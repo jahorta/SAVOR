@@ -21,7 +21,8 @@ CREATE TABLE object_ref (
   id INTEGER PRIMARY KEY,
   sha256      TEXT NOT NULL UNIQUE,
   compression INTEGER NOT NULL,
-  size        INTEGER NOT NULL
+  size        INTEGER NOT NULL,
+  filename        Text
 );
 
 -- Savestates
