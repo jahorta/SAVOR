@@ -9,12 +9,15 @@
 namespace simcore::pred {
 
 #pragma pack(push,1)
-    enum class PredFlag : uint8_t {
+    enum class PredFlag : uint32_t {
         CaptureBaseline = 1 << 0,
         Active = 1 << 1,
         RhsIsKey = 1 << 2,
         LhsIsProg = 1 << 3,
-        RhsIsProg = 1 << 4
+        RhsIsProg = 1 << 4,
+        LhsIsNeg = 1 << 5,
+        RhsIsNeg = 1 << 6,
+        AbortOnFail = 1 << 7
     };
 
     inline constexpr PredFlag operator|(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) | uint8_t(b)); }
@@ -26,7 +29,7 @@ namespace simcore::pred {
         uint8_t  kind;                // 0 ABS, 1 DELTA
         uint8_t  width;               // 1,2,4,8
         uint8_t  cmp;                 // 0==,1!=,2<,3<=,4>,5>=
-        uint8_t  flags;               // PredFlag bits
+        uint32_t  flags;               // PredFlag bits
         uint32_t turn_mask;           // 0 => treat as all-ones
 
         // LHS
@@ -66,7 +69,7 @@ namespace simcore::pred {
         PredKind kind{ PredKind::ABS };
         uint8_t  width{ 0 };
         CmpOp    cmp{ CmpOp::EQ };
-        uint8_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
+        uint32_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
 
         uint32_t lhs_addr{ 0 };                   // LHS absolute VA (legacy path)
         std::optional<addr::AddrKey> lhs_key{};     // LHS anchor (symbolic), optional
