@@ -14,16 +14,54 @@ namespace soa::battle::actions {
         UseItem = 4
     };
 
+    static constexpr size_t ACTION_PARAM_WIRE_SIZE = 3;
     struct ActionParameters {
         uint32_t target_mask = 0;   // single-target for now
         uint16_t item_id = 0xFFFF; // valid when macro==UseItem
+
+        /* Wire spec (uint8_t) (3 bytes)
+        [0] target_slot
+        [1..2] item_id
+        */
+        static bool to_wire(const actions::ActionParameters ap, std::vector<std::uint8_t>& out) {
+            out.push_back(ap.target_slot);
+            out.push_back(static_cast<uint8_t>(ap.item_id & 0xFF));
+            out.push_back(static_cast<uint8_t>((ap.item_id >> 8) & 0xFF));
+        }
+        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionParameters& ap) {
+            if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PARAM_WIRE_SIZE)) return false;
+
+            ap.target_slot = *cur; cur += 1;
+            ap.item_id = static_cast<uint16_t>(*cur); cur += 2;
+            return true;
+        }
     };
 
+    static constexpr size_t ACTION_PLAN_SIZE = 2 + ACTION_PARAM_WIRE_SIZE;
     struct ActionPlan {
         uint8_t actor_slot = 0;     // 0..3
-        uint8_t is_prelude = 0;     // 1 if prelude
         BattleAction macro{};
         ActionParameters params{};
+
+
+        /* Wire spec (uint8_t) (5 bytes)
+        [0] actor_slot
+        [1] macro
+        [2..4] ActionParameters (3 bytes)
+        */
+        static bool to_wire(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out) {
+            out.push_back(ap.actor_slot);
+            out.push_back(static_cast<uint8_t>(ap.macro));
+            ActionParameters::to_wire(ap.params, out);
+        }
+        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionPlan& ap) {
+            if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PLAN_SIZE)) return false;
+
+            ap.actor_slot = *cur; cur += 1;
+            ap.macro = static_cast<BattleAction>(*cur); cur += 1;
+            ActionParameters::from_wire(cur, end, ap.params);
+            return true;
+        }
     };
 
     using TurnPlanSpec = std::vector<ActionPlan>; 

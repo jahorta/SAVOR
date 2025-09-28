@@ -16,36 +16,6 @@ namespace soa::battle::actions {
         return true;
     }
 
-    // You should already have these in your ActionPlan wire layer.
-    // Adapters are included here to avoid guessing your function names.
-    static void encode_action_plan(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out)
-    {
-        // Map high-level ActionPlan -> packed WireActionPlan (16 bytes)
-        simcore::WireActionPlan w{};
-        w.actor_slot = static_cast<std::uint8_t>(ap.actor_slot);
-        w.is_prelude = static_cast<std::uint8_t>(ap.is_prelude ? 1 : 0);
-        w.macro = static_cast<std::uint8_t>(ap.macro); // BattleAction enum -> u8
-        w._pad0 = 0;
-
-        w.target_mask = static_cast<std::uint32_t>(ap.params.target_mask);
-
-        const auto* p = reinterpret_cast<const std::uint8_t*>(&w);
-        out.insert(out.end(), p, p + sizeof(w));
-    }
-
-    static bool decode_action_plan(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionPlan& ap)
-    {
-        if (end - cur < static_cast<std::ptrdiff_t>(sizeof(simcore::WireActionPlan))) return false;
-
-        const auto* w = reinterpret_cast<const simcore::WireActionPlan*>(cur);
-        ap.actor_slot = w->actor_slot;
-        ap.is_prelude = (w->is_prelude != 0);
-        ap.macro = static_cast<actions::BattleAction>(w->macro);
-        ap.params.target_mask = w->target_mask;
-
-        cur += sizeof(simcore::WireActionPlan);
-        return true;
-    }
     // --- public API ---
 
     void encode_turn_plans_to_buffer(const actions::BattlePath& path, std::vector<std::uint8_t>& out) {
@@ -55,7 +25,7 @@ namespace soa::battle::actions {
             u32_le(out, static_cast<std::uint32_t>(turn.fake_attack_count));
             u32_le(out, static_cast<std::uint32_t>(turn.spec.size()));
             for (const auto& ap : turn.spec) {
-                encode_action_plan(ap, out); // unchanged (packed struct memcpy)
+                ActionPlan::to_wire(ap, out);
             }
         }
     }
@@ -80,7 +50,7 @@ namespace soa::battle::actions {
 
             for (std::uint32_t i = 0; i < action_count; ++i) {
                 actions::ActionPlan ap{};
-                if (!decode_action_plan(cur, end, ap)) return false;
+                if (!ActionPlan::from_wire(cur, end, ap)) return false;
                 tp.spec.push_back(ap);
             }
             out.push_back(std::move(tp));

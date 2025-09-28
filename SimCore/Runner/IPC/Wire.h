@@ -130,16 +130,4 @@ namespace simcore {
         uint32_t payload_len;  // number of bytes that follow immediately
     };
 
-#pragma pack(push,1)
-    struct WireActionPlan {
-        uint8_t actor_slot;
-        uint8_t is_prelude;
-        uint8_t macro;   // BattleAction
-        uint8_t _pad0;
-        uint32_t target_mask;
-    };
-#pragma pack(pop)
-
-    static_assert(sizeof(WireActionPlan) == 8, "WireActionPlan size drift");
-
 } // namespace simcore
