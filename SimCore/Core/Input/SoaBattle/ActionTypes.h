@@ -23,7 +23,7 @@ namespace soa::battle::actions {
         [0] target_slot
         [1..2] item_id
         */
-        static bool to_wire(const actions::ActionParameters ap, std::vector<std::uint8_t>& out) {
+        static void to_wire(const actions::ActionParameters ap, std::vector<std::uint8_t>& out) {
             out.push_back(ap.target_slot);
             out.push_back(static_cast<uint8_t>(ap.item_id & 0xFF));
             out.push_back(static_cast<uint8_t>((ap.item_id >> 8) & 0xFF));
@@ -49,7 +49,7 @@ namespace soa::battle::actions {
         [1] macro
         [2..4] ActionParameters (3 bytes)
         */
-        static bool to_wire(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out) {
+        static void to_wire(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out) {
             out.push_back(ap.actor_slot);
             out.push_back(static_cast<uint8_t>(ap.macro));
             ActionParameters::to_wire(ap.params, out);
@@ -83,12 +83,9 @@ namespace soa::battle::actions {
         }
     }
 
-    inline int resolveTargetIndex(uint32_t mask) {
-        if (!mask) return -1;
-        for (int i = 4; i < 12; ++i) {
-            if (mask & (1u << (i & 31u))) return i;
-        }
-        return -1;
+    inline int resolveTargetIndex(uint32_t slot) {
+        // slot is already a concrete 0..11; anything else = "unset/auto"
+        return (slot <= 11u) ? static_cast<int>(slot) : -1;
     }
 
     inline std::string get_battle_path_summary(BattlePath bp) {
@@ -98,12 +95,12 @@ namespace soa::battle::actions {
             path.emplace_back("\n    Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
             for (auto sp : tp.spec) {
                 std::string actor = " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
-                if (sp.macro == BattleAction::Attack) 
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_slot)) + "]";
+                if (sp.macro == BattleAction::Attack)
+                    actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
                 if (sp.macro == BattleAction::UseItem) 
                 {
                     actor = actor + ":[" + std::to_string(sp.params.item_id) + "]";
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_slot)) + "]";
+                    actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
                 }
                 path.emplace_back(actor);
             }
