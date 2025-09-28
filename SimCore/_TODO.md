@@ -1,6 +1,6 @@
-1. work on refactor of \*Repo classes to make them use DBStorage instead of raw sqlite3
-1. work on reseting workers and resending jobs for stalled workers
-    - see if return result - failure -> resend works for this.
+1. fix planwriter for battle plans
+    - We are now using a single target slot, not a mask of targets.
+    - Also fix in BattleExplorer.cpp (early convert from mask to slot, may need to increase UIAction target mask to uint16_t to allow for PC targets too).
 1. try to remove frame limiter and test for consistency
 1. work on the job storage database:
     - Optional reader pool: route OpType::Read to a small read thread pool with separate connections; keep single writer for OpType::Write
@@ -36,7 +36,7 @@ New shape to implement:
  - job_sets(job_set_id PK, purpose, program_kind, created_by, created_at, domain_ref_kind, domain_ref_id)
  - domain_ref_* points to SeedProbeRepo row, TasMovieRepo row, ExplorerRunRepo row, etc.
  - jobs(job_id PK, job_set_id FK, program_kind, fingerprint UNIQUE, priority, state, attempts, max_attempts, claimed_by_worker, lease_expires_at, queued_at, created_at)
- - state: QUEUED | CLAIMED | RUNNING | SUCCEEDED | FAILED | CANCELED | SUPERSEDED | SUCCEEDED_WINNER | SUCCEEDED_DUPLICATE
+ - state: PLANNED | QUEUED | CLAIMED | RUNNING | SUCCEEDED | FAILED | CANCELED | SUPERSEDED | SUCCEEDED_WINNER | SUCCEEDED_DUPLICATE
  - job_events(event_id PK, job_id FK, ts, event_kind, payload_json)
  - artifacts(artifact_id PK(hash), kind, bytes, meta_json, created_at)
  - workers(worker_id PK, pid, current_program_kind NULL, last_heartbeat, state)
@@ -59,7 +59,7 @@ New shape to implement:
 #### Mapping to your repos:
  - ##### SeedProbe:
     - Inputs: read from SeedProbeRepo (probe metadata). For the grid, don't use SeedDeltaRepo to queue; instead, generate jobs directly into jobs.
-    - Progress: sent to SeedProbeRepo.
+    - Progress: sent to JobEventsRepo (each job should have no progress).
     - Results: on success, write a record to SeedDeltaRepo (this is now your results ledger).
  - ##### TasMovie:
     - Inputs: read from TasMovieRepo.
@@ -74,7 +74,7 @@ New shape to implement:
 #### Tables (new):
  - seed_probe_winners(job_set_id, delta_id, winner_job_id, result_artifact_id, metrics_json, created_at, PRIMARY KEY(job_set_id, delta_id))
 #### Codec behavior:
- - On first successful probe for (job_set_id, delta_id):
+ - On first successful probe for (job_set_id, delta):
  - Transaction: insert into seed_probe_winners (unique enforces "first wins"), set job SUCCEEDED_WINNER, write SeedDeltaRepo row with is_unique=1, and optionally mark queued siblings SUPERSEDED.
  - On later successes: mark SUCCEEDED_DUPLICATE, write SeedDeltaRepo row with is_unique=0.
  - Scheduler excludes queued jobs whose (job_set_id, delta_id) already has a winner (via NOT EXISTS on the winners table).
@@ -90,11 +90,11 @@ New shape to implement:
  - Dispatch: resolve WorkerDispatch via the Program Registry decode; ship over IPC.
  - Progress/Results: route back into DB using the same program's encode_* functions.
  - Phase chaining: after any terminal state, evaluate triggers (next milestone).
-Straw-man knobs:
+#### Straw-man knobs:
  - max_concurrent_processes, child_launch_timeout_ms, child_shutdown_grace_ms
  - heartbeat_interval_ms, lease_seconds, aging_factor
  - idle_keepalive_ms for warm reuse within same ProgramKind
-Reuse:
+#### Reuse:
  - Keep your existing ProcessWorker class (pipes, reader thread) and retarget it under WorkerCoordinator.
 
 ## Milestone 5 - DB phase coordinators (compartmentalized)
