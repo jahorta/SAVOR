@@ -34,15 +34,11 @@ namespace soa::battle::actions {
         return firstAliveEnemyIndex();
     }
 
-    int PlanWriter::resolveRequestedTargetIndex(uint32_t mask) const {
+    int PlanWriter::resolveRequestedTargetIndex(uint32_t slot) const {
         int base = firstAliveEnemyIndex();
         if (base < 0) return -1;
-        if (!mask) return base;
-        for (int i = 4; i < 12; ++i) {
-            if (bc_.slots[i].present && bc_.slots[i].is_alive && !bc_.slots[i].is_player) {
-                if (mask & (1u << (i & 31u))) return i - 4;
-            }
-        }
+        if (slot == -1) return base;
+        if (slot < -1 && slot < 12 && bc_.slots[slot].present && bc_.slots[slot].is_alive) return slot;
         return -1;
     }
 
@@ -59,7 +55,7 @@ namespace soa::battle::actions {
         navMainTo(p, 3);
         tapA(p); // enter targets, 1-frame animation
         const int cur = currentTargetIndex();
-        const int dst = resolveRequestedTargetIndex(ap.target_mask);
+        const int dst = resolveRequestedTargetIndex(ap.target_slot);
         if (dst < 0) { err = MaterializeErr::NoValidTarget; return false; }
         navTargetTo(p, cur, dst);
         tapA(p); // confirm target; game returns to main menu highlight (assume 3)

@@ -16,7 +16,7 @@ namespace soa::battle::actions {
 
     static constexpr size_t ACTION_PARAM_WIRE_SIZE = 3;
     struct ActionParameters {
-        uint32_t target_mask = 0;   // single-target for now
+        uint8_t target_slot = 0;   // single-target, use -1 for first available enemy
         uint16_t item_id = 0xFFFF; // valid when macro==UseItem
 
         /* Wire spec (uint8_t) (3 bytes)
@@ -99,11 +99,11 @@ namespace soa::battle::actions {
             for (auto sp : tp.spec) {
                 std::string actor = " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
                 if (sp.macro == BattleAction::Attack) 
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_mask)) + "]";
+                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_slot)) + "]";
                 if (sp.macro == BattleAction::UseItem) 
                 {
                     actor = actor + ":[" + std::to_string(sp.params.item_id) + "]";
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_mask)) + "]";
+                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_slot)) + "]";
                 }
                 path.emplace_back(actor);
             }
