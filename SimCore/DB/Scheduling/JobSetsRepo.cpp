@@ -17,7 +17,7 @@ namespace simcore::db {
         if (sqlite3_prepare_v2(db,
             "INSERT INTO job_sets(purpose,program_kind,created_by,created_at,domain_ref_kind,domain_ref_id,meta_text,expected_total)"
             " VALUES(?,?,?,strftime('%s','now'),?,?,?,?) RETURNING job_set_id", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<int64_t>::Err(sqlite3_errmsg(db));
+            return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
 
         if (purpose && !purpose->empty()) sqlite3_bind_text(st, 1, purpose->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st, 1);
@@ -31,7 +31,7 @@ namespace simcore::db {
         int64_t id = 0;
         if (sqlite3_step(st) == SQLITE_ROW) id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
-        if (!id) return DbResult<int64_t>::Err("failed to insert job_set");
+        if (!id) return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "failed to insert job_set" });
         return DbResult<int64_t>::Ok(id);
     }
 
@@ -54,7 +54,7 @@ namespace simcore::db {
         if (sqlite3_prepare_v2(db,
             "SELECT job_set_id,purpose,program_kind,created_by,created_at,domain_ref_kind,domain_ref_id,meta_text,expected_total"
             " FROM job_sets WHERE job_set_id=?", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<JobSetRow>::Err(sqlite3_errmsg(db));
+            return DbResult<JobSetRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_set_id);
         JobSetRow r{};
@@ -72,7 +72,7 @@ namespace simcore::db {
             return DbResult<JobSetRow>::Ok(std::move(r));
         }
         sqlite3_finalize(st);
-        return DbResult<JobSetRow>::Err("job_set not found");
+        return DbResult<JobSetRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "job_set not found" });
     }
 
     std::future<DbResult<JobSetRow>> JobSetsRepo::GetAsync(int64_t job_set_id, RetryPolicy rp) {

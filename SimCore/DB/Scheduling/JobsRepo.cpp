@@ -17,7 +17,7 @@ namespace simcore::db {
             " VALUES(?,?,?,?,?,?, 'QUEUED',0,5,strftime('%s','now'),?)"
             " ON CONFLICT(fingerprint) DO UPDATE SET fingerprint=fingerprint"
             " RETURNING job_id", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<int64_t>::Err(sqlite3_errmsg(db));
+            return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
 
         sqlite3_bind_int64(st, 1, job_set_id);
@@ -34,7 +34,7 @@ namespace simcore::db {
         int64_t out_id = 0;
         if (sqlite3_step(st) == SQLITE_ROW) out_id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
-        if (!out_id) return DbResult<int64_t>::Err("failed to upsert job");
+        if (!out_id) return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "failed to upsert job" });
         return DbResult<int64_t>::Ok(out_id);
     }
 
@@ -55,7 +55,7 @@ namespace simcore::db {
         if (sqlite3_prepare_v2(db,
             "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at,queued_at,vm_kv"
             " FROM jobs WHERE job_id=?", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<JobRow>::Err(sqlite3_errmsg(db));
+            return DbResult<JobRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_id);
         JobRow r{};
@@ -78,7 +78,7 @@ namespace simcore::db {
             return DbResult<JobRow>::Ok(std::move(r));
         }
         sqlite3_finalize(st);
-        return DbResult<JobRow>::Err("job not found");
+        return DbResult<JobRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "job not found" });
     }
 
     std::future<DbResult<JobRow>> JobsRepo::GetAsync(int64_t job_id, RetryPolicy rp) {
@@ -90,7 +90,7 @@ namespace simcore::db {
         auto* db = env.handle();
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db, "UPDATE jobs SET state=? WHERE job_id=?", -1, &st, nullptr) != SQLITE_OK)
-            return DbResult<void>::Err(sqlite3_errmsg(db));
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         sqlite3_bind_text(st, 1, s.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2, job_id);
         sqlite3_step(st);
@@ -107,7 +107,7 @@ namespace simcore::db {
         auto* db = env.handle();
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db, "UPDATE jobs SET vm_kv=? WHERE job_id=?", -1, &st, nullptr) != SQLITE_OK)
-            return DbResult<void>::Err(sqlite3_errmsg(db));
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         if (kv && !kv->empty())
             sqlite3_bind_text(st, 1, kv->c_str(), -1, SQLITE_TRANSIENT);
         else

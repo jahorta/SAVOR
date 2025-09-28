@@ -10,7 +10,7 @@ namespace simcore::db {
         if (sqlite3_prepare_v2(db,
             "INSERT INTO job_events(job_id, ts, event_kind, payload)"
             " VALUES(?, strftime('%s','now'), ?, ?) RETURNING event_id", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<int64_t>::Err(sqlite3_errmsg(db));
+            return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_id);
         sqlite3_bind_text(st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
@@ -20,7 +20,7 @@ namespace simcore::db {
         int64_t id = 0;
         if (sqlite3_step(st) == SQLITE_ROW) id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
-        if (!id) return DbResult<int64_t>::Err("failed to insert job_event");
+        if (!id) return DbResult<int64_t>::Err({DbErrorKind::IO, sqlite3_errcode(db), "failed to insert job_event" });
         return DbResult<int64_t>::Ok(id);
     }
 
@@ -34,7 +34,7 @@ namespace simcore::db {
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db,
             "SELECT payload FROM job_events WHERE job_id=? AND event_kind=? ORDER BY event_id LIMIT 1", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<std::optional<std::string>>::Err(sqlite3_errmsg(db));
+            return DbResult<std::optional<std::string>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_id);
         sqlite3_bind_text(st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
@@ -56,7 +56,7 @@ namespace simcore::db {
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db,
             "SELECT payload FROM job_events WHERE job_id=? AND event_kind=? ORDER BY event_id DESC LIMIT 1", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<std::optional<std::string>>::Err(sqlite3_errmsg(db));
+            return DbResult<std::optional<std::string>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_id);
         sqlite3_bind_text(st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
@@ -82,7 +82,7 @@ namespace simcore::db {
             " JOIN jobs j ON j.job_id = je.job_id"
             " WHERE j.job_set_id=? AND je.event_kind=?"
             " ORDER BY je.event_id", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<std::vector<JobEventRow>>::Err(sqlite3_errmsg(db));
+            return DbResult<std::vector<JobEventRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_set_id);
         sqlite3_bind_text(st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);

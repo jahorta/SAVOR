@@ -29,7 +29,7 @@ namespace simcore {
             rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &err);
             if (rc != SQLITE_OK) { std::string m = err ? err : "commit"; sqlite3_free(err); return DbResult<SeedProbeRow>::Err({ map_sqlite_err(rc), rc, m }); }
 
-            return SeedProbeRepo::Get(env, id);
+            return SeedProbeRepo::Get(id);
         }
 
         DbResult<ExplorerRunRow> QueryRepo::DequeueRun(DbEnv& env) {
@@ -57,7 +57,7 @@ namespace simcore {
             rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &err);
             if (rc != SQLITE_OK) { std::string m = err ? err : "commit"; sqlite3_free(err); return DbResult<ExplorerRunRow>::Err({ map_sqlite_err(rc), rc, m }); }
 
-            return ExplorerRunRepo::Get(env, id);
+            return ExplorerRunRepo::Get(id);
         }
 
         DbResult<QueueDepths> QueryRepo::QueueDepthsNow(DbEnv& env) {
@@ -142,7 +142,7 @@ namespace simcore {
             rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &err);
             if (rc != SQLITE_OK) { std::string m = err ? err : "commit"; sqlite3_free(err); return DbResult<TasMovieRow>::Err({ map_sqlite_err(rc), rc, m }); }
 
-            return TasMovieRepo::Get(env, id);
+            return TasMovieRepo::Get(id);
         }
 
         DbResult<TasMovieQueueDepths> QueryRepo::TasMovieQueueDepthsNow(DbEnv& env) {
