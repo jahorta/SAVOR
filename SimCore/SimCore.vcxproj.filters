@@ -88,6 +88,9 @@
     <Filter Include="DB\ProgramCodecs">
       <UniqueIdentifier>{cdeaa0cf-dc17-4849-beb2-0c34fa2ddbf4}</UniqueIdentifier>
     </Filter>
+    <Filter Include="DB\Scheduling">
+      <UniqueIdentifier>{72a966a8-4d7c-4dd8-a4af-05d9c1f627a1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -327,16 +330,10 @@
     <ClInclude Include="DB\DeltaSeedRepo.h">
       <Filter>DB\PhaseRepos</Filter>
     </ClInclude>
-    <ClInclude Include="DB\SavestateRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
     <ClInclude Include="DB\SeedProbeRepo.h">
       <Filter>DB\PhaseRepos</Filter>
     </ClInclude>
     <ClInclude Include="DB\TasMovieRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\SavestateHelpers.h">
       <Filter>DB\PhaseRepos</Filter>
     </ClInclude>
     <ClInclude Include="DB\ExplorerSettingsRepo.h">
@@ -372,13 +369,10 @@
     <ClInclude Include="DB\DBCore\DbEventsRepo.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
-    <ClInclude Include="DB\DBCore\SeedProgramKinds.h">
+    <ClInclude Include="DB\DBCore\RegisterProgramKinds.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
     <ClInclude Include="DB\ProgramDB\ExplorerRunDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\Fingerprint.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
     <ClInclude Include="DB\ProgramDB\IniKV.h">
@@ -392,6 +386,33 @@
     </ClInclude>
     <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\JobEventsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\JobSetsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\JobsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\Hash.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\BattlePlanRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\DBWorkerCoordinatorConfig.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\DBWorkerCoordinator.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavestateRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1160,13 +1181,7 @@
     <ClCompile Include="DB\ExplorerRunRepo.cpp">
       <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
-    <ClCompile Include="DB\SavestateRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
     <ClCompile Include="DB\TasMovieRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\SavestateHelpers.cpp">
       <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
     <ClCompile Include="DB\SeedProbeRepo.cpp">
@@ -1181,7 +1196,7 @@
     <ClCompile Include="DB\AddressProgramRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
-    <ClCompile Include="DB\BattlePlanAtomrepo.cpp">
+    <ClCompile Include="DB\BattlePlanAtomRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
     <ClCompile Include="DB\BattlePlanTurnRepo.cpp">
@@ -1205,7 +1220,7 @@
     <ClCompile Include="DB\DBCore\DbEventsRepo.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
-    <ClCompile Include="DB\DBCore\SeedProgramKinds.cpp">
+    <ClCompile Include="DB\DBCore\RegisterProgramKinds.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
     <ClCompile Include="DB\ProgramDB\ExplorerRunDBCodec.cpp">
@@ -1217,11 +1232,29 @@
     <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
     </ClCompile>
-    <ClCompile Include="DB\ProgramDB\Fingerprint.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
     <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\JobsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\BattlePlanRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\DBWorkerCoordinator.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\SavestateRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1261,6 +1294,15 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0010.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0011.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0012.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0013.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>

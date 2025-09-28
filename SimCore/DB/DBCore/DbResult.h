@@ -13,6 +13,7 @@ namespace simcore::db {
             Unique,
             NotFound,
             InvalidArgument,
+            InvalidState,
             Unknown
         };
 

@@ -144,5 +144,40 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_ListActiveForProbe(e, probe_id); });
         }
 
+        static inline DbResult<void> Impl_SetResultsIni(DbEnv& env, int64_t run_id, const std::string& ini_text) {
+            auto* db = env.handle();
+            sqlite3_stmt* st{};
+            if (sqlite3_prepare_v2(db, "UPDATE explorer_run SET results_ini=? WHERE id=?;", -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<void>::Err(sqlite3_errmsg(db));
+            sqlite3_bind_text(st, 1, ini_text.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(st, 2, run_id);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<void>::Err(sqlite3_errmsg(db));
+            return DbResult<void>::Ok();
+        }
+
+        static inline DbResult<void> Impl_SetProgressLogArtifactId(DbEnv& env, int64_t run_id, int64_t artifact_id) {
+            auto* db = env.handle();
+            sqlite3_stmt* st{};
+            if (sqlite3_prepare_v2(db, "UPDATE explorer_run SET progress_log_artifact_id=? WHERE id=?;", -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<void>::Err(sqlite3_errmsg(db));
+            sqlite3_bind_int64(st, 1, artifact_id);
+            sqlite3_bind_int64(st, 2, run_id);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<void>::Err(sqlite3_errmsg(db));
+            return DbResult<void>::Ok();
+        }
+
+        std::future<DbResult<void>> ExplorerRunRepo::SetResultsIniAsync(int64_t run_id, std::string ini_text, RetryPolicy rp) {
+            return DBService::instance().submit_void(OpType::Write, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_SetResultsIni(e, run_id, ini_text); });
+        }
+        std::future<DbResult<void>> ExplorerRunRepo::SetProgressLogArtifactIdAsync(int64_t run_id, int64_t artifact_id, RetryPolicy rp) {
+            return DBService::instance().submit_void(OpType::Write, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_SetProgressLogArtifactId(e, run_id, artifact_id); });
+        }
+
     } // db
 } // simcore

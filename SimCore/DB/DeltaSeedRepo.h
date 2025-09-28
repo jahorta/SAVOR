@@ -54,6 +54,10 @@ namespace simcore {
             static inline DbResult<std::vector<DeltaSeedRow>> ListForProbe(int64_t probe_id) {
                 return ListForProbeAsync(probe_id).get();
             }
+            static std::future<DbResult<int64_t>> InsertOneAsync(int64_t probe_id, const DeltaSeedRow& row, bool is_grid, bool is_unique, RetryPolicy rp = {});
+            static inline DbResult<int64_t> InsertOne(int64_t probe_id, const DeltaSeedRow& row, bool is_grid, bool is_unique) {
+                return InsertOneAsync(probe_id, row, is_grid, is_unique).get();
+            }
         };
 
     } // namespace db

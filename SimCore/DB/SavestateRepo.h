@@ -23,10 +23,23 @@ namespace simcore {
             static std::future<DbResult<int64_t>> PlanAsync(int savestate_type, std::string note, RetryPolicy rp = {});
             static std::future<DbResult<void>>    FinalizeAsync(int64_t id, int64_t object_ref_id, RetryPolicy rp = {});
             static std::future<DbResult<std::optional<SavestateRow>>> GetAsync(int64_t id, RetryPolicy rp = {});
+            static std::future<DbResult<std::string>> MaterializeToTempPathAsync(
+                int64_t savestate_id,
+                std::string objdir = ".objects",
+                std::string tmpdir = ".tmp",
+                RetryPolicy rp = {}
+            );
 
             static inline DbResult<int64_t> Plan(int savestate_type, std::string note) { return PlanAsync(savestate_type, std::move(note)).get(); }
             static inline DbResult<void>    Finalize(int64_t id, int64_t object_ref_id) { return FinalizeAsync(id, object_ref_id).get(); }
             static inline DbResult<std::optional<SavestateRow>> Get(int64_t id) { return GetAsync(id).get(); }
+            static inline DbResult<std::string> MaterializeToTempPath(
+                int64_t savestate_id,
+                std::string objdir = ".objects",
+                std::string tmpdir = ".tmp"
+            ) {
+                return MaterializeToTempPathAsync(savestate_id, std::move(objdir), std::move(tmpdir)).get();
+            }
         };
 
     } // namespace db

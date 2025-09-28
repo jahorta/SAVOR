@@ -26,7 +26,8 @@ namespace simcore {
             static std::future<DbResult<void>>    MarkRunningAsync(int64_t run_id, RetryPolicy rp = {});
             static std::future<DbResult<void>>    MarkDoneAsync(int64_t run_id, RetryPolicy rp = {});
             static std::future<DbResult<ExplorerRunRow>> GetAsync(int64_t run_id, RetryPolicy rp = {});
-            static std::future<DbResult<std::vector<ExplorerRunRow>>> ListActiveForProbeAsync(int64_t probe_id, RetryPolicy rp = {});
+            static std::future<DbResult<std::vector<ExplorerRunRow>>> ListActiveForProbeAsync(int64_t probe_id, RetryPolicy rp = {}); static std::future<DbResult<void>> SetResultsIniAsync(int64_t run_id, std::string ini_text, RetryPolicy rp = {});
+            static std::future<DbResult<void>> SetProgressLogArtifactIdAsync(int64_t run_id, int64_t artifact_id, RetryPolicy rp = {});
 
             // Blocking convenience
             static inline DbResult<int64_t> IdempotentCreate(int64_t probe_id, int64_t settings_id) { return IdempotentCreateAsync(probe_id, settings_id).get(); }
@@ -35,6 +36,12 @@ namespace simcore {
             static inline DbResult<void>    MarkDone(int64_t run_id) { return MarkDoneAsync(run_id).get(); }
             static inline DbResult<ExplorerRunRow> Get(int64_t run_id) { return GetAsync(run_id).get(); }
             static inline DbResult<std::vector<ExplorerRunRow>> ListActiveForProbe(int64_t probe_id) { return ListActiveForProbeAsync(probe_id).get(); }
+            static inline DbResult<void> SetResultsIni(int64_t run_id, std::string ini_text) {
+                return SetResultsIniAsync(run_id, std::move(ini_text)).get();
+            }
+            static inline DbResult<void> SetProgressLogArtifactId(int64_t run_id, int64_t artifact_id) {
+                return SetProgressLogArtifactIdAsync(run_id, artifact_id).get();
+            }
         };
 
     }

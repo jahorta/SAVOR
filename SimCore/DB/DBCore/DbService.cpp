@@ -10,7 +10,7 @@
 #include "DbHealth.h"
 #include "DbEventsRepo.h"
 #include "CoordinatorClock.h"
-#include "SeedProgramKinds.h"
+#include "RegisterProgramKinds.h"
 #include "../../Utils/Log.h"
 
 namespace simcore {
@@ -47,12 +47,10 @@ namespace simcore {
                     CoordinatorClock::instance().boot_wall_utc_iso().c_str());
             }
 
-            auto seed_programs = SeedProgramKinds(*m_env);
-
-
-            (void)DbEventsRepo::InsertBootEvent(*m_env, "coordinator_booted", "");
-
             m_worker = std::thread([this]() { workerLoop(); });
+
+            (void)RegisterProgramKinds();
+            (void)DbEventsRepo::InsertBootEvent("coordinator_booted", "");
         }
 
         void DBService::stop() {

@@ -6,6 +6,18 @@ DELETE FROM schema_version;
 INSERT INTO schema_version(version, applied_at)
 VALUES (3, strftime('%s','now'));
 
+-- Concrete plan header
+CREATE TABLE IF NOT EXISTS battle_plan (
+  plan_id      INTEGER PRIMARY KEY,
+  settings_id  INTEGER NOT NULL REFERENCES explorer_settings(id) ON DELETE CASCADE,
+  name         TEXT,
+  fingerprint  TEXT NOT NULL UNIQUE,
+  num_turns    INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_battle_plan_by_settings ON battle_plan(settings_id);
+
 -- Battle plan atoms
 CREATE TABLE battle_plan_atom (
   id INTEGER PRIMARY KEY,
@@ -23,20 +35,18 @@ CREATE INDEX ix_battle_plan_atom_type_actor
 
 -- Turns under explorer_settings
 CREATE TABLE battle_plan_turn (
-  settings_id INTEGER NOT NULL REFERENCES explorer_settings(id) ON DELETE CASCADE,
-  turn_index INTEGER NOT NULL,
+  plan_id       INTEGER NOT NULL REFERENCES battle_plan(plan_id) ON DELETE CASCADE,
+  turn_index    INTEGER NOT NULL,
   fake_atk_count INTEGER NOT NULL,
-  PRIMARY KEY (settings_id, turn_index)
+  PRIMARY KEY(plan_id, turn_index)
 );
 
 CREATE TABLE battle_plan_turn_actor (
-  settings_id INTEGER NOT NULL REFERENCES explorer_settings(id) ON DELETE CASCADE,
+  plan_id     INTEGER NOT NULL REFERENCES battle_plan(plan_id) ON DELETE CASCADE,
   turn_index  INTEGER NOT NULL,
   actor_index INTEGER NOT NULL,
-  atom_id     INTEGER NOT NULL REFERENCES battle_plan_atom(id) ON DELETE RESTRICT,
-  PRIMARY KEY (settings_id, turn_index, actor_index),
-  FOREIGN KEY (settings_id, turn_index)
-    REFERENCES battle_plan_turn(settings_id, turn_index) ON DELETE CASCADE
+  atom_id     INTEGER NOT NULL REFERENCES battle_plan_atom(id),
+  PRIMARY KEY(plan_id, turn_index, actor_index)
 );
 
 -- Address programs
@@ -84,5 +94,9 @@ CREATE TABLE explorer_settings_predicate (
 );
 CREATE INDEX ix_settings_predicate_pid
   ON explorer_settings_predicate(settings_id, predicate_id);
+
+  -- Explorer run: store final INI and a reference to the concatenated progress log object
+ALTER TABLE explorer_run ADD COLUMN results_ini TEXT;
+ALTER TABLE explorer_run ADD COLUMN progress_log_artifact_id INTEGER;
 
 COMMIT;

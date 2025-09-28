@@ -1,6 +1,8 @@
 #include "SavestateRepo.h"
 #include <sqlite3.h>
 
+#include "DBCore/ObjectStore.h"
+
 namespace simcore {
     namespace db {
 
@@ -72,6 +74,27 @@ namespace simcore {
         std::future<DbResult<std::optional<SavestateRow>>> SavestateRepo::GetAsync(int64_t id, RetryPolicy rp) {
             return DBService::instance().submit_res<std::optional<SavestateRow>>(OpType::Read, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_Get(e, id); });
+        }
+
+        static inline DbResult<int64_t> Impl_Plan(DbEnv& env, int savestate_type, const std::string& note);
+        static inline DbResult<void>    Impl_Finalize(DbEnv& env, int64_t id, int64_t object_ref_id);
+        static inline DbResult<std::optional<SavestateRow>> Impl_Get(DbEnv& env, int64_t id);
+
+        static inline DbResult<std::string> Impl_Materialize(DbEnv& env, int64_t savestate_id, const std::string& objdir, const std::string& tmpdir) {
+            auto row = Impl_Get(env, savestate_id);
+            if (!row.ok) return DbResult<std::string>::Err(row.error);
+            if (!row.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0, "savestate not found" });
+            const auto ss = row.value.value();
+            if (!ss.complete || ss.object_ref_id <= 0) return DbResult<std::string>::Err({ DbErrorKind::InvalidState, 0, "savestate incomplete" });
+            auto mat = ObjectStore::MaterializeToTemp(ss.object_ref_id, objdir, tmpdir);
+            if (!mat.ok) return DbResult<std::string>::Err(mat.error);
+            return DbResult<std::string>::Ok(mat.value);
+        }
+
+        std::future<DbResult<std::string>> SavestateRepo::MaterializeToTempPathAsync(
+            int64_t savestate_id, std::string objdir, std::string tmpdir, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::string>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_Materialize(e, savestate_id, objdir, tmpdir); });
         }
 
     } // namespace db

@@ -4,130 +4,106 @@
 namespace simcore {
     namespace db {
 
-        static inline DbResult<void> Impl_UpsertTurn(DbEnv& env, int64_t settings_id, int32_t turn_index, int32_t fake_atk_count) {
-            sqlite3* db = env.handle();
+        static inline DbResult<void> Impl_UpsertTurnByPlan(DbEnv& env, int64_t plan_id, int32_t turn_index, int32_t fake_atk_count) {
+            auto* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "INSERT INTO battle_plan_turn(settings_id, turn_index, fake_atk_count) VALUES(?,?,?) "
-                "ON CONFLICT(settings_id, turn_index) DO UPDATE SET fake_atk_count=excluded.fake_atk_count;",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, settings_id);
+                "INSERT INTO battle_plan_turn(plan_id,turn_index,fake_atk_count) VALUES(?,?,?) "
+                "ON CONFLICT(plan_id,turn_index) DO UPDATE SET fake_atk_count=excluded.fake_atk_count;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            sqlite3_bind_int64(st, 1, plan_id);
             sqlite3_bind_int(st, 2, turn_index);
             sqlite3_bind_int(st, 3, fake_atk_count);
             rc = sqlite3_step(st); sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "upsert" });
-            return DbResult<void>{ true };
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            return DbResult<void>::Ok();
         }
 
-        static inline DbResult<void> Impl_UpsertTurnActor(DbEnv& env, int64_t settings_id, int32_t turn_index, int32_t actor_index, int64_t atom_id) {
-            sqlite3* db = env.handle();
+        static inline DbResult<void> Impl_UpsertTurnActorByPlan(DbEnv& env, int64_t plan_id, int32_t turn_index, int32_t actor_index, int64_t atom_id) {
+            auto* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "INSERT INTO battle_plan_turn_actor(settings_id, turn_index, actor_index, atom_id) VALUES(?,?,?,?) "
-                "ON CONFLICT(settings_id, turn_index, actor_index) DO UPDATE SET atom_id=excluded.atom_id;",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, settings_id);
+                "INSERT INTO battle_plan_turn_actor(plan_id,turn_index,actor_index,atom_id) VALUES(?,?,?,?) "
+                "ON CONFLICT(plan_id,turn_index,actor_index) DO UPDATE SET atom_id=excluded.atom_id;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            sqlite3_bind_int64(st, 1, plan_id);
             sqlite3_bind_int(st, 2, turn_index);
             sqlite3_bind_int(st, 3, actor_index);
             sqlite3_bind_int64(st, 4, atom_id);
             rc = sqlite3_step(st); sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "upsert" });
-            return DbResult<void>{ true };
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            return DbResult<void>::Ok();
         }
 
-        static inline DbResult<void> Impl_ReplaceTurn(DbEnv& env, int64_t settings_id, int32_t turn_index, int32_t fake_atk_count, const std::vector<TurnActorBinding>& actors) {
-            auto r = Impl_UpsertTurn(env, settings_id, turn_index, fake_atk_count);
-            if (!r.ok) return r;
-
-            sqlite3* db = env.handle();
-            sqlite3_stmt* del{};
-            int rc = sqlite3_prepare_v2(db, "DELETE FROM battle_plan_turn_actor WHERE settings_id=? AND turn_index=?;", -1, &del, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare del" });
-            sqlite3_bind_int64(del, 1, settings_id);
-            sqlite3_bind_int(del, 2, turn_index);
-            rc = sqlite3_step(del); sqlite3_finalize(del);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "delete" });
-
-            sqlite3_stmt* ins{};
-            rc = sqlite3_prepare_v2(db,
-                "INSERT INTO battle_plan_turn_actor(settings_id, turn_index, actor_index, atom_id) VALUES(?,?,?,?);",
-                -1, &ins, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare ins" });
-
-            for (const auto& a : actors) {
-                sqlite3_reset(ins); sqlite3_clear_bindings(ins);
-                sqlite3_bind_int64(ins, 1, settings_id);
-                sqlite3_bind_int(ins, 2, turn_index);
-                sqlite3_bind_int(ins, 3, a.actor_index);
-                sqlite3_bind_int64(ins, 4, a.atom_id);
-                rc = sqlite3_step(ins);
-                if (rc != SQLITE_DONE) { sqlite3_finalize(ins); return DbResult<void>::Err({ map_sqlite_err(rc), rc, "insert actors" }); }
+        static inline DbResult<void> Impl_ReplaceTurnByPlan(DbEnv& env, int64_t plan_id, int32_t turn_index, int32_t fake_atk_count, const std::vector<TurnActorBindingByPlan>& actors) {
+            auto a = Impl_UpsertTurnByPlan(env, plan_id, turn_index, fake_atk_count);
+            if (!a.ok) return a;
+            for (auto& b : actors) {
+                auto r = Impl_UpsertTurnActorByPlan(env, plan_id, turn_index, b.actor_index, b.atom_id);
+                if (!r.ok) return r;
             }
-            sqlite3_finalize(ins);
-            return DbResult<void>{ true };
+            return DbResult<void>::Ok();
         }
 
-        static inline DbResult<std::vector<BattlePlanTurnRow>> Impl_LoadTurns(DbEnv& env, int64_t settings_id) {
-            sqlite3* db = env.handle();
-
+        static inline DbResult<std::vector<BattlePlanTurnByPlanRow>> Impl_LoadTurnsByPlan(DbEnv& env, int64_t plan_id) {
+            auto* db = env.handle();
             sqlite3_stmt* ts{};
             int rc = sqlite3_prepare_v2(db,
-                "SELECT turn_index, fake_atk_count FROM battle_plan_turn WHERE settings_id=? ORDER BY turn_index;",
-                -1, &ts, nullptr);
-            if (rc != SQLITE_OK) return DbResult<std::vector<BattlePlanTurnRow>>::Err({ map_sqlite_err(rc), rc, "prepare turns" });
-            sqlite3_bind_int64(ts, 1, settings_id);
-
-            std::vector<BattlePlanTurnRow> rows;
+                "SELECT turn_index,fake_atk_count FROM battle_plan_turn WHERE plan_id=? ORDER BY turn_index;", -1, &ts, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::vector<BattlePlanTurnByPlanRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            sqlite3_bind_int64(ts, 1, plan_id);
+            std::vector<BattlePlanTurnByPlanRow> rows;
             while ((rc = sqlite3_step(ts)) == SQLITE_ROW) {
-                BattlePlanTurnRow r;
-                r.settings_id = settings_id;
+                BattlePlanTurnByPlanRow r;
+                r.plan_id = plan_id;
                 r.turn_index = sqlite3_column_int(ts, 0);
                 r.fake_atk_count = sqlite3_column_int(ts, 1);
                 rows.push_back(std::move(r));
             }
             sqlite3_finalize(ts);
-            if (rc != SQLITE_DONE) return DbResult<std::vector<BattlePlanTurnRow>>::Err({ map_sqlite_err(rc), rc, "scan turns" });
+            if (rc != SQLITE_DONE) return DbResult<std::vector<BattlePlanTurnByPlanRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            return DbResult<std::vector<BattlePlanTurnByPlanRow>>::Ok(std::move(rows));
+        }
 
-            sqlite3_stmt* as{};
-            rc = sqlite3_prepare_v2(db,
-                "SELECT turn_index, actor_index, atom_id FROM battle_plan_turn_actor WHERE settings_id=? ORDER BY turn_index, actor_index;",
-                -1, &as, nullptr);
-            if (rc != SQLITE_OK) return DbResult<std::vector<BattlePlanTurnRow>>::Err({ map_sqlite_err(rc), rc, "prepare actors" });
-            sqlite3_bind_int64(as, 1, settings_id);
-
-            while ((rc = sqlite3_step(as)) == SQLITE_ROW) {
-                int t = sqlite3_column_int(as, 0);
-                TurnActorBinding b{ sqlite3_column_int(as, 1), sqlite3_column_int64(as, 2) };
-                for (auto& r : rows) { if (r.turn_index == t) { r.actors.push_back(b); break; } }
+        static inline DbResult<std::vector<TurnActorBindingByPlan>> Impl_ListActorsByPlan(DbEnv& env, int64_t plan_id, int32_t turn_index) {
+            auto* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT actor_index,atom_id FROM battle_plan_turn_actor WHERE plan_id=? AND turn_index=? ORDER BY actor_index;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::vector<TurnActorBindingByPlan>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            sqlite3_bind_int64(st, 1, plan_id);
+            sqlite3_bind_int(st, 2, turn_index);
+            std::vector<TurnActorBindingByPlan> v;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                TurnActorBindingByPlan r;
+                r.actor_index = sqlite3_column_int(st, 0);
+                r.atom_id = sqlite3_column_int64(st, 1);
+                v.push_back(std::move(r));
             }
-            sqlite3_finalize(as);
-            if (rc != SQLITE_DONE) return DbResult<std::vector<BattlePlanTurnRow>>::Err({ map_sqlite_err(rc), rc, "scan actors" });
-
-            return DbResult<std::vector<BattlePlanTurnRow>>::Ok(std::move(rows));
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<std::vector<TurnActorBindingByPlan>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            return DbResult<std::vector<TurnActorBindingByPlan>>::Ok(std::move(v));
         }
 
-        // Async
-
-        std::future<DbResult<void>> BattlePlanTurnRepo::UpsertTurnAsync(int64_t settings_id, int32_t turn_index, int32_t fake_atk_count, RetryPolicy rp) {
+        std::future<DbResult<void>> BattlePlanTurnRepo::UpsertTurnByPlanAsync(int64_t plan_id, int32_t turn_index, int32_t fake_atk_count, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_UpsertTurn(e, settings_id, turn_index, fake_atk_count); });
+                [=](DbEnv& e) { return Impl_UpsertTurnByPlan(e, plan_id, turn_index, fake_atk_count); });
         }
-
-        std::future<DbResult<void>> BattlePlanTurnRepo::UpsertTurnActorAsync(int64_t settings_id, int32_t turn_index, int32_t actor_index, int64_t atom_id, RetryPolicy rp) {
+        std::future<DbResult<void>> BattlePlanTurnRepo::UpsertTurnActorByPlanAsync(int64_t plan_id, int32_t turn_index, int32_t actor_index, int64_t atom_id, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_UpsertTurnActor(e, settings_id, turn_index, actor_index, atom_id); });
+                [=](DbEnv& e) { return Impl_UpsertTurnActorByPlan(e, plan_id, turn_index, actor_index, atom_id); });
         }
-
-        std::future<DbResult<void>> BattlePlanTurnRepo::ReplaceTurnAsync(int64_t settings_id, int32_t turn_index, int32_t fake_atk_count, std::vector<TurnActorBinding> actors, RetryPolicy rp) {
+        std::future<DbResult<void>> BattlePlanTurnRepo::ReplaceTurnByPlanAsync(int64_t plan_id, int32_t turn_index, int32_t fake_atk_count, std::vector<TurnActorBindingByPlan> actors, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [=, as = std::move(actors)](DbEnv& e) { return Impl_ReplaceTurn(e, settings_id, turn_index, fake_atk_count, as); });
+                [=](DbEnv& e) { return Impl_ReplaceTurnByPlan(e, plan_id, turn_index, fake_atk_count, actors); });
         }
-
-        std::future<DbResult<std::vector<BattlePlanTurnRow>>> BattlePlanTurnRepo::LoadTurnsAsync(int64_t settings_id, RetryPolicy rp) {
-            return DBService::instance().submit_res<std::vector<BattlePlanTurnRow>>(OpType::Read, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_LoadTurns(e, settings_id); });
+        std::future<DbResult<std::vector<BattlePlanTurnByPlanRow>>> BattlePlanTurnRepo::LoadTurnsByPlanAsync(int64_t plan_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<BattlePlanTurnByPlanRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_LoadTurnsByPlan(e, plan_id); });
+        }
+        std::future<DbResult<std::vector<TurnActorBindingByPlan>>> BattlePlanTurnRepo::ListActorsByPlanAsync(int64_t plan_id, int32_t turn_index, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<TurnActorBindingByPlan>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListActorsByPlan(e, plan_id, turn_index); });
         }
 
     } // namespace db
