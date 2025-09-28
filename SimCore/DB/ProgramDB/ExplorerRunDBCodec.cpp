@@ -202,13 +202,13 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
 
     BattlePath path;
     for (auto& t : turnsR.value) {
-        TurnPlan plan{ .fake_attack_count = t.fake_atk_count };
+        TurnPlan plan{ .fake_attack_count = static_cast<uint32_t>(t.fake_atk_count) };
         auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(plan_id, t.turn_index);
         if (!actorsR.ok) return DbResult<simcore::PSJob>::Err(actorsR.error);
         for (auto& a : actorsR.value) {
             auto atom = simcore::db::BattlePlanAtomRepo::Get(a.atom_id);
             if (!atom.ok) return DbResult<simcore::PSJob>::Err(atom.error);
-            ActionPlan ap{ .actor_slot = atom.value.actor_slot, .macro = (BattleAction)atom.value.action_type };
+            ActionPlan ap{ .actor_slot = (uint8_t)atom.value.actor_slot, .macro = (BattleAction)atom.value.action_type };
             // add target if valid
             if (atom.value.target_slot > -1 && atom.value.target_slot < 12) ap.params.target_slot = atom.value.target_slot;
             // add item id if valid
@@ -237,17 +237,17 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
             rhs_prog = std::move(rhs_prog_row.value.prog_bytes);
         }
         simcore::pred::Spec spec{
-            .id = r.ordinal,
-            .required_bp = p.value.required_bp,
+            .id = (uint16_t)r.ordinal,
+            .required_bp = (uint16_t)p.value.required_bp,
             .kind = (simcore::pred::PredKind)p.value.kind,
-            .width = p.value.width,
+            .width = (uint8_t)p.value.width,
             .cmp = (simcore::pred::CmpOp)p.value.cmp_op,
-            .flags = p.value.flags & 0xFF,
-            .lhs_addr = p.value.lhs_addr,
+            .flags = (uint32_t)p.value.flags,
+            .lhs_addr = (uint32_t)p.value.lhs_addr,
             .lhs_key = (addr::AddrKey)p.value.lhs_key.value(),
-            .rhs_value = p.value.rhs_value,
+            .rhs_value = (uint64_t)p.value.rhs_value,
             .rhs_key = (addr::AddrKey)p.value.rhs_key.value(),
-            .turn_mask = p.value.turn_mask,
+            .turn_mask = (uint32_t)p.value.turn_mask,
             .lhs_prog = lhs_prog,
             .rhs_prog = rhs_prog,
             .desc = p.value.description
