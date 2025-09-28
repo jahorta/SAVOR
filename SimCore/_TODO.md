@@ -105,7 +105,7 @@ New shape to implement:
  - retrieve_results(job_id|job_set_id) -> ResultDto
  - register_trigger(scope, scope_id, condition, action_kind, action_args)
 #### Notes:
- - Use domain repos (SeedProbeRepo, TasMovieRepo, ExplorerRunRepo) to read/validate inputs and to persist domain-specific summaries.
+ - Use ProgramDBCodecs as much as possible, and domain repos if needed (SeedProbeRepo, TasMovieRepo, ExplorerRunRepo) to read/validate inputs and to persist domain-specific summaries.
  - All execution goes through jobs/job_sets.
 
 ## Milestone 6 - Next-phase triggers (DB, not in-process listeners)
