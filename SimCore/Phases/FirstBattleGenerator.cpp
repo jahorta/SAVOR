@@ -101,10 +101,8 @@ namespace simcore::tas_movie {
         for (auto& jm : all_jobs) {
             simcore::tasmovie::EncodeSpec spec{};
             spec.dtm_path = jm.dtm;
-            spec.save_dir = args.out_dir;
             spec.run_ms = 0;
             spec.vi_stall_ms = args.vi_stall_ms;
-            spec.save_on_fail = args.save_on_fail;
             spec.progress_enable = true; // <- per-job toggle
 
             std::vector<uint8_t> blob;

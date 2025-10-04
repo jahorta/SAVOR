@@ -176,7 +176,8 @@ namespace simcore {
 		ViStalled = 2,  // VI didn't advance for the configured stall window
 		MovieEnded = 3,  // movie playback ended before any breakpoint fired
 		Aborted = 4,  // reserved for future external aborts
-		Unknown = 5,  // catch-all
+
+		Unknown = 0xffffffff,  // catch-all
 	};
 
 	// ----- VM -----

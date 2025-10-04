@@ -131,6 +131,8 @@ namespace simcore {
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
 
+        ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+
         // Always start by restoring the pre-captured snapshot for each job
         if (!load_snapshot()) return R;
 
@@ -376,7 +378,7 @@ namespace simcore {
                 ctx[keys::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
                 ctx[keys::core::ELAPSED_MS] = elapsed_ms;
                 ctx[keys::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
-                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+                ctx[keys::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
                 ctx[keys::core::POLL_MS] = poll_ms;
 
                 // derive hit BP id by matching PC
@@ -441,6 +443,7 @@ namespace simcore {
             }
 
             case PSOpCode::RETURN_RESULT: {
+                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
                 R.ctx = ctx;
                 R.ctx[op.keyimm.key] = op.keyimm.imm;
                 uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome);
@@ -481,6 +484,7 @@ namespace simcore {
                 std::string path;
                 ctx.get<std::string>(op.key.id, path);
                 if (!host_.saveSavestateBlocking(path)) return R;
+                ctx[keys::core::LAST_SAVESTATE_PATH] = path;    
                 break;
             }
 

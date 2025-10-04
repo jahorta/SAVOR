@@ -3,6 +3,10 @@
 
 -- Creates table to record first-success winners per (job_set_id, result_delta).
 -- Grid runs NEVER claim winners; only unique-phase runs insert here.
+BEGIN;
+
+DELETE FROM schema_version;
+INSERT INTO schema_version(version, applied_at) VALUES (12, strftime('%s','now'));
 
 CREATE TABLE seed_probe_winners (
   job_set_id       INTEGER NOT NULL REFERENCES job_sets(job_set_id) ON DELETE CASCADE,
@@ -19,3 +23,5 @@ CREATE TABLE seed_probe_winners (
 
   PRIMARY KEY(job_set_id, result_delta)
 ) WITHOUT ROWID;
+
+COMMIT;

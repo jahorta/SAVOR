@@ -39,23 +39,22 @@ namespace simcore::tasmovie {
         return (uint32_t)msi;
     }
 
-    std::string derive_save_path(const std::string& dtm_path, const std::string& save_dir)
+    std::string derive_save_path(const std::string& dtm_path)
     {
         const fs::path p(dtm_path);
         const std::string stem = p.stem().string();
-        return (fs::path(save_dir) / (stem + ".sav")).string();
+        return (fs::path(dtm_path).parent_path() / (stem + ".sav")).string();
     }
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
         out.clear();
-        out.reserve(1 + 4 + 2 + 1 + 1 + 4 + spec.dtm_path.size() + 6 + 4 + 4 + 4 + spec.save_dir.size());
+        out.reserve(1 + 4 + 2 + 1 + 1 + 4 + spec.dtm_path.size() + 6 + 4 + 4 + 4);
 
         out.push_back(PK_TasMovie);                 // payload kind tag
         put_u16(out, 1);                            // version
         
         uint8_t flags = 0;
-        if (spec.save_on_fail)   flags |= 0x01;
         if (spec.progress_enable) flags |= 0x02;
         out.push_back(flags);
         out.push_back(0);  // reserved
@@ -68,9 +67,6 @@ namespace simcore::tasmovie {
 
         put_u32(out, (uint32_t)spec.dtm_path.size());
         out.insert(out.end(), spec.dtm_path.begin(), spec.dtm_path.end());
-
-        put_u32(out, (uint32_t)spec.save_dir.size());
-        out.insert(out.end(), spec.save_dir.begin(), spec.save_dir.end());
 
         return true;
     }
@@ -103,11 +99,8 @@ namespace simcore::tasmovie {
         const uint32_t len_savedir = rd_u32(in.data(), off, in.size());
         if (off + len_savedir != in.size()) return false;
 
-        const std::string save_dir(reinterpret_cast<const char*>(in.data() + off), len_savedir);
-        off += len_savedir;
-
-        // Derive final save path from <save_dir>/<stem(dtm)>.sav
-        const std::string save_path = derive_save_path(dtm_path, save_dir);
+        // Derive final save path from <dtm_dir>/<stem(dtm)>.sav
+        const std::string save_path = derive_save_path(dtm_path);
 
         // Read DTM header to extract id6 and counts
         simcore::tas::DtmFile df;
@@ -132,11 +125,11 @@ namespace simcore::tasmovie {
 
         // Fill TAS program context keys
         out_ctx[keys::tas::DTM_PATH] = dtm_path;
-        out_ctx[keys::tas::SAVE_PATH] = save_path; 
+        out_ctx[keys::tas::SAVE_PATH] = save_path;
         out_ctx[keys::core::RUN_MS] = run_ms;
         out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
-        out_ctx[keys::tas::SAVE_ON_FAIL] = static_cast<uint32_t>((flags & 1) ? 1 : 0);
-        out_ctx[keys::core::PROGRESS_ENABLE] = static_cast<uint32_t>((flags & 0x02) ? 1 : 0);
+        out_ctx[keys::tas::SAVE_ON_FAIL] = (uint32_t)0;
+        out_ctx[keys::core::PROGRESS_TEXT_FILENAME] = static_cast<uint32_t>((flags & 0x02) ? 1 : 0);
         out_ctx[keys::tas::DISC_ID6] = id6;
 
         return true;

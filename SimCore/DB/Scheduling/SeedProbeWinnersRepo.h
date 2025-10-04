@@ -55,9 +55,13 @@ namespace simcore {
 
             static std::future<DbResult<bool>> ExistsAsync(int64_t job_set_id, int32_t result_delta, RetryPolicy rp = {});
             static inline DbResult<bool> Exists(int64_t job_set_id, int32_t result_delta) { return ExistsAsync(job_set_id, result_delta).get(); }
+            static std::future<DbResult<int64_t>> DeleteByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
 
             static std::future<DbResult<int64_t>> CountByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
             static inline DbResult<int64_t> CountByJobSet(int64_t job_set_id) { return CountByJobSetAsync(job_set_id).get(); }
+            static inline DbResult<int64_t> DeleteByJobSet(int64_t job_set_id) {
+                return DeleteByJobSetAsync(job_set_id).get();
+            }
         };
 
     } // namespace db

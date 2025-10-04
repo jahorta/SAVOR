@@ -1,8 +1,11 @@
 // Runner/Breakpoints/Predicate.cpp
 #include "Predicate.h"
+
 #include <unordered_map>
 #include <span>
 #include <cstring>
+
+#include "../../Utils/Hash.h"
 
 namespace {
     // FNV-1a 64-bit
@@ -34,6 +37,56 @@ namespace {
 }
 
 namespace simcore::pred {
+
+    static inline void push_u8(std::vector<uint8_t>& b, uint8_t  v) { b.push_back(v); }
+    static inline void push_u16(std::vector<uint8_t>& b, uint16_t v) { b.push_back(uint8_t(v & 0xFF)); b.push_back(uint8_t((v >> 8) & 0xFF)); }
+    static inline void push_u32(std::vector<uint8_t>& b, uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back(uint8_t((v >> (8 * i)) & 0xFF)); }
+    static inline void push_u64(std::vector<uint8_t>& b, uint64_t v) { for (int i = 0; i < 8; ++i) b.push_back(uint8_t((v >> (8 * i)) & 0xFF)); }
+    static inline void push_blob(std::vector<uint8_t>& b, const std::vector<uint8_t>& v) { b.insert(b.end(), v.begin(), v.end()); }
+
+    std::string fingerprint(const Spec& s) {
+        std::vector<uint8_t> buf;
+        buf.reserve(128 + s.lhs_prog.size() + s.rhs_prog.size());
+
+        const uint8_t width = s.width ? s.width : 4;
+        const uint32_t tmask = s.turn_mask ? s.turn_mask : 0xFFFFFFFFu;
+
+        // Required core fields
+        push_u16(buf, s.required_bp);
+        push_u8(buf, (uint8_t)s.kind);
+        push_u8(buf, width);
+        push_u8(buf, (uint8_t)s.cmp);
+        push_u32(buf, s.flags);
+        push_u32(buf, tmask);
+
+        // LHS
+        push_u32(buf, s.lhs_addr);
+        if (s.lhs_key.has_value()) { push_u8(buf, 1); push_u16(buf, (uint16_t)s.lhs_key.value()); }
+        else { push_u8(buf, 0); }
+
+        // RHS: choose one of key | prog | imm
+        if ((s.flags & uint32_t(PredFlag::RhsIsKey)) && s.rhs_key.has_value()) {
+            push_u8(buf, 1); push_u16(buf, (uint16_t)s.rhs_key.value());
+        }
+        else if ((s.flags & uint32_t(PredFlag::RhsIsProg)) && !s.rhs_prog.empty()) {
+            push_u8(buf, 2); push_u32(buf, (uint32_t)s.rhs_prog.size()); push_blob(buf, s.rhs_prog);
+        }
+        else {
+            push_u8(buf, 0); push_u64(buf, s.rhs_value);
+        }
+
+        // LHS program (only if flagged)
+        if ((s.flags & uint32_t(PredFlag::LhsIsProg)) && !s.lhs_prog.empty()) {
+            push_u8(buf, 1); push_u32(buf, (uint32_t)s.lhs_prog.size()); push_blob(buf, s.lhs_prog);
+        }
+        else {
+            push_u8(buf, 0);
+        }
+
+        // Exclude cosmetic fields (desc, id)
+
+        return hash::sha256(buf.data(), buf.size());
+    }
 
     bool BuildTable(const std::vector<Spec>& in,
         std::vector<PredicateRecord>& out_records,

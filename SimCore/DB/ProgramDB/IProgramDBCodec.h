@@ -8,6 +8,7 @@
 #include "../../Runner/Script/PSContext.h"
 #include "../../Runner/Script/PhaseScriptVM.h"
 #include "../../Runner/Parallel/PRTypes.h"
+#include "../../Runner/Parallel/DB/DBTriggerEngine.h"
 
 using namespace simcore::db;
 
@@ -41,6 +42,9 @@ struct IProgramDBCodec {
 
     // build a results ini from the prresult output
     virtual DbResult<std::string>            build_results_ini_from_prresult(int64_t job_id, const simcore::PRResult& r) = 0;
+
+    // setup the next phase on trigger
+    virtual simcore::db::DbResult<void> phase_setup_on_trigger(const simcore::TriggerCtx& ctx, const std::string& action_args_ini) = 0;
 };
 
 struct ProgramDBCodecRegistry {

@@ -67,5 +67,22 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_Get(e, id); });
         }
 
+        static inline DbResult<void> Impl_SetSeedProbeId(DbEnv& env, int64_t settings_id, int64_t seed_probe_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db, "UPDATE explorer_settings SET seed_probe_id=? WHERE id=?;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, seed_probe_id);
+            sqlite3_bind_int64(st, 2, settings_id);
+            rc = sqlite3_step(st); sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
+            return DbResult<void>{ true };
+        }
+
+        std::future<DbResult<void>> ExplorerSettingsRepo::SetSeedProbeIdAsync(int64_t settings_id, int64_t seed_probe_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_SetSeedProbeId(e, settings_id, seed_probe_id); });
+        }
+
     } // db
 } // simcore

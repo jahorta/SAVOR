@@ -4,25 +4,79 @@
 namespace simcore {
     namespace db {
 
-        static inline DbResult<int64_t> Impl_IdempotentCreate(DbEnv& env, int64_t probe_id, int64_t settings_id) {
+        static inline DbResult<void> Impl_SetGroupId(DbEnv& env, int64_t run_id, int64_t group_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db, "UPDATE explorer_run SET group_id=? WHERE id=?;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, group_id);
+            sqlite3_bind_int64(st, 2, run_id);
+            rc = sqlite3_step(st); sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
+            return DbResult<void>{ true };
+        }
+
+        static inline DbResult<std::vector<ExplorerRunRow>> Impl_ListByGroup(DbEnv& env, int64_t group_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "SELECT id FROM explorer_run WHERE probe_id=? AND settings_id=? AND status='planned' LIMIT 1;",
+                "SELECT id, probe_id, settings_id, status, progress_log, complete "
+                "FROM explorer_run WHERE group_id=? ORDER BY id;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::vector<ExplorerRunRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, group_id);
+
+            std::vector<ExplorerRunRow> out;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                ExplorerRunRow r{};
+                r.id = sqlite3_column_int64(st, 0);
+                r.probe_id = sqlite3_column_int64(st, 1);
+                r.settings_id = sqlite3_column_int64(st, 2);
+                r.status = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+                r.progress_log = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+                r.complete = sqlite3_column_int(st, 5);
+                out.push_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<std::vector<ExplorerRunRow>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::vector<ExplorerRunRow>>::Ok(std::move(out));
+        }
+
+        static inline DbResult<int64_t> Impl_IdempotentCreate(DbEnv& env, int64_t group_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT id FROM explorer_run WHERE group_id=? AND settings_id=? AND plan_id=? AND delta_seed_id=? LIMIT 1;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, probe_id);
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare find" });
+            sqlite3_bind_int64(st, 1, group_id);
             sqlite3_bind_int64(st, 2, settings_id);
+            sqlite3_bind_int64(st, 3, plan_id);
+            sqlite3_bind_int64(st, 4, delta_seed_id);
             rc = sqlite3_step(st);
             if (rc == SQLITE_ROW) { int64_t id = sqlite3_column_int64(st, 0); sqlite3_finalize(st); return DbResult<int64_t>::Ok(id); }
             sqlite3_finalize(st);
 
+            // derive probe_id from delta
+            sqlite3_stmt* stp{};
+            rc = sqlite3_prepare_v2(db, "SELECT probe_id FROM seed_delta WHERE id=? LIMIT 1;", -1, &stp, nullptr);
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare probe" });
+            sqlite3_bind_int64(stp, 1, delta_seed_id);
+            rc = sqlite3_step(stp);
+            if (rc != SQLITE_ROW) { sqlite3_finalize(stp); return DbResult<int64_t>::Err({ DbErrorKind::NotFound, rc, "seed_delta not found" }); }
+            int64_t probe_id = sqlite3_column_int64(stp, 0);
+            sqlite3_finalize(stp);
+
             rc = sqlite3_prepare_v2(db,
-                "INSERT INTO explorer_run(probe_id, settings_id, status, progress_log, complete) VALUES(?, ?, 'planned', '', 0);",
+                "INSERT INTO explorer_run(probe_id, settings_id, plan_id, delta_seed_id, group_id, status, progress_log, complete) "
+                "VALUES(?,?,?,?,?,'planned','',0);",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare ins" });
             sqlite3_bind_int64(st, 1, probe_id);
             sqlite3_bind_int64(st, 2, settings_id);
+            sqlite3_bind_int64(st, 3, plan_id);
+            sqlite3_bind_int64(st, 4, delta_seed_id);
+            sqlite3_bind_int64(st, 5, group_id);
             rc = sqlite3_step(st);
             if (rc != SQLITE_DONE) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" }); }
             int64_t id = sqlite3_last_insert_rowid(db);
@@ -114,9 +168,9 @@ namespace simcore {
 
         // Async via DBService
 
-        std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t probe_id, int64_t settings_id, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t group_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_IdempotentCreate(e, probe_id, settings_id); });
+                [=](DbEnv& e) { return Impl_IdempotentCreate(e, group_id, settings_id, plan_id, delta_seed_id); });
         }
 
         std::future<DbResult<void>> ExplorerRunRepo::AppendProgressAsync(int64_t run_id, std::string text, int max_bytes, RetryPolicy rp) {
@@ -177,6 +231,16 @@ namespace simcore {
         std::future<DbResult<void>> ExplorerRunRepo::SetProgressLogArtifactIdAsync(int64_t run_id, int64_t artifact_id, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_SetProgressLogArtifactId(e, run_id, artifact_id); });
+        }
+
+        std::future<DbResult<void>> ExplorerRunRepo::SetGroupIdAsync(int64_t run_id, int64_t group_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_SetGroupId(e, run_id, group_id); });
+        }
+
+        std::future<DbResult<std::vector<ExplorerRunRow>>> ExplorerRunRepo::ListByGroupAsync(int64_t group_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<ExplorerRunRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListByGroup(e, group_id); });
         }
 
     } // db

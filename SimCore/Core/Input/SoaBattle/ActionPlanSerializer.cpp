@@ -18,7 +18,7 @@ namespace soa::battle::actions {
 
     // --- public API ---
 
-    void encode_turn_plans_to_buffer(const actions::BattlePath& path, std::vector<std::uint8_t>& out) {
+    void encode_battle_plan_to_buffer(const actions::BattlePath& path, std::vector<std::uint8_t>& out) {
         out.clear();
         u32_le(out, static_cast<std::uint32_t>(path.size()));
         for (const auto& turn : path) {
@@ -30,7 +30,7 @@ namespace soa::battle::actions {
         }
     }
 
-    bool decode_turn_plans_from_buffer(std::span<const std::uint8_t> buf, actions::BattlePath& out) {
+    bool decode_battle_plan_from_buffer(std::span<const std::uint8_t> buf, actions::BattlePath& out) {
         out.clear();
         const std::uint8_t* cur = buf.data();
         const std::uint8_t* end = buf.data() + buf.size();

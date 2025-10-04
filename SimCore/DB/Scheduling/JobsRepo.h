@@ -7,6 +7,7 @@
 #include <optional>
 #include <cstdint>
 #include <future>
+#include <vector>
 
 namespace simcore::db {
 
@@ -42,6 +43,8 @@ namespace simcore::db {
         static std::future<DbResult<void>> MarkRunningAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> RenewLeaseAsync(int64_t job_id, int lease_seconds, RetryPolicy rp = {});
         static std::future<DbResult<void>> RequeueExpiredLeasesAsync(RetryPolicy rp = {});
+        static std::future<DbResult<std::vector<JobRow>>> GetByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
+        static std::future<DbResult<std::vector<JobRow>>> GetQueuedByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
 
 
         // Blocking methods
@@ -61,6 +64,14 @@ namespace simcore::db {
         static inline DbResult<void> MarkRunning(int64_t job_id) { return MarkRunningAsync(job_id).get(); }
         static inline DbResult<void> RenewLease(int64_t job_id, int lease_seconds) { return RenewLeaseAsync(job_id, lease_seconds).get(); }
         static inline DbResult<void> RequeueExpiredLeases() { return RequeueExpiredLeasesAsync().get(); }
+        static inline DbResult<std::vector<JobRow>> GetByJobSet(int64_t job_set_id) {
+            return GetByJobSetAsync(job_set_id).get();
+        }
+        static inline DbResult<std::vector<JobRow>> GetQueuedByJobSet(int64_t job_set_id) {
+            return GetQueuedByJobSetAsync(job_set_id).get();
+        }
     };
+
+    
 
 } // namespace simcore::db

@@ -28,6 +28,8 @@ namespace simcore {
         WERR_NoProgramLoaded = 5,
         WERR_DecodePayloadFail = 7,
         WERR_EncodePayloadFail = 8,
+        // Unknown
+        WERR_UnknownError = 0xffffffff
     };
 
     enum : uint8_t {

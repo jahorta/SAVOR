@@ -92,7 +92,8 @@ namespace simcore {
             // Start the service with a path to the SQLite database. This will
             // open the underlying DbEnv and spin up worker threads. If already
             // started, this has no effect.
-            void start(const std::string& db_path);
+            // It will always create/start a database located at (exe dir)/db/SoaSimDB.sqlite3
+            void start();
 
             // Stop the service, flush pending tasks and join threads.
             // After stop(), no more tasks can be submitted until start().

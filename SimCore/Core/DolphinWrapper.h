@@ -71,9 +71,10 @@ namespace simcore {
         bool stepOneFrameBlocking(int timeout_ms = 1000);
 
         // Returns an approximate VI field count since the last reset.
-        uint64_t getViFieldCountApprox() const;
+        uint64_t getViFieldCountApproxFromBaseline() const;
         uint64_t getFrameCountApprox(bool interlaced = false) const;
         void resetViCounterBaseline();
+        uint64_t getViFieldCountApprox() const;
 
         // Isolated user/base management
         bool SetUserDirectory(const std::filesystem::path& user_dir);

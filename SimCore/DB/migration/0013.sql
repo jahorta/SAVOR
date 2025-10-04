@@ -3,6 +3,9 @@
 PRAGMA foreign_keys=OFF;
 BEGIN;
 
+DELETE FROM schema_version;
+INSERT INTO schema_version(version, applied_at) VALUES (13, strftime('%s','now'));
+
 DROP TABLE IF EXISTS battle_plan_atom;
 
 CREATE TABLE battle_plan_atom (

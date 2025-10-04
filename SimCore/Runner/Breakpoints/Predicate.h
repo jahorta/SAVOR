@@ -63,11 +63,12 @@ namespace simcore::pred {
         return "(?)";
     }
 
+    static constexpr size_t SPEC_VERSION = 1;
     struct Spec {
         uint16_t id{ 0 };
         uint16_t required_bp{ 0 };
         PredKind kind{ PredKind::ABS };
-        uint8_t  width{ 0 };
+        uint8_t  width{ 4 };
         CmpOp    cmp{ CmpOp::EQ };
         uint32_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
 
@@ -81,7 +82,9 @@ namespace simcore::pred {
 
         // NEW: embedded address programs (may be empty)
         std::vector<uint8_t> lhs_prog;          // must start with OP_BASE_KEY if non-empty
+        std::string lhs_prog_desc;
         std::vector<uint8_t> rhs_prog;          // must start with OP_BASE_KEY if non-empty
+        std::string rhs_prog_desc;
 
         std::string desc{};
 
@@ -93,6 +96,8 @@ namespace simcore::pred {
         void set_turns(const std::vector<uint8_t> turns) { for (const auto i : turns) if (i > 0 && i <= 32) turn_mask = turn_mask | (1 << (i - 1)); }
         void set_turn(const uint8_t turn) {if ( turn > 0 && turn <= 32) turn_mask = turn_mask | (1 << (turn - 1)); }
     };
+
+    std::string fingerprint(const Spec& s);
 
     // One-and-done builder: fills records and returns packed program blob.
     bool BuildTable(const std::vector<Spec>& specs,

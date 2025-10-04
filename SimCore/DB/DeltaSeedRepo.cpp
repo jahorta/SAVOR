@@ -153,6 +153,71 @@ namespace simcore {
             return DbResult<std::vector<DeltaSeedRow>>::Ok(std::move(out));
         }
 
+        static inline DbResult<std::vector<DeltaSeedRow>> Impl_ListGridForProbe(DbEnv& env, int64_t probe_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT id, probe_id, seed_delta, input, complete "
+                "FROM seed_delta WHERE probe_id=? AND is_grid=1 ORDER BY id ASC;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::vector<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, probe_id);
+
+            std::vector<DeltaSeedRow> out;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) out.push_back(read_row(st));
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<std::vector<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::vector<DeltaSeedRow>>::Ok(std::move(out));
+        }
+
+        static inline DbResult<std::vector<DeltaSeedRow>> Impl_ListUniqueForProbe(DbEnv& env, int64_t probe_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT id, probe_id, seed_delta, input, complete "
+                "FROM seed_delta WHERE probe_id=? AND is_unique=1 ORDER BY id ASC;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::vector<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, probe_id);
+
+            std::vector<DeltaSeedRow> out;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) out.push_back(read_row(st));
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<std::vector<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::vector<DeltaSeedRow>>::Ok(std::move(out));
+        }
+
+        static inline DbResult<std::optional<DeltaSeedRow>> Impl_Get(DbEnv& env, int64_t id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT id, probe_id, seed_delta, input, complete FROM seed_delta WHERE id=? LIMIT 1;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::optional<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, id);
+            rc = sqlite3_step(st);
+            std::optional<DeltaSeedRow> out{};
+            if (rc == SQLITE_ROW) out = read_row(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_ROW && rc != SQLITE_DONE) return DbResult<std::optional<DeltaSeedRow>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::optional<DeltaSeedRow>>::Ok(out);
+        }
+
+        static inline DbResult<int64_t> Impl_InsertOne(DbEnv& env, int64_t probe_id, const DeltaSeedRow& r, bool is_grid, bool is_unique) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "INSERT INTO seed_delta(probe_id, seed_delta, input, is_grid, is_unique, complete) VALUES(?, ?, ?, ?, ?, 0);",
+                -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, probe_id);
+            sqlite3_bind_int(st, 2, r.seed_delta);
+            bind_input_blob(st, 3, r.input);
+            sqlite3_bind_int(st, 4, is_grid ? 1 : 0);
+            sqlite3_bind_int(st, 5, is_unique ? 1 : 0);
+            rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" });
+            return DbResult<int64_t>::Ok(1);
+        }
+
         // Async via DBService
 
         std::future<DbResult<int64_t>> DeltaSeedRepo::BulkQueueAsync(int64_t probe_id, const std::vector<DeltaSeedRow>& rows, RetryPolicy rp) {
@@ -190,27 +255,24 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_ListForProbe(e, probe_id); });
         }
 
-        static inline DbResult<int64_t> Impl_InsertOne(DbEnv& env, int64_t probe_id, const DeltaSeedRow& r, bool is_grid, bool is_unique) {
-            sqlite3* db = env.handle();
-            sqlite3_stmt* st{};
-            int rc = sqlite3_prepare_v2(db,
-                "INSERT INTO seed_delta(probe_id, seed_delta, input, is_grid, is_unique, complete) VALUES(?, ?, ?, ?, ?, 0);",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, probe_id);
-            sqlite3_bind_int(st, 2, r.seed_delta);
-            bind_input_blob(st, 3, r.input);
-            sqlite3_bind_int(st, 4, is_grid ? 1 : 0);
-            sqlite3_bind_int(st, 5, is_unique ? 1 : 0);
-            rc = sqlite3_step(st);
-            sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" });
-            return DbResult<int64_t>::Ok(1);
-        }
-
         std::future<DbResult<int64_t>> DeltaSeedRepo::InsertOneAsync(int64_t probe_id, const DeltaSeedRow& row, bool is_grid, bool is_unique, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
                 [=, &row](DbEnv& e) { return Impl_InsertOne(e, probe_id, row, is_grid, is_unique); });
+        }
+
+        std::future<DbResult<std::vector<DeltaSeedRow>>> DeltaSeedRepo::ListGridForProbeAsync(int64_t probe_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<DeltaSeedRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListGridForProbe(e, probe_id); });
+        }
+
+        std::future<DbResult<std::vector<DeltaSeedRow>>> DeltaSeedRepo::ListUniqueForProbeAsync(int64_t probe_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<DeltaSeedRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListUniqueForProbe(e, probe_id); });
+        }
+
+        std::future<DbResult<std::optional<DeltaSeedRow>>> DeltaSeedRepo::GetAsync(int64_t id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::optional<DeltaSeedRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_Get(e, id); });
         }
 
     } // namespace db

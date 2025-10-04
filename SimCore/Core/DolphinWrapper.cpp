@@ -512,6 +512,19 @@ namespace simcore {
     {
         auto& sys = Core::System::GetInstance();
         const uint64_t now_ticks = sys.GetCoreTiming().GetTicks();
+
+        auto& vi = sys.GetVideoInterface();
+        const uint32_t ticks_per_field = vi.GetTicksPerField();
+        if (ticks_per_field == 0)
+            return 0;
+
+        return now_ticks / ticks_per_field;
+    }
+
+    uint64_t DolphinWrapper::getViFieldCountApproxFromBaseline() const
+    {
+        auto& sys = Core::System::GetInstance();
+        const uint64_t now_ticks = sys.GetCoreTiming().GetTicks();
         const uint64_t dt = (now_ticks >= g_vi_ticks_baseline) ? (now_ticks - g_vi_ticks_baseline) : 0;
 
         auto& vi = sys.GetVideoInterface();
@@ -524,7 +537,7 @@ namespace simcore {
 
     uint64_t DolphinWrapper::getFrameCountApprox(bool interlaced) const
     {
-        const uint64_t fields = getViFieldCountApprox();
+        const uint64_t fields = getViFieldCountApproxFromBaseline();
         return interlaced ? (fields / 2) : fields;
     }
 
@@ -992,7 +1005,7 @@ namespace simcore {
 
         // VI stall tracking baseline
         resetViCounterBaseline();
-        uint64_t last_vi = getViFieldCountApprox();
+        uint64_t last_vi = getViFieldCountApproxFromBaseline();
         auto last_vi_change = steady_clock::now();
 
         const ProgressSink& emit = sink ? sink : m_progress_sink; // toggle: null = no progress
@@ -1024,7 +1037,7 @@ namespace simcore {
             if (now >= deadline) {
                 // TIMEOUT: enforce postcondition (Paused) then return
                 Core::SetState(*m_system, Core::State::Paused);
-                SCLOGD("[DW/run] TIMEOUT polls=%zu pc=%08X vi=%lld", polls, getPC(), getViFieldCountApprox());
+                SCLOGD("[DW/run] TIMEOUT polls=%zu pc=%08X vi=%lld", polls, getPC(), getViFieldCountApproxFromBaseline());
                 return { false, 0u, "timeout" };
             }
 
@@ -1060,7 +1073,7 @@ namespace simcore {
 
                 // VI-stall detection
                 if (vi_stall_ms > 0) {
-                    const uint64_t vi_now = getViFieldCountApprox();
+                    const uint64_t vi_now = getViFieldCountApproxFromBaseline();
                     if (vi_now != last_vi) {
                         last_vi = vi_now;
                         last_vi_change = now;
@@ -1099,7 +1112,7 @@ namespace simcore {
                     // VI stall early warning (if configured)
                     if (vi_stall_ms > 0)
                     {
-                        const uint64_t vi_now = getViFieldCountApprox();
+                        const uint64_t vi_now = getViFieldCountApproxFromBaseline();
                         if (vi_now == last_vi)
                         {
                             const auto since_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - last_vi_change).count();
@@ -1133,7 +1146,7 @@ namespace simcore {
                 SCLOGD("[DW/run] poll=%zu state=%d pc=%08X movie=%d vi=%llu",
                     polls, (int)Core::GetState(*m_system), getPC(),
                     movie.IsPlayingInput() ? 1 : 0,
-                    (unsigned long long)getViFieldCountApprox());
+                    (unsigned long long)getViFieldCountApproxFromBaseline());
             }
 
             // Dynamic poll interval based on *time remaining* (single-sourced policy)

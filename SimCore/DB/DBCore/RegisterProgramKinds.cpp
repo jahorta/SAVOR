@@ -7,9 +7,10 @@ namespace simcore {
 
         static inline DbResult<void> Impl_RegisterProgramKinds(DbEnv& env) {
             static const struct Row { int32_t id; const char* name; int32_t base_pri; int32_t spawn_ms; } kRows[] = {
-                { PK_SeedProbe,        "SeedProbe",        0, 0 },
-                { PK_TasMovie,         "TasMovie",         0, 0 },
-                { PK_BattleTurnRunner, "BattleTurnRunner", 0, 0 }
+                { PK_SeedProbe,          "SeedProbe",          0, 0 },
+                { PK_TasMovie,           "TasMovie",           0, 0 },
+                { PK_BattleTurnRunner,   "BattleTurnRunner",   0, 0 },
+                { PK_BattleContextProbe, "BattleContextProbe", 0, 0 }
                 // Add more ProgramKinds here if needed later.
             };
 

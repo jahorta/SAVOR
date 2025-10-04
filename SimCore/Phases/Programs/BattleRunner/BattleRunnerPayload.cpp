@@ -40,7 +40,7 @@ namespace phase::battle::runner {
         if (blob_sz) out.insert(out.end(), blob.begin(), blob.end());
 
         std::vector<std::uint8_t> plans;
-        soa::battle::actions::encode_turn_plans_to_buffer(spec.path, plans);
+        soa::battle::actions::encode_battle_plan_to_buffer(spec.path, plans);
         const uint32_t nt = (uint32_t)plans.size();
         put_u32(out, nt);
         if (nt) out.insert(out.end(), plans.begin(), plans.end());
@@ -86,7 +86,7 @@ namespace phase::battle::runner {
 
         uint32_t battle_plan_buf_size = 0; if (!get_u32(p, e, battle_plan_buf_size)) return false;
         soa::battle::actions::BattlePath b_path;
-        soa::battle::actions::decode_turn_plans_from_buffer(std::span<const uint8_t>(p, p + battle_plan_buf_size), b_path);
+        soa::battle::actions::decode_battle_plan_from_buffer(std::span<const uint8_t>(p, p + battle_plan_buf_size), b_path);
         p += battle_plan_buf_size;
 
         out_ctx[keys::core::RUN_MS] = run_ms;

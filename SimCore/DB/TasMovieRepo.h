@@ -27,8 +27,8 @@ namespace simcore::db {
 
         struct TasMovieRepo {
             // Async API (primary)
-            static std::future<DbResult<int64_t>> EnqueueAsync(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority, RetryPolicy rp = {});
-            static std::future<DbResult<int64_t>> IdempotentEnqueueAsync(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority, RetryPolicy rp = {});
+            static std::future<DbResult<int64_t>> EnqueueAsync(int64_t base_file_id, int64_t new_rtc, int32_t priority, RetryPolicy rp = {});
+            static std::future<DbResult<int64_t>> IdempotentEnqueueAsync(int64_t base_file_id, int64_t new_rtc, int32_t priority, RetryPolicy rp = {});
             static std::future<DbResult<void>>    MarkRunningAsync(int64_t id, RetryPolicy rp = {});
             static std::future<DbResult<void>>    AppendProgressAsync(int64_t id, std::string text, int max_bytes = 8192, RetryPolicy rp = {});
             static std::future<DbResult<void>>    MarkFailedAsync(int64_t id, std::string err, RetryPolicy rp = {});
@@ -38,8 +38,8 @@ namespace simcore::db {
             static std::future<DbResult<std::vector<TasMovieRow>>>  ListActiveAsync(RetryPolicy rp = {});
 
             // Optional blocking conveniences
-            static inline DbResult<int64_t> Enqueue(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority) { return EnqueueAsync(base_file_id, new_rtc, priority).get(); }
-            static inline DbResult<int64_t> IdempotentEnqueue(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority) { return IdempotentEnqueueAsync(base_file_id, new_rtc, priority).get(); }
+            static inline DbResult<int64_t> Enqueue(int64_t base_file_id, int64_t new_rtc, int32_t priority) { return EnqueueAsync(base_file_id, new_rtc, priority).get(); }
+            static inline DbResult<int64_t> IdempotentEnqueue(int64_t base_file_id, int64_t new_rtc, int32_t priority) { return IdempotentEnqueueAsync(base_file_id, new_rtc, priority).get(); }
             static inline DbResult<void> MarkRunning(int64_t id) { return MarkRunningAsync(id).get(); }
             static inline DbResult<void> AppendProgress(int64_t id, std::string text, int max_bytes = 8192) { return AppendProgressAsync(id, std::move(text), max_bytes).get(); }
             static inline DbResult<void> MarkFailed(int64_t id, std::string err) { return MarkFailedAsync(id, std::move(err)).get(); }

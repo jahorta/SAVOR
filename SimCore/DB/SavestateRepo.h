@@ -10,9 +10,14 @@
 namespace simcore {
     namespace db {
 
+        enum SavestateType : uint8_t {
+            BATTLE = 0,
+            UNKNOWN = 0xFF
+        };
+
         struct SavestateRow {
             int64_t id{};
-            int savestate_type{};
+            SavestateType savestate_type{};
             std::string note;
             int64_t object_ref_id{};
             bool complete{ false };
@@ -29,17 +34,15 @@ namespace simcore {
                 std::string tmpdir = ".tmp",
                 RetryPolicy rp = {}
             );
+            static std::future<DbResult<std::optional<SavestateRow>>> GetByProbeIdAsync(int64_t probe_id, RetryPolicy rp = {});
 
             static inline DbResult<int64_t> Plan(int savestate_type, std::string note) { return PlanAsync(savestate_type, std::move(note)).get(); }
             static inline DbResult<void>    Finalize(int64_t id, int64_t object_ref_id) { return FinalizeAsync(id, object_ref_id).get(); }
             static inline DbResult<std::optional<SavestateRow>> Get(int64_t id) { return GetAsync(id).get(); }
-            static inline DbResult<std::string> MaterializeToTempPath(
-                int64_t savestate_id,
-                std::string objdir = ".objects",
-                std::string tmpdir = ".tmp"
-            ) {
-                return MaterializeToTempPathAsync(savestate_id, std::move(objdir), std::move(tmpdir)).get();
+            static inline DbResult<std::string> MaterializeToTempPath(int64_t savestate_id) {
+                return MaterializeToTempPathAsync(savestate_id).get();
             }
+            static inline DbResult<std::optional<SavestateRow>> GetByProbeId(int64_t probe_id) { return GetByProbeIdAsync(probe_id).get(); }
         };
 
     } // namespace db

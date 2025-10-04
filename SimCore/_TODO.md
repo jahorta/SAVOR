@@ -1,6 +1,16 @@
-1. fix planwriter for battle plans
-    - We are now using a single target slot, not a mask of targets.
-    - Also fix in BattleExplorer.cpp (early convert from mask to slot, may need to increase UIAction target mask to uint16_t to allow for PC targets too).
+1. To all phase repos, add/use field to store a results_ini:
+    - TasMovieRepo
+    - SeedProbeRepo
+    - 
+1. Setup all DBCodecs for flow, inputs, outputs, etc:
+    - TasMovieRepo
+    - SeedProbeRepo
+    - ExplorerRunRepo
+1. Rename ExplorerRun (everything) to BattleRun for clarity.
+1. Added some keys for specifying what types of progress we want to return from certain scripts, still need to:
+    - Add these keys to the SimCoreWorker and PhaseScriptVM
+    - Allow the user to specify the values for those keys
+    - Change the progress sink to be more general? or something.
 1. try to remove frame limiter and test for consistency
 1. work on the job storage database:
     - Optional reader pool: route OpType::Read to a small read thread pool with separate connections; keep single writer for OpType::Write
@@ -110,13 +120,14 @@ New shape to implement:
 
 ## Milestone 6 - Next-phase triggers (DB, not in-process listeners)
 #### Table (new):
- - next_phase_triggers(trigger_id PK, scope ('job'|'job_set'), scope_id, condition_json, action_kind, action_args_json, active)
+ - triggers(trigger_id PK, scope ('job'|'job_set'), scope_id, condition_json, action_kind, action_args_ini, active)
 #### Flow:
  - WorkerCoordinator evaluates triggers after each job terminal update:
  - If condition satisfied (e.g., ALL_SUCCEEDED, or winners_found == total_deltas), atomically deactivate and invoke program-specific encode_job_into_db to enqueue the next phase.
 #### Example:
- - SeedProbe: Grid (A) -> trigger -> nothing (dedupe is inline already).
+ - SeedProbe: Neutral -> trigger on single job complete -> Grid phase -> trigger on job_set complete -> Unique phase -> trigger -> ensure SeedDelta from winners and mark is_unique -> clear out winners table.
  - Explorer: Explore -> trigger -> Validate job_set.
+ - phase transitions example: If user want to automatically transition between phases: TasMovie -> trigger on each completed job -> SeedProbe -> trigger on completion of unique phase -> Explorer (using some predetermined Explorer Settings id)
 
 ## Milestone 7 - Observability & ergonomics
 #### Add:
@@ -145,3 +156,119 @@ New shape to implement:
 1. Add triggers and convert one multi-phase flow (e.g., Explorer: explore -> validate).
 1. Port remaining coordinators to DB-phase API.
 1. Remove runner references, keep ProcessWorker under Coordinator.
+
+
+UI implementation plan:
+0) Readiness & boundaries
+Goal: Ensure the UI can depend on stable contracts.
+Inventory repos you’ll call from UI: JobsRepo, JobEventsRepo, WorkersRepo, TriggersRepo, ProgramKindsRepo, ObjectStore, domain repos (TasMovie/SeedProbe/ExplorerRun/etc.).
+Confirm ProgramDBCodecRegistry enumeration works at runtime.
+Decide default polling cadences and time windows for lists (e.g., last 24h).
+Done when: You can list available ProgramKinds and read a few rows from each main table via repos in a throwaway console.
+
+1) App shell (ImGui)
+Goal: A stable, dockable UI host that never blocks the DB thread.
+Add ImGui docking+viewport; persistent layout (save to IniDoc).
+Global status bar: DB connected badge, env, last refresh timestamp.
+Left nav with panes (disabled until backed by data).
+Done when: The app opens with docking, saves/restores layout, shows “connected” with a heartbeat timestamp.
+
+2) DataService (UI-agnostic contracts)
+Goal: A thin async layer that exposes paging/polling DTOs.
+Define PagedQuery<T> (keyset cursor), ListScope (filters/time window), Lightweight DTOs for jobs/events/workers.
+Implement keyset pagination using (updated_at, id); avoid OFFSET for big tables.
+Background polling with coalescing; deliver snapshots to UI via thread-safe mailbox.
+Done when: You can fetch “Jobs (last 24h, non-terminal)” page 1?N and back, outside any UI code.
+
+3) Jobs pane (MVP list)
+Goal: First real table.
+ImGui table with clipper; columns: id, job_set_id, program_kind, state, updated_at, progress (codec summary).
+Page controls (Prev/Next), quick filter by job_set_id, program_kind, state.
+Auto refresh every 2–5s; preserve selection & scroll.
+Done when: You can browse jobs smoothly across pages without stutter.
+
+4) Job details drawer
+Goal: On-demand heavy data.
+Right-side details: Overview tab (all columns), Events tab (lazy), Artifacts tab (refs only), Payload/Results (lazy load via codec summary).
+Deep links to related entities (job set, artifacts).
+Done when: Clicking a row shows details; heavy blobs fetch only when the tab opens.
+
+5) Job actions
+Goal: Operator control for a single job.
+Add Requeue, Cancel, Bump priority with confirmation modals.
+Surface repo errors to a non-blocking toast/log area.
+Append a JobEvents entry and reflect new state in list.
+Done when: You can requeue/cancel/bump and see state changes propagate.
+
+6) Job Events stream
+Goal: Live tail for diagnostics.
+Events table with “Follow tail” toggle; filter by job_id or job_set_id.
+Keyset paging backward in time; client clipper for visible rows.
+Done when: You can tail events for a running job set and scrub history without UI stalls.
+
+7) WorkerStatus pane
+Goal: Fleet awareness.
+Workers table: id, host, pid, current program_kind, job_id, last heartbeat, lease renew lag.
+Draining toggle (if supported) and “nudge requeue stale leases” action (guarded).
+Done when: You can spot unhealthy workers at a glance and toggle draining.
+
+8) Phase Builder (MVP)
+Goal: Create job sets from codec blueprints.
+Render form from BlueprintIni schema (types, defaults, validation).
+Preview panel: counts, artifacts to create, estimated payload size.
+Submit: write job_set + jobs via repos; link to JobSet overview.
+Done when: You can author and enqueue a basic job set end-to-end.
+
+9) Auto-queue next phase
+Goal: Chain phases without manual steps.
+Add auto_queue_next checkbox in the builder.
+If enabled: render Next Phase subform using the next codec’s schema (hard-coded map is fine).
+On submit: create a trigger (ALL_FINISHED) with action_args carrying next_phase_kind and serialized next_phase_blueprint (+ fingerprint).
+Add a minimal Triggers admin pane (list, inspect, delete).
+Done when: Completing a job set auto-creates the next job set with the expected args.
+
+10) Catalog panes (lightweight)
+Goal: Domain browsing with cross-links.
+TasMovies, SeedProbes, ExplorerRun (BattleRuns), BattleContexts, Savestates, BattlePlans, PredicateSets.
+Each: small list with filters + detail view; deep links to related jobs/artifacts.
+Done when: You can navigate from a catalog item to its producing job and artifacts.
+
+11) Artifacts/ObjectStore viewer
+Goal: Inspect large outputs safely.
+List artifacts by digest/name/type/time; filter by refcount or recent.
+Preview text/json/ini/csv inline; binary shows metadata; “materialize temp” action.
+Done when: You can open a result artifact from a job and view its contents inline (when textual).
+
+12) UX polish & persistence
+Goal: Make it pleasant daily.
+Saved filters, column visibility/order, and polling cadences via IniDoc.
+Global search box (id/fingerprint).
+Keyboard nav (J/K to move, Enter to open).
+Done when: UI remembers operator preferences and speeds up common flows.
+
+13) Performance & resilience hardening
+Goal: Handle load gracefully.
+Incremental refreshes keyed on last_updated_at.
+In-memory caches with TTL; dedupe identical snapshots.
+Backpressure: pause polling when CPU/GPU > threshold or when window unfocused (optional).
+Done when: Profiling shows stable frame times with 100k+ jobs across pages and sustained event flow.
+
+14) Test & demo datasets
+Goal: Repeatable validation.
+Seed small/medium/large fixture datasets.
+“Demo scripts” that run a short pipeline to exercise auto-queue and artifact flows.
+Done when: One command populates data; manual test plan can be run in ~10 minutes.
+
+15) Optional Qt track (parallel, no rush)
+Goal: Richer tables when/if needed.
+Reuse DataService contracts.
+Implement QAbstractTableModel for Jobs and Job Events with keyset fetching.
+Add table niceties (frozen columns, advanced sort, export/print).
+Done when: A separate Qt viewer can browse the same data with enterprise table UX.
+
+Guardrails & priorities
+Land Steps 1->5 quickly for a functional ops console.
+Steps 8->9 unlock real value (authoring + auto-queue).
+Keep DataService pure and UI-agnostic; everything DB-touching routes through repos/DBService.
+All heavy fields (payloads/results) are lazy—never fetch in lists.
+If this sequence works for you, I can next propose the DataService DTOs and keyset cursor shape (very small, decisive spec) so Step 2 starts on solid ground.

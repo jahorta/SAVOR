@@ -241,4 +241,85 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_requeue_expired(e); });
     }
 
+    static DbResult<std::vector<JobRow>> impl_list_by_job_set(DbEnv& env, int64_t job_set_id, bool queued_only) {
+        auto* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+
+        const char* sql_all =
+            "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,"
+            "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,"
+            "lease_expires_at,queued_at,vm_kv "
+            "FROM jobs WHERE job_set_id=? ORDER BY queued_at ASC";
+
+        const char* sql_queued =
+            "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,"
+            "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,"
+            "lease_expires_at,queued_at,vm_kv "
+            "FROM jobs WHERE job_set_id=? AND state='QUEUED' ORDER BY queued_at ASC";
+
+        if (sqlite3_prepare_v2(db, queued_only ? sql_queued : sql_all, -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<std::vector<JobRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare failed" });
+        }
+        if (sqlite3_bind_int64(st, 1, job_set_id) != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return DbResult<std::vector<JobRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "bind failed" });
+        }
+
+        std::vector<JobRow> out;
+        for (;;) {
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                JobRow r{};
+                r.job_id = sqlite3_column_int64(st, 0);
+                r.job_set_id = sqlite3_column_int64(st, 1);
+                r.program_kind = sqlite3_column_int(st, 2);
+                r.program_version = sqlite3_column_int(st, 3);
+                r.program_ref_id = sqlite3_column_int64(st, 4);
+                r.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+                r.priority = sqlite3_column_int(st, 6);
+                r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 7));
+                r.attempts = sqlite3_column_int(st, 8);
+                r.max_attempts = sqlite3_column_int(st, 9);
+
+                if (sqlite3_column_type(st, 10) != SQLITE_NULL)
+                    r.claimed_by_token = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 10)));
+                else
+                    r.claimed_by_token.reset();
+
+                if (sqlite3_column_type(st, 11) != SQLITE_NULL)
+                    r.lease_expires_at = sqlite3_column_int64(st, 11);
+                else
+                    r.lease_expires_at.reset();
+
+                r.queued_at = sqlite3_column_int64(st, 12);
+
+                if (sqlite3_column_type(st, 13) != SQLITE_NULL)
+                    r.vm_kv = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 13)));
+                else
+                    r.vm_kv.reset();
+
+                out.push_back(std::move(r));
+                continue;
+            }
+            if (rc == SQLITE_DONE) break;
+
+            auto err = DbResult<std::vector<JobRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+            sqlite3_finalize(st);
+            return err;
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<std::vector<JobRow>>::Ok(std::move(out));
+    }
+
+    std::future<DbResult<std::vector<JobRow>>> JobsRepo::GetByJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<std::vector<JobRow>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_by_job_set(e, job_set_id, false); });
+    }
+
+    std::future<DbResult<std::vector<JobRow>>> JobsRepo::GetQueuedByJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<std::vector<JobRow>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_by_job_set(e, job_set_id, true); });
+    }
+
 } // namespace simcore::db

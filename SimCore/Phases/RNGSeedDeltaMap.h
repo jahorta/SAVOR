@@ -52,6 +52,31 @@ namespace simcore {
         uint32_t combos_sampler_tries = 8;   // attempts to construct a triple that sums to target
     };
 
+    static std::vector<simcore::GCInputFrame> build_grid_main(int n, int minv, int maxv);
+    static std::vector<simcore::GCInputFrame> build_grid_cstick(int n, int minv, int maxv);
+    static std::vector<simcore::GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top);
+
+    struct ComboSampleSet {
+        int32_t target_delta = 0;
+        std::vector<GCInputFrame> frames;
+    };
+
+    struct JCTComboSamples {
+        std::vector<GCInputFrame> singletons; // unique singleton frames used (includes neutral)
+        std::vector<int32_t> expected;        // sorted unique (non-singleton) combo targets
+        std::vector<ComboSampleSet> samples;  // samples[i].target_delta == expected[i]
+    };
+
+    /**
+     * Build expected (non-singleton) J/C/T combo deltas from a probe grid and pre-sample
+     * up to attempts_per_target GCInputFrames per expected target using the same fair
+     * iterator and dedupe rules as RunFindSeedDeltaCombos.
+     */
+    JCTComboSamples PlanJCTComboSamples(
+        const RandSeedProbeResult& grid,
+        uint32_t attempts_per_target,
+        uint32_t sampler_tries);
+
     RandSeedProbeResult RunRngSeedDeltaMap(ParallelPhaseScriptRunner& runner, const RngSeedDeltaArgs& args);
     RandSeedComboResult RunFindSeedDeltaCombos(ParallelPhaseScriptRunner& runner, const RngSeedDeltaArgs& args, const RandSeedProbeResult& grid);
 

@@ -22,7 +22,7 @@ namespace simcore {
 
         struct SeedProbeRepo {
             // Async
-            static std::future<DbResult<int64_t>> CreateAsync(int64_t savestate_id, int64_t version_id, int64_t neutral_seed, RetryPolicy rp = {});
+            static std::future<DbResult<int64_t>> CreateAsync(int64_t savestate_id, int64_t version_id, RetryPolicy rp = {});
             static std::future<DbResult<void>>    MarkRunningAsync(int64_t probe_id, RetryPolicy rp = {});
             static std::future<DbResult<void>>    SetNeutralSeedAsync(int64_t probe_id, int64_t neutral_seed, RetryPolicy rp = {});
             static std::future<DbResult<void>>    MarkDoneAsync(int64_t probe_id, RetryPolicy rp = {});
@@ -31,7 +31,7 @@ namespace simcore {
             static std::future<DbResult<std::vector<SeedProbeRow>>> ListPlannedAsync(RetryPolicy rp = {});
 
             // Blocking convenience
-            static inline DbResult<int64_t> Create(int64_t savestate_id, int64_t version_id, int64_t neutral_seed) { return CreateAsync(savestate_id, version_id, neutral_seed).get(); }
+            static inline DbResult<int64_t> Create(int64_t savestate_id, int64_t version_id) { return CreateAsync(savestate_id, version_id).get(); }
             static inline DbResult<void>    MarkRunning(int64_t probe_id) { return MarkRunningAsync(probe_id).get(); }
             static inline DbResult<void>    SetNeutralSeed(int64_t probe_id, int64_t neutral_seed) { return SetNeutralSeedAsync(probe_id, neutral_seed).get(); }
             static inline DbResult<void>    MarkDone(int64_t probe_id) { return MarkDoneAsync(probe_id).get(); }

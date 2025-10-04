@@ -4,6 +4,7 @@
 #include <queue>
 #include <future>
 #include <sqlite3.h>
+#include <filesystem>
 
 #include "MigrationRunner.h"
 #include "MigrationRunner_Embedded.h"
@@ -11,19 +12,53 @@
 #include "DbEventsRepo.h"
 #include "CoordinatorClock.h"
 #include "RegisterProgramKinds.h"
+#include "ConfigRepo.h"
+#include "ObjectStore.h"
 #include "../../Utils/Log.h"
 
 namespace simcore {
     namespace db {
 
+        static std::vector<SeedAny> create_cfg_defaults(std::string path) {
+            using namespace simcore::db::cfg;
+
+            std::filesystem::path root = path;
+            std::vector<SeedAny> defaults = {
+                make_seed(ObjectStoreDir,             (root / "objects").string()),
+                make_seed(TempDir,                    (root / "tmp").string()),
+
+                make_seed(BusyTimeoutMs,              int64_t(2000)),
+                make_seed(ForeignKeys,                true),
+                make_seed(Synchronous,                std::string("NORMAL")),
+                make_seed(WalAutocheckpointPages,     int64_t(1000)),
+
+                // Worker / scheduling
+                // If you prefer a dynamic default for max_workers, omit it here and set it later explicitly.
+                make_seed(MaxWorkers,                 std::max<int64_t>(1, (int64_t)std::thread::hardware_concurrency() - 2)),
+                make_seed(ProcessReuse,               true),
+
+                // Retry / leases
+                make_seed(RetryInitialBackoffMs,      int64_t(50)),
+                make_seed(RetryBackoffMultiplierX100, int64_t(150)),
+                make_seed(RetryMaxBackoffMs,          int64_t(2000)),
+                make_seed(LeaseTimeoutMs,             int64_t(60000)),
+                make_seed(HeartbeatIntervalMs,        int64_t(5000)),
+            };
+
+            return defaults;
+        }
+
         DBService::DBService() = default;
         DBService::~DBService() { stop(); }
         DBService& DBService::instance() { static DBService inst; return inst; }
 
-        void DBService::start(const std::string& db_path) {
+        // Always starts a DB at (exe dir)/DB/SoaSimDB.sqlite3
+        void DBService::start() {
             bool expected = false;
             if (!m_running.compare_exchange_strong(expected, true)) return;
 
+            std::filesystem::path db_root = std::filesystem::current_path() / "DB";
+            std::string db_path = (db_root / "SoaSimDB.sqlite3").string();
             m_env = DbEnv::open(db_path);
 
             CoordinatorClock::instance().boot();
@@ -50,6 +85,18 @@ namespace simcore {
             m_worker = std::thread([this]() { workerLoop(); });
 
             (void)RegisterProgramKinds();
+
+            (void)ConfigRepo::EnsureDefaults(create_cfg_defaults(db_root.string()));
+
+            auto objdir_res = ConfigRepo::Get(cfg::ObjectStoreDir);
+            auto tmpdir_res = ConfigRepo::Get(cfg::TempDir);
+            if (objdir_res.ok && tmpdir_res.ok) {
+                ObjectStore::SetRoots(objdir_res.value, tmpdir_res.value);
+            }
+            else {
+                 ObjectStore::SetRoots((db_root / "objects").string(), (db_root / "tmp").string());
+            }
+
             (void)DbEventsRepo::InsertBootEvent("coordinator_booted", "");
         }
 

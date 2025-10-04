@@ -80,4 +80,66 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_get(e, job_set_id); });
     }
 
+    static DbResult<void> impl_set_meta_text(DbEnv& env, int64_t job_set_id, const std::optional<std::string>& meta_text) {
+        auto* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+
+        if (sqlite3_prepare_v2(db, "UPDATE job_sets SET meta_text=? WHERE job_set_id=?", -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare failed" });
+        }
+
+        int rc = (meta_text ? sqlite3_bind_text(st, 1, meta_text->c_str(), -1, SQLITE_TRANSIENT)
+            : sqlite3_bind_null(st, 1));
+        if (rc != SQLITE_OK || sqlite3_bind_int64(st, 2, job_set_id) != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "bind failed" });
+        }
+
+        rc = sqlite3_step(st);
+        if (rc != SQLITE_DONE) {
+            auto err = DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+            sqlite3_finalize(st);
+            return err;
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<void>::Ok();
+    }
+
+    static DbResult<void> impl_set_expected_total(DbEnv& env, int64_t job_set_id, const std::optional<int64_t>& expected_total) {
+        auto* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+
+        if (sqlite3_prepare_v2(db, "UPDATE job_sets SET expected_total=? WHERE job_set_id=?", -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare failed" });
+        }
+
+        int rc = (expected_total ? sqlite3_bind_int64(st, 1, *expected_total)
+            : sqlite3_bind_null(st, 1));
+        if (rc != SQLITE_OK || sqlite3_bind_int64(st, 2, job_set_id) != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "bind failed" });
+        }
+
+        rc = sqlite3_step(st);
+        if (rc != SQLITE_DONE) {
+            auto err = DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+            sqlite3_finalize(st);
+            return err;
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<void>::Ok();
+    }
+
+    std::future<DbResult<void>> JobSetsRepo::SetMetaTextAsync(int64_t job_set_id, std::optional<std::string> meta_text, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_set_meta_text(e, job_set_id, meta_text); });
+    }
+
+    std::future<DbResult<void>> JobSetsRepo::SetExpectedTotalAsync(int64_t job_set_id, std::optional<int64_t> expected_total, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_set_expected_total(e, job_set_id, expected_total); });
+    }
+
 } // namespace simcore::db

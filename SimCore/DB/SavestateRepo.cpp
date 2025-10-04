@@ -50,7 +50,7 @@ namespace simcore {
 
             SavestateRow row;
             row.id = sqlite3_column_int64(stmt, 0);
-            row.savestate_type = sqlite3_column_int(stmt, 1);
+            row.savestate_type = (SavestateType)sqlite3_column_int(stmt, 1);
             row.note = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
             row.object_ref_id = sqlite3_column_int64(stmt, 3);
             row.complete = sqlite3_column_int(stmt, 4) != 0;
@@ -86,7 +86,7 @@ namespace simcore {
             if (!row.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0, "savestate not found" });
             const auto ss = row.value.value();
             if (!ss.complete || ss.object_ref_id <= 0) return DbResult<std::string>::Err({ DbErrorKind::InvalidState, 0, "savestate incomplete" });
-            auto mat = ObjectStore::MaterializeToTemp(ss.object_ref_id, objdir, tmpdir);
+            auto mat = ObjectStore::MaterializeToTemp(ss.object_ref_id);
             if (!mat.ok) return DbResult<std::string>::Err(mat.error);
             return DbResult<std::string>::Ok(mat.value);
         }
@@ -95,6 +95,37 @@ namespace simcore {
             int64_t savestate_id, std::string objdir, std::string tmpdir, RetryPolicy rp) {
             return DBService::instance().submit_res<std::string>(OpType::Read, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_Materialize(e, savestate_id, objdir, tmpdir); });
+        }
+
+        static inline DbResult<std::optional<SavestateRow>> Impl_GetByProbeId(DbEnv& env, int64_t probe_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* stmt{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT s.id, s.savestate_type, s.note, s.object_ref_id, s.complete "
+                "FROM savestate s JOIN seed_probe p ON p.savestate_id = s.id WHERE p.id=? LIMIT 1;",
+                -1, &stmt, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::optional<SavestateRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(stmt, 1, probe_id);
+            rc = sqlite3_step(stmt);
+
+            std::optional<SavestateRow> out{};
+            if (rc == SQLITE_ROW) {
+                SavestateRow r{};
+                r.id = sqlite3_column_int64(stmt, 0);
+                r.savestate_type = (SavestateType)sqlite3_column_int(stmt, 1);
+                r.note = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+                r.object_ref_id = sqlite3_column_int64(stmt, 3);
+                r.complete = sqlite3_column_int(stmt, 4) != 0;
+                out = r;
+            }
+            sqlite3_finalize(stmt);
+            if (rc != SQLITE_ROW && rc != SQLITE_DONE) return DbResult<std::optional<SavestateRow>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::optional<SavestateRow>>::Ok(out);
+        }
+
+        std::future<DbResult<std::optional<SavestateRow>>> SavestateRepo::GetByProbeIdAsync(int64_t probe_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::optional<SavestateRow>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_GetByProbeId(e, probe_id); });
         }
 
     } // namespace db

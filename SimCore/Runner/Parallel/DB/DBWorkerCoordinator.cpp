@@ -5,14 +5,17 @@
 #include <sstream>
 #include <mutex>  // for std::once_flag / std::call_once
 
-#include "../../Utils/ThreadName.h"
-#include "../../DB/ProgramDB/IProgramDBCodec.h"
-#include "../../DB/ProgramDB/SeedProbeDBCodec.h"
-#include "../../DB/ProgramDB/TasMovieDBCodec.h"
-#include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
-#include "../../DB/Scheduling/JobsRepo.h"
-#include "../../DB/Scheduling/JobEventsRepo.h"
-#include "../IPC/Wire.h"
+#include "../../../Utils/ThreadName.h"
+#include "../../../DB/ProgramDB/IProgramDBCodec.h"
+#include "../../../DB/ProgramDB/SeedProbeDBCodec.h"
+#include "../../../DB/ProgramDB/TasMovieDBCodec.h"
+#include "../../../DB/ProgramDB/ExplorerRunDBCodec.h"
+#include "../../../DB/ProgramDB/BattleContextDBCodec.h"
+#include "../../../DB/Scheduling/JobsRepo.h"
+#include "../../../DB/Scheduling/JobEventsRepo.h"
+#include "../../../DB/DBCore/ObjectStore.h"
+#include "../../IPC/Wire.h"
+#include "DBTriggerEngine.h"
 
 namespace {
     void ensure_codecs_registered() {
@@ -20,12 +23,14 @@ namespace {
         std::call_once(once, [] {
             static SeedProbeDBCodec  seed_codec;
             static TasMovieDBCodec   tas_codec;
-            static ExplorerRunDBCodec explore_codec;
+            static ExplorerRunDBCodec battle_runner_codec;
+            static BattleContextDBCodec battle_context_codec;
 
             // Use your existing ProgramKind ids here:
             ProgramDBCodecRegistry::register_codec(simcore::PK_SeedProbe, &seed_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_TasMovie, &tas_codec);
-            ProgramDBCodecRegistry::register_codec(simcore::PK_BattleTurnRunner, &explore_codec);
+            ProgramDBCodecRegistry::register_codec(simcore::PK_BattleTurnRunner, &battle_runner_codec);
+            ProgramDBCodecRegistry::register_codec(simcore::PK_BattleContextProbe, &battle_context_codec);
             });
     }
 }
@@ -252,6 +257,8 @@ namespace simcore {
                 auto ini = codec.build_results_ini_from_prresult((int64_t)r.job_id, r);
                 if (ini.ok) {
                     (void)codec.encode_results_into_db((int64_t)r.job_id, ini.value, r.ps.ok);
+                    auto tr = simcore::TriggerEngine::after_terminal(r.job_id);
+                    (void)tr; // ignore errors for now; they will be visible in DB events/logs if you add them later
                 }
             }
 

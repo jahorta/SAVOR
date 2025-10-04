@@ -139,5 +139,51 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_ListByBp(e, required_bp); });
         }
 
+        static inline DbResult<std::optional<int64_t>> Impl_FindByFingerprint(DbEnv& env, const std::string& fp) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db, "SELECT id FROM predicate_spec WHERE fingerprint=? LIMIT 1;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<std::optional<int64_t>>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_text(st, 1, fp.c_str(), -1, SQLITE_TRANSIENT);
+            rc = sqlite3_step(st);
+            std::optional<int64_t> out{};
+            if (rc == SQLITE_ROW) out = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_ROW && rc != SQLITE_DONE) return DbResult<std::optional<int64_t>>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<std::optional<int64_t>>::Ok(out);
+        }
+
+        static inline DbResult<int64_t> Impl_InsertWithFingerprint(DbEnv& env, const PredicateSpecRow& r, const std::string& fp) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            // add 'fingerprint' column at the end of the INSERT value list
+            int rc = sqlite3_prepare_v2(db,
+                "INSERT INTO predicate_spec("
+                "spec_version,required_bp,kind,width,cmp_op,flags,"
+                "lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc,fingerprint)"
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
+                -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
+
+            bind_spec(st, r); // binds 14 params
+            sqlite3_bind_text(st, 15, fp.c_str(), -1, SQLITE_TRANSIENT);
+
+            rc = sqlite3_step(st);
+            if (rc != SQLITE_DONE) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" }); }
+            int64_t id = sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(st);
+            return DbResult<int64_t>::Ok(id);
+        }
+
+        std::future<DbResult<int64_t>> PredicateSpecRepo::EnsureByFingerprintAsync(const PredicateSpecRow& r, const std::string& fingerprint, RetryPolicy rp) {
+            return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
+                [=, &r, &fingerprint](DbEnv& e) -> DbResult<int64_t> {
+                    auto f = Impl_FindByFingerprint(e, fingerprint);
+                    if (!f.ok) return DbResult<int64_t>::Err(f.error);
+                    if (f.value) return DbResult<int64_t>::Ok(*f.value);
+                    return Impl_InsertWithFingerprint(e, r, fingerprint);
+                });
+        }
+
     } // db
 } // simcore

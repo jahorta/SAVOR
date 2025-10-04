@@ -35,12 +35,14 @@ namespace simcore {
             static std::future<DbResult<int64_t>> BulkInsertAsync(std::vector<PredicateSpecRow>& rows, RetryPolicy rp = {});
             static std::future<DbResult<PredicateSpecRow>> GetAsync(int64_t id, RetryPolicy rp = {});
             static std::future<DbResult<std::vector<PredicateSpecRow>>> ListByBpAsync(int32_t required_bp, RetryPolicy rp = {});
+            static std::future<DbResult<int64_t>> EnsureByFingerprintAsync(const PredicateSpecRow& r, const std::string& fingerprint, RetryPolicy rp = {});
 
             // Blocking conveniences
             static inline DbResult<int64_t> Insert(const PredicateSpecRow& r) { return InsertAsync(r).get(); }
             static inline DbResult<int64_t> BulkInsert(std::vector<PredicateSpecRow>& rows) { return BulkInsertAsync(rows).get(); }
             static inline DbResult<PredicateSpecRow> Get(int64_t id) { return GetAsync(id).get(); }
             static inline DbResult<std::vector<PredicateSpecRow>> ListByBp(int32_t bp) { return ListByBpAsync(bp).get(); }
+            static inline DbResult<int64_t> EnsureByFingerprint(const PredicateSpecRow& r, const std::string& fingerprint) { return EnsureByFingerprintAsync(r, fingerprint).get(); }
         };
 
     } // db

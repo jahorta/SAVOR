@@ -4,16 +4,15 @@
 namespace simcore {
     namespace db {
 
-        static inline DbResult<int64_t> Impl_Create(DbEnv& env, int64_t savestate_id, int64_t version_id, int64_t neutral_seed) {
+        static inline DbResult<int64_t> Impl_Create(DbEnv& env, int64_t savestate_id, int64_t version_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "INSERT INTO seed_probe(savestate_id, version_id, neutral_seed, status, complete) VALUES(?, ?, ?, 'planned', 0);",
+                "INSERT INTO seed_probe(savestate_id, version_id, status, complete) VALUES(?, ?, 'planned', 0);",
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
             sqlite3_bind_int64(st, 1, savestate_id);
             sqlite3_bind_int64(st, 2, version_id);
-            sqlite3_bind_int64(st, 3, neutral_seed);
             rc = sqlite3_step(st);
             if (rc != SQLITE_DONE) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" }); }
             int64_t id = sqlite3_last_insert_rowid(db);
@@ -125,9 +124,9 @@ namespace simcore {
 
         // Async via DBService
 
-        std::future<DbResult<int64_t>> SeedProbeRepo::CreateAsync(int64_t savestate_id, int64_t version_id, int64_t neutral_seed, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> SeedProbeRepo::CreateAsync(int64_t savestate_id, int64_t version_id, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_Create(e, savestate_id, version_id, neutral_seed); });
+                [=](DbEnv& e) { return Impl_Create(e, savestate_id, version_id); });
         }
         std::future<DbResult<void>> SeedProbeRepo::MarkRunningAsync(int64_t probe_id, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,

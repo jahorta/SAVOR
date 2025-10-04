@@ -7,11 +7,11 @@
 #include <string>
 #include <chrono>
 #include <thread>
-#include "../Parallel/PRTypes.h"
-#include "../Parallel/ProcessWorker.h"
-#include "../../DB/ProgramDB/IProgramDBCodec.h"
-#include "../../DB/Scheduling/JobsRepo.h"
-#include "../../DB/Scheduling/JobEventsRepo.h"
+#include "../PRTypes.h"
+#include "../ProcessWorker.h"
+#include "../../../DB/ProgramDB/IProgramDBCodec.h"
+#include "../../../DB/Scheduling/JobsRepo.h"
+#include "../../../DB/Scheduling/JobEventsRepo.h"
 #include "DBWorkerCoordinatorConfig.h"
 
 namespace simcore {

@@ -113,5 +113,27 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_CountByJobSet(e, job_set_id); });
         }
 
+        static DbResult<int64_t> impl_delete_by_job_set(DbEnv& env, int64_t job_set_id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st = nullptr;
+            const char* sql = "DELETE FROM seed_probe_winners WHERE job_set_id=?";
+            if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+                return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            }
+            sqlite3_bind_int64(st, 1, job_set_id);
+            int rc = sqlite3_step(st);
+            int changes = sqlite3_changes(db);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) {
+                return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "delete seed_probe_winners failed" });
+            }
+            return DbResult<int64_t>::Ok(static_cast<int64_t>(changes));
+        }
+
+        std::future<DbResult<int64_t>> SeedProbeWinnersRepo::DeleteByJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
+            return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
+                [=](DbEnv& e) { return impl_delete_by_job_set(e, job_set_id); });
+        }
+
     } // namespace db
 } // namespace simcore

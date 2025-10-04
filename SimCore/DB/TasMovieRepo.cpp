@@ -3,7 +3,7 @@
 
 namespace simcore::db {
 
-        static inline DbResult<int64_t> Impl_Enqueue(DbEnv& env, int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority) {
+        static DbResult<int64_t> Impl_Enqueue(DbEnv& env, int64_t base_file_id, int64_t new_rtc, int32_t priority) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -11,7 +11,7 @@ namespace simcore::db {
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
             sqlite3_bind_int64(st, 1, base_file_id);
-            if (new_rtc) sqlite3_bind_int64(st, 2, *new_rtc); else sqlite3_bind_null(st, 2);
+            sqlite3_bind_int64(st, 2, new_rtc);
             sqlite3_bind_int(st, 3, priority);
             rc = sqlite3_step(st);
             if (rc != SQLITE_DONE) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" }); }
@@ -20,17 +20,16 @@ namespace simcore::db {
             return DbResult<int64_t>::Ok(id);
         }
 
-        static inline DbResult<int64_t> Impl_IdempotentEnqueue(DbEnv& env, int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority) {
+        static DbResult<int64_t> Impl_IdempotentEnqueue(DbEnv& env, int64_t base_file_id, int64_t new_rtc, int32_t priority) {
             // Strategy: try find existing planned for (base_file_id,new_rtc); else insert
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "SELECT id FROM tas_movie WHERE base_file_id=? AND ((new_rtc IS NULL AND ? IS NULL) OR new_rtc=?) AND status='planned' LIMIT 1;",
+                "SELECT id FROM tas_movie WHERE base_file_id=? AND new_rtc=? AND status='planned' LIMIT 1;",
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
             sqlite3_bind_int64(st, 1, base_file_id);
-            if (new_rtc) { sqlite3_bind_null(st, 2); sqlite3_bind_int64(st, 3, *new_rtc); }
-            else { sqlite3_bind_null(st, 2); sqlite3_bind_null(st, 3); }
+            sqlite3_bind_int64(st, 2, new_rtc);
             rc = sqlite3_step(st);
             if (rc == SQLITE_ROW) {
                 int64_t id = sqlite3_column_int64(st, 0);
@@ -41,7 +40,7 @@ namespace simcore::db {
             return Impl_Enqueue(env, base_file_id, new_rtc, priority);
         }
 
-        static inline DbResult<void> Impl_MarkRunning(DbEnv& env, int64_t id) {
+        static DbResult<void> Impl_MarkRunning(DbEnv& env, int64_t id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -55,7 +54,7 @@ namespace simcore::db {
             return DbResult<void>{ true };
         }
 
-        static inline DbResult<void> Impl_AppendProgress(DbEnv& env, int64_t id, const std::string& text, int max_bytes) {
+        static DbResult<void> Impl_AppendProgress(DbEnv& env, int64_t id, const std::string& text, int max_bytes) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -70,7 +69,7 @@ namespace simcore::db {
             return DbResult<void>{ true };
         }
 
-        static inline DbResult<void> Impl_MarkFailed(DbEnv& env, int64_t id, const std::string& err) {
+        static DbResult<void> Impl_MarkFailed(DbEnv& env, int64_t id, const std::string& err) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -84,7 +83,7 @@ namespace simcore::db {
             return DbResult<void>{ true };
         }
 
-        static inline DbResult<void> Impl_MarkDone(DbEnv& env, int64_t id, int64_t savestate_id) {
+        static DbResult<void> Impl_MarkDone(DbEnv& env, int64_t id, int64_t savestate_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -99,7 +98,7 @@ namespace simcore::db {
             return DbResult<void>{ true };
         }
 
-        static inline TasMovieRow ReadRow(sqlite3_stmt* st) {
+        static TasMovieRow ReadRow(sqlite3_stmt* st) {
             TasMovieRow r{};
             // Column order:
             // 0:id, 1:base_file_id, 2:new_rtc, 3:status, 4:progress_log, 5:created_at,
@@ -119,7 +118,7 @@ namespace simcore::db {
             return r;
         }
 
-        static inline DbResult<TasMovieRow> Impl_Get(DbEnv& env, int64_t id) {
+        static DbResult<TasMovieRow> Impl_Get(DbEnv& env, int64_t id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -139,7 +138,7 @@ namespace simcore::db {
             return DbResult<TasMovieRow>::Err({ DbErrorKind::NotFound, SQLITE_DONE, "not found" });
         }
 
-        static inline DbResult<std::vector<TasMovieRow>> Impl_ListByStatus(DbEnv& env, const char* status) {
+        static DbResult<std::vector<TasMovieRow>> Impl_ListByStatus(DbEnv& env, const char* status) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -160,12 +159,12 @@ namespace simcore::db {
 
         // Async wrappers via DBService
 
-        std::future<DbResult<int64_t>> TasMovieRepo::EnqueueAsync(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> TasMovieRepo::EnqueueAsync(int64_t base_file_id, int64_t new_rtc, int32_t priority, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_Enqueue(e, base_file_id, new_rtc, priority); });
         }
 
-        std::future<DbResult<int64_t>> TasMovieRepo::IdempotentEnqueueAsync(int64_t base_file_id, std::optional<int64_t> new_rtc, int32_t priority, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> TasMovieRepo::IdempotentEnqueueAsync(int64_t base_file_id, int64_t new_rtc, int32_t priority, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_IdempotentEnqueue(e, base_file_id, new_rtc, priority); });
         }
