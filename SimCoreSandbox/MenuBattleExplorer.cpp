@@ -371,9 +371,11 @@ namespace {
         specs.push_back(first);
 
 
+        
         // Check that we have 1 electribox after first turn
+        std::string eb_count_addrprog_desc;
         addrprog::Builder eb_count_addrprog;
-        addrprog::catalog::item_drop_amt(eb_count_addrprog, soa::itemid::Electri_Box);
+        addrprog::catalog::item_drop_amt(eb_count_addrprog, soa::itemid::Electri_Box, eb_count_addrprog_desc);
 
         Spec eb{};
         eb.id = 1;
@@ -384,6 +386,7 @@ namespace {
         eb.set_every_turn();
 
         eb.lhs_prog = eb_count_addrprog.blob();
+        eb.lhs_prog_desc = eb_count_addrprog_desc;
         eb.set_flag(PredFlag::LhsIsProg);
 
         eb.cmp = CmpOp::EQ;
