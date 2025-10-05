@@ -25,3 +25,8 @@
 /SimCoreTests/x64/Release
 /_old files if needed
 /DME_struct_extract.txt
+/SoaSimGui/third_party/imgui/examples
+/SoaSimGui/third_party/imgui/.github
+/SoaSimGui/third_party/imgui/.gitattributes
+/SoaSimGui/third_party/imgui/.gitignore
+/SoaSimGui/x64/Debug
