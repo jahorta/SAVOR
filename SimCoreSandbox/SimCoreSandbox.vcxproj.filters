@@ -45,6 +45,9 @@
     <ClCompile Include="MenuBattleExplorer.cpp">
       <Filter>Menus</Filter>
     </ClCompile>
+    <ClCompile Include="TASMovieDBEnqueue.cpp">
+      <Filter>Menus</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MenuConfig.h">
@@ -63,6 +66,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="MenuBattleExplorer.h">
+      <Filter>Menus</Filter>
+    </ClInclude>
+    <ClInclude Include="TASMovieDBEnqueue.h">
       <Filter>Menus</Filter>
     </ClInclude>
   </ItemGroup>
