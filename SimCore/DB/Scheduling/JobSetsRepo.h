@@ -3,6 +3,8 @@
 #include "../DBCore/DbResult.h"
 #include "../DBCore/DbRetryPolicy.h"
 #include "../DBCore/DbService.h"
+#include "../Querying/Paging.h"
+#include "../Querying/JobSetListDTO.h"
 #include <string>
 #include <optional>
 #include <cstdint>
@@ -36,7 +38,12 @@ namespace simcore::db {
         static std::future<DbResult<JobSetRow>> GetAsync(int64_t job_set_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetMetaTextAsync(int64_t job_set_id, std::optional<std::string> meta_text, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetExpectedTotalAsync(int64_t job_set_id, std::optional<int64_t> expected_total, RetryPolicy rp = {});
-
+        static std::future<DbResult<Page<JobSetLite>>> ListRecentAsync(
+            const JobSetsListScope& scope,
+            std::optional<KeysetCursor> before, // created_at DESC, job_set_id DESC
+            int limit,
+            RetryPolicy rp = {}
+        );
 
         static inline DbResult<int64_t> Create(
             std::optional<std::string> purpose, int program_kind,

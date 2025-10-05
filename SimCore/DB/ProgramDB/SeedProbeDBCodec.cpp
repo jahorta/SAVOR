@@ -170,7 +170,7 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     auto dr = simcore::db::DeltaSeedRepo::ListGridForProbe(bp_ini.probe_id);
     if (!dr.ok) return simcore::db::DbResult<int64_t>::Err(dr.error);
 
-    simcore::RandSeedProbeResult result{.base_seed=pr.value.neutral_seed};
+    simcore::RandSeedProbeResult result{.base_seed=(uint32_t)pr.value.neutral_seed};
     for (auto ds : dr.value) {
         auto family = (simcore::SeedFamily)ds.input.get_family();
         uint8_t x = 0, y = 0;
@@ -184,7 +184,7 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
             .family = family,
             .x = x,
             .y = y,
-            .seed = pr.value.neutral_seed + ds.seed_delta,
+            .seed = (uint32_t)pr.value.neutral_seed + ds.seed_delta,
             .delta = ds.seed_delta,
             .ok = true
         };

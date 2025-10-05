@@ -1,6 +1,7 @@
 // SimCore/DB/JobsRepo.cpp
 #include "JobsRepo.h"
 #include <sqlite3.h>
+#include <sstream>
 
 namespace simcore::db {
 
@@ -320,6 +321,193 @@ namespace simcore::db {
     std::future<DbResult<std::vector<JobRow>>> JobsRepo::GetQueuedByJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
         return DBService::instance().submit_res<std::vector<JobRow>>(OpType::Read, Priority::Normal, rp,
             [=](DbEnv& e) { return impl_list_by_job_set(e, job_set_id, true); });
+    }
+
+    static DbResult<Page<JobLite>> impl_list_recent_jobs(
+        DbEnv& env,
+        const JobsListScope& scope,
+        const std::optional<KeysetCursor>& before,
+        int limit)
+    {
+        auto* db = env.handle();
+        std::ostringstream sql;
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at "
+            "FROM jobs ";
+
+        // WHERE
+        bool hasWhere = false;
+        auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
+
+        if (scope.job_set_id) { add_and(true); sql << "job_set_id=?"; }
+        if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
+        if (!scope.states.empty()) {
+            add_and(true);
+            sql << "state IN (";
+            for (size_t i = 0; i < scope.states.size(); ++i) {
+                if (i) sql << ',';
+                sql << '?';
+            }
+            sql << ")";
+        }
+        if (scope.since_queued_at) { add_and(true); sql << "queued_at >= ?"; }
+        if (before) {
+            add_and(true);
+            sql << "(queued_at < ? OR (queued_at = ? AND job_id < ?))";
+        }
+
+        sql << " ORDER BY queued_at DESC, job_id DESC LIMIT ?";
+
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<Page<JobLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+        }
+
+        int bi = 1;
+        if (scope.job_set_id) sqlite3_bind_int64(st, bi++, *scope.job_set_id);
+        if (scope.program_kind) sqlite3_bind_int(st, bi++, *scope.program_kind);
+        for (auto const& s : scope.states) sqlite3_bind_text(st, bi++, s.c_str(), -1, SQLITE_TRANSIENT);
+        if (scope.since_queued_at) sqlite3_bind_int64(st, bi++, *scope.since_queued_at);
+        if (before) {
+            sqlite3_bind_int64(st, bi++, before->primary);   // queued_at
+            sqlite3_bind_int64(st, bi++, before->primary);   // queued_at (tie)
+            sqlite3_bind_int64(st, bi++, before->secondary); // job_id
+        }
+        sqlite3_bind_int(st, bi++, limit);
+
+        Page<JobLite> page{};
+        page.items.reserve(static_cast<size_t>(limit));
+        while (true) {
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                JobLite r{};
+                r.job_id = sqlite3_column_int64(st, 0);
+                r.job_set_id = sqlite3_column_int64(st, 1);
+                r.program_kind = sqlite3_column_int(st, 2);
+                r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+                r.priority = sqlite3_column_int(st, 4);
+                r.queued_at = sqlite3_column_int64(st, 5);
+                page.items.push_back(std::move(r));
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                auto err = DbResult<Page<JobLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+                sqlite3_finalize(st);
+                return err;
+            }
+        }
+
+        sqlite3_finalize(st);
+
+        if ((int)page.items.size() == limit) {
+            const auto& last = page.items.back();
+            page.next = KeysetCursor{ last.queued_at, last.job_id };
+        }
+        // prev not computed for DESC scans; UI can pass `before` from the first item of previous page if needed.
+
+        return DbResult<Page<JobLite>>::Ok(std::move(page));
+    }
+
+    std::future<DbResult<Page<JobLite>>> JobsRepo::ListRecentAsync(
+        const JobsListScope& scope,
+        std::optional<KeysetCursor> before,
+        int limit,
+        RetryPolicy rp)
+    {
+        if (limit <= 0) limit = 50;
+        return DBService::instance().submit_res<Page<JobLite>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_recent_jobs(e, scope, before, limit); });
+    }
+    static DbResult<Page<JobLite>> impl_list_recent_jobs_after(
+        DbEnv& env,
+        const JobsListScope& scope,
+        const std::optional<KeysetCursor>& after,
+        int limit)
+    {
+        auto* db = env.handle();
+        std::ostringstream sql;
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at FROM jobs ";
+
+        bool hasWhere = false;
+        auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
+
+        if (scope.job_set_id) { add_and(true); sql << "job_set_id=?"; }
+        if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
+        if (!scope.states.empty()) {
+            add_and(true);
+            sql << "state IN(";
+            for (size_t i = 0; i < scope.states.size(); ++i) { if (i) sql << ','; sql << '?'; }
+            sql << ")";
+        }
+        if (scope.since_queued_at) { add_and(true); sql << "queued_at >= ?"; }
+        if (after) {
+            add_and(true);
+            sql << "(queued_at > ? OR (queued_at = ? AND job_id > ?))";
+        }
+
+        sql << " ORDER BY queued_at DESC, job_id DESC LIMIT ?";
+
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &st, nullptr) != SQLITE_OK) {
+            int rc = sqlite3_errcode(db);
+            return DbResult<Page<JobLite>>::Err({ map_sqlite_err(rc), rc, sqlite3_errmsg(db) });
+        }
+
+        int bind = 1;
+        if (scope.job_set_id) sqlite3_bind_int64(st, bind++, *scope.job_set_id);
+        if (scope.program_kind) sqlite3_bind_int(st, bind++, *scope.program_kind);
+        for (auto& s : scope.states) sqlite3_bind_text(st, bind++, s.c_str(), -1, SQLITE_TRANSIENT);
+        if (scope.since_queued_at) sqlite3_bind_int64(st, bind++, *scope.since_queued_at);
+        if (after) {
+            sqlite3_bind_int64(st, bind++, after->primary);
+            sqlite3_bind_int64(st, bind++, after->primary);
+            sqlite3_bind_int64(st, bind++, after->secondary);
+        }
+        sqlite3_bind_int(st, bind++, limit);
+
+        Page<JobLite> page{};
+        for (;;) {
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                JobLite r{};
+                r.job_id = sqlite3_column_int64(st, 0);
+                r.job_set_id = sqlite3_column_int64(st, 1);
+                r.program_kind = sqlite3_column_int(st, 2);
+                r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+                r.priority = sqlite3_column_int(st, 4);
+                r.queued_at = sqlite3_column_int64(st, 5);
+                page.items.push_back(std::move(r));
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                int ec = sqlite3_errcode(db);
+                sqlite3_finalize(st);
+                return DbResult<Page<JobLite>>::Err({ map_sqlite_err(ec), ec, sqlite3_errmsg(db) });
+            }
+        }
+        sqlite3_finalize(st);
+
+        if (!page.items.empty()) {
+            const auto& first = page.items.front();
+            const auto& last = page.items.back();
+            page.prev = KeysetCursor{ first.queued_at, first.job_id };
+            page.next = KeysetCursor{ last.queued_at,  last.job_id };
+        }
+        return DbResult<Page<JobLite>>::Ok(std::move(page));
+    }
+
+    std::future<DbResult<Page<JobLite>>> JobsRepo::ListRecentAfterAsync(
+        const JobsListScope& scope,
+        std::optional<KeysetCursor> after,
+        int limit,
+        RetryPolicy rp)
+    {
+        if (limit <= 0) limit = 50;
+        return DBService::instance().submit_res<Page<JobLite>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_recent_jobs_after(e, scope, after, limit); });
     }
 
 } // namespace simcore::db

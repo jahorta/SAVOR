@@ -52,9 +52,9 @@ namespace simcore {
         uint32_t combos_sampler_tries = 8;   // attempts to construct a triple that sums to target
     };
 
-    static std::vector<simcore::GCInputFrame> build_grid_main(int n, int minv, int maxv);
-    static std::vector<simcore::GCInputFrame> build_grid_cstick(int n, int minv, int maxv);
-    static std::vector<simcore::GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top);
+    std::vector<simcore::GCInputFrame> build_grid_main(int n, int minv, int maxv);
+    std::vector<simcore::GCInputFrame> build_grid_cstick(int n, int minv, int maxv);
+    std::vector<simcore::GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top);
 
     struct ComboSampleSet {
         int32_t target_delta = 0;

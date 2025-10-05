@@ -273,4 +273,41 @@ namespace simcore {
         }
     }
 
+    void WorkerCoordinator::RegisterWorker(int64_t worker_id, const std::string& host, int pid, const std::string& boot_uuid) {
+        worker_status_.RegisterWorker(worker_id, host, pid, boot_uuid);
+    }
+    void WorkerCoordinator::UnregisterWorker(int64_t worker_id) {
+        worker_status_.UnregisterWorker(worker_id);
+    }
+
+    void WorkerCoordinator::UpdateState(int64_t worker_id, WorkerStateKind s) {
+        worker_status_.UpdateState(worker_id, s);
+    }
+    void WorkerCoordinator::SetCurrentJob(int64_t worker_id, std::optional<int64_t> job_id, std::optional<int> program_kind) {
+        worker_status_.SetCurrentJob(worker_id, job_id, program_kind);
+    }
+    void WorkerCoordinator::SetLeaseInfo(int64_t worker_id, std::optional<int64_t> lease_expires_at, int attempts, int max_attempts) {
+        worker_status_.SetLeaseInfo(worker_id, lease_expires_at, attempts, max_attempts);
+    }
+
+    void WorkerCoordinator::RecordEvent(int64_t worker_id, WorkerEventKind k, std::optional<int64_t> job_id, const std::string& note) {
+        worker_status_.RecordEvent(worker_id, k, job_id, note);
+    }
+    void WorkerCoordinator::RecordHeartbeat(int64_t worker_id) {
+        worker_status_.RecordHeartbeat(worker_id);
+    }
+    void WorkerCoordinator::RecordDbSuccess(int64_t worker_id) {
+        worker_status_.RecordDbSuccess(worker_id);
+    }
+    void WorkerCoordinator::RecordError(int64_t worker_id, const std::string& err) {
+        worker_status_.RecordError(worker_id, err);
+    }
+
+    std::vector<WorkerSnapshot> WorkerCoordinator::GetClusterSnapshot() const {
+        return worker_status_.GetClusterSnapshot();
+    }
+    void WorkerCoordinator::SetEventBufferCapacity(size_t n) {
+        worker_status_.SetEventBufferCapacity(n);
+    }
+
 } // namespace simcore

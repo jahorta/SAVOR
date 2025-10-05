@@ -105,11 +105,11 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
     if (!jr.ok) return DbResult<simcore::PSJob>::Err(jr.error);
     const int64_t run_id = jr.value.program_ref_id;
 
-    if (!jr.value.vm_kv.has_value()) return;
+    if (!jr.value.vm_kv.has_value()) return DbResult<simcore::PSJob>::Err({ .kind = DbErrorKind::NotFound, .message = "job has no vm_kv" });
 
     IniDoc ini = IniDoc::parse(jr.value.vm_kv.value());
     if (!ini.has_section(BlueprintIni::SECTION_NAME) || !ini.has_section(JobIni::SECTION_NAME))
-        return;
+        return DbResult<simcore::PSJob>::Err({ .kind = DbErrorKind::NotFound, .message = "job vm_kv does not have all necessary sections for blueprint or job" });
 
     BlueprintIni bp_ini = BlueprintIni::from_section(ini);
     
@@ -311,7 +311,7 @@ DbResult<std::optional<int64_t>> ExplorerRunDBCodec::get_required_savestate_id(i
     // jobs -> job_set
     auto j = JobsRepo::Get(job_id);
     if (!j.ok) return DbResult<std::optional<int64_t>>::Err(j.error);
-    if (!j.value.vm_kv.has_value()) return;
+    if (!j.value.vm_kv.has_value()) return DbResult<std::optional<int64_t>>::Err({ .kind = DbErrorKind::NotFound, .message = "job has no vm_kv" });
 
     JobIni jb_ini = JobIni::from_section(IniDoc::parse(j.value.vm_kv.value()));
 

@@ -244,7 +244,7 @@ namespace simcore {
         return v;
     }
 
-    static std::vector<GCInputFrame> build_grid_main(int n, int minv, int maxv) {
+    std::vector<GCInputFrame> build_grid_main(int n, int minv, int maxv) {
         auto xs = linspace_u8(n, minv, maxv);
         auto ys = linspace_u8(n, minv, maxv);
         std::vector<GCInputFrame> out; out.reserve((size_t)n * (size_t)n);
@@ -252,7 +252,7 @@ namespace simcore {
         return out;
     }
 
-    static std::vector<GCInputFrame> build_grid_cstick(int n, int minv, int maxv) {
+    std::vector<GCInputFrame> build_grid_cstick(int n, int minv, int maxv) {
         auto xs = linspace_u8(n, minv, maxv);
         auto ys = linspace_u8(n, minv, maxv);
         std::vector<GCInputFrame> out; out.reserve((size_t)n * (size_t)n);
@@ -260,7 +260,7 @@ namespace simcore {
         return out;
     }
 
-    static std::vector<GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top) {
+    std::vector<GCInputFrame> build_grid_trig(int n, int minv, int maxv, bool cap_top) {
         auto ls = linspace_u8(n, minv, maxv);
         auto rs = linspace_u8(n, minv, maxv);
         if (cap_top) {

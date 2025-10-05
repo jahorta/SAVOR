@@ -2,6 +2,8 @@
 #pragma once
 #include "IProgramDBCodec.h"
 #include "../../Runner/Script/PhaseScriptVM.h"
+#include "../../Utils/IniDoc.h"
+#include "../../Runner/IPC/Wire.h"
 
 using simcore::TriggerCtx;
 

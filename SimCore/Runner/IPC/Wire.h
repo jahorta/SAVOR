@@ -24,10 +24,11 @@ namespace simcore {
         WERR_LoadGame = 3,
         WERR_VMInit = 4,
         WERR_WriteReady = 6,
+
         // Job errors
-        WERR_NoProgramLoaded = 5,
-        WERR_DecodePayloadFail = 7,
-        WERR_EncodePayloadFail = 8,
+        WERR_NoProgramLoaded = 16,
+        WERR_DecodePayloadFail = 17,
+        WERR_EncodePayloadFail = 18,
         // Unknown
         WERR_UnknownError = 0xffffffff
     };

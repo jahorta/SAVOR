@@ -99,14 +99,62 @@ namespace simcore {
             // After stop(), no more tasks can be submitted until start().
             void stop();
 
-            // Submit a task returning T. The provided callable will run on the
-            // service's worker thread. A future is returned immediately.
-            template <typename T>
-            std::future<T> submit(OpType type, Priority prio, std::function<T(DbEnv&)> fn);
+
+
+            // ===== template bodies =====
 
             template <typename T>
-            std::future<DbResult<T>> submit_res(OpType type, Priority prio, RetryPolicy policy,
-                std::function<DbResult<T>(DbEnv&)> fn);
+            inline std::future<T> submit(OpType type, Priority prio, std::function<T(DbEnv&)> fn) {
+                auto task = std::make_shared<Task<T>>(type, prio, std::move(fn));
+                auto fut = task->promise.get_future();
+                {
+                    std::unique_lock<std::mutex> lock(m_mutex);
+                    m_notFull.wait(lock, [this]() { return m_running && m_size < m_maxQueue; });
+                    record_submit(prio);
+                    m_queues[static_cast<std::size_t>(prio)].push(QueuedTask{ task, std::chrono::steady_clock::now(), prio });
+                    ++m_size;
+                    m_stats.peak_queue = (std::max)(m_stats.peak_queue, static_cast<uint64_t>(m_size));
+                }
+                m_hasTask.notify_one();
+                return fut;
+            }
+
+            template <typename T>
+            inline std::future<DbResult<T>> submit_res(OpType type, Priority prio, RetryPolicy policy,
+                std::function<DbResult<T>(DbEnv&)> fn) {
+                // Wrap DbResult<T> into a Task<DbResult<T>>
+                auto exec = [this, type, policy, fn = std::move(fn)](DbEnv& env) -> DbResult<T> {
+                    int attempt = 0;
+                    auto backoff = policy.initial_backoff;
+                    while (true) {
+                        ++attempt;
+                        DbResult<T> r;
+                        try {
+                            r = fn(env);
+                        }
+                        catch (...) {
+                            // Map unknown exceptions to Unknown error
+                            r = DbResult<T>::Err(DbError{ DbErrorKind::Unknown, 0, "exception" });
+                        }
+                        if (r.ok) return r;
+
+                        const auto k = r.error.kind;
+                        const bool retryable = (k == DbErrorKind::Busy || k == DbErrorKind::Locked);
+                        if (!policy.enabled() || !retryable || attempt >= policy.max_attempts) {
+                            return r;
+                        }
+                        {
+                            std::lock_guard<std::mutex> g(m_metrics_mtx);
+                            ++m_stats.retried;
+                        }
+                        std::this_thread::sleep_for(backoff);
+                        auto next_us = static_cast<int64_t>(backoff.count() * policy.backoff_multiplier);
+                        if (next_us > policy.max_backoff.count()) next_us = policy.max_backoff.count();
+                        backoff = std::chrono::milliseconds(next_us);
+                    }
+                    };
+                return submit<DbResult<T>>(type, prio, std::move(exec));
+            }
 
 
             Stats stats() const;

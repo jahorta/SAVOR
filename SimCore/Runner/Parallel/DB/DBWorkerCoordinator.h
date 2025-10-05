@@ -13,6 +13,7 @@
 #include "../../../DB/Scheduling/JobsRepo.h"
 #include "../../../DB/Scheduling/JobEventsRepo.h"
 #include "DBWorkerCoordinatorConfig.h"
+#include "../WorkerStatusRegistry.h"
 
 namespace simcore {
 
@@ -25,6 +26,21 @@ namespace simcore {
         void stop();
 
         PRStatus snapshot_status() const;
+
+        void RegisterWorker(int64_t worker_id, const std::string& host, int pid, const std::string& boot_uuid);
+        void UnregisterWorker(int64_t worker_id);
+
+        void UpdateState(int64_t worker_id, WorkerStateKind s);
+        void SetCurrentJob(int64_t worker_id, std::optional<int64_t> job_id, std::optional<int> program_kind);
+        void SetLeaseInfo(int64_t worker_id, std::optional<int64_t> lease_expires_at, int attempts, int max_attempts);
+
+        void RecordEvent(int64_t worker_id, WorkerEventKind k, std::optional<int64_t> job_id = std::nullopt, const std::string& note = {});
+        void RecordHeartbeat(int64_t worker_id);
+        void RecordDbSuccess(int64_t worker_id);
+        void RecordError(int64_t worker_id, const std::string& err);
+
+        std::vector<WorkerSnapshot> GetClusterSnapshot() const;
+        void SetEventBufferCapacity(size_t n);
 
     private:
         struct Slot {
@@ -69,6 +85,8 @@ namespace simcore {
 
         std::atomic<uint64_t> epoch_{ 1 };
         std::string claim_token_;
+
+        WorkerStatusRegistry worker_status_;
     };
 
 } // namespace simcore

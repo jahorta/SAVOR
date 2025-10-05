@@ -8,7 +8,7 @@
 
 using simcore::TriggerCtx;
 
-namespace db::codec::tas {
+namespace simcore::db::codec::tas {
     struct BlueprintIni {
         static constexpr const char* SECTION_NAME = "TasMovie.Blueprint";
 
@@ -45,6 +45,11 @@ namespace db::codec::tas {
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
             doc.set(SECTION_NAME, "auto_queue_seeds", auto_queue_seeds ? "1" : "0");
+        }
+        inline std::string to_string() const {
+            IniDoc doc;
+            set_section(doc);
+            return doc.to_string_sorted();
         }
     };
 

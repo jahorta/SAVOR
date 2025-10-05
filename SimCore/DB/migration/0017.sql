@@ -5,6 +5,8 @@ BEGIN;
 DELETE FROM schema_version;
 INSERT INTO schema_version(version, applied_at) VALUES (17, strftime('%s','now'));
 
+DROP VIEW IF EXISTS v_winners_progress;
+
 -- Battle run groups
 CREATE TABLE IF NOT EXISTS battle_run_groups (
   group_id     INTEGER PRIMARY KEY,

@@ -1,6 +1,7 @@
 // SimCore/DB/JobSetsRepo.cpp
 #include "JobSetsRepo.h"
 #include <sqlite3.h>
+#include <sstream>
 
 namespace simcore::db {
 
@@ -140,6 +141,91 @@ namespace simcore::db {
     std::future<DbResult<void>> JobSetsRepo::SetExpectedTotalAsync(int64_t job_set_id, std::optional<int64_t> expected_total, RetryPolicy rp) {
         return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
             [=](DbEnv& e) { return impl_set_expected_total(e, job_set_id, expected_total); });
+    }
+
+    static DbResult<Page<JobSetLite>> impl_list_recent_job_sets(
+        DbEnv& env,
+        const JobSetsListScope& scope,
+        const std::optional<KeysetCursor>& before,
+        int limit)
+    {
+        auto* db = env.handle();
+        std::ostringstream sql;
+        sql << "SELECT job_set_id, program_kind, "
+            "CASE WHEN purpose IS NULL THEN '' ELSE purpose END AS purpose, "
+            "CASE WHEN created_at IS NULL THEN 0  ELSE created_at END AS created_at "
+            "FROM job_sets ";
+
+        bool hasWhere = false;
+        auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
+
+        if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
+        if (scope.min_job_set_id) { add_and(true); sql << "job_set_id >= ?"; }
+        if (before) {
+            add_and(true);
+            sql << "(created_at < ? OR (created_at = ? AND job_set_id < ?))";
+        }
+
+        sql << " ORDER BY created_at DESC, job_set_id DESC LIMIT ?";
+
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<Page<JobSetLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+        }
+
+        int bi = 1;
+        if (scope.program_kind) sqlite3_bind_int(st, bi++, *scope.program_kind);
+        if (scope.min_job_set_id) sqlite3_bind_int64(st, bi++, *scope.min_job_set_id);
+        if (before) {
+            sqlite3_bind_int64(st, bi++, before->primary);   // created_at
+            sqlite3_bind_int64(st, bi++, before->primary);   // created_at (tie)
+            sqlite3_bind_int64(st, bi++, before->secondary); // job_set_id
+        }
+        sqlite3_bind_int(st, bi++, limit);
+
+        Page<JobSetLite> page{};
+        page.items.reserve(static_cast<size_t>(limit));
+        while (true) {
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                JobSetLite r{};
+                r.job_set_id = sqlite3_column_int64(st, 0);
+                r.program_kind = sqlite3_column_int(st, 1);
+                if (sqlite3_column_type(st, 2) != SQLITE_NULL)
+                    r.purpose = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 2)));
+                else
+                    r.purpose.clear();
+                r.created_at = sqlite3_column_int64(st, 3);
+                page.items.push_back(std::move(r));
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                auto err = DbResult<Page<JobSetLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+                sqlite3_finalize(st);
+                return err;
+            }
+        }
+
+        sqlite3_finalize(st);
+
+        if ((int)page.items.size() == limit) {
+            const auto& last = page.items.back();
+            page.next = KeysetCursor{ last.created_at, last.job_set_id };
+        }
+        return DbResult<Page<JobSetLite>>::Ok(std::move(page));
+    }
+
+    std::future<DbResult<Page<JobSetLite>>> JobSetsRepo::ListRecentAsync(
+        const JobSetsListScope& scope,
+        std::optional<KeysetCursor> before,
+        int limit,
+        RetryPolicy rp)
+    {
+        if (limit <= 0) limit = 50;
+        return DBService::instance().submit_res<Page<JobSetLite>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_recent_job_sets(e, scope, before, limit); });
     }
 
 } // namespace simcore::db

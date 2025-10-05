@@ -2,6 +2,9 @@
 
 BEGIN;
 
+DELETE FROM schema_version;
+INSERT INTO schema_version(version, applied_at) VALUES (5, strftime('%s','now'));
+
 CREATE TABLE IF NOT EXISTS tas_movie (
     id INTEGER PRIMARY KEY,
     base_file_id INTEGER NOT NULL REFERENCES object_ref(id),

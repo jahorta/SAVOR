@@ -1,7 +1,7 @@
 #include "DBTasMovieCoordinator.h"
 #include "../../DB/Scheduling/JobSetsRepo.h"
 #include "../../DB/ProgramDB/TasMovieDBCodec.h"
-#include "../../IniDoc.h"
+#include "../../Utils/IniDoc.h"
 #include "../../Runner/IPC/Wire.h"
 
 using simcore::db::DbResult;
@@ -18,22 +18,19 @@ namespace simcore {
             return DbResult<int64_t>::Ok(js.value);
         }
 
-        DbResult<void> TasMovieCoordinator::QueueJobs(int64_t job_set_id, const std::vector<TasJobSpec>& jobs)
+        DbResult<void> TasMovieCoordinator::QueueJob(int64_t job_set_id, const TasJobSpec& job)
         {
             TasMovieDBCodec codec;
-            for (auto& j : jobs) {
-                IniKV kv;
-                kv.add("dtm_path", j.dtm_path);
-                kv.add("save_dir", j.save_dir);
-                if (j.new_rtc) kv.add("new_rtc", std::to_string(j.new_rtc));
-                if (j.priority) kv.add("priority", std::to_string(j.priority));
-                if (j.run_ms) kv.add("run_ms", std::to_string(j.run_ms));
-                if (j.vi_stall_ms) kv.add("vi_stall_ms", std::to_string(j.vi_stall_ms));
-                if (!j.progress_enable) kv.add("progress_enable", "0");
-                if (j.save_on_fail) kv.add("save_on_fail", "1");
-                auto enq = codec.encode_job_into_db(job_set_id, kv.to_string_sorted());
-                if (!enq.ok) return DbResult<void>::Err(enq.error);
-            }
+            db::codec::tas::BlueprintIni ini;
+            ini.base_dtm_artifact_id = job.base_dtm_id;
+            ini.rtc_low = job.new_rtc_min;
+            ini.rtc_high = job.new_rtc_max;
+            ini.priority = job.priority;
+            ini.run_ms = job.run_ms;
+            ini.vi_stall_ms = job.vi_stall_ms;
+            ini.progress_enable = job.progress_enable;
+            auto enq = codec.encode_job_into_db(job_set_id, ini.to_string());
+            if (!enq.ok) return DbResult<void>::Err(enq.error);
             return DbResult<void>::Ok();
         }
 

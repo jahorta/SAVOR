@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS battle_contexts (
   artifact_id  INTEGER NOT NULL,
   created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   savestate_id INTEGER NOT NULL,
-  bc_version   INTEGER NOT NULL,
+  bc_version   INTEGER NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_battle_context_job ON battle_contexts(job_id);

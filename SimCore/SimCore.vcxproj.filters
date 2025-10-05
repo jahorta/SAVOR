@@ -94,6 +94,9 @@
     <Filter Include="Phases\DBCoordinators">
       <UniqueIdentifier>{e34a113b-44a9-4ccf-b4c5-33b97bdd407c}</UniqueIdentifier>
     </Filter>
+    <Filter Include="DB\Querying">
+      <UniqueIdentifier>{3f74286f-bc0e-497f-9b87-4bbacf2387f4}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -454,6 +457,39 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Utils\Hex.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\WorkerStatusRegistry.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\WorkerTelemetry.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\DataService.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\JobEventListDTO.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\JobListDTO.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\JobSetListDTO.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\PagedQuery.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\Paging.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\SnapshotMailbox.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\ProgramKindsRepo.h">
+      <Filter>DB\PhaseRepos</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\ModulePath.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>
@@ -1310,7 +1346,7 @@
     <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp">
       <Filter>Phases\DBCoordinators</Filter>
     </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBTasMoveCoordinator.cpp">
+    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp">
       <Filter>Phases\DBCoordinators</Filter>
     </ClCompile>
     <ClCompile Include="DB\DBCore\ConfigRepo.cpp">
@@ -1330,6 +1366,18 @@
     </ClCompile>
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp">
       <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Querying\DataService.cpp">
+      <Filter>DB\Querying</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\ProgramKindsRepo.cpp">
+      <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1399,6 +1447,9 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0020.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0021.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>

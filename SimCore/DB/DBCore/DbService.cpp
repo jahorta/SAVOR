@@ -15,6 +15,7 @@
 #include "ConfigRepo.h"
 #include "ObjectStore.h"
 #include "../../Utils/Log.h"
+#include "../../Utils/ModulePath.h"
 
 namespace simcore {
     namespace db {
@@ -57,7 +58,7 @@ namespace simcore {
             bool expected = false;
             if (!m_running.compare_exchange_strong(expected, true)) return;
 
-            std::filesystem::path db_root = std::filesystem::current_path() / "DB";
+            std::filesystem::path db_root = utils::getExecutablePath() / ".db";
             std::string db_path = (db_root / "SoaSimDB.sqlite3").string();
             m_env = DbEnv::open(db_path);
 
@@ -195,60 +196,9 @@ namespace simcore {
             }
         }
 
-        // ===== template bodies =====
 
-        template <typename T>
-        std::future<T> DBService::submit(OpType type, Priority prio, std::function<T(DbEnv&)> fn) {
-            auto task = std::make_shared<Task<T>>(type, prio, std::move(fn));
-            auto fut = task->promise.get_future();
-            {
-                std::unique_lock<std::mutex> lock(m_mutex);
-                m_notFull.wait(lock, [this]() { return m_running && m_size < m_maxQueue; });
-                record_submit(prio);
-                m_queues[static_cast<std::size_t>(prio)].push(QueuedTask{ task, std::chrono::steady_clock::now(), prio });
-                ++m_size;
-                m_stats.peak_queue = (std::max)(m_stats.peak_queue, static_cast<uint64_t>(m_size));
-            }
-            m_hasTask.notify_one();
-            return fut;
-        }
 
-        template <typename T>
-        std::future<DbResult<T>> DBService::submit_res(OpType type, Priority prio, RetryPolicy policy,
-            std::function<DbResult<T>(DbEnv&)> fn) {
-            // Wrap DbResult<T> into a Task<DbResult<T>>
-            auto exec = [this, type, policy, fn = std::move(fn)](DbEnv& env) -> DbResult<T> {
-                int attempt = 0;
-                auto backoff = policy.initial_backoff;
-                while (true) {
-                    ++attempt;
-                    DbResult<T> r;
-                    try {
-                        r = fn(env);
-                    }
-                    catch (...) {
-                        // Map unknown exceptions to Unknown error
-                        r = DbResult<T>::Err(DbError{ DbErrorKind::Unknown, 0, "exception" });
-                    }
-                    if (r.ok) return r;
 
-                    const auto k = r.error.kind;
-                    const bool retryable = (k == DbErrorKind::Busy || k == DbErrorKind::Locked);
-                    if (!policy.enabled() || !retryable || attempt >= policy.max_attempts) {
-                        return r;
-                    }
-                    {
-                        std::lock_guard<std::mutex> g(m_metrics_mtx);
-                        ++m_stats.retried;
-                    }
-                    std::this_thread::sleep_for(backoff);
-                    auto next_us = static_cast<int64_t>(backoff.count() * policy.backoff_multiplier);
-                    if (next_us > policy.max_backoff.count()) next_us = policy.max_backoff.count();
-                    backoff = std::chrono::milliseconds(next_us);
-                }
-                };
-            return submit<DbResult<T>>(type, prio, std::move(exec));
-        }
 
     } // namespace db
 } // namespace simcore

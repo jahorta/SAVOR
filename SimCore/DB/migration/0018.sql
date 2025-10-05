@@ -5,6 +5,10 @@ BEGIN;
 DELETE FROM schema_version;
 INSERT INTO schema_version(version, applied_at) VALUES (18, strftime('%s','now'));
 
+-- Make room for rebuild: old v_lineage references explorer_run (with delta_id)
+DROP VIEW IF EXISTS v_lineage;
+
+
 -- Rebuild explorer_run to add (group_id already exists from 0017), plan_id, delta_seed_id
 CREATE TABLE explorer_run__new (
   id            INTEGER PRIMARY KEY,
@@ -37,6 +41,16 @@ FROM explorer_run;
 
 DROP TABLE explorer_run;
 ALTER TABLE explorer_run__new RENAME TO explorer_run;
+
+-- Recreate lineage view against the new schema (delta_seed_id)
+CREATE VIEW IF NOT EXISTS v_lineage AS
+SELECT r.id AS run_id,
+       r.probe_id,
+       r.delta_seed_id,
+       r.settings_id,
+       p.savestate_id
+FROM explorer_run r
+JOIN seed_probe p ON r.probe_id = p.id;
 
 -- One-run-per-(group,settings,plan,delta) uniqueness within groups
 CREATE UNIQUE INDEX IF NOT EXISTS ux_explorer_run_group_settings_plan_delta

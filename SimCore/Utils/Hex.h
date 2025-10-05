@@ -1,3 +1,4 @@
+#pragma once
 
 static inline std::string bytes_to_hex(const void* data, size_t size) {
     static const char* HEX = "0123456789abcdef";

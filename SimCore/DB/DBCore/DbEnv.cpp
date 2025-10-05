@@ -2,6 +2,7 @@
 
 #include <sqlite3.h>
 #include <stdexcept>
+#include <filesystem>
 
 namespace simcore::db {
 
@@ -10,10 +11,20 @@ namespace simcore::db {
         }
 
         std::unique_ptr<DbEnv> DbEnv::open(const std::string& path) {
+            try {
+                std::filesystem::path p(path);
+                if (p.has_parent_path() && !p.parent_path().empty())
+                    std::filesystem::create_directories(p.parent_path());
+            }
+            catch (...) {
+                throw std::runtime_error("Failed to create parent directory for DB: " + path);
+            }
+
             sqlite3* db = nullptr;
             if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) {
                 throw std::runtime_error("Failed to open database");
             }
+            
             // Pragmas
             sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
             sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nullptr, nullptr, nullptr);

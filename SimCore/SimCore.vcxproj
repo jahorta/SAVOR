@@ -264,7 +264,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\ProgramDB\IProgramDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\SeedProbeDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h" />
+    <ClInclude Include="DB\ProgramKindsRepo.h" />
     <ClInclude Include="DB\Query.h" />
+    <ClInclude Include="DB\Querying\DataService.h" />
+    <ClInclude Include="DB\Querying\JobEventListDTO.h" />
+    <ClInclude Include="DB\Querying\JobListDTO.h" />
+    <ClInclude Include="DB\Querying\JobSetListDTO.h" />
+    <ClInclude Include="DB\Querying\PagedQuery.h" />
+    <ClInclude Include="DB\Querying\Paging.h" />
+    <ClInclude Include="DB\Querying\SnapshotMailbox.h" />
     <ClInclude Include="DB\SavestateRepo.h" />
     <ClInclude Include="DB\Scheduling\JobEventsRepo.h" />
     <ClInclude Include="DB\Scheduling\JobSetsRepo.h" />
@@ -303,6 +311,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
     <ClInclude Include="Runner\Parallel\TSQueue.h" />
+    <ClInclude Include="Runner\Parallel\WorkerStatusRegistry.h" />
+    <ClInclude Include="Runner\Parallel\WorkerTelemetry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyRegistry.h" />
@@ -320,6 +330,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Utils\IniDoc.h" />
     <ClInclude Include="Utils\IniKV.h" />
     <ClInclude Include="Utils\Log.h" />
+    <ClInclude Include="Utils\ModulePath.h" />
     <ClInclude Include="Utils\MultiProgress.h" />
     <ClInclude Include="Utils\ProgressBar.h" />
     <ClInclude Include="Utils\SafeEnv.h" />
@@ -1171,6 +1182,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Boot\Boot.cpp" />
     <ClCompile Include="Core\Branching\Branching.cpp" />
     <ClCompile Include="Core\Config\SimConfig.cpp" />
@@ -1213,7 +1227,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\SeedProbeDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp" />
+    <ClCompile Include="DB\ProgramKindsRepo.cpp" />
     <ClCompile Include="DB\Query.cpp" />
+    <ClCompile Include="DB\Querying\DataService.cpp" />
     <ClCompile Include="DB\SavestateRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp" />
@@ -1227,7 +1243,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\Coordinators\DBBattleContextCoordinator.cpp" />
     <ClCompile Include="Phases\Coordinators\DBBattleRunnerCoordinator.cpp" />
     <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBTasMoveCoordinator.cpp" />
+    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp" />
     <ClCompile Include="Phases\FirstBattleGenerator.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
@@ -1241,6 +1257,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\ParallelPhaseScriptRunner.cpp" />
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
+    <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
@@ -1273,6 +1290,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <None Include="DB\migration\0018.sql" />
     <None Include="DB\migration\0019.sql" />
     <None Include="DB\migration\0020.sql" />
+    <None Include="DB\migration\0021.sql" />
     <None Include="DB\update_generated_migrations_command.txt" />
     <None Include="Interesting SOA Addresses.md">
       <SubType>

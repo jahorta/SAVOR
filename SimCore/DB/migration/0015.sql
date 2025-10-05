@@ -1,6 +1,9 @@
 -- 0015.sql: Config table (single-row, column-oriented)
 BEGIN;
 
+DELETE FROM schema_version;
+INSERT INTO schema_version(version, applied_at) VALUES (15, strftime('%s','now'));
+
 CREATE TABLE IF NOT EXISTS config (
   config_id INTEGER PRIMARY KEY CHECK(config_id=1),
 

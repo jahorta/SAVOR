@@ -3,6 +3,8 @@
 #include "../DBCore/DbResult.h"
 #include "../DBCore/DbRetryPolicy.h"
 #include "../DBCore/DbService.h"
+#include "../Querying/Paging.h"
+#include "../Querying/JobListDTO.h"
 #include <string>
 #include <optional>
 #include <cstdint>
@@ -45,6 +47,17 @@ namespace simcore::db {
         static std::future<DbResult<void>> RequeueExpiredLeasesAsync(RetryPolicy rp = {});
         static std::future<DbResult<std::vector<JobRow>>> GetByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
         static std::future<DbResult<std::vector<JobRow>>> GetQueuedByJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
+        static std::future<DbResult<Page<JobLite>>> ListRecentAsync(
+            const JobsListScope& scope,
+            std::optional<KeysetCursor> before, // keyset for DESC order
+            int limit,
+            RetryPolicy rp = {}
+        );
+        static std::future<DbResult<Page<JobLite>>> ListRecentAfterAsync(
+            const JobsListScope& scope,
+            std::optional<KeysetCursor> after,
+            int limit,
+            RetryPolicy rp = {});
 
 
         // Blocking methods
@@ -69,6 +82,13 @@ namespace simcore::db {
         }
         static inline DbResult<std::vector<JobRow>> GetQueuedByJobSet(int64_t job_set_id) {
             return GetQueuedByJobSetAsync(job_set_id).get();
+        }
+        static inline DbResult<Page<JobLite>> ListRecentAfter(
+            const JobsListScope& scope,
+            std::optional<KeysetCursor> after,
+            int limit,
+            RetryPolicy rp = {}) {
+            return ListRecentAfterAsync(scope, after, limit, rp).get();
         }
     };
 

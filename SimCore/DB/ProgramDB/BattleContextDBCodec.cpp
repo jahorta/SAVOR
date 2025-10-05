@@ -25,7 +25,8 @@ static constexpr int kPK = PK_BattleContextProbe;
 static constexpr int kPV = 1;
 
 DbResult<int64_t> BattleContextDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
-    IniKV kv = IniKV::parse(blueprint_ini);
+    IniKV kv = IniDoc::parse(blueprint_ini).section_kv(IniDoc::GLOBAL);
+
     const uint32_t run_ms = kv.get_u32("run_ms", 0);
     const uint32_t vi_stall_ms = kv.get_u32("vi_stall_ms", 0);
     const int priority = (int)kv.get_i64("priority", 0);
@@ -61,12 +62,12 @@ DbResult<simcore::PSJob> BattleContextDBCodec::decode_job_from_db(int64_t job_id
     if (!jr.ok) return DbResult<simcore::PSJob>::Err(jr.error);
 
     IniKV kv;
-    if (jr.value.vm_kv) kv = IniKV::parse(*jr.value.vm_kv);
+    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
     else {
         auto enq = simcore::db::JobEventsRepo::GetFirstPayload(job_id, "ENQUEUED");
         if (!enq.ok) return DbResult<simcore::PSJob>::Err(enq.error);
         if (!enq.value) return DbResult<simcore::PSJob>::Err({ simcore::db::DbErrorKind::NotFound, 0, "missing ENQUEUED payload" });
-        kv = IniKV::parse(*enq.value);
+        kv = IniDoc::parse(*enq.value).section_kv(IniDoc::GLOBAL);
     }
 
     const uint32_t run_ms = kv.get_u32("run_ms", 0);
@@ -137,7 +138,7 @@ simcore::db::DbResult<std::optional<int64_t>> BattleContextDBCodec::get_required
     if (!jr.ok) return DbResult<std::optional<int64_t>>::Err(jr.error);
 
     IniKV kv;
-    if (jr.value.vm_kv) kv = IniKV::parse(*jr.value.vm_kv);
+    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
 
     return simcore::db::DbResult<std::optional<int64_t>>::Ok(std::optional<int64_t>(kv.get_i64("savestate_id", 0)));
 }
@@ -147,7 +148,7 @@ simcore::db::DbResult<simcore::PSInit> BattleContextDBCodec::build_psinit_for_jo
     if (!jr.ok) return DbResult<simcore::PSInit>::Err(jr.error);
 
     IniKV kv;
-    if (jr.value.vm_kv) kv = IniKV::parse(*jr.value.vm_kv);
+    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
 
     auto temp_savestate_path = ObjectStore::MaterializeToTemp(kv.get_i64("savestate_id"));
     if (!temp_savestate_path.ok) return simcore::db::DbResult<simcore::PSInit>::Err(temp_savestate_path.error);
@@ -183,7 +184,7 @@ simcore::db::DbResult<std::string> BattleContextDBCodec::build_results_ini_from_
 }
 
 DbResult<void> BattleContextDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) {
-    IniKV args = IniKV::parse(action_args_ini);
+    IniKV args = IniDoc::parse(action_args_ini).section_kv(IniDoc::GLOBAL);
     int64_t target_js = args.get_i64("target_job_set_id", 0);
     if (!target_js) {
         std::optional<std::string> purpose = args.get("purpose");

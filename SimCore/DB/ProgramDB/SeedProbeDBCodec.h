@@ -6,6 +6,7 @@
 #include "../DBCore/DbResult.h"
 #include "../../Runner/Script/PhaseScriptVM.h"
 #include "../../Utils/IniDoc.h"
+#include "../../Runner/IPC/Wire.h"
 
 using simcore::TriggerCtx;
 
@@ -143,13 +144,13 @@ namespace db::codec::seedprobe {
         uint32_t     vi_start{ 0 };
         uint32_t     vi_end{ 0 };
 
-        uint64_t rng_seed{ 0 };
+        uint32_t rng_seed{ 0 };
 
         static inline ResultsIni from_section(const IniDoc& doc) {
             ResultsIni results{};
             if (!doc.has_section(SECTION_NAME)) return results;
             IniKV section = doc.section_kv(SECTION_NAME);
-            results.rng_seed = section.get_i64("rng_seed", 0);
+            results.rng_seed = section.get_u32("rng_seed", 0);
             results.w_err = section.get_u32("w_err", (uint32_t)simcore::WERR_UnknownError);
             results.dw_err = section.get_u32("dw_err", (uint32_t)simcore::RunToBpOutcome::Unknown);
             results.vi_start = section.get_u32("vi_start", -1);

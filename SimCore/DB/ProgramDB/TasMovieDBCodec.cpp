@@ -22,10 +22,10 @@ static constexpr int PK = simcore::PK_TasMovie;
 static constexpr int PV = 1;
 
 using simcore::TriggerCtx;
-using db::codec::tas::BlueprintIni;
-using db::codec::tas::JobIni;
-using db::codec::tas::ResultsIni;
-using db::codec::tas::CleanupIni;
+using simcore::db::codec::tas::BlueprintIni;
+using simcore::db::codec::tas::JobIni;
+using simcore::db::codec::tas::ResultsIni;
+using simcore::db::codec::tas::CleanupIni;
 
 static std::string kv_get(const std::vector<std::pair<std::string, std::string>>& kv, const char* k, const std::string& dflt = {}) {
     for (auto& p : kv) if (p.first == k) return p.second;
