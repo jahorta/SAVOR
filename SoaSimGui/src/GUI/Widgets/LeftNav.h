@@ -4,7 +4,11 @@
 namespace ImGui { void BeginDisabled(bool disabled); void EndDisabled(); }
 
 enum class GuiPane {
-    JobSets, Jobs, Workers, Artifacts, Programs, Triggers, ExplorerRuns, SeedProbe, TasMovies
+    JobBuilder, Workers, JobSets, Jobs, BattleRunSettings, Artifacts, Triggers, ExplorerRuns, SeedProbe, TasMovies
+};
+
+static inline const char* items[] = {
+        "Programs","Workers","Job Sets","Jobs","BattleRunSettings","Artifacts","Triggers","Explorer Runs","Seed Probe","TAS Movies"
 };
 
 struct GuiLeftNav {

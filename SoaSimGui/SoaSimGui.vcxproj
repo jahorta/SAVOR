@@ -144,11 +144,23 @@
   <ItemGroup>
     <ClInclude Include="framework.h" />
     <ClInclude Include="resources\Resource.h" />
+    <ClInclude Include="src\Components\FutureQueue.h" />
     <ClInclude Include="src\Components\GuiHeartbeatPoller.h" />
+    <ClInclude Include="src\Components\ToastBus.h" />
     <ClInclude Include="src\GUI\App.h" />
+    <ClInclude Include="src\GUI\Panes\BattleRunSettingsPane.h" />
+    <ClInclude Include="src\GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="src\GUI\Panes\JobsPane.h" />
+    <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h" />
+    <ClInclude Include="src\GUI\Popups\IdPicker.h" />
+    <ClInclude Include="src\GUI\Popups\IdRepoAdapters.h" />
+    <ClInclude Include="src\GUI\Popups\PredicateSpecPopup.h" />
+    <ClInclude Include="src\GUI\Popups\UiActionPresetPopup.h" />
+    <ClInclude Include="src\GUI\Widgets\BattleContextTree.h" />
+    <ClInclude Include="src\GUI\Widgets\JobDetailDrawer.h" />
     <ClInclude Include="src\GUI\Widgets\LeftNav.h" />
     <ClInclude Include="src\GUI\Widgets\StatusBar.h" />
+    <ClInclude Include="src\GUI\Widgets\TreeView.h" />
     <ClInclude Include="src\Models\GuiLayoutStore.h" />
     <ClInclude Include="src\Models\GuiStatus.h" />
     <ClInclude Include="src\SoaSimGui.h" />
@@ -170,11 +182,21 @@
     <Image Include="resources\SoaSimGui.ico" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Components\FutureQueue.cpp" />
     <ClCompile Include="src\Components\GuiHeartbeatPoller.cpp" />
+    <ClCompile Include="src\Components\ToastBus.cpp" />
     <ClCompile Include="src\GUI\App.cpp" />
+    <ClCompile Include="src\GUI\Panes\BattleRunSettingsPane.cpp" />
+    <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp" />
+    <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp" />
+    <ClCompile Include="src\GUI\Popups\IdPicker.cpp" />
+    <ClCompile Include="src\GUI\Popups\IdRepoAdapters.cpp" />
+    <ClCompile Include="src\GUI\Widgets\BattleContextTree.cpp" />
+    <ClCompile Include="src\GUI\Widgets\JobDetailDrawer.cpp" />
     <ClCompile Include="src\GUI\Widgets\LeftNav.cpp" />
     <ClCompile Include="src\GUI\Widgets\StatusBar.cpp" />
+    <ClCompile Include="src\GUI\Widgets\TreeView.cpp" />
     <ClCompile Include="src\Models\GuiLayoutStore.cpp" />
     <ClCompile Include="src\SoaSimGui.cpp" />
     <ClCompile Include="third_party\imgui\backends\imgui_impl_dx11.cpp">
@@ -195,6 +217,7 @@
     <ClCompile Include="third_party\imgui\imgui_widgets.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="third_party\imgui\misc\cpp\imgui_stdlib.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

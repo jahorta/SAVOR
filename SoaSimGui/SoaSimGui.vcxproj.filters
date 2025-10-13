@@ -31,6 +31,9 @@
     <Filter Include="GUI\Panes">
       <UniqueIdentifier>{c019ac0d-6aa1-42e2-a07a-6cbbf8184afa}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Popups">
+      <UniqueIdentifier>{ed3a8f65-7c8c-47da-ac3f-858d94023765}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -65,6 +68,42 @@
     </ClInclude>
     <ClInclude Include="src\GUI\Panes\JobsPane.h">
       <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\JobDetailDrawer.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Panes\CoordinatorPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\ToastBus.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\FutureQueue.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Popups\IdPicker.h">
+      <Filter>GUI\Popups</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Popups\IdRepoAdapters.h">
+      <Filter>GUI\Popups</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Panes\BattleRunSettingsPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\BattleContextTree.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\TreeView.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Popups\PredicateSpecPopup.h">
+      <Filter>GUI\Popups</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Popups\UiActionPresetPopup.h">
+      <Filter>GUI\Popups</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -119,6 +158,39 @@
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp">
       <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Widgets\JobDetailDrawer.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Components\ToastBus.cpp">
+      <Filter>Components</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Components\FutureQueue.cpp">
+      <Filter>Components</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\misc\cpp\imgui_stdlib.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Popups\IdPicker.cpp">
+      <Filter>GUI\Popups</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Popups\IdRepoAdapters.cpp">
+      <Filter>GUI\Popups</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\BattleRunSettingsPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Widgets\BattleContextTree.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Widgets\TreeView.cpp">
+      <Filter>GUI\Widgets</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

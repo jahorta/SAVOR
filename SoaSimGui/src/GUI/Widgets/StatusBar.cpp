@@ -1,6 +1,8 @@
 #include "StatusBar.h"
 #include "imgui.h"
 #include "Utils/Time.h"
+#include "../App.h"   
+#include "../../Components/ToastBus.h"
 
 static void Pill(const char* text, ImU32 col_bg, ImU32 col_fg) {
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
@@ -10,6 +12,8 @@ static void Pill(const char* text, ImU32 col_bg, ImU32 col_fg) {
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
 }
+
+extern GuiApp g_app;
 
 void GuiStatusBar::Draw(const GuiStatusModel& model) {
     auto s = model.get();
@@ -40,6 +44,37 @@ void GuiStatusBar::Draw(const GuiStatusModel& model) {
     else {
         ImGui::Text("Last refresh: --");
     }
+
+    ImGui::SameLine();
+    if (g_app.CoordinatorRunning()) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Coordinator: %zu", g_app.CoordinatorActiveWorkers());
+        Pill(buf, IM_COL32(64, 128, 255, 200), IM_COL32(255, 255, 255, 255));
+    }
+    else {
+        Pill("Coordinator: Stopped", IM_COL32(128, 128, 128, 180), IM_COL32(255, 255, 255, 255));
+    }
+
+    auto toasts = GuiToastBus::SnapshotActive();
+    if (!toasts.empty()) {
+        ImGui::SameLine();
+        for (auto& t : toasts) {
+            ImU32 bg = 0, fg = IM_COL32(255, 255, 255, 255);
+            switch (t.severity) {
+            case GuiToastSeverity::Info:    bg = IM_COL32(64, 128, 255, 180); break;
+            case GuiToastSeverity::Success: bg = IM_COL32(64, 160, 80, 180);  break;
+            case GuiToastSeverity::Warn:    bg = IM_COL32(200, 160, 64, 220); break;
+            case GuiToastSeverity::Error:   bg = IM_COL32(200, 80, 80, 220);  break;
+            }
+            ImGui::SameLine();
+            char buf[512];
+            if (t.count > 1) snprintf(buf, sizeof(buf), "%s ×%d", t.message.c_str(), t.count);
+            else             snprintf(buf, sizeof(buf), "%s", t.message.c_str());
+            Pill(buf, bg, fg);
+            if (t.details && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.details->c_str());
+        }
+    }
+
     ImGui::End();
 
     ImGui::PopStyleVar();

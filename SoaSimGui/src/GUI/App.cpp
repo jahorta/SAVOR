@@ -3,6 +3,9 @@
 #include "Widgets/LeftNav.h"
 #include "Widgets/StatusBar.h"
 #include "Panes/JobsPane.h"
+#include "Panes/CoordinatorPane.h"
+#include "Panes/PhaseBuilderPane.h"
+#include "Panes/BattleRunSettingsPane.h"
 
 #include "../Models/GuiLayoutStore.h"
 
@@ -15,6 +18,7 @@
 #include "backends/imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <fstream>
+#include "../Components/FutureQueue.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -43,8 +47,11 @@ bool GuiApp::createDeviceSwapchain(HWND hwnd) {
 
     ID3D11Texture2D* back = nullptr;
     swap_->GetBuffer(0, IID_PPV_ARGS(&back));
-    device_->CreateRenderTargetView(back, nullptr, &rtv_);
-    if (back) back->Release();
+    
+    if (back){
+        device_->CreateRenderTargetView(back, nullptr, &rtv_);
+        back->Release();
+    }
     return true;
 }
 
@@ -65,6 +72,15 @@ bool GuiApp::Init(HWND hwnd) {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
+    io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f);
+
+    // Merge a symbols font that covers U+23F0..U+25FF (pause, stop, play, etc.)
+    ImFontConfig merge{};
+    merge.MergeMode = true;
+    static const ImWchar shapes_range[] = { 0x23F0, 0x25FF, 0 };
+    io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/seguisym.ttf", 16.0f, &merge, shapes_range);
+
+
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(device_, ctx_);
@@ -83,12 +99,16 @@ bool GuiApp::Init(HWND hwnd) {
     // Start DB + heartbeat
     simcore::db::DBService::instance().start();
     hb_.start(&status_);
+    FutureQueue::Start();
 
     return true;
 }
 
 void GuiApp::Shutdown() {
     hb_.stop();
+    simcore::db::DBService::instance().stop();
+    StopCoordinator();
+    FutureQueue::Stop();
 
     // Save layout
     {
@@ -138,19 +158,31 @@ void GuiApp::RenderFrame() {
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + kLeftNavW, vp->Pos.y + kTopBarH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x - kLeftNavW, vp->Size.y - kTopBarH - status_h), ImGuiCond_Always);
     ImGui::SetNextWindowViewport(vp->ID);
+
     bool pane_swap = GuiLeftNav::GetActive() != s_last_pane;
     s_last_pane = GuiLeftNav::GetActive();
+
     switch (GuiLeftNav::GetActive()) {
     case GuiPane::Jobs:
         if (pane_swap) JobsPane::OnActivated();
         JobsPane::Draw();
         break;
+    case GuiPane::Workers:
+        CoordinatorPane::Draw();
+        break;
+    case GuiPane::JobBuilder:
+        PhaseBuilderPane::Draw();
+        break;
+    case GuiPane::BattleRunSettings:
+        brs_pane.Draw();
+        break;
     default:
-        ImGui::Begin("Content", nullptr, ImGuiWindowFlags_NoMove);
+        ImGui::Begin("Content");
         ImGui::TextUnformatted("Coming soon");
         ImGui::End();
         break;
     }
+
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vp->Size.y - status_h), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, status_h), ImGuiCond_Always);
@@ -177,10 +209,70 @@ void GuiApp::OnResize(UINT w, UINT h) {
     swap_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
     ID3D11Texture2D* back = nullptr;
     swap_->GetBuffer(0, IID_PPV_ARGS(&back));
-    device_->CreateRenderTargetView(back, nullptr, &rtv_);
-    if (back) back->Release();
+    if (back){
+        device_->CreateRenderTargetView(back, nullptr, &rtv_);
+        back->Release();
+    }
 }
 
 bool GuiApp::HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+}
+
+bool GuiApp::CoordinatorRunning() const { return wc_ != nullptr; }
+void GuiApp::StartCoordinator(WorkerCoordinatorConfig& cfg) {
+    if (wc_) return;
+    wc_ = std::make_unique<simcore::WorkerCoordinator>(cfg);
+    desired_workers_ = cfg.max_concurrent_processes;
+    wc_->start();
+    paused_ = cfg.start_to_paused;
+}
+void GuiApp::StopCoordinator() {
+    if (!wc_) return;
+    wc_->stop();
+    wc_.reset();
+    desired_workers_ = 0;
+    paused_ = false;
+}
+void GuiApp::SetCoordinatorTargetWorkers(size_t n) {
+    desired_workers_ = n > 0 ? n : 1;
+    if (wc_) wc_->set_target_workers(desired_workers_);
+}
+void GuiApp::SetCoordinatorPaused(bool p) {
+    paused_ = p;
+    if (wc_) wc_->set_paused(paused_);
+}
+bool   GuiApp::CoordinatorPaused() const { return paused_; }
+size_t GuiApp::CoordinatorTargetWorkers() const { return desired_workers_; }
+size_t GuiApp::CoordinatorActiveWorkers() const {
+    if (!wc_) return 0;
+    return wc_->GetClusterSnapshot().size();
+}
+void   GuiApp::SetCoordinatorEventBufferCapacity(size_t n) {
+    if (wc_) wc_->SetEventBufferCapacity(n);
+}
+std::vector<WorkerSnapshot> GuiApp::CoordinatorSnapshot() const {
+    if (!wc_) return {};
+    return wc_->GetClusterSnapshot();
+}
+
+std::string GuiApp::GuiCfgGet(const std::string& section, const std::string& key, const std::string& def) const {
+    // Assumes IniDoc supports get(section,key,default)
+    return g_doc.get(section, key, def);
+}
+
+void GuiApp::GuiCfgSet(const std::string& section, const std::string& key, const std::string& val) {
+    // Assumes IniDoc supports set(section,key,value)
+    g_doc.set(section, key, val);
+}
+
+int GuiApp::GuiCfgGetInt(const std::string& section, const std::string& key, int def) const {
+    std::string s = g_doc.get(section, key, "");
+    if (s.empty()) return def;
+    try { return std::stoi(s); }
+    catch (...) { return def; }
+}
+
+void GuiApp::GuiCfgSetInt(const std::string& section, const std::string& key, int v) {
+    g_doc.set(section, key, std::to_string(v));
 }

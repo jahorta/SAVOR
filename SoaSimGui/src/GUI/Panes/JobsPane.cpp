@@ -1,4 +1,7 @@
 #include "JobsPane.h"
+
+#include "../Widgets/JobDetailDrawer.h"
+
 #include "DB/Querying/JobListDTO.h"
 #include "DB/Querying/Paging.h"
 #include "DB/Querying/DataService.h"
@@ -34,6 +37,10 @@ namespace {
         float pending_scroll_ratio = 0.0f;
 
         bool pk_loaded = false;
+
+        std::optional<JobLite> open_job;
+        bool drawer_open = false;
+        int drawer_tab = 0;
     };
 
     static State& S() { static State s; return s; }
@@ -278,10 +285,11 @@ void JobsPane::Draw() {
                 ImGui::PushID((int)r.job_id);
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                bool sel = (s.selected_job_id == r.job_id);
-                if (ImGui::Selectable(std::to_string(r.job_id).c_str(), sel, ImGuiSelectableFlags_SpanAllColumns)) {
-                    s.selected_job_id = r.job_id;
-                }
+                ImVec2 row_top = ImGui::GetCursorScreenPos();
+
+                
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(std::to_string(r.job_id).c_str());
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(std::to_string(r.job_set_id).c_str());
                 ImGui::TableSetColumnIndex(2);
@@ -301,7 +309,23 @@ void JobsPane::Draw() {
                 {
                     auto it = s.progress_summary.find(r.job_id);
                     if (it != s.progress_summary.end()) ImGui::TextUnformatted(it->second.c_str());
-                    else ImGui::TextUnformatted("…");
+                    else ImGui::TextUnformatted("...");
+                }
+                bool sel = (s.selected_job_id == r.job_id);
+                ImGui::SetCursorScreenPos(row_top);
+                const float row_h = ImGui::GetTextLineHeightWithSpacing();
+                if (ImGui::Selectable("##Row",
+                    sel,
+                    ImGuiSelectableFlags_SpanAllColumns |
+                    ImGuiSelectableFlags_AllowDoubleClick |
+                    ImGuiSelectableFlags_AllowItemOverlap,
+                    ImVec2(0, row_h))) {
+                    s.selected_job_id = r.job_id;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        s.open_job = r;
+                        s.drawer_open = true;
+                        s.drawer_tab = 0;
+                    }
                 }
                 ImGui::PopID();
             }
@@ -309,6 +333,13 @@ void JobsPane::Draw() {
         ImGui::EndTable();
     }
     ImGui::EndChild();
+
+    if (s.drawer_open && s.open_job.has_value()) {
+        if (!JobDetailsDrawer::Draw(*s.open_job, s.drawer_tab, s.program_names)) {
+            s.drawer_open = false;
+            s.open_job.reset();
+        }
+    }
 
     ImGui::End();
 }
