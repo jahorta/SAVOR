@@ -34,18 +34,6 @@ namespace simcore {
             return DbResult<std::string>::Err({ DbErrorKind::InvalidArgument, 0, "ObjectStore roots not initialized" });
         }
 
-        static inline std::string sha256_of_file(const std::string& path) {
-            std::ifstream f(path, std::ios::binary | std::ios::ate);
-            if (!f) throw std::runtime_error("open failed: " + path);
-            const std::streamsize size = f.tellg();
-            if (size < 0) throw std::runtime_error("tellg failed: " + path);
-            std::string buf;
-            buf.resize(static_cast<size_t>(size));
-            f.seekg(0, std::ios::beg);
-            if (!f.read(buf.data(), size)) throw std::runtime_error("read failed: " + path);
-            return hash::sha256(buf.data(), buf.size());
-        }
-
         static inline DbResult<ObjectRefRow> upsert_object_ref(DbEnv& env,
             const std::string& sha, Compression comp, int64_t size, const std::string& filename) {
             auto* db = env.handle();
