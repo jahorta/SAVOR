@@ -324,5 +324,68 @@ namespace simcore {
                 });
         }
 
-    } // namespace db
+        static inline void bind_like(sqlite3_stmt* st, int idx, const std::string& s) {
+            std::string pat = "%" + s + "%";
+            sqlite3_bind_text(st, idx, pat.c_str(), -1, SQLITE_TRANSIENT);
+        }
+
+        static inline DbResult<Page<ObjectRefLite>> Impl_List(DbEnv& env, const PagedQuery<>& q, const std::string& search, const std::string& ext) {
+            sqlite3* db = env.handle();
+            std::string sql =
+                "SELECT id,sha256,compression,size,COALESCE(filename,''),created_at "
+                "FROM object_ref ";
+            std::string where;
+            if (!search.empty()) { where += (where.empty() ? "WHERE " : " AND "); where += "filename LIKE ? "; }
+            if (!ext.empty()) { where += (where.empty() ? "WHERE " : " AND "); where += "filename LIKE ? "; }
+            std::string order = " ORDER BY created_at DESC, id DESC ";
+            std::string keyset;
+            KeysetCursor cur{};
+            bool has_cursor = false;
+            if (q.before) { has_cursor = true; cur = *q.before; keyset = " AND (created_at < ? OR (created_at = ? AND id < ?)) "; }
+            if (q.after) { has_cursor = true; cur = *q.after;  keyset = " AND (created_at > ? OR (created_at = ? AND id > ?)) "; order = " ORDER BY created_at ASC, id ASC "; }
+            if (has_cursor) where += (where.empty() ? "WHERE " : " AND "), where += keyset.substr(5);
+            sql += where + order + " LIMIT ?;";
+            sqlite3_stmt* st{};
+            if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<Page<ObjectRefLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+
+            int b = 1;
+            if (!search.empty()) bind_like(st, b++, search);
+            if (!ext.empty()) {
+                std::string pat = "%" + ext;
+                sqlite3_bind_text(st, b++, pat.c_str(), -1, SQLITE_TRANSIENT);
+            }
+            if (has_cursor) { sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.secondary); }
+            sqlite3_bind_int(st, b++, q.limit);
+
+            Page<ObjectRefLite> page{};
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                ObjectRefLite r{};
+                r.id = sqlite3_column_int64(st, 0);
+                r.sha256 = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+                r.compression = static_cast<Compression>(sqlite3_column_int(st, 2));
+                r.size = sqlite3_column_int64(st, 3);
+                r.filename = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+                r.created_at = sqlite3_column_int64(st, 5);
+                page.items.push_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+
+            if (q.after && !page.items.empty()) { std::reverse(page.items.begin(), page.items.end()); }
+
+            if (!page.items.empty()) {
+                const auto& first = page.items.front();
+                const auto& last = page.items.back();
+                page.prev = KeysetCursor{ first.created_at, (int64_t)first.id };
+                page.next = KeysetCursor{ last.created_at,  (int64_t)last.id };
+            }
+            return DbResult<Page<ObjectRefLite>>::Ok(std::move(page));
+        }
+
+        std::future<DbResult<Page<ObjectRefLite>>> ObjectRefList::ListPagedAsync(const PagedQuery<>& q, const std::string& search, const std::string& ext_filter, RetryPolicy rp) {
+            return DBService::instance().submit_res<Page<ObjectRefLite>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_List(e, q, search, ext_filter); });
+        }
+
+} // namespace db
 } // namespace simcore

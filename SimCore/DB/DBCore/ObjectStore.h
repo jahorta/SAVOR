@@ -2,6 +2,10 @@
 #include "DbResult.h"
 #include "DbRetryPolicy.h"
 #include "DbService.h"
+#include "../Querying/IdRepoListDTO.h"
+#include "../Querying/Paging.h"
+#include "../Querying/PagedQuery.h"
+#include "Common.h"
 #include <string>
 #include <optional>
 #include <cstdint>
@@ -18,6 +22,21 @@ namespace simcore {
             uint64_t size{};
             std::string filename{};
             std::string temp_path; // new: absolute path to verified temp materialization (nullable in DB)
+            int64_t created_at{};
+        };
+
+        struct ObjectRefListScope {};
+
+        struct ObjectRefList {
+            static std::future<DbResult<Page<ObjectRefLite>>> ListPagedAsync(
+                const PagedQuery<>& q,
+                const std::string& search,
+                const std::string& ext_filter,
+                RetryPolicy rp = {}
+            );
+            static inline DbResult<Page<ObjectRefLite>> ListPaged(const PagedQuery<>& q, const std::string& s, const std::string& ext) {
+                return ListPagedAsync(q, s, ext).get();
+            }
         };
 
         class ObjectStore {
