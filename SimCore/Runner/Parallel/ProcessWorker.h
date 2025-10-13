@@ -19,7 +19,7 @@ namespace simcore {
 		size_t worker_id{ 0 };
 		std::string exe_path;     // path to SimCoreSandbox.exe
 		std::string iso_path;
-		std::string qt_base_dir;
+		std::string dolphin_base_dir;
 		std::string user_dir;     // unique per worker
 		bool vm_control{ false };
 	};
@@ -118,6 +118,10 @@ namespace simcore {
 		void NotifyHeartbeat();
 		void NotifyDbSuccess();
 		void NotifyError(const std::string& err);
+
+		int64_t GetPid() const {
+			return (int64_t)dwProcessId;
+		}
 
 	private:
 		void reader_thread();

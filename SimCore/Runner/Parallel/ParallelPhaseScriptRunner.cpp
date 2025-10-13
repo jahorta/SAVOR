@@ -94,8 +94,8 @@ namespace simcore {
             ps.worker_id = w->id;
             ps.exe_path = workerExe;
             ps.iso_path = boot.iso_path;
-            ps.qt_base_dir = boot.boot.dolphin_qt_base.string();
-            ps.user_dir = (boot.boot.user_dir / ("runner-" + std::to_string(w->id)) / "User").string();
+            ps.dolphin_base_dir = boot.boot.dolphin_qt_base.string();
+            ps.user_dir = (boot.boot.user_dir / ("worker-" + std::to_string(w->id)) / "User").string();
             ps.vm_control = true;
 
             if (!w->proc->start(ps, out_.get())) {

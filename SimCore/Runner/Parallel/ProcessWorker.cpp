@@ -35,7 +35,7 @@ namespace simcore {
             << " --worker"
             << " --id " << p.worker_id
             << " --iso \"" << p.iso_path << "\""
-            << " --qtbase \"" << p.qt_base_dir << "\""
+            << " --qtbase \"" << p.dolphin_base_dir << "\""
             << " --userdir \"" << p.user_dir << "\""
             << " --vmctrl";
 
@@ -321,54 +321,54 @@ namespace simcore {
 
     void ProcessWorker::NotifyDraining() {
         if (!observer_) return;
-        observer_->UpdateState(/*id*/ (int64_t)0, WorkerStateKind::Draining);
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::Draining);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Draining);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Draining);
     }
 
     void ProcessWorker::NotifyExiting() {
         if (!observer_) return;
-        observer_->UpdateState(/*id*/ (int64_t)0, WorkerStateKind::Exiting);
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::Exiting);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Exiting);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Exiting);
     }
 
     void ProcessWorker::NotifyJobClaimed(int64_t job_id, int program_kind) {
         if (!observer_) return;
-        observer_->SetCurrentJob(/*id*/ (int64_t)0, job_id, program_kind);
-        observer_->UpdateState(/*id*/ (int64_t)0, WorkerStateKind::Leasing);
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::Claimed, job_id);
+        observer_->SetCurrentJob((int64_t)id_, job_id, program_kind);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Leasing);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Claimed, job_id);
     }
 
     void ProcessWorker::NotifyMarkRunning(int64_t job_id) {
         if (!observer_) return;
-        observer_->UpdateState(/*id*/ (int64_t)0, WorkerStateKind::Running);
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::MarkRunning, job_id);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Running);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::MarkRunning, job_id);
     }
 
     void ProcessWorker::NotifyLeaseRenewed(int64_t job_id, int64_t lease_expires_at, int attempts, int max_attempts) {
         if (!observer_) return;
-        observer_->SetLeaseInfo(/*id*/ (int64_t)0, lease_expires_at, attempts, max_attempts);
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::RenewLease, job_id);
-        observer_->RecordHeartbeat(/*id*/ (int64_t)0);
-        observer_->RecordDbSuccess(/*id*/ (int64_t)0);
+        observer_->SetLeaseInfo((int64_t)id_, lease_expires_at, attempts, max_attempts);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::RenewLease, job_id);
+        observer_->RecordHeartbeat((int64_t)id_);
+        observer_->RecordDbSuccess((int64_t)id_);
     }
 
     void ProcessWorker::NotifyJobFinished(int64_t job_id) {
         if (!observer_) return;
-        observer_->RecordEvent(/*id*/ (int64_t)0, WorkerEventKind::Finished, job_id);
-        observer_->SetCurrentJob(/*id*/ (int64_t)0, std::nullopt, std::nullopt);
-        observer_->UpdateState(/*id*/ (int64_t)0, WorkerStateKind::Idle);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Finished, job_id);
+        observer_->SetCurrentJob((int64_t)id_, std::nullopt, std::nullopt);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Idle);
     }
 
     void ProcessWorker::NotifyHeartbeat() {
-        if (observer_) observer_->RecordHeartbeat(/*id*/ (int64_t)0);
+        if (observer_) observer_->RecordHeartbeat((int64_t)id_);
     }
 
     void ProcessWorker::NotifyDbSuccess() {
-        if (observer_) observer_->RecordDbSuccess(/*id*/ (int64_t)0);
+        if (observer_) observer_->RecordDbSuccess((int64_t)id_);
     }
 
     void ProcessWorker::NotifyError(const std::string& err) {
         if (!observer_) return;
-        observer_->RecordError(/*id*/ (int64_t)0, err);
+        observer_->RecordError((int64_t)id_, err);
     }
 } // namespace simcore

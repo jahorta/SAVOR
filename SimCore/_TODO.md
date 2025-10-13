@@ -200,32 +200,32 @@ Surface repo errors to a non-blocking toast/log area.
 Append a JobEvents entry and reflect new state in list.
 Done when: You can requeue/cancel/bump and see state changes propagate.
 
-6) Job Events stream
-Goal: Live tail for diagnostics.
-Events table with “Follow tail” toggle; filter by job_id or job_set_id.
-Keyset paging backward in time; client clipper for visible rows.
-Done when: You can tail events for a running job set and scrub history without UI stalls.
-
-7) WorkerStatus pane
-Goal: Fleet awareness.
-Workers table: id, host, pid, current program_kind, job_id, last heartbeat, lease renew lag.
-Draining toggle (if supported) and “nudge requeue stale leases” action (guarded).
-Done when: You can spot unhealthy workers at a glance and toggle draining.
-
-8) Phase Builder (MVP)
+6) Phase Builder (MVP)
 Goal: Create job sets from codec blueprints.
 Render form from BlueprintIni schema (types, defaults, validation).
 Preview panel: counts, artifacts to create, estimated payload size.
 Submit: write job_set + jobs via repos; link to JobSet overview.
 Done when: You can author and enqueue a basic job set end-to-end.
 
-9) Auto-queue next phase
+7) Auto-queue next phase
 Goal: Chain phases without manual steps.
 Add auto_queue_next checkbox in the builder.
 If enabled: render Next Phase subform using the next codec’s schema (hard-coded map is fine).
 On submit: create a trigger (ALL_FINISHED) with action_args carrying next_phase_kind and serialized next_phase_blueprint (+ fingerprint).
 Add a minimal Triggers admin pane (list, inspect, delete).
 Done when: Completing a job set auto-creates the next job set with the expected args.
+
+8) Job Events stream
+Goal: Live tail for diagnostics.
+Events table with “Follow tail” toggle; filter by job_id or job_set_id.
+Keyset paging backward in time; client clipper for visible rows.
+Done when: You can tail events for a running job set and scrub history without UI stalls.
+
+9) WorkerStatus pane
+Goal: Fleet awareness.
+Workers table: id, host, pid, current program_kind, job_id, last heartbeat, lease renew lag.
+Draining toggle (if supported) and “nudge requeue stale leases” action (guarded).
+Done when: You can spot unhealthy workers at a glance and toggle draining.
 
 10) Catalog panes (lightweight)
 Goal: Domain browsing with cross-links.
