@@ -31,7 +31,7 @@ TEST(Dolphin, PollsPad_UsesIsolatedUserDir)
 
     std::string err;
     ASSERT_TRUE(dw.SetUserDirectory(userdir)) << "Error setting User base dir";
-    ASSERT_TRUE(dw.SetRequiredDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
+    ASSERT_TRUE(dw.SetDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
     ASSERT_TRUE(dw.SyncFromDolphinQtBase(false, &err)) << "Error syncing Qt base dir: " << err;
 
     const char* iso = std::getenv("SOASIM_TEST_ISO");

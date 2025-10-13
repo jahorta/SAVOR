@@ -40,7 +40,7 @@ bool load_appstate_ini(AppState& s, std::filesystem::path ini_path)
         auto val = strip_quotes(trim(t.substr(eq + 1)));
 
         if (key == "iso_path")            s.iso_path = val;
-        else if (key == "qt_base_dir")    s.qt_base_dir = val;
+        else if (key == "dolphin_base_dir")    s.dolphin_base_dir = val;
         else if (key == "default_savestate") s.default_savestate = val;
         else if (key == "workers") {
             try { s.workers = std::clamp<size_t>(std::stoul(val), 1u, 128u); }
@@ -61,7 +61,7 @@ bool save_appstate_ini(const AppState& s, std::filesystem::path ini_path)
     out << "# SOASim Sandbox config\n";
     out << "[paths]\n";
     put_kv(out, "iso_path", s.iso_path);
-    put_kv(out, "qt_base_dir", s.qt_base_dir);
+    put_kv(out, "dolphin_base_dir", s.dolphin_base_dir);
     put_kv(out, "default_savestate", s.default_savestate);
     out << "\n[run]\n";
     out << "workers=" << s.workers << "\n";

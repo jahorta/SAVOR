@@ -16,6 +16,6 @@ TEST(SimConfig, RoundTrip) {
     ASSERT_TRUE(out.has_value()) << err;
     EXPECT_EQ(std::filesystem::weakly_canonical(in.user_dir),
         std::filesystem::weakly_canonical(out->user_dir));
-    EXPECT_EQ(std::filesystem::weakly_canonical(in.qt_base_dir),
-        std::filesystem::weakly_canonical(out->qt_base_dir));
+    EXPECT_EQ(std::filesystem::weakly_canonical(in.dolphin_base_dir),
+        std::filesystem::weakly_canonical(out->dolphin_base_dir));
 }

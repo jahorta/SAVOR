@@ -570,7 +570,7 @@ namespace sandbox {
         {
             std::cout << "\n--- BattleExplorer ---\n";
             std::cout << "ISO:              " << (app.iso_path.empty() ? "<unset>" : app.iso_path) << "\n";
-            std::cout << "Dolphin base:     " << (app.qt_base_dir.empty() ? "<unset>" : app.qt_base_dir) << "\n";
+            std::cout << "Dolphin base:     " << (app.dolphin_base_dir.empty() ? "<unset>" : app.dolphin_base_dir) << "\n";
             std::cout << "Workers:          " << app.workers << "\n";
             std::cout << "Savestate:        " << (savestate_path.empty() ? "<unset>" : savestate_path) << "\n";
             std::cout << "\n"
@@ -613,7 +613,7 @@ namespace sandbox {
         {
             std::cout << "\n--- BattleExplorer ---\n";
             std::cout << "ISO:              " << (app.iso_path.empty() ? "<unset>" : app.iso_path) << "\n";
-            std::cout << "Dolphin base:     " << (app.qt_base_dir.empty() ? "<unset>" : app.qt_base_dir) << "\n";
+            std::cout << "Dolphin base:     " << (app.dolphin_base_dir.empty() ? "<unset>" : app.dolphin_base_dir) << "\n";
             std::cout << "Workers:          " << app.workers << "\n";
             std::cout << "Savestate:        " << (savestate_path.empty() ? "<unset>" : savestate_path) << "\n";
             std::cout << "\n"
