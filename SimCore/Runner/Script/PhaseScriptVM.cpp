@@ -684,7 +684,7 @@ namespace simcore {
             }
 
         }
-
+        R.ctx = ctx;
         R.ok = true;
         return R;
     }
