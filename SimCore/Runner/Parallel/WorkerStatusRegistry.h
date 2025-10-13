@@ -25,6 +25,7 @@ public:
     void RecordDbSuccess(int64_t worker_id);
     void RecordError(int64_t worker_id, const std::string& err);
 
+    WorkerStateKind GetWorkerState(int64_t worker_id) { return workers_[worker_id].state; }
     std::vector<WorkerSnapshot> GetClusterSnapshot() const;
 
 private:

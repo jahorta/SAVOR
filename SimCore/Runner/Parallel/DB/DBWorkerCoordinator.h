@@ -42,6 +42,11 @@ namespace simcore {
         std::vector<WorkerSnapshot> GetClusterSnapshot() const;
         void SetEventBufferCapacity(size_t n);
 
+        // dynamic controls
+        void set_target_workers(size_t n);
+        void set_paused(bool p);
+        bool is_paused() const { return paused_.load(); }
+
     private:
         struct Slot {
             size_t id{ 0 };
@@ -87,6 +92,9 @@ namespace simcore {
         std::string claim_token_;
 
         WorkerStatusRegistry worker_status_;
+
+        std::atomic<size_t> desired_workers_{ 0 };
+        std::atomic<bool>   paused_{ false };
     };
 
 } // namespace simcore

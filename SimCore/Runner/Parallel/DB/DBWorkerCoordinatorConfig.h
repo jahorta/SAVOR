@@ -11,10 +11,11 @@ struct WorkerCoordinatorConfig {
     uint32_t controller_sleep_ms{ 5 };
     uint32_t lease_seconds{ 30 };
     double   aging_factor{ 0.0 };
-    uint32_t idle_keepalive_ms{ 5000 };
+    uint32_t idle_keepalive_ms{ 300000 };
+    bool start_to_paused{ true };
 
     std::string worker_exe_path;
     std::string iso_path;
-    std::string qt_base_dir;
-    std::string user_dir_root;
+    std::string dolphin_base_dir;
+    std::string worker_dir_root;
 };
