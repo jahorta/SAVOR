@@ -109,14 +109,14 @@ namespace simcore {
                     if (key == "user_dir") {
                         cfg.user_dir = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
                     }
-                    else if (key == "qt_base_dir") {
-                        cfg.qt_base_dir = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    else if (key == "dolphin_base_dir") {
+                        cfg.dolphin_base_dir = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
                     }
                 }
             }
 
-            if (cfg.user_dir.empty() || cfg.qt_base_dir.empty()) {
-                if (error_out) *error_out = "Config missing required keys (user_dir, qt_base_dir).";
+            if (cfg.user_dir.empty() || cfg.dolphin_base_dir.empty()) {
+                if (error_out) *error_out = "Config missing required keys (user_dir, dolphin_base_dir).";
                 return std::nullopt;
             }
             return cfg;
@@ -130,7 +130,7 @@ namespace simcore {
                     "# Stores paths for your isolated User folder and a DolphinQt *portable* base.\n"
                     "\n[Paths]\n";
                 os << "user_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg.user_dir)) << "\n";
-                os << "qt_base_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg.qt_base_dir)) << "\n";
+                os << "dolphin_base_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg.dolphin_base_dir)) << "\n";
 
                 std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
                 if (!ofs) { if (error_out) *error_out = "Could not open for write: " + ToUtf8(path); return false; }

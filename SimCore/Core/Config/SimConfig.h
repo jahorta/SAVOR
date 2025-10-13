@@ -7,12 +7,12 @@ namespace simcore {
 
 	struct SimConfig {
 		std::filesystem::path user_dir;     // our isolated User/ folder (per-run or persistent)
-		std::filesystem::path qt_base_dir;  // required: DolphinQt portable base (must contain portable.txt)
+		std::filesystem::path dolphin_base_dir;  // required: DolphinQt portable base (must contain portable.txt)
 	};
 
 	// Read/write an INI-style config with two keys under [Paths]:
 	//   user_dir = C:\...\SOASim\User
-	//   qt_base_dir = C:\...\DolphinQt
+	//   dolphin_base_dir = C:\...\DolphinQt
 	namespace SimConfigIO {
 
 		// Suggested default location (Windows):

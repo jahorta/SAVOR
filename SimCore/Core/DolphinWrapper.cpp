@@ -613,22 +613,22 @@ namespace simcore {
     }
 
 
-    bool DolphinWrapper::SetRequiredDolphinQtBaseDir(const fs::path& qt_base, std::string* error_out)
+    bool DolphinWrapper::SetDolphinQtBaseDir(const fs::path& dolphin_base_dir, std::string* error_out)
     {
         std::string err;
-        if (!require_exists_dir(qt_base, "DolphinQt base", &err)) { if (error_out) *error_out = err; return false; }
+        if (!require_exists_dir(dolphin_base_dir, "DolphinQt base", &err)) { if (error_out) *error_out = err; return false; }
 
-        if (!fs::exists(qt_base / "portable.txt")) {
-            if (error_out) *error_out = "portable.txt not found in base: " + qt_base.string();
+        if (!fs::exists(dolphin_base_dir / "portable.txt")) {
+            if (error_out) *error_out = "portable.txt not found in base: " + dolphin_base_dir.string();
             return false;
         }
 
-        const fs::path sys = qt_base / "Sys";
-        const fs::path user = qt_base / "User";
+        const fs::path sys = dolphin_base_dir / "Sys";
+        const fs::path user = dolphin_base_dir / "User";
         if (!require_exists_dir(sys, "Sys", &err)) { if (error_out) *error_out = err; return false; }
         if (!require_exists_dir(user, "User", &err)) { if (error_out) *error_out = err; return false; }
 
-        m_qt_base_dir = qt_base;
+        m_qt_base_dir = dolphin_base_dir;
         m_imported_from_qt = false;
         return true;
     }
@@ -636,7 +636,7 @@ namespace simcore {
     bool DolphinWrapper::SyncFromDolphinQtBase(bool force, std::string* error_out)
     {
         if (m_qt_base_dir.empty()) {
-            if (error_out) *error_out = "DolphinQt base dir not set. Call SetRequiredDolphinQtBaseDir() first.";
+            if (error_out) *error_out = "DolphinQt base dir not set. Call SetDolphinQtBaseDir() first.";
             return false;
         }
         if (m_imported_from_qt && !force) return true;
@@ -663,7 +663,7 @@ namespace simcore {
             return false;
         }
         std::string err;
-        if (!SetRequiredDolphinQtBaseDir(cfg.qt_base_dir, &err)) {
+        if (!SetDolphinQtBaseDir(cfg.dolphin_base_dir, &err)) {
             if (error_out) *error_out = "Invalid DolphinQt base: " + err;
             return false;
         }

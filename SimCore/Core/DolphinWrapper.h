@@ -78,7 +78,7 @@ namespace simcore {
 
         // Isolated user/base management
         bool SetUserDirectory(const std::filesystem::path& user_dir);
-        bool SetRequiredDolphinQtBaseDir(const std::filesystem::path& qt_base,
+        bool SetDolphinQtBaseDir(const std::filesystem::path& dolphin_base_dir,
             std::string* error_out = nullptr);
         const std::filesystem::path& GetUserDirectory() const { return m_user_dir; }
         const std::filesystem::path& GetDolphinQtBaseDir() const { return m_qt_base_dir; }
