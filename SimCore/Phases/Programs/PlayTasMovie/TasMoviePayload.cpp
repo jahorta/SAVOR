@@ -12,6 +12,8 @@ namespace fs = std::filesystem;
 
 namespace simcore::tasmovie {
 
+    static constexpr const int PVersion = 2;
+
     static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) {
         b.push_back(uint8_t(v)); b.push_back(uint8_t(v >> 8));
         b.push_back(uint8_t(v >> 16)); b.push_back(uint8_t(v >> 24));
@@ -49,21 +51,20 @@ namespace simcore::tasmovie {
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
         out.clear();
-        out.reserve(1 + 4 + 2 + 1 + 1 + 4 + spec.dtm_path.size() + 6 + 4 + 4 + 4);
+        out.reserve(1 + 2 + 1 + 4 + 4 + 8 + 4 + spec.dtm_path.size());
 
         out.push_back(PK_TasMovie);                 // payload kind tag
-        put_u16(out, 1);                            // version
+        put_u16(out, PVersion);                            // version
         
         uint8_t flags = 0;
         if (spec.progress_enable) flags |= 0x02;
         out.push_back(flags);
-        out.push_back(0);  // reserved
-
-        // reserved 6 bytes (future use: checksum or id6 snapshot)
-        out.insert(out.end(), 6, uint8_t(0));
 
         put_u32(out, spec.run_ms);
         put_u32(out, spec.vi_stall_ms);
+
+        // reserved 8 bytes 
+        out.insert(out.end(), 8, uint8_t(0));
 
         put_u32(out, (uint32_t)spec.dtm_path.size());
         out.insert(out.end(), spec.dtm_path.begin(), spec.dtm_path.end());
@@ -73,31 +74,27 @@ namespace simcore::tasmovie {
 
     bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
     {
-        if (in.size() < 1 + 4 + 2 + 2 + 4 + 6 + 4 + 4 + 4) return false;
+        if (in.size() < 1 + 2 + 1 + 4 + 4 + 8 + 4) return false;
         size_t off = 0;
         const uint8_t pk = in[off++];         // ProgramKind tag
         if (pk != PK_TasMovie) return false;
 
         const uint16_t ver = rd_u16(in.data(), off, in.size());
-        if (ver != 1) return false;
+        if (ver != PVersion) return false;
 
         const uint8_t flags = in[off++]; // bit0: save_on_fail
-        off += 1; // reserved
-
-        // skip 6 reserved bytes
-        off += 6;
 
         const uint32_t run_ms_in = rd_u32(in.data(), off, in.size());
         const uint32_t vi_stall_ms = rd_u32(in.data(), off, in.size());
 
+        // skip 8 reserved bytes
+        off += 8;
+
         const uint32_t len_dtm = rd_u32(in.data(), off, in.size());
-        if (off + len_dtm + 6 + 4 + 4 + 4 > in.size()) return false;
+        if (off + len_dtm > in.size()) return false;
 
         const std::string dtm_path(reinterpret_cast<const char*>(in.data() + off), len_dtm);
         off += len_dtm;
-
-        const uint32_t len_savedir = rd_u32(in.data(), off, in.size());
-        if (off + len_savedir != in.size()) return false;
 
         // Derive final save path from <dtm_dir>/<stem(dtm)>.sav
         const std::string save_path = derive_save_path(dtm_path);

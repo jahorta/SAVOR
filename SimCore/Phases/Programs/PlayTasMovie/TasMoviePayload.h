@@ -11,17 +11,14 @@ namespace simcore::tasmovie {
 
     // On-wire binary layout (little-endian):
     // [0]                 : uint8  ProgramKind tag (== PK_TasMovie)
-    // [1..4]              : u32    magic 'TMOV' (0x564F4D54)
-    // [5..6]              : u16    version = 1
-    // [7]                 : u8     flags (bit0: save_on_fail)
-    // [8]                 : u8     reserved
-    // [9..12]             : u32    len_dtm
-    // [..]                : bytes  dtm_path (not null-terminated)
-    // [..+6]              : 6      reserved (kept for future checksum, currently zeroed)
-    // [..]                : u32    run_ms (0 means "derive from header")
-    // [..]                : u32    vi_stall_ms
-    // [..]                : u32    len_save_dir
-    // [..]                : bytes  save_dir (directory path; worker derives final save_path = save_dir/<stem>.sav)
+    // [1..2]              : u16    version = 1
+    // [3]                 : u8     flags (bit0: save_on_fail)
+    // [4..7]              : u32    run_ms (0 means "derive from header")
+    // [8..11]             : u32    vi_stall_ms
+    // [12..19]            : 8      reserved (kept for future checksum, currently zeroed)
+    // [20..23]            : u32    len_dtm
+    // [24..]              : bytes  dtm_path (not null-terminated)
+
 
     struct EncodeSpec {
         std::string dtm_path;
