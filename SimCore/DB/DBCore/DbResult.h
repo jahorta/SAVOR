@@ -14,6 +14,7 @@ namespace simcore::db {
             NotFound,
             InvalidArgument,
             InvalidState,
+            InvalidData,
             Unknown
         };
 
