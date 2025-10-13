@@ -16,6 +16,7 @@
 #include "ObjectStore.h"
 #include "../../Utils/Log.h"
 #include "../../Utils/ModulePath.h"
+#include "../ProgramDB/IProgramDBCodec.h"
 
 namespace simcore {
     namespace db {
@@ -84,7 +85,7 @@ namespace simcore {
             }
 
             m_worker = std::thread([this]() { workerLoop(); });
-
+            db::codec::ensure_codecs_registered();
             (void)RegisterProgramKinds();
 
             (void)ConfigRepo::EnsureDefaults(create_cfg_defaults(db_root.string()));
