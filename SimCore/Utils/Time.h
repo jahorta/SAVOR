@@ -3,8 +3,6 @@
 #include <ctime>
 #include <cstdio>
 
-using namespace std::chrono;
-
 namespace simcore::time_util {
 
     using namespace std::chrono;
