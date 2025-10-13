@@ -32,6 +32,28 @@ public:
         return *m_latest;
     }
 
+    // Non-blocking helpers for UI polling
+    bool has_value() const {
+        std::lock_guard<std::mutex> g(m_mtx);
+        return m_latest.has_value();
+    }
+
+    T peek() const {
+        std::lock_guard<std::mutex> g(m_mtx);
+        return *m_latest; // caller should check has_value() first
+    }
+
+    void pop() {
+        std::lock_guard<std::mutex> g(m_mtx);
+        m_latest.reset();
+    }
+
+    // Optional: single-call non-blocking copy
+    std::optional<T> try_peek() const {
+        std::lock_guard<std::mutex> g(m_mtx);
+        return m_latest; // copy
+    }
+
 private:
     mutable std::mutex m_mtx;
     std::condition_variable m_cv;
