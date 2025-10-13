@@ -97,6 +97,9 @@
     <Filter Include="DB\Querying">
       <UniqueIdentifier>{3f74286f-bc0e-497f-9b87-4bbacf2387f4}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Phases\DBPhaseBuilders">
+      <UniqueIdentifier>{a3628a6d-558f-4dc7-a8b4-568c8607faee}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -363,9 +366,6 @@
     <ClInclude Include="DB\VersionStampRepo.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
-    <ClInclude Include="DB\Query.h">
-      <Filter>DB</Filter>
-    </ClInclude>
     <ClInclude Include="DB\DBCore\DbHealth.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
@@ -491,6 +491,33 @@
     </ClInclude>
     <ClInclude Include="Utils\ModulePath.h">
       <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h">
+      <Filter>Phases\DBPhaseBuilders</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h">
+      <Filter>Phases\DBPhaseBuilders</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h">
+      <Filter>Phases\DBPhaseBuilders</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Querying\IdRepoListDTO.h">
+      <Filter>DB\Querying</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\DBCore\Common.h">
+      <Filter>DB\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.h">
+      <Filter>Phases\BattleRunner</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\AuthoringTemplatesRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\TurnActionPresetRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\UiConfigRowRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1286,9 +1313,6 @@
     <ClCompile Include="DB\VersionStampRepo.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
-    <ClCompile Include="DB\Query.cpp">
-      <Filter>DB</Filter>
-    </ClCompile>
     <ClCompile Include="DB\DBCore\CoordinatorClock.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
@@ -1379,6 +1403,24 @@
     <ClCompile Include="DB\ProgramKindsRepo.cpp">
       <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
+    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp">
+      <Filter>Phases\DBPhaseBuilders</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp">
+      <Filter>Phases\DBPhaseBuilders</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp">
+      <Filter>Phases\BattleRunner</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\AuthoringTemplatesRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\TurnActionPresetRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\UiConfigRowRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Interesting SOA Addresses.md" />
@@ -1450,6 +1492,24 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0021.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0022.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0023.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0024.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0025.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0026.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0027.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>
