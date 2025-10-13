@@ -9,6 +9,7 @@
 #include "../ExplorerRunRepo.h"
 #include "../DeltaSeedRepo.h"
 #include "../SavestateRepo.h"
+#include "../Querying/DataService.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../../Phases/Programs/BattleContext/BattleContextPayload.h"
 #include "../../Phases/Programs/BattleContext/BattleContextScript.h"
@@ -17,41 +18,42 @@
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../Runner/Script/KeyRegistry.h"
 #include "../../Runner/Parallel/DB/DBTriggerEngine.h"
+#include "../../Core/Memory/Soa/Battle/BattleContextCodec.h"
 
 using simcore::db::DbResult;
 using simcore::TriggerCtx;
+using simcore::db::battle::ctx::BlueprintIni;
+using simcore::db::battle::ctx::ResultsIni;
 
 static constexpr int kPK = PK_BattleContextProbe;
 static constexpr int kPV = 1;
 
 DbResult<int64_t> BattleContextDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
-    IniKV kv = IniDoc::parse(blueprint_ini).section_kv(IniDoc::GLOBAL);
+    IniDoc ini = IniDoc::parse(blueprint_ini);
 
-    const uint32_t run_ms = kv.get_u32("run_ms", 0);
-    const uint32_t vi_stall_ms = kv.get_u32("vi_stall_ms", 0);
-    const int priority = (int)kv.get_i64("priority", 0);
-    const uint64_t savestate_id = kv.get_i64("savestate_id", 0);
+    BlueprintIni bp = BlueprintIni::from_section(ini);
+
+    const uint32_t run_ms = bp.run_ms;
+    const uint32_t vi_stall_ms = bp.vi_stall_ms;
+    const int priority = bp.priority;
+    const uint64_t savestate_id = bp.savestate_id;
 
     auto save_found = simcore::db::SavestateRepo::Get(savestate_id);
     if (!save_found.ok) return DbResult<int64_t>::Err(save_found.error);
     if (!save_found.value.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "savestate_id is required to make a battle context" });
     auto savestate_row = save_found.value.value();
-    if (!savestate_row.complete || savestate_row.savestate_type != db::SavestateType::BATTLE) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "a complete battle savestate is required" });
+    if (!savestate_row.savestate_type != db::SavestateType::BATTLE) return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "a battle savestate is required" });
 
-    IniKV norm;
-    norm.add("run_ms", std::to_string(run_ms));
-    norm.add("vi_stall_ms", std::to_string(vi_stall_ms));
-    if (priority) norm.add("priority", std::to_string(priority));
-    const std::string vmkv = norm.to_string_sorted();
 
-    std::string fp = "PK=" + std::to_string(kPK) + ";PV=" + std::to_string(kPV)
+    std::string fp = "PK=" + std::to_string(kPK) + ";PV=" + std::to_string(kPV) 
+        + ";ssid=" + std::to_string(bp.savestate_id) + ";bcver=" + std::to_string(soa::battle::ctx::codec::ver)
         + ";run_ms=" + std::to_string(run_ms)
         + ";vi=" + std::to_string(vi_stall_ms);
 
-    auto ins = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, /*program_ref_id*/0, fp, priority, vmkv);
+    auto ins = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, /*program_ref_id*/0, fp, priority, blueprint_ini);
     if (!ins.ok) return DbResult<int64_t>::Err(ins.error);
 
-    auto ev = simcore::db::JobEventsRepo::Append(ins.value, "ENQUEUED", vmkv);
+    auto ev = simcore::db::JobEventsRepo::Append(ins.value, "ENQUEUED", blueprint_ini);
     if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
 
     return DbResult<int64_t>::Ok(ins.value);
@@ -61,17 +63,19 @@ DbResult<simcore::PSJob> BattleContextDBCodec::decode_job_from_db(int64_t job_id
     auto jr = simcore::db::JobsRepo::Get(job_id);
     if (!jr.ok) return DbResult<simcore::PSJob>::Err(jr.error);
 
-    IniKV kv;
-    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
+    IniDoc ini;
+    if (jr.value.vm_kv) ini = IniDoc::parse(*jr.value.vm_kv);
     else {
         auto enq = simcore::db::JobEventsRepo::GetFirstPayload(job_id, "ENQUEUED");
         if (!enq.ok) return DbResult<simcore::PSJob>::Err(enq.error);
         if (!enq.value) return DbResult<simcore::PSJob>::Err({ simcore::db::DbErrorKind::NotFound, 0, "missing ENQUEUED payload" });
-        kv = IniDoc::parse(*enq.value).section_kv(IniDoc::GLOBAL);
+        ini = IniDoc::parse(*enq.value);
     }
 
-    const uint32_t run_ms = kv.get_u32("run_ms", 0);
-    const uint32_t vi_stall_ms = kv.get_u32("vi_stall_ms", 0);
+    BlueprintIni bp = BlueprintIni::from_section(ini);
+
+    const uint32_t run_ms = bp.run_ms;
+    const uint32_t vi_stall_ms = bp.vi_stall_ms;
 
     phase::battle::ctx::EncodeSpec es{};
     es.run_ms = run_ms;
@@ -92,10 +96,29 @@ DbResult<void> BattleContextDBCodec::encode_progress_into_db(int64_t job_id, con
 }
 
 DbResult<void> BattleContextDBCodec::encode_results_into_db(int64_t job_id, const std::string& results_ini, bool success) {
+        
+    IniDoc ini = IniDoc::parse(results_ini);
+
+    ResultsIni res = ResultsIni::from_section(ini);
+    BlueprintIni bp = BlueprintIni::from_section(ini);
+        
     auto st = simcore::db::JobsRepo::SetState(job_id, success ? "SUCCEEDED" : "FAILED");
     if (!st.ok) return DbResult<void>::Err(st.error);
-    auto ev = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", results_ini);
+
+    auto ev = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", res.to_string());
     if (!ev.ok) return DbResult<void>::Err(ev.error);
+
+    if (success) {
+        auto jb = simcore::db::JobsRepo::Get(job_id);
+        if (!jb.ok) return DbResult<void>::Err(jb.error);
+
+        int64_t ver = res.version;
+        int64_t obj_id = res.artifact_id;
+        int64_t sav_id = bp.savestate_id;
+
+        auto bc = simcore::db::BattleContextRepo::Insert(jb.value.job_set_id, job_id, obj_id, sav_id, ver);
+    }
+
     return DbResult<void>::Ok();
 }
 
@@ -138,7 +161,7 @@ simcore::db::DbResult<std::optional<int64_t>> BattleContextDBCodec::get_required
     if (!jr.ok) return DbResult<std::optional<int64_t>>::Err(jr.error);
 
     IniKV kv;
-    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
+    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(BlueprintIni::SECTION_NAME);
 
     return simcore::db::DbResult<std::optional<int64_t>>::Ok(std::optional<int64_t>(kv.get_i64("savestate_id", 0)));
 }
@@ -148,9 +171,14 @@ simcore::db::DbResult<simcore::PSInit> BattleContextDBCodec::build_psinit_for_jo
     if (!jr.ok) return DbResult<simcore::PSInit>::Err(jr.error);
 
     IniKV kv;
-    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
+    if (jr.value.vm_kv) kv = IniDoc::parse(*jr.value.vm_kv).section_kv(BlueprintIni::SECTION_NAME);
 
-    auto temp_savestate_path = ObjectStore::MaterializeToTemp(kv.get_i64("savestate_id"));
+    auto ss = SavestateRepo::Get(kv.get_i64("savestate_id"));
+    if (!ss.ok) return DbResult<simcore::PSInit>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<simcore::PSInit>::Err({ simcore::db::DbErrorKind::NotFound, 0,
+        "save state not found" });
+
+    auto temp_savestate_path = ObjectStore::MaterializeToTemp(ss.value.value().object_ref_id);
     if (!temp_savestate_path.ok) return simcore::db::DbResult<simcore::PSInit>::Err(temp_savestate_path.error);
 
     simcore::PSInit init{};
@@ -161,45 +189,71 @@ simcore::db::DbResult<simcore::PSInit> BattleContextDBCodec::build_psinit_for_jo
 }
 
 simcore::db::DbResult<std::string> BattleContextDBCodec::build_results_ini_from_prresult(int64_t job_id, const simcore::PRResult& r) {
-    IniKV kv;
-    kv.add("ok", r.ps.ok ? "1" : "0");
-    kv.add("w_err", std::to_string(static_cast<unsigned>(r.ps.w_err)));
+    ResultsIni res{};
+        
+    res.w_err = r.ps.w_err;
+    r.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, res.dw_err);
+
+    auto jb = JobsRepo::Get(job_id);
+    if (!jb.ok) return DbResult<std::string>::Err(jb.error);
+    if (!jb.value.vm_kv.has_value()) return DbResult<std::string>::Err({ simcore::db::DbErrorKind::NotFound, 0,
+        "vm_kv not found" });
+
+    IniDoc ini = IniDoc::parse(jb.value.vm_kv.value());
+    BlueprintIni bp = BlueprintIni::from_section(ini);
 
     std::string blob;
-    if (r.ps.ctx.get<std::string>(simcore::keys::battle::CTX_BLOB, blob)) {
-        auto put = simcore::db::ObjectStore::PutText(blob);
+    if (r.ps.ok && r.ps.ctx.get<std::string>(simcore::keys::battle::CTX_BLOB, blob)) {
+        auto ss = SavestateRepo::Get(bp.savestate_id);
+        if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+        if (!ss.value.has_value()) return DbResult<std::string>::Err({ simcore::db::DbErrorKind::NotFound, 0,
+            "save state not found" });
+
+        auto sso = ObjectStore::Get(ss.value.value().object_ref_id);
+        if (!sso.ok) return simcore::db::DbResult<std::string>::Err(sso.error);
+
+        std::filesystem::path ss_fn = sso.value.filename;
+        std::string filename = ss_fn.stem().string() +
+            "_v" + std::to_string(soa::battle::ctx::codec::ver) +
+            soa::battle::ctx::codec::ext;
+
+        auto put = simcore::db::ObjectStore::PutText(blob, filename);
         if (!put.ok) return simcore::db::DbResult<std::string>::Err(put.error);
 
-        auto jj = simcore::db::JobsRepo::Get(job_id);
-        if (!jj.ok) return simcore::db::DbResult<std::string>::Err(jj.error);
-        auto bc = simcore::db::BattleContextRepo::Insert(jj.value.job_set_id, job_id, put.value.id);
-        if (!bc.ok) return simcore::db::DbResult<std::string>::Err(bc.error);
-
-        kv.add("artifact_id", std::to_string(put.value.id));
-        kv.add("context_id", std::to_string(bc.value));
-        kv.add("size", std::to_string(put.value.size));
+        res.artifact_id = put.value.id;
+        res.version = soa::battle::ctx::codec::ver;
+        res.size = put.value.size;
+        r.ps.ctx.get(simcore::keys::core::VI_FIRST, res.vi_start);
+        r.ps.ctx.get(simcore::keys::core::VI_LAST, res.vi_end);
     }
 
-    return simcore::db::DbResult<std::string>::Ok(kv.to_string_sorted());
+    res.set_section(ini);
+
+    return simcore::db::DbResult<std::string>::Ok(ini.to_string_sorted());
 }
 
 DbResult<void> BattleContextDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) {
-    IniKV args = IniDoc::parse(action_args_ini).section_kv(IniDoc::GLOBAL);
-    int64_t target_js = args.get_i64("target_job_set_id", 0);
-    if (!target_js) {
-        std::optional<std::string> purpose = args.get("purpose");
-        std::optional<std::string> drk = args.get("domain_ref_kind");
-        std::optional<int64_t> drid; if (args.has("domain_ref_id")) drid = args.get_i64("domain_ref_id", 0);
-        std::optional<std::string> meta = args.get("meta_text");
-        std::optional<int64_t> expected; if (args.has("expected_total")) expected = args.get_i64("expected_total", 0);
-        auto crt = simcore::db::JobSetsRepo::Create(purpose, PK_BattleContextProbe, std::nullopt, drk, drid, meta, expected);
-        if (!crt.ok) return DbResult<void>::Err(crt.error);
-        target_js = crt.value;
-    }
-    IniKV bp = args;
-    bp.erase("target_job_set_id"); bp.erase("purpose"); bp.erase("domain_ref_kind"); bp.erase("domain_ref_id");
-    bp.erase("meta_text"); bp.erase("expected_total");
-    auto enq = encode_job_into_db(target_js, bp.to_string_sorted());
-    if (!enq.ok) return DbResult<void>::Err(enq.error);
-    return DbResult<void>::Ok();
+    return DbResult<void>::Err({DbErrorKind::InvalidState, 0, "Nothing should trigger a battle context"});
+}
+
+DbResult<std::string> BattleContextDBCodec::build_artifact_ini_from_db(int64_t job_id)
+{
+    ArtifactIniBuilder artifacts{};
+
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+
+    if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
+
+    IniKV kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
+    const uint64_t savestate_id = kv.get_i64("savestate_id", 0);
+
+    auto ss = SavestateRepo::Get(savestate_id);
+    if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+        "No Savestate found..." });
+
+    artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+
+    return DbResult<std::string>::Ok(artifacts.to_string());
 }

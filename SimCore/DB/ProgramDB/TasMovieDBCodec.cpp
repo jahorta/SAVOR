@@ -5,6 +5,7 @@
 
 #include "../../Utils/Hash.h"
 #include "../DBCore/ObjectStore.h"
+#include "../DBCore/Common.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../TasMovieRepo.h"
 #include "../SavestateRepo.h"
@@ -16,6 +17,7 @@
 #include "../../Runner/Parallel/DB/DBTriggerEngine.h"
 #include "../../Tas/DtmFile.h"
 #include "../../Runner/Script/KeyRegistry.h"
+#include "../Querying/DataService.h"
 
 namespace fs = std::filesystem;
 static constexpr int PK = simcore::PK_TasMovie;
@@ -110,9 +112,12 @@ DbResult<simcore::PSJob> TasMovieDBCodec::decode_job_from_db(int64_t job_id) {
     std::string temp_filename = std::filesystem::path(base_dtm_filename).stem().string()+ "_rtc" + std::to_string(job_ini.new_rtc) + ".dtm";
 
     std::filesystem::path temp_filepath = std::filesystem::path(ObjectStore::TmpDir()) / "zzTasMovieDerived" / temp_filename;
+    if (!std::filesystem::exists(temp_filepath.parent_path()))
+        std::filesystem::create_directories(temp_filepath);
+
     std::string temp_filepath_str = temp_filepath.string();
 
-    base_dtm.save(temp_filepath_str);
+    bool saved = base_dtm.save(temp_filepath_str);
 
     IniKV cfg;
     cfg.add("type", "EACH_JOB_TERMINAL");
@@ -130,6 +135,9 @@ DbResult<simcore::PSJob> TasMovieDBCodec::decode_job_from_db(int64_t job_id) {
     std::vector<uint8_t> payload;
     if (!simcore::tasmovie::encode_payload(spec, payload))
         return DbResult<simcore::PSJob>::Err({ DbErrorKind::InvalidArgument, 0, "encode_payload failed" });
+
+    auto tas_running = TasMovieRepo::MarkRunning(tm.value.id);
+    if (!tas_running.ok) return DbResult<simcore::PSJob>::Err(tas_running.error);
 
     simcore::PSJob out{};
     out.payload = std::move(payload);
@@ -290,4 +298,38 @@ DbResult<void> TasMovieDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, co
     
     return DbResult<void>::Err({ DbErrorKind::InvalidState, 0,
             "cleanup is the only implemented TasMovie phase trigger, however this was sent:\n" + action_args_ini });
+}
+
+DbResult<std::string> TasMovieDBCodec::build_artifact_ini_from_db(int64_t job_id)
+{
+    ArtifactIniBuilder artifacts{};
+
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+
+    if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
+
+    IniDoc ini = IniDoc::parse(*jr.value.vm_kv);
+    IniKV bp = ini.section_kv(BlueprintIni::SECTION_NAME);
+
+    const auto base_dtm_artifact_id = bp.get_i64("base_dtm_artifact_id", -1);
+    if (base_dtm_artifact_id < 0) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+            "Base DTM file not found..." });
+
+    artifacts.add_artifact("Base DTM File", base_dtm_artifact_id);
+
+    auto tas = simcore::db::TasMovieRepo::Get(jr.value.program_ref_id);
+    if (!tas.ok) return DbResult<std::string>::Err(tas.error);
+
+    if (tas.value.status == "done" && tas.value.output_savestate_id.has_value()) {
+
+        auto ss = SavestateRepo::Get(tas.value.output_savestate_id.value());
+        if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+        if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+            "TasMovie was marked done but no Savestate found..." });
+
+        artifacts.add_artifact("savestate", ss.value.value().object_ref_id);
+    }
+
+    return DbResult<std::string>::Ok(artifacts.to_string());
 }

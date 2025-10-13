@@ -7,18 +7,18 @@
 
 using simcore::TriggerCtx;
 
-namespace phase::db::codec::battle::run {
+namespace simcore::db::codec::battle::run {
     struct BlueprintIni {
         static constexpr const char* SECTION_NAME = "BattleRun.Blueprint";
 
         int64_t     settings_id;
-        int64_t     delta_seed_id;
         int64_t     plan_id;
+        int64_t     seed_probe_id;
+        int64_t     delta_seed_id;
         int         priority{ 0 };
         uint32_t    run_ms{};
         uint32_t    vi_stall_ms{};
         bool        progress_enable{ true };
-        bool        auto_queue_seeds{ false };
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
             BlueprintIni bp{};
@@ -26,12 +26,12 @@ namespace phase::db::codec::battle::run {
             IniKV section = doc.section_kv(SECTION_NAME);
             bp.settings_id = section.get_i64("settings_id", -1);
             bp.delta_seed_id = section.get_i64("delta_seed_id", -1);
+            bp.delta_seed_id = section.get_i64("delta_seed_id", -1);
             bp.plan_id = section.get_i64("plan_id", 0);
             bp.priority = section.get_i64("priority", 0);
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
             bp.progress_enable = section.get_bool("progress_enable", true);
-            bp.auto_queue_seeds = section.get_bool("auto_queue_seeds", true);
             return bp;
         }
         inline void set_section(IniDoc& doc) const {
@@ -43,13 +43,13 @@ namespace phase::db::codec::battle::run {
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
-            doc.set(SECTION_NAME, "auto_queue_seeds", auto_queue_seeds ? "1" : "0");
         }
     };
 
     struct JobIni {
         static constexpr const char* SECTION_NAME = "BattleRun.Job";
 
+        int64_t     delta_seed_id;
         int64_t     savestate_id;
 
         static inline JobIni from_section(const IniDoc& doc) {
@@ -143,4 +143,6 @@ struct ExplorerRunDBCodec final : IProgramDBCodec {
     simcore::db::DbResult<simcore::PSInit>        build_psinit_for_job(int64_t job_id) override;
     simcore::db::DbResult<std::string>            build_results_ini_from_prresult(int64_t job_id, const simcore::PRResult& r) override;
     DbResult<void> phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) override;
+
+    DbResult<std::string>            build_artifact_ini_from_db(int64_t job_id) override;
 };

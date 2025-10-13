@@ -12,6 +12,10 @@
 
 using namespace simcore::db;
 
+namespace simcore::db::codec {
+    void ensure_codecs_registered();
+}
+
 struct IProgramDBCodec {
 
     virtual ~IProgramDBCodec() = default;
@@ -42,6 +46,9 @@ struct IProgramDBCodec {
 
     // build a results ini from the prresult output
     virtual DbResult<std::string>            build_results_ini_from_prresult(int64_t job_id, const simcore::PRResult& r) = 0;
+
+    // build a results ini from the prresult output
+    virtual DbResult<std::string>            build_artifact_ini_from_db(int64_t job_id) = 0;
 
     // setup the next phase on trigger
     virtual simcore::db::DbResult<void> phase_setup_on_trigger(const simcore::TriggerCtx& ctx, const std::string& action_args_ini) = 0;

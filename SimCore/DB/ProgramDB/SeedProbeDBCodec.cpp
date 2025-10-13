@@ -20,6 +20,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include "../Querying/DataService.h"
 
 using simcore::db::DbResult;
 using simcore::db::JobRow;
@@ -29,13 +30,13 @@ using simcore::db::TriggersRepo;
 using simcore::db::JobEventsRepo;
 using simcore::db::SeedProbeRepo;
 using simcore::db::SeedProbeRow;
-using db::codec::seedprobe::GridIni;
-using db::codec::seedprobe::UniqueIni;
-using db::codec::seedprobe::BlueprintIni;
-using db::codec::seedprobe::JobIni;
-using db::codec::seedprobe::ResultsIni;
-using db::codec::seedprobe::CleanupIni;
-using db::codec::seedprobe::SeedProbePhase;
+using simcore::db::codec::seedprobe::GridIni;
+using simcore::db::codec::seedprobe::UniqueIni;
+using simcore::db::codec::seedprobe::BlueprintIni;
+using simcore::db::codec::seedprobe::JobIni;
+using simcore::db::codec::seedprobe::ResultsIni;
+using simcore::db::codec::seedprobe::CleanupIni;
+using simcore::db::codec::seedprobe::SeedProbePhase;
 
 static constexpr int PK = simcore::PK_SeedProbe;
 static constexpr int PV = 1;
@@ -262,11 +263,30 @@ simcore::db::DbResult<int64_t> SeedProbeDBCodec::encode_job_into_db(int64_t job_
 
     BlueprintIni bp = BlueprintIni::from_section(ini);
 
+    if (bp.savestate_id <= 0)
+        return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, 
+            "Require a value for SeedProbe.BlueprintIni.savestate_id"});
+
+    auto ss = SavestateRepo::Get(bp.savestate_id);
+    if (!ss.ok) return simcore::db::DbResult<int64_t>::Err(ss.error);
+    if (!ss.value.has_value())
+        return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0,
+            "Savestate with id" + std::to_string(bp.savestate_id) + " not found" });
+
+    if (bp.probe_id <= 0) {
+        auto sp = SeedProbeRepo::Create(bp.savestate_id, PV);
+        if (!sp.ok) return simcore::db::DbResult<int64_t>::Err(sp.error);
+
+        bp.probe_id = sp.value;
+
+        bp.set_section(ini);
+    }
+
     simcore::db::DbResult<int64_t> enc;
     switch (bp.cur_phase) {
-    case SeedProbePhase::Neutral: encode_neutral(job_set_id, blueprint_ini);
-    case SeedProbePhase::Grid: encode_grid(job_set_id, blueprint_ini);
-    case SeedProbePhase::Unique: encode_unique(job_set_id, blueprint_ini);
+    case SeedProbePhase::Neutral: encode_neutral(job_set_id, ini.to_string_sorted()); break;
+    case SeedProbePhase::Grid: encode_grid(job_set_id, ini.to_string_sorted()); break;
+    case SeedProbePhase::Unique: encode_unique(job_set_id, ini.to_string_sorted()); break;
     default: return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "Invalid SeedProbe Phase: " + std::to_string(bp.cur_phase) });
     }
     return enc;
@@ -481,11 +501,15 @@ DbResult<simcore::PSInit> SeedProbeDBCodec::build_psinit_for_job(int64_t job_id)
     auto probe = SeedProbeRepo::Get(job.value.program_ref_id);
     if (!probe.ok) return DbResult<simcore::PSInit>::Err(probe.error);
 
-    auto savestate_path = SavestateRepo::MaterializeToTempPath(probe.value.savestate_id);
-    if (!savestate_path.ok) return DbResult<simcore::PSInit>::Err(savestate_path.error);
+    auto ss = SavestateRepo::Get(probe.value.savestate_id);
+    if (!ss.ok) return DbResult<simcore::PSInit>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<simcore::PSInit>::Err({ DbErrorKind::NotFound, 0, "Savestate not found by id" });
+
+    auto ss_path = ObjectStore::MaterializeToTemp(ss.value.value().object_ref_id);
+    if (!ss_path.ok) return DbResult<simcore::PSInit>::Err(ss_path.error);
 
     simcore::PSInit init{};
-    init.savestate_path = savestate_path.value;
+    init.savestate_path = ss_path.value;
     init.default_timeout_ms = 10000;
     init.derived_buffer_type = simcore::DBuf::DK_None;
     return DbResult<simcore::PSInit>::Ok(init);
@@ -601,4 +625,29 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
     return DbResult<void>::Err({ DbErrorKind::InvalidState, 0,
             "Seedprobe Trigger can only be set for phases Neutral(1), Grid(2), and Unique(3), not: " + std::to_string(bp.cur_phase) });
 
+}
+
+DbResult<std::string> SeedProbeDBCodec::build_artifact_ini_from_db(int64_t job_id)
+{
+    ArtifactIniBuilder artifacts{};
+
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+
+    if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
+
+    IniKV kv = IniDoc::parse(*jr.value.vm_kv).section_kv(BlueprintIni::SECTION_NAME);
+    const uint64_t probe_id = kv.get_i64("probe_id", 0);
+
+    auto sp = SeedProbeRepo::Get(probe_id);
+    if (!sp.ok) return DbResult<std::string>::Err(sp.error);
+
+    auto ss = SavestateRepo::Get(sp.value.savestate_id);
+    if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+        "No Savestate found..." });
+
+    artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+
+    return DbResult<std::string>::Ok(artifacts.to_string());
 }

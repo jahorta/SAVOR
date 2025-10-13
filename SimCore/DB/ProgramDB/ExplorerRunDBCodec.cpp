@@ -20,6 +20,7 @@
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
 #include "../SavestateRepo.h"
+#include "../Querying/DataService.h"
 
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
@@ -45,9 +46,9 @@ using soa::battle::actions::TurnPlan;
 using soa::battle::actions::ActionPlan;
 using soa::battle::actions::BattleAction;
 using simcore::TriggerCtx;
-using phase::db::codec::battle::run::BlueprintIni;
-using phase::db::codec::battle::run::JobIni;
-using phase::db::codec::battle::run::ResultsIni;
+using simcore::db::codec::battle::run::BlueprintIni;
+using simcore::db::codec::battle::run::JobIni;
+using simcore::db::codec::battle::run::ResultsIni;
 
 static constexpr int kPK = PK_BattleTurnRunner;                                     // from Wire.h
 static constexpr int kProgramVersion = phase::battle::runner::PayloadVersion;       // from BattleRunnerPayload.h
@@ -381,4 +382,26 @@ DbResult<void> ExplorerRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx,
     }
 
     return DbResult<void>::Ok();
+}
+
+DbResult<std::string> ExplorerRunDBCodec::build_artifact_ini_from_db(int64_t job_id)
+{
+    ArtifactIniBuilder artifacts{};
+
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+
+    if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
+
+    IniKV kv = IniDoc::parse(*jr.value.vm_kv).section_kv(JobIni::SECTION_NAME);
+    const uint64_t savestate_id = kv.get_i64("savestate_id", 0);
+
+    auto ss = SavestateRepo::Get(savestate_id);
+    if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+        "No Savestate found..." });
+
+    artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+    
+    return DbResult<std::string>::Ok(artifacts.to_string());
 }

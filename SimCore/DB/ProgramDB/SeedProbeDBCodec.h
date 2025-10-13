@@ -10,7 +10,7 @@
 
 using simcore::TriggerCtx;
 
-namespace db::codec::seedprobe {
+namespace simcore::db::codec::seedprobe {
     struct GridIni {
         static constexpr const char* SECTION_NAME = "SeedProbe.Grid";
 
@@ -25,8 +25,8 @@ namespace db::codec::seedprobe {
             if (!doc.has_section(SECTION_NAME)) return grid;
             IniKV section = doc.section_kv(SECTION_NAME);
             grid.samples_per_axis = section.get_i64("samples_per_axis", grid.samples_per_axis);
-            grid.min_value = static_cast<uint8_t>(section.get_i64("min_value", grid.min_value) && 0xFF);
-            grid.max_value = static_cast<uint8_t>(section.get_i64("max_value", grid.max_value) && 0xFF);
+            grid.min_value = section.get_u8("min_value", grid.min_value);
+            grid.max_value = section.get_u8("max_value", grid.max_value);
             grid.cap_trigger_top = section.get_bool("cap_trigger_top", grid.cap_trigger_top);
             grid.ignore_trigger_minmax = section.get_bool("ignore_trigger_minmax", grid.ignore_trigger_minmax);
             return grid;
@@ -73,33 +73,39 @@ namespace db::codec::seedprobe {
     struct BlueprintIni {
         static constexpr const char* SECTION_NAME = "SeedProbe.Blueprint";
 
+        int64_t savestate_id{ -1 };
         int64_t probe_id{ -1 };
         uint32_t run_ms;
         uint32_t vi_stall_ms;
         SeedProbePhase cur_phase{ SeedProbePhase::None };
         bool clear_result_winners = true;
         bool auto_schedule_battle_run = false;
+        int priority = 0;
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
             BlueprintIni bp{};
             if (!doc.has_section(SECTION_NAME)) return bp;
             IniKV section = doc.section_kv(SECTION_NAME);
+            bp.savestate_id = section.get_i64("savestate_id", -1);
             bp.probe_id = section.get_i64("probe_id", -1);
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
             bp.cur_phase = (SeedProbePhase)section.get_u32("cur_phase", 0);
             bp.clear_result_winners = section.get_bool("clear_result_winners", true);
             bp.auto_schedule_battle_run = section.get_bool("auto_schedule_battle_run", true);
+            bp.priority = section.get_i64("priority", 0);
             return bp;
         }
         inline void set_section(IniDoc& doc) const {
             doc.ensure_section(SECTION_NAME);
+            doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
             doc.set(SECTION_NAME, "probe_id", std::to_string(probe_id));
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "cur_phase", std::to_string((uint32_t)cur_phase));
             doc.set(SECTION_NAME, "clear_result_winners", clear_result_winners ? "1" : "0");
             doc.set(SECTION_NAME, "auto_schedule_battle_run", auto_schedule_battle_run ? "1" : "0");
+            doc.set(SECTION_NAME, "priority", std::to_string(priority));
         }
     };
 
@@ -144,7 +150,7 @@ namespace db::codec::seedprobe {
         uint32_t     vi_start{ 0 };
         uint32_t     vi_end{ 0 };
 
-        uint32_t rng_seed{ 0 };
+        uint32_t     rng_seed{ 0 };
 
         static inline ResultsIni from_section(const IniDoc& doc) {
             ResultsIni results{};
@@ -202,4 +208,6 @@ struct SeedProbeDBCodec final : IProgramDBCodec {
     simcore::db::DbResult<simcore::PSInit>        build_psinit_for_job(int64_t job_id) override;
     simcore::db::DbResult<std::string>            build_results_ini_from_prresult(int64_t job_id, const simcore::PRResult& r) override;
     DbResult<void> phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) override;
+    
+    DbResult<std::string>            build_artifact_ini_from_db(int64_t job_id) override;
 };
