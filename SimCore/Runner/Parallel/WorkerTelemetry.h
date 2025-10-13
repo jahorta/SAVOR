@@ -5,7 +5,7 @@
 #include <vector>
 
 enum class WorkerStateKind {
-    Spawning, Idle, Leasing, Running, Renewing, Draining, Exiting, Dead
+    Spawning, Idle, Leasing, Running, Renewing, Paused, Draining, Exiting, Stopping, Dead
 };
 
 enum class WorkerEventKind {
