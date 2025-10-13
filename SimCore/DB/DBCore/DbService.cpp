@@ -65,8 +65,7 @@ namespace simcore {
 
             CoordinatorClock::instance().boot();
 
-            try { ApplyEmbeddedMigrations(*m_env); }
-            catch (...) {}
+            ApplyEmbeddedMigrations(*m_env);
 
             auto health = RunDbHealth(*m_env, false);
 
