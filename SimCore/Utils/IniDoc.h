@@ -128,6 +128,16 @@ struct IniDoc {
         return out;
     }
 
+    std::vector<std::string> to_string_lines_preserve_order() const {
+        std::vector<std::string> out;
+        for (const auto& s : sections_) {
+            if (!s.name.empty()) out.emplace_back('[' + s.name + ']');
+
+            for (const auto& kvp : s.kv.kv) out.emplace_back(kvp.first + '=' + kvp.second);
+        }
+        return out;
+    }
+
     // ---- Section management --------------------------------------------------
 
     bool has_section(const std::string& name) const {
