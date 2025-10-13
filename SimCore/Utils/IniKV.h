@@ -82,6 +82,34 @@ struct IniKV {
         return def;
     }
 
+
+
+    uint64_t get_u64(const std::string& key, uint64_t def = 0) const {
+        for (const auto& p : kv) if (p.first == key) {
+            try {
+                size_t pos = 0;
+                long long v = std::stoll(p.second, &pos, 0);
+                if (pos == p.second.size()) return static_cast<uint64_t>(v);
+            }
+            catch (...) {}
+            return def;
+        }
+        return def;
+    }
+
+    uint64_t get_u64_last(const std::string& key, uint64_t def = 0) const {
+        for (size_t i = kv.size(); i-- > 0; ) if (kv[i].first == key) {
+            try {
+                size_t pos = 0;
+                long long v = std::stoll(kv[i].second, &pos, 0);
+                if (pos == kv[i].second.size()) return static_cast<uint64_t>(v);
+            }
+            catch (...) {}
+            return def;
+        }
+        return def;
+    }
+
     uint32_t get_u32(const std::string& key, uint32_t def = 0) const {
         for (const auto& p : kv) if (p.first == key) {
             try {
