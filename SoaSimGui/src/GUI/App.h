@@ -19,6 +19,8 @@ public:
     void RenderFrame();
     void OnResize(UINT w, UINT h);
     bool HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+    void SetAcceptExplorerDrops(bool enable);
     
     // --- Coordinator control (App-owned) ---
     bool CoordinatorRunning() const;
@@ -43,6 +45,7 @@ private:
     void destroyDevice();
     void newFrame();
 
+    bool explorer_drops_enabled_ = false;
     HWND hwnd_{};
     ID3D11Device* device_{};
     ID3D11DeviceContext* ctx_{};

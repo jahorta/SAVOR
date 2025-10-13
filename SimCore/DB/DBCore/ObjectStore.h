@@ -54,6 +54,18 @@ namespace simcore {
             static std::future<DbResult<std::string>> GetTextAsync(
                 int64_t object_ref_id, RetryPolicy rp = {});
 
+            static std::future<DbResult<ObjectRefRow>> GetAsync(
+                int64_t object_ref_id, RetryPolicy rp = {});
+
+            static std::future<DbResult<ObjectRefRow>> GetByShaAsync(
+                const std::string& sha256, RetryPolicy rp = {}
+            );
+
+            static std::future<DbResult<void>> MaterializeToPathAsync(
+                int64_t object_ref_id,
+                const std::string& dst_path,
+                RetryPolicy rp = {});
+
             // Sync convenience wrappers
 
             static inline DbResult<ObjectRefRow> FinalizeFromFile(
@@ -74,9 +86,6 @@ namespace simcore {
                 return GetTextAsync(object_ref_id).get();
             }
 
-            static std::future<DbResult<ObjectRefRow>> GetAsync(
-                int64_t object_ref_id, RetryPolicy rp = {});
-
             static inline DbResult<ObjectRefRow> Get(int64_t object_ref_id) {
                 return GetAsync(object_ref_id).get();
             }
@@ -85,6 +94,7 @@ namespace simcore {
             static void SetRoots(const std::string& objdir, const std::string& tmpdir);
             static const std::string& ObjDir();
             static const std::string& TmpDir();
+            static bool Ready();
 
         private:
             static std::string s_objdir;

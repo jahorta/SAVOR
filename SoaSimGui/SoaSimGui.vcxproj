@@ -144,10 +144,13 @@
   <ItemGroup>
     <ClInclude Include="framework.h" />
     <ClInclude Include="resources\Resource.h" />
+    <ClInclude Include="src\Components\DropInbox.h" />
     <ClInclude Include="src\Components\FutureQueue.h" />
     <ClInclude Include="src\Components\GuiHeartbeatPoller.h" />
     <ClInclude Include="src\Components\ToastBus.h" />
+    <ClInclude Include="src\Components\Win32Dialogs.h" />
     <ClInclude Include="src\GUI\App.h" />
+    <ClInclude Include="src\GUI\Panes\ArtifactsPane.h" />
     <ClInclude Include="src\GUI\Panes\BattleRunSettingsPane.h" />
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="src\GUI\Panes\JobsPane.h" />
@@ -182,10 +185,13 @@
     <Image Include="resources\SoaSimGui.ico" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Components\DropInbox.cpp" />
     <ClCompile Include="src\Components\FutureQueue.cpp" />
     <ClCompile Include="src\Components\GuiHeartbeatPoller.cpp" />
     <ClCompile Include="src\Components\ToastBus.cpp" />
+    <ClCompile Include="src\Components\Win32Dialogs.cpp" />
     <ClCompile Include="src\GUI\App.cpp" />
+    <ClCompile Include="src\GUI\Panes\ArtifactsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\BattleRunSettingsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp" />

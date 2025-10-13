@@ -31,3 +31,5 @@
 /SoaSimGui/third_party/imgui/.gitignore
 /SoaSimGui/x64/Debug
 /SimCoreSandbox/DB
+/SoaSimGui/imgui.ini
+/SoaSimGui/SoaGui.ini

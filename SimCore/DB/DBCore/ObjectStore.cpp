@@ -8,8 +8,7 @@
 
 namespace fs = std::filesystem;
 
-namespace simcore {
-    namespace db {
+namespace simcore::db {
 
         std::string ObjectStore::s_objdir;
         std::string ObjectStore::s_tmpdir;
@@ -28,6 +27,7 @@ namespace simcore {
 
         const std::string& ObjectStore::ObjDir() { return s_objdir; }
         const std::string& ObjectStore::TmpDir() { return s_tmpdir; }
+        bool ObjectStore::Ready() { return s_inited; }
 
         // small helper at file-scope
         static inline DbResult<std::string> err_not_inited() {
@@ -69,7 +69,7 @@ namespace simcore {
         }
 
         static inline DbResult<ObjectRefRow> impl_finalize_from_file(DbEnv& env, const std::string& file_path, const std::string& objdir, Compression comp, const std::string& filename) {
-            const std::string sha = sha256_of_file(file_path);
+            const std::string sha = hash::sha256_of_file(file_path);
             const fs::path dst_dir = fs::path(objdir) / sha.substr(0, 2) / sha.substr(2, 2);
             const fs::path dst_path = dst_dir / sha;
             fs::create_directories(dst_dir);
@@ -128,7 +128,7 @@ namespace simcore {
                     if ((int64_t)s != size) return false;
                 }
                 try {
-                    const std::string have = sha256_of_file(p.string());
+                    const std::string have = hash::sha256_of_file(p.string());
                     return have == sha;
                 }
                 catch (...) {
@@ -375,5 +375,124 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_List(e, q, search, ext_filter); });
         }
 
-} // namespace db
-} // namespace simcore
+        static inline DbResult<ObjectRefRow> impl_get_by_sha(DbEnv& env, const std::string& sha) {
+            auto* db = env.handle();
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "SELECT id,sha256,compression,size,filename,temp_path,created_at FROM object_ref WHERE sha256=? LIMIT 1",
+                -1, &st, nullptr) != SQLITE_OK) {
+                return DbResult<ObjectRefRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            }
+            sqlite3_bind_text(st, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
+
+            ObjectRefRow r{};
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                r.id = sqlite3_column_int64(st, 0);
+                if (sqlite3_column_type(st, 1) != SQLITE_NULL) r.sha256 = (const char*)sqlite3_column_text(st, 1);
+                r.compression = static_cast<Compression>(sqlite3_column_int(st, 2));
+                r.size = sqlite3_column_int64(st, 3);
+                if (sqlite3_column_type(st, 4) != SQLITE_NULL) r.filename = (const char*)sqlite3_column_text(st, 4);
+                if (sqlite3_column_type(st, 5) != SQLITE_NULL) r.temp_path = (const char*)sqlite3_column_text(st, 5);
+                if (sqlite3_column_count(st) > 6 && sqlite3_column_type(st, 6) != SQLITE_NULL) r.created_at = sqlite3_column_int64(st, 6);
+                sqlite3_finalize(st);
+                return DbResult<ObjectRefRow>::Ok(std::move(r));
+            }
+            sqlite3_finalize(st);
+            return DbResult<ObjectRefRow>::Err({ DbErrorKind::NotFound, 0, "object_ref not found" });
+        }
+
+        std::future<DbResult<ObjectRefRow>> ObjectStore::GetByShaAsync(const std::string& sha256, RetryPolicy rp) {
+            return DBService::instance().submit_res<ObjectRefRow>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) -> DbResult<ObjectRefRow> {
+                    if (!s_inited) return DbResult<ObjectRefRow>::Err({ DbErrorKind::InvalidArgument, 0, "ObjectStore roots not initialized" });
+                    return impl_get_by_sha(e, sha256);
+                });
+        }
+
+        static inline DbResult<void> impl_materialize_to_path(DbEnv& env,
+            int64_t object_ref_id, const std::string object_dir, const std::string& dst_path) {
+            auto* db = env.handle();
+
+            // Read sha, compression, size
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "SELECT sha256,compression,size FROM object_ref WHERE id=?",
+                -1, &st, nullptr) != SQLITE_OK)
+            {
+                return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)),
+                                                    sqlite3_errcode(db),
+                                                    sqlite3_errmsg(db) });
+            }
+
+            sqlite3_bind_int64(st, 1, object_ref_id);
+
+            std::string sha;
+            int comp_i = 0;
+            int64_t size = -1;
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                if (sqlite3_column_type(st, 0) != SQLITE_NULL) sha = (const char*)sqlite3_column_text(st, 0);
+                comp_i = sqlite3_column_int(st, 1);
+                size = sqlite3_column_int64(st, 2);
+            }
+            sqlite3_finalize(st);
+
+            if (sha.empty()) {
+                return DbResult<void>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "object_ref not found" });
+            }
+
+            const fs::path src = fs::path(object_dir) / sha.substr(0, 2) / sha.substr(2, 2) / sha;
+            if (!fs::exists(src)) {
+                return DbResult<void>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "object file missing: " + src.string() });
+            }
+
+            fs::path dst(dst_path);
+            std::error_code ec;
+            if (!dst.parent_path().empty())
+                fs::create_directories(dst.parent_path(), ec);
+
+            Compression comp = static_cast<Compression>(comp_i);
+            if (comp != Compression::None) {
+                // Future: decode/decompress here.
+                return DbResult<void>::Err({ DbErrorKind::InvalidArgument, 0, "compressed objects not supported yet" });
+            }
+
+            try {
+                fs::copy_file(src, dst, fs::copy_options::overwrite_existing);
+            }
+            catch (const std::exception& e) {
+                return DbResult<void>::Err({ DbErrorKind::IO, 0, std::string("copy failed: ") + e.what() });
+            }
+
+            // Verify: size (if known) and sha256
+            try {
+                if (size > 0) {
+                    std::uintmax_t s = fs::file_size(dst, ec);
+                    if (ec || static_cast<int64_t>(s) != size) {
+                        return DbResult<void>::Err({ DbErrorKind::IO, 0, "verification failed: size mismatch" });
+                    }
+                }
+                const std::string have = hash::sha256_of_file(dst.string());
+                if (have != sha) {
+                    return DbResult<void>::Err({ DbErrorKind::IO, 0, "verification failed: hash mismatch" });
+                }
+            }
+            catch (...) {
+                return DbResult<void>::Err({ DbErrorKind::IO, 0, "verification failed" });
+            }
+
+            return DbResult<void>::Ok();
+        }
+
+        std::future<DbResult<void>> ObjectStore::MaterializeToPathAsync(int64_t object_ref_id, const std::string& dst_path, RetryPolicy rp)
+        {
+            return DBService::instance().submit_res<void>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& env) -> DbResult<void>
+                {
+                    if (!s_inited) {
+                        return DbResult<void>::Err({ DbErrorKind::InvalidArgument, 0, "ObjectStore roots not initialized" });
+                    }
+                    return impl_materialize_to_path(env, object_ref_id, ObjDir(), dst_path);
+                });
+        }
+
+} // namespace simcore::db

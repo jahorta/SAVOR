@@ -6,6 +6,7 @@
 #include "Panes/CoordinatorPane.h"
 #include "Panes/PhaseBuilderPane.h"
 #include "Panes/BattleRunSettingsPane.h"
+#include "Panes/ArtifactsPane.h"
 
 #include "../Models/GuiLayoutStore.h"
 
@@ -19,6 +20,7 @@
 #include <d3d11.h>
 #include <fstream>
 #include "../Components/FutureQueue.h"
+#include "../Components/DropInbox.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -84,6 +86,7 @@ bool GuiApp::Init(HWND hwnd) {
     ImGui::StyleColorsDark();
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(device_, ctx_);
+    ::DragAcceptFiles(hwnd, true);
 
     // Load layout (IniDoc in same dir as exe; file: SoaGui.ini)
     {
@@ -162,6 +165,8 @@ void GuiApp::RenderFrame() {
     bool pane_swap = GuiLeftNav::GetActive() != s_last_pane;
     s_last_pane = GuiLeftNav::GetActive();
 
+    if (pane_swap) SetAcceptExplorerDrops(GuiLeftNav::GetActive() == GuiPane::Artifacts);
+
     switch (GuiLeftNav::GetActive()) {
     case GuiPane::Jobs:
         if (pane_swap) JobsPane::OnActivated();
@@ -175,6 +180,10 @@ void GuiApp::RenderFrame() {
         break;
     case GuiPane::BattleRunSettings:
         brs_pane.Draw();
+        break; 
+    case GuiPane::Artifacts:
+        if (pane_swap) ArtifactsPane::OnActivated();
+        ArtifactsPane::Draw();
         break;
     default:
         ImGui::Begin("Content");
@@ -216,7 +225,42 @@ void GuiApp::OnResize(UINT w, UINT h) {
 }
 
 bool GuiApp::HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_DROPFILES) {
+        if (!explorer_drops_enabled_) { // shouldn’t happen, but be safe
+            DragFinish((HDROP)wParam);
+            return true;
+        }
+        HDROP h = (HDROP)wParam;
+        UINT n = DragQueryFileW(h, 0xFFFFFFFF, nullptr, 0);
+        POINT pt{};
+        DragQueryPoint(h, &pt); // client coords
+        ::ClientToScreen(hWnd, &pt);
+
+        std::vector<std::filesystem::path> paths;
+        paths.reserve(n);
+        for (UINT i = 0; i < n; ++i) {
+            wchar_t buf[MAX_PATH]{ 0 };
+            DragQueryFileW(h, i, buf, MAX_PATH);
+            paths.emplace_back(buf);
+        }
+        DragFinish(h);
+
+        DropEvent ev{};
+        ev.paths = std::move(paths);
+        ev.screen_pt = pt;
+        DropInbox::Push(std::move(ev));
+        return true;
+    }
     return ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+}
+
+void GuiApp::SetAcceptExplorerDrops(bool enable) {
+    if (explorer_drops_enabled_ == enable) return;
+    explorer_drops_enabled_ = enable;
+    ::DragAcceptFiles(hwnd_, enable ? TRUE : FALSE);
+    if (!enable) {
+        DropInbox::Clear(); // Defensive: if anything was queued from earlier, drop it
+    }
 }
 
 bool GuiApp::CoordinatorRunning() const { return wc_ != nullptr; }

@@ -105,6 +105,15 @@
     <ClInclude Include="src\GUI\Popups\UiActionPresetPopup.h">
       <Filter>GUI\Popups</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\ArtifactsPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\Win32Dialogs.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\DropInbox.h">
+      <Filter>Components</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\SoaSimGui.rc">
@@ -191,6 +200,15 @@
     </ClCompile>
     <ClCompile Include="src\GUI\Widgets\TreeView.cpp">
       <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\ArtifactsPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Components\Win32Dialogs.cpp">
+      <Filter>Components</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Components\DropInbox.cpp">
+      <Filter>Components</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
