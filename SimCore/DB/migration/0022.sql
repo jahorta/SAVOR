@@ -1,12 +1,9 @@
--- 0022.sql object_ref created_at + indexes for pickers
+-- 0022.sql object_ref indexes for pickers
 PRAGMA foreign_keys=OFF;
 BEGIN;
 
 DELETE FROM schema_version;
 INSERT INTO schema_version(version, applied_at) VALUES (22, strftime('%s','now'));
-
-ALTER TABLE object_ref ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
-UPDATE object_ref SET created_at = (strftime('%s','now'));
 
 CREATE INDEX IF NOT EXISTS ix_object_ref_created_at  ON object_ref(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS ix_object_ref_filename    ON object_ref(filename);

@@ -22,7 +22,8 @@ CREATE TABLE object_ref (
   sha256      TEXT NOT NULL UNIQUE,
   compression INTEGER NOT NULL,
   size        INTEGER NOT NULL,
-  filename        Text
+  filename    TEXT,
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 -- Savestates

@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS config (
   heartbeat_interval_ms INTEGER,
 
   -- bookkeeping
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 INSERT OR IGNORE INTO config(config_id) VALUES(1);

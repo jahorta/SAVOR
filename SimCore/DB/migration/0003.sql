@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS battle_plan (
   name         TEXT,
   fingerprint  TEXT NOT NULL UNIQUE,
   num_turns    INTEGER NOT NULL,
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_battle_plan_by_settings ON battle_plan(settings_id);

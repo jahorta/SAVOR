@@ -55,7 +55,7 @@ CREATE TABLE battle_plan__new (
   name        TEXT,
   fingerprint TEXT NOT NULL UNIQUE,
   num_turns   INTEGER NOT NULL,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 INSERT INTO battle_plan__new(plan_id, name, fingerprint, num_turns, created_at)

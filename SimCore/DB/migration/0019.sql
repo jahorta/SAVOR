@@ -17,7 +17,7 @@ CREATE TABLE triggers_new (
   action_kind INTEGER NOT NULL,     -- PK_* integer
   action_args TEXT,                 -- INI
   active INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at INTEGER DEFAULT (strftime('%s','now')),
   FOREIGN KEY(action_kind) REFERENCES program_kinds(kind_id)
 );
 

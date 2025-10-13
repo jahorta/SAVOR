@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS battle_contexts (
   job_set_id   INTEGER NOT NULL,
   job_id       INTEGER NOT NULL,
   artifact_id  INTEGER NOT NULL,
-  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at   INTEGER DEFAULT (strftime('%s','now')),
   savestate_id INTEGER NOT NULL,
   bc_version   INTEGER NOT NULL
 );
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS triggers (
   condition    TEXT NOT NULL,
   action_kind  TEXT NOT NULL,
   action_args  TEXT NOT NULL,
-  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at   INTEGER DEFAULT (strftime('%s','now'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_triggers_scope ON triggers(scope, scope_id);
