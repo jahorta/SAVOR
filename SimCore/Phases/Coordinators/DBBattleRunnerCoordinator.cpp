@@ -50,6 +50,7 @@ namespace simcore {
             r.lhs_prog_id = std::nullopt;
             r.rhs_prog_id = std::nullopt;
             r.description = s.desc;
+            r.fingerprint = "";
             return r;
         }
 
@@ -121,6 +122,7 @@ namespace simcore {
 
                 // Build the base DB row from the raw Spec (width/turn-mask defaults already normalized there)
                 PredicateSpecRow row = to_row(ps);
+                row.fingerprint = fp;
 
                 // LHS program
                 if ((ps.flags & static_cast<uint32_t>(simcore::pred::PredFlag::LhsIsProg)) && !ps.lhs_prog.empty()) {
@@ -149,7 +151,7 @@ namespace simcore {
                 }
 
                 // Ensure the predicate spec by fingerprint (now carrying program IDs)
-                auto pid = simcore::db::PredicateSpecRepo::EnsureByFingerprint(row, fp);
+                auto pid = simcore::db::PredicateSpecRepo::EnsureByFingerprint(row);
                 if (!pid.ok) return DbResult<int64_t>::Err(pid.error);
 
                 pred_links.push_back(SettingsPredicateRow{ 0, static_cast<int32_t>(i), pid.value });
