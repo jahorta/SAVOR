@@ -88,11 +88,11 @@ namespace soa::battle::actions {
         return (slot <= 11u) ? static_cast<int>(slot) : -1;
     }
 
-    inline std::string get_battle_path_summary(BattlePath bp) {
+    inline std::string get_battle_path_summary(BattlePath bp, std::string sep = "\n", bool offset = true) {
         std::vector<std::string> path;
         for (int i = 0; i < bp.size(); i++) {
             auto tp = bp[i];
-            path.emplace_back("\n    Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
+            path.emplace_back(sep + (offset ? "    " : " ") + "Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
             for (auto sp : tp.spec) {
                 std::string actor = " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
                 if (sp.macro == BattleAction::Attack)
