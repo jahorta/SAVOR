@@ -22,6 +22,7 @@ namespace simcore {
             if (r.lhs_prog_id) sqlite3_bind_int64(st, 12, *r.lhs_prog_id); else sqlite3_bind_null(st, 12);
             if (r.rhs_prog_id) sqlite3_bind_int64(st, 13, *r.rhs_prog_id); else sqlite3_bind_null(st, 13);
             sqlite3_bind_text(st, 14, r.description.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 15, r.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
         }
 
         static inline DbResult<int64_t> Impl_Insert(DbEnv& env, const PredicateSpecRow& r) {
@@ -30,8 +31,8 @@ namespace simcore {
             int rc = sqlite3_prepare_v2(db,
                 "INSERT INTO predicate_spec("
                 "spec_version,required_bp,kind,width,cmp_op,flags,"
-                "lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc)"
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
+                "lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc,fingerprint)"
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
             bind_spec(st, r);
@@ -82,6 +83,7 @@ namespace simcore {
             if (sqlite3_column_type(st, 12) == SQLITE_NULL) r.lhs_prog_id.reset(); else r.lhs_prog_id = sqlite3_column_int64(st, 12);
             if (sqlite3_column_type(st, 13) == SQLITE_NULL) r.rhs_prog_id.reset(); else r.rhs_prog_id = sqlite3_column_int64(st, 13);
             r.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 14));
+            r.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(st, 15));
             return r;
         }
 
@@ -89,7 +91,7 @@ namespace simcore {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "SELECT id,spec_version,required_bp,kind,width,cmp_op,flags,lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc "
+                "SELECT id,spec_version,required_bp,kind,width,cmp_op,flags,lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc,fingerprint "
                 "FROM predicate_spec WHERE id=?;",
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<PredicateSpecRow>::Err({ map_sqlite_err(rc), rc, "prepare" });
@@ -153,36 +155,62 @@ namespace simcore {
             return DbResult<std::optional<int64_t>>::Ok(out);
         }
 
-        static inline DbResult<int64_t> Impl_InsertWithFingerprint(DbEnv& env, const PredicateSpecRow& r, const std::string& fp) {
-            sqlite3* db = env.handle();
-            sqlite3_stmt* st{};
-            // add 'fingerprint' column at the end of the INSERT value list
-            int rc = sqlite3_prepare_v2(db,
-                "INSERT INTO predicate_spec("
-                "spec_version,required_bp,kind,width,cmp_op,flags,"
-                "lhs_addr,lhs_key,rhs_value,rhs_key,turn_mask,lhs_prog_id,rhs_prog_id,desc,fingerprint)"
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare" });
-
-            bind_spec(st, r); // binds 14 params
-            sqlite3_bind_text(st, 15, fp.c_str(), -1, SQLITE_TRANSIENT);
-
-            rc = sqlite3_step(st);
-            if (rc != SQLITE_DONE) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert" }); }
-            int64_t id = sqlite3_last_insert_rowid(db);
-            sqlite3_finalize(st);
-            return DbResult<int64_t>::Ok(id);
-        }
-
-        std::future<DbResult<int64_t>> PredicateSpecRepo::EnsureByFingerprintAsync(const PredicateSpecRow& r, const std::string& fingerprint, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> PredicateSpecRepo::EnsureByFingerprintAsync(const PredicateSpecRow& r, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
-                [=, &r, &fingerprint](DbEnv& e) -> DbResult<int64_t> {
-                    auto f = Impl_FindByFingerprint(e, fingerprint);
+                [=, &r](DbEnv& e) -> DbResult<int64_t> {
+                    auto f = Impl_FindByFingerprint(e, r.fingerprint);
                     if (!f.ok) return DbResult<int64_t>::Err(f.error);
                     if (f.value) return DbResult<int64_t>::Ok(*f.value);
-                    return Impl_InsertWithFingerprint(e, r, fingerprint);
+                    return Impl_Insert(e, r);
                 });
+        }
+
+        // lightweight search for left-pane library
+        static inline DbResult<std::vector<PredicateSpecLite>>
+            Impl_ListLite(DbEnv& env, const std::string& search, int32_t limit) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+
+            // search by description (desc); case-insensitive; escape % _ \ like your other ListLite impls
+            const char* sql =
+                "SELECT id, COALESCE(name,''), COALESCE(desc,'') "
+                "FROM predicate_spec "
+                "WHERE LOWER(COALESCE(desc,'')) LIKE LOWER(?) ESCAPE '\\' "
+                "ORDER BY id DESC "
+                "LIMIT ?;";
+
+            if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<std::vector<PredicateSpecLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+
+            std::string pattern = "%";
+            for (char c : search) { if (c == '%' || c == '_' || c == '\\') pattern.push_back('\\'); pattern.push_back(c); }
+            pattern.push_back('%');
+
+            sqlite3_bind_text(st, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(st, 2, (limit <= 0 ? 50 : limit));
+
+            std::vector<PredicateSpecLite> out;
+            int rc;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                PredicateSpecLite r{};
+                r.id = sqlite3_column_int64(st, 0);
+                r.name = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+                r.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                out.emplace_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE)
+                return DbResult<std::vector<PredicateSpecLite>>::Err({ map_sqlite_err(rc), rc, "list predicate specs" });
+
+            return DbResult<std::vector<PredicateSpecLite>>::Ok(std::move(out));
+        }
+
+        std::future<DbResult<std::vector<PredicateSpecLite>>>
+            PredicateSpecRepo::ListLiteAsync(const std::string& search, int32_t limit, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<PredicateSpecLite>>(
+                OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& env) { return Impl_ListLite(env, search, limit); }
+            );
         }
 
     } // db

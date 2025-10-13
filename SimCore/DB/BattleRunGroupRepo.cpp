@@ -112,5 +112,50 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_IsComplete(e, group_id); });
         }
 
+        static inline void bind_like(sqlite3_stmt* st, int idx, const std::string& s) {
+            std::string pat = "%" + s + "%";
+            sqlite3_bind_text(st, idx, pat.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        static inline DbResult<Page<BattleRunGroupLite>> Impl_ListBRG(DbEnv& env, const PagedQuery<>& q, const std::string& search) {
+            sqlite3* db = env.handle();
+            std::string sql = "SELECT group_id,settings_id,seed_probe_id,COALESCE(name,''),COALESCE(description,''),created_at FROM battle_run_groups ";
+            std::string where;
+            if (!search.empty()) { where += "WHERE (name LIKE ? OR description LIKE ?)"; }
+            std::string keyset; KeysetCursor cur{}; bool has = false;
+            if (q.before) { has = true; cur = *q.before; where += (where.empty() ? "WHERE " : " AND "); where += "(created_at < ? OR (created_at = ? AND group_id < ?))"; }
+            if (q.after) { has = true; cur = *q.after;  where += (where.empty() ? "WHERE " : " AND "); where += "(created_at > ? OR (created_at = ? AND group_id > ?))"; }
+            std::string order = q.after ? " ORDER BY created_at ASC, group_id ASC " : " ORDER BY created_at DESC, group_id DESC ";
+            sqlite3_stmt* st{};
+            std::string final = sql + where + order + " LIMIT ?;";
+            if (sqlite3_prepare_v2(db, final.c_str(), -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<Page<BattleRunGroupLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            int b = 1;
+            if (!search.empty()) { bind_like(st, b++, search); bind_like(st, b++, search); }
+            if (q.before) { sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.secondary); }
+            if (q.after) { sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.primary); sqlite3_bind_int64(st, b++, cur.secondary); }
+            sqlite3_bind_int(st, b++, q.limit);
+            Page<BattleRunGroupLite> page{};
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                BattleRunGroupLite r{};
+                r.group_id = sqlite3_column_int64(st, 0);
+                r.settings_id = sqlite3_column_int64(st, 1);
+                r.seed_probe_id = sqlite3_column_int64(st, 2);
+                r.name = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+                r.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+                r.created_at = sqlite3_column_int64(st, 5);
+                page.items.push_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+            if (q.after && !page.items.empty()) std::reverse(page.items.begin(), page.items.end());
+            if (!page.items.empty()) {
+                page.prev = KeysetCursor{ page.items.front().created_at, page.items.front().group_id };
+                page.next = KeysetCursor{ page.items.back().created_at,  page.items.back().group_id };
+            }
+            return DbResult<Page<BattleRunGroupLite>>::Ok(std::move(page));
+        }
+        std::future<DbResult<Page<BattleRunGroupLite>>> BattleRunGroupRepo::ListPagedAsync(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+            return DBService::instance().submit_res<Page<BattleRunGroupLite>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListBRG(e, q, search); });
+        }
     }
 } // namespace

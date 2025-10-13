@@ -1,5 +1,11 @@
 #include "DataService.h"
+#include "../SavestateRepo.h"
+#include "../SeedProbeRepo.h"
+#include "../TasMovieRepo.h"
+#include "../BattleRunGroupRepo.h"
+#include "../DBCore/ObjectStore.h"
 #include "../ProgramKindsRepo.h"
+#include "../../Runner/IPC/Wire.h"
 #include <thread>
 
 namespace simcore::db {
@@ -314,6 +320,258 @@ namespace simcore::db {
             }).detach();
 
         return fut;
+    }
+
+    std::future<DbResult<IniDoc>> DataService::FetchJobVmKvIniAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<IniDoc>> p;
+        auto fut = p.get_future();
+        std::thread([job_id, rp, pr = std::move(p)]() mutable {
+            auto jr = JobsRepo::GetAsync(job_id).get();
+            if (!jr.ok) { pr.set_value(DbResult<IniDoc>::Err(jr.error)); return; }
+            IniDoc doc;
+            if (jr.value.vm_kv.has_value() && !jr.value.vm_kv->empty()) {
+                try { doc = IniDoc::parse(*jr.value.vm_kv); }
+                catch (...) { pr.set_value(DbResult<IniDoc>::Err({ DbErrorKind::InvalidData, 0, "vm_kv parse error" })); return; }
+            }
+            pr.set_value(DbResult<IniDoc>::Ok(std::move(doc)));
+            }).detach();
+        return fut;
+    }
+
+    
+
+    std::future<DbResult<IniDoc>> DataService::FetchJobResultsIniAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<IniDoc>> p;
+        auto fut = p.get_future();
+        std::thread([job_id, rp, pr = std::move(p)]() mutable {
+            auto jr = JobsRepo::GetAsync(job_id).get();
+            if (!jr.ok) { pr.set_value(DbResult<IniDoc>::Err(jr.error)); return; }
+            auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
+            auto r = codec.decode_results_from_db(job_id, std::optional<int64_t>{});
+            if (!r.ok) { pr.set_value(DbResult<IniDoc>::Err(r.error)); return; }
+            IniDoc doc;
+            if (!r.value.empty()) {
+                try { doc = IniDoc::parse(r.value); }
+                catch (...) { pr.set_value(DbResult<IniDoc>::Err({ DbErrorKind::InvalidData, 0, "results ini parse error" })); return; }
+            }
+            pr.set_value(DbResult<IniDoc>::Ok(std::move(doc)));
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<IniDoc>> DataService::FetchDecodedProgressIniAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<IniDoc>> p;
+        auto fut = p.get_future();
+        std::thread([job_id, rp, pr = std::move(p)]() mutable {
+            auto jr = JobsRepo::GetAsync(job_id).get();
+            if (!jr.ok) { pr.set_value(DbResult<IniDoc>::Err(jr.error)); return; }
+            auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
+            auto r = codec.decode_progress_from_db(job_id, std::optional<int64_t>{});
+            if (!r.ok) { pr.set_value(DbResult<IniDoc>::Err(r.error)); return; }
+            IniDoc doc;
+            if (!r.value.empty()) {
+                try { doc = IniDoc::parse(r.value); }
+                catch (...) { pr.set_value(DbResult<IniDoc>::Err({ DbErrorKind::InvalidData, 0, "progress ini parse error" })); return; }
+            }
+            pr.set_value(DbResult<IniDoc>::Ok(std::move(doc)));
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<std::vector<ArtifactRefLite>>> DataService::FetchJobArtifactRefsAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<std::vector<ArtifactRefLite>>> p;
+        auto fut = p.get_future();
+        std::thread([job_id, rp, pr = std::move(p)]() mutable {
+            auto jr = JobsRepo::GetAsync(job_id).get();
+            if (!jr.ok) { pr.set_value(DbResult<std::vector<ArtifactRefLite>>::Err(jr.error)); return; }
+            auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
+            auto r = codec.build_artifact_ini_from_db(job_id);
+            if (!r.ok) { pr.set_value(DbResult<std::vector<ArtifactRefLite>>::Err(r.error)); return; }
+
+            auto list = ArtifactIniBuilder::parse_from_ini(r.value);
+
+            // Optional: enrich from ObjectStore metadata (best-effort)
+            for (auto& a : list) {
+                auto meta = ObjectStore::GetAsync(a.artifact_id).get();
+                if (meta.ok) {
+                    const auto& m = meta.value;
+                    a.filename = m.filename;
+                    a.size_bytes = static_cast<uint64_t>(m.size);
+                    a.compression = static_cast<int>(m.compression);
+                    //a.created_at = m.created_at;
+                }
+            }
+            pr.set_value(DbResult<std::vector<ArtifactRefLite>>::Ok(std::move(list)));
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<void>> DataService::RequeueJobAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<void>> pr;
+        auto fut = pr.get_future();
+        std::thread([job_id, rp, p = std::move(pr)]() mutable {
+            auto r = JobsRepo::RequeueAsync(job_id, rp).get();
+            if (!r.ok) { p.set_value(DbResult<void>::Err(r.error)); return; }
+            // Best-effort event; ignore errors (same behavior as before).
+            (void)JobEventsRepo::AppendAsync(job_id, "REQUEUE", std::nullopt, rp).get();
+            p.set_value(DbResult<void>::Ok());
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<void>> DataService::CancelJobAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<void>> pr;
+        auto fut = pr.get_future();
+        std::thread([job_id, rp, p = std::move(pr)]() mutable {
+            auto r = JobsRepo::CancelIfNotRunningAsync(job_id, rp).get();
+            if (!r.ok) { p.set_value(DbResult<void>::Err(r.error)); return; }
+            (void)JobEventsRepo::AppendAsync(job_id, "CANCEL", std::nullopt, rp).get();
+            p.set_value(DbResult<void>::Ok());
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<void>> DataService::BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp) {
+        std::promise<DbResult<void>> pr;
+        auto fut = pr.get_future();
+        std::thread([job_id, delta, rp, p = std::move(pr)]() mutable {
+            auto r = JobsRepo::BumpPriorityAsync(job_id, delta, rp).get();
+            if (!r.ok) { p.set_value(DbResult<void>::Err(r.error)); return; }
+            // Include the +/-delta string as before.
+            std::string payload = (delta > 0 ? "+" : "") + std::to_string(delta);
+            (void)JobEventsRepo::AppendAsync(job_id, "PRIORITY_BUMP", payload, rp).get();
+            p.set_value(DbResult<void>::Ok());
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<int64_t>> DataService::CreateJobSetAsync(
+        std::optional<std::string> purpose,
+        int program_kind,
+        std::optional<std::string> created_by,
+        std::optional<std::string> domain_ref_kind,
+        std::optional<int64_t>    domain_ref_id,
+        std::optional<std::string> meta_text,
+        std::optional<int64_t>    expected_total,
+        RetryPolicy rp)
+    {
+        return JobSetsRepo::CreateAsync(
+            std::move(purpose), program_kind,
+            std::move(created_by),
+            std::move(domain_ref_kind),
+            std::move(domain_ref_id),
+            std::move(meta_text),
+            std::move(expected_total),
+            rp);
+    }
+
+    std::future<DbResult<int64_t>> DataService::EncodeJobSetWithCodecAsync(
+        int program_kind,
+        int64_t job_set_id,
+        const std::string& ini_sorted,
+        RetryPolicy /*rp*/)
+    {
+        return std::async(std::launch::async, [program_kind, job_set_id, ini = std::string(ini_sorted)]() mutable {
+            simcore::db::codec::ensure_codecs_registered();
+            auto& codec = ProgramDBCodecRegistry::for_kind(program_kind);
+            return codec.encode_job_into_db(job_set_id, ini);
+            });
+    }
+
+    std::future<DbResult<void>> DataService::SetJobSetExpectedTotalAsync(
+        int64_t job_set_id,
+        std::optional<int64_t> expected_total,
+        RetryPolicy rp)
+    {
+        return JobSetsRepo::SetExpectedTotalAsync(job_set_id, std::move(expected_total), rp);
+    }
+
+    std::future<DbResult<Page<SavestateLite>>> DataService::FetchSavestatesPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+        return SavestateRepo::ListPagedAsync(q, search, rp);
+    }
+    std::future<DbResult<Page<SeedProbeLite>>> DataService::FetchSeedProbesPage(const PagedQuery<>& q, const std::string& search, bool only_done, std::optional<int64_t> filter_savestate_id, RetryPolicy rp) {
+        return SeedProbeRepo::ListPagedAsync(q, search, only_done, filter_savestate_id, rp);
+    }
+    std::future<DbResult<Page<TasMovieLite>>> DataService::FetchTasMoviesPage(const PagedQuery<>& q, const std::string& search, bool only_done, RetryPolicy rp) {
+        return TasMovieRepo::ListPagedAsync(q, search, only_done, rp);
+    }
+    std::future<DbResult<Page<BattleRunGroupLite>>> DataService::FetchBattleRunGroupsPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+        return BattleRunGroupRepo::ListPagedAsync(q, search, rp);
+    }
+    std::future<DbResult<Page<ObjectRefLite>>> DataService::FetchObjectRefsPage(const PagedQuery<>& q, const std::string& search, const std::string& ext_filter, RetryPolicy rp) {
+        return ObjectRefList::ListPagedAsync(q, search, ext_filter, rp);
+    }
+
+    std::future<DbResult<int64_t>> DataService::GetSavestateForSeedProbeAsync(int64_t seed_probe_id, RetryPolicy rp) {
+        return std::async(std::launch::async, [seed_probe_id, rp]() -> DbResult<int64_t> {
+            auto fr = SeedProbeRepo::GetAsync(seed_probe_id, rp).get();
+            if (!fr.ok) return DbResult<int64_t>::Err(fr.error);
+            if (fr.value.savestate_id <= 0)
+                return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "seed_probe has no savestate_id" });
+            return DbResult<int64_t>::Ok(fr.value.savestate_id);
+            });
+    }
+
+    std::future<DbResult<std::optional<simcore::db::BattleContextRow>>> DataService::GetLatestBattleContextForSavestateAsync(int64_t savestate_id, RetryPolicy rp) {
+        // Implement via a tiny repo helper or reuse List/ORDER BY created_at DESC LIMIT 1
+        return BattleContextRepo::GetLatestBySavestateIdAsync(savestate_id);
+        
+    }
+
+    std::future<DbResult<int64_t>> DataService::GetNewBattleContextAsync(const std::string& ini_string, RetryPolicy rp) {
+        
+        return std::async(std::launch::async, [ini_string, rp]() -> DbResult<int64_t> {
+            auto js = JobSetsRepo::Create("New Context Probe", PK_BattleContextProbe, std::nullopt, std::nullopt, std::nullopt, ini_string, 1);
+            if (!js.ok) return DbResult<int64_t>::Err(js.error);
+
+            auto cp = EncodeJobSetWithCodecAsync(PK_BattleContextProbe, js.value, ini_string);
+            if (!js.ok) return DbResult<int64_t>::Err(js.error);
+
+            return DbResult<int64_t>::Ok(js.value);
+            });
+    }
+
+    std::future<DbResult<int64_t>> DataService::SaveAuthoringTemplateAsync(const simcore::db::AuthoringTemplateRow& r, bool is_update, RetryPolicy rp) {
+        if (is_update) {
+            return std::async(std::launch::async, [r, rp]() -> DbResult<int64_t> {
+                auto res = AuthoringTemplatesRepo::UpdateAsync(r, rp).get();
+                if (!res.ok) return DbResult<int64_t>::Err(res.error);
+                return DbResult<int64_t>::Ok(r.id);
+                });
+        }
+        return AuthoringTemplatesRepo::InsertAsync(r, rp);
+    }
+
+    std::future<DbResult<simcore::db::AuthoringTemplateRow>> DataService::LoadAuthoringTemplateAsync(int64_t template_id, RetryPolicy rp) {
+        return AuthoringTemplatesRepo::GetAsync(template_id, rp);
+    }
+
+    std::future<DbResult<std::vector<simcore::db::TurnActionPresetLite>>> DataService::ListActionPresetsAsync(const std::string& search, int32_t limit, RetryPolicy rp) {
+        return TurnActionPresetRepo::ListLiteAsync(search, limit, rp);
+    }
+
+    std::future<DbResult<int64_t>> DataService::SaveActionPresetAsync(const simcore::db::TurnActionPresetRow& r, bool is_update, RetryPolicy rp) {
+        if (is_update) {
+            return std::async(std::launch::async, [r, rp]() -> DbResult<int64_t> {
+                auto res = TurnActionPresetRepo::UpdateAsync(r, rp).get();
+                if (!res.ok) return DbResult<int64_t>::Err(res.error);
+                return DbResult<int64_t>::Ok(r.id);
+                });
+        }
+        return TurnActionPresetRepo::InsertAsync(r, rp);
+    }
+
+    std::future<DbResult<std::vector<int64_t>>> DataService::InsertUiConfigRowsAsync(const std::vector<UiConfigRow>& rows, RetryPolicy rp) {
+        return UiConfigRowRepo::InsertManyAsync(rows, rp);
+    }
+
+    std::future<DbResult<std::vector<UiConfigRow>>> DataService::GetUiConfigRowsByIdsAsync(const std::vector<int64_t>& ids, RetryPolicy rp) {
+        return UiConfigRowRepo::GetByIdsAsync(ids, rp);
+    }
+
+    std::future<DbResult<std::vector<simcore::db::PredicateSpecLite>>>
+        DataService::ListPredicateSpecsAsync(const std::string& search, int32_t limit, RetryPolicy rp) {
+        return simcore::db::PredicateSpecRepo::ListLiteAsync(search, limit, rp);
     }
 
 } // namespace simcore::db

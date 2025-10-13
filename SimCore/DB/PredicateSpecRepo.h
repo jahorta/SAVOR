@@ -27,6 +27,13 @@ namespace simcore {
             std::optional<int64_t> lhs_prog_id;
             std::optional<int64_t> rhs_prog_id;
             std::string description;
+            std::string fingerprint;
+        };
+
+        struct PredicateSpecLite {
+            int64_t     id{};
+            std::string name;
+            std::string description;   // from predicate_spec.desc
         };
 
         struct PredicateSpecRepo {
@@ -35,14 +42,18 @@ namespace simcore {
             static std::future<DbResult<int64_t>> BulkInsertAsync(std::vector<PredicateSpecRow>& rows, RetryPolicy rp = {});
             static std::future<DbResult<PredicateSpecRow>> GetAsync(int64_t id, RetryPolicy rp = {});
             static std::future<DbResult<std::vector<PredicateSpecRow>>> ListByBpAsync(int32_t required_bp, RetryPolicy rp = {});
-            static std::future<DbResult<int64_t>> EnsureByFingerprintAsync(const PredicateSpecRow& r, const std::string& fingerprint, RetryPolicy rp = {});
+            static std::future<DbResult<int64_t>> EnsureByFingerprintAsync(const PredicateSpecRow& r, RetryPolicy rp = {});
+            static std::future<DbResult<std::vector<PredicateSpecLite>>> ListLiteAsync(const std::string& search, int32_t limit, RetryPolicy rp = {});
 
             // Blocking conveniences
             static inline DbResult<int64_t> Insert(const PredicateSpecRow& r) { return InsertAsync(r).get(); }
             static inline DbResult<int64_t> BulkInsert(std::vector<PredicateSpecRow>& rows) { return BulkInsertAsync(rows).get(); }
             static inline DbResult<PredicateSpecRow> Get(int64_t id) { return GetAsync(id).get(); }
             static inline DbResult<std::vector<PredicateSpecRow>> ListByBp(int32_t bp) { return ListByBpAsync(bp).get(); }
-            static inline DbResult<int64_t> EnsureByFingerprint(const PredicateSpecRow& r, const std::string& fingerprint) { return EnsureByFingerprintAsync(r, fingerprint).get(); }
+            static inline DbResult<int64_t> EnsureByFingerprint(const PredicateSpecRow& r) { return EnsureByFingerprintAsync(r).get(); }
+            static inline DbResult<std::vector<PredicateSpecLite>> ListLite(const std::string& s, int32_t lim) {
+                return ListLiteAsync(s, lim).get();
+            }
         };
 
     } // db

@@ -2,6 +2,9 @@
 #include "DBCore/DbResult.h"
 #include "DBCore/DbRetryPolicy.h"
 #include "DBCore/DbService.h"
+#include "Querying/IdRepoListDTO.h"
+#include "Querying/Paging.h"
+#include "Querying/PagedQuery.h"
 #include <future>
 #include <string>
 #include <vector>
@@ -34,6 +37,7 @@ namespace simcore {
             static std::future<DbResult<BattleRunGroupRow>> GetAsync(int64_t group_id, RetryPolicy rp = {});
             static std::future<DbResult<std::vector<int64_t>>> ListRunIdsAsync(int64_t group_id, RetryPolicy rp = {});
             static std::future<DbResult<bool>> IsCompleteAsync(int64_t group_id, RetryPolicy rp = {});
+            static std::future<DbResult<Page<BattleRunGroupLite>>> ListPagedAsync(const PagedQuery<>& q, const std::string& search, RetryPolicy rp = {});
 
             // Blocking convenience
             static inline DbResult<int64_t> Create(
@@ -48,6 +52,9 @@ namespace simcore {
             static inline DbResult<BattleRunGroupRow> Get(int64_t group_id) { return GetAsync(group_id).get(); }
             static inline DbResult<std::vector<int64_t>> ListRunIds(int64_t group_id) { return ListRunIdsAsync(group_id).get(); }
             static inline DbResult<bool> IsComplete(int64_t group_id) { return IsCompleteAsync(group_id).get(); }
+            static inline DbResult<Page<BattleRunGroupLite>> ListPaged(const PagedQuery<>& q, const std::string& s) {
+                return ListPagedAsync(q, s).get();
+            }
         };
 
     }

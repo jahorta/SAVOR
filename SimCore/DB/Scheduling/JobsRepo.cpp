@@ -138,7 +138,7 @@ namespace simcore::db {
         int rc = 0;
         sqlite3_stmt* st = nullptr;
 
-        rc = sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nullptr, nullptr, nullptr);
+        rc = sqlite3_exec(db, "SAVEPOINT claim_job;", nullptr, nullptr, nullptr);
         if (rc != SQLITE_OK) return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "begin" });
 
         int64_t cand_id = 0;
@@ -151,13 +151,17 @@ namespace simcore::db {
             "ORDER BY (pk.base_priority + j.priority + ((strftime('%s','now') - j.queued_at) * ?1)) DESC, j.queued_at ASC "
             "LIMIT 1;";
         rc = sqlite3_prepare_v2(db, sel, -1, &st, nullptr);
-        if (rc != SQLITE_OK) { sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr); return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare sel" }); }
+        if (rc != SQLITE_OK) { 
+            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr);
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
+            return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare sel" }); 
+        }
         sqlite3_bind_double(st, 1, aging_factor);
         if (sqlite3_step(st) == SQLITE_ROW) cand_id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
 
         if (cand_id == 0) {
-            sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr);
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
             return DbResult<std::optional<JobRow>>::Ok(std::nullopt);
         }
 
@@ -171,13 +175,20 @@ namespace simcore::db {
         sqlite3_bind_int64(st, 3, cand_id);
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) { sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr); return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "update" }); }
+        if (rc != SQLITE_DONE) {
+            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr);
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
+            return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "update" }); 
+        }
 
         auto row = impl_get(env, cand_id);
-        if (!row.ok) { sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr); return DbResult<std::optional<JobRow>>::Err(row.error); }
+        if (!row.ok) {
+            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr);
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr); 
+            return DbResult<std::optional<JobRow>>::Err(row.error); 
+        }
 
-        rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr);
-        if (rc != SQLITE_OK) return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "commit" });
+        sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
         return DbResult<std::optional<JobRow>>::Ok(std::optional<JobRow>(row.value));
     }
 
@@ -508,6 +519,55 @@ namespace simcore::db {
         if (limit <= 0) limit = 50;
         return DBService::instance().submit_res<Page<JobLite>>(OpType::Read, Priority::Normal, rp,
             [=](DbEnv& e) { return impl_list_recent_jobs_after(e, scope, after, limit); });
+    }
+
+    static inline DbResult<void> impl_requeue(DbEnv& env, int64_t job_id) {
+        sqlite3* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, "UPDATE jobs SET state='QUEUED', claimed_by_token=NULL, lease_expires_at=NULL WHERE job_id=?1;", -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare requeue" });
+        sqlite3_bind_int64(st, 1, job_id);
+        rc = sqlite3_step(st); sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "exec requeue" });
+        return DbResult<void>::Ok();
+    }
+    std::future<DbResult<void>> JobsRepo::RequeueAsync(int64_t job_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_requeue(e, job_id); });
+    }
+
+    static inline DbResult<void> impl_cancel_if_not_running(DbEnv& env, int64_t job_id) {
+        sqlite3* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, "UPDATE jobs SET state='CANCELED', claimed_by_token=NULL, lease_expires_at=NULL WHERE job_id=?1 AND state IN('QUEUED','CLAIMED');", -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare cancel" });
+        sqlite3_bind_int64(st, 1, job_id);
+        rc = sqlite3_step(st);
+        int changes = sqlite3_changes(db);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "exec cancel" });
+        if (changes == 0) return DbResult<void>::Err({ DbErrorKind::InvalidState, 0, "cannot cancel a running or terminal job" });
+        return DbResult<void>::Ok();
+    }
+    std::future<DbResult<void>> JobsRepo::CancelIfNotRunningAsync(int64_t job_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_cancel_if_not_running(e, job_id); });
+    }
+
+    static inline DbResult<void> impl_bump_priority(DbEnv& env, int64_t job_id, int delta) {
+        sqlite3* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, "UPDATE jobs SET priority=priority+?2 WHERE job_id=?1;", -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare bump" });
+        sqlite3_bind_int64(st, 1, job_id);
+        sqlite3_bind_int(st, 2, delta);
+        rc = sqlite3_step(st); sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "exec bump" });
+        return DbResult<void>::Ok();
+    }
+    std::future<DbResult<void>> JobsRepo::BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_bump_priority(e, job_id, delta); });
     }
 
 } // namespace simcore::db

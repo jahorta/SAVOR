@@ -2,6 +2,9 @@
 #include "DBCore/DbResult.h"
 #include "DBCore/DbRetryPolicy.h"
 #include "DBCore/DbService.h"
+#include "Querying/IdRepoListDTO.h"
+#include "Querying/Paging.h"
+#include "Querying/PagedQuery.h"
 #include <future>
 #include <string>
 #include <vector>
@@ -36,6 +39,8 @@ namespace simcore::db {
             static std::future<DbResult<TasMovieRow>>               GetAsync(int64_t id, RetryPolicy rp = {});
             static std::future<DbResult<std::vector<TasMovieRow>>>  ListPlannedAsync(RetryPolicy rp = {});
             static std::future<DbResult<std::vector<TasMovieRow>>>  ListActiveAsync(RetryPolicy rp = {});
+            static std::future<DbResult<Page<TasMovieLite>>> ListPagedAsync(const PagedQuery<>& q, const std::string& search, bool only_done, RetryPolicy rp = {});
+
 
             // Optional blocking conveniences
             static inline DbResult<int64_t> Enqueue(int64_t base_file_id, int64_t new_rtc, int32_t priority) { return EnqueueAsync(base_file_id, new_rtc, priority).get(); }
@@ -47,6 +52,9 @@ namespace simcore::db {
             static inline DbResult<TasMovieRow> Get(int64_t id) { return GetAsync(id).get(); }
             static inline DbResult<std::vector<TasMovieRow>> ListPlanned() { return ListPlannedAsync().get(); }
             static inline DbResult<std::vector<TasMovieRow>> ListActive() { return ListActiveAsync().get(); }
+            static inline DbResult<Page<TasMovieLite>> ListPaged(const PagedQuery<>& q, const std::string& s, bool only_done) {
+                return ListPagedAsync(q, s, only_done).get();
+            }
         };
 
 } // namespace simcore::db

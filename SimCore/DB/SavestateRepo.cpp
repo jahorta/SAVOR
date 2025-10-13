@@ -80,23 +80,6 @@ namespace simcore {
         static inline DbResult<void>    Impl_Finalize(DbEnv& env, int64_t id, int64_t object_ref_id);
         static inline DbResult<std::optional<SavestateRow>> Impl_Get(DbEnv& env, int64_t id);
 
-        static inline DbResult<std::string> Impl_Materialize(DbEnv& env, int64_t savestate_id, const std::string& objdir, const std::string& tmpdir) {
-            auto row = Impl_Get(env, savestate_id);
-            if (!row.ok) return DbResult<std::string>::Err(row.error);
-            if (!row.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0, "savestate not found" });
-            const auto ss = row.value.value();
-            if (!ss.complete || ss.object_ref_id <= 0) return DbResult<std::string>::Err({ DbErrorKind::InvalidState, 0, "savestate incomplete" });
-            auto mat = ObjectStore::MaterializeToTemp(ss.object_ref_id);
-            if (!mat.ok) return DbResult<std::string>::Err(mat.error);
-            return DbResult<std::string>::Ok(mat.value);
-        }
-
-        std::future<DbResult<std::string>> SavestateRepo::MaterializeToTempPathAsync(
-            int64_t savestate_id, std::string objdir, std::string tmpdir, RetryPolicy rp) {
-            return DBService::instance().submit_res<std::string>(OpType::Read, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_Materialize(e, savestate_id, objdir, tmpdir); });
-        }
-
         static inline DbResult<std::optional<SavestateRow>> Impl_GetByProbeId(DbEnv& env, int64_t probe_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* stmt{};
@@ -126,6 +109,56 @@ namespace simcore {
         std::future<DbResult<std::optional<SavestateRow>>> SavestateRepo::GetByProbeIdAsync(int64_t probe_id, RetryPolicy rp) {
             return DBService::instance().submit_res<std::optional<SavestateRow>>(OpType::Read, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_GetByProbeId(e, probe_id); });
+        }
+
+        static inline void bind_like(sqlite3_stmt* st, int idx, const std::string& s) {
+            std::string pat = "%" + s + "%";
+            sqlite3_bind_text(st, idx, pat.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        static inline DbResult<Page<SavestateLite>> Impl_ListSavestate(DbEnv& env, const PagedQuery<>& q, const std::string& search) {
+            sqlite3* db = env.handle();
+            std::string sql = "SELECT id,savestate_type,COALESCE(note,''),object_ref_id,complete FROM savestate ";
+            std::string where;
+            bool has_num = false; int num = 0;
+            try { num = std::stoi(search); has_num = true; }
+            catch (...) {}
+            if (!search.empty()) {
+                where += "WHERE (note LIKE ? OR savestate_type " + std::string(has_num ? "= ?" : ">= -1") + ")";
+            }
+            std::string keyset; KeysetCursor cur{}; bool has_cursor = false;
+            if (q.before) { has_cursor = true; cur = *q.before; keyset = " AND id < ? "; }
+            if (q.after) { has_cursor = true; cur = *q.after;  keyset = " AND id > ? "; }
+            if (has_cursor) where += (where.empty() ? "WHERE id" : keyset);
+            std::string order = q.after ? " ORDER BY id ASC " : " ORDER BY id DESC ";
+            sql += where + order + " LIMIT ?;";
+            sqlite3_stmt* st{};
+            if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<Page<SavestateLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+            int b = 1;
+            if (!search.empty()) { bind_like(st, b++, search); if (has_num) sqlite3_bind_int(st, b++, num); }
+            if (has_cursor) sqlite3_bind_int64(st, b++, q.after ? cur.secondary : cur.secondary ? cur.secondary : cur.primary); // id
+            sqlite3_bind_int(st, b++, q.limit);
+            Page<SavestateLite> page{};
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                SavestateLite r{};
+                r.id = sqlite3_column_int64(st, 0);
+                r.savestate_type = sqlite3_column_int(st, 1);
+                r.note = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                if (sqlite3_column_type(st, 3) != SQLITE_NULL) r.object_ref_id = sqlite3_column_int64(st, 3);
+                r.complete = sqlite3_column_int(st, 4);
+                page.items.push_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+            if (q.after && !page.items.empty()) std::reverse(page.items.begin(), page.items.end());
+            if (!page.items.empty()) {
+                page.prev = KeysetCursor{ page.items.front().id, page.items.front().id };
+                page.next = KeysetCursor{ page.items.back().id,  page.items.back().id };
+            }
+            return DbResult<Page<SavestateLite>>::Ok(std::move(page));
+        }
+        std::future<DbResult<Page<SavestateLite>>> SavestateRepo::ListPagedAsync(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+            return DBService::instance().submit_res<Page<SavestateLite>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListSavestate(e, q, search); });
         }
 
     } // namespace db

@@ -21,7 +21,7 @@ namespace simcore::db {
         int64_t program_ref_id{};
         std::string fingerprint;
         int priority{};
-        std::string state; // 'QUEUED'...
+        std::string state; // 'QUEUED', 'CLAIMED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'SUPERSEDED', 'SUCCEEDED_WINNER', 'SUCCEEDED_DUPLICATE'
         int attempts{};
         int max_attempts{};
         std::optional<std::string> claimed_by_token{};
@@ -58,6 +58,9 @@ namespace simcore::db {
             std::optional<KeysetCursor> after,
             int limit,
             RetryPolicy rp = {});
+        static std::future<DbResult<void>> RequeueAsync(int64_t job_id, RetryPolicy rp = {});
+        static std::future<DbResult<void>> CancelIfNotRunningAsync(int64_t job_id, RetryPolicy rp = {});
+        static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});
 
 
         // Blocking methods
@@ -90,6 +93,9 @@ namespace simcore::db {
             RetryPolicy rp = {}) {
             return ListRecentAfterAsync(scope, after, limit, rp).get();
         }
+        static inline DbResult<void> Requeue(int64_t job_id) { return RequeueAsync(job_id).get(); }
+        static inline DbResult<void> CancelIfNotRunning(int64_t job_id) { return CancelIfNotRunningAsync(job_id).get(); }
+        static inline DbResult<void> BumpPriority(int64_t job_id, int delta) { return BumpPriorityAsync(job_id, delta).get(); }
     };
 
     
