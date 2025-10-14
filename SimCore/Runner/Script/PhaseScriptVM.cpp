@@ -130,12 +130,10 @@ namespace simcore {
         PSContext ctx = job.ctx;
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
-
-        ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-
         // Always start by restoring the pre-captured snapshot for each job
         if (!load_snapshot()) return R;
 
+        ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
 
         if (derived_) derived_->on_init(ctx);
         DolphinKeyReader     mem1_reader(&host_);
@@ -448,6 +446,7 @@ namespace simcore {
             }
 
             case PSOpCode::RETURN_RESULT: {
+                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
                 R.ctx = ctx;
                 R.ctx[op.keyimm.key] = op.keyimm.imm;
                 uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome);
@@ -688,6 +687,7 @@ namespace simcore {
             }
 
         }
+        ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         R.ctx = ctx;
         R.ok = true;
         return R;
