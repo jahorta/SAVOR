@@ -157,7 +157,11 @@ namespace simcore {
             { arm_bps_once(); break; }
 
             case PSOpCode::LOAD_SNAPSHOT: 
-            { if (!load_snapshot()) return R; break; }
+            { 
+                if (!load_snapshot()) return R;
+                ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+                break; 
+            }
 
             case PSOpCode::CAPTURE_SNAPSHOT: 
             { if (!save_snapshot()) return R; break; }
@@ -380,6 +384,7 @@ namespace simcore {
                 ctx[keys::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
                 ctx[keys::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
                 ctx[keys::core::POLL_MS] = poll_ms;
+                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
 
                 // derive hit BP id by matching PC
                 uint32_t hit_bp_key = 0;
@@ -443,7 +448,6 @@ namespace simcore {
             }
 
             case PSOpCode::RETURN_RESULT: {
-                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
                 R.ctx = ctx;
                 R.ctx[op.keyimm.key] = op.keyimm.imm;
                 uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome);
