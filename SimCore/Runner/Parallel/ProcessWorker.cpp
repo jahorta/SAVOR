@@ -195,7 +195,7 @@ namespace simcore {
             if (ready_received_.load()) {
                 return ready_ok_.load();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         return false;
     }

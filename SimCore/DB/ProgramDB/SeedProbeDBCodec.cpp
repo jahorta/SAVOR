@@ -57,19 +57,13 @@ static simcore::db::DbResult<int64_t> encode_neutral(int64_t job_set_id, const s
     
     const std::string frame_hex = simcore::GCInputFrame().to_frame_hex();
 
-    IniKV vmkv;
-    vmkv.add("probe_id", std::to_string(bp_ini.probe_id));
-    vmkv.add("frame_hex", frame_hex);
-    vmkv.add("run_ms", std::to_string(bp_ini.run_ms));
-    vmkv.add("vi_stall_ms", std::to_string(bp_ini.vi_stall_ms));
-    vmkv.add("is_neutral", "1");
-    vmkv.add("is_grid",    "0");
-    vmkv.add("is_unique",  "0");
+    
+    JobIni jb{};
+    jb.frame_hex = frame_hex;
 
-    const std::string vm_kv_text = vmkv.to_string_sorted();
     const std::string fp = fingerprint_for(bp_ini.probe_id, frame_hex, bp_ini.run_ms, bp_ini.vi_stall_ms);
 
-    auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, vm_kv_text);
+    auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, jb.append_section(ini).to_string_sorted());
     if (!ins.ok) return simcore::db::DbResult<int64_t>::Err(ins.error);
 
     const int64_t job_id = ins.value;

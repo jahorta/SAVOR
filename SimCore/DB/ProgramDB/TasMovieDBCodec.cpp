@@ -165,6 +165,9 @@ DbResult<void> TasMovieDBCodec::encode_results_into_db(int64_t job_id, const std
     if (results.savestate_path.empty() || !std::filesystem::exists(results.savestate_path)) 
         success = false;
 
+    if (results.dw_err != 0 || results.w_err != 0)
+        success = false;
+
     if (success) {
         std::string filename = std::filesystem::path(results.savestate_path).filename().string();
 

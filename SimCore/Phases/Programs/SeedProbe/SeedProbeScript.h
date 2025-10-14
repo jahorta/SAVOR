@@ -32,6 +32,7 @@ namespace simcore::seedprobe {
         ps.ops.push_back(OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
 
         ps.ops.push_back(OpEmitResult(simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(OpReturnResult(DW_Outcome, (uint32_t)RunToBpOutcome::Hit));
 
         // ============  Label Dolphin Wrapper Run Error  ===================
         ps.ops.push_back(OpLabel(LabelDWErr));

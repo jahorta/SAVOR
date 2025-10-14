@@ -274,7 +274,7 @@ void JobsPane::Draw() {
         ImGui::TableSetupColumn("program_kind");
         ImGui::TableSetupColumn("state");
         ImGui::TableSetupColumn("queued_at");
-        ImGui::TableSetupColumn("progress");
+        ImGui::TableSetupColumn("progress", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
         ImGuiListClipper clipper;
