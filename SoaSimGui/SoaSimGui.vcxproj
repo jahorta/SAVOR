@@ -157,6 +157,7 @@
     <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h" />
     <ClInclude Include="src\GUI\Popups\IdPicker.h" />
     <ClInclude Include="src\GUI\Popups\IdRepoAdapters.h" />
+    <ClInclude Include="src\GUI\Popups\IniEditor.h" />
     <ClInclude Include="src\GUI\Popups\PredicateSpecPopup.h" />
     <ClInclude Include="src\GUI\Popups\UiActionPresetPopup.h" />
     <ClInclude Include="src\GUI\Widgets\BattleContextTree.h" />

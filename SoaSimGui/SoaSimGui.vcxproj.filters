@@ -114,6 +114,9 @@
     <ClInclude Include="src\Components\DropInbox.h">
       <Filter>Components</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Popups\IniEditor.h">
+      <Filter>GUI\Popups</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\SoaSimGui.rc">

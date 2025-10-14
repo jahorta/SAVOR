@@ -574,4 +574,9 @@ namespace simcore::db {
         return simcore::db::PredicateSpecRepo::ListLiteAsync(search, limit, rp);
     }
 
+    std::future<DbResult<void>> DataService::SetJobVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp) {
+        return JobsRepo::SetVmKvAsync(job_id, std::move(vm_kv), rp);
+    }
+
+
 } // namespace simcore::db

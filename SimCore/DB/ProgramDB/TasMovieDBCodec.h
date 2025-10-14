@@ -20,6 +20,7 @@ namespace simcore::db::codec::tas {
         uint32_t    vi_stall_ms{};
         bool        progress_enable{ true };
         bool        auto_queue_seeds{ false };
+        uint8_t     headroom_x10{ 15 };
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
             BlueprintIni bp{};
@@ -32,7 +33,8 @@ namespace simcore::db::codec::tas {
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
             bp.progress_enable = section.get_bool("progress_enable", true);
-            bp.auto_queue_seeds = section.get_bool("auto_queue_seeds", true);
+            bp.auto_queue_seeds = section.get_bool("auto_queue_seeds", false);
+            bp.headroom_x10 = section.get_u8("headroom_x10", 15);
             return bp;
         }
         inline void set_section(IniDoc& doc) const {
@@ -45,6 +47,7 @@ namespace simcore::db::codec::tas {
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
             doc.set(SECTION_NAME, "auto_queue_seeds", auto_queue_seeds ? "1" : "0");
+            doc.set(SECTION_NAME, "headroom_x10", std::to_string(headroom_x10));
         }
         inline std::string to_string() const {
             IniDoc doc;
@@ -82,8 +85,10 @@ namespace simcore::db::codec::tas {
         uint32_t     w_err{ 0 };
         uint32_t     dw_err{ 0 };
 
+        uint32_t     run_ms_used{ 0 };
         uint32_t     vi_start{ 0 };
         uint32_t     vi_end{ 0 };
+
 
         std::string  savestate_path;
 
@@ -96,15 +101,17 @@ namespace simcore::db::codec::tas {
             results.savestate_path = section.get("savestate_path");
             results.vi_start = section.get_u32("vi_start", -1);
             results.vi_end = section.get_u32("vi_end", -1);
+            results.run_ms_used = section.get_u32("run_ms_used", -1);
             return results;
         }
         inline void set_section(IniDoc& doc) const {
             doc.ensure_section(SECTION_NAME);
             doc.set(SECTION_NAME, "w_err", std::to_string(w_err));
             doc.set(SECTION_NAME, "dw_err", std::to_string(dw_err));
-            doc.set(SECTION_NAME, "savestate_path", savestate_path);
+            doc.set(SECTION_NAME, "run_ms_used", std::to_string(run_ms_used));
             doc.set(SECTION_NAME, "vi_start", std::to_string(vi_start));
             doc.set(SECTION_NAME, "vi_end", std::to_string(vi_end));
+            doc.set(SECTION_NAME, "savestate_path", savestate_path);
         }
         IniDoc append_section(const IniDoc& doc) const {
             IniDoc newDoc{ doc };

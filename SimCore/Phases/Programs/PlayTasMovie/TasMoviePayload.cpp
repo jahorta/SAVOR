@@ -51,7 +51,7 @@ namespace simcore::tasmovie {
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
         out.clear();
-        out.reserve(1 + 2 + 1 + 4 + 4 + 8 + 4 + spec.dtm_path.size());
+        out.reserve(1 + 2 + 1 + 4 + 4 + + 1 + 7 + 4 + spec.dtm_path.size());
 
         out.push_back(PK_TasMovie);                 // payload kind tag
         put_u16(out, PVersion);                            // version
@@ -63,8 +63,10 @@ namespace simcore::tasmovie {
         put_u32(out, spec.run_ms);
         put_u32(out, spec.vi_stall_ms);
 
+        out.push_back(spec.headroom_x10);
+
         // reserved 8 bytes 
-        out.insert(out.end(), 8, uint8_t(0));
+        out.insert(out.end(), 7, uint8_t(0));
 
         put_u32(out, (uint32_t)spec.dtm_path.size());
         out.insert(out.end(), spec.dtm_path.begin(), spec.dtm_path.end());
@@ -74,7 +76,7 @@ namespace simcore::tasmovie {
 
     bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
     {
-        if (in.size() < 1 + 2 + 1 + 4 + 4 + 8 + 4) return false;
+        if (in.size() < 1 + 2 + 1 + 4 + 4 + 1 + 7 + 4) return false;
         size_t off = 0;
         const uint8_t pk = in[off++];         // ProgramKind tag
         if (pk != PK_TasMovie) return false;
@@ -87,8 +89,10 @@ namespace simcore::tasmovie {
         const uint32_t run_ms_in = rd_u32(in.data(), off, in.size());
         const uint32_t vi_stall_ms = rd_u32(in.data(), off, in.size());
 
-        // skip 8 reserved bytes
-        off += 8;
+        const uint8_t headroom_x10 = in[off++];
+
+        // skip 7 reserved bytes
+        off += 7;
 
         const uint32_t len_dtm = rd_u32(in.data(), off, in.size());
         if (off + len_dtm > in.size()) return false;
@@ -115,9 +119,11 @@ namespace simcore::tasmovie {
             id6.assign("");
         }
 
+        float headroom = static_cast<float>(headroom_x10) / 10.0;
+
         // Derive run_ms if the payload asked us to (== 0)
         const uint32_t run_ms = (run_ms_in == 0)
-            ? compute_run_ms_from_counts(vi_count, input_count, /*headroom=*/1.5)
+            ? compute_run_ms_from_counts(vi_count, input_count, /*headroom=*/headroom)
             : run_ms_in;
 
         // Fill TAS program context keys

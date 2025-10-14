@@ -203,6 +203,9 @@ namespace simcore::db {
         static std::future<DbResult<std::vector<simcore::db::PredicateSpecLite>>>
             ListPredicateSpecsAsync(const std::string& search, int32_t limit, RetryPolicy rp = {});
 
+        static std::future<DbResult<void>> SetJobVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp = {});
+
+
     private:
         class JobsPoller;
         class JobSetsPoller;

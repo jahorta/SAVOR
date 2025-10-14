@@ -131,6 +131,7 @@ DbResult<simcore::PSJob> TasMovieDBCodec::decode_job_from_db(int64_t job_id) {
     spec.progress_enable = bp.progress_enable;
     spec.run_ms = bp.run_ms;
     spec.vi_stall_ms = bp.vi_stall_ms;
+    spec.headroom_x10 = bp.headroom_x10;
 
     std::vector<uint8_t> payload;
     if (!simcore::tasmovie::encode_payload(spec, payload))
@@ -265,8 +266,8 @@ DbResult<std::string> TasMovieDBCodec::build_results_ini_from_prresult(int64_t /
     ResultsIni results{};
     bool success = r.ps.ok ? true : false;
     results.w_err = r.ps.w_err;
-
-    if (results.w_err == 0) r.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, results.dw_err);
+    r.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, results.dw_err);
+    r.ps.ctx.get(simcore::keys::core::RUN_MS, results.run_ms_used);
 
     if (success) {
         r.ps.ctx.get(simcore::keys::tas::SAVE_PATH, results.savestate_path);
@@ -275,7 +276,7 @@ DbResult<std::string> TasMovieDBCodec::build_results_ini_from_prresult(int64_t /
     }
 
     IniDoc ini;
-    return DbResult<std::string>::Ok(results.append_section(ini).to_string_sorted());
+    return DbResult<std::string>::Ok(results.append_section(ini).to_string_preserve_order());
 }
 
 DbResult<void> TasMovieDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) {
