@@ -57,7 +57,6 @@ static simcore::db::DbResult<int64_t> encode_neutral(int64_t job_set_id, const s
     
     const std::string frame_hex = simcore::GCInputFrame().to_frame_hex();
 
-    
     JobIni jb{};
     jb.frame_hex = frame_hex;
 
