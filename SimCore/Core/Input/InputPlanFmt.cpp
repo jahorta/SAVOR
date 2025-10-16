@@ -204,7 +204,7 @@ namespace simcore {
         append("RT", static_cast<int>(f.trig_r), static_cast<int>(neutral.trig_r));
 
         if (parts.empty())
-            return "(no changes vs neutral)";
+            return "(neutral)";
 
         std::ostringstream out;
         for (size_t i = 0; i < parts.size(); ++i) {
