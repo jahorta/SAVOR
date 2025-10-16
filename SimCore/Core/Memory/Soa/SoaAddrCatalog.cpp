@@ -50,6 +50,6 @@ namespace addrprog::catalog {
 
     // Explicit instantiations for the common types you already use
     template uint32_t battle_treasure_slot<>(addrprog::Builder&, uint16_t, int16_t soa::BattleItemDropSlot::*, std::string& description);
-    template uint32_t enemy_item_field<>(addrprog::Builder&, uint16_t, uint16_t, int16_t soa::ItemDrop::*, std::string& description);
+    template uint32_t enemy_item_field<uint16_t>(addrprog::Builder&, uint16_t, uint16_t, uint16_t soa::ItemDrop::*, std::string& description);
 
 }
