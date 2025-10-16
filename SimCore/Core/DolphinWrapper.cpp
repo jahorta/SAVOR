@@ -185,7 +185,7 @@ namespace simcore {
     bool DolphinWrapper::loadGame(const std::string& iso_path)
     {
         if (!m_imported_from_qt) {
-            SCLOGE("Must import sys and user folders from DolphinQT before loading a game. (Best to use Dolphin ver. 2506a");
+            SCLOGE("Must import sys folder from DolphinQT before loading a game. (Best to use Dolphin ver. 2506a");
             return false;
         }
         
@@ -196,8 +196,8 @@ namespace simcore {
 
         const WindowSystemInfo wsi = MakeHeadlessWSI();
 
-        sterilizeConfigs();
         SetUserDirectory(m_user_dir);
+        sterilizeConfigs();
 
         m_system_pad_is_inited = loadDolphinGUISettings(wsi);
 
@@ -574,7 +574,6 @@ namespace simcore {
     bool DolphinWrapper::SetUserDirectory(const fs::path& user_dir)
     {
         m_user_dir = user_dir;
-        m_imported_from_qt = false;
         try {
             fs::create_directories(m_user_dir / "Config");
             UICommon::SetUserDirectory(m_user_dir.string());
