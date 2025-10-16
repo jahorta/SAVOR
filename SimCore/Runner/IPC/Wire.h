@@ -29,6 +29,10 @@ namespace simcore {
         WERR_NoProgramLoaded = 16,
         WERR_DecodePayloadFail = 17,
         WERR_EncodePayloadFail = 18,
+
+        // Ctx errors
+        WERR_NoGameIsoRecorded = 32,
+
         // Unknown
         WERR_UnknownError = 0xffffffff
     };
