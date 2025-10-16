@@ -81,6 +81,7 @@ CREATE TABLE predicate_spec (
   turn_mask INTEGER NOT NULL,
   lhs_prog_id INTEGER REFERENCES address_program(id),
   rhs_prog_id INTEGER REFERENCES address_program(id),
+  name TEXT,
   desc TEXT
 );
 CREATE INDEX ix_predicate_spec_bp   ON predicate_spec(required_bp);
