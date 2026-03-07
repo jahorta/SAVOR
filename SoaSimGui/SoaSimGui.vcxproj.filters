@@ -117,6 +117,36 @@
     <ClInclude Include="src\GUI\Popups\IniEditor.h">
       <Filter>GUI\Popups</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\SeedProbePane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\ColorMaps.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\LazyCache.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\SearchableCombo.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\SegmentedControl.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\AddrProgramEditor.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\BitmaskEditor.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\BreakpointPicker.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Components\ItemCatalog.h">
+      <Filter>Components</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GUI\Widgets\InputTextMultilineWrap.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\SoaSimGui.rc">
@@ -150,24 +180,6 @@
     <ClCompile Include="src\Models\GuiLayoutStore.cpp">
       <Filter>Models</Filter>
     </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_draw.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_tables.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_widgets.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\backends\imgui_impl_dx11.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\backends\imgui_impl_win32.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp">
       <Filter>GUI\Panes</Filter>
     </ClCompile>
@@ -185,9 +197,6 @@
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp">
       <Filter>GUI\Panes</Filter>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\misc\cpp\imgui_stdlib.cpp">
-      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Popups\IdPicker.cpp">
       <Filter>GUI\Popups</Filter>
@@ -212,6 +221,21 @@
     </ClCompile>
     <ClCompile Include="src\Components\DropInbox.cpp">
       <Filter>Components</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\SeedProbePane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Widgets\AddrProgramEditor.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui_backends\imgui_impl_dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui_backends\imgui_impl_win32.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\dolphin_imgui\misc\cpp\imgui_stdlib.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -11,6 +11,7 @@ namespace simcore::keys::core {
   X(DW_RUN_OUTCOME_CODE,     0x0002, "core.run.outcome_code")  \
   X(ELAPSED_MS,              0x0003, "core.run.elapsed_ms")    \
   X(LAST_SAVESTATE_PATH,     0x0004, "core.run.last_savestate_path")    \
+  X(GAME_ISO_PATH,           0x0005, "core.run.game_iso_path")    \
 \
   X(VI_FIRST,                0x0020, "core.metrics.vi_first")  \
   X(VI_LAST,                 0x0021, "core.metrics.vi_last")   \
@@ -20,10 +21,7 @@ namespace simcore::keys::core {
   X(RUN_MS,                  0x0040, "core.input.run_ms")      \
   X(VI_STALL_MS,             0x0041, "core.input.vi_stall_ms") \
   X(PROGRESS_RATE,           0x0042, "core.input.progress_rate") \
-  X(PROGRESS_TEXT_FILENAME,  0x0043, "core.input.progress_text_filename") \
-  X(PROGRESS_TEXT_VI_TOTAL,  0x0044, "core.input.progress_text_vi_total") \
-  X(PROGRESS_TEXT_VI_DELTA,  0x0045, "core.input.progress_text_vi_delta") \
-  X(PROGRESS_TEXT_PREDICATE, 0x0046, "core.input.progress_text_predicate") \
+  X(PROGRESS_CORE_FLAGS,     0x0043, "core.input.progress_core_flags") \
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \
@@ -33,9 +31,7 @@ namespace simcore::keys::core {
   X(PRED_BASELINES,          0x0082, "core.pred.baselines")    \
   X(PRED_TOTAL,              0x0083, "core.pred.total_passed")  \
   X(PRED_PASSED,             0x0084, "core.pred.count_passed_at_bp")   \
-  X(PRED_ALL_PASSED,         0x0085, "core.pred.all_passed")   \
-  X(PRED_FIRST_FAILED,       0x0086, "core.pred.first_failed")   \
-  X(PRED_FAILED_CMP_STR,     0x0087, "core.pred.failed_cmp")   \
+  X(PRED_ABORT_RUN,          0x0085, "core.pred.abort_run")   \
 \
   X(WORKER_ERROR,            0x00A0, "core.output.worker_err")
 

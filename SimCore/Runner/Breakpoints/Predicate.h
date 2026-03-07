@@ -12,16 +12,19 @@ namespace simcore::pred {
     enum class PredFlag : uint32_t {
         CaptureBaseline = 1 << 0,
         Active = 1 << 1,
-        RhsIsKey = 1 << 2,
+        LhsIsKey = 1 << 2,
         LhsIsProg = 1 << 3,
-        RhsIsProg = 1 << 4,
-        LhsIsNeg = 1 << 5,
-        RhsIsNeg = 1 << 6,
-        AbortOnFail = 1 << 7
+        RhsIsKey = 1 << 4,
+        RhsIsProg = 1 << 5,
+        LhsIsNeg = 1 << 6,
+        RhsIsNeg = 1 << 7,
+        AbortOnFail = 1 << 8
     };
 
     inline constexpr PredFlag operator|(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) | uint8_t(b)); }
     inline constexpr PredFlag operator&(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) & uint8_t(b)); }
+
+    static constexpr int PredNameLength = 32;
 
     struct PredicateRecord {
         uint16_t id;
@@ -42,9 +45,11 @@ namespace simcore::pred {
         uint16_t rhs_addr_key;        // region for RHS key or program
         uint32_t rhs_addrprog_offset; // program offset within [records || blob] (0 = none)
 
-        void set_flag(PredFlag f) { flags |= uint8_t(f); }
-        void clear_flag(PredFlag f) { flags &= ~uint8_t(f); }
-        bool has_flag(PredFlag f) const { return (flags & uint8_t(f)) != 0; }
+        char name[PredNameLength+1];               // short name for identification
+
+        void set_flag(PredFlag f) { flags |= uint32_t(f); }
+        void clear_flag(PredFlag f) { flags &= ~uint32_t(f); }
+        bool has_flag(PredFlag f) const { return (flags & uint32_t(f)) != 0; }
     };
 #pragma pack(pop)
 
@@ -85,12 +90,12 @@ namespace simcore::pred {
         std::string lhs_prog_desc;
         std::vector<uint8_t> rhs_prog;          // must start with OP_BASE_KEY if non-empty
         std::string rhs_prog_desc;
-
+        std::string name{};
         std::string desc{};
 
-        void set_flag(PredFlag f) { flags |= uint8_t(f); }
-        void clear_flag(PredFlag f) { flags &= ~uint8_t(f); }
-        bool has_flag(PredFlag f) const { return (flags & uint8_t(f)) != 0; }
+        void set_flag(PredFlag f) { flags |= uint32_t(f); }
+        void clear_flag(PredFlag f) { flags &= ~uint32_t(f); }
+        bool has_flag(PredFlag f) const { return (flags & uint32_t(f)) != 0; }
 
         void set_every_turn() { turn_mask = 0xFFFFFFFFu; }
         void set_turns(const std::vector<uint8_t> turns) { for (const auto i : turns) if (i > 0 && i <= 32) turn_mask = turn_mask | (1 << (i - 1)); }

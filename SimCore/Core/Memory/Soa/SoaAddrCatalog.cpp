@@ -1,6 +1,9 @@
 #include "SoaAddrCatalog.h"
 #include "../Soa/SoaAddrRegistry.h"
 #include "SoaStructs.h"
+#include "SoaConstants.h"
+
+#include <format>
 
 namespace addrprog::catalog {
 
@@ -41,7 +44,7 @@ namespace addrprog::catalog {
 
     uint32_t item_drop_amt(addrprog::Builder& b, uint16_t item_id, std::string& description)
     {
-        description = "item drop amount";
+        description = std::format("item drop amount for [{}] {}", item_id, soa::text::get_item_name(item_id));
         b.op_base_key(addr::derived::battle::DropsByItem_base);
         b.op_index(item_id, 1);
         b.op_end();

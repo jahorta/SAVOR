@@ -9,13 +9,13 @@ namespace simcore {
             sqlite3_stmt* st{};
             const char* sql =
                 "INSERT INTO battle_contexts(job_set_id,job_id,artifact_id,savestate_id,codec_version,created_at)"
-                " VALUES(?,?,?,?,strftime('%s','now')) RETURNING context_id;";
+                " VALUES(?,?,?,?,?,strftime('%s','now')) RETURNING context_id;";
             if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
                 return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
             sqlite3_bind_int64(st, 1, job_set_id);
             sqlite3_bind_int64(st, 2, job_id);
             sqlite3_bind_int64(st, 3, artifact_id);
-            sqlite3_bind_int64(st, 5, savestate_id);
+            sqlite3_bind_int64(st, 4, savestate_id);
             sqlite3_bind_int64(st, 5, codec_version);
             int rc = sqlite3_step(st);
             if (rc != SQLITE_ROW) { sqlite3_finalize(st); return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), rc, "insert" }); }

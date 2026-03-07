@@ -111,10 +111,10 @@ int main(int argc, char** argv)
     std::error_code ec;
     std::filesystem::create_directories(log_path.parent_path(), ec);
 
-    auto& L = simcore::log::Logger::get();
+    auto& L = simcore::logger::Logger::get();
     // File sink: lowest threshold so everything is captured; console is muted
     L.open_file(log_path.string().c_str(), /*append=*/false);
-    L.set_levels(simcore::log::Level::Off, simcore::log::Level::Debug);
+    L.set_levels(simcore::logger::Level::Off, simcore::logger::Level::Debug);
 
     SCLOGI("[Worker %zu] Initializing", worker_id);
 
@@ -277,22 +277,14 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            auto progress_sink = [hOut, jh](uint32_t cur_frames,
-                uint32_t total_frames,
-                uint32_t elapsed_ms,
-                uint32_t flags,
-                const char* text)
+            pj.ctx[keys::core::GAME_ISO_PATH] = boot.iso_path;
+
+            auto progress_sink = [hOut, jh](const char* text, bool record = true)
                 {
                     WireProgress wp{};
                     wp.tag = MSG_PROGRESS;
                     wp.job_id = jh.job_id;
-                    wp.epoch = jh.epoch;
-                    wp.phase_code = PHASE_RUN_UNTIL_BP; // primary emitter lives in runUntilBreakpointFlexible
-                    wp.cur_frames = cur_frames;
-                    wp.total_frames = total_frames;
-                    wp.elapsed_ms = elapsed_ms;
-                    wp.status_flags = flags;
-                    wp.poll_ms_used = 0; // optional; you can plumb actual poll if desired
+                    wp.record_progress = record;
                     std::memset(wp.text, 0, sizeof(wp.text));
                     if (text && *text)
                         std::strncpy(wp.text, text, sizeof(wp.text) - 1);
@@ -300,14 +292,18 @@ int main(int argc, char** argv)
                     (void)write_all(hOut, &wp, sizeof(wp));
                 };
 
-            // For now, enable progress sink for all jobs; you can add a PSContext key later:
-            host.setProgressSink(progress_sink);
+            uint32_t progress_flags;
+            pj.ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
+
+            if (progress_flags != 0)
+                host.setProgressSink(progress_sink);
 
             // Run
             auto R = vm.run(pj);
 
             // --- clear sink after job ---
-            host.setProgressSink(nullptr);
+            if (progress_flags != 0)
+                host.setProgressSink(nullptr);
 
             // Encode numeric context
             std::vector<uint8_t> blob;

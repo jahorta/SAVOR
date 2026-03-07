@@ -15,6 +15,7 @@
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "../Breakpoints/BPRegistry.h"
+#include "ScriptProgress.h"
 
 namespace {
     inline bool read_via_addrprog(simcore::DolphinWrapper& host,
@@ -103,8 +104,8 @@ namespace simcore {
         if (armed_ && !armed_pcs_.empty()) {
             host_.disarmPcBreakpoints(armed_pcs_);
             armed_pcs_.clear();
-            armed_ = false;
         }
+        armed_ = false;
 
         // Optional savestate (allow empty path for boot-based phases)
         if (!init_.savestate_path.empty()) {
@@ -163,6 +164,25 @@ namespace simcore {
 
             case PSOpCode::CAPTURE_SNAPSHOT: 
             { if (!save_snapshot()) return R; break; }
+
+            case PSOpCode::REBOOT_CORE:
+            {
+                std::string iso_path{};
+                if (ctx.get(keys::core::GAME_ISO_PATH, iso_path)) {
+                    host_.clearAllPcBreakpoints();
+                    host_.loadGame(iso_path);
+                    host_.ConfigurePortsStandardPadP1();
+                    armed_ = false;
+                    armed_pcs_.clear();
+                    arm_bps_once();
+                }
+                else {
+                    ctx[keys::core::WORKER_ERROR] = (uint32_t)32; // Worker error that iso path was not loaded into the context
+                    R.ctx = ctx;
+                    return R;
+                }
+                break;
+            }
 
             case PSOpCode::LABEL: 
             { break; }
@@ -343,8 +363,19 @@ namespace simcore {
 
             case PSOpCode::STEP_FRAMES: {
                 SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n);
+                if (op.imm.v == 1) host_.setEnableAllBreakpoints(false);
                 for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking();
+                if (op.imm.v == 1) host_.setEnableAllBreakpoints(true);
                 SCLOGD("[VM] phase=run_inputs end");
+                break;
+            }
+
+            case PSOpCode::START_DETERMINISIC_RUN: {
+                if (!host_.startMovieRecording()) SCLOGE("[VM] Unable to start recording for deterministic run");
+                break;
+            }
+            case PSOpCode::END_DETERMINISTIC_RUN: {
+                host_.endMovieRecording();
                 break;
             }
 
@@ -360,10 +391,13 @@ namespace simcore {
                 const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
                 const bool watch_movie = true;
 
+                uint32_t progress_flags = 0;
+                ctx.get<uint32_t>(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
+
                 // progress sink handled inside wrapper; host has per-job sink already
 
                 auto t0 = std::chrono::steady_clock::now();
-                auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms);
+                auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
                 auto t1 = std::chrono::steady_clock::now();
                 const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
@@ -448,6 +482,7 @@ namespace simcore {
             case PSOpCode::RETURN_RESULT: {
                 ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
                 R.ctx = ctx;
+
                 R.ctx[op.keyimm.key] = op.keyimm.imm;
                 uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome);
                 R.ok = dw_outcome == 0;
@@ -479,7 +514,11 @@ namespace simcore {
             case PSOpCode::MOVIE_PLAY_FROM: {
                 std::string path;
                 ctx.get<std::string>(op.key.id, path);
+                host_.clearAllPcBreakpoints();
                 if (!host_.startMoviePlayback(path)) return R;
+                armed_ = false;
+                armed_pcs_.clear();
+                arm_bps_once();
                 break;
             }
 
@@ -579,7 +618,6 @@ namespace simcore {
 
                 uint32_t total = 0; ctx.get(keys::core::PRED_TOTAL, total);
                 uint32_t pass = 0;
-                uint32_t all_passed = 1;  ctx.get(keys::core::PRED_ALL_PASSED, all_passed);
 
                 auto itN = ctx.find(keys::core::PRED_COUNT);
                 auto itT = ctx.find(keys::core::PRED_TABLE);
@@ -610,7 +648,7 @@ namespace simcore {
                         read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, lhs)) {
                         // ok
                     }
-                    else if (r.lhs_addr_key) {
+                    else if (r.has_flag(PredFlag::LhsIsKey)) {
                         if (!router->read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, lhs)) continue;
                     }
                     else {
@@ -622,6 +660,8 @@ namespace simcore {
                         default: continue;
                         }
                     }
+
+                    
 
                     // RHS precedence: key (RhsIsKey) -> addrprog -> immediate
                     if (r.has_flag(PredFlag::RhsIsProg) &&
@@ -652,36 +692,30 @@ namespace simcore {
                     default: ok = false; break;
                     }
 
-                    ++total;
-                    if (ok) ++pass;
-                    else if (all_passed)
+                    std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
+
+                    uint32_t progress;
+                    if (ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink())
                     {
-                        ctx[keys::core::PRED_FIRST_FAILED] = (uint32_t)r.id;
-                        ctx[keys::core::PRED_FAILED_CMP_STR] = std::to_string(lhs) + " " + simcore::pred::get_cmp_string((simcore::pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
-                        all_passed = 0;
+                        std::string msg = std::format("{} - {}", r.name, cmp_string);
+                        msg = std::string("Pred") + (ok ? "(Passed): " : "(Failed): ") + msg;
+                        host_.getProgressSink()(msg.c_str(), true);
+                    }
+
+                    ++total;
+                    if (ok) 
+                    {
+                        ++pass;
+                    }
+
+                    if (!ok && r.has_flag(pred::PredFlag::AbortOnFail))
+                    {
+                        ctx[keys::core::PRED_ABORT_RUN] = (uint32_t)1;
+                        break;
                     }
                 }
                 ctx[keys::core::PRED_PASSED] = pass;
-                ctx[keys::core::PRED_ALL_PASSED] = all_passed;
                 ctx[keys::core::PRED_TOTAL] = total;
-                break;
-            }
-
-            case PSOpCode::RECORD_PROGRESS_AT_BP: {
-                uint32_t tot = 0; ctx.get<uint32_t>(keys::core::PRED_TOTAL, tot);
-                if (tot) {
-                    uint32_t turn = 0, hitbp = 0, pass = 0;
-                    ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, turn);
-                    ctx.get<uint32_t>(keys::core::RUN_HIT_BP_KEY, hitbp);
-                    ctx.get<uint32_t>(keys::core::PRED_PASSED, pass);
-                    auto sink = host_.getProgressSink();
-                    if (sink) {
-                        auto tag = host_.getCurrentSctFileTag();
-                        char buf[128];
-                        std::snprintf(buf, sizeof(buf), "turn=%u bp=%u pred=%u/%u %s", turn, hitbp, pass, tot, tag.c_str());
-                        sink(0, 0, 0, 0, buf);
-                    }
-                }
                 break;
             }
             }
@@ -724,7 +758,6 @@ namespace simcore {
         case PSOpCode::CAPTURE_PRED_BASELINES: return { "Capture Predicate Breakpoint Baselines" };
         case PSOpCode::ARM_BPS_FROM_PRED_TABLE: return { "Arm Breakpoints from Predicate Table" };
         case PSOpCode::EVAL_PREDICATES_AT_HIT_BP: return { "Evaulate Predicates at Hit BP" };
-        case PSOpCode::RECORD_PROGRESS_AT_BP: return { "Record Progress at Breakpoint" };
         case PSOpCode::SET_U32: return { "Set a u32 Context Value" };
         case PSOpCode::ADD_U32: return { "Add to a u32 Context Value" };
         case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES : return { "Apply Inputplan Frame from Context" };

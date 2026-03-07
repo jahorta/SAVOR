@@ -62,7 +62,7 @@ static simcore::db::DbResult<int64_t> encode_neutral(int64_t job_set_id, const s
 
     const std::string fp = fingerprint_for(bp_ini.probe_id, frame_hex, bp_ini.run_ms, bp_ini.vi_stall_ms);
 
-    auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, jb.append_section(ini).to_string_sorted());
+    auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, jb.append_section(ini).to_string_sorted(), bp_ini.savestate_id);
     if (!ins.ok) return simcore::db::DbResult<int64_t>::Err(ins.error);
 
     const int64_t job_id = ins.value;
@@ -111,20 +111,20 @@ static simcore::db::DbResult<int64_t> encode_grid(int64_t job_set_id, const std:
     std::vector<std::string> inputs;
     for (auto f : frames) inputs.push_back(f.to_frame_hex());
 
+    IniDoc t_ini{};
+    bp_ini.set_section(t_ini);
+
     int64_t enqueued = 0;
     for (size_t i = 0; i < inputs.size(); ++i) {
         const std::string frame_hex = inputs[i];
 
-        IniKV vmkv;
-        vmkv.add("probe_id", std::to_string(bp_ini.probe_id));
-        vmkv.add("frame_hex", frame_hex);
-        vmkv.add("run_ms", std::to_string(bp_ini.run_ms));
-        vmkv.add("vi_stall_ms", std::to_string(bp_ini.vi_stall_ms));
+        JobIni jb{};
+        jb.frame_hex = frame_hex;
 
-        const std::string vm_kv_text = vmkv.to_string_sorted();
+        const std::string vm_kv_text = jb.append_section(t_ini).to_string_preserve_order();
         const std::string fp = fingerprint_for(bp_ini.probe_id, frame_hex, bp_ini.run_ms, bp_ini.vi_stall_ms);
 
-        auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, vm_kv_text);
+        auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, vm_kv_text, bp_ini.savestate_id);
         if (!ins.ok) return simcore::db::DbResult<int64_t>::Err(ins.error);
 
         const int64_t job_id = ins.value;
@@ -200,7 +200,7 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     for (auto sample : samples.samples) {
 
         int32_t expected_delta = sample.target_delta;
-        auto ds = JobSetsRepo::Create(
+        auto ds = JobSetsRepo::CreateChild(job_set_id,
             "delta_set", simcore::PK_SeedProbe, std::nullopt, std::nullopt, std::nullopt, 
             "expected_delta=" + std::to_string(expected_delta), std::nullopt);
 
@@ -211,13 +211,12 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
 
             JobIni job_ini{};
             job_ini.expected_delta = expected_delta;
-            job_ini.delta_set_id = ds.value;
             job_ini.frame_hex = frame_hex;
             
             const std::string vm_kv_text = job_ini.append_section(t_ini).to_string_sorted();
             const std::string fp = fingerprint_for(bp_ini.probe_id, frame_hex, bp_ini.run_ms, bp_ini.vi_stall_ms);
 
-            auto ins = JobsRepo::CreateOrGetByFingerprint(job_set_id, PK, PV, bp_ini.probe_id, fp, 0, vm_kv_text);
+            auto ins = JobsRepo::CreateOrGetByFingerprint(ds.value, PK, PV, bp_ini.probe_id, fp, 0, vm_kv_text, bp_ini.savestate_id);
             if (!ins.ok) return simcore::db::DbResult<int64_t>::Err(ins.error);
 
             const int64_t job_id = ins.value;
@@ -248,6 +247,8 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
         auto tr = TriggersRepo::AddForJobSet(job_set_id, simcore::PK_BattleTurnRunner, cond.to_string_sorted(), blueprint_ini);
         if (!tr.ok) return simcore::db::DbResult<int64_t>::Err(tr.error);
     }
+
+    return simcore::db::DbResult<int64_t>::Ok(enqueued);
 }
 
 simcore::db::DbResult<int64_t> SeedProbeDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
@@ -277,10 +278,10 @@ simcore::db::DbResult<int64_t> SeedProbeDBCodec::encode_job_into_db(int64_t job_
 
     simcore::db::DbResult<int64_t> enc;
     switch (bp.cur_phase) {
-    case SeedProbePhase::Neutral: encode_neutral(job_set_id, ini.to_string_sorted()); break;
-    case SeedProbePhase::Grid: encode_grid(job_set_id, ini.to_string_sorted()); break;
-    case SeedProbePhase::Unique: encode_unique(job_set_id, ini.to_string_sorted()); break;
-    default: return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "Invalid SeedProbe Phase: " + std::to_string(bp.cur_phase) });
+    case SeedProbePhase::Neutral: enc = encode_neutral(job_set_id, ini.to_string_sorted()); break;
+    case SeedProbePhase::Grid: enc = encode_grid(job_set_id, ini.to_string_sorted()); break;
+    case SeedProbePhase::Unique: enc = encode_unique(job_set_id, ini.to_string_sorted()); break;
+    default: enc = DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "Invalid SeedProbe Phase: " + std::to_string(bp.cur_phase) });
     }
     return enc;
 }
@@ -290,10 +291,22 @@ DbResult<simcore::PSJob> SeedProbeDBCodec::decode_job_from_db(int64_t job_id) {
     if (!jr.ok) return DbResult<simcore::PSJob>::Err(jr.error);
     if (!jr.value.vm_kv.has_value()) return DbResult<simcore::PSJob>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "vm_kv missing" });
 
-    auto kv = IniDoc::parse(*jr.value.vm_kv).section_kv(IniDoc::GLOBAL);
-    const uint32_t run_ms = kv.get_u32("run_ms", 0);
-    const uint32_t vi_stall_ms = kv.get_u32("vi_stall_ms", 0);
-    const std::string frame_hex = kv.get("frame_hex", "");
+    auto ini = IniDoc::parse(*jr.value.vm_kv);
+
+    if (!ini.has_section(BlueprintIni::SECTION_NAME)) return DbResult<simcore::PSJob>::Err({ DbErrorKind::InvalidState, 0,
+    "Seedprobe Trigger has no BlueprintIni" });
+
+    if (!ini.has_section(JobIni::SECTION_NAME)) return DbResult<simcore::PSJob>::Err({ DbErrorKind::InvalidState, 0,
+        "Seedprobe Trigger has no JobIni" });
+
+    BlueprintIni bp = BlueprintIni::from_section(ini);
+    JobIni jb = JobIni::from_section(ini);
+
+    if (bp.cur_phase == SeedProbePhase::Neutral) (void) SeedProbeRepo::MarkRunningAsync(bp.probe_id);
+
+    const uint32_t run_ms = bp.run_ms;
+    const uint32_t vi_stall_ms = bp.vi_stall_ms;
+    const std::string frame_hex = jb.frame_hex;
     if (frame_hex.empty()) return DbResult<simcore::PSJob>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "frame_hex missing" });
 
     auto bytes = hex_to_bytes(frame_hex);
@@ -361,16 +374,23 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
     JobEventsRepo::Append(job_id, "RESULTS", "rng_seed=" + std::to_string(rng_seed) + " input=" + frame_hex);
 
     if (!success) {
+
+        if (bp.cur_phase == SeedProbePhase::Grid) {
+            JobsRepo::SetState(job_id, "QUEUED");
+            JobEventsRepo::Append(job_id, "REQUEUED", "Requeued failed grid job");
+            return DbResult<void>::Ok();
+        }
+
         JobsRepo::SetState(job_id, "FAILED");
-        return simcore::db::DbResult<void>::Ok();
+        return DbResult<void>::Ok();
     }
 
     if (bp.cur_phase == SeedProbePhase::Neutral) {
-        auto s = simcore::db::SeedProbeRepo::SetNeutralSeed(probe_id, rng_seed);
-        if (!s.ok) return simcore::db::DbResult<void>::Err(s.error);
+        auto s = SeedProbeRepo::SetNeutralSeed(probe_id, rng_seed);
+        if (!s.ok) return DbResult<void>::Err(s.error);
         auto j = JobsRepo::SetState(job_id, "SUCCEEDED");
-        if (!j.ok) return simcore::db::DbResult<void>::Err(j.error);
-        return simcore::db::DbResult<void>::Ok();
+        if (!j.ok) return DbResult<void>::Err(j.error);
+        return DbResult<void>::Ok();
     }
 
     auto pr = simcore::db::SeedProbeRepo::Get(probe_id);
@@ -394,14 +414,24 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
     row.input = frame;
     row.complete = true;
 
-    if (bp.cur_phase = SeedProbePhase::Unique) {
+    if (bp.cur_phase == SeedProbePhase::Grid) {
+        auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/true, /*is_unique=*/false);
+        if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
+
+        JobsRepo::SetState(job_id, "SUCCEEDED");
+        return simcore::db::DbResult<void>::Ok();
+    }
+
+    if (bp.cur_phase == SeedProbePhase::Unique) {
 
         const uint32_t expected_delta = job_ini.expected_delta;
         const std::string expected_tag = job_ini.unique_tag;
-        const int64_t job_set_id = jr.value.job_set_id;
+        const int64_t child_js = jr.value.job_set_id;
+        auto parent = JobSetsRepo::GetParent(child_js);
+        int64_t root_js = (parent.ok && parent.value.has_value()) ? *parent.value : child_js;
 
         auto win = simcore::db::SeedProbeWinnersRepo::TryInsertWinner(
-            job_set_id,
+            root_js,
             seed_delta,
             job_id,
             (std::optional<int32_t>{ expected_delta }),
@@ -414,13 +444,20 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
 
         const bool is_winner = win.value.inserted;
 
-        auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/false, /*is_unique=*/is_winner);
-        if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
+        if (is_winner) {
 
-        if (is_winner && expected_delta == seed_delta) {
-            const int64_t delta_set_id = job_ini.delta_set_id;
-            auto others = JobsRepo::GetQueuedByJobSet(delta_set_id);
-            for (auto other : others.value) 
+            auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/false, /*is_unique=*/true);
+            if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
+
+            if (expected_delta == seed_delta) {
+                auto others = JobsRepo::GetQueuedByJobSet(child_js);
+                for (auto other : others.value)
+                    JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            }
+        }
+        else {
+            auto others = JobsRepo::GetQueuedByJobSet(child_js);
+            for (auto other : others.value)
                 JobsRepo::SetState(other.job_id, "SUPERSEDED");
         }
 
@@ -429,11 +466,8 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
         return simcore::db::DbResult<void>::Ok();
     }
 
-    auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/true, /*is_unique=*/false);
-    if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
-
-    JobsRepo::SetState(job_id, "SUCCEEDED");
-    return simcore::db::DbResult<void>::Ok();
+    JobsRepo::SetState(job_id, "FAILED");
+    return simcore::db::DbResult<void>::Err({DbErrorKind::InvalidState, 0, "Unhandled seed probe phase" + std::to_string(bp.cur_phase)});
 }
 
 simcore::db::DbResult<std::string> SeedProbeDBCodec::decode_progress_from_db(std::optional<int64_t> job_id, std::optional<int64_t> job_set_id) {
@@ -603,6 +637,8 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
     }
     else if (bp.cur_phase == SeedProbePhase::Unique) {
 
+        (void)SeedProbeRepo::MarkDoneAsync(bp.probe_id);
+
         if (!ini.has_section(CleanupIni::SECTION_NAME)) return DbResult<void>::Err({ DbErrorKind::InvalidState, 0,
             "Seedprobe Trigger has no CleanupIni after a Unique run" });
         
@@ -626,7 +662,6 @@ DbResult<std::string> SeedProbeDBCodec::build_artifact_ini_from_db(int64_t job_i
 
     auto jr = simcore::db::JobsRepo::Get(job_id);
     if (!jr.ok) return DbResult<std::string>::Err(jr.error);
-
     if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
 
     IniKV kv = IniDoc::parse(*jr.value.vm_kv).section_kv(BlueprintIni::SECTION_NAME);

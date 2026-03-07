@@ -29,9 +29,9 @@ namespace {
                 sqlite3* db = env.handle();
                 sqlite3_stmt* st = nullptr;
                 const char* sql =
-                    "SELECT succeeded,total FROM v_job_set_progress WHERE job_set_id=?";
+                    "SELECT succeeded,total FROM v_job_set_progress_h WHERE job_set_id=?";
                 if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
-                    return DbResult<bool>::Err({ simcore::db::map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare v_job_set_progress" });
+                    return DbResult<bool>::Err({ simcore::db::map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare v_job_set_progress_h" });
                 }
                 sqlite3_bind_int64(st, 1, job_set_id);
                 bool ok = false;
@@ -53,13 +53,13 @@ namespace {
                 sqlite3_stmt* st = nullptr;
 
                 const char* sql =
-                    "SELECT terminal,total FROM v_job_set_progress WHERE job_set_id=?";
+                    "SELECT terminal,total FROM v_job_set_progress_h WHERE job_set_id=?";
 
                 if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
                     return DbResult<bool>::Err({
                         simcore::db::map_sqlite_err(sqlite3_errcode(db)),
                         sqlite3_errcode(db),
-                        "prepare v_job_set_progress (ALL_FINISHED)"
+                        "prepare v_job_set_progress_h (ALL_FINISHED)"
                         });
                 }
 
@@ -104,9 +104,9 @@ namespace {
                 sqlite3* db = env.handle();
                 sqlite3_stmt* st = nullptr;
                 const char* sql =
-                    "SELECT winners_found,expected_total FROM v_winners_progress WHERE job_set_id=?";
+                    "SELECT winners_found,expected_total FROM v_winners_progress_h WHERE job_set_id=?";
                 if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
-                    return DbResult<bool>::Err({ simcore::db::map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare v_winners_progress" });
+                    return DbResult<bool>::Err({ simcore::db::map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "prepare v_winners_progress_h" });
                 }
                 sqlite3_bind_int64(st, 1, job_set_id);
                 bool ok = false;
@@ -198,6 +198,23 @@ namespace simcore {
             for (auto& t : list.value) {
                 auto r = handle_trigger(t, jr);
                 if (!r.ok) return r;
+            }
+        }
+        // Evaluate triggers attached to ancestor job_sets (parent -> ... -> root)
+        {
+            auto pid = JobSetsRepo::GetParent(jr.job_set_id);
+            if (!pid.ok) return DbResult<void>::Err(pid.error);
+            std::optional<int64_t> cur = pid.value;
+            while (cur.has_value()) {
+                auto list = TriggersRepo::ListActiveByJobSet(*cur);
+                if (!list.ok) return DbResult<void>::Err(list.error);
+                for (auto& t : list.value) {
+                    auto r = handle_trigger(t, jr); // handle_trigger uses t.scope='job_set' and will read progress for t.scope_id
+                    if (!r.ok) return r;
+                }
+                auto next = JobSetsRepo::GetParent(*cur);
+                if (!next.ok) return DbResult<void>::Err(next.error);
+                cur = next.value;
             }
         }
         return DbResult<void>::Ok();

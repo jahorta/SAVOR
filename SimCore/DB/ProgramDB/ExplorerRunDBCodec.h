@@ -12,9 +12,7 @@ namespace simcore::db::codec::battle::run {
         static constexpr const char* SECTION_NAME = "BattleRun.Blueprint";
 
         int64_t     settings_id;
-        int64_t     plan_id;
         int64_t     seed_probe_id;
-        int64_t     delta_seed_id;
         int         priority{ 0 };
         uint32_t    run_ms{};
         uint32_t    vi_stall_ms{};
@@ -25,9 +23,7 @@ namespace simcore::db::codec::battle::run {
             if (!doc.has_section(SECTION_NAME)) return bp;
             IniKV section = doc.section_kv(SECTION_NAME);
             bp.settings_id = section.get_i64("settings_id", -1);
-            bp.delta_seed_id = section.get_i64("delta_seed_id", -1);
-            bp.delta_seed_id = section.get_i64("delta_seed_id", -1);
-            bp.plan_id = section.get_i64("plan_id", 0);
+            bp.seed_probe_id = section.get_i64("seed_probe_id", -1);
             bp.priority = section.get_i64("priority", 0);
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
@@ -37,18 +33,23 @@ namespace simcore::db::codec::battle::run {
         inline void set_section(IniDoc& doc) const {
             doc.ensure_section(SECTION_NAME);
             doc.set(SECTION_NAME, "settings_id", std::to_string(settings_id));
-            doc.set(SECTION_NAME, "delta_seed_id", std::to_string(delta_seed_id));
-            doc.set(SECTION_NAME, "plan_id", std::to_string(plan_id));
+            doc.set(SECTION_NAME, "seed_probe_id", std::to_string(seed_probe_id));
             doc.set(SECTION_NAME, "priority", std::to_string(priority));
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
+        }
+        inline std::string to_string() const {
+            IniDoc doc{};
+            set_section(doc);
+            return doc.to_string_preserve_order();
         }
     };
 
     struct JobIni {
         static constexpr const char* SECTION_NAME = "BattleRun.Job";
 
+        int64_t     plan_id;
         int64_t     delta_seed_id;
         int64_t     savestate_id;
 
@@ -56,12 +57,16 @@ namespace simcore::db::codec::battle::run {
             JobIni job{};
             if (!doc.has_section(SECTION_NAME)) return job;
             IniKV section = doc.section_kv(SECTION_NAME);
+            job.plan_id = section.get_i64("plan_id", -1);
+            job.delta_seed_id = section.get_i64("delta_seed_id", -1);
             job.savestate_id = section.get_i64("savestate_id", -1);
             return job;
         }
         inline void set_section(IniDoc& doc) const {
             doc.ensure_section(SECTION_NAME);
+            doc.set(SECTION_NAME, "plan_id", std::to_string(plan_id));
             doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
+            doc.set(SECTION_NAME, "delta_seed_id", std::to_string(delta_seed_id));
         }
         IniDoc append_section(const IniDoc& doc) const {
             IniDoc newDoc{ doc };

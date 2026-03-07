@@ -5,7 +5,6 @@
 #include "../../DB/DBCore/DbResult.h"
 #include "../../DB/PredicateSpecRepo.h"
 #include "../../DB/ExplorerSettingsPlanLinkRepo.h"
-#include "../../DB/BattleRunGroupRepo.h"
 #include "../../DB/DeltaSeedRepo.h"
 #include "../../DB/SavestateRepo.h"
 #include "../../Runner/Breakpoints/Predicate.h"

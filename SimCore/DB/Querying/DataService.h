@@ -136,7 +136,7 @@ namespace simcore::db {
         static std::future<DbResult<std::vector<ProgramKindKV>>> ListProgramKindsAsync(RetryPolicy rp = {});
         static std::future<DbResult<IniDoc>> FetchJobVmKvIniAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<IniDoc>> FetchJobResultsIniAsync(int64_t job_id, RetryPolicy rp = {});
-        static std::future<DbResult<IniDoc>> FetchDecodedProgressIniAsync(int64_t job_id, RetryPolicy rp = {});
+        static std::future<DbResult<std::string>> FetchDecodedProgressAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<std::vector<ArtifactRefLite>>> FetchJobArtifactRefsAsync(int64_t job_id, RetryPolicy rp = {});
 
         static std::future<DbResult<void>> RequeueJobAsync(int64_t job_id, RetryPolicy rp = {});
@@ -176,7 +176,7 @@ namespace simcore::db {
         static std::future<DbResult<Page<SavestateLite>>>       FetchSavestatesPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp = {});
         static std::future<DbResult<Page<SeedProbeLite>>>       FetchSeedProbesPage(const PagedQuery<>& q, const std::string& search, bool only_done, std::optional<int64_t> filter_savestate_id = std::nullopt, RetryPolicy rp = {});
         static std::future<DbResult<Page<TasMovieLite>>>        FetchTasMoviesPage(const PagedQuery<>& q, const std::string& search, bool only_done, RetryPolicy rp = {});
-        static std::future<DbResult<Page<BattleRunGroupLite>>>  FetchBattleRunGroupsPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp = {});
+        static std::future<DbResult<Page<ExplorerSettingsLite>>> FetchExplorerSettingsPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp = {});
         static std::future<DbResult<Page<ObjectRefLite>>>       FetchObjectRefsPage(const PagedQuery<>& q, const std::string& search, const std::string& ext_filter, RetryPolicy rp = {});
 
         // SeedProbe -> Savestate

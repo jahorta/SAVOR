@@ -228,4 +228,81 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_list_recent_job_sets(e, scope, before, limit); });
     }
 
+    static DbResult<int64_t> impl_create_child(DbEnv& env,
+        int64_t parent_job_set_id,
+        const std::optional<std::string>& purpose, int program_kind,
+        const std::optional<std::string>& created_by,
+        const std::optional<std::string>& domain_ref_kind,
+        const std::optional<int64_t>& domain_ref_id,
+        const std::optional<std::string>& meta_text,
+        const std::optional<int64_t>& expected_total)
+    {
+        sqlite3* db = env.handle();
+        const char* sql =
+            "INSERT INTO job_sets(purpose,program_kind,created_by,domain_ref_kind,domain_ref_id,meta_text,expected_total,parent_job_set_id) "
+            "VALUES(?,?,?,?,?,?,?,?);";
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) 
+        {
+            const std::string err = "prepare job_sets insert child" + std::string(sqlite3_errmsg(db));
+            return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, err.c_str()});
+        }
+
+        int idx = 1;
+        if (purpose) sqlite3_bind_text(st, idx++, purpose->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st, idx++);
+        sqlite3_bind_int(st, idx++, program_kind);
+        if (created_by) sqlite3_bind_text(st, idx++, created_by->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st, idx++);
+        if (domain_ref_kind) sqlite3_bind_text(st, idx++, domain_ref_kind->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st, idx++);
+        if (domain_ref_id) sqlite3_bind_int64(st, idx++, *domain_ref_id); else sqlite3_bind_null(st, idx++);
+        if (meta_text) sqlite3_bind_text(st, idx++, meta_text->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st, idx++);
+        if (expected_total) sqlite3_bind_int64(st, idx++, *expected_total); else sqlite3_bind_null(st, idx++);
+        sqlite3_bind_int64(st, idx++, parent_job_set_id);
+
+        rc = sqlite3_step(st);
+        if (rc != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert child job_set" });
+        }
+        sqlite3_finalize(st);
+        return DbResult<int64_t>::Ok(sqlite3_last_insert_rowid(db));
+    }
+
+    // Public async wrappers
+    std::future<DbResult<int64_t>> JobSetsRepo::CreateChildAsync(
+        int64_t parent_job_set_id,
+        std::optional<std::string> purpose,
+        int program_kind,
+        std::optional<std::string> created_by,
+        std::optional<std::string> domain_ref_kind,
+        std::optional<int64_t> domain_ref_id,
+        std::optional<std::string> meta_text,
+        std::optional<int64_t> expected_total,
+        RetryPolicy rp)
+    {
+        return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::High, rp,
+            [=](DbEnv& e) { return impl_create_child(e, parent_job_set_id, purpose, program_kind, created_by, domain_ref_kind, domain_ref_id, meta_text, expected_total); });
+    }
+
+    static DbResult<std::optional<int64_t>> impl_get_parent(DbEnv& env, int64_t job_set_id) {
+        sqlite3* db = env.handle();
+        const char* sql = "SELECT parent_job_set_id FROM job_sets WHERE job_set_id=?";
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<std::optional<int64_t>>::Err({ map_sqlite_err(rc), rc, "prepare GetParent" });
+        sqlite3_bind_int64(st, 1, job_set_id);
+        std::optional<int64_t> out;
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            if (sqlite3_column_type(st, 0) != SQLITE_NULL) out = sqlite3_column_int64(st, 0);
+        }
+        sqlite3_finalize(st);
+        return DbResult<std::optional<int64_t>>::Ok(out);
+    }
+
+    std::future<DbResult<std::optional<int64_t>>> JobSetsRepo::GetParentAsync(int64_t job_set_id)
+    {
+        return DBService::instance().submit_res<std::optional<int64_t>>(OpType::Read, Priority::Normal, {},
+            [=](DbEnv& env) { return impl_get_parent(env, job_set_id); });
+    }
+
 } // namespace simcore::db

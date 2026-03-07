@@ -45,7 +45,7 @@ DbResult<int64_t> TasMovieDBCodec::encode_job_into_db(int64_t job_set_id, const 
     if (!base_dtm.ok) return DbResult<int64_t>::Err(base_dtm.error);
 
     int enqueued = 0;
-    for (int rtc = bp.rtc_low; rtc < bp.rtc_high; rtc++) {
+    for (int rtc = bp.rtc_low; rtc <= bp.rtc_high; rtc++) {
         auto tm_idr = simcore::db::TasMovieRepo::IdempotentEnqueue(bp.base_dtm_artifact_id, rtc, bp.priority);
         if (!tm_idr.ok) return DbResult<int64_t>::Err(tm_idr.error);
         const int64_t program_ref_id = tm_idr.value;
@@ -106,14 +106,14 @@ DbResult<simcore::PSJob> TasMovieDBCodec::decode_job_from_db(int64_t job_id) {
 
     simcore::tas::DtmFile base_dtm;
     base_dtm.load(dtm_pathr.value);
-    base_dtm.set_recording_start_time(job_ini.new_rtc);
+    base_dtm.set_recording_start_time(job_ini.new_rtc, false);
 
     std::string base_dtm_filename = dtm_deets.value.filename.empty() ? "temp.dtm" : dtm_deets.value.filename;
     std::string temp_filename = std::filesystem::path(base_dtm_filename).stem().string()+ "_rtc" + std::to_string(job_ini.new_rtc) + ".dtm";
 
     std::filesystem::path temp_filepath = std::filesystem::path(ObjectStore::TmpDir()) / "zzTasMovieDerived" / temp_filename;
     if (!std::filesystem::exists(temp_filepath.parent_path()))
-        std::filesystem::create_directories(temp_filepath);
+        std::filesystem::create_directories(temp_filepath.parent_path());
 
     std::string temp_filepath_str = temp_filepath.string();
 

@@ -65,8 +65,9 @@ DtmInfo DtmFile::info() const
 	return i;
 }
 
-void DtmFile::set_recording_start_time(uint64_t unix_time)
+void DtmFile::set_recording_start_time(uint64_t unix_time, bool is_delta)
 {
 	if (!m_valid) return;
+	if (!is_delta) unix_time += base_sec;
 	write_le<uint64_t>(m_bytes.data() + kOffRecordingStartTime, unix_time);
 }

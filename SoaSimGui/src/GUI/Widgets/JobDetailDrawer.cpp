@@ -2,6 +2,7 @@
 #include "../../Components/ToastBus.h"
 #include "../../Components/FutureQueue.h"
 #include "../Popups/IniEditor.h"
+#include "Utils/String.h"
 using namespace simcore::db;
 
 namespace {
@@ -22,8 +23,8 @@ namespace {
         // Decoded progress (optional)
         bool show_decoded = false;
         bool decoded_progress_loaded = false;
-        std::optional<IniDoc> decoded_progress_ini;
-        std::future<DbResult<IniDoc>> decoded_fut;
+        std::optional<std::vector<std::string>> decoded_progress_lines;
+        std::future<DbResult<std::string>> decoded_fut;
 
         bool requeue_opts_open = false;
         IniEditorModalState ini_editor;
@@ -44,10 +45,10 @@ namespace {
             artifacts.clear();
 
             decoded_progress_loaded = false;
-            decoded_progress_ini.reset();
+            decoded_progress_lines.reset();
 
             // reset future to an empty state
-            decoded_fut = std::future<DbResult<IniDoc>>{};
+            decoded_fut = std::future<DbResult<std::string>>{};
         }
     };
 
@@ -88,8 +89,6 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
         ImGui::End();
         return open;
     }
-
-    g.popup_viewport_id = ImGui::GetWindowViewport()->ID;
 
     const auto it = program_names.find(job.program_kind);
     const char* kind_name = (it != program_names.end()) ? it->second.c_str() : "<unknown>";
@@ -137,11 +136,12 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
         );
     }
 
-    ImGui::SetNextWindowViewport(g.popup_viewport_id);
-    if (ImGuiViewport* vp = ImGui::FindViewportByID(g.popup_viewport_id)) {
-        ImVec2 center(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
-        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) g.reset();
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 c = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowFocus();
 
     // Requeue Options modal (FAILED only)
@@ -180,7 +180,7 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
     }
 
     // INI Editor modal (standalone)
-    if (Widgets::DrawIniEditor(g.ini_editor, "Edit Job INI", "Edit Job INI", g.popup_viewport_id)) {
+    if (Widgets::DrawIniEditor(g.ini_editor, "Edit Job INI", "Edit Job INI")) {
         if (g.ini_editor.ok_clicked && !g.ini_editor.in_flight) {
             g.ini_editor.in_flight = true;
             g.ini_editor.error_msg.reset();
@@ -295,11 +295,21 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
 
         if (ImGui::BeginTabItem("Progress")) {
             if (!g.decoded_progress_loaded) {
-                g.decoded_fut = DataService::FetchDecodedProgressIniAsync(job.job_id);
+                g.decoded_fut = DataService::FetchDecodedProgressAsync(job.job_id);
                 auto r = g.decoded_fut.get();
-                if (r.ok) { g.decoded_progress_ini = std::move(r.value); g.decoded_progress_loaded = true; }
+                if (r.ok) { 
+                    
+                    g.decoded_progress_lines = string::splitStringByNewline(r.value); 
+                    g.decoded_progress_loaded = true; }
             }
-            if (g.decoded_progress_ini) DrawIniDoc(*g.decoded_progress_ini);
+
+            ImGui::BeginChild("ProgressText");
+            if (!g.decoded_progress_lines.has_value()) ImGui::Text("No progress...");
+            else {
+                for (auto l : *g.decoded_progress_lines) ImGui::Text(l.c_str());
+            }
+            ImGui::EndChild();
+
             ImGui::EndTabItem();
             active_tab = 4;
         }

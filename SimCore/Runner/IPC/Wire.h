@@ -102,14 +102,8 @@ namespace simcore {
     {
         uint32_t tag;         // = MSG_PROGRESS
         uint64_t job_id;      // mirrors WireJobHeader::job_id
-        uint32_t epoch;       // mirrors WireJobHeader::epoch
-        uint32_t phase_code;  // 0=Unknown, 1=RunInputs, 2=RunUntilBp
-        uint32_t cur_frames;  // VI/frame approximation (numerator)
-        uint32_t total_frames;// TAS total frames if known, else 0 (unknown)
-        uint32_t elapsed_ms;  // since entry into long loop
-        uint32_t status_flags;// bitfield (see ProgressFlags)
-        uint32_t poll_ms_used;// effective poll cadence
-        char     text[64];    // short hint, UTF-8, NUL-terminated if shorter
+        bool     record_progress;
+        char     text[1025];    // short hint, UTF-8, NUL-terminated if shorter
     };
 #pragma pack(pop)
 

@@ -105,7 +105,7 @@ namespace soasim::ui::adapters {
         return a;
     }
 
-    LedgerAdapter<simcore::db::SeedProbeLite> MakeSeedProbeAdapter(std::optional<int64_t> filter_savestate_id, int page_size) {
+    LedgerAdapter<simcore::db::SeedProbeLite> MakeSeedProbeAdapter(int page_size, std::optional<int64_t> filter_savestate_id) {
         auto mbox = std::make_shared<SnapshotMailbox<Page<simcore::db::SeedProbeLite>>>();
         LedgerAdapter<simcore::db::SeedProbeLite> a{};
         a.kind = LedgerKind::SeedProbe;
@@ -155,24 +155,23 @@ namespace soasim::ui::adapters {
         return a;
     }
 
-    LedgerAdapter<simcore::db::BattleRunGroupLite> MakeBattleRunGroupAdapter(int page_size) {
-        auto mbox = std::make_shared<SnapshotMailbox<Page<simcore::db::BattleRunGroupLite>>>();
-        LedgerAdapter<simcore::db::BattleRunGroupLite> a{};
+    LedgerAdapter<simcore::db::ExplorerSettingsLite> MakeExplorerSettingsAdapter(int page_size)
+    {
+        auto mbox = std::make_shared<SnapshotMailbox<Page<simcore::db::ExplorerSettingsLite>>>();
+        LedgerAdapter<simcore::db::ExplorerSettingsLite> a{};
         a.kind = LedgerKind::BattleRunGroup;
         a.title = "Pick BattleRun Group";
         a.page_size = page_size;
         a.columns = {
-            {"ID", 80.f, [](auto& r) { return std::to_string(r.group_id); }},
+            {"ID", 80.f, [](auto& r) { return std::to_string(r.id); }},
             {"Name", 200.f, [](auto& r) { return r.name; }},
-            {"Desc", 0.f, [](auto& r) { return r.description; }},
-            {"Settings", 100.f, [](auto& r) { return std::to_string(r.settings_id); }},
-            {"SeedProbe", 100.f, [](auto& r) { return std::to_string(r.seed_probe_id); }},
+            {"Desc", 0.f, [](auto& r) { return r.description; }}
         };
-        a.get_id = [](auto& r) { return r.group_id; };
+        a.get_id = [](auto& r) { return r.id; };
         a.draw_preview = [](auto&) {};
         a.poll_snapshot = [mbox]() { return mbox->latest(); };
-        a.submit_request = make_submit<simcore::db::BattleRunGroupLite>(mbox, [](const PagedQuery<>& q, const std::string& s) {
-            return simcore::db::DataService::FetchBattleRunGroupsPage(q, s);
+        a.submit_request = make_submit<simcore::db::ExplorerSettingsLite>(mbox, [](const PagedQuery<>& q, const std::string& s) {
+            return simcore::db::DataService::FetchExplorerSettingsPage(q, s);
             });
         return a;
     }

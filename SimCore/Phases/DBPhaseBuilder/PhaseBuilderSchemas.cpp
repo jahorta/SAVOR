@@ -31,19 +31,19 @@ namespace simcore::db::phasebuilder {
 
         SPBp bp{};
         bp.probe_id = -1;
-        bp.run_ms = 0u;
-        bp.vi_stall_ms = 0u;
+        bp.run_ms = 30000u;
+        bp.vi_stall_ms = 4000u;
         bp.cur_phase = SeedProbePhase::Neutral;
         bp.clear_result_winners = true;
         bp.auto_schedule_battle_run = false;
         bp.set_section(doc);
 
         SPGrid grid{};
-        grid.samples_per_axis = 5;
+        grid.samples_per_axis = 20;
         grid.min_value = 48;
         grid.max_value = 207;
         grid.cap_trigger_top = true;
-        grid.ignore_trigger_minmax = false;
+        grid.ignore_trigger_minmax = true;
         grid.set_section(doc);
 
         SPUni uni{};
@@ -58,8 +58,7 @@ namespace simcore::db::phasebuilder {
         IniDoc doc{};
         BRBp bp{};
         bp.settings_id = -1;
-        bp.delta_seed_id = -1;
-        bp.plan_id = -1;
+        bp.seed_probe_id = -1;
         bp.priority = 0;
         bp.run_ms = 0u;
         bp.vi_stall_ms = 0u;

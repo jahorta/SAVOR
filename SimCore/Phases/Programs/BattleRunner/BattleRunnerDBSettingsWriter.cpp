@@ -9,7 +9,6 @@
 #include "../../../DB/PredicateSpecRepo.h"
 #include "../../../Core/Input/SoaBattle/ActionPlanSerializer.h"
 #include "../../../Phases/BattleExplorer.h"
-#include "../../../DB/BattleRunGroupRepo.h"
 
 namespace simcore::phases {
 
@@ -125,42 +124,6 @@ namespace simcore::phases {
 
         // Optional: associate a seed probe later; for now settings are independent
         return DbResult<int64_t>::Ok(settings_id);
-    }
-
-    DbResult<int64_t> BRSettingsWriter::CreateRunGroup(
-        int64_t seed_probe_id,
-        int64_t savestate_id,
-        int64_t settings_id,
-        const std::string& name,
-        const std::string& description) {
-
-        (void)savestate_id; // not stored on group; seed_probe_id implies savestate
-        // We can compute vector fingerprints from current settings links for convenience
-        auto plans = db::ExplorerSettingsPlanLinkRepo::List(settings_id);
-        if (!plans.ok) return DbResult<int64_t>::Err(plans.error);
-        std::vector<std::string> plan_fps;
-        plan_fps.reserve(plans.value.size());
-        for (auto& link : plans.value) {
-            auto pr = db::BattlePlanRepo::Get(link.plan_id);
-            if (!pr.ok) return DbResult<int64_t>::Err(pr.error);
-            plan_fps.emplace_back(pr.value.fingerprint);
-        }
-        const std::string plan_vec_fp = hash_joined(plan_fps);
-
-        auto preds = db::ExplorerSettingsPredicateRepo::List(settings_id);
-        if (!preds.ok) return DbResult<int64_t>::Err(preds.error);
-        std::vector<std::string> pred_fps;
-        pred_fps.reserve(preds.value.size());
-        for (auto& link : preds.value) {
-            auto pr = db::PredicateSpecRepo::Get(link.predicate_id);
-            if (!pr.ok) return DbResult<int64_t>::Err(pr.error);
-            pred_fps.emplace_back(pr.value.fingerprint);
-        }
-        const std::string pred_vec_fp = hash_joined(pred_fps);
-
-        auto cg = db::BattleRunGroupRepo::Create(settings_id, seed_probe_id, name, description, pred_vec_fp, plan_vec_fp);
-        if (!cg.ok) return DbResult<int64_t>::Err(cg.error);
-        return DbResult<int64_t>::Ok(cg.value);
     }
 
 } // namespace simcore::phases

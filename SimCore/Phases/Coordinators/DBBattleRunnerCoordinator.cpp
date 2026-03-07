@@ -199,7 +199,7 @@ namespace simcore {
             // Load ordered plan ids for settings
             std::vector<int64_t> plan_ids;
             {
-                auto links = ExplorerSettingsPlanLinkRepo::List(settings_id);
+                auto links = ExplorerSettingsPlanLinkRepo::ListBySettings(settings_id);
                 if (!links.ok) return DbResult<int64_t>::Err(links.error);
                 plan_ids.reserve(links.value.size());
                 for (auto& l : links.value) plan_ids.push_back(l.plan_id);
@@ -213,26 +213,13 @@ namespace simcore {
                 uniques = std::move(lu.value);
             }
 
-            // Create a group row
-            int64_t group_id{};
-            {
-                auto g = BattleRunGroupRepo::Create(
-                    settings_id, seed_probe_id,
-                    group_name.value_or("BattleRunGroup"),
-                    group_desc.value_or(""),
-                    /*predicate_vec_fp*/std::nullopt,
-                    /*plan_vec_fp*/std::nullopt);
-                if (!g.ok) return DbResult<int64_t>::Err(g.error);
-                group_id = g.value;
-            }
-
             // 2) Create a job set bound to this run with expected_total=1
             auto js = JobSetsRepo::Create(
                 /*purpose*/"BattleRunner",
                 /*program_kind*/PK_BattleTurnRunner,
                 /*created_by*/std::nullopt,
-                /*domain_ref_kind*/std::optional<std::string>("BattleRunGroup"),
-                /*domain_ref_id*/std::optional<int64_t>(group_id),
+                /*domain_ref_kind*/std::nullopt,
+                /*domain_ref_id*/std::nullopt,
                 /*meta_text*/std::nullopt,
                 /*expected_total*/std::optional<int64_t>(1));
             if (!js.ok) return DbResult<int64_t>::Err(js.error);
@@ -244,12 +231,9 @@ namespace simcore {
             for (int64_t plan_id : plan_ids) {
                 for (const auto& d : uniques) {
                     // 1) Create run (planned) and attach to group
-                    auto run = ExplorerRunRepo::IdempotentCreate(group_id, settings_id, plan_id, d.id);
+                    auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_id, d.id);
                     if (!run.ok) return DbResult<int64_t>::Err(run.error);
                     const int64_t run_id = run.value;
-
-                    auto sg = ExplorerRunRepo::SetGroupId(run_id, group_id);
-                    if (!sg.ok) return DbResult<int64_t>::Err(sg.error);
 
                     // 3) Build blueprint INI and enqueue exactly one job in the set
                     IniKV kv;
@@ -265,7 +249,7 @@ namespace simcore {
                 }
             }
 
-            return DbResult<int64_t>::Ok(group_id);
+            return DbResult<int64_t>::Ok(0);
         }
 
         DbResult<std::string> BattleRunnerCoordinator::PollProgress_JobSet(int64_t job_set_id)

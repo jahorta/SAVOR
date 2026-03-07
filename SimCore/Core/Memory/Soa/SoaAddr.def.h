@@ -6,7 +6,11 @@
 #define ADDR_TABLE_CORE(X) \
   X(core,   RNG_SEED,               MEM1,      0x803469A8) \
   X(core,   SCT_FILE_NUM,           MEM1,      0x80311AC4) \
-  X(core,   SCT_FILE_LTTR,          MEM1,      0x80311AC8)
+  X(core,   SCT_FILE_LTTR,          MEM1,      0x80311AC8) \
+  X(core,   SCT_INDEX_BUFFER,       MEM1,      0x8030D6C0) \
+  X(core,   SCT_SECTION_COUNT,      MEM1,      0x8030D6C4) \
+  X(core,   SCT_FIRST_INST,         MEM1,      0x8030CEA0) \
+  X(core,   SCT_CURRENT_INST,       MEM1,      0x8030CEA4)
 
 #define ADDR_TABLE_BATTLE(X) \
   X(battle, CombatantInstancesTable,     MEM1,      0x80309DE4) /* 12 x u32 pointers (PC0..PC3, EC0..EC7) */\
@@ -17,6 +21,7 @@
   X(battle, TurnType,                    MEM1,      0x80347344) /* Turn type for detecting a back attack */\
   X(battle, TurnPhase,                   MEM1,      0x8034733c) /* Current Turn phase */\
   X(battle, CurrentTurn,                 MEM1,      0x80347340) /* Current Turn number */\
+  X(battle, Instructions,                MEM1,      0x80309174) /* Combatant Instruction Sheet 12 x QueuedInstructionWorksheet (size=0x20) */\
 
 
 /*

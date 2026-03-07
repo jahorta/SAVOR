@@ -32,13 +32,10 @@ namespace simcore::db {
         std::optional<int64_t> completed_at;
     };
 
-    struct BattleRunGroupLite {
-        int64_t group_id{};
-        int64_t settings_id{};
-        int64_t seed_probe_id{};
+    struct ExplorerSettingsLite {
+        int64_t id{};
         std::string name;
         std::string description;
-        int64_t created_at{};
     };
 
     struct ObjectRefLite {

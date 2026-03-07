@@ -26,13 +26,6 @@ namespace simcore {
 	{
 		size_t    worker_id{ 0 };
 		uint64_t  job_id{ 0 };
-		uint32_t  epoch{ 0 };
-		uint32_t  phase_code{ 0 };
-		uint32_t  cur_frames{ 0 };
-		uint32_t  total_frames{ 0 }; // 0 means unknown
-		uint32_t  elapsed_ms{ 0 };
-		uint32_t  flags{ 0 };
-		uint32_t  poll_ms{ 0 };
 		std::string text;          // copied from WireProgress::text
 	};
 

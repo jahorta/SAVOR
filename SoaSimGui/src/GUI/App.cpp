@@ -7,6 +7,7 @@
 #include "Panes/PhaseBuilderPane.h"
 #include "Panes/BattleRunSettingsPane.h"
 #include "Panes/ArtifactsPane.h"
+#include "Panes/SeedProbePane.h"
 
 #include "../Models/GuiLayoutStore.h"
 
@@ -15,8 +16,8 @@
 #include "DB/DBCore/DbService.h"
 
 #include "imgui.h"
-#include "backends/imgui_impl_win32.h"
-#include "backends/imgui_impl_dx11.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <fstream>
 #include "../Components/FutureQueue.h"
@@ -71,8 +72,6 @@ bool GuiApp::Init(HWND hwnd) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f);
 
@@ -109,8 +108,8 @@ bool GuiApp::Init(HWND hwnd) {
 
 void GuiApp::Shutdown() {
     hb_.stop();
-    simcore::db::DBService::instance().stop();
     StopCoordinator();
+    simcore::db::DBService::instance().stop();
     FutureQueue::Stop();
 
     // Save layout
@@ -134,13 +133,6 @@ void GuiApp::newFrame() {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
-
-    // First-run layout hint (only if no layout loaded)
-    if (g_layout_blob.empty()) {
-        ImGui::SetNextWindowDockID(ImGui::GetMainViewport()->ID, ImGuiCond_FirstUseEver);
-    }
 }
 
 static GuiPane s_last_pane{};
@@ -155,12 +147,10 @@ void GuiApp::RenderFrame() {
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + kTopBarH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(kLeftNavW, vp->Size.y - kTopBarH - status_h), ImGuiCond_Always);
-    ImGui::SetNextWindowViewport(vp->ID);
     GuiLeftNav::Draw();
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + kLeftNavW, vp->Pos.y + kTopBarH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x - kLeftNavW, vp->Size.y - kTopBarH - status_h), ImGuiCond_Always);
-    ImGui::SetNextWindowViewport(vp->ID);
 
     bool pane_swap = GuiLeftNav::GetActive() != s_last_pane;
     s_last_pane = GuiLeftNav::GetActive();
@@ -179,11 +169,16 @@ void GuiApp::RenderFrame() {
         PhaseBuilderPane::Draw();
         break;
     case GuiPane::BattleRunSettings:
+        if (pane_swap) brs_pane.OnActivated();
         brs_pane.Draw();
         break; 
     case GuiPane::Artifacts:
         if (pane_swap) ArtifactsPane::OnActivated();
         ArtifactsPane::Draw();
+        break;
+    case GuiPane::SeedProbe:
+        if (pane_swap) SeedProbePane::OnActivated();
+        SeedProbePane::Draw();
         break;
     default:
         ImGui::Begin("Content");
@@ -195,7 +190,6 @@ void GuiApp::RenderFrame() {
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vp->Size.y - status_h), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, status_h), ImGuiCond_Always);
-    ImGui::SetNextWindowViewport(vp->ID);
     GuiStatusBar::Draw(status_);
 
     ImGui::Render();
@@ -205,11 +199,6 @@ void GuiApp::RenderFrame() {
     ctx_->ClearRenderTargetView(rtv_, clear_col);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     swap_->Present(1, 0);
-
-    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
-    }
 }
 
 void GuiApp::OnResize(UINT w, UINT h) {
@@ -234,7 +223,6 @@ bool GuiApp::HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         UINT n = DragQueryFileW(h, 0xFFFFFFFF, nullptr, 0);
         POINT pt{};
         DragQueryPoint(h, &pt); // client coords
-        ::ClientToScreen(hWnd, &pt);
 
         std::vector<std::filesystem::path> paths;
         paths.reserve(n);

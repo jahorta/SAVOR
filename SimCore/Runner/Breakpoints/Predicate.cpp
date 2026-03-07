@@ -122,6 +122,11 @@ namespace simcore::pred {
             r.rhs_imm = rhs_is_key ? 0ull : s.rhs_value;
             r.rhs_addrprog_offset = 0; // fill after packing
 
+            std::string name = s.name;
+            while (name.size() > (sizeof(r.name) - 1))
+                name.pop_back();
+            snprintf(r.name, sizeof(r.name)-1, "%s", s.name.c_str());
+
             out_records.push_back(r);
         }
 

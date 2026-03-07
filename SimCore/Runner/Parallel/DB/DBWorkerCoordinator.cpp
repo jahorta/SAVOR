@@ -172,16 +172,16 @@ namespace simcore {
         return true;
     }
 
-    bool WorkerCoordinator::dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec) {
-        if (!s.proc->try_acquire_slot()) return false;
+    WorkerCoordinator::DispatchResult WorkerCoordinator::dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec) {
+        if (!s.proc->try_acquire_slot()) return DispatchResult::NotAvailable;
 
         auto jobr = codec.decode_job_from_db(job.job_id);
-        if (!jobr.ok) { s.proc->release_slot(); RecordError((int64_t)s.id, "dispatch_one failed (decode)"); return false; }
+        if (!jobr.ok) { s.proc->release_slot(); RecordError((int64_t)s.id, "dispatch_one failed (decode)"); return DispatchResult::BadDecode; }
 
         if (!s.proc->send_job((uint64_t)job.job_id, epoch_.load(), jobr.value)) {
             s.proc->release_slot();
             RecordError((int64_t)s.id, "dispatch_one failed (send)");
-            return false;
+            return DispatchResult::BadSend;
         }
 
         // worker status: job assigned
@@ -196,7 +196,7 @@ namespace simcore {
 
         s.assigned_job_id = job.job_id;
         s.lease_renew_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.heartbeat_interval_ms);
-        return true;
+        return DispatchResult::Success;
     }
 
     void WorkerCoordinator::renew_lease_if_due(int64_t job_id, Slot& s) {
@@ -262,29 +262,35 @@ namespace simcore {
                     continue;
                 }
 
-                auto claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor);
+                auto claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor, s.current_savestate_id);
                 if (!claimr.ok) { Sleep(cfg_.controller_sleep_ms); continue; }
                 if (!claimr.value.has_value()) { Sleep(cfg_.controller_sleep_ms); continue; }
 
                 auto job = claimr.value.value();
                 auto& codec = ProgramDBCodecRegistry::for_kind(job.program_kind);
 
-                auto need_sav = codec.get_required_savestate_id(job.job_id);
-                if (!need_sav.ok) { simcore::db::JobsRepo::SetState(job.job_id, "QUEUED"); RecordError((int64_t)s.id, "Missing required savestate"); continue; }
-
-                if (!ensure_program(s, job.program_kind, need_sav.value, codec, job.job_id)) {
+                if (!ensure_program(s, job.program_kind, job.savestate_id, codec, job.job_id)) {
                     simcore::db::JobsRepo::SetState(job.job_id, "QUEUED");
                     RecordError((int64_t)s.id, "ensure_program failed; requeueing");
                     SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
                     continue;
                 }
 
-                if (!dispatch_one(s, job, codec)) {
+                auto d_res = dispatch_one(s, job, codec);
+                if (d_res == DispatchResult::BadDecode) {
+                    simcore::db::JobsRepo::SetState(job.job_id, "FAILED");
+                    RecordError((int64_t)s.id, "dispatch_one decode failed.");
+                    SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
+                    UpdateState((int64_t)s.id, WorkerStateKind::Idle);
+                } else if (d_res == DispatchResult::BadSend || d_res == DispatchResult::NotAvailable){
                     simcore::db::JobsRepo::SetState(job.job_id, "QUEUED");
-                    RecordError((int64_t)s.id, "dispatch_one failed; requeueing");
+                    RecordError((int64_t)s.id, "dispatch_one send failed; requeueing");
                     SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
                     UpdateState((int64_t)s.id, WorkerStateKind::Idle);
                     continue;
+                }
+                else {
+                    simcore::db::JobsRepo::SetState(job.job_id, "RUNNING");
                 }
             }
 

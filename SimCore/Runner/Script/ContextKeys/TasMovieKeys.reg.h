@@ -8,7 +8,8 @@ namespace simcore::keys::tas {
   X(DTM_PATH,     0x0200, "tas.dtm_path")     \
   X(SAVE_PATH,    0x0201, "tas.save_path")    \
   X(SAVE_ON_FAIL, 0x0202, "tas.save_on_fail") \
-  X(DISC_ID6,     0x0203, "tas.disc_id6")     
+  X(DISC_ID6,     0x0203, "tas.disc_id6")     \
+  X(MOVIE_FAILED, 0x0204, "tas.movie_failed")     
 
 #define DECL_KEY(NAME, ID, STR) \
   inline constexpr simcore::keys::KeyId NAME = static_cast<simcore::keys::KeyId>(ID); \

@@ -63,6 +63,13 @@ namespace simcore {
             std::chrono::steady_clock::time_point lease_renew_deadline{};
         };
 
+        enum DispatchResult : uint8_t {
+            Success,
+            NotAvailable,
+            BadDecode,
+            BadSend
+        };
+
         void controller_loop();
         void drain_progress_loop();
         void drain_results_loop();
@@ -72,7 +79,7 @@ namespace simcore {
 
         bool ensure_ready(Slot& s);
         bool ensure_program(Slot& s, int program_kind, std::optional<int64_t> required_savestate_id, IProgramDBCodec& codec, int64_t job_id, uint32_t default_timeout_ms = 10000);
-        bool dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec);
+        DispatchResult dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec);
 
         void renew_lease_if_due(int64_t job_id, Slot& s);
         void sweep_expired_leases();

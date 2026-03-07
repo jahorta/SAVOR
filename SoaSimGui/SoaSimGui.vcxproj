@@ -112,15 +112,22 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)third_party/imgui/backends;$(SolutionDir)SimCore;$(ProjectDir)third_party/imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)third_party/dolphin_imgui;$(ProjectDir)third_party/imgui_backends;$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>%(AdditionalDependencies);d3d11.lib;dxgi.lib;dxguid.lib</AdditionalDependencies>
+      <ShowProgress>LinkVerbose</ShowProgress>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
     </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -128,25 +135,29 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;$(ProjectDir)third_party/imgui/backends;$(ProjectDir)third_party/imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)third_party/dolphin_imgui;$(ProjectDir)third_party/imgui_backends;$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>%(AdditionalDependencies);d3d11.lib;dxgi.lib;dxguid.lib;imm32.lib;dwmapi.lib</AdditionalDependencies>
+      <AdditionalOptions>/VERBOSE:LIB %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <Manifest>
-      <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
+      <EnableDpiAwareness>false</EnableDpiAwareness>
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
     <ClInclude Include="resources\Resource.h" />
+    <ClInclude Include="src\Components\ColorMaps.h" />
     <ClInclude Include="src\Components\DropInbox.h" />
     <ClInclude Include="src\Components\FutureQueue.h" />
     <ClInclude Include="src\Components\GuiHeartbeatPoller.h" />
+    <ClInclude Include="src\Components\ItemCatalog.h" />
+    <ClInclude Include="src\Components\LazyCache.h" />
     <ClInclude Include="src\Components\ToastBus.h" />
     <ClInclude Include="src\Components\Win32Dialogs.h" />
     <ClInclude Include="src\GUI\App.h" />
@@ -155,14 +166,21 @@
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="src\GUI\Panes\JobsPane.h" />
     <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h" />
+    <ClInclude Include="src\GUI\Panes\SeedProbePane.h" />
     <ClInclude Include="src\GUI\Popups\IdPicker.h" />
     <ClInclude Include="src\GUI\Popups\IdRepoAdapters.h" />
     <ClInclude Include="src\GUI\Popups\IniEditor.h" />
     <ClInclude Include="src\GUI\Popups\PredicateSpecPopup.h" />
     <ClInclude Include="src\GUI\Popups\UiActionPresetPopup.h" />
+    <ClInclude Include="src\GUI\Widgets\AddrProgramEditor.h" />
     <ClInclude Include="src\GUI\Widgets\BattleContextTree.h" />
+    <ClInclude Include="src\GUI\Widgets\BitmaskEditor.h" />
+    <ClInclude Include="src\GUI\Widgets\BreakpointPicker.h" />
+    <ClInclude Include="src\GUI\Widgets\InputTextMultilineWrap.h" />
     <ClInclude Include="src\GUI\Widgets\JobDetailDrawer.h" />
     <ClInclude Include="src\GUI\Widgets\LeftNav.h" />
+    <ClInclude Include="src\GUI\Widgets\SearchableCombo.h" />
+    <ClInclude Include="src\GUI\Widgets\SegmentedControl.h" />
     <ClInclude Include="src\GUI\Widgets\StatusBar.h" />
     <ClInclude Include="src\GUI\Widgets\TreeView.h" />
     <ClInclude Include="src\Models\GuiLayoutStore.h" />
@@ -197,8 +215,10 @@
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp" />
+    <ClCompile Include="src\GUI\Panes\SeedProbePane.cpp" />
     <ClCompile Include="src\GUI\Popups\IdPicker.cpp" />
     <ClCompile Include="src\GUI\Popups\IdRepoAdapters.cpp" />
+    <ClCompile Include="src\GUI\Widgets\AddrProgramEditor.cpp" />
     <ClCompile Include="src\GUI\Widgets\BattleContextTree.cpp" />
     <ClCompile Include="src\GUI\Widgets\JobDetailDrawer.cpp" />
     <ClCompile Include="src\GUI\Widgets\LeftNav.cpp" />
@@ -206,25 +226,9 @@
     <ClCompile Include="src\GUI\Widgets\TreeView.cpp" />
     <ClCompile Include="src\Models\GuiLayoutStore.cpp" />
     <ClCompile Include="src\SoaSimGui.cpp" />
-    <ClCompile Include="third_party\imgui\backends\imgui_impl_dx11.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\backends\imgui_impl_win32.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_draw.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_tables.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\imgui_widgets.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="third_party\imgui\misc\cpp\imgui_stdlib.cpp" />
+    <ClCompile Include="third_party\dolphin_imgui\misc\cpp\imgui_stdlib.cpp" />
+    <ClCompile Include="third_party\imgui_backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="third_party\imgui_backends\imgui_impl_win32.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

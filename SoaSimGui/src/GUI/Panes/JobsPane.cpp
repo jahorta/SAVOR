@@ -16,7 +16,7 @@ namespace {
         JobsListScope scope{};
         int page_limit = 100;
         bool auto_refresh = true;
-        int refresh_seconds = 3;
+        int refresh_seconds = 2;
 
         std::optional<KeysetCursor> before{};
         std::optional<KeysetCursor> after{};
@@ -238,7 +238,7 @@ void JobsPane::Draw() {
     s.auto_refresh = auto_ref;
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80);
-    ImGui::SliderInt("Every (s)", &refresh_sec, 2, 5);
+    ImGui::SliderInt("Every (s)", &refresh_sec, 1, 5);
     s.refresh_seconds = refresh_sec;
 
     ImGui::Separator();
@@ -268,14 +268,17 @@ void JobsPane::Draw() {
     apply_pending_scroll_if_any();
     maybe_refresh();
 
-    if (ImGui::BeginTable("JobsTable", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
+    if (ImGui::BeginTable("JobsTable", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("id");
         ImGui::TableSetupColumn("job_set_id");
+        ImGui::TableSetupColumn("savestate_id");
         ImGui::TableSetupColumn("program_kind");
         ImGui::TableSetupColumn("state");
         ImGui::TableSetupColumn("queued_at");
         ImGui::TableSetupColumn("progress", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
+
+        std::unordered_map<int64_t, std::string> summaries{ s.progress_summary };
 
         ImGuiListClipper clipper;
         clipper.Begin((int)s.page.items.size());
@@ -285,32 +288,42 @@ void JobsPane::Draw() {
                 ImGui::PushID((int)r.job_id);
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
+
                 ImVec2 row_top = ImGui::GetCursorScreenPos();
 
-                
-                ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(std::to_string(r.job_id).c_str());
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(std::to_string(r.job_set_id).c_str());
                 ImGui::TableSetColumnIndex(2);
+
+                std::string savestate_id{ "Null" };
+                if (r.savestate_id.has_value()) savestate_id = std::to_string(r.savestate_id.value());
+                ImGui::TextUnformatted(savestate_id.c_str());
+                ImGui::TableSetColumnIndex(3);
+                
                 {
                     auto it = s.program_names.find(r.program_kind);
                     if (it != s.program_names.end()) ImGui::TextUnformatted(it->second.c_str());
                     else ImGui::Text("kind %d", r.program_kind);
                 }
-                ImGui::TableSetColumnIndex(3);
-                ImGui::TextUnformatted(r.state.c_str());
                 ImGui::TableSetColumnIndex(4);
+                ImGui::TextUnformatted(r.state.c_str());
+                ImGui::TableSetColumnIndex(5);
                 {
                     auto ts = fmt_time(r.queued_at);
                     ImGui::TextUnformatted(ts.c_str());
                 }
-                ImGui::TableSetColumnIndex(5);
+                ImGui::TableSetColumnIndex(6);
                 {
-                    auto it = s.progress_summary.find(r.job_id);
-                    if (it != s.progress_summary.end()) ImGui::TextUnformatted(it->second.c_str());
+                    auto it = summaries.find(r.job_id);
+
+                    if (it != summaries.end())
+                    {
+                        ImGui::TextUnformatted(it->second.c_str());
+                    }
                     else ImGui::TextUnformatted("...");
                 }
+                
                 bool sel = (s.selected_job_id == r.job_id);
                 ImGui::SetCursorScreenPos(row_top);
                 const float row_h = ImGui::GetTextLineHeightWithSpacing();
@@ -319,7 +332,8 @@ void JobsPane::Draw() {
                     ImGuiSelectableFlags_SpanAllColumns |
                     ImGuiSelectableFlags_AllowDoubleClick |
                     ImGuiSelectableFlags_AllowItemOverlap,
-                    ImVec2(0, row_h))) {
+                    ImVec2(0, row_h))) 
+                {
                     s.selected_job_id = r.job_id;
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         s.open_job = r;

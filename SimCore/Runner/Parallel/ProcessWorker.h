@@ -131,6 +131,7 @@ namespace simcore {
 		HANDLE hProcess{ NULL };
 		HANDLE hThread{ NULL };
 		unsigned long dwProcessId{ 0 };
+		HANDLE hJob{ 0 };
 
 		std::thread reader_;
 		TSQueue<PRResult>* out_{ nullptr };

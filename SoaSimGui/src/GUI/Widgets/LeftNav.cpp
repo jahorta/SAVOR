@@ -9,7 +9,7 @@ void GuiLeftNav::Draw() {
     ImGui::Begin("Navigation", nullptr, ImGuiWindowFlags_NoMove);
 
     for (int i = 0; i < 10; ++i) {
-        bool disabled = (i > 5); 
+        bool disabled = (i > 10); 
         if (disabled) ImGui::BeginDisabled(true);
         bool sel = ((int)g_active == i);
         if (ImGui::Selectable(items[i], sel)) g_active = (GuiPane)i;

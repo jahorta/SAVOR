@@ -10,6 +10,8 @@
 #include "Phases/DBPhaseBuilder/PhaseBuilderSchemas.h"
 #include "../Popups/IdPicker.h"            // your generic picker widget
 #include "../Popups/IdRepoAdapters.h"      // Make*Adapter(...) factories
+#include "../../Components/FutureQueue.h"
+#include "../../Components/ToastBus.h"
 
 using simcore::db::DbResult;
 using simcore::db::ProgramKindKV;
@@ -39,6 +41,9 @@ namespace {
         std::future<simcore::db::DbResult<simcore::db::phasebuilder::PhasePreview>> preview_future_;
         std::optional<simcore::db::phasebuilder::PhasePreview> preview_;
         std::string preview_err_;
+
+        int battle_plan_count_ = -1;
+        int unique_seed_count_ = -1;
 
         SubmitState submit_state_ = SubmitState::Idle;
         std::future<simcore::db::DbResult<std::pair<int64_t, int>>> submit_future_;
@@ -332,41 +337,94 @@ void PhaseBuilderPane::drawExplorerRunForm() {
 
     ImGui::SeparatorText("ExplorerRun");
     int64_t settings_id = bp.settings_id;
-    int64_t delta_seed_id = bp.delta_seed_id;
+    int64_t seed_probe_id = bp.seed_probe_id;
     int priority = bp.priority;
     int run_ms = (int)bp.run_ms;
     int vi_ms = (int)bp.vi_stall_ms;
     bool progress_enable = bp.progress_enable;
 
-    ImGui::TextUnformatted("Battle Run Group: "); ImGui::SameLine();
-    if (ImGui::Button("Pick Group...")) {
-        ImGui::OpenPopup("PB_BattleRunGroupPicker");
+    if (ImGui::Button("Pick SeedProbe...")) {
+        ImGui::OpenPopup("PB_SeedProbe");
     }
 
     {
-        using RowT = simcore::db::BattleRunGroupLite; // or: simcore::db::BattleRunGroupRow
+        using RowT = simcore::db::SeedProbeLite; // or: simcore::db::BattleRunGroupRow
         static soasim::ui::LedgerPicker<RowT> picker;
         static bool init = false;
         if (!init) {
-            picker.adapter = soasim::ui::adapters::MakeBattleRunGroupAdapter(/*page_size*/100);
-            picker.args.modal_id = "PB_BattleRunGroupPicker";
+            picker.adapter = soasim::ui::adapters::MakeSeedProbeAdapter(/*page_size*/100);
+            picker.args.modal_id = "PB_SeedProbe";
             picker.args.initial_query.limit = picker.adapter.page_size;
             picker.args.initial_query.order = PageOrder::Desc;
             init = true;
         }
-        picker.open = ImGui::IsPopupOpen("PB_BattleRunGroupPicker");
+        picker.open = ImGui::IsPopupOpen("PB_SeedProbe");
         picker.Draw([&](const soasim::ui::PickResult& pr, const std::optional<RowT>& row) {
             if (pr.ok && row) {
                 // Autofill from the selected group row
-                settings_id = row->settings_id;
-                delta_seed_id = row->seed_probe_id; // when codec refactor lands, write seed_probe_id instead
+                seed_probe_id = row->id; // when codec refactor lands, write seed_probe_id instead
                 inst().ini_dirty_ = true;
+                inst().unique_seed_count_ = -1;
+                FutureQueue::Enqueue(
+                    DeltaSeedRepo::ListUniqueForProbeAsync(row->id),
+                    // on success
+                    [](DbResult<std::vector<DeltaSeedRow>> rows)
+                    {
+                        if (rows.ok) inst().unique_seed_count_ = rows.value.size();
+                        else GuiToastBus::Error("Unable to get Unique seed count", rows.error.message);
+                    },
+                    // on error
+                    [](std::exception_ptr)
+                    {
+                        GuiToastBus::Error("Error getting Unique seed count");
+                    }
+                );
+            }
+            });
+    }
+
+    if (ImGui::Button("Pick ExplorerSettings...")) {
+        ImGui::OpenPopup("PB_ExplorerSettings");
+    }
+
+    {
+        using RowT = simcore::db::ExplorerSettingsLite; // or: simcore::db::BattleRunGroupRow
+        static soasim::ui::LedgerPicker<RowT> picker;
+        static bool init = false;
+        if (!init) {
+            picker.adapter = soasim::ui::adapters::MakeExplorerSettingsAdapter(/*page_size*/100);
+            picker.args.modal_id = "PB_ExplorerSettings";
+            picker.args.initial_query.limit = picker.adapter.page_size;
+            picker.args.initial_query.order = PageOrder::Desc;
+            init = true;
+        }
+        picker.open = ImGui::IsPopupOpen("PB_ExplorerSettings");
+        picker.Draw([&](const soasim::ui::PickResult& pr, const std::optional<RowT>& row) {
+            if (pr.ok && row) {
+                // Autofill from the selected group row
+                settings_id = row->id;
+                inst().ini_dirty_ = true;
+                inst().battle_plan_count_ = -1;
+                FutureQueue::Enqueue(
+                    ExplorerSettingsPlanLinkRepo::GetPlanCountAsync(row->id),
+                    // on success
+                    [](DbResult<int> count)
+                    {
+                        if (count.ok) inst().battle_plan_count_ = count.value;
+                        else GuiToastBus::Error("Unable to get BattlePlan count", count.error.message);
+                    },
+                    // on error
+                    [](std::exception_ptr)
+                    {
+                        GuiToastBus::Error("Error getting BattlePlan count");
+                    }
+                );
             }
             });
     }
 
     ImGui::Text("settings_id: %lld | ", settings_id); ImGui::SameLine();
-    ImGui::Text("delta_seed_id: %lld", delta_seed_id); ImGui::SameLine();
+    ImGui::Text("seed_probe_id: %lld", seed_probe_id); ImGui::SameLine();
 
     if (ImGui::InputInt("priority", &priority)) { inst().ini_dirty_ = true; }
     if (ImGui::InputInt("run_ms", &run_ms)) { inst().ini_dirty_ = true; }
@@ -375,7 +433,7 @@ void PhaseBuilderPane::drawExplorerRunForm() {
 
     if (inst().ini_dirty_) {
         bp.settings_id = settings_id;
-        bp.delta_seed_id = delta_seed_id;
+        bp.seed_probe_id = seed_probe_id;
         bp.priority = priority;
         bp.run_ms = (uint32_t)run_ms;
         bp.vi_stall_ms = (uint32_t)vi_ms;
@@ -440,7 +498,7 @@ void PhaseBuilderPane::drawPreview() {
     if (inst().preview_state_ != PreviewState::Ready || !inst().preview_) return;
 
     ImGui::SeparatorText("Preview");
-    const auto& pv = *inst().preview_;
+    auto& pv = *inst().preview_;
     if (pv.tasmovie) {
         const auto& t = *pv.tasmovie;
         ImGui::Text("TasMovie jobs: %lld", (long long)t.jobs);
@@ -460,8 +518,14 @@ void PhaseBuilderPane::drawPreview() {
         for (auto& w : s.warnings) ImGui::BulletText("%s", w.c_str());
     }
     if (pv.explorer) {
-        const auto& e = *pv.explorer;
-        ImGui::Text("Jobs: %lld", (long long)e.jobs);
+        auto& e = *pv.explorer;
+        if (inst().battle_plan_count_ > 0 && inst().unique_seed_count_ > 0) 
+        {
+            ImGui::Text("Jobs: %lld", inst().battle_plan_count_ * inst().unique_seed_count_);
+            e.jobs = inst().battle_plan_count_ * inst().unique_seed_count_;
+        }
+        else ImGui::Text("Jobs: calcluating...");
+        
         ImGui::Text("Predicates: %d", (int)e.predicate_count);
         for (auto& w : e.warnings) ImGui::BulletText("%s", w.c_str());
     }

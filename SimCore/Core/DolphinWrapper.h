@@ -17,6 +17,7 @@
 #include "Core/InputCommon/GCPadStatus.h"
 #include "Input/GCPadOverride.h"
 #include "Core/Common/Buffer.h"
+#include "Common/WindowSystemInfo.h"
 
 namespace Core { class System; }
 namespace addr { enum class AddrKey : uint16_t; struct DolphinAddr; }
@@ -57,10 +58,16 @@ namespace simcore {
         // Run a functor on the CPU thread (blocks). Returns false if not running.
         bool runOnCpuThread(const std::function<void()>& fn, const bool waitForCompletion = true) const;
 
+        bool getMem1(std::string& out) const; // fills out with 24 MiB MEM1 snapshot
+        bool getMem1RangeRaw(std::string& out, uint32_t va, uint32_t size) const;
+        uint32_t getRegister(uint8_t reg);
         uint32_t getPC();
         uint64_t getTBR();
+        uint32_t getConfigRTC(bool offset = true);
+        uint32_t getEmulatedTime();
         std::string getCurrentSctFileTag() const;
-        bool getMem1(std::string& out) const; // fills out with 24 MiB MEM1 snapshot
+        std::string getCurrentSctSection() const;
+
 
         // Input functions
         void setInputPlan(const InputPlan& p) { m_plan = p; m_cursor = 0; }
@@ -117,17 +124,15 @@ namespace simcore {
         bool readByKeyAny(addr::AddrKey k, uint8_t width, uint64_t& out, uint8_t& out_width) const;
 
         struct RunUntilHitResult { bool hit; uint32_t pc; const char* reason; };
+        bool armBattleBreakpoints();
+        bool disarmBattleBreakpoints();
         bool armPcBreakpoints(const std::vector<uint32_t>& pcs);
         bool disarmPcBreakpoints(const std::vector<uint32_t>& pcs);
         void clearAllPcBreakpoints();
         bool setEnableBreakpoint(uint32_t pc, bool enabled);
         bool setEnableAllBreakpoints(bool enabled);
 
-        using ProgressSink = std::function<void(uint32_t cur_frames,
-            uint32_t total_frames,
-            uint32_t elapsed_ms,
-            uint32_t flags,
-            const char* text)>;
+        using ProgressSink = std::function<void(const char* text, const bool record)>;
 
         ProgressSink getProgressSink() const { return m_progress_sink; }
         void setProgressSink(ProgressSink s) { m_progress_sink = std::move(s); }
@@ -137,20 +142,23 @@ namespace simcore {
             uint32_t vi_stall_ms = 0,
             bool watch_movie = true,
             uint32_t poll_ms = 0,
+            uint32_t flags = {},
             ProgressSink sink = nullptr);
 
         uint32_t pickPollIntervalMs(uint32_t timeout_ms);
         static uint32_t pickPollIntervalMsForTimeLeft(uint32_t timeout_ms, uint32_t time_left_ms);
 
-        // Convenience: query whether a DTM is currently being played back.
-        bool isMoviePlaying() const;
-
         void silenceStdOutInfo();
         void restoreStdOutInfo();
 
+        // Convenience: query whether a DTM is currently being played back.
+        bool isMoviePlaying() const;
         bool startMoviePlayback(const std::string& dtm_path);
         bool endMoviePlaybackBlocking(uint32_t timeout_ms = 4000);
         bool setGCMemoryCardA(const std::string& raw_path);
+
+        bool startMovieRecording();
+        void endMovieRecording(std::optional<std::string> movie_save_path = std::nullopt);
 
 
     private:
@@ -166,6 +174,8 @@ namespace simcore {
         bool m_ran_since_last_load = false;
         bool m_system_pad_is_inited = false;
         GCPadOverride m_pad{ 0 };
+        std::string m_last_game_iso_path{""};
+        WindowSystemInfo m_wsi;
 
         InputPlan m_plan;
         size_t m_cursor = 0;

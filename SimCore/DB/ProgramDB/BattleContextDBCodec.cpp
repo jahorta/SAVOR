@@ -42,7 +42,7 @@ DbResult<int64_t> BattleContextDBCodec::encode_job_into_db(int64_t job_set_id, c
     if (!save_found.ok) return DbResult<int64_t>::Err(save_found.error);
     if (!save_found.value.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "savestate_id is required to make a battle context" });
     auto savestate_row = save_found.value.value();
-    if (!savestate_row.savestate_type != db::SavestateType::BATTLE) return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "a battle savestate is required" });
+    //if (!savestate_row.savestate_type != db::SavestateType::BATTLE) return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "a battle savestate is required" });
 
 
     std::string fp = "PK=" + std::to_string(kPK) + ";PV=" + std::to_string(kPV) 
@@ -50,7 +50,7 @@ DbResult<int64_t> BattleContextDBCodec::encode_job_into_db(int64_t job_set_id, c
         + ";run_ms=" + std::to_string(run_ms)
         + ";vi=" + std::to_string(vi_stall_ms);
 
-    auto ins = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, /*program_ref_id*/0, fp, priority, blueprint_ini);
+    auto ins = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, /*program_ref_id*/0, fp, priority, blueprint_ini, bp.savestate_id);
     if (!ins.ok) return DbResult<int64_t>::Err(ins.error);
 
     auto ev = simcore::db::JobEventsRepo::Append(ins.value, "ENQUEUED", blueprint_ini);

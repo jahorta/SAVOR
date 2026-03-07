@@ -2,7 +2,7 @@
 #include "DBCore/DbResult.h"
 #include "DBCore/DbRetryPolicy.h"
 #include "DBCore/DbService.h"
-#include "../../Core/Input/InputPlan.h"
+#include "../Core/Input/InputPlan.h"
 #include <future>
 #include <vector>
 #include <cstdint>

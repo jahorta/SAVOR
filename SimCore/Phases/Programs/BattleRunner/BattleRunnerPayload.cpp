@@ -5,6 +5,7 @@
 #include "../../../Runner/IPC/Wire.h"
 #include "../../../Runner/Script/KeyRegistry.h"
 #include "../../../Core/Input/SoaBattle/ActionPlanSerializer.h"
+#include "../../../Runner/Script/ScriptProgress.h"
 
 namespace phase::battle::runner {
     static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) { b.push_back(uint8_t(v)); b.push_back(uint8_t(v >> 8)); b.push_back(uint8_t(v >> 16)); b.push_back(uint8_t(v >> 24)); }
@@ -102,9 +103,17 @@ namespace phase::battle::runner {
         out_ctx[keys::core::PRED_BASELINES] = pred_bases;
         out_ctx[keys::core::PRED_PASSED] = (uint32_t) 0;
         out_ctx[keys::core::PRED_TOTAL] = (uint32_t) 0;
-        out_ctx[keys::core::PRED_ALL_PASSED] = (uint32_t) 1;
+        out_ctx[keys::core::PRED_ABORT_RUN] = (uint32_t) 0;
 
         out_ctx[keys::battle::TURN_PLANS] = b_path;
+
+        simcore::progress::ProgressDeets progress{ .poll_rate = 5000 };
+        progress.set_flag(CoreProgressFlags::BattleProgress);
+        progress.set_flag(CoreProgressFlags::PredicateProgress);
+        progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
+        
+        out_ctx[simcore::keys::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[simcore::keys::core::PROGRESS_CORE_FLAGS] = progress.flags;
         return true;
     }
 

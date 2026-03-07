@@ -6,7 +6,7 @@
 #endif
 #include <ctime>
 
-namespace simcore::log{
+namespace simcore::logger{
 
     static std::string fmt_v(const char* fmt, std::va_list ap) {
         std::va_list ap2; va_copy(ap2, ap);

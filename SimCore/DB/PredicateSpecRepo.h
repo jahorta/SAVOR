@@ -7,6 +7,7 @@
 #include <string>
 #include <optional>
 #include <cstdint>
+#include "../Runner/Breakpoints/BPRegistry.h"
 
 namespace simcore {
     namespace db {
@@ -26,6 +27,7 @@ namespace simcore {
             int32_t turn_mask{};
             std::optional<int64_t> lhs_prog_id;
             std::optional<int64_t> rhs_prog_id;
+            std::string name;
             std::string description;
             std::string fingerprint;
         };
@@ -34,6 +36,8 @@ namespace simcore {
             int64_t     id{};
             std::string name;
             std::string description;   // from predicate_spec.desc
+            BPAddr required_bp{};
+            bool abort_on_fail;
         };
 
         struct PredicateSpecRepo {

@@ -26,6 +26,8 @@ namespace simcore::db {
 
     class JobSetsRepo {
     public:
+        // Async functions
+
         static std::future<DbResult<int64_t>> CreateAsync(
             std::optional<std::string> purpose, int program_kind,
             std::optional<std::string> created_by,
@@ -44,6 +46,19 @@ namespace simcore::db {
             int limit,
             RetryPolicy rp = {}
         );
+        static std::future<DbResult<int64_t>> CreateChildAsync(
+            int64_t parent_job_set_id,
+            std::optional<std::string> purpose,
+            int program_kind,
+            std::optional<std::string> created_by,
+            std::optional<std::string> domain_ref_kind,
+            std::optional<int64_t> domain_ref_id,
+            std::optional<std::string> meta_text,
+            std::optional<int64_t> expected_total,
+            RetryPolicy rp = {});
+        static std::future<DbResult<std::optional<int64_t>>> GetParentAsync(int64_t job_set_id);
+
+        // Blocking Helpers
 
         static inline DbResult<int64_t> Create(
             std::optional<std::string> purpose, int program_kind,
@@ -61,6 +76,23 @@ namespace simcore::db {
         static inline DbResult<void> SetExpectedTotal(int64_t job_set_id, std::optional<int64_t> expected_total) {
             return SetExpectedTotalAsync(job_set_id, std::move(expected_total)).get();
         }
+        static inline DbResult<int64_t> CreateChild(
+            int64_t parent_job_set_id,
+            std::optional<std::string> purpose,
+            int program_kind,
+            std::optional<std::string> created_by,
+            std::optional<std::string> domain_ref_kind,
+            std::optional<int64_t> domain_ref_id,
+            std::optional<std::string> meta_text,
+            std::optional<int64_t> expected_total) {
+            return CreateChildAsync(parent_job_set_id, std::move(purpose), program_kind,
+                std::move(created_by), std::move(domain_ref_kind), std::move(domain_ref_id),
+                std::move(meta_text), std::move(expected_total)).get();
+        }
+        static inline DbResult<std::optional<int64_t>> GetParent(int64_t job_set_id) {
+            return GetParentAsync(job_set_id).get();
+        }
+
     };
 
 } // namespace simcore::db

@@ -38,8 +38,6 @@ struct BreakpointMap
 // Central, X-macro driven dataset
 namespace bp {
 
-    struct BPRec { BPKey key; uint32_t pc; const char* name; };
-
     enum class BPDomain : uint8_t { PreBattle = 0, Battle = 1, Overworld = 2, Unknown = 255 };
 
     // If you rely on numeric ranges, keep this; otherwise you can drop it later.
@@ -52,8 +50,9 @@ namespace bp {
 
     class BPRegistry {
     public:
-        static std::span<const BPRec> all();
-        static const BPRec* find(BPKey k);
+        static std::span<const BPAddr> all();
+        static const BPAddr* find(BPKey k);
+        static const BPAddr* find(uint32_t);
         static std::optional<BPKey> match(uint32_t pc);
         static const char* name(BPKey k);
         static uint32_t pc(BPKey k);

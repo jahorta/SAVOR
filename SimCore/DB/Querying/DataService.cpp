@@ -2,7 +2,7 @@
 #include "../SavestateRepo.h"
 #include "../SeedProbeRepo.h"
 #include "../TasMovieRepo.h"
-#include "../BattleRunGroupRepo.h"
+#include "../ExplorerSettingsRepo.h"
 #include "../DBCore/ObjectStore.h"
 #include "../ProgramKindsRepo.h"
 #include "../../Runner/IPC/Wire.h"
@@ -359,21 +359,16 @@ namespace simcore::db {
         return fut;
     }
 
-    std::future<DbResult<IniDoc>> DataService::FetchDecodedProgressIniAsync(int64_t job_id, RetryPolicy rp) {
-        std::promise<DbResult<IniDoc>> p;
+    std::future<DbResult<std::string>> DataService::FetchDecodedProgressAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<std::string>> p;
         auto fut = p.get_future();
         std::thread([job_id, rp, pr = std::move(p)]() mutable {
             auto jr = JobsRepo::GetAsync(job_id).get();
-            if (!jr.ok) { pr.set_value(DbResult<IniDoc>::Err(jr.error)); return; }
+            if (!jr.ok) { pr.set_value(DbResult<std::string>::Err(jr.error)); return; }
             auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
             auto r = codec.decode_progress_from_db(job_id, std::optional<int64_t>{});
-            if (!r.ok) { pr.set_value(DbResult<IniDoc>::Err(r.error)); return; }
-            IniDoc doc;
-            if (!r.value.empty()) {
-                try { doc = IniDoc::parse(r.value); }
-                catch (...) { pr.set_value(DbResult<IniDoc>::Err({ DbErrorKind::InvalidData, 0, "progress ini parse error" })); return; }
-            }
-            pr.set_value(DbResult<IniDoc>::Ok(std::move(doc)));
+            if (!r.ok) { pr.set_value(DbResult<std::string>::Err(r.error)); return; }
+            pr.set_value(DbResult<std::string>::Ok(r.value));
             }).detach();
         return fut;
     }
@@ -495,8 +490,8 @@ namespace simcore::db {
     std::future<DbResult<Page<TasMovieLite>>> DataService::FetchTasMoviesPage(const PagedQuery<>& q, const std::string& search, bool only_done, RetryPolicy rp) {
         return TasMovieRepo::ListPagedAsync(q, search, only_done, rp);
     }
-    std::future<DbResult<Page<BattleRunGroupLite>>> DataService::FetchBattleRunGroupsPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
-        return BattleRunGroupRepo::ListPagedAsync(q, search, rp);
+    std::future<DbResult<Page<ExplorerSettingsLite>>> DataService::FetchExplorerSettingsPage(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+        return ExplorerSettingsRepo::ListPagedAsync(q, search, rp);
     }
     std::future<DbResult<Page<ObjectRefLite>>> DataService::FetchObjectRefsPage(const PagedQuery<>& q, const std::string& search, const std::string& ext_filter, RetryPolicy rp) {
         return ObjectRefList::ListPagedAsync(q, search, ext_filter, rp);
@@ -524,10 +519,11 @@ namespace simcore::db {
             auto js = JobSetsRepo::Create("New Context Probe", PK_BattleContextProbe, std::nullopt, std::nullopt, std::nullopt, ini_string, 1);
             if (!js.ok) return DbResult<int64_t>::Err(js.error);
 
-            auto cp = EncodeJobSetWithCodecAsync(PK_BattleContextProbe, js.value, ini_string);
-            if (!js.ok) return DbResult<int64_t>::Err(js.error);
+            auto cpa = EncodeJobSetWithCodecAsync(PK_BattleContextProbe, js.value, ini_string);
+            auto cp = cpa.get();
+            if (!cp.ok) return DbResult<int64_t>::Err(cp.error);
 
-            return DbResult<int64_t>::Ok(js.value);
+            return DbResult<int64_t>::Ok(cp.value);
             });
     }
 

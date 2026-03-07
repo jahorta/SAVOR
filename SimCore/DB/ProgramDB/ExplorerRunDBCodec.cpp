@@ -5,6 +5,7 @@
 #include "../DBCore/DbResult.h"
 #include "../DBCore/DbEnv.h"
 #include "../DBCore/ObjectStore.h"
+#include "SeedProbeDBCodec.h"
 
 #include "../Scheduling/JobsRepo.h"
 #include "../Scheduling/JobSetsRepo.h"
@@ -49,6 +50,7 @@ using simcore::TriggerCtx;
 using simcore::db::codec::battle::run::BlueprintIni;
 using simcore::db::codec::battle::run::JobIni;
 using simcore::db::codec::battle::run::ResultsIni;
+using SeedProbeBp = simcore::db::codec::seedprobe::BlueprintIni;
 
 static constexpr int kPK = PK_BattleTurnRunner;                                     // from Wire.h
 static constexpr int kProgramVersion = phase::battle::runner::PayloadVersion;       // from BattleRunnerPayload.h
@@ -61,43 +63,57 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
     BlueprintIni bp_ini = BlueprintIni::from_section(ini);
 
     const int64_t settings_id = bp_ini.settings_id;
-    const int64_t plan_id = bp_ini.plan_id;
-    const int64_t delta_seed_id = bp_ini.delta_seed_id;
+    const int64_t seed_probe_id = bp_ini.seed_probe_id;
     const int priority = bp_ini.priority;
     const uint32_t run_ms = bp_ini.run_ms;
     const uint32_t vi_stall_ms = bp_ini.vi_stall_ms;
-    if (!plan_id || !delta_seed_id) return DbResult<int64_t>::Err({ .kind=DbErrorKind::NotFound, .message="plan_id and delta_seed_id required" });
-    
-    auto delta = simcore::db::DeltaSeedRepo::Get(bp_ini.delta_seed_id);
-    if (!delta.ok) return DbResult<int64_t>::Err(delta.error);
-    const int64_t probe_id = delta.value.value().probe_id;
 
-    auto probe = simcore::db::SeedProbeRepo::Get(probe_id);
+    auto deltas = DeltaSeedRepo::ListUniqueForProbe(seed_probe_id);
+    if (!deltas.ok) return DbResult<int64_t>::Err(deltas.error);
+
+    auto plans = ExplorerSettingsPlanLinkRepo::ListBySettings(settings_id);
+    if (!plans.ok) return DbResult<int64_t>::Err(plans.error);
+
+    auto probe = simcore::db::SeedProbeRepo::Get(seed_probe_id);
     if (!probe.ok) return DbResult<int64_t>::Err(probe.error);
-    const int64_t savestate_id = probe.value.savestate_id;    
+    const int64_t savestate_id = probe.value.savestate_id;
 
-    JobIni jb_ini = JobIni::from_section(ini);
-    jb_ini.savestate_id = savestate_id;
-
-    IniDoc t_ini{};
+    int64_t enqueued = 0;
+    IniDoc t_ini = IniDoc();
     bp_ini.set_section(t_ini);
-    jb_ini.set_section(t_ini);
 
-    auto run = ExplorerRunRepo::IdempotentCreate(job_set_id, settings_id, plan_id, delta_seed_id);
-    if (!run.ok) return DbResult<int64_t>::Err(run.error);
+    for (auto delta_row : deltas.value) {
 
-    std::string to_hash = "ExplorerRun|" + std::to_string(kProgramVersion) + "|" +
-        std::to_string(run.value) + "|" + std::to_string(plan_id) + "|" + std::to_string(delta_seed_id) + "|" +
-        std::to_string(run_ms) + "|" + std::to_string(vi_stall_ms);
-    const std::string fingerprint = hash::sha256(to_hash.data(), to_hash.size());
+        std::string meta = std::format("delta_id={}", delta_row.id);
+        auto delta_group = JobSetsRepo::CreateChild(job_set_id, "Explorer Run Delta Group", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, meta, plans.value.size());
+        if (!delta_group.ok) return DbResult<int64_t>::Err(delta_group.error);
 
-    auto cj = JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kProgramVersion, run.value, fingerprint, priority, t_ini.to_string_sorted());
-    if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
+        for (auto plan_row : plans.value) {
 
-    auto ev = JobEventsRepo::Append(cj.value, "ENQUEUED");
-    if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
+            JobIni jb_ini = JobIni::from_section(ini);
+            jb_ini.savestate_id = savestate_id;
+            jb_ini.plan_id = plan_row.plan_id;
+            jb_ini.delta_seed_id = delta_row.id;
 
-    return DbResult<int64_t>::Ok(cj.value);
+            auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_row.plan_id, delta_row.id);
+            if (!run.ok) return DbResult<int64_t>::Err(run.error);
+
+            std::string to_hash = "ExplorerRun|" + std::to_string(kProgramVersion) + "|" +
+                std::to_string(run.value) + "|" + std::to_string(plan_row.plan_id) + "|" + std::to_string(delta_row.id) + "|" +
+                std::to_string(run_ms) + "|" + std::to_string(vi_stall_ms);
+            const std::string fingerprint = hash::sha256(to_hash.data(), to_hash.size());
+
+            auto cj = JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kProgramVersion, run.value, fingerprint, priority, jb_ini.append_section(t_ini).to_string_preserve_order(), savestate_id);
+            if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
+
+            auto ev = JobEventsRepo::Append(cj.value, "ENQUEUED");
+            if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
+
+            enqueued++;
+        }
+    }
+
+    return DbResult<int64_t>::Ok(enqueued);
 }
 
 DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
@@ -113,10 +129,11 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
         return DbResult<simcore::PSJob>::Err({ .kind = DbErrorKind::NotFound, .message = "job vm_kv does not have all necessary sections for blueprint or job" });
 
     BlueprintIni bp_ini = BlueprintIni::from_section(ini);
+    JobIni jb_ini = JobIni::from_section(ini);
     
     const int64_t settings_id = bp_ini.settings_id;
-    const int64_t plan_id = bp_ini.plan_id;
-    const int64_t delta_seed_id = bp_ini.delta_seed_id;
+    const int64_t plan_id = jb_ini.plan_id;
+    const int64_t delta_seed_id = jb_ini.delta_seed_id;
     const uint32_t run_ms = bp_ini.run_ms;
     const uint32_t vi_stall_ms = bp_ini.vi_stall_ms;
     if (!plan_id || !delta_seed_id) return DbResult<simcore::PSJob>::Err({ .kind = DbErrorKind::NotFound, .message = "plan_id and delta_seed_id required" });
@@ -176,7 +193,8 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
             .turn_mask = (uint32_t)p.value.turn_mask,
             .lhs_prog = lhs_prog,
             .rhs_prog = rhs_prog,
-            .desc = p.value.description
+            .name = p.value.name.size() > 0 ? p.value.name : "unnamed",
+            .desc = p.value.description.size() > 0 ? p.value.description : "no description"
         };
         if (p.value.lhs_key.has_value()) spec.lhs_key = (addr::AddrKey)p.value.lhs_key.value();
         if (p.value.rhs_key.has_value()) spec.rhs_key = (addr::AddrKey)p.value.rhs_key.value();
@@ -326,7 +344,11 @@ DbResult<simcore::PSInit> ExplorerRunDBCodec::build_psinit_for_job(int64_t job_i
     IniDoc ini = IniDoc::parse(jr.value.vm_kv.value());
     JobIni jb_ini = JobIni::from_section(ini);
 
-    auto temp_savestate_path = ObjectStore::MaterializeToTemp(jb_ini.savestate_id);
+    auto savestate = SavestateRepo::Get(jb_ini.savestate_id);
+    if (!savestate.ok) return simcore::db::DbResult<simcore::PSInit>::Err(savestate.error);
+    if (!savestate.value.has_value()) return simcore::db::DbResult<simcore::PSInit>::Err({DbErrorKind::NotFound, 0, "Savestate not found"});
+
+    auto temp_savestate_path = ObjectStore::MaterializeToTemp(savestate.value.value().object_ref_id);
     if (!temp_savestate_path.ok) return simcore::db::DbResult<simcore::PSInit>::Err(temp_savestate_path.error);
 
     simcore::PSInit init{};
@@ -363,23 +385,25 @@ DbResult<void> ExplorerRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx,
 
     BlueprintIni bp = BlueprintIni::from_section(ini);
 
-    auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::List(bp.settings_id);
+    auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
     if (!plans.ok) return DbResult<void>::Err(plans.error);
     if (plans.value.size() == 0) return DbResult<void>::Err({DbErrorKind::NotFound, 0, 
         "No plans found for setting_id=" + std::to_string(bp.settings_id) + ". Make sure they were registered in the ExplorerSettingsPlanLink repo."});
 
-    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, "", 1);
-    if (!crt.ok) return DbResult<void>::Err(crt.error);
-    
-    for (auto link : plans.value) {
-        IniDoc tmp;
-        
-        bp.plan_id = link.plan_id;
-        bp.set_section(tmp);
+    SeedProbeBp spbp = SeedProbeBp::from_section(ini);
 
-        auto enq = encode_job_into_db(crt.value, tmp.to_string_sorted());
-        if (!enq.ok) return DbResult<void>::Err(enq.error);
-    }
+    auto unique_count = DeltaSeedRepo::ListUniqueForProbe(spbp.probe_id);
+    if (!unique_count.ok) return DbResult<void>::Err(unique_count.error);
+    if (unique_count.value.size() == 0) return DbResult<void>::Err({ DbErrorKind::NotFound, 0,
+        "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) + ". Make sure that the SeedProbe is done and that they were registered in the DeltaSeed repo." });
+
+
+    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
+    if (!crt.ok) return DbResult<void>::Err(crt.error);
+
+    bp.seed_probe_id = spbp.probe_id;
+    
+    encode_job_into_db(crt.value, bp.to_string());
 
     return DbResult<void>::Ok();
 }

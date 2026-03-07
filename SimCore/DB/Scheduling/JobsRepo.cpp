@@ -6,47 +6,51 @@
 namespace simcore::db {
 
     static DbResult<int64_t> impl_create_or_get(DbEnv& env,
-        int64_t job_set_id, int program_kind, int program_version,
-        int64_t program_ref_id, const std::string& fingerprint, int priority,
-        const std::optional<std::string>& vm_kv) {
+            int64_t job_set_id, int program_kind, int program_version,
+            int64_t program_ref_id, const std::string& fingerprint, int priority,
+            const std::optional<std::string>& vm_kv,
+            const std::optional<int64_t>& savestate_id)
+            {
+                auto* db = env.handle();
+                sqlite3_stmt* st = nullptr;
 
-        auto* db = env.handle();
-        sqlite3_stmt* st = nullptr;
+                const char* sql =
+                    "INSERT INTO jobs(job_set_id,program_kind,program_version,program_ref_id,"
+                    "fingerprint,priority,state,attempts,max_attempts,queued_at,vm_kv,savestate_id) "
+                    "VALUES(?,?,?,?,?,?, 'QUEUED',0,5,strftime('%s','now'),?,?) "
+                    "ON CONFLICT(fingerprint) DO UPDATE SET fingerprint=fingerprint "
+                    "RETURNING job_id";
 
-        if (sqlite3_prepare_v2(db,
-            "INSERT INTO jobs(job_set_id,program_kind,program_version,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at,vm_kv)"
-            " VALUES(?,?,?,?,?,?, 'QUEUED',0,5,strftime('%s','now'),?)"
-            " ON CONFLICT(fingerprint) DO UPDATE SET fingerprint=fingerprint"
-            " RETURNING job_id", -1, &st, nullptr) != SQLITE_OK) {
-            return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
-        }
+                if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+                    return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+                }
 
-        sqlite3_bind_int64(st, 1, job_set_id);
-        sqlite3_bind_int(st, 2, program_kind);
-        sqlite3_bind_int(st, 3, program_version);
-        sqlite3_bind_int64(st, 4, program_ref_id);
-        sqlite3_bind_text(st, 5, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(st, 6, priority);
-        if (vm_kv && !vm_kv->empty())
-            sqlite3_bind_text(st, 7, vm_kv->c_str(), -1, SQLITE_TRANSIENT);
-        else
-            sqlite3_bind_null(st, 7);
+                sqlite3_bind_int64(st, 1, job_set_id);
+                sqlite3_bind_int(st, 2, program_kind);
+                sqlite3_bind_int(st, 3, program_version);
+                sqlite3_bind_int64(st, 4, program_ref_id);
+                sqlite3_bind_text(st, 5, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(st, 6, priority);
+                if (vm_kv && !vm_kv->empty()) sqlite3_bind_text(st, 7, vm_kv->c_str(), -1, SQLITE_TRANSIENT);
+                else                          sqlite3_bind_null(st, 7);
+                if (savestate_id)             sqlite3_bind_int64(st, 8, *savestate_id);
+                else                          sqlite3_bind_null(st, 8);
 
-        int64_t out_id = 0;
-        if (sqlite3_step(st) == SQLITE_ROW) out_id = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
-        if (!out_id) return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "failed to upsert job" });
-        return DbResult<int64_t>::Ok(out_id);
+                int64_t out_id = 0;
+                if (sqlite3_step(st) == SQLITE_ROW) out_id = sqlite3_column_int64(st, 0);
+                sqlite3_finalize(st);
+                if (!out_id) return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "failed to upsert job" });
+                return DbResult<int64_t>::Ok(out_id);
     }
 
     std::future<DbResult<int64_t>> JobsRepo::CreateOrGetByFingerprintAsync(
         int64_t job_set_id, int program_kind, int program_version,
         int64_t program_ref_id, std::string fingerprint, int priority,
-        std::optional<std::string> vm_kv, RetryPolicy rp) {
+        std::optional<std::string> vm_kv, std::optional<int64_t> savestate_id, RetryPolicy rp) {
 
         return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
             [=](DbEnv& e) {
-                return impl_create_or_get(e, job_set_id, program_kind, program_version, program_ref_id, fingerprint, priority, vm_kv);
+                return impl_create_or_get(e, job_set_id, program_kind, program_version, program_ref_id, fingerprint, priority, vm_kv, savestate_id);
             });
     }
 
@@ -54,8 +58,9 @@ namespace simcore::db {
         auto* db = env.handle();
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db,
-            "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at,queued_at,vm_kv"
-            " FROM jobs WHERE job_id=?", -1, &st, nullptr) != SQLITE_OK) {
+            "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,fingerprint,priority,"
+            "state,attempts,max_attempts,claimed_by_token,lease_expires_at,queued_at,vm_kv,savestate_id "
+            "FROM jobs WHERE job_id=?", -1, &st, nullptr) != SQLITE_OK) {
             return DbResult<JobRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
         }
         sqlite3_bind_int64(st, 1, job_id);
@@ -75,6 +80,7 @@ namespace simcore::db {
             if (sqlite3_column_type(st, 11) != SQLITE_NULL) r.lease_expires_at = sqlite3_column_int64(st, 11);
             r.queued_at = sqlite3_column_int64(st, 12);
             if (sqlite3_column_type(st, 13) != SQLITE_NULL) r.vm_kv = std::string((const char*)sqlite3_column_text(st, 13));
+            if (sqlite3_column_type(st, 14) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 14);
             sqlite3_finalize(st);
             return DbResult<JobRow>::Ok(std::move(r));
         }
@@ -133,12 +139,9 @@ namespace simcore::db {
     static DbResult<void> impl_set_state(DbEnv& env, int64_t job_id, const std::string& new_state);
     static DbResult<void> impl_set_vm_kv(DbEnv& env, int64_t job_id, const std::optional<std::string>& vm_kv);
 
-    static inline DbResult<std::optional<JobRow>> impl_claim_next_ready(DbEnv& env, const std::string& claim_token, int lease_seconds, double aging_factor) {
+    static inline DbResult<std::optional<JobRow>> impl_claim_next_ready(DbEnv& env, const std::string& claim_token, int lease_seconds, double aging_factor, std::optional<int64_t> preferred_savestate_id) {
         sqlite3* db = env.handle();
-        int rc = 0;
-        sqlite3_stmt* st = nullptr;
-
-        rc = sqlite3_exec(db, "SAVEPOINT claim_job;", nullptr, nullptr, nullptr);
+        int rc = sqlite3_exec(db, "SAVEPOINT claim_job;", nullptr, nullptr, nullptr);
         if (rc != SQLITE_OK) return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "begin" });
 
         int64_t cand_id = 0;
@@ -148,15 +151,28 @@ namespace simcore::db {
             "FROM jobs j "
             "JOIN program_kinds pk ON pk.kind_id = j.program_kind "
             "WHERE j.state='QUEUED' "
-            "ORDER BY (pk.base_priority + j.priority + ((strftime('%s','now') - j.queued_at) * ?1)) DESC, j.queued_at ASC "
+            "ORDER BY "
+            "  CASE WHEN ?1 IS NULL "
+            "       THEN CASE WHEN j.savestate_id IS NULL THEN 1 ELSE 0 END "
+            "       ELSE CASE WHEN j.savestate_id = ?1   THEN 1 ELSE 0 END "
+            "  END DESC, "
+            "  (pk.base_priority + j.priority + ((strftime('%s','now') - j.queued_at) * ?2)) DESC, "
+            "  j.queued_at ASC "
             "LIMIT 1;";
+
+        sqlite3_stmt* st = nullptr;
         rc = sqlite3_prepare_v2(db, sel, -1, &st, nullptr);
-        if (rc != SQLITE_OK) { 
-            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr);
-            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
+        if (rc != SQLITE_OK) 
+        { 
+            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr); 
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr); 
             return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare sel" }); 
         }
-        sqlite3_bind_double(st, 1, aging_factor);
+
+        if (preferred_savestate_id) sqlite3_bind_int64(st, 1, *preferred_savestate_id);
+        else                        sqlite3_bind_null(st, 1);
+        sqlite3_bind_double(st, 2, aging_factor);
+
         if (sqlite3_step(st) == SQLITE_ROW) cand_id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
 
@@ -233,9 +249,11 @@ namespace simcore::db {
         return DbResult<void>::Ok();
     }
 
-    std::future<DbResult<std::optional<JobRow>>> JobsRepo::ClaimNextReadyAsync(std::string claim_token, int lease_seconds, double aging_factor, RetryPolicy rp) {
+    std::future<DbResult<std::optional<JobRow>>> JobsRepo::ClaimNextReadyAsync(
+        std::string claim_token, int lease_seconds, double aging_factor,
+        std::optional<int64_t> savestate_id, RetryPolicy rp) {
         return DBService::instance().submit_res<std::optional<JobRow>>(OpType::Write, Priority::High, rp,
-            [=](DbEnv& e) { return impl_claim_next_ready(e, claim_token, lease_seconds, aging_factor); });
+            [=](DbEnv& e) { return impl_claim_next_ready(e, claim_token, lease_seconds, aging_factor, savestate_id); });
     }
 
     std::future<DbResult<void>> JobsRepo::MarkRunningAsync(int64_t job_id, RetryPolicy rp) {
@@ -260,13 +278,13 @@ namespace simcore::db {
         const char* sql_all =
             "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,"
             "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,"
-            "lease_expires_at,queued_at,vm_kv "
+            "lease_expires_at,queued_at,vm_kv,savestate_id "
             "FROM jobs WHERE job_set_id=? ORDER BY queued_at ASC";
 
         const char* sql_queued =
             "SELECT job_id,job_set_id,program_kind,program_version,program_ref_id,"
             "fingerprint,priority,state,attempts,max_attempts,claimed_by_token,"
-            "lease_expires_at,queued_at,vm_kv "
+            "lease_expires_at,queued_at,vm_kv,savestate_id "
             "FROM jobs WHERE job_set_id=? AND state='QUEUED' ORDER BY queued_at ASC";
 
         if (sqlite3_prepare_v2(db, queued_only ? sql_queued : sql_all, -1, &st, nullptr) != SQLITE_OK) {
@@ -310,6 +328,11 @@ namespace simcore::db {
                 else
                     r.vm_kv.reset();
 
+                if (sqlite3_column_type(st, 14) != SQLITE_NULL)
+                    r.savestate_id = sqlite3_column_int64(st, 14);
+                else
+                    r.savestate_id.reset();
+
                 out.push_back(std::move(r));
                 continue;
             }
@@ -342,7 +365,7 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at "
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at, savestate_id "
             "FROM jobs ";
 
         // WHERE
@@ -397,6 +420,7 @@ namespace simcore::db {
                 r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 r.priority = sqlite3_column_int(st, 4);
                 r.queued_at = sqlite3_column_int64(st, 5);
+                if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 6);
                 page.items.push_back(std::move(r));
             }
             else if (rc == SQLITE_DONE) {
@@ -438,7 +462,7 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at FROM jobs ";
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at, savestate_id FROM jobs ";
 
         bool hasWhere = false;
         auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
@@ -487,7 +511,8 @@ namespace simcore::db {
                 r.program_kind = sqlite3_column_int(st, 2);
                 r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 r.priority = sqlite3_column_int(st, 4);
-                r.queued_at = sqlite3_column_int64(st, 5);
+                r.queued_at = sqlite3_column_int64(st, 5);                
+                if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 6);
                 page.items.push_back(std::move(r));
             }
             else if (rc == SQLITE_DONE) {

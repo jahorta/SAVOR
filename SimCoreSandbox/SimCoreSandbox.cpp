@@ -32,8 +32,8 @@ static void init_logging(AppState& g )
     char exePath[MAX_PATH]{};
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     g.exe_dir = fs::path(exePath).parent_path();
-    log::Logger::get().set_levels(log::Level::Info, log::Level::Debug);
-    log::Logger::get().open_file((g.exe_dir / "sandbox.log").string().c_str(), false);
+    logger::Logger::get().set_levels(logger::Level::Info, logger::Level::Debug);
+    logger::Logger::get().open_file((g.exe_dir / "sandbox.log").string().c_str(), false);
     SCLOGI("[sandbox] Starting...");
 }
 

@@ -1280,6 +1280,25 @@ namespace soa {
 			Silver,
 		};
 
+		enum Instructions : uint8_t {
+			Focus,
+			Magic,
+			Smove,
+			Attack,
+			Defend,
+			Item,
+			Run,
+			// not sure where Crew attack or Moon Drop is yet
+		};
 
+		inline constexpr auto InstructionNames = std::to_array<std::string_view>({
+			"Focus",
+			"Magic",
+			"Smove",
+			"Attack",
+			"Defend",
+			"Item",
+			"Run"
+		});
 	} 
 }

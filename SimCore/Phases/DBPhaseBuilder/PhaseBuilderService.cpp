@@ -49,19 +49,14 @@ namespace simcore::db::phasebuilder {
         case PK_BattleTurnRunner: {
             auto bp = BRBp::from_section(ini);
             if (bp.settings_id <= 0) errs.push_back({ "BattleRun.Blueprint.settings_id","required" });
-            if (bp.plan_id <= 0)     errs.push_back({ "BattleRun.Blueprint.plan_id","required" });
-            if (bp.delta_seed_id <= 0) errs.push_back({ "BattleRun.Blueprint.delta_seed_id","required" });
+            if (bp.seed_probe_id <= 0) errs.push_back({ "BattleRun.Blueprint.seed_probe_id","required" });
             if (bp.settings_id > 0) {
                 auto s = ExplorerSettingsRepo::Get(bp.settings_id);
                 if (!s.ok) errs.push_back({ "BattleRun.Blueprint.settings_id","settings not found" });
             }
-            if (bp.plan_id > 0) {
-                auto p = BattlePlanRepo::Get(bp.plan_id);
-                if (!p.ok) errs.push_back({ "BattleRun.Blueprint.plan_id","plan not found" });
-            }
-            if (bp.delta_seed_id > 0) {
-                auto d = DeltaSeedRepo::Get(bp.delta_seed_id);
-                if (!d.ok || !d.value.has_value()) errs.push_back({ "BattleRun.Blueprint.delta_seed_id","delta seed not found" });
+            if (bp.seed_probe_id > 0) {
+                auto d = SeedProbeRepo::Get(bp.seed_probe_id);
+                if (!d.ok || d.value.status != "done") errs.push_back({ "BattleRun.Blueprint.seed_probe_id","seed probe not found or not done" });
             }
             break;
         }
@@ -98,7 +93,7 @@ namespace simcore::db::phasebuilder {
         auto bp = TasBp::from_section(ini);
         p.rtc_low = bp.rtc_low;
         p.rtc_high = bp.rtc_high;
-        if (bp.rtc_high > bp.rtc_low) p.jobs = (bp.rtc_high - bp.rtc_low);
+        if (bp.rtc_high >= bp.rtc_low) p.jobs = (bp.rtc_high - bp.rtc_low + 1);
         if (bp.base_dtm_artifact_id > 0) {
             auto r = ObjectStore::Get(bp.base_dtm_artifact_id);
             if (r.ok) {

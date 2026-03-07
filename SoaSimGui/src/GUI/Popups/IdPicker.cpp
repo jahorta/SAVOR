@@ -19,7 +19,11 @@ namespace soasim::ui {
     template <class Row>
     bool LedgerPicker<Row>::Draw(std::function<void(const PickResult&, const std::optional<Row>&)> cb) {
         if (!open) return false;
-        ImGui::SetNextWindowSize(ImVec2(args.width, args.height), ImGuiCond_FirstUseEver);
+        // Center on first appear relative to main viewport (only as a starting point).
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(720, 0), ImVec2(vp->WorkSize.x, vp->WorkSize.y));
+
         if (ImGui::BeginPopupModal(args.modal_id, &open, ImGuiWindowFlags_NoResize)) {
             if (search_buffer.empty() && !args.initial_search.empty()) search_buffer = args.initial_search;
             if (!page.has_value()) { adapter.submit_request(args.initial_query, search_buffer); }
@@ -137,7 +141,7 @@ namespace soasim::ui {
     template struct LedgerPicker<simcore::db::SavestateLite>;
     template struct LedgerPicker<simcore::db::SeedProbeLite>;
     template struct LedgerPicker<simcore::db::TasMovieLite>;
-    template struct LedgerPicker<simcore::db::BattleRunGroupLite>;
     template struct LedgerPicker<simcore::db::ObjectRefLite>;
+    template struct LedgerPicker<simcore::db::ExplorerSettingsLite>;
 
 } // namespace soasim::ui

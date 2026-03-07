@@ -7,6 +7,7 @@
 #include "../../../Utils/Log.h"
 #include "../../../Runner/IPC/Wire.h"
 #include "../../../Runner/Script/KeyRegistry.h"
+#include "../../../Runner/Script/ScriptProgress.h"
 
 namespace fs = std::filesystem;
 
@@ -132,7 +133,15 @@ namespace simcore::tasmovie {
         out_ctx[keys::core::RUN_MS] = run_ms;
         out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
         out_ctx[keys::tas::SAVE_ON_FAIL] = (uint32_t)0;
-        out_ctx[keys::core::PROGRESS_TEXT_FILENAME] = static_cast<uint32_t>((flags & 0x02) ? 1 : 0);
+
+        simcore::progress::ProgressDeets progress{};
+        progress.set_flag(CoreProgressFlags::ViDelta);
+        progress.set_flag(CoreProgressFlags::Filename);
+        progress.set_flag(CoreProgressFlags::ScriptSection);
+        progress.set_flag(CoreProgressFlags::WarnViStall);
+
+        out_ctx[keys::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[keys::core::PROGRESS_CORE_FLAGS] = progress.flags;
         out_ctx[keys::tas::DISC_ID6] = id6;
 
         return true;

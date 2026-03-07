@@ -25,9 +25,6 @@
     <Filter Include="Utils">
       <UniqueIdentifier>{44d5a27b-0a42-4f94-83b3-20b148da213b}</UniqueIdentifier>
     </Filter>
-    <Filter Include="IO">
-      <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Runner\VM">
       <UniqueIdentifier>{1ade13ea-176c-4287-8a73-b2ec1bb22622}</UniqueIdentifier>
     </Filter>
@@ -100,6 +97,9 @@
     <Filter Include="Phases\DBPhaseBuilders">
       <UniqueIdentifier>{a3628a6d-558f-4dc7-a8b4-568c8607faee}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Tas">
+      <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -151,7 +151,7 @@
       <Filter>Phases</Filter>
     </ClInclude>
     <ClInclude Include="Tas\DtmFile.h">
-      <Filter>IO</Filter>
+      <Filter>Tas</Filter>
     </ClInclude>
     <ClInclude Include="Phases\FirstBattleGenerator.h">
       <Filter>Phases</Filter>
@@ -432,9 +432,6 @@
     <ClInclude Include="DB\DBCore\ConfigRepo.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
-    <ClInclude Include="DB\BattleRunGroupRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
     <ClInclude Include="DB\ExplorerSettingsPlanLinkRepo.h">
       <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
@@ -519,643 +516,19 @@
     <ClInclude Include="DB\UiConfigRowRepo.h">
       <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Script\ScriptProgress.h">
+      <Filter>Runner\VM</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\String.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SimCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\WiiUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\AchievementManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\ActionReplay.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\ARDecrypt.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\BootManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\CheatGeneration.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\CheatSearch.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\ConfigManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Core.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\CoreTiming.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\CPUThreadConfigCallback.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\DolphinAnalytics.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\DSPEmulator.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\FreeLookConfig.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\FreeLookManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\GeckoCode.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\GeckoCodeConfig.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HotkeyManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\LibusbUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\MemoryWatcher.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\MemTools.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Movie.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\NetPlayClient.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\NetPlayCommon.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\NetPlayServer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\NetworkCaptureLogger.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PatchEngine.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\State.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\SysConf.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\System.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\TimePlayed.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\TitleDatabase.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\WC24PatchEngine.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\WiiRoot.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeGC.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeVerifier.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeWad.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeWii.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\WbfsBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\WIABlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\WIACompression.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\WiiEncryptionCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\WiiSaveBanner.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\Blob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\CISOBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\CompressedBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\DirectoryBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\DiscExtractor.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\DiscScrubber.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\DiscUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\Enums.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\FileBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\Filesystem.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\FileSystemGCWii.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\GameModDescriptor.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\LaggedFibonacciGenerator.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\NANDImporter.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\NFSBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\RiivolutionParser.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\RiivolutionPatcher.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\ScrubbedBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\SplitFileBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\TGCBlob.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\Volume.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeDisc.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\DiscIO\VolumeFileBlobReader.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\AutoUpdate.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\CommandLineParse.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\DBusUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\DiscordPresence.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\GameFile.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\GameFileCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\NetPlayIndex.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\UICommon.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\USBUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\UICommon\X11Utils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Boot\ElfReader.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Boot\Boot.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Boot\Boot_BS2Emu.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Boot\Boot_WiiWAD.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Boot\DolReader.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\AchievementSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\DefaultLocale.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\FreeLookSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\GraphicsSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\MainSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\NetplaySettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\SessionSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\SYSCONFSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\UISettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\Config\WiimoteSettings.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\DynamicInputTextureManager.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\GCAdapter.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ImageOperations.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\InputConfig.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\InputProfile.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Thread.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Timer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\TimeUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\TraversalClient.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\TraversalServer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\UPnP.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Version.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\WindowsRegistry.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\x64ABI.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\x64CPUDetect.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\x64Emitter.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\x64FPURoundMode.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Analytics.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\AndroidAnalytics.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Arm64Emitter.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\ArmCPUDetect.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\ArmFPURoundMode.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\ColorUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\CommonFuncs.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\CompatPatches.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\DynamicLibrary.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\ENet.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\FatFsUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\FileSearch.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\FileUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\FloatUtils.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\GekkoDisassembler.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\GenericCPUDetect.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\GenericFPURoundMode.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Hash.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\HostDisassembler.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\HRWrap.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\HttpRequest.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Image.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\IniFile.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\IOFile.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\JitRegister.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\JsonUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\LdrWatcher.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Matrix.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MemArenaAndroid.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MemArenaDarwin.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MemArenaUnix.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MemArenaWin.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MemoryUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\MsgHandler.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\NandPaths.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Network.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\PcapFile.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Profiler.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\QoSSession.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\Random.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\SDCardUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\SettingsHandler.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\SFMLHelper.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\SocketContext.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\StringUtil.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Common\SymbolDB.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\AddressSpace.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\AudioInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\CPU.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\DSP.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GBACore.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GBAPad.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GBAPadEmu.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GCKeyboard.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GCKeyboardEmu.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GCPad.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GCPadEmu.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\GPFifo.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\HW.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\Memmap.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\MemoryInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\MMIO.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\ProcessorInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\Sram.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\StreamADPCM.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\SystemTimers.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\VideoInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\WII_IPC.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\Wiimote.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\WiiSave.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
     <ClCompile Include="Core\Config\SimConfig.cpp">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\BreakPoints.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\ConditionRegister.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Expression.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\GDBStub.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\JitInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\MMU.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\PowerPC.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\PPCAnalyst.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\PPCCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\PPCSymbolDB.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\PPCTables.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_Branch.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_FloatingPoint.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_Integer.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_LoadStore.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_LoadStoreFloating.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_LoadStorePaired.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_Paired.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit_SystemRegisters.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\Jit64_Tables.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\JitAsm.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\RegCache\FPURegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\RegCache\GPRRegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\PowerPC\Jit64\RegCache\JitRegCache.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\ControllerInterface.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\CoreDevice.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\InputBackend.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\MappingCommon.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\XInput\XInput.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerInterface\Win32\Win32.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\InputCommon\ControllerEmu\ControllerEmu.cpp">
-      <Filter>DolphinSource</Filter>
     </ClCompile>
     <ClCompile Include="Boot\Boot.cpp">
       <Filter>Core</Filter>
@@ -1184,9 +557,6 @@
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\dolphin-2506a\Source\Core\Core\HW\DSPHLE\UCodes\UCodes.cpp">
-      <Filter>DolphinSource</Filter>
-    </ClCompile>
     <ClCompile Include="Utils\EnsureSys.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -1200,7 +570,7 @@
       <Filter>Phases</Filter>
     </ClCompile>
     <ClCompile Include="Tas\DtmFile.cpp">
-      <Filter>IO</Filter>
+      <Filter>Tas</Filter>
     </ClCompile>
     <ClCompile Include="Phases\FirstBattleGenerator.cpp">
       <Filter>Phases</Filter>
@@ -1379,9 +749,6 @@
     <ClCompile Include="DB\ExplorerSettingsPlanLinkRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
-    <ClCompile Include="DB\BattleRunGroupRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
     <ClCompile Include="DB\Scheduling\TriggersRepo.cpp">
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
@@ -1420,6 +787,198 @@
     </ClCompile>
     <ClCompile Include="DB\UiConfigRowRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\AchievementManager.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\ActionReplay.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\ARDecrypt.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\BootManager.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\CheatGeneration.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\CheatSearch.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\ConfigManager.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Core.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\CoreTiming.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\CPUThreadConfigCallback.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\DolphinAnalytics.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\DSPEmulator.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\FreeLookConfig.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\FreeLookManager.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\GeckoCode.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\GeckoCodeConfig.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\HotkeyManager.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\LibusbUtils.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\MemoryWatcher.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\MemTools.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Movie.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\NetPlayClient.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\NetPlayCommon.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\NetPlayServer.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\NetworkCaptureLogger.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PatchEngine.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\State.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\SysConf.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\System.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\TimePlayed.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\TitleDatabase.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\WC24PatchEngine.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\WiiRoot.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_WiiWAD.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Boot\DolReader.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Boot\ElfReader.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Boot\Boot.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Boot\Boot_BS2Emu.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\AchievementSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\DefaultLocale.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\FreeLookSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\GraphicsSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\MainSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\NetplaySettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\SessionSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\SYSCONFSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\UISettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\Config\WiimoteSettings.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Integer.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStore.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStoreFloating.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_LoadStorePaired.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Paired.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_SystemRegisters.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit64_Tables.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\JitAsm.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_Branch.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\Jit_FloatingPoint.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\JitRegCache.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\FPURegCache.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\PowerPC\Jit64\RegCache\GPRRegCache.cpp">
+      <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="_Dolphin_src\Core\HW\SystemTimers.cpp">
+      <Filter>DolphinSource</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -1510,6 +1069,15 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0027.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0028.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0029.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0030.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>

@@ -21,6 +21,7 @@
 #include "Core/Movie.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/EXI/EXI.h"
 
 #include "Core/ConfigManager.h"  // SConfig::Init/Shutdown/LoadSettings
 #include "Core/Config/MainSettings.h"
@@ -54,6 +55,8 @@
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
 #include "Shims/StateBufferShim.h"
+#include "../Runner/Script/ScriptProgress.h"
+#include "../Tas/DtmFile.h"
 
 
 using namespace std::chrono_literals;
@@ -153,7 +156,7 @@ namespace simcore {
     void DolphinWrapper::shutdownAll() {
         if (Core::IsRunning(*m_system))
             shutdownCore();
-        log::Logger::get().close_file();
+        logger::Logger::get().close_file();
     }
 
     bool DolphinWrapper::isRunning() const noexcept {
@@ -196,6 +199,8 @@ namespace simcore {
 
         const WindowSystemInfo wsi = MakeHeadlessWSI();
 
+        m_wsi = wsi;
+
         SetUserDirectory(m_user_dir);
         sterilizeConfigs();
 
@@ -209,6 +214,8 @@ namespace simcore {
         auto boot = BootParameters::GenerateFromFile(iso_path);
         if (!BootManager::BootCore(*m_system, std::move(boot), wsi))
             return false;
+
+        m_last_game_iso_path = iso_path;
 
         auto deadline = std::chrono::steady_clock::now() + 20s;
         while (!Core::IsRunning(*m_system) && std::chrono::steady_clock::now() < deadline)
@@ -243,6 +250,18 @@ namespace simcore {
         return done.load();
     }
 
+    uint32_t DolphinWrapper::getRegister(uint8_t reg)
+    {
+        if (Core::GetState(*m_system) == Core::State::Paused)
+            return m_system->GetPowerPC().GetPPCState().gpr[reg];
+
+        uint32_t value = 0;
+        runOnCpuThread([&] {
+            value = m_system->GetPowerPC().GetPPCState().gpr[reg];
+            }, true);
+        return value;
+    }
+
     uint32_t DolphinWrapper::getPC()
     {
         if (Core::GetState(*m_system) == Core::State::Paused)
@@ -267,6 +286,18 @@ namespace simcore {
         return tbr;
     }
 
+    uint32_t DolphinWrapper::getConfigRTC(bool offset)
+    {
+        uint32_t rtc = Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
+        if (offset) rtc = rtc - simcore::tas::base_sec;
+        return rtc;
+    }
+
+    uint32_t DolphinWrapper::getEmulatedTime()
+    {
+        return ExpansionInterface::CEXIIPL::GetEmulatedTime(*m_system, ExpansionInterface::CEXIIPL::GC_EPOCH);
+    }
+
     std::string DolphinWrapper::getCurrentSctFileTag() const
     {
         uint32_t num = 0;
@@ -285,6 +316,47 @@ namespace simcore {
         return std::string(buf);
     }
 
+    std::string DolphinWrapper::getCurrentSctSection() const
+    {
+        
+        uint32_t start = 0;
+        uint32_t  pos = 0;
+
+        // Try both reads; if either fails, return empty.
+        if (!readByKey(addr::core::SCT_FIRST_INST, start, false)) return {};
+        if (!readByKey(addr::core::SCT_CURRENT_INST, pos, false))  return {};
+
+        if (start == 0 || pos == 0) return {};
+
+        uint32_t offset = pos - start;
+
+        uint32_t section_count = 0;
+        uint32_t p_index = 0;
+
+        // Try both reads; if either fails, return empty.
+        if (!readByKey(addr::core::SCT_SECTION_COUNT, section_count, false)) return {};
+        if (!readByKey(addr::core::SCT_INDEX_BUFFER, p_index, false))  return {};
+
+        std::string name{"..."};
+        uint32_t section_offset = 0;
+        for (int i = 0; i < section_count - 1; i++) {
+            uint32_t next_offset = 0;
+            if (!readU32(p_index + ((i + 1) * 0x14), next_offset)) return {};
+            if (next_offset >= offset) 
+            {
+                if (!readU32(p_index + (i * 0x14), section_offset)) return {};
+                if (!getMem1RangeRaw(name, p_index + (i * 0x14) + 4, 0x10)) return {};
+                break;
+            }
+        }
+
+        offset -= section_offset;
+
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%s:0x%X", name.c_str(), offset);
+        return std::string(buf);
+    }
+
     bool simcore::DolphinWrapper::getMem1(std::string& out) const
     {
         if (!isRunning()) return false;
@@ -294,6 +366,28 @@ namespace simcore {
             auto& mem = m_system->GetMemory();
             // CopyFromEmu(dst, VA, size) - big block copy of MEM1 starting at 0x80000000
             mem.CopyFromEmu(out.data(), 0x80000000u, out.size());
+            };
+
+        if (Core::GetState(*m_system) == Core::State::Paused)
+        {
+            copier();
+            return true;
+        }
+        else
+        {
+            return runOnCpuThread([&] { copier(); }, true);
+        }
+    }
+
+    bool DolphinWrapper::getMem1RangeRaw(std::string& out, uint32_t va, uint32_t size) const
+    {
+        if (!isRunning()) return false;
+        out.resize(size);
+
+        auto copier = [&] {
+            auto& mem = m_system->GetMemory();
+            // CopyFromEmu(dst, VA, size) - big block copy of MEM1 starting at 0x80000000
+            mem.CopyFromEmu(out.data(), va, size);
             };
 
         if (Core::GetState(*m_system) == Core::State::Paused)
@@ -352,7 +446,10 @@ namespace simcore {
     bool DolphinWrapper::saveSavestateBlocking(const std::string& path)
     {
         if (!Core::IsRunning(*m_system)) return false;
-        if (Core::GetState(*m_system) != Core::State::Paused) Core::SetState(*m_system, Core::State::Paused, false, false);
+        if (Core::GetState(*m_system) != Core::State::Paused) 
+            Core::SetState(*m_system, Core::State::Paused, false, false);
+        while (Core::GetState(*m_system) != Core::State::Paused)
+            std::this_thread::sleep_for(milliseconds(10));
         State::SaveAs(*m_system, path, true);
         return true;
     }
@@ -382,12 +479,35 @@ namespace simcore {
 
     bool DolphinWrapper::startMoviePlayback(const std::string& dtm_path)
     {
-        SCLOGI("[Movie] PLAY {}", dtm_path);
-        bool ok = false;
+        SCLOGI("[Movie] PLAY %s", dtm_path);
+        if (Core::GetState(*m_system) == Core::State::Paused)
+            Core::SetState(*m_system, Core::State::Running);
+
+        while (Core::GetState(*m_system) != Core::State::Running)
+            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
+
+        Core::Stop(*m_system);
+        while (!Core::IsUninitialized(*m_system))
+            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
+
         auto& movie = m_system->GetMovie();
-        if (!movie.IsReadOnly()) movie.SetReadOnly(true);
-        ok = movie.PlayInput(dtm_path, new std::optional<std::string>{});
-        return ok;
+        if (!movie.IsReadOnly()) 
+            movie.SetReadOnly(true);
+        
+        if (movie.IsMovieActive())
+            movie.EndPlayInput(false);
+        
+        if (!movie.PlayInput(dtm_path, new std::optional<std::string>{}))
+            return false;
+        
+        auto boot = BootParameters::GenerateFromFile(m_last_game_iso_path);
+        if (!BootManager::BootCore(*m_system, std::move(boot), m_wsi))
+            return false;
+
+        while (!Core::IsRunning(*m_system))
+            std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
+        
+        return true;
     }
 
     bool DolphinWrapper::endMoviePlaybackBlocking(uint32_t timeout_ms)
@@ -412,7 +532,7 @@ namespace simcore {
             std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
 
         const bool stopped = !movie.IsPlayingInput();
-        SCLOGI("[Movie] STOP {}", stopped ? "ok" : "timeout");
+        SCLOGI("[Movie] STOP %s", stopped ? "ok" : "timeout");
         return stopped;
     }
 
@@ -458,6 +578,37 @@ namespace simcore {
         catch (...) {
             return false;
         }
+    }
+
+    bool DolphinWrapper::startMovieRecording()
+    {
+        Movie::ControllerTypeArray controllers{ Movie::ControllerType::GC, Movie::ControllerType::None, Movie::ControllerType::None, Movie::ControllerType::None };
+        Movie::WiimoteEnabledArray wiimotes{ false, false, false, false };
+        
+        auto& movie = m_system->GetMovie();
+        if (isMoviePlaying())
+            movie.EndPlayInput(false);
+        
+        if (movie.IsReadOnly())
+            movie.SetReadOnly(false);
+        
+        return m_system->GetMovie().BeginRecordingInput(controllers, wiimotes);
+    }
+
+    void DolphinWrapper::endMovieRecording(std::optional<std::string> movie_save_path)
+    {
+        auto& movie = m_system->GetMovie();
+        if (movie.IsRecordingInput() && movie_save_path.has_value())
+        {
+            if (Core::GetState(*m_system) == Core::State::Running)
+                Core::SetState(*m_system, Core::State::Paused);
+            while (Core::GetState(*m_system) == Core::State::Running)
+                std::this_thread::sleep_for(milliseconds(10));
+            movie.SaveRecording(movie_save_path.value());
+        }
+            
+
+
     }
 
     void DolphinWrapper::applyNextInputFrame() {
@@ -878,6 +1029,58 @@ namespace simcore {
     static bool contains_pc(const std::unordered_set<uint32_t>& s, uint32_t v) { return s.find(v) != s.end(); }
     struct ArmedSet { std::unordered_set<uint32_t> pcs; };
     static ArmedSet& armed_singleton() { static ArmedSet a; return a; }
+    static ArmedSet& armed_battle_singleton() { static ArmedSet a; return a; }
+
+    bool DolphinWrapper::armBattleBreakpoints()
+    {
+        if (!armed_battle_singleton().pcs.empty()) return true;
+
+        auto pcs = simcore::progress::BattleProgressBPs();
+
+        SCLOGT("[core] arming battle breakpoints");
+        auto& armed = armed_battle_singleton().pcs;
+        bool arm_result = runOnCpuThread([&] {
+            for (auto pc : pcs)
+            {
+                if (armed.insert(pc).second)
+                    m_system->GetPowerPC().GetBreakPoints().Add(pc);
+            }
+            }, true);
+        SCLOGT("[core] properly loaded battle breakpoints: %s", arm_result ? "true" : "false");
+        SCLOGT("[core] checking current battle breakpoints");
+        for (auto bp : m_system->GetPowerPC().GetBreakPoints().GetStrings()) {
+            SCLOGT("[core] Battle Breakpoint Present: %s", bp.c_str());
+        }
+        return arm_result;
+    }
+
+    bool DolphinWrapper::disarmBattleBreakpoints()
+    {
+        if (armed_battle_singleton().pcs.empty()) return true;
+
+        auto pcs = simcore::progress::BattleProgressBPs();
+
+        SCLOGT("[core] disarming battle breakpoints");
+        auto& armed = armed_battle_singleton().pcs;
+        bool disarm_result = runOnCpuThread([&] {
+            for (auto pc : pcs)
+            {
+                auto it = armed.find(pc);
+                if (it != armed.end())
+                {
+                    m_system->GetPowerPC().GetBreakPoints().Remove(pc);
+                    armed.erase(it);
+                }
+            }
+            }, true);
+
+        SCLOGT("[core] properly removed battle breakpoints: %s", disarm_result ? "true" : "false");
+        SCLOGT("[core] checking current battle breakpoints");
+        for (auto bp : m_system->GetPowerPC().GetBreakPoints().GetStrings()) {
+            SCLOGT("[core] Battle Breakpoint Present: %s", bp.c_str());
+        }
+        return disarm_result;
+    }
 
     bool DolphinWrapper::armPcBreakpoints(const std::vector<uint32_t>& pcs)
     {
@@ -974,11 +1177,11 @@ namespace simcore {
         // Monotonic tiers: tighten as we get closer to the deadline.
         // You can tweak these in one place and both VM and wrapper will follow.
         (void)timeout_ms; // reserved for future policy that also considers absolute scale
-        if (time_left_ms >= 5u * 60u * 1000u) return 500u;  // >= 5 minutes
-        if (time_left_ms >= 60u * 1000u)      return 250u;  // 1-5 minutes
-        if (time_left_ms >= 10u * 1000u)      return 100u;  // 10-60 seconds
-        if (time_left_ms >= 2000u)            return 50u;   // 2-10 seconds
-        return 20u;                                         // < 2 seconds
+        if (time_left_ms >= 5u * 60u * 1000u) return 1000u;  // >= 5 minutes
+        if (time_left_ms >= 60u * 1000u)      return 500u;  // 1-5 minutes
+        if (time_left_ms >= 10u * 1000u)      return 200u;  // 10-60 seconds
+        if (time_left_ms >= 2000u)            return 100u;   // 2-10 seconds
+        return 100u;                                         // < 2 seconds
     }
 
     DolphinWrapper::RunUntilHitResult
@@ -986,6 +1189,7 @@ namespace simcore {
             uint32_t vi_stall_ms,
             bool watch_movie,
             uint32_t poll_ms,
+            uint32_t progflags,
             ProgressSink sink)
     {
         using std::chrono::steady_clock;
@@ -1024,10 +1228,15 @@ namespace simcore {
             //setEnableBreakpoint(pc, true);
         }
 
+        if (progflags & (uint32_t)CoreProgressFlags::BattleProgress) armBattleBreakpoints();
+        else disarmBattleBreakpoints();
+
         // Ensure we begin in Running so time can advance (unless already paused by a BP before entry)
         if (Core::GetState(*m_system) != Core::State::Paused)
             Core::SetState(*m_system, Core::State::Running);
 
+        // m_system->GetSystemTimers().GetLocalTimeRTCOffset()
+        uint32_t rtc = Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
 
         size_t polls = 0;
         while (true)
@@ -1057,9 +1266,6 @@ namespace simcore {
                     SCLOGD("[DW/run] MOVIE_ENDED (paused) polls=%zu pc=%08X", polls, getPC());
                     return { false, 0u, "movie_ended" };
                 }
-
-                // 3) Otherwise resume to continue progress
-                Core::SetState(*m_system, Core::State::Running);
             }
             else // Running
             {
@@ -1094,9 +1300,11 @@ namespace simcore {
                 const bool time_ok = (!last_emit.time_since_epoch().count()) ||
                     (now2 - last_emit) >= milliseconds(std::max<uint32_t>(100u, poll_ms ? poll_ms : 0u));
 
+                std::vector<std::string> msg_strs{};
+                uint32_t flags = 0;
+
                 if (time_ok || ((polls & 0x3F) == 0)) // also piggyback on your 64-poll trace cadence
                 {
-                    uint32_t flags = 0;
                     flags |= PF_WAITING_FOR_BP;
                     if (watch_movie && movie.IsPlayingInput()) flags |= PF_MOVIE_PLAYING;
 
@@ -1118,26 +1326,57 @@ namespace simcore {
                             if (since_ms >= (vi_stall_ms / 2u))
                             {
                                 SCLOGD("[run] close to VI stall!", left_ms_now2);
-                                flags |= PF_VI_STALLED_SUSPECTED;
+                                if (progflags & (uint32_t)CoreProgressFlags::WarnViStall) msg_strs.push_back("VI stall imminent");
                             }
                         }
                     }
 
                     const uint32_t cur_frames = (uint32_t)getFrameCountApprox(false);
-                    const uint32_t total_frames = 0; // if TAS-known, you can pass it via member/context later
-                    const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - start).count();
 
-                    std::string tag = getCurrentSctFileTag();
-                    const char* msg = nullptr;
-                    if (!tag.empty()) {
-                        msg = tag.c_str();
-                    }
-                    else {
-                        msg = (flags & PF_MOVIE_PLAYING) ? "playing" : "waiting on bp";
-                    }
+                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) msg_strs.push_back(std::format("VIDelta={}", cur_frames));
+                    if (progflags & (uint32_t)CoreProgressFlags::Filename) msg_strs.push_back(getCurrentSctFileTag());
+                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) msg_strs.push_back(getCurrentSctSection());
 
-                    emit(cur_frames, total_frames, elapsed_ms, flags, msg);
                     last_emit = now2;
+                }
+
+                if (progflags & (uint32_t)CoreProgressFlags::BattleProgress && Core::GetState(*m_system) == Core::State::Paused) {
+                    uint32_t cur_pc = getPC();
+                    
+                    if (simcore::progress::BattleProgressBPs().contains(cur_pc))
+                    {
+                        for (simcore::progress::BattleProgressEntry entry : simcore::progress::BattleProgress) {
+                            if (entry.key == cur_pc) msg_strs.push_back(entry.fxn(*this));
+                        }
+                        SCLOGD("[DW/run] Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
+                        Common::Event sync_event;
+                        auto& power_pc = m_system->GetPowerPC();
+                        PowerPC::CoreMode old_mode = power_pc.GetMode();
+                        power_pc.SetMode(PowerPC::CoreMode::Interpreter);
+                        m_system->GetCPU().StepOpcode(&sync_event);
+                        sync_event.WaitFor(std::chrono::milliseconds(20));
+                        power_pc.SetMode(old_mode);
+                    }
+
+                }
+
+                bool record = true;
+                if (msg_strs.empty() && time_ok && (progflags & (uint32_t)CoreProgressFlags::DontRecordHeartbeat) != 0) record = false;
+
+                if (msg_strs.empty() && time_ok) msg_strs.push_back((flags & PF_MOVIE_PLAYING) ? "playing" : "waiting on bp");
+                
+                if (!msg_strs.empty())
+                {
+                    std::string message{};
+                    bool first = true;
+                    for (auto s : msg_strs) 
+                    {
+                        if (s.empty()) continue;
+                        if (first) first = false;
+                        else message += " - ";
+                        message += s;
+                    }
+                    emit(message.c_str(), record);
                 }
             }
 
@@ -1165,6 +1404,9 @@ namespace simcore {
             const auto left_ms_now = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - steady_clock::now()).count();
             const uint32_t sleep_ms = (left_ms_now > dyn_poll) ? dyn_poll : std::max<uint32_t>(1u, left_ms_now);
 
+            if (Core::GetState(*m_system) == Core::State::Paused)
+                Core::SetState(*m_system, Core::State::Running);
+
             std::this_thread::sleep_for(milliseconds(sleep_ms));
         }
     }
@@ -1177,12 +1419,12 @@ namespace simcore {
 
     void DolphinWrapper::silenceStdOutInfo()
     {
-        log::Logger::get().set_stdout_level(log::Level::Warn);
+        logger::Logger::get().set_stdout_level(logger::Level::Warn);
     }
 
     void DolphinWrapper::restoreStdOutInfo()
     {
-        log::Logger::get().set_stdout_level(log::Level::Info);
+        logger::Logger::get().set_stdout_level(logger::Level::Info);
     }
 
     bool DolphinWrapper::waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate_ms)

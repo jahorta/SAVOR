@@ -16,7 +16,8 @@ namespace soasim::ui {
         ObjectRef,
         BattleRunGroup,
         SeedProbe,
-        TasMovie
+        TasMovie,
+        ExplorerSettings
     };
 
     template <class Row>
@@ -75,11 +76,6 @@ namespace soasim::ui {
         std::optional<Row> current_row;
         int64_t selected_id{ 0 };
         std::string search_buffer;
-
-        // Begin/End are optional helpers if you want manual control; Draw() does a full frame.
-        void Begin();
-        void Tick();
-        void End();
 
         // Renders the modal; invokes cb when user clicks OK or double-clicks a row.
         // Returns true once the modal is closed.

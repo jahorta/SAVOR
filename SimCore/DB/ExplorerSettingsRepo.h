@@ -2,6 +2,9 @@
 #include "DBCore/DbResult.h"
 #include "DBCore/DbRetryPolicy.h"
 #include "DBCore/DbService.h"
+#include "Querying/PagedQuery.h"
+#include "Querying/Paging.h"
+#include "Querying/IdRepoListDTO.h"
 #include <future>
 #include <string>
 #include <optional>
@@ -23,6 +26,7 @@ namespace simcore {
             static std::future<DbResult<int64_t>> EnsureByFingerprintAsync(const std::string& name, const std::string& description, const std::string& fingerprint, RetryPolicy rp = {});
             static std::future<DbResult<ExplorerSettingsRow>> GetAsync(int64_t id, RetryPolicy rp = {});
             static std::future<DbResult<void>> SetSeedProbeIdAsync(int64_t settings_id, int64_t seed_probe_id, RetryPolicy rp = {});
+            static std::future<DbResult<Page<ExplorerSettingsLite>>> ListPagedAsync(const PagedQuery<>& q, const std::string& search, RetryPolicy rp = {});
 
             // Blocking conveniences
             static inline DbResult<std::optional<int64_t>> FindByFingerprint(const std::string& fp) { return FindByFingerprintAsync(fp).get(); }

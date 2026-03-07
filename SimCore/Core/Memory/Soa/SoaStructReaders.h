@@ -21,4 +21,13 @@ namespace soa::readers {
 		return true;
 	}
 
+	template <class T>
+	inline bool read(const std::string& view, T& out) {
+		static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+		if (view.size() != sizeof(T)) return false;            // or < if you allow partials
+		std::memcpy(&out, view.data(), view.size());
+		simcore::endian::fix_endianness_in_place(out);
+		return true;
+	}
+
 } // namespace soa::readers

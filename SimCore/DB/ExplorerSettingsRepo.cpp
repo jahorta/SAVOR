@@ -84,5 +84,55 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_SetSeedProbeId(e, settings_id, seed_probe_id); });
         }
 
+        static inline void bind_like(sqlite3_stmt* st, int idx, const std::string& s) {
+            std::string pat = "%" + s + "%";
+            sqlite3_bind_text(st, idx, pat.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        static inline DbResult<Page<ExplorerSettingsLite>> Impl_ListES(DbEnv& env, const PagedQuery<>& q, const std::string& search) {
+            sqlite3* db = env.handle();
+            std::string sql = "SELECT id,COALESCE(name,''),COALESCE(description,'') FROM explorer_settings ";
+
+            std::string where;
+            if (!search.empty()) { where += "WHERE (name LIKE ? OR description LIKE ?)"; }
+
+            std::string keyset; KeysetCursor cur{}; bool has = false;
+            if (q.before) { has = true; cur = *q.before; where += (where.empty() ? "WHERE " : " AND "); where += "(id < ?)"; }
+            if (q.after) { has = true; cur = *q.after;  where += (where.empty() ? "WHERE " : " AND "); where += "(id > ?)"; }
+
+            std::string order = q.after ? " ORDER BY id ASC " : " ORDER BY id DESC ";
+
+            sqlite3_stmt* st{};
+            std::string final = sql + where + order + " LIMIT ?;";
+            if (sqlite3_prepare_v2(db, final.c_str(), -1, &st, nullptr) != SQLITE_OK)
+                return DbResult<Page<ExplorerSettingsLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+
+            int b = 1;
+            if (!search.empty()) { bind_like(st, b++, search); bind_like(st, b++, search); }
+            if (q.before) { sqlite3_bind_int64(st, b++, cur.primary); }
+            if (q.after) { sqlite3_bind_int64(st, b++, cur.primary); }
+            sqlite3_bind_int(st, b++, q.limit);
+
+            Page<ExplorerSettingsLite> page{};
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                ExplorerSettingsLite r{};
+                r.id = sqlite3_column_int64(st, 0);
+                r.name = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+                r.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                page.items.push_back(std::move(r));
+            }
+            sqlite3_finalize(st);
+            if (q.after && !page.items.empty()) std::reverse(page.items.begin(), page.items.end());
+            if (!page.items.empty()) {
+                page.prev = KeysetCursor{ page.items.front().id };
+                page.next = KeysetCursor{ page.items.back().id };
+            }
+            return DbResult<Page<ExplorerSettingsLite>>::Ok(std::move(page));
+        }
+
+        std::future<DbResult<Page<ExplorerSettingsLite>>> ExplorerSettingsRepo::ListPagedAsync(const PagedQuery<>& q, const std::string& search, RetryPolicy rp) {
+            return DBService::instance().submit_res<Page<ExplorerSettingsLite>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListES(e, q, search); });
+        }
+
     } // db
 } // simcore

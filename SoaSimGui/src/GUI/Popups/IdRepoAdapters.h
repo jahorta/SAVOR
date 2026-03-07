@@ -1,6 +1,7 @@
 #pragma once
 #include "IdPicker.h"
 #include "DB/Querying/IdRepoListDTO.h"
+#include "DB/ExplorerSettingsRepo.h"
 #include <optional>
 
 namespace soasim::ui::adapters {
@@ -19,12 +20,12 @@ namespace soasim::ui::adapters {
 
 	// SeedProbe: default filter status='done'. Optional constrain by savestate_id.
 	// Implementations may expose open_aux_filter to launch a nested savestate picker.
-	LedgerAdapter<simcore::db::SeedProbeLite> MakeSeedProbeAdapter(std::optional<int64_t> filter_savestate_id = std::nullopt, int page_size = 100);
+	LedgerAdapter<simcore::db::SeedProbeLite> MakeSeedProbeAdapter(int page_size = 100, std::optional<int64_t> filter_savestate_id = std::nullopt);
 
 	// TasMovie: default filter status='done'
 	LedgerAdapter<simcore::db::TasMovieLite> MakeTasMovieAdapter(int page_size = 100);
 
-	// BattleRunGroup: search by name/description
-	LedgerAdapter<simcore::db::BattleRunGroupLite> MakeBattleRunGroupAdapter(int page_size = 100);
+	// ExplorerSettings: search by name/description
+	LedgerAdapter <simcore::db::ExplorerSettingsLite> MakeExplorerSettingsAdapter(int page_size = 100);
 
 } // namespace soasim::ui::adapters

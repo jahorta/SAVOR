@@ -5,6 +5,7 @@
 #include <optional>
 #include <cstdint>
 #include "Utils/IniDoc.h"
+#include "imgui_internal.h"
 
 struct IniEditorModalState {
     bool request_open{ false };
@@ -36,7 +37,7 @@ namespace Widgets {
     }
 
     inline bool DrawIniEditor(IniEditorModalState& s, const char* popup_id, const char* title,
-        ImGuiID viewport_id = 0, bool center_on_appearing = true)
+        const ImRect* center_rect = nullptr, bool center_on_appearing = true)
     {
         if (s.request_open) {
             ImGui::OpenPopup(popup_id);
@@ -44,14 +45,10 @@ namespace Widgets {
             s.visible = true;
         }
 
-        if (viewport_id != 0) {
-            ImGui::SetNextWindowViewport(viewport_id);
-            if (center_on_appearing) {
-                if (ImGuiViewport* vp = ImGui::FindViewportByID(viewport_id)) {
-                    ImVec2 center(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
-                    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-                }
-            }
+        if (center_on_appearing) {
+            ImGuiIO& io = ImGui::GetIO();
+            ImVec2 c = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowFocus();
         }
 

@@ -7,6 +7,7 @@
 struct JobLite {
     int64_t job_id{};
     int64_t job_set_id{};
+    std::optional<int64_t> savestate_id{};
     int program_kind{};
     std::string state;
     int priority{};

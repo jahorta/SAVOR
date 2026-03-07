@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <unordered_set>
 #include <unordered_map>
 
 #include "imgui.h"
@@ -52,6 +53,8 @@ namespace soasim::ui {
 
 	struct PredicateDraft {
 		int64_t predicate_id{ 0 };
+		std::string name;
+		std::string description;
 	};
 
 	enum BattleContextRequestState : uint8_t {
@@ -76,10 +79,16 @@ namespace soasim::ui {
 	public:
 		BattleRunSettingsPane() = default;
 
+		void OnActivated();
 		// Primary entry
 		void Draw();
 
+
 	private:
+
+		void load_ui_actions();
+		void load_predicates();
+
 		// ---------- Left: libraries ----------
 		void draw_left_library_();
 		void draw_left_ui_actions_();
@@ -98,7 +107,7 @@ namespace soasim::ui {
 		void draw_save_actions_();
 
 		// ---------- Helpers ----------
-		void open_seed_probe_picker_();
+		PredicateSpecLite get_pred_row(int64_t id);
 		void on_context_row_found(int64_t artifact_id, int version);
 		void on_savestate_row_found(int64_t savestate_id);
 		void on_seed_probe_picked_(int64_t seed_probe_id);
@@ -118,7 +127,14 @@ namespace soasim::ui {
 		void save_authoring_template_();
 		void load_authoring_template_(int64_t template_id);
 
+		void validate_grid_against_context_();
+
+		void ensure_preset_cached_async_(int64_t id);
+
 		// ---------- State ----------
+		
+		bool inited_{ false };
+		// 
 		// Left library state
 		std::string search_ui_actions_;
 		std::string search_predicates_;
@@ -131,9 +147,12 @@ namespace soasim::ui {
 		// Middle editor state
 		UiConfigDraft ui_config_{};
 		std::vector<PredicateDraft> predicates_{};
+		std::unordered_set<uint32_t> invalid_cells_;
+		std::unordered_map<uint32_t, std::string> invalid_reasons_;
 
-		std::unordered_map<int64_t, simcore::db::TurnActionPresetLite> ui_config_cache_{};
+		std::unordered_map<int64_t, simcore::db::TurnActionPresetRow> preset_cache_;
 		std::unordered_map<int64_t, simcore::db::PredicateSpecLite> predicate_cache_{};
+
 
 		// Right context/save state
 		int64_t                         seed_probe_id_{ 0 };
@@ -152,9 +171,16 @@ namespace soasim::ui {
 		std::string run_group_desc_;
 
 		// Pickers / modals
-		bool show_assign_popup_{ false };
 		soasim::ui::UiActionPresetPopup ui_preset_popup_;
+		bool show_ui_preset_popup_{ false };
+		std::optional<std::pair<uint32_t, uint32_t>> ui_preset_edit_loc_ = std::nullopt;
+		std::optional<int64_t> preset_edit_id_ = std::nullopt;
+
 		soasim::ui::PredicateSpecPopup  pred_popup_;
+		bool show_pred_popup_{ false };
+		std::optional<uint32_t> pred_edit_loc_ = std::nullopt;
+		std::optional<int64_t> pred_edit_id_ = std::nullopt;
+
 
 		};
 

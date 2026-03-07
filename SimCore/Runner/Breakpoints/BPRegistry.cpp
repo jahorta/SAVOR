@@ -3,19 +3,26 @@
 
 namespace bp {
 
-    static const BPRec kAll[] = {
+    static const BPAddr kAll[] = {
     #define ROW(ns, NAME, ID, PC, STR) { static_cast<BPKey>(ID), static_cast<uint32_t>(PC), STR },
     BP_TABLE_ALL(ROW)
     #undef ROW
     };
 
-    std::span<const BPRec> BPRegistry::all() {
-        return std::span<const BPRec>(kAll, sizeof(kAll) / sizeof(kAll[0]));
+    std::span<const BPAddr> BPRegistry::all() {
+        return std::span<const BPAddr>(kAll, sizeof(kAll) / sizeof(kAll[0]));
     }
 
-    const BPRec* BPRegistry::find(BPKey k) {
+    const BPAddr* BPRegistry::find(BPKey k) {
         for (const auto& r : kAll) if (r.key == k) return &r;
         return nullptr;
+    }
+
+    const BPAddr* BPRegistry::find(uint32_t pc)
+    {
+        std::optional<BPKey> m = match(pc);
+        if (!m.has_value()) return nullptr;
+        return find(m.value());
     }
 
     std::optional<BPKey> BPRegistry::match(uint32_t pc) {

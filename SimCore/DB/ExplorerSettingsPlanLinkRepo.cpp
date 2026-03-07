@@ -38,7 +38,7 @@ namespace simcore {
             return DbResult<void>{ true };
         }
 
-        static inline DbResult<std::vector<SettingsPlanLinkRow>> Impl_List(DbEnv& env, int64_t settings_id) {
+        static inline DbResult<std::vector<SettingsPlanLinkRow>> Impl_ListBySettings(DbEnv& env, int64_t settings_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
@@ -95,9 +95,9 @@ namespace simcore {
                 [=, &plan_ids](DbEnv& e) { return Impl_ReplaceAll(e, settings_id, plan_ids); });
         }
 
-        std::future<DbResult<std::vector<SettingsPlanLinkRow>>> ExplorerSettingsPlanLinkRepo::ListAsync(int64_t settings_id, RetryPolicy rp) {
+        std::future<DbResult<std::vector<SettingsPlanLinkRow>>> ExplorerSettingsPlanLinkRepo::ListBySettingsAsync(int64_t settings_id, RetryPolicy rp) {
             return DBService::instance().submit_res<std::vector<SettingsPlanLinkRow>>(OpType::Read, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_List(e, settings_id); });
+                [=](DbEnv& e) { return Impl_ListBySettings(e, settings_id); });
         }
 
         std::future<DbResult<void>> ExplorerSettingsPlanLinkRepo::AppendAsync(int64_t settings_id, int64_t plan_id, RetryPolicy rp) {
@@ -113,6 +113,30 @@ namespace simcore {
         std::future<DbResult<void>> ExplorerSettingsPlanLinkRepo::RemoveAsync(int64_t settings_id, int32_t ordinal, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_Remove(e, settings_id, ordinal); });
+        }
+
+        static inline DbResult<int> Impl_GetPlanCount(DbEnv& env, int64_t settings_id) {
+            int64_t count = 0;
+
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT COUNT(*) FROM explorer_settings_plan_link WHERE settings_id=?;",
+                -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<int>::Err({ map_sqlite_err(rc), rc, "prepare count" });
+            sqlite3_bind_int64(st, 1, settings_id);
+            rc = sqlite3_step(st);
+            if (rc != SQLITE_ROW) return DbResult<int>::Err({ map_sqlite_err(rc), rc, "count" });
+            count = sqlite3_column_int(st, 0);
+            sqlite3_finalize(st);
+
+            return DbResult<int>::Ok(count);
+        }
+
+        std::future<DbResult<int>> ExplorerSettingsPlanLinkRepo::GetPlanCountAsync(int64_t settings_id, RetryPolicy rp)
+        {
+            return DBService::instance().submit_res<int>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_GetPlanCount(e, settings_id); });
         }
 
     }

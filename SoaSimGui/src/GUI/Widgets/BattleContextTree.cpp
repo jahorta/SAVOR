@@ -48,7 +48,7 @@ Node decode_context(soa::battle::ctx::BattleContext bc) {
             auto item_name = soa::text::get_item_name((size_t)item.itemId);
             auto amt = (int)item.amount;
             auto chance = (int)item.chance;
-            Node i{ std::format("({}%) {} x{}", chance, item_name, amt) };
+            Node i{ std::format("({}%) [{}]{} x{}", chance, item.itemId, item_name, amt) };
             e.children.push_back(i);
         }
         items.children.push_back(e);
