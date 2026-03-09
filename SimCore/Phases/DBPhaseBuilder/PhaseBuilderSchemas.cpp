@@ -63,6 +63,8 @@ namespace simcore::db::phasebuilder {
         bp.run_ms = 0u;
         bp.vi_stall_ms = 0u;
         bp.progress_enable = true;
+        bp.use_single_turn_runner = false;
+        bp.auto_wave_trigger_enable = false;
         bp.set_section(doc);
         return doc;
     }
@@ -72,6 +74,7 @@ namespace simcore::db::phasebuilder {
         case PK_SeedProbe:        return DefaultSeedProbe();
         case PK_TasMovie:         return DefaultTasMovie();
         case PK_BattleTurnRunner: return DefaultExplorerRun();
+        case PK_BattleSingleTurnRunner: return DefaultExplorerRun();
         default:                  return IniDoc{};
         }
     }

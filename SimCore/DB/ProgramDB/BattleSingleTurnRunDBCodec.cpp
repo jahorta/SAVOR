@@ -1,0 +1,429 @@
+#include "BattleSingleTurnRunDBCodec.h"
+
+#include "../../Utils/Hash.h"
+#include "../../Runner/IPC/Wire.h"
+#include "../../Runner/Script/KeyRegistry.h"
+#include "../../Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
+#include "../../Phases/Programs/BattleRunner/BattleOutcome.h"
+
+#include "../Scheduling/JobsRepo.h"
+#include "../Scheduling/JobSetsRepo.h"
+#include "../Scheduling/JobEventsRepo.h"
+#include "../Scheduling/TriggersRepo.h"
+#include "../ExplorerSettingsPlanLinkRepo.h"
+#include "../ExplorerSettingsPredicateRepo.h"
+#include "../PredicateSpecRepo.h"
+#include "../AddressProgramRepo.h"
+#include "../BattlePlanTurnRepo.h"
+#include "../BattlePlanAtomRepo.h"
+#include "../ExplorerRunRepo.h"
+#include "../DeltaSeedRepo.h"
+#include "../SeedProbeRepo.h"
+#include "../SavestateRepo.h"
+#include "../DBCore/ObjectStore.h"
+
+#include <filesystem>
+#include <unordered_map>
+#include <unordered_set>
+
+using BRBp = simcore::db::codec::battle::run::BlueprintIni;
+using STJob = simcore::db::codec::battle::singleturn::JobIni;
+using STRes = simcore::db::codec::battle::singleturn::ResultsIni;
+using STWave = simcore::db::codec::battle::singleturn::WaveIni;
+
+static constexpr int kPK = PK_BattleSingleTurnRunner;
+static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
+
+namespace {
+    std::string action_key_for_plan_turn(int64_t plan_id, uint32_t turn_index) {
+        auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(plan_id, (int32_t)turn_index);
+        if (!actorsR.ok) return "";
+        std::string s;
+        s.reserve(64);
+        for (auto& a : actorsR.value) {
+            auto atom = simcore::db::BattlePlanAtomRepo::Get(a.atom_id);
+            if (!atom.ok) continue;
+            s += std::to_string(atom.value.action_type) + ":" + std::to_string(atom.value.actor_slot) + ":" + std::to_string(atom.value.param_item_id) + ":" + std::to_string(atom.value.target_slot) + "|";
+        }
+        return hash::sha256(s.data(), s.size());
+    }
+
+    struct Survivor {
+        int64_t job_id{-1};
+        int64_t savestate_id{-1};
+        int64_t delta_seed_id{-1};
+        uint32_t fake_used{0};
+        uint32_t rng_seed{0};
+        std::string action_key;
+    };
+}
+
+DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
+    IniDoc ini = IniDoc::parse(blueprint_ini);
+    BRBp bp = BRBp::from_section(ini);
+    STWave wave = STWave::from_section(ini);
+
+    auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
+    if (!plans.ok) return DbResult<int64_t>::Err(plans.error);
+
+    std::vector<std::pair<int64_t, int64_t>> starts;
+    if (wave.cur_turn <= 1) {
+        auto deltas = simcore::db::DeltaSeedRepo::ListUniqueForProbe(bp.seed_probe_id);
+        if (!deltas.ok) return DbResult<int64_t>::Err(deltas.error);
+        auto probe = simcore::db::SeedProbeRepo::Get(bp.seed_probe_id);
+        if (!probe.ok) return DbResult<int64_t>::Err(probe.error);
+        for (auto& d : deltas.value) starts.push_back({ probe.value.savestate_id, d.id });
+    }
+    else {
+        auto jobs = simcore::db::JobsRepo::GetByJobSet(job_set_id);
+        if (!jobs.ok) return DbResult<int64_t>::Err(jobs.error);
+        for (auto& j : jobs.value) {
+            if (j.savestate_id.has_value()) starts.push_back({ j.savestate_id.value(), -1 });
+        }
+    }
+
+    int64_t enqueued = 0;
+    IniDoc t_ini{};
+    bp.set_section(t_ini);
+    wave.set_section(t_ini);
+
+    for (auto& st : starts) {
+        for (auto& plan : plans.value) {
+            auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(plan.plan_id);
+            if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
+            if (wave.cur_turn < 1 || wave.cur_turn > turns.value.size()) continue;
+
+            STJob jb{};
+            jb.plan_id = plan.plan_id;
+            jb.delta_seed_id = st.second;
+            jb.savestate_id = st.first;
+            jb.turn_index = wave.cur_turn;
+            jb.fake_attacks_used_before = 0;
+            jb.action_key = action_key_for_plan_turn(plan.plan_id, wave.cur_turn - 1);
+
+            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, st.second > 0 ? st.second : 0);
+            if (!run.ok) return DbResult<int64_t>::Err(run.error);
+
+            const std::string vm = jb.append_section(t_ini).to_string_sorted();
+            const std::string fp = hash::sha256(vm.data(), vm.size());
+            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+            if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
+            auto ev = simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
+            if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
+            ++enqueued;
+        }
+    }
+
+    if (bp.auto_wave_trigger_enable) {
+        IniKV cond;
+        cond.add("type", "ALL_FINISHED");
+        auto tr = simcore::db::TriggersRepo::AddForJobSet(job_set_id, kPK, cond.to_string_sorted(), ini.to_string_sorted());
+        if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
+    }
+
+    return DbResult<int64_t>::Ok(enqueued);
+}
+
+DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t job_id) {
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<simcore::PSJob>::Err(jr.error);
+    if (!jr.value.vm_kv.has_value()) return DbResult<simcore::PSJob>::Err({ DbErrorKind::NotFound, 0, "missing vm_kv" });
+    IniDoc ini = IniDoc::parse(*jr.value.vm_kv);
+
+    BRBp bp = BRBp::from_section(ini);
+    STJob jb = STJob::from_section(ini);
+
+    auto turnsR = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(jb.plan_id);
+    if (!turnsR.ok) return DbResult<simcore::PSJob>::Err(turnsR.error);
+    if (jb.turn_index < 1 || jb.turn_index > turnsR.value.size()) return DbResult<simcore::PSJob>::Err({ DbErrorKind::InvalidArgument, 0, "turn_index out of range" });
+
+    auto& t = turnsR.value[jb.turn_index - 1];
+    soa::battle::actions::TurnPlan turn{ .fake_attack_count = static_cast<uint32_t>(t.fake_atk_count) };
+    auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(jb.plan_id, (int32_t)(jb.turn_index - 1));
+    if (!actorsR.ok) return DbResult<simcore::PSJob>::Err(actorsR.error);
+    for (auto& a : actorsR.value) {
+        auto atom = simcore::db::BattlePlanAtomRepo::Get(a.atom_id);
+        if (!atom.ok) return DbResult<simcore::PSJob>::Err(atom.error);
+        soa::battle::actions::ActionPlan ap{ .actor_slot = (uint8_t)atom.value.actor_slot, .macro = (soa::battle::actions::BattleAction)atom.value.action_type };
+        if (atom.value.target_slot >= -1 && atom.value.target_slot < 12) ap.params.target_slot = atom.value.target_slot;
+        if (atom.value.param_item_id >= 0) ap.params.item_id = atom.value.param_item_id;
+        turn.spec.push_back(std::move(ap));
+    }
+
+    std::vector<simcore::pred::Spec> preds;
+    auto plist = simcore::db::ExplorerSettingsPredicateRepo::List(bp.settings_id);
+    if (!plist.ok) return DbResult<simcore::PSJob>::Err(plist.error);
+    for (auto& r : plist.value) {
+        auto p = simcore::db::PredicateSpecRepo::Get(r.predicate_id);
+        if (!p.ok) return DbResult<simcore::PSJob>::Err(p.error);
+        std::vector<uint8_t> lhs_prog, rhs_prog;
+        if (p.value.lhs_prog_id.has_value()) {
+            auto lhs = simcore::db::AddressProgramRepo::Get(*p.value.lhs_prog_id);
+            if (!lhs.ok) return DbResult<simcore::PSJob>::Err(lhs.error);
+            lhs_prog = std::move(lhs.value.prog_bytes);
+        }
+        if (p.value.rhs_prog_id.has_value()) {
+            auto rhs = simcore::db::AddressProgramRepo::Get(*p.value.rhs_prog_id);
+            if (!rhs.ok) return DbResult<simcore::PSJob>::Err(rhs.error);
+            rhs_prog = std::move(rhs.value.prog_bytes);
+        }
+        simcore::pred::Spec spec{
+            .id = (uint16_t)r.ordinal,
+            .required_bp = (uint16_t)p.value.required_bp,
+            .kind = (simcore::pred::PredKind)p.value.kind,
+            .width = (uint8_t)p.value.width,
+            .cmp = (simcore::pred::CmpOp)p.value.cmp_op,
+            .flags = (uint32_t)p.value.flags,
+            .lhs_addr = (uint32_t)p.value.lhs_addr,
+            .rhs_value = (uint64_t)p.value.rhs_value,
+            .turn_mask = (uint32_t)p.value.turn_mask,
+            .lhs_prog = lhs_prog,
+            .rhs_prog = rhs_prog,
+            .name = p.value.name.size() > 0 ? p.value.name : "unnamed",
+            .desc = p.value.description.size() > 0 ? p.value.description : "no description"
+        };
+        if (p.value.lhs_key.has_value()) spec.lhs_key = (addr::AddrKey)*p.value.lhs_key;
+        if (p.value.rhs_key.has_value()) spec.rhs_key = (addr::AddrKey)*p.value.rhs_key;
+        preds.push_back(std::move(spec));
+    }
+
+    phase::battle::turnrunner::EncodeSpec spec{};
+    spec.run_ms = bp.run_ms;
+    spec.vi_stall_ms = bp.vi_stall_ms;
+    spec.current_turn = jb.turn_index;
+    spec.turn_plan = std::move(turn);
+    spec.predicates = std::move(preds);
+    spec.fake_attacks_used_before_turn = jb.fake_attacks_used_before;
+
+    if (jb.turn_index == 1 && jb.delta_seed_id > 0) {
+        auto drow = simcore::db::DeltaSeedRepo::Get(jb.delta_seed_id);
+        if (!drow.ok) return DbResult<simcore::PSJob>::Err(drow.error);
+        if (!drow.value) return DbResult<simcore::PSJob>::Err({ DbErrorKind::NotFound, 0, "delta seed not found" });
+        spec.has_initial_input = true;
+        spec.initial = drow.value->input;
+    }
+
+    auto out_dir = std::filesystem::path(simcore::db::ObjectStore::TmpDir()) / "BattleSingleTurnDerived";
+    std::filesystem::create_directories(out_dir);
+    spec.output_savestate_path = (out_dir / ("job_" + std::to_string(job_id) + ".sav")).string();
+
+    simcore::PSJob out{};
+    if (!phase::battle::turnrunner::encode_payload(spec, out.payload))
+        return DbResult<simcore::PSJob>::Err({ DbErrorKind::Unknown, 0, "encode payload failed" });
+    return DbResult<simcore::PSJob>::Ok(std::move(out));
+}
+
+DbResult<void> BattleSingleTurnRunDBCodec::encode_progress_into_db(int64_t job_id, const std::string& progress_line) {
+    auto r = simcore::db::JobEventsRepo::Append(job_id, "PROGRESS", progress_line);
+    if (!r.ok) return DbResult<void>::Err(r.error);
+    return DbResult<void>::Ok();
+}
+
+DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id, const std::string& results_ini, bool success) {
+    auto ev = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", results_ini);
+    if (!ev.ok) return DbResult<void>::Err(ev.error);
+
+    IniDoc ini = IniDoc::parse(results_ini);
+    STRes r = STRes::from_section(ini);
+
+    bool ok = success && r.w_err == 0 && r.dw_err == 0 && !r.savestate_path.empty() && std::filesystem::exists(r.savestate_path);
+    if (ok) {
+        auto obj = simcore::db::ObjectStore::FinalizeFromFile(r.savestate_path, simcore::db::Compression::None, std::filesystem::path(r.savestate_path).filename().string());
+        if (!obj.ok) return DbResult<void>::Err(obj.error);
+        std::filesystem::remove(r.savestate_path);
+
+        auto plan = simcore::db::SavestateRepo::Plan(simcore::db::SavestateType::BATTLE, "BattleSingleTurnRunner");
+        if (!plan.ok) return DbResult<void>::Err(plan.error);
+        auto fin = simcore::db::SavestateRepo::Finalize(plan.value, obj.value.id);
+        if (!fin.ok) return DbResult<void>::Err(fin.error);
+
+        r.output_savestate_id = plan.value;
+        r.set_section(ini);
+        auto ev2 = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", ini.to_string_sorted());
+        if (!ev2.ok) return DbResult<void>::Err(ev2.error);
+
+        auto st = simcore::db::JobsRepo::SetState(job_id, "SUCCEEDED");
+        if (!st.ok) return DbResult<void>::Err(st.error);
+    }
+    else {
+        if (!r.savestate_path.empty() && std::filesystem::exists(r.savestate_path)) std::filesystem::remove(r.savestate_path);
+        auto st = simcore::db::JobsRepo::SetState(job_id, "FAILED");
+        if (!st.ok) return DbResult<void>::Err(st.error);
+    }
+
+    return DbResult<void>::Ok();
+}
+
+DbResult<std::string> BattleSingleTurnRunDBCodec::decode_progress_from_db(std::optional<int64_t> job_id, std::optional<int64_t> job_set_id) {
+    ExplorerRunDBCodec c;
+    return c.decode_progress_from_db(job_id, job_set_id);
+}
+
+DbResult<std::string> BattleSingleTurnRunDBCodec::decode_results_from_db(std::optional<int64_t> job_id, std::optional<int64_t> job_set_id) {
+    ExplorerRunDBCodec c;
+    return c.decode_results_from_db(job_id, job_set_id);
+}
+
+DbResult<std::optional<int64_t>> BattleSingleTurnRunDBCodec::get_required_savestate_id(int64_t job_id) {
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::optional<int64_t>>::Err(jr.error);
+    if (!jr.value.vm_kv.has_value()) return DbResult<std::optional<int64_t>>::Ok(std::nullopt);
+    STJob jb = STJob::from_section(IniDoc::parse(*jr.value.vm_kv));
+    return DbResult<std::optional<int64_t>>::Ok(jb.savestate_id > 0 ? std::optional<int64_t>(jb.savestate_id) : std::nullopt);
+}
+
+DbResult<simcore::PSInit> BattleSingleTurnRunDBCodec::build_psinit_for_job(int64_t job_id) {
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<simcore::PSInit>::Err(jr.error);
+    if (!jr.value.vm_kv.has_value()) return DbResult<simcore::PSInit>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
+    STJob jb = STJob::from_section(IniDoc::parse(*jr.value.vm_kv));
+
+    auto ss = simcore::db::SavestateRepo::Get(jb.savestate_id);
+    if (!ss.ok) return DbResult<simcore::PSInit>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<simcore::PSInit>::Err({ DbErrorKind::NotFound, 0, "savestate not found" });
+
+    auto temp = simcore::db::ObjectStore::MaterializeToTemp(ss.value->object_ref_id);
+    if (!temp.ok) return DbResult<simcore::PSInit>::Err(temp.error);
+
+    simcore::PSInit init{};
+    init.savestate_path = temp.value;
+    init.default_timeout_ms = 10000;
+    init.derived_buffer_type = simcore::DBuf::DK_Battle;
+    return DbResult<simcore::PSInit>::Ok(init);
+}
+
+DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresult(int64_t, const simcore::PRResult& r) {
+    STRes out{};
+    out.w_err = r.ps.w_err;
+    if (out.w_err == 0) r.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+    r.ps.ctx.get(simcore::keys::core::VI_FIRST, out.vi_start);
+    r.ps.ctx.get(simcore::keys::core::VI_LAST, out.vi_end);
+    r.ps.ctx.get(simcore::keys::seed::RNG_SEED, out.rng_seed);
+    r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, out.battle_outcome);
+
+    uint32_t before = 0, cur = 0;
+    r.ps.ctx.get(simcore::keys::battle::FAKE_ATTACK_USED_BEFORE, before);
+    r.ps.ctx.get(simcore::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
+    out.fake_attacks_used = before + cur;
+    r.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
+
+    IniDoc ini;
+    out.set_section(ini);
+    return DbResult<std::string>::Ok(ini.to_string_sorted());
+}
+
+DbResult<std::string> BattleSingleTurnRunDBCodec::build_artifact_ini_from_db(int64_t job_id) {
+    ExplorerRunDBCodec c;
+    return c.build_artifact_ini_from_db(job_id);
+}
+
+DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) {
+    IniDoc ini = IniDoc::parse(action_args_ini);
+    BRBp bp = BRBp::from_section(ini);
+    STWave wave = STWave::from_section(ini);
+
+    if (!bp.auto_wave_trigger_enable) return DbResult<void>::Ok();
+
+    auto results = simcore::db::JobEventsRepo::ListByJobSetAndKind(ctx.prev_job_set_id, "RESULTS");
+    if (!results.ok) return DbResult<void>::Err(results.error);
+
+    std::unordered_map<std::string, Survivor> best;
+    std::unordered_set<int64_t> winner_jobs;
+    std::vector<Survivor> all;
+
+    for (auto& e : results.value) {
+        if (!e.payload.has_value()) continue;
+        IniDoc rdoc = IniDoc::parse(*e.payload);
+        if (!rdoc.has_section(STRes::SECTION_NAME)) continue;
+        STRes r = STRes::from_section(rdoc);
+        if (r.output_savestate_id <= 0) continue;
+        if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) continue;
+
+        auto jr = simcore::db::JobsRepo::Get(e.job_id);
+        if (!jr.ok || !jr.value.vm_kv.has_value()) continue;
+        STJob jb = STJob::from_section(IniDoc::parse(*jr.value.vm_kv));
+
+        Survivor s{};
+        s.job_id = e.job_id;
+        s.savestate_id = r.output_savestate_id;
+        s.delta_seed_id = jb.delta_seed_id;
+        s.fake_used = r.fake_attacks_used;
+        s.rng_seed = r.rng_seed;
+        s.action_key = jb.action_key;
+        all.push_back(s);
+
+        const std::string key = std::to_string(s.rng_seed) + "|" + s.action_key;
+        auto it = best.find(key);
+        if (it == best.end() || s.fake_used < it->second.fake_used || (s.fake_used == it->second.fake_used && s.job_id < it->second.job_id)) {
+            best[key] = s;
+        }
+    }
+
+    for (auto& kv : best) winner_jobs.insert(kv.second.job_id);
+
+    for (auto& s : all) {
+        if (winner_jobs.count(s.job_id)) {
+            (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_WINNER");
+        } else {
+            (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_DUPLICATE");
+            (void)simcore::db::SavestateRepo::Delete(s.savestate_id);
+        }
+    }
+
+    if (best.empty()) return DbResult<void>::Ok();
+
+    std::vector<Survivor> winners;
+    winners.reserve(best.size());
+    for (auto& kv : best) winners.push_back(kv.second);
+
+    auto links = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
+    if (!links.ok) return DbResult<void>::Err(links.error);
+    bool has_next_turn = false;
+    for (auto& pl : links.value) {
+        auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
+        if (turns.ok && wave.cur_turn < turns.value.size()) { has_next_turn = true; break; }
+    }
+    if (!has_next_turn) return DbResult<void>::Ok();
+
+    auto js = simcore::db::JobSetsRepo::Create("BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
+    if (!js.ok) return DbResult<void>::Err(js.error);
+
+    STWave next{ .cur_turn = wave.cur_turn + 1 };
+    next.set_section(ini);
+
+    // Build jobs directly from winners x plan turn options
+    IniDoc t_ini{};
+    bp.set_section(t_ini);
+    next.set_section(t_ini);
+
+    for (auto& w : winners) {
+        for (auto& pl : links.value) {
+            auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
+            if (!turns.ok) continue;
+            if (next.cur_turn < 1 || next.cur_turn > turns.value.size()) continue;
+
+            STJob jb{};
+            jb.plan_id = pl.plan_id;
+            jb.delta_seed_id = w.delta_seed_id;
+            jb.savestate_id = w.savestate_id;
+            jb.turn_index = next.cur_turn;
+            jb.fake_attacks_used_before = w.fake_used;
+            jb.action_key = action_key_for_plan_turn(pl.plan_id, next.cur_turn - 1);
+
+            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (w.delta_seed_id > 0) ? w.delta_seed_id : 0);
+            if (!run.ok) continue;
+            const std::string vm = jb.append_section(t_ini).to_string_sorted();
+            const std::string fp = hash::sha256(vm.data(), vm.size());
+            (void)simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+        }
+    }
+
+    if (bp.auto_wave_trigger_enable) {
+        IniKV cond;
+        cond.add("type", "ALL_FINISHED");
+        auto tr = simcore::db::TriggersRepo::AddForJobSet(js.value, kPK, cond.to_string_sorted(), ini.to_string_sorted());
+        if (!tr.ok) return DbResult<void>::Err(tr.error);
+    }
+
+    return DbResult<void>::Ok();
+}

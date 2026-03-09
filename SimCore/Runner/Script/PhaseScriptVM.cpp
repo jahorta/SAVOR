@@ -525,6 +525,7 @@ namespace simcore {
             case PSOpCode::SAVE_SAVESTATE_FROM: {
                 std::string path;
                 ctx.get<std::string>(op.key.id, path);
+                if (path.empty()) break;
                 if (!host_.saveSavestateBlocking(path)) return R;
                 ctx[keys::core::LAST_SAVESTATE_PATH] = path;    
                 break;
@@ -767,4 +768,3 @@ namespace simcore {
     }
 
 } // namespace simcore
-

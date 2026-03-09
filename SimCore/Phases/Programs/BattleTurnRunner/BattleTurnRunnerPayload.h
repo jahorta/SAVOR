@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <string>
 
 #include "../../../Runner/Script/PhaseScriptVM.h"
 #include "../../../Runner/Breakpoints/Predicate.h"
@@ -8,7 +9,7 @@
 
 namespace phase::battle::turnrunner {
 
-    static constexpr int PayloadVersion = 1;
+    static constexpr int PayloadVersion = 2;
 
     struct EncodeSpec {
         uint32_t run_ms{ 0 };
@@ -23,6 +24,7 @@ namespace phase::battle::turnrunner {
         // bookkeeping metadata; enforced by coordinator (not decoder)
         uint32_t fake_attack_budget_max{ 0 };
         uint32_t fake_attacks_used_before_turn{ 0 };
+        std::string output_savestate_path{};
     };
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out);

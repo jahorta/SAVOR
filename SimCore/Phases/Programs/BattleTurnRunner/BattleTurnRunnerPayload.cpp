@@ -20,6 +20,18 @@ namespace phase::battle::turnrunner {
         p += 4;
         return true;
     }
+    static inline void put_str(std::vector<uint8_t>& b, const std::string& s) {
+        put_u32(b, (uint32_t)s.size());
+        b.insert(b.end(), s.begin(), s.end());
+    }
+    static inline bool get_str(const uint8_t*& p, const uint8_t* e, std::string& out) {
+        uint32_t n = 0;
+        if (!get_u32(p, e, n)) return false;
+        if (p + n > e) return false;
+        out.assign(reinterpret_cast<const char*>(p), reinterpret_cast<const char*>(p + n));
+        p += n;
+        return true;
+    }
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
@@ -41,9 +53,10 @@ namespace phase::battle::turnrunner {
             soa::battle::actions::ActionPlan::to_wire(ap, out);
         }
 
-        // bookeeping metadata
+        // bookkeeping metadata
         put_u32(out, spec.fake_attack_budget_max);
         put_u32(out, spec.fake_attacks_used_before_turn);
+        put_str(out, spec.output_savestate_path);
 
         std::vector<simcore::pred::PredicateRecord> records;
         std::vector<uint8_t> blob;
@@ -108,6 +121,8 @@ namespace phase::battle::turnrunner {
         uint32_t used_before = 0;
         if (!get_u32(p, e, budget_max)) return false;
         if (!get_u32(p, e, used_before)) return false;
+        std::string output_savestate_path;
+        if (!get_str(p, e, output_savestate_path)) return false;
 
         uint32_t pred_count = 0;
         if (!get_u32(p, e, pred_count)) return false;
@@ -150,6 +165,7 @@ namespace phase::battle::turnrunner {
         out_ctx[simcore::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
         out_ctx[simcore::keys::battle::FAKE_ATTACK_BUDGET_MAX] = budget_max;
         out_ctx[simcore::keys::battle::FAKE_ATTACK_USED_BEFORE] = used_before;
+        out_ctx[simcore::keys::battle::OUTPUT_SAVESTATE_PATH] = output_savestate_path;
 
         out_ctx[simcore::keys::core::PRED_COUNT] = pred_count;
         out_ctx[simcore::keys::core::PRED_TABLE] = pred_table;

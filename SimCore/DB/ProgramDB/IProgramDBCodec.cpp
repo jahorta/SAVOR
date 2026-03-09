@@ -4,6 +4,7 @@
 #include "SeedProbeDBCodec.h"
 #include "TasMovieDBCodec.h"
 #include "ExplorerRunDBCodec.h"
+#include "BattleSingleTurnRunDBCodec.h"
 #include "BattleContextDBCodec.h"
 
 #include "../../Runner/IPC/Wire.h"
@@ -15,12 +16,14 @@ namespace simcore::db::codec {
             static SeedProbeDBCodec  seed_codec;
             static TasMovieDBCodec   tas_codec;
             static ExplorerRunDBCodec battle_runner_codec;
+            static BattleSingleTurnRunDBCodec battle_single_turn_runner_codec;
             static BattleContextDBCodec battle_context_codec;
 
             // Use your existing ProgramKind ids here:
             ProgramDBCodecRegistry::register_codec(simcore::PK_SeedProbe, &seed_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_TasMovie, &tas_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_BattleTurnRunner, &battle_runner_codec);
+            ProgramDBCodecRegistry::register_codec(simcore::PK_BattleSingleTurnRunner, &battle_single_turn_runner_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_BattleContextProbe, &battle_context_codec);
             });
     }

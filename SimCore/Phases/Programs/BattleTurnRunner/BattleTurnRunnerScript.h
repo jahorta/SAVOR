@@ -94,27 +94,33 @@ namespace phase::battle::turnrunner {
         // return labels read ending RNG before returning
         ps.ops.push_back(simcore::OpLabel(LabelRetReachedNext));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::TURN_OUTPUT_INDEX, 1u));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetVictory));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Victory));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetDefeat));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Defeat));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetPredFail));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PredFailure));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetMaterializeFail));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PlanMaterializeFailure));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetDWErr));
         ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::DWRunErr));
 
         return ps;
