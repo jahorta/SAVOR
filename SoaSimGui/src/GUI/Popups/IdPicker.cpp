@@ -22,7 +22,7 @@ namespace soasim::ui {
         // Center on first appear relative to main viewport (only as a starting point).
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSizeConstraints(ImVec2(720, 0), ImVec2(vp->WorkSize.x, vp->WorkSize.y));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(720, 150), ImVec2(vp->WorkSize.x, vp->WorkSize.y));
 
         if (ImGui::BeginPopupModal(args.modal_id, &open, ImGuiWindowFlags_NoResize)) {
             if (search_buffer.empty() && !args.initial_search.empty()) search_buffer = args.initial_search;
