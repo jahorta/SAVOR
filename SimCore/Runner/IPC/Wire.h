@@ -48,6 +48,7 @@ namespace simcore {
         PK_TasMovie = 2,
         PK_BattleTurnRunner = 3, 
         PK_BattleContextProbe = 4,
+        PK_BattleSingleTurnRunner = 5,
     };
 
     // Payload used for TAS jobs (paths are NUL-terminated, Windows MAX_PATH safe)

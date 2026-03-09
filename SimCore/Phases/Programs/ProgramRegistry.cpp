@@ -7,6 +7,8 @@
 #include "BattleRunner/BattleRunnerScript.h"
 #include "BattleContext/BattleContextScript.h"
 #include "BattleContext/BattleContextPayload.h"
+#include "BattleTurnRunner/BattleTurnRunnerPayload.h"
+#include "BattleTurnRunner/BattleTurnRunnerScript.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace simcore::programs {
@@ -24,6 +26,8 @@ namespace simcore::programs {
             return phase::battle::runner::MakeBattleRunnerProgram();
         case PK_BattleContextProbe:
             return phase::battle::ctx::MakeBattleContextProbeProgram();
+        case PK_BattleSingleTurnRunner:
+            return phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
         default:
             return PhaseScript{};
         }
@@ -49,6 +53,8 @@ namespace simcore::programs {
             return phase::battle::runner::decode_payload(payload, out_ctx);
         case PK_BattleContextProbe:
             return phase::battle::ctx::decode_payload(payload, out_ctx);
+        case PK_BattleSingleTurnRunner:
+            return phase::battle::turnrunner::decode_payload(payload, out_ctx);
         default:
             return false;
         }
