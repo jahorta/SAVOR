@@ -176,6 +176,16 @@ void JobsPane::OnActivated() {
     if (!s.fetch_in_flight) kick_fetch();
 }
 
+void JobsPane::FocusJobSet(int64_t job_set_id) {
+    auto& s = S();
+    s.scope = {};
+    s.scope.job_set_id = job_set_id;
+    s.before.reset();
+    s.after.reset();
+    s.selected_job_id = 0;
+    kick_fetch();
+}
+
 void JobsPane::Draw() {
     auto& s = S();
 
