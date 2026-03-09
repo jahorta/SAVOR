@@ -75,6 +75,9 @@
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h">
       <Filter>GUI\Panes</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\JobSetsPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
     <ClInclude Include="src\Components\ToastBus.h">
       <Filter>Components</Filter>
     </ClInclude>
@@ -187,6 +190,9 @@
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\JobSetsPane.cpp">
       <Filter>GUI\Panes</Filter>
     </ClCompile>
     <ClCompile Include="src\Components\ToastBus.cpp">

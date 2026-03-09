@@ -8,6 +8,9 @@ struct JobSetLite {
     int program_kind{};
     std::string purpose;
     int64_t created_at{}; // if not present in schema, set to 0 on read
+    int64_t total_jobs{};
+    int64_t completed_jobs{};
+    std::optional<int64_t> expected_total{};
 };
 
 struct JobSetsListScope {
