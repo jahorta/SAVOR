@@ -3,6 +3,7 @@
 #include "Widgets/LeftNav.h"
 #include "Widgets/StatusBar.h"
 #include "Panes/JobsPane.h"
+#include "Panes/JobSetsPane.h"
 #include "Panes/CoordinatorPane.h"
 #include "Panes/PhaseBuilderPane.h"
 #include "Panes/BattleRunSettingsPane.h"
@@ -158,6 +159,10 @@ void GuiApp::RenderFrame() {
     if (pane_swap) SetAcceptExplorerDrops(GuiLeftNav::GetActive() == GuiPane::Artifacts);
 
     switch (GuiLeftNav::GetActive()) {
+    case GuiPane::JobSets:
+        if (pane_swap) JobSetsPane::OnActivated();
+        JobSetsPane::Draw();
+        break;
     case GuiPane::Jobs:
         if (pane_swap) JobsPane::OnActivated();
         JobsPane::Draw();
@@ -215,7 +220,7 @@ void GuiApp::OnResize(UINT w, UINT h) {
 
 bool GuiApp::HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_DROPFILES) {
-        if (!explorer_drops_enabled_) { // shouldn’t happen, but be safe
+        if (!explorer_drops_enabled_) { // shouldnâ€™t happen, but be safe
             DragFinish((HDROP)wParam);
             return true;
         }

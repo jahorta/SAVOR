@@ -151,22 +151,26 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT job_set_id, program_kind, "
-            "CASE WHEN purpose IS NULL THEN '' ELSE purpose END AS purpose, "
-            "CASE WHEN created_at IS NULL THEN 0  ELSE created_at END AS created_at "
-            "FROM job_sets ";
+        sql << "SELECT js.job_set_id, js.program_kind, "
+            "CASE WHEN js.purpose IS NULL THEN '' ELSE js.purpose END AS purpose, "
+            "CASE WHEN js.created_at IS NULL THEN 0  ELSE js.created_at END AS created_at, "
+            "COALESCE(p.total, 0) AS total_jobs, "
+            "COALESCE(p.terminal, 0) AS completed_jobs, "
+            "js.expected_total "
+            "FROM job_sets js "
+            "LEFT JOIN v_job_set_progress_h p ON p.job_set_id = js.job_set_id ";
 
         bool hasWhere = false;
         auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
 
-        if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
-        if (scope.min_job_set_id) { add_and(true); sql << "job_set_id >= ?"; }
+        if (scope.program_kind) { add_and(true); sql << "js.program_kind=?"; }
+        if (scope.min_job_set_id) { add_and(true); sql << "js.job_set_id >= ?"; }
         if (before) {
             add_and(true);
-            sql << "(created_at < ? OR (created_at = ? AND job_set_id < ?))";
+            sql << "(js.created_at < ? OR (js.created_at = ? AND js.job_set_id < ?))";
         }
 
-        sql << " ORDER BY created_at DESC, job_set_id DESC LIMIT ?";
+        sql << " ORDER BY js.created_at DESC, js.job_set_id DESC LIMIT ?";
 
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &st, nullptr) != SQLITE_OK) {
@@ -196,6 +200,11 @@ namespace simcore::db {
                 else
                     r.purpose.clear();
                 r.created_at = sqlite3_column_int64(st, 3);
+                r.total_jobs = sqlite3_column_int64(st, 4);
+                r.completed_jobs = sqlite3_column_int64(st, 5);
+                if (sqlite3_column_type(st, 6) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 6);
+                }
                 page.items.push_back(std::move(r));
             }
             else if (rc == SQLITE_DONE) {

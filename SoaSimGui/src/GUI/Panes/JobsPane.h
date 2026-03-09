@@ -10,4 +10,5 @@
 struct JobsPane {
     static void Draw();
     static void OnActivated();
+    static void FocusJobSet(int64_t job_set_id);
 };
