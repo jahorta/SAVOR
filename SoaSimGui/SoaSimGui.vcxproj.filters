@@ -75,6 +75,9 @@
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h">
       <Filter>GUI\Panes</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\ExplorerRunsPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
     <ClInclude Include="src\GUI\Panes\JobSetsPane.h">
       <Filter>GUI\Panes</Filter>
     </ClInclude>
@@ -190,6 +193,9 @@
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\ExplorerRunsPane.cpp">
       <Filter>GUI\Panes</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\JobSetsPane.cpp">

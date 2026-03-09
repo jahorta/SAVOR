@@ -35,6 +35,43 @@ static constexpr int kPK = PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
+    struct WaveMetaIni {
+        static constexpr const char* SECTION_NAME = "BattleSingleTurn.WaveMeta";
+        int64_t root_group_id{-1};
+        uint32_t wave_turn{1};
+        int64_t settings_id{-1};
+        int64_t seed_probe_id{-1};
+        std::string settings_name;
+        int64_t tas_movie_id{-1};
+
+        static WaveMetaIni from_meta(const std::optional<std::string>& meta_text) {
+            WaveMetaIni m{};
+            if (!meta_text.has_value() || meta_text->empty()) return m;
+            IniDoc ini = IniDoc::parse(*meta_text);
+            if (!ini.has_section(SECTION_NAME)) return m;
+            auto kv = ini.section_kv(SECTION_NAME);
+            m.root_group_id = kv.get_i64("root_group_id", -1);
+            m.wave_turn = kv.get_u32("wave_turn", 1);
+            m.settings_id = kv.get_i64("settings_id", -1);
+            m.seed_probe_id = kv.get_i64("seed_probe_id", -1);
+            m.settings_name = kv.get("settings_name", "");
+            m.tas_movie_id = kv.get_i64("tas_movie_id", -1);
+            return m;
+        }
+
+        std::string to_meta_text() const {
+            IniDoc ini{};
+            ini.ensure_section(SECTION_NAME);
+            ini.set(SECTION_NAME, "root_group_id", std::to_string(root_group_id));
+            ini.set(SECTION_NAME, "wave_turn", std::to_string(wave_turn));
+            ini.set(SECTION_NAME, "settings_id", std::to_string(settings_id));
+            ini.set(SECTION_NAME, "seed_probe_id", std::to_string(seed_probe_id));
+            ini.set(SECTION_NAME, "settings_name", settings_name);
+            ini.set(SECTION_NAME, "tas_movie_id", std::to_string(tas_movie_id));
+            return ini.to_string_sorted();
+        }
+    };
+
     std::string action_key_for_plan_turn(int64_t plan_id, uint32_t turn_index) {
         auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(plan_id, (int32_t)turn_index);
         if (!actorsR.ok) return "";
@@ -56,12 +93,52 @@ namespace {
         uint32_t rng_seed{0};
         std::string action_key;
     };
+
+    static std::string get_settings_name(int64_t settings_id) {
+        auto s = simcore::db::ExplorerSettingsRepo::Get(settings_id);
+        if (!s.ok) return "";
+        return s.value.name;
+    }
+
+    static DbResult<void> set_wave_meta_for_jobset(int64_t job_set_id, int64_t root_group_id, uint32_t wave_turn, const BRBp& bp) {
+        WaveMetaIni meta{};
+        meta.root_group_id = root_group_id;
+        meta.wave_turn = wave_turn;
+        meta.settings_id = bp.settings_id;
+        meta.seed_probe_id = bp.seed_probe_id;
+        meta.settings_name = get_settings_name(bp.settings_id);
+        auto mr = simcore::db::JobSetsRepo::SetMetaText(job_set_id, meta.to_meta_text());
+        if (!mr.ok) return DbResult<void>::Err(mr.error);
+        return DbResult<void>::Ok();
+    }
+
+    static DbResult<int64_t> resolve_root_group_id_for_jobset(int64_t job_set_id) {
+        auto js = simcore::db::JobSetsRepo::Get(job_set_id);
+        if (!js.ok) return DbResult<int64_t>::Err(js.error);
+
+        WaveMetaIni meta = WaveMetaIni::from_meta(js.value.meta_text);
+        if (meta.root_group_id > 0) return DbResult<int64_t>::Ok(meta.root_group_id);
+
+        int64_t cur = job_set_id;
+        while (true) {
+            auto pr = simcore::db::JobSetsRepo::GetParent(cur);
+            if (!pr.ok) return DbResult<int64_t>::Err(pr.error);
+            if (!pr.value.has_value()) break;
+            cur = *pr.value;
+        }
+        return DbResult<int64_t>::Ok(cur);
+    }
 }
 
 DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
     IniDoc ini = IniDoc::parse(blueprint_ini);
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
+
+    auto root = resolve_root_group_id_for_jobset(job_set_id);
+    if (!root.ok) return DbResult<int64_t>::Err(root.error);
+    auto sm = set_wave_meta_for_jobset(job_set_id, root.value, wave.cur_turn, bp);
+    if (!sm.ok) return DbResult<int64_t>::Err(sm.error);
 
     auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
     if (!plans.ok) return DbResult<int64_t>::Err(plans.error);
@@ -385,10 +462,15 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     }
     if (!has_next_turn) return DbResult<void>::Ok();
 
-    auto js = simcore::db::JobSetsRepo::Create("BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
-    if (!js.ok) return DbResult<void>::Err(js.error);
+    auto root = resolve_root_group_id_for_jobset(ctx.prev_job_set_id);
+    if (!root.ok) return DbResult<void>::Err(root.error);
 
     STWave next{ .cur_turn = wave.cur_turn + 1 };
+
+    auto js = simcore::db::JobSetsRepo::CreateChild(ctx.prev_job_set_id, "BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
+    if (!js.ok) return DbResult<void>::Err(js.error);
+    auto sm = set_wave_meta_for_jobset(js.value, root.value, next.cur_turn, bp);
+    if (!sm.ok) return DbResult<void>::Err(sm.error);
     next.set_section(ini);
 
     // Build jobs directly from winners x plan turn options
@@ -426,4 +508,87 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     }
 
     return DbResult<void>::Ok();
+}
+
+
+DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable) {
+    auto jr = simcore::db::JobsRepo::Get(source_job_id);
+    if (!jr.ok) return DbResult<int64_t>::Err(jr.error);
+    if (!jr.value.vm_kv.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
+
+    IniDoc job_ini = IniDoc::parse(*jr.value.vm_kv);
+    BRBp bp = BRBp::from_section(job_ini);
+    STJob jb = STJob::from_section(job_ini);
+
+    auto rr = simcore::db::JobEventsRepo::GetLatestPayload(source_job_id, "RESULTS");
+    if (!rr.ok || !rr.value.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "results payload missing" });
+    IniDoc rdoc = IniDoc::parse(*rr.value);
+    STRes r = STRes::from_section(rdoc);
+
+    if (r.output_savestate_id <= 0) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "source job has no continuation savestate" });
+    if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "source job did not reach next turn" });
+
+    auto links = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
+    if (!links.ok) return DbResult<int64_t>::Err(links.error);
+
+    STWave next{ .cur_turn = jb.turn_index + 1 };
+    bool has_next_turn = false;
+    for (auto& pl : links.value) {
+        auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
+        if (turns.ok && next.cur_turn >= 1 && next.cur_turn <= turns.value.size()) { has_next_turn = true; break; }
+    }
+    if (!has_next_turn) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "no next turn configured for selected run" });
+
+    auto root = resolve_root_group_id_for_jobset(jr.value.job_set_id);
+    if (!root.ok) return DbResult<int64_t>::Err(root.error);
+
+    auto js = simcore::db::JobSetsRepo::CreateChild(jr.value.job_set_id, "BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
+    if (!js.ok) return DbResult<int64_t>::Err(js.error);
+
+    auto sm = set_wave_meta_for_jobset(js.value, root.value, next.cur_turn, bp);
+    if (!sm.ok) return DbResult<int64_t>::Err(sm.error);
+
+    IniDoc t_ini{};
+    bp.set_section(t_ini);
+    next.set_section(t_ini);
+
+    int64_t enqueued = 0;
+    for (auto& pl : links.value) {
+        auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
+        if (!turns.ok) continue;
+        if (next.cur_turn < 1 || next.cur_turn > turns.value.size()) continue;
+
+        STJob nj{};
+        nj.plan_id = pl.plan_id;
+        nj.delta_seed_id = jb.delta_seed_id;
+        nj.savestate_id = r.output_savestate_id;
+        nj.turn_index = next.cur_turn;
+        nj.fake_attacks_used_before = r.fake_attacks_used;
+        nj.action_key = action_key_for_plan_turn(pl.plan_id, next.cur_turn - 1);
+
+        auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
+        if (!run.ok) continue;
+
+        const std::string vm = nj.append_section(t_ini).to_string_sorted();
+        const std::string fp = hash::sha256(vm.data(), vm.size());
+        auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id);
+        if (!cj.ok) continue;
+        (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
+        ++enqueued;
+    }
+
+    if (enqueued <= 0) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "no jobs enqueued for next wave" });
+
+    bool arm = auto_wave_trigger_enable || bp.auto_wave_trigger_enable;
+    if (arm) {
+        IniDoc tr_ini{};
+        bp.set_section(tr_ini);
+        next.set_section(tr_ini);
+        IniKV cond;
+        cond.add("type", "ALL_FINISHED");
+        auto tr = simcore::db::TriggersRepo::AddForJobSet(js.value, kPK, cond.to_string_sorted(), tr_ini.to_string_sorted());
+        if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
+    }
+
+    return DbResult<int64_t>::Ok(js.value);
 }

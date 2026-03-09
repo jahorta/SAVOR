@@ -164,6 +164,7 @@
     <ClInclude Include="src\GUI\Panes\ArtifactsPane.h" />
     <ClInclude Include="src\GUI\Panes\BattleRunSettingsPane.h" />
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h" />
+    <ClInclude Include="src\GUI\Panes\ExplorerRunsPane.h" />
     <ClInclude Include="src\GUI\Panes\JobSetsPane.h" />
     <ClInclude Include="src\GUI\Panes\JobsPane.h" />
     <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h" />
@@ -214,6 +215,7 @@
     <ClCompile Include="src\GUI\Panes\ArtifactsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\BattleRunSettingsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp" />
+    <ClCompile Include="src\GUI\Panes\ExplorerRunsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobSetsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp" />
