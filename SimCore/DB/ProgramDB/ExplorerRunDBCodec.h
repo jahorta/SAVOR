@@ -17,6 +17,8 @@ namespace simcore::db::codec::battle::run {
         uint32_t    run_ms{};
         uint32_t    vi_stall_ms{};
         bool        progress_enable{ true };
+        bool        use_single_turn_runner{ false };
+        bool        auto_wave_trigger_enable{ false };
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
             BlueprintIni bp{};
@@ -28,6 +30,8 @@ namespace simcore::db::codec::battle::run {
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
             bp.progress_enable = section.get_bool("progress_enable", true);
+            bp.use_single_turn_runner = section.get_bool("use_single_turn_runner", false);
+            bp.auto_wave_trigger_enable = section.get_bool("auto_wave_trigger_enable", false);
             return bp;
         }
         inline void set_section(IniDoc& doc) const {
@@ -38,6 +42,8 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
+            doc.set(SECTION_NAME, "use_single_turn_runner", use_single_turn_runner ? "1" : "0");
+            doc.set(SECTION_NAME, "auto_wave_trigger_enable", auto_wave_trigger_enable ? "1" : "0");
         }
         inline std::string to_string() const {
             IniDoc doc{};

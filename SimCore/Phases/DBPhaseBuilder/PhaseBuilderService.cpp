@@ -46,7 +46,8 @@ namespace simcore::db::phasebuilder {
             }
             break;
         }
-        case PK_BattleTurnRunner: {
+        case PK_BattleTurnRunner:
+        case PK_BattleSingleTurnRunner: {
             auto bp = BRBp::from_section(ini);
             if (bp.settings_id <= 0) errs.push_back({ "BattleRun.Blueprint.settings_id","required" });
             if (bp.seed_probe_id <= 0) errs.push_back({ "BattleRun.Blueprint.seed_probe_id","required" });
@@ -79,7 +80,8 @@ namespace simcore::db::phasebuilder {
             auto r = PreviewSeedProbe(ini); if (!r.ok) return DbResult<PhasePreview>::Err(r.error);
             out.seedprobe = r.value; break;
         }
-        case PK_BattleTurnRunner: {
+        case PK_BattleTurnRunner:
+        case PK_BattleSingleTurnRunner: {
             auto r = PreviewExplorer(ini); if (!r.ok) return DbResult<PhasePreview>::Err(r.error);
             out.explorer = r.value; break;
         }
@@ -180,7 +182,7 @@ namespace simcore::db::phasebuilder {
             if (program_kind == PK_TasMovie) {
                 auto tp = PreviewTas(ini); if (tp.ok) expected_total = tp.value.jobs;
             }
-            else if (program_kind == PK_BattleTurnRunner) {
+            else if (program_kind == PK_BattleTurnRunner || program_kind == PK_BattleSingleTurnRunner) {
                 expected_total = 1;
             }
             else {

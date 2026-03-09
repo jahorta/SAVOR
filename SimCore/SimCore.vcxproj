@@ -262,6 +262,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\PredicateSpecRepo.h" />
     <ClInclude Include="DB\ProgramDB\BattleContextDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\ExplorerRunDBCodec.h" />
+    <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\IProgramDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\SeedProbeDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h" />
@@ -391,6 +392,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\PredicateSpecRepo.cpp" />
     <ClCompile Include="DB\ProgramDB\BattleContextDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\ExplorerRunDBCodec.cpp" />
+    <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\SeedProbeDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp" />

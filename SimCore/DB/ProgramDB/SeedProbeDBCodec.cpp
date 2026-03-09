@@ -1,5 +1,6 @@
 // SimCore/DB/ProgramDB/SeedProbeDBCodec.cpp
 #include "SeedProbeDBCodec.h"
+#include "ExplorerRunDBCodec.h"
 #include "../../Utils/Hex.h"
 #include "../Scheduling/JobSetsRepo.h"
 #include "../Scheduling/JobsRepo.h"
@@ -244,7 +245,10 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
         IniKV cond;
         cond.add("type", "ALL_FINISHED");
 
-        auto tr = TriggersRepo::AddForJobSet(job_set_id, simcore::PK_BattleTurnRunner, cond.to_string_sorted(), blueprint_ini);
+        IniDoc bini = IniDoc::parse(blueprint_ini);
+        auto brbp = simcore::db::codec::battle::run::BlueprintIni::from_section(bini);
+        int action_kind = brbp.use_single_turn_runner ? simcore::PK_BattleSingleTurnRunner : simcore::PK_BattleTurnRunner;
+        auto tr = TriggersRepo::AddForJobSet(job_set_id, action_kind, cond.to_string_sorted(), blueprint_ini);
         if (!tr.ok) return simcore::db::DbResult<int64_t>::Err(tr.error);
     }
 

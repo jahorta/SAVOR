@@ -66,7 +66,7 @@ void PhaseBuilderPane::ensureKindsLoaded() {
 
 void PhaseBuilderPane::ensureDefaults() {
     if (!inst().ini_.has_value() && inst().selected_kind_idx_ >= 0 && inst().selected_kind_idx_ < (int)inst().kinds_.size()) {
-        const int pk = inst().kinds_[inst().selected_kind_idx_].id;
+        int pk = inst().kinds_[inst().selected_kind_idx_].id;
         inst().ini_ = simcore::db::phasebuilder::PhaseBuilderService::DefaultsFor(pk);
         inst().ini_dirty_ = false;
         inst().submit_state_ = SubmitState::Idle;
@@ -342,6 +342,8 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     int run_ms = (int)bp.run_ms;
     int vi_ms = (int)bp.vi_stall_ms;
     bool progress_enable = bp.progress_enable;
+    bool use_single_turn_runner = bp.use_single_turn_runner;
+    bool auto_wave_trigger_enable = bp.auto_wave_trigger_enable;
 
     if (ImGui::Button("Pick SeedProbe...")) {
         ImGui::OpenPopup("PB_SeedProbe");
@@ -430,6 +432,8 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     if (ImGui::InputInt("run_ms", &run_ms)) { inst().ini_dirty_ = true; }
     if (ImGui::InputInt("vi_stall_ms", &vi_ms)) { inst().ini_dirty_ = true; }
     if (ImGui::Checkbox("progress_enable", &progress_enable)) { inst().ini_dirty_ = true; }
+    if (ImGui::Checkbox("use_single_turn_runner", &use_single_turn_runner)) { inst().ini_dirty_ = true; }
+    if (ImGui::Checkbox("auto_wave_trigger_enable", &auto_wave_trigger_enable)) { inst().ini_dirty_ = true; }
 
     if (inst().ini_dirty_) {
         bp.settings_id = settings_id;
@@ -438,6 +442,8 @@ void PhaseBuilderPane::drawExplorerRunForm() {
         bp.run_ms = (uint32_t)run_ms;
         bp.vi_stall_ms = (uint32_t)vi_ms;
         bp.progress_enable = progress_enable;
+        bp.use_single_turn_runner = use_single_turn_runner;
+        bp.auto_wave_trigger_enable = auto_wave_trigger_enable;
         bp.set_section(*inst().ini_);
     }
 }
@@ -446,7 +452,7 @@ void PhaseBuilderPane::drawValidation() {
     inst().validation_errors_.clear();
     if (!inst().ini_ || inst().selected_kind_idx_ < 0 || inst().selected_kind_idx_ >= (int)inst().kinds_.size()) return;
 
-    const int pk = inst().kinds_[inst().selected_kind_idx_].id;
+    int pk = inst().kinds_[inst().selected_kind_idx_].id;
     auto errs = simcore::db::phasebuilder::PhaseBuilderService::Validate(pk, *inst().ini_);
     for (auto& e : errs) inst().validation_errors_.push_back({ e.field, e.message });
 
@@ -463,7 +469,7 @@ void PhaseBuilderPane::startPreviewAsync() {
     inst().preview_state_ = PreviewState::Working;
     inst().preview_.reset();
     inst().preview_err_.clear();
-    const int pk = inst().kinds_[inst().selected_kind_idx_].id;
+    int pk = inst().kinds_[inst().selected_kind_idx_].id;
     const auto doc = inst().ini_.value();
     inst().preview_future_ = std::async(std::launch::async, [pk, doc]() {
         return simcore::db::phasebuilder::PhaseBuilderService::Preview(pk, doc);
@@ -486,7 +492,7 @@ void PhaseBuilderPane::drawPreview() {
                 }
             }
         }
-        ImGui::TextUnformatted("Previewing…");
+        ImGui::TextUnformatted("PreviewingÂ…");
         return;
     }
 
@@ -512,9 +518,14 @@ void PhaseBuilderPane::drawPreview() {
         if (s.unique_deferred) {
             ImGui::TextDisabled("Unique jobs will be scheduled after Grid; count depends on discovered deltas.");
         }
-        else if (s.unique_jobs.has_value()) {
-            ImGui::Text("Unique jobs: %lld", (long long)*s.unique_jobs);
-        }
+    int pk = inst().kinds_[inst().selected_kind_idx_].id;
+    auto battle_bp = simcore::db::codec::battle::run::BlueprintIni::from_section(*inst().ini_);
+    if (pk == simcore::PK_BattleTurnRunner && battle_bp.use_single_turn_runner) {
+        pk = simcore::PK_BattleSingleTurnRunner;
+    }
+
+        if (preview_copy && (pk == simcore::PK_TasMovie || pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner)) {
+            if ((pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner) && preview_copy->explorer) expected = preview_copy->explorer->jobs;
         for (auto& w : s.warnings) ImGui::BulletText("%s", w.c_str());
     }
     if (pv.explorer) {
@@ -582,8 +593,9 @@ void PhaseBuilderPane::drawSubmit() {
                 }
             }
         }
-        ImGui::TextUnformatted("Submitting…");
-        return;
+        ImGui::TextUnformatted("SubmittingÂ…        int pk = inst().kinds_[inst().selected_kind_idx_].id;
+        case simcore::PK_BattleTurnRunner:
+        case simcore::PK_BattleSingleTurnRunner: drawExplorerRunForm(); break;
     }
 
     if (inst().submit_state_ == SubmitState::Error) {

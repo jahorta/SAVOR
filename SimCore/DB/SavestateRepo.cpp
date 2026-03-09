@@ -36,6 +36,21 @@ namespace simcore {
             return DbResult<void>{ true };
         }
 
+
+        static inline DbResult<void> Impl_Delete(DbEnv& env, int64_t id) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* stmt{};
+            int rc = sqlite3_prepare_v2(db,
+                "DELETE FROM savestate WHERE id=?;",
+                -1, &stmt, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(stmt, 1, id);
+            rc = sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "delete" });
+            return DbResult<void>::Ok();
+        }
+
         static inline DbResult<std::optional<SavestateRow>> Impl_Get(DbEnv& env, int64_t id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* stmt{};
@@ -163,3 +178,9 @@ namespace simcore {
 
     } // namespace db
 } // namespace simcore
+
+
+        std::future<DbResult<void>> SavestateRepo::DeleteAsync(int64_t id, RetryPolicy rp) {
+            return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
+                [=](DbEnv& e) { return Impl_Delete(e, id); });
+        }
