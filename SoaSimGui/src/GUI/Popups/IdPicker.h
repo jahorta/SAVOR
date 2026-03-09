@@ -76,6 +76,7 @@ namespace soasim::ui {
         std::optional<Row> current_row;
         int64_t selected_id{ 0 };
         std::string search_buffer;
+        bool refresh{ false };
 
         // Renders the modal; invokes cb when user clicks OK or double-clicks a row.
         // Returns true once the modal is closed.

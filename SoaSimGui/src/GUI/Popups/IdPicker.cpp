@@ -26,6 +26,7 @@ namespace soasim::ui {
 
         if (ImGui::BeginPopupModal(args.modal_id, &open, ImGuiWindowFlags_NoResize)) {
             if (search_buffer.empty() && !args.initial_search.empty()) search_buffer = args.initial_search;
+            if (refresh) { page.reset(); refresh = false; }
             if (!page.has_value()) { adapter.submit_request(args.initial_query, search_buffer); }
 
             bool do_search = false;
@@ -33,6 +34,8 @@ namespace soasim::ui {
             if (ImGui::InputText("##search", &search_buffer)) do_search = true;
             ImGui::SameLine();
             if (adapter.open_aux_filter) { if (ImGui::Button("Filter…")) adapter.open_aux_filter(); }
+			ImGui::SameLine();
+            if (ImGui::Button("Refresh")) { refresh = true; }
 
             auto snap = adapter.poll_snapshot();
             if (snap) page = std::move(*snap);
