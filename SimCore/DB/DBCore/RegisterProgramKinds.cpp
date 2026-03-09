@@ -10,7 +10,8 @@ namespace simcore {
                 { PK_SeedProbe,          "SeedProbe",          0, 0 },
                 { PK_TasMovie,           "TasMovie",           0, 0 },
                 { PK_BattleTurnRunner,   "BattleTurnRunner",   0, 0 },
-                { PK_BattleContextProbe, "BattleContextProbe", 0, 0 }
+                { PK_BattleContextProbe, "BattleContextProbe", 0, 0 },
+                { PK_BattleSingleTurnRunner, "BattleSingleTurnRunner", 0, 0 }
                 // Add more ProgramKinds here if needed later.
             };
 

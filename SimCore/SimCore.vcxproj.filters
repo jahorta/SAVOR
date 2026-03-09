@@ -177,6 +177,12 @@
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h">
       <Filter>Phases\BattleRunner</Filter>
     </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.h">
+      <Filter>Phases\BattleRunner</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h">
+      <Filter>Phases\BattleRunner</Filter>
+    </ClInclude>
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbePayload.h">
       <Filter>Phases\SeedProbe</Filter>
     </ClInclude>
@@ -585,6 +591,9 @@
       <Filter>Runner\Breakpoints</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp">
+      <Filter>Phases\BattleRunner</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp">
       <Filter>Phases\BattleRunner</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp">

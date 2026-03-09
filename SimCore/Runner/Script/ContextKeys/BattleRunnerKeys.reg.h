@@ -14,7 +14,13 @@ namespace simcore::keys::battle {
   X(NUM_TURN_PLANS,           0x0330, "battle.turnplan.count")     \
   X(TURN_PLANS,               0x0331, "battle.turnplan.plans") \
   X(LAST_TURN,                0x0332, "battle.turnplan.last_idx") \
-  X(PLAN_MATERIALIZE_ERR,     0x0333, "battle.turnplan.materialize_err")
+  X(PLAN_MATERIALIZE_ERR,     0x0333, "battle.turnplan.materialize_err") \
+  X(TURN_INPUT_INDEX,         0x0334, "battle.turn.input_index") \
+  X(TURN_OUTPUT_INDEX,        0x0335, "battle.turn.output_index") \
+  X(HAS_INITIAL_INPUT,        0x0336, "battle.turn.has_initial_input") \
+  X(FAKE_ATTACK_COUNT_THIS_TURN, 0x0337, "battle.turn.fake_attacks_this_turn") \
+  X(FAKE_ATTACK_BUDGET_MAX,   0x0338, "battle.turn.fake_attacks_budget_max") \
+  X(FAKE_ATTACK_USED_BEFORE,  0x0339, "battle.turn.fake_attacks_used_before")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr simcore::keys::KeyId NAME = static_cast<simcore::keys::KeyId>(ID); \
 static_assert(NAME >= simcore::keys::BATTLE_MIN && NAME <= simcore::keys::BATTLE_MAX, "battle key out of range");

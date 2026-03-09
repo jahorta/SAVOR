@@ -301,6 +301,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h" />
+    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.h" />
+    <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h" />
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMoviePayload.h" />
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMovieScript.h" />
     <ClInclude Include="Phases\Programs\ProgramRegistry.h" />
@@ -416,6 +418,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
+    <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
     <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp" />
