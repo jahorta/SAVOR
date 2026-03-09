@@ -9,6 +9,7 @@
 #include "Panes/BattleRunSettingsPane.h"
 #include "Panes/ArtifactsPane.h"
 #include "Panes/SeedProbePane.h"
+#include "Panes/ExplorerRunsPane.h"
 
 #include "../Models/GuiLayoutStore.h"
 
@@ -184,6 +185,10 @@ void GuiApp::RenderFrame() {
     case GuiPane::SeedProbe:
         if (pane_swap) SeedProbePane::OnActivated();
         SeedProbePane::Draw();
+        break;
+    case GuiPane::ExplorerRuns:
+        if (pane_swap) ExplorerRunsPane::OnActivated();
+        ExplorerRunsPane::Draw();
         break;
     default:
         ImGui::Begin("Content");
