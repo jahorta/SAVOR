@@ -397,7 +397,9 @@ namespace simcore {
                 // progress sink handled inside wrapper; host has per-job sink already
 
                 auto t0 = std::chrono::steady_clock::now();
+                host_.disableThrottle();
                 auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
+                host_.enableThrottle();
                 auto t1 = std::chrono::steady_clock::now();
                 const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
