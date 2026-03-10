@@ -138,7 +138,7 @@ namespace {
     }
 
     static const char* state_items[] = {
-        "QUEUED","CLAIMED","RUNNING","SUCCEEDED","FAILED","CANCELED","SUPERSEDED","SUCCEEDED_WINNER","SUCCEEDED_DUPLICATE"
+        "QUEUED","CLAIMED","RUNNING","INTERRUPTED","SUCCEEDED","FAILED","CANCELED","SUPERSEDED","SUCCEEDED_WINNER","SUCCEEDED_DUPLICATE"
     };
 
     static void kick_kinds_fetch() {

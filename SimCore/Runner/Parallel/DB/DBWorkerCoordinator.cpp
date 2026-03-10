@@ -29,6 +29,14 @@ namespace simcore {
         return (int64_t)duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
     }
 
+    static inline void interrupt_in_flight_jobs_with_event() {
+        auto ir = simcore::db::JobsRepo::InterruptInFlight();
+        if (!ir.ok) return;
+        for (const auto job_id : ir.value) {
+            (void)simcore::db::JobEventsRepo::Append(job_id, "INTERRUPTED", std::nullopt);
+        }
+    }
+
     WorkerCoordinator::WorkerCoordinator(const WorkerCoordinatorConfig& cfg)
         : cfg_(cfg), claim_token_(make_claim_token()) {
         auto base_path = utils::getExecutablePath();
@@ -40,6 +48,7 @@ namespace simcore {
 
     void WorkerCoordinator::start() {
         if (!slots_.empty()) return;
+        interrupt_in_flight_jobs_with_event();
         const size_t n = cfg_.max_concurrent_processes;
         desired_workers_.store(cfg_.max_concurrent_processes);
         slots_.reserve(n);
@@ -66,6 +75,7 @@ namespace simcore {
 
     void WorkerCoordinator::stop() {
         if (stop_.exchange(true)) return;
+        interrupt_in_flight_jobs_with_event();
         startup_in_flight_slot_.reset();
         startup_queue_.clear();
         for (auto& s : slots_) { shutdown_slot(*s); }
