@@ -5,6 +5,7 @@
 #include <sstream>
 #include <mutex>  // for std::once_flag / std::call_once
 #include <chrono>
+#include <algorithm>
 
 #include "../../../Utils/ThreadName.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
@@ -47,9 +48,14 @@ namespace simcore {
             s->id = i;
             s->proc = std::make_unique<ProcessWorker>();
             s->proc->set_progress_queue(&progress_q_);
-            s->running.store(true);
-            spawn_slot(*s);
+            s->running.store(false);
+            s->phase = Slot::Phase::Uninitialized;
             slots_.push_back(std::move(s));
+        }
+        for (size_t i = 0; i < desired_workers_.load() && i < slots_.size(); ++i) {
+            slots_[i]->running.store(true);
+            slots_[i]->phase = Slot::Phase::PendingStart;
+            enqueue_startup_slot(i);
         }
         paused_.store(cfg_.start_to_paused);
         stop_.store(false);
@@ -60,6 +66,8 @@ namespace simcore {
 
     void WorkerCoordinator::stop() {
         if (stop_.exchange(true)) return;
+        startup_in_flight_slot_.reset();
+        startup_queue_.clear();
         for (auto& s : slots_) { shutdown_slot(*s); }
         progress_q_.close();
         results_q_.close();
@@ -72,10 +80,23 @@ namespace simcore {
     PRStatus WorkerCoordinator::snapshot_status() const {
         PRStatus st{};
         st.epoch = epoch_.load();
-        st.workers = slots_.size();
+        st.workers = active_slot_count();
         size_t running = 0;
-        for (auto& s : slots_) if (s->assigned_job_id.has_value()) ++running;
+        size_t ready = 0;
+        size_t pending = 0;
+        size_t dead = 0;
+        for (auto& s : slots_) {
+            if (!s->running.load()) continue;
+            if (s->assigned_job_id.has_value()) ++running;
+            if (s->phase == Slot::Phase::Ready) ++ready;
+            if (s->phase == Slot::Phase::PendingStart || s->phase == Slot::Phase::StartingProcess || s->phase == Slot::Phase::WaitingReady) ++pending;
+            if (s->phase == Slot::Phase::Dead) ++dead;
+        }
         st.running_workers = running;
+        st.ready_workers = ready;
+        st.pending_start_workers = pending;
+        st.dead_workers = dead;
+        st.starting_workers = startup_in_flight_slot_.has_value() ? 1 : 0;
         return st;
     }
 
@@ -93,6 +114,7 @@ namespace simcore {
         ps.vm_control = true;
         if (!s.proc->start(ps, &results_q_)) {
             s.dead.store(true);
+            s.phase = Slot::Phase::Dead;
             RecordError((int64_t)s.id, "ProcessWorker.start failed");
             UpdateState((int64_t)s.id, WorkerStateKind::Dead);
             return false;
@@ -103,6 +125,7 @@ namespace simcore {
         s.ready.store(false);
         s.current_program_kind.reset();
         s.current_savestate_id.reset();
+        s.phase = Slot::Phase::WaitingReady;
         s.idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
         return true;
     }
@@ -114,8 +137,106 @@ namespace simcore {
         if (s.proc) s.proc->stop();
         s.ready.store(false);
         s.dead.store(true);
+        s.phase = Slot::Phase::Dead;
         UpdateState((int64_t)s.id, WorkerStateKind::Dead);
         UnregisterWorker((int64_t)s.id);
+    }
+
+    void WorkerCoordinator::enqueue_startup_slot(size_t slot_id) {
+        if (slot_id >= slots_.size()) return;
+        if (startup_in_flight_slot_.has_value() && *startup_in_flight_slot_ == slot_id) return;
+        const auto found = std::find(startup_queue_.begin(), startup_queue_.end(), slot_id);
+        if (found == startup_queue_.end()) startup_queue_.push_back(slot_id);
+    }
+
+    void WorkerCoordinator::mark_slot_start_failed(Slot& s, const std::string& err) {
+        UpdateState((int64_t)s.id, WorkerStateKind::Stopping);
+        SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
+        if (s.proc) s.proc->stop();
+        UnregisterWorker((int64_t)s.id);
+        s.ready.store(false);
+        s.startup_attempts += 1;
+        s.dead.store(true);
+        s.phase = Slot::Phase::Dead;
+        UpdateState((int64_t)s.id, WorkerStateKind::Dead);
+        RecordError((int64_t)s.id, err);
+        if (s.running.load() && active_slot_count() <= desired_workers_.load()) {
+            s.phase = Slot::Phase::PendingStart;
+            s.dead.store(false);
+            enqueue_startup_slot(s.id);
+        }
+    }
+
+    size_t WorkerCoordinator::active_slot_count() const {
+        size_t active = 0;
+        for (const auto& s : slots_) if (s->running.load()) ++active;
+        return active;
+    }
+
+    void WorkerCoordinator::advance_startup_once() {
+        if (!startup_in_flight_slot_.has_value()) {
+            while (!startup_queue_.empty()) {
+                const size_t candidate = startup_queue_.front();
+                startup_queue_.pop_front();
+                if (candidate >= slots_.size()) continue;
+                auto& s = *slots_[candidate];
+                if (!s.running.load()) continue;
+                if (s.phase != Slot::Phase::PendingStart && s.phase != Slot::Phase::StartingProcess && s.phase != Slot::Phase::WaitingReady) continue;
+                startup_in_flight_slot_ = candidate;
+                break;
+            }
+        }
+
+        if (!startup_in_flight_slot_.has_value()) return;
+
+        auto& s = *slots_[*startup_in_flight_slot_];
+        if (!s.running.load()) {
+            startup_in_flight_slot_.reset();
+            return;
+        }
+
+        if (s.phase == Slot::Phase::PendingStart) {
+            s.phase = Slot::Phase::StartingProcess;
+            if (!spawn_slot(s)) {
+                mark_slot_start_failed(s, "startup failed while spawning slot");
+                startup_in_flight_slot_.reset();
+                return;
+            }
+            s.startup_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.child_launch_timeout_ms);
+            s.next_ready_probe = std::chrono::steady_clock::now();
+            return;
+        }
+
+        if (s.phase == Slot::Phase::StartingProcess || s.phase == Slot::Phase::WaitingReady) {
+            s.phase = Slot::Phase::WaitingReady;
+            if (s.proc->is_failed()) {
+                mark_slot_start_failed(s, "Child reported failure before ready");
+                startup_in_flight_slot_.reset();
+                return;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= s.startup_deadline) {
+                mark_slot_start_failed(s, "wait_ready timed out");
+                startup_in_flight_slot_.reset();
+                return;
+            }
+
+            if (now < s.next_ready_probe) return;
+
+            if (s.proc->wait_ready(1)) {
+                s.ready.store(true);
+                s.dead.store(false);
+                s.startup_attempts = 0;
+                s.phase = Slot::Phase::Ready;
+                UpdateState((int64_t)s.id, WorkerStateKind::Idle);
+                RecordHeartbeat((int64_t)s.id);
+                startup_in_flight_slot_.reset();
+                return;
+            }
+
+            s.next_ready_probe = now + std::chrono::milliseconds(25);
+        }
     }
 
     bool WorkerCoordinator::ensure_ready(Slot& s) {
@@ -220,26 +341,45 @@ namespace simcore {
 
             sweep_expired_leases();
 
+            advance_startup_once();
+
             // scale up
-            while (slots_.size() < desired_workers_.load()) {
-                auto s = std::make_unique<Slot>();
-                s->id = slots_.size();
-                s->proc = std::make_unique<ProcessWorker>();
-                s->proc->set_progress_queue(&progress_q_);
-                s->running.store(true);
-                spawn_slot(*s);
-                slots_.push_back(std::move(s));
+            while (active_slot_count() < desired_workers_.load()) {
+                bool activated = false;
+                for (auto& sp : slots_) {
+                    auto& s = *sp;
+                    if (s.running.load()) continue;
+                    s.running.store(true);
+                    s.dead.store(false);
+                    s.ready.store(false);
+                    s.assigned_job_id.reset();
+                    s.current_program_kind.reset();
+                    s.current_savestate_id.reset();
+                    s.startup_attempts = 0;
+                    s.phase = Slot::Phase::PendingStart;
+                    enqueue_startup_slot(s.id);
+                    activated = true;
+                    break;
+                }
+                if (!activated) break;
             }
+
             // scale down (idle-only shrink to avoid preempt)
-            while (slots_.size() > desired_workers_.load()) {
+            while (active_slot_count() > desired_workers_.load()) {
                 bool removed = false;
-                for (size_t i = slots_.size(); i-- > 0; ) {
+                for (size_t i = slots_.size(); i-- > 0;) {
                     auto& sl = *slots_[i];
-                    if (sl.running.load() && !sl.assigned_job_id.has_value()) {
-                        shutdown_slot(sl);
-                        slots_.erase(slots_.begin() + i);
+                    if (!sl.running.load()) continue;
+                    if (sl.assigned_job_id.has_value()) continue;
+                    if (startup_in_flight_slot_.has_value() && *startup_in_flight_slot_ == i) continue;
+                    sl.phase = Slot::Phase::Stopping;
+                    shutdown_slot(sl);
+                    sl.phase = Slot::Phase::Uninitialized;
+                    sl.running.store(false);
+                    sl.dead.store(false);
+                    sl.ready.store(false);
+                    startup_queue_.erase(std::remove(startup_queue_.begin(), startup_queue_.end(), i), startup_queue_.end());
                         removed = true; break;
-                    }
                 }
                 if (!removed) break;
             }
@@ -247,7 +387,7 @@ namespace simcore {
             for (auto& sp : slots_) {
                 auto& s = *sp;
                 if (!s.running.load()) continue;
-                if (!ensure_ready(s)) continue;
+                if (s.phase != Slot::Phase::Ready) continue;
 
                 if (paused_.load()) { 
                     if (!s.assigned_job_id.has_value() && worker_status_.GetWorkerState(s.id) != WorkerStateKind::Paused) {
@@ -273,6 +413,9 @@ namespace simcore {
                     simcore::db::JobsRepo::SetState(job.job_id, "QUEUED");
                     RecordError((int64_t)s.id, "ensure_program failed; requeueing");
                     SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
+                    s.phase = Slot::Phase::Dead;
+                    s.ready.store(false);
+                    mark_slot_start_failed(s, "ensure_program failed; restarting worker");
                     continue;
                 }
 
@@ -282,11 +425,13 @@ namespace simcore {
                     RecordError((int64_t)s.id, "dispatch_one decode failed.");
                     SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
                     UpdateState((int64_t)s.id, WorkerStateKind::Idle);
+                    s.phase = Slot::Phase::Ready;
                 } else if (d_res == DispatchResult::BadSend || d_res == DispatchResult::NotAvailable){
                     simcore::db::JobsRepo::SetState(job.job_id, "QUEUED");
                     RecordError((int64_t)s.id, "dispatch_one send failed; requeueing");
                     SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
                     UpdateState((int64_t)s.id, WorkerStateKind::Idle);
+                    s.phase = Slot::Phase::Ready;
                     continue;
                 }
                 else {
@@ -346,6 +491,7 @@ namespace simcore {
                 s.idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
                 SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
                 UpdateState((int64_t)s.id, WorkerStateKind::Idle);
+                s.phase = Slot::Phase::Ready;
                 RecordHeartbeat((int64_t)s.id);
             }
 
@@ -353,7 +499,7 @@ namespace simcore {
         }
     }
 
-    void WorkerCoordinator::set_target_workers(size_t n) { desired_workers_.store(n); }
+    void WorkerCoordinator::set_target_workers(size_t n) { desired_workers_.store((std::min)(n, cfg_.max_concurrent_processes)); }
     void WorkerCoordinator::set_paused(bool p) { 
         paused_.store(p);
         for (auto& sp : slots_) {

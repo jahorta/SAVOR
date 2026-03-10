@@ -11,6 +11,10 @@ namespace simcore {
 		size_t queued_jobs{ 0 };
 		size_t running_workers{ 0 };
 		size_t workers{ 0 };
+		size_t ready_workers{ 0 };
+		size_t pending_start_workers{ 0 };
+		size_t starting_workers{ 0 };
+		size_t dead_workers{ 0 };
 	};
 
 	// Cross-thread/process job result

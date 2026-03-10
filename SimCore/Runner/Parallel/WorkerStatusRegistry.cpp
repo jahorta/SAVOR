@@ -122,6 +122,13 @@ void WorkerStatusRegistry::RecordError(int64_t worker_id, const std::string& err
     RecordEvent(worker_id, WorkerEventKind::Error, std::nullopt, err);
 }
 
+WorkerStateKind WorkerStatusRegistry::GetWorkerState(int64_t worker_id) const {
+    std::shared_lock rk(mtx_);
+    auto it = workers_.find(worker_id);
+    if (it == workers_.end()) return WorkerStateKind::Dead;
+    return it->second.state;
+}
+
 std::vector<WorkerSnapshot> WorkerStatusRegistry::GetClusterSnapshot() const {
     std::vector<WorkerSnapshot> out;
     std::shared_lock rk(mtx_);
