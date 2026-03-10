@@ -314,4 +314,124 @@ namespace simcore::db {
             [=](DbEnv& env) { return impl_get_parent(env, job_set_id); });
     }
 
+    static DbResult<void> impl_exec_simple(sqlite3* db, const char* sql, const char* stage) {
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) {
+            return DbResult<void>::Err({ map_sqlite_err(rc), rc, stage });
+        }
+        rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            return DbResult<void>::Err({ map_sqlite_err(rc), rc, stage });
+        }
+        return DbResult<void>::Ok();
+    }
+
+    static DbResult<void> impl_delete_tree(DbEnv& env, int64_t root_job_set_id) {
+        sqlite3* db = env.handle();
+
+        sqlite3_stmt* exists = nullptr;
+        int rc = sqlite3_prepare_v2(db, "SELECT 1 FROM job_sets WHERE job_set_id=? LIMIT 1", -1, &exists, nullptr);
+        if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare exists" });
+        sqlite3_bind_int64(exists, 1, root_job_set_id);
+        rc = sqlite3_step(exists);
+        sqlite3_finalize(exists);
+        if (rc != SQLITE_ROW) {
+            return DbResult<void>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "job_set not found" });
+        }
+
+        auto begin = impl_exec_simple(db, "BEGIN IMMEDIATE", "begin delete tree");
+        if (!begin.ok) return begin;
+
+        auto rollback = [&]() {
+            (void)impl_exec_simple(db, "ROLLBACK", "rollback delete tree");
+        };
+
+        auto finalize = [&](const DbResult<void>& r) -> DbResult<void> {
+            if (!r.ok) {
+                rollback();
+                return r;
+            }
+            auto c = impl_exec_simple(db, "COMMIT", "commit delete tree");
+            if (!c.ok) {
+                rollback();
+                return c;
+            }
+            return DbResult<void>::Ok();
+        };
+
+        const char* sql_del_job_events =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "DELETE FROM job_events "
+            "WHERE job_id IN (SELECT j.job_id FROM jobs j JOIN tree t ON t.job_set_id=j.job_set_id);";
+
+        const char* sql_del_battle_contexts =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "DELETE FROM battle_contexts "
+            "WHERE job_set_id IN (SELECT job_set_id FROM tree) "
+            "   OR job_id IN (SELECT j.job_id FROM jobs j JOIN tree t ON t.job_set_id=j.job_set_id);";
+
+        const char* sql_del_triggers =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "DELETE FROM triggers "
+            "WHERE (scope='job_set' AND scope_id IN (SELECT job_set_id FROM tree)) "
+            "   OR (scope='job' AND scope_id IN (SELECT j.job_id FROM jobs j JOIN tree t ON t.job_set_id=j.job_set_id));";
+
+        const char* sql_del_jobs =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "DELETE FROM jobs WHERE job_set_id IN (SELECT job_set_id FROM tree);";
+
+        const char* sql_del_job_sets =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "DELETE FROM job_sets WHERE job_set_id IN (SELECT job_set_id FROM tree);";
+
+        auto exec_bound_delete = [&](const char* sql, const char* stage) -> DbResult<void> {
+            sqlite3_stmt* st = nullptr;
+            int prep_rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+            if (prep_rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(prep_rc), prep_rc, stage });
+            sqlite3_bind_int64(st, 1, root_job_set_id);
+            int step_rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (step_rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(step_rc), step_rc, stage });
+            return DbResult<void>::Ok();
+        };
+
+        auto r = exec_bound_delete(sql_del_job_events, "delete job_events by job_set tree");
+        if (!r.ok) return finalize(r);
+        r = exec_bound_delete(sql_del_battle_contexts, "delete battle_contexts by job_set tree");
+        if (!r.ok) return finalize(r);
+        r = exec_bound_delete(sql_del_triggers, "delete triggers by job_set tree");
+        if (!r.ok) return finalize(r);
+        r = exec_bound_delete(sql_del_jobs, "delete jobs by job_set tree");
+        if (!r.ok) return finalize(r);
+        r = exec_bound_delete(sql_del_job_sets, "delete job_sets tree");
+        return finalize(r);
+    }
+
+    std::future<DbResult<void>> JobSetsRepo::DeleteTreeAsync(int64_t job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
+            [=](DbEnv& env) { return impl_delete_tree(env, job_set_id); });
+    }
+
 } // namespace simcore::db
