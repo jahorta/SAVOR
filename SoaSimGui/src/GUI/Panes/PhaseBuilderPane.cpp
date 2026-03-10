@@ -548,11 +548,15 @@ void PhaseBuilderPane::startSubmitAsync() {
     inst().submit_err_.clear();
     inst().created_job_set_id_.reset();
 
-    const int pk = inst().kinds_[inst().selected_kind_idx_].id;
+    int pk = inst().kinds_[inst().selected_kind_idx_].id;
     auto ini_sorted = inst().ini_->to_string_sorted();
     auto purpose = inst().purpose_;
     auto meta = inst().meta_text_;
     auto preview_copy = inst().preview_;
+
+    if (pk == simcore::PK_BattleTurnRunner and inst().ini_.value().get_bool(simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME, "use_single_turn_runner")) {
+        pk = simcore::PK_BattleSingleTurnRunner;
+    }
 
     inst().submit_future_ = std::async(std::launch::async, [pk, ini_sorted, purpose, meta, preview_copy]() -> DbResult<std::pair<int64_t, int>> {
         auto jsf = simcore::db::DataService::CreateJobSetAsync(purpose.empty() ? std::optional<std::string>{} : std::optional<std::string>{ purpose }, pk, {}, {}, {}, meta, {}, {});
