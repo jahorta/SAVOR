@@ -1,5 +1,6 @@
 // SimCore/DB/ProgramDB/SeedProbeDBCodec.cpp
 #include "SeedProbeDBCodec.h"
+#include "ResultErrorFormatting.h"
 #include "ExplorerRunDBCodec.h"
 #include "../../Utils/Hex.h"
 #include "../Scheduling/JobSetsRepo.h"
@@ -502,14 +503,14 @@ DbResult<std::string> SeedProbeDBCodec::decode_results_from_db(std::optional<int
     if (job_id.has_value()) {
         auto evs = JobEventsRepo::ListByJobAndKind(*job_id, "RESULTS");
         if (!evs.ok) return DbResult<std::string>::Err(evs.error);
-        for (auto& e : evs.value) { out.append(e.payload.value_or("")); out.push_back('\n'); }
+        for (auto& e : evs.value) { out.append(simcore::db::codec::HumanizeResultIniErrors(e.payload.value_or(""))); out.push_back('\n'); }
         return DbResult<std::string>::Ok(std::move(out));
     }
 
     if (job_set_id.has_value()) {
         auto evs = JobEventsRepo::ListByJobSetAndKind(*job_set_id, "RESULTS");
         if (!evs.ok) return DbResult<std::string>::Err(evs.error);
-        for (auto& e : evs.value) { out.append(e.payload.value_or("")); out.push_back('\n'); }
+        for (auto& e : evs.value) { out.append(simcore::db::codec::HumanizeResultIniErrors(e.payload.value_or(""))); out.push_back('\n'); }
     }
 
     return DbResult<std::string>::Ok(std::move(out));
