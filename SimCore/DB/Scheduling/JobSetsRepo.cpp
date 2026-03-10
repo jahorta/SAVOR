@@ -341,24 +341,8 @@ namespace simcore::db {
             return DbResult<void>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "job_set not found" });
         }
 
-        auto begin = impl_exec_simple(db, "BEGIN IMMEDIATE", "begin delete tree");
-        if (!begin.ok) return begin;
-
         auto rollback = [&]() {
             (void)impl_exec_simple(db, "ROLLBACK", "rollback delete tree");
-        };
-
-        auto finalize = [&](const DbResult<void>& r) -> DbResult<void> {
-            if (!r.ok) {
-                rollback();
-                return r;
-            }
-            auto c = impl_exec_simple(db, "COMMIT", "commit delete tree");
-            if (!c.ok) {
-                rollback();
-                return c;
-            }
-            return DbResult<void>::Ok();
         };
 
         const char* sql_del_job_events =
@@ -418,15 +402,31 @@ namespace simcore::db {
         };
 
         auto r = exec_bound_delete(sql_del_job_events, "delete job_events by job_set tree");
-        if (!r.ok) return finalize(r);
+        if (!r.ok) {
+            rollback();
+            return r;
+        }
         r = exec_bound_delete(sql_del_battle_contexts, "delete battle_contexts by job_set tree");
-        if (!r.ok) return finalize(r);
+        if (!r.ok) {
+            rollback();
+            return r;
+        }
         r = exec_bound_delete(sql_del_triggers, "delete triggers by job_set tree");
-        if (!r.ok) return finalize(r);
+        if (!r.ok) {
+            rollback();
+            return r;
+        }
         r = exec_bound_delete(sql_del_jobs, "delete jobs by job_set tree");
-        if (!r.ok) return finalize(r);
+        if (!r.ok) {
+            rollback();
+            return r;
+        }
         r = exec_bound_delete(sql_del_job_sets, "delete job_sets tree");
-        return finalize(r);
+        if (!r.ok) {
+            rollback();
+            return r;
+        }
+        return DbResult<void>::Ok();
     }
 
     std::future<DbResult<void>> JobSetsRepo::DeleteTreeAsync(int64_t job_set_id, RetryPolicy rp) {
