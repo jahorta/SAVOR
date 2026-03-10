@@ -528,6 +528,9 @@
     <ClInclude Include="Utils\String.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h">
+      <Filter>DB\ProgramCodecs</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SimCore.cpp">
@@ -988,6 +991,9 @@
     </ClCompile>
     <ClCompile Include="_Dolphin_src\Core\HW\SystemTimers.cpp">
       <Filter>DolphinSource</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp">
+      <Filter>DB\ProgramCodecs</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
