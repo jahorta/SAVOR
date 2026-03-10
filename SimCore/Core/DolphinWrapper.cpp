@@ -1167,6 +1167,8 @@ namespace simcore {
         return runUntilBreakpointFlexible(timeout_ms, 0, false);
     }
 
+    
+
     uint32_t DolphinWrapper::pickPollIntervalMs(uint32_t timeout_ms)
     {
         return pickPollIntervalMsForTimeLeft(timeout_ms, timeout_ms);
@@ -1409,6 +1411,16 @@ namespace simcore {
 
             std::this_thread::sleep_for(milliseconds(sleep_ms));
         }
+    }
+
+    void DolphinWrapper::disableThrottle()
+    {
+        Core::SetIsThrottlerTempDisabled(true);
+    }
+
+    void DolphinWrapper::enableThrottle()
+    {
+        Core::SetIsThrottlerTempDisabled(false);
     }
 
     bool DolphinWrapper::isMoviePlaying() const

@@ -145,6 +145,9 @@ namespace simcore {
             uint32_t flags = {},
             ProgressSink sink = nullptr);
 
+        void disableThrottle();
+        void enableThrottle();
+
         uint32_t pickPollIntervalMs(uint32_t timeout_ms);
         static uint32_t pickPollIntervalMsForTimeLeft(uint32_t timeout_ms, uint32_t time_left_ms);
 
