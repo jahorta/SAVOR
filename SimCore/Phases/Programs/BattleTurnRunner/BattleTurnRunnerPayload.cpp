@@ -6,6 +6,8 @@
 #include "../../../Runner/Script/KeyRegistry.h"
 #include "../../../Runner/Script/ScriptProgress.h"
 
+using simcore::GCInputFrame;
+
 namespace phase::battle::turnrunner {
 
     static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) {
@@ -36,7 +38,7 @@ namespace phase::battle::turnrunner {
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {
         out.clear();
-        out.push_back(PK_BattleSingleTurnRunner);
+        out.push_back(simcore::PK_BattleSingleTurnRunner);
         put_u32(out, PayloadVersion);
         put_u32(out, spec.run_ms);
         put_u32(out, spec.vi_stall_ms);
@@ -84,7 +86,7 @@ namespace phase::battle::turnrunner {
         const uint8_t* e = p + in.size();
 
         const uint8_t tag = *p++;
-        if (tag != PK_BattleSingleTurnRunner) return false;
+        if (tag != simcore::PK_BattleSingleTurnRunner) return false;
 
         uint32_t version = 0;
         uint32_t run_ms = 0, vi_stall_ms = 0;
@@ -153,8 +155,8 @@ namespace phase::battle::turnrunner {
         out_ctx[simcore::keys::core::RUN_MS] = run_ms;
         out_ctx[simcore::keys::core::VI_STALL_MS] = vi_stall_ms;
 
-        out_ctx[simcore::keys::battle::ACTIVE_TURN] = (uint32_t)1;
-        out_ctx[simcore::keys::battle::TURN_INPUT_INDEX] = current_turn;
+        out_ctx[simcore::keys::battle::ACTIVE_TURN] = current_turn;
+        out_ctx[simcore::keys::battle::TURN_INPUT_INDEX] = (uint32_t)1;
         out_ctx[simcore::keys::battle::TURN_OUTPUT_INDEX] = current_turn;
         out_ctx[simcore::keys::battle::HAS_INITIAL_INPUT] = has_initial_input ? 1u : 0u;
         out_ctx[simcore::keys::battle::INITIAL_INPUT] = initial;
@@ -175,9 +177,9 @@ namespace phase::battle::turnrunner {
         out_ctx[simcore::keys::core::PRED_ABORT_RUN] = (uint32_t)0;
 
         simcore::progress::ProgressDeets progress{ .poll_rate = 5000 };
-        progress.set_flag(simcore::CoreProgressFlags::BattleProgress);
-        progress.set_flag(simcore::CoreProgressFlags::PredicateProgress);
-        progress.set_flag(simcore::CoreProgressFlags::DontRecordHeartbeat);
+        progress.set_flag(CoreProgressFlags::BattleProgress);
+        progress.set_flag(CoreProgressFlags::PredicateProgress);
+        progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
 
         out_ctx[simcore::keys::core::PROGRESS_RATE] = progress.poll_rate;
         out_ctx[simcore::keys::core::PROGRESS_CORE_FLAGS] = progress.flags;

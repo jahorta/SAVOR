@@ -8,11 +8,11 @@
 
 namespace phase::battle::turnrunner {
 
-    static constexpr BPKey BP_BattleLoadComplete = simcore::bp::battle::BattleLoadComplete;
-    static constexpr BPKey BP_BattleAcceptInput = simcore::bp::battle::TurnInputs;
-    static constexpr BPKey BP_BattleInputsDone = simcore::bp::battle::TurnIsReady;
-    static constexpr BPKey BP_Victory = simcore::bp::battle::EndBattleVictory;
-    static constexpr BPKey BP_Defeat = simcore::bp::battle::EndBattleDefeat;
+    static constexpr BPKey BP_BattleLoadComplete = bp::battle::BattleLoadComplete;
+    static constexpr BPKey BP_BattleAcceptInput = bp::battle::TurnInputs;
+    static constexpr BPKey BP_BattleInputsDone = bp::battle::TurnIsReady;
+    static constexpr BPKey BP_Victory = bp::battle::EndBattleVictory;
+    static constexpr BPKey BP_Defeat = bp::battle::EndBattleDefeat;
 
     static constexpr simcore::keys::KeyId DW_Outcome = simcore::keys::core::DW_RUN_OUTCOME_CODE;
     static constexpr simcore::keys::KeyId Battle_Outcome = simcore::keys::battle::BATTLE_OUTCOME;
@@ -42,7 +42,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_INPUT_INDEX, simcore::PSCmp::GT, 1u, LabelAfterPrelude));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::ACTIVE_TURN, simcore::PSCmp::GT, 1u, LabelAfterPrelude));
 
         // Turn 1 path: apply initial input only if caller supplied it.
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::HAS_INITIAL_INPUT, simcore::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));
@@ -65,15 +65,12 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_INPUT_INDEX, simcore::PSCmp::LE, 1u, LabelApplyTurn));
         ps.ops.push_back(simcore::OpStepFrames(1, true));
 
-        ps.ops.push_back(simcore::OpLabel(LabelApplyTurn));
-        ps.ops.push_back(simcore::OpSetU32(simcore::keys::battle::ACTIVE_TURN, 1u));
-
         // Build and apply exactly one turn
         ps.ops.push_back(simcore::OpGetBattleContext());
         ps.ops.push_back(simcore::OpBuildTurnInputFromActions());
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::PLAN_MATERIALIZE_ERR, simcore::PSCmp::NE, 0u, LabelRetMaterializeFail));
 
-        ps.ops.push_back(simcore::OpApplyPlanFrameFrom(simcore::keys::battle::ACTIVE_TURN));
+        ps.ops.push_back(simcore::OpApplyPlanFrameFrom(simcore::keys::battle::TURN_INPUT_INDEX));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PLAN_DONE, simcore::PSCmp::EQ, 1u, LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpGoto(LabelApplyTurn));
 
@@ -93,33 +90,33 @@ namespace phase::battle::turnrunner {
 
         // return labels read ending RNG before returning
         ps.ops.push_back(simcore::OpLabel(LabelRetReachedNext));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::TURN_OUTPUT_INDEX, 1u));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetVictory));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Victory));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetDefeat));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Defeat));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetPredFail));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PredFailure));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetMaterializeFail));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PlanMaterializeFailure));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetDWErr));
-        ps.ops.push_back(simcore::OpReadU32(simcore::addr::Registry::base(simcore::addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::DWRunErr));
 

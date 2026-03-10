@@ -176,11 +176,10 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_ListSavestate(e, q, search); });
         }
 
-    } // namespace db
-} // namespace simcore
-
-
         std::future<DbResult<void>> SavestateRepo::DeleteAsync(int64_t id, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
                 [=](DbEnv& e) { return Impl_Delete(e, id); });
         }
+
+    } // namespace db
+} // namespace simcore

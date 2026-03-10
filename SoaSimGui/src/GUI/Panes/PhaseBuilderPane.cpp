@@ -492,7 +492,7 @@ void PhaseBuilderPane::drawPreview() {
                 }
             }
         }
-        ImGui::TextUnformatted("Previewing");
+        ImGui::TextUnformatted("Previewing");
         return;
     }
 
@@ -518,27 +518,27 @@ void PhaseBuilderPane::drawPreview() {
         if (s.unique_deferred) {
             ImGui::TextDisabled("Unique jobs will be scheduled after Grid; count depends on discovered deltas.");
         }
-    int pk = inst().kinds_[inst().selected_kind_idx_].id;
-    auto battle_bp = simcore::db::codec::battle::run::BlueprintIni::from_section(*inst().ini_);
-    if (pk == simcore::PK_BattleTurnRunner && battle_bp.use_single_turn_runner) {
-        pk = simcore::PK_BattleSingleTurnRunner;
-    }
-
-        if (preview_copy && (pk == simcore::PK_TasMovie || pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner)) {
-            if ((pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner) && preview_copy->explorer) expected = preview_copy->explorer->jobs;
-        for (auto& w : s.warnings) ImGui::BulletText("%s", w.c_str());
-    }
-    if (pv.explorer) {
-        auto& e = *pv.explorer;
-        if (inst().battle_plan_count_ > 0 && inst().unique_seed_count_ > 0) 
-        {
-            ImGui::Text("Jobs: %lld", inst().battle_plan_count_ * inst().unique_seed_count_);
-            e.jobs = inst().battle_plan_count_ * inst().unique_seed_count_;
+        int pk = inst().kinds_[inst().selected_kind_idx_].id;
+        auto battle_bp = simcore::db::codec::battle::run::BlueprintIni::from_section(*inst().ini_);
+        if (pk == simcore::PK_BattleTurnRunner && battle_bp.use_single_turn_runner) {
+            pk = simcore::PK_BattleSingleTurnRunner;
         }
-        else ImGui::Text("Jobs: calcluating...");
-        
-        ImGui::Text("Predicates: %d", (int)e.predicate_count);
-        for (auto& w : e.warnings) ImGui::BulletText("%s", w.c_str());
+
+        if (pk == simcore::PK_TasMovie || pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner) {
+            for (auto& w : s.warnings) ImGui::BulletText("%s", w.c_str());
+        }
+        if (pv.explorer) {
+            auto& e = *pv.explorer;
+            if (inst().battle_plan_count_ > 0 && inst().unique_seed_count_ > 0)
+            {
+                ImGui::Text("Jobs: %lld", inst().battle_plan_count_ * inst().unique_seed_count_);
+                e.jobs = inst().battle_plan_count_ * inst().unique_seed_count_;
+            }
+            else ImGui::Text("Jobs: calcluating...");
+
+            ImGui::Text("Predicates: %d", (int)e.predicate_count);
+            for (auto& w : e.warnings) ImGui::BulletText("%s", w.c_str());
+        }
     }
 }
 
@@ -593,9 +593,12 @@ void PhaseBuilderPane::drawSubmit() {
                 }
             }
         }
-        ImGui::TextUnformatted("Submitting        int pk = inst().kinds_[inst().selected_kind_idx_].id;
-        case simcore::PK_BattleTurnRunner:
-        case simcore::PK_BattleSingleTurnRunner: drawExplorerRunForm(); break;
+        ImGui::TextUnformatted("Submitting...");
+        int pk = inst().kinds_[inst().selected_kind_idx_].id;
+        switch (pk) {
+            case simcore::PK_BattleTurnRunner:
+            case simcore::PK_BattleSingleTurnRunner: drawExplorerRunForm(); break;
+        }
     }
 
     if (inst().submit_state_ == SubmitState::Error) {

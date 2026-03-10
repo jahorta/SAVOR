@@ -6,6 +6,7 @@
 #include "../../../Runner/Script/PhaseScriptVM.h"
 #include "../../../Runner/Breakpoints/Predicate.h"
 #include "../../../Core/Input/SoaBattle/ActionTypes.h"
+#include "../../../Core/Input/InputPlan.h"
 
 namespace phase::battle::turnrunner {
 
@@ -16,7 +17,7 @@ namespace phase::battle::turnrunner {
         uint32_t vi_stall_ms{ 0 };
         uint32_t current_turn{ 1 };
         bool has_initial_input{ false };
-        GCInputFrame initial{};
+        simcore::GCInputFrame initial{};
 
         soa::battle::actions::TurnPlan turn_plan{};
         std::vector<simcore::pred::Spec> predicates;

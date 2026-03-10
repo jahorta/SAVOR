@@ -142,7 +142,7 @@ namespace {
 
     static std::vector<GroupRow> build_groups() {
         JobSetsListScope scope{};
-        scope.program_kind = PK_BattleSingleTurnRunner;
+        scope.program_kind = simcore::PK_BattleSingleTurnRunner;
         auto page = JobSetsRepo::ListRecentAsync(scope, std::nullopt, 400).get();
         if (!page.ok) return {};
 

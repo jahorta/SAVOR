@@ -17,6 +17,7 @@
 #include "../BattlePlanTurnRepo.h"
 #include "../BattlePlanAtomRepo.h"
 #include "../ExplorerRunRepo.h"
+#include "../ExplorerSettingsRepo.h"
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
 #include "../SavestateRepo.h"
@@ -31,7 +32,7 @@ using STJob = simcore::db::codec::battle::singleturn::JobIni;
 using STRes = simcore::db::codec::battle::singleturn::ResultsIni;
 using STWave = simcore::db::codec::battle::singleturn::WaveIni;
 
-static constexpr int kPK = PK_BattleSingleTurnRunner;
+static constexpr int kPK = simcore::PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
