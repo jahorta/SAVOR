@@ -594,11 +594,6 @@ void PhaseBuilderPane::drawSubmit() {
             }
         }
         ImGui::TextUnformatted("Submitting...");
-        int pk = inst().kinds_[inst().selected_kind_idx_].id;
-        switch (pk) {
-            case simcore::PK_BattleTurnRunner:
-            case simcore::PK_BattleSingleTurnRunner: drawExplorerRunForm(); break;
-        }
     }
 
     if (inst().submit_state_ == SubmitState::Error) {
