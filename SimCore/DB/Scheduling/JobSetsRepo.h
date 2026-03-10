@@ -57,6 +57,7 @@ namespace simcore::db {
             std::optional<int64_t> expected_total,
             RetryPolicy rp = {});
         static std::future<DbResult<std::optional<int64_t>>> GetParentAsync(int64_t job_set_id);
+        static std::future<DbResult<void>> DeleteTreeAsync(int64_t job_set_id, RetryPolicy rp = {});
 
         // Blocking Helpers
 
@@ -91,6 +92,9 @@ namespace simcore::db {
         }
         static inline DbResult<std::optional<int64_t>> GetParent(int64_t job_set_id) {
             return GetParentAsync(job_set_id).get();
+        }
+        static inline DbResult<void> DeleteTree(int64_t job_set_id) {
+            return DeleteTreeAsync(job_set_id).get();
         }
 
     };

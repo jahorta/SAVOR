@@ -142,6 +142,7 @@ namespace simcore::db {
         static std::future<DbResult<void>> RequeueJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> CancelJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});
+        static std::future<DbResult<void>> DeleteJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
 
         static std::future<DbResult<int64_t>> CreateJobSetAsync(
             std::optional<std::string> purpose,

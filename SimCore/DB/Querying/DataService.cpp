@@ -440,6 +440,10 @@ namespace simcore::db {
         return fut;
     }
 
+    std::future<DbResult<void>> DataService::DeleteJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
+        return JobSetsRepo::DeleteTreeAsync(job_set_id, rp);
+    }
+
     std::future<DbResult<int64_t>> DataService::CreateJobSetAsync(
         std::optional<std::string> purpose,
         int program_kind,
