@@ -150,8 +150,9 @@ namespace simcore::db {
             "SELECT j.job_id "
             "FROM jobs j "
             "JOIN program_kinds pk ON pk.kind_id = j.program_kind "
-            "WHERE j.state='QUEUED' "
+            "WHERE j.state IN ('QUEUED','INTERRUPTED') "
             "ORDER BY "
+            "  CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END DESC, "
             "  CASE WHEN ?1 IS NULL "
             "       THEN CASE WHEN j.savestate_id IS NULL THEN 1 ELSE 0 END "
             "       ELSE CASE WHEN j.savestate_id = ?1   THEN 1 ELSE 0 END "
@@ -183,7 +184,7 @@ namespace simcore::db {
 
         const char* upd =
             "UPDATE jobs SET state='CLAIMED', claimed_by_token=?1, lease_expires_at=(strftime('%s','now') + ?2) "
-            "WHERE job_id=?3 AND state='QUEUED';";
+            "WHERE job_id=?3 AND state IN ('QUEUED','INTERRUPTED');";
         rc = sqlite3_prepare_v2(db, upd, -1, &st, nullptr);
         if (rc != SQLITE_OK) { sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr); return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare upd" }); }
         sqlite3_bind_text(st, 1, claim_token.c_str(), -1, SQLITE_TRANSIENT);
@@ -249,6 +250,35 @@ namespace simcore::db {
         return DbResult<void>::Ok();
     }
 
+
+    static inline DbResult<std::vector<int64_t>> impl_interrupt_in_flight(DbEnv& env) {
+        sqlite3* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        const char* sql =
+            "UPDATE jobs "
+            "SET state='INTERRUPTED', claimed_by_token=NULL, lease_expires_at=NULL "
+            "WHERE state IN ('CLAIMED','RUNNING') "
+            "RETURNING job_id;";
+
+        int rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<std::vector<int64_t>>::Err({ map_sqlite_err(rc), rc, "prepare interrupt in-flight" });
+
+        std::vector<int64_t> job_ids;
+        for (;;) {
+            rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                job_ids.push_back(sqlite3_column_int64(st, 0));
+                continue;
+            }
+            if (rc == SQLITE_DONE) break;
+            sqlite3_finalize(st);
+            return DbResult<std::vector<int64_t>>::Err({ map_sqlite_err(rc), rc, "exec interrupt in-flight" });
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<std::vector<int64_t>>::Ok(std::move(job_ids));
+    }
+
     std::future<DbResult<std::optional<JobRow>>> JobsRepo::ClaimNextReadyAsync(
         std::string claim_token, int lease_seconds, double aging_factor,
         std::optional<int64_t> savestate_id, RetryPolicy rp) {
@@ -269,6 +299,11 @@ namespace simcore::db {
     std::future<DbResult<void>> JobsRepo::RequeueExpiredLeasesAsync(RetryPolicy rp) {
         return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
             [=](DbEnv& e) { return impl_requeue_expired(e); });
+    }
+
+    std::future<DbResult<std::vector<int64_t>>> JobsRepo::InterruptInFlightAsync(RetryPolicy rp) {
+        return DBService::instance().submit_res<std::vector<int64_t>>(OpType::Write, Priority::High, rp,
+            [=](DbEnv& e) { return impl_interrupt_in_flight(e); });
     }
 
     static DbResult<std::vector<JobRow>> impl_list_by_job_set(DbEnv& env, int64_t job_set_id, bool queued_only) {
@@ -564,7 +599,7 @@ namespace simcore::db {
     static inline DbResult<void> impl_cancel_if_not_running(DbEnv& env, int64_t job_id) {
         sqlite3* db = env.handle();
         sqlite3_stmt* st = nullptr;
-        int rc = sqlite3_prepare_v2(db, "UPDATE jobs SET state='CANCELED', claimed_by_token=NULL, lease_expires_at=NULL WHERE job_id=?1 AND state IN('QUEUED','CLAIMED');", -1, &st, nullptr);
+        int rc = sqlite3_prepare_v2(db, "UPDATE jobs SET state='CANCELED', claimed_by_token=NULL, lease_expires_at=NULL WHERE job_id=?1 AND state IN('QUEUED','INTERRUPTED','CLAIMED');", -1, &st, nullptr);
         if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare cancel" });
         sqlite3_bind_int64(st, 1, job_id);
         rc = sqlite3_step(st);
