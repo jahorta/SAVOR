@@ -7,6 +7,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <deque>
 #include "../PRTypes.h"
 #include "../ProcessWorker.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
@@ -49,11 +50,25 @@ namespace simcore {
 
     private:
         struct Slot {
+            enum class Phase : uint8_t {
+                Uninitialized,
+                PendingStart,
+                StartingProcess,
+                WaitingReady,
+                Ready,
+                Stopping,
+                Dead
+            };
+
             size_t id{ 0 };
             std::unique_ptr<ProcessWorker> proc;
             std::atomic<bool> running{ false };
             std::atomic<bool> ready{ false };
             std::atomic<bool> dead{ false };
+            Phase phase{ Phase::Uninitialized };
+            uint32_t startup_attempts{ 0 };
+            std::chrono::steady_clock::time_point startup_deadline{};
+            std::chrono::steady_clock::time_point next_ready_probe{};
 
             std::optional<int> current_program_kind;
             std::optional<int64_t> current_savestate_id;
@@ -73,6 +88,10 @@ namespace simcore {
         void controller_loop();
         void drain_progress_loop();
         void drain_results_loop();
+        void advance_startup_once();
+        void enqueue_startup_slot(size_t slot_id);
+        void mark_slot_start_failed(Slot& s, const std::string& err);
+        size_t active_slot_count() const;
 
         bool spawn_slot(Slot& s);
         void shutdown_slot(Slot& s);
@@ -102,6 +121,9 @@ namespace simcore {
 
         std::atomic<size_t> desired_workers_{ 0 };
         std::atomic<bool>   paused_{ false };
+
+        std::deque<size_t> startup_queue_;
+        std::optional<size_t> startup_in_flight_slot_;
     };
 
 } // namespace simcore
