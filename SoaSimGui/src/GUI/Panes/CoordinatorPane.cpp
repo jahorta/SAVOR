@@ -35,6 +35,7 @@ namespace {
         // Ints
         int tw = g_app.GuiCfgGetInt(SEC, "target_workers", 1);
         if (tw < 1) tw = 1;
+        in.target_workers = tw;
         g_app.SetCoordinatorTargetWorkers((size_t)tw); // seed the live/prestart target
 
         in.event_buf_cap = g_app.GuiCfgGetInt(SEC, "event_ring", 64);
@@ -57,7 +58,8 @@ void CoordinatorPane::Draw() {
     if (running && ImGui::IsItemHovered()) ImGui::SetTooltip("Start Coordinator");
     if (start_clicked) {
         WorkerCoordinatorConfig cfg{};
-        cfg.max_concurrent_processes = (size_t)std::max(1, instance().target_workers);
+        cfg.max_concurrent_processes = (size_t)std::max(64, instance().target_workers);
+        cfg.desired_workers = instance().target_workers;
         cfg.iso_path = instance().iso_path;
         cfg.dolphin_base_dir = instance().dolphin_base_dir;
 
@@ -110,6 +112,7 @@ void CoordinatorPane::Draw() {
         target_now = std::max(target_now, 1);
         g_app.SetCoordinatorTargetWorkers((size_t)target_now);
         g_app.GuiCfgSetInt(SEC, "target_workers", target_now);
+        instance().target_workers = target_now;
     }
 
     ImGui::SameLine();

@@ -265,7 +265,6 @@ bool GuiApp::CoordinatorRunning() const { return wc_ != nullptr; }
 void GuiApp::StartCoordinator(WorkerCoordinatorConfig& cfg) {
     if (wc_) return;
     wc_ = std::make_unique<simcore::WorkerCoordinator>(cfg);
-    desired_workers_ = cfg.max_concurrent_processes;
     wc_->start();
     paused_ = cfg.start_to_paused;
 }

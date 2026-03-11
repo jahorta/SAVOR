@@ -50,7 +50,7 @@ namespace simcore {
         if (!slots_.empty()) return;
         interrupt_in_flight_jobs_with_event();
         const size_t n = cfg_.max_concurrent_processes;
-        desired_workers_.store(cfg_.max_concurrent_processes);
+        desired_workers_.store(cfg_.desired_workers);
         slots_.reserve(n);
         for (size_t i = 0; i < n; ++i) {
             auto s = std::make_unique<Slot>();

@@ -5,6 +5,7 @@
 
 struct WorkerCoordinatorConfig {
     size_t  max_concurrent_processes{ 1 };
+    size_t  desired_workers{ 1 };
     uint32_t child_launch_timeout_ms{ 30000 };
     uint32_t child_shutdown_grace_ms{ 3000 };
     uint32_t heartbeat_interval_ms{ 1000 };
