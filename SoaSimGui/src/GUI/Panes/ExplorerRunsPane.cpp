@@ -678,7 +678,7 @@ void ExplorerRunsPane::Draw() {
             ImGui::TableSetColumnIndex(3); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
             ImGui::TableSetColumnIndex(4); ImGui::Text("%u", j.delta_vi);
             ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.fake_used);
-            ImGui::TableSetColumnIndex(6); ImGui::Text("%u", j.rng_seed);
+            ImGui::TableSetColumnIndex(6); ImGui::Text("0x%08X", j.rng_seed);
             ImGui::PopID();
         }
 

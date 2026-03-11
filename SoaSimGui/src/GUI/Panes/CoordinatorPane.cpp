@@ -4,6 +4,7 @@
 #include "../App.h"           // GuiApp
 #include "../../Components/ToastBus.h"
 #include "imgui.h"
+#include "../GuiCommon.h"
 
 // Access the app-owned services
 extern GuiApp g_app;
@@ -165,9 +166,10 @@ void CoordinatorPane::Draw() {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0); ImGui::Text("%lld", (long long)r.worker_id);
                 ImGui::TableSetColumnIndex(1); ImGui::Text("%d", r.pid);
-                ImGui::TableSetColumnIndex(2); ImGui::Text("%d", (int)r.state);
+                ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(soasim::ui::WorkerStateLabel(r.state));
                 ImGui::TableSetColumnIndex(3); ImGui::Text("%lld", (long long)(r.job_id ? *r.job_id : 0));
-                ImGui::TableSetColumnIndex(4); ImGui::Text("%d", (int)(r.program_kind ? *r.program_kind : -1));
+                const std::string kind_label = soasim::ui::WorkerProgramKindLabel(r.program_kind);
+                ImGui::TableSetColumnIndex(4); ImGui::TextUnformatted(kind_label.c_str());
                 ImGui::TableSetColumnIndex(5); ImGui::Text("%lld", (long long)(r.lease_expires_at ? *r.lease_expires_at : 0));
                 ImGui::TableSetColumnIndex(6); ImGui::Text("%d / %d", r.attempts, r.max_attempts);
                 ImGui::TableSetColumnIndex(7); ImGui::Text("%lld", (long long)r.last_heartbeat_mono_ns);
