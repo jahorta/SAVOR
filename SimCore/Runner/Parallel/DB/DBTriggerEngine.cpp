@@ -4,13 +4,13 @@
 #include "../../DB/Scheduling/JobsRepo.h"
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../DB/ProgramDB/IProgramDBCodec.h"
-#include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
 #include "../../DB/Scheduling/JobEventsRepo.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../../Utils/IniDoc.h"
 #include <sqlite3.h>
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 using simcore::db::DbResult;
 using simcore::db::JobsRepo;
@@ -182,13 +182,35 @@ namespace {
 
 namespace simcore {
 
+    struct RetrySections {
+        const char* blueprint_section;
+        const char* results_section;
+    };
+
+    static std::optional<RetrySections> retry_sections_for_kind(int program_kind) {
+        switch (program_kind) {
+        case simcore::PK_SeedProbe:
+            return RetrySections{ "SeedProbe.Blueprint", "SeedProbe.Results" };
+        case simcore::PK_TasMovie:
+            return RetrySections{ "TasMovie.Blueprint", "TasMovie.Results" };
+        case simcore::PK_BattleTurnRunner:
+            return RetrySections{ "BattleRun.Blueprint", "BattleRun.Results" };
+        case simcore::PK_BattleContextProbe:
+            return RetrySections{ "BattleContext.Blueprint", "BattleContext.Results" };
+        case simcore::PK_BattleSingleTurnRunner:
+            return RetrySections{ "BattleRun.Blueprint", "BattleSingleTurn.Results" };
+        default:
+            return std::nullopt;
+        }
+    }
+
     static uint32_t double_u32_limit(uint32_t v) {
         if (v == 0) return 0;
         const uint64_t doubled = static_cast<uint64_t>(v) * 2ull;
         return static_cast<uint32_t>((std::min)(doubled, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
     }
 
-    static DbResult<void> maybe_expand_limits_for_timeout_retry(const simcore::db::JobRow& jr, std::string& detail) {
+    static DbResult<void> maybe_expand_limits_for_timeout_retry(const simcore::db::JobRow& jr, const RetrySections& sections, std::string& detail) {
         if (!jr.vm_kv.has_value() || jr.vm_kv->empty()) return DbResult<void>::Ok();
 
         auto latest = simcore::db::JobEventsRepo::GetLatestPayload(jr.job_id, "RESULTS");
@@ -196,48 +218,45 @@ namespace simcore {
 
         IniDoc result_doc = IniDoc::parse(*latest.value);
         uint32_t dw_err = static_cast<uint32_t>(simcore::RunToBpOutcome::Unknown);
-        if (result_doc.has_section("BattleSingleTurn.Results")) {
-            dw_err = result_doc.section_kv("BattleSingleTurn.Results").get_u32("dw_err", dw_err);
-        }
-        else if (result_doc.has_section(simcore::db::codec::battle::run::ResultsIni::SECTION_NAME)) {
-            dw_err = result_doc.section_kv(simcore::db::codec::battle::run::ResultsIni::SECTION_NAME).get_u32("dw_err", dw_err);
-        }
-        else {
+        if (!result_doc.has_section(sections.results_section)) {
             return DbResult<void>::Ok();
         }
+        dw_err = result_doc.section_kv(sections.results_section).get_u32("dw_err", dw_err);
 
         const bool hit_timeout = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::Timeout);
         const bool hit_vi_stall = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::ViStalled);
         if (!hit_timeout && !hit_vi_stall) return DbResult<void>::Ok();
 
         IniDoc vm_doc = IniDoc::parse(*jr.vm_kv);
-        if (!vm_doc.has_section(simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME)) return DbResult<void>::Ok();
+        if (!vm_doc.has_section(sections.blueprint_section)) return DbResult<void>::Ok();
+        IniKV bp = vm_doc.section_kv(sections.blueprint_section);
 
-        auto bp = simcore::db::codec::battle::run::BlueprintIni::from_section(vm_doc);
-        const uint32_t old_run = bp.run_ms;
-        const uint32_t old_vi = bp.vi_stall_ms;
+        const uint32_t old_run = bp.get_u32("run_ms", 0);
+        const uint32_t old_vi = bp.get_u32("vi_stall_ms", 0);
 
-        if (hit_timeout) bp.run_ms = double_u32_limit(bp.run_ms);
-        if (hit_vi_stall) bp.vi_stall_ms = double_u32_limit(bp.vi_stall_ms);
+        const uint32_t new_run = hit_timeout ? double_u32_limit(old_run) : old_run;
+        const uint32_t new_vi = hit_vi_stall ? double_u32_limit(old_vi) : old_vi;
 
-        if (bp.run_ms == old_run && bp.vi_stall_ms == old_vi) return DbResult<void>::Ok();
+        if (new_run == old_run && new_vi == old_vi) return DbResult<void>::Ok();
 
-        bp.set_section(vm_doc);
+        if (new_run != old_run) vm_doc.set(sections.blueprint_section, "run_ms", std::to_string(new_run));
+        if (new_vi != old_vi) vm_doc.set(sections.blueprint_section, "vi_stall_ms", std::to_string(new_vi));
         auto set = simcore::db::JobsRepo::SetVmKv(jr.job_id, vm_doc.to_string_sorted());
         if (!set.ok) return DbResult<void>::Err(set.error);
 
-        if (hit_timeout) detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(bp.run_ms) + " ";
-        if (hit_vi_stall) detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(bp.vi_stall_ms);
+        if (new_run != old_run) detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(new_run) + " ";
+        if (new_vi != old_vi) detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(new_vi);
         return DbResult<void>::Ok();
     }
 
-    static DbResult<bool> maybe_auto_retry_failed_explorer(const simcore::db::JobRow& jr) {
-        if (jr.program_kind != simcore::PK_BattleSingleTurnRunner) return DbResult<bool>::Ok(false);
+    static DbResult<bool> maybe_auto_retry_failed_job(const simcore::db::JobRow& jr) {
+        auto sections = retry_sections_for_kind(jr.program_kind);
+        if (!sections.has_value()) return DbResult<bool>::Ok(false);
         if (jr.state != "FAILED") return DbResult<bool>::Ok(false);
         if (jr.attempts >= jr.max_attempts) return DbResult<bool>::Ok(false);
 
         std::string detail;
-        auto tune = maybe_expand_limits_for_timeout_retry(jr, detail);
+        auto tune = maybe_expand_limits_for_timeout_retry(jr, *sections, detail);
         if (!tune.ok) return DbResult<bool>::Err(tune.error);
 
         auto rr = JobsRepo::Requeue(jr.job_id);
@@ -254,7 +273,7 @@ namespace simcore {
         if (!jres.ok) return DbResult<void>::Err(jres.error);
         const auto jr = jres.value;
 
-        auto retry = maybe_auto_retry_failed_explorer(jr);
+        auto retry = maybe_auto_retry_failed_job(jr);
         if (!retry.ok) return DbResult<void>::Err(retry.error);
         if (retry.value) return DbResult<void>::Ok();
 
