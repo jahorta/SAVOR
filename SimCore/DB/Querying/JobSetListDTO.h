@@ -16,7 +16,14 @@ struct JobSetLite {
     std::optional<int64_t> expected_total{};
 };
 
+enum class JobSetStateFilter {
+    Completed,
+    Incomplete,
+    HasFailures,
+};
+
 struct JobSetsListScope {
     std::optional<int> program_kind;
     std::optional<int64_t> min_job_set_id;
+    std::optional<JobSetStateFilter> state_filter;
 };
