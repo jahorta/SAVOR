@@ -675,7 +675,7 @@ namespace {
                         s.poll_in_flight = false;
                         force_refresh_probe_data(r.id);
                     }
-                    else ImGui::TextDisabled("");
+                    else ImGui::TextDisabled("");
                 }
 
                 bool sel = (s.selected_probe_id == r.id);
@@ -715,7 +715,7 @@ namespace {
         }
 
         auto pr = s.probe_cache.get(s.selected_probe_id);
-        if (!pr) { ImGui::TextDisabled("Loading probe"); return; }
+        if (!pr) { ImGui::TextDisabled("Loading probe"); return; }
 
         auto sav = SavestateRepo::GetByProbeId(s.selected_probe_id);
         std::string ss_name;
@@ -802,7 +802,7 @@ namespace {
         if (ImGui::BeginChild("C", ImVec2(0, 0), true)) {
             auto uopt = s.unique_cache.get(s.selected_probe_id);
             if (!uopt) {
-                ImGui::TextDisabled("Loading unique rows");
+                ImGui::TextDisabled("Loading unique rows");
             }
             else {
                 const bool have_neutral = (pr->neutral_seed >= 0);
@@ -843,8 +843,6 @@ namespace {
                         ImGui::TableNextColumn();
                         ImGui::TextDisabled("n/a");
                     }
-    poll_selected_probe_if_due();
-
                     else {
                         for (auto& [seed, row] : items) {
                             ImGui::TableNextRow();
@@ -855,6 +853,9 @@ namespace {
                             ImGui::TextUnformatted(hex.c_str());
                         }
                     }
+                    poll_selected_probe_if_due();
+
+
 
                     ImGui::EndTable();
                 }
