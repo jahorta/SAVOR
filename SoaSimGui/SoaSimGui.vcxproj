@@ -169,6 +169,7 @@
     <ClInclude Include="src\GUI\Panes\JobsPane.h" />
     <ClInclude Include="src\GUI\Panes\PhaseBuilderPane.h" />
     <ClInclude Include="src\GUI\Panes\SeedProbePane.h" />
+    <ClInclude Include="src\GUI\Panes\SettingsPane.h" />
     <ClInclude Include="src\GUI\Popups\IdPicker.h" />
     <ClInclude Include="src\GUI\Popups\IdRepoAdapters.h" />
     <ClInclude Include="src\GUI\Popups\IniEditor.h" />
@@ -216,6 +217,7 @@
     <ClCompile Include="src\GUI\Panes\BattleRunSettingsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="src\GUI\Panes\ExplorerRunsPane.cpp" />
+    <ClCompile Include="src\GUI\Panes\SettingsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobSetsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp" />
     <ClCompile Include="src\GUI\Panes\PhaseBuilderPane.cpp" />

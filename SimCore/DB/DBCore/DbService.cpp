@@ -50,7 +50,8 @@ namespace simcore {
             return defaults;
         }
 
-        DBService::DBService() = default;
+        DBService::DBService()
+            : m_db_root(utils::getExecutablePath() / ".db") {}
         DBService::~DBService() { stop(); }
         DBService& DBService::instance() { static DBService inst; return inst; }
 
@@ -59,7 +60,9 @@ namespace simcore {
             bool expected = false;
             if (!m_running.compare_exchange_strong(expected, true)) return;
 
-            std::filesystem::path db_root = utils::getExecutablePath() / ".db";
+            std::filesystem::path db_root = m_db_root.empty() ? (utils::getExecutablePath() / ".db") : m_db_root;
+            std::error_code ec;
+            std::filesystem::create_directories(db_root, ec);
             std::string db_path = (db_root / "SoaSimDB.sqlite3").string();
             m_env = DbEnv::open(db_path);
 
@@ -99,6 +102,83 @@ namespace simcore {
             }
 
             (void)DbEventsRepo::InsertBootEvent("coordinator_booted", "");
+        }
+
+
+
+        void DBService::set_database_root(std::filesystem::path root) {
+            if (m_running) return;
+            if (root.empty()) {
+                m_db_root = utils::getExecutablePath() / ".db";
+                return;
+            }
+            m_db_root = std::move(root);
+        }
+
+        std::filesystem::path DBService::database_root() const {
+            return m_db_root.empty() ? (utils::getExecutablePath() / ".db") : m_db_root;
+        }
+
+
+
+        bool DBService::relocate_database_root(const std::filesystem::path& new_root, std::string& error) {
+            namespace fs = std::filesystem;
+            error.clear();
+
+            fs::path target = new_root;
+            if (target.empty()) {
+                error = "Target path cannot be empty";
+                return false;
+            }
+
+            std::error_code ec;
+            fs::path source = database_root();
+
+            fs::path source_canon = fs::weakly_canonical(source, ec);
+            if (ec) {
+                ec.clear();
+                source_canon = source;
+            }
+
+            fs::path target_canon = fs::weakly_canonical(target, ec);
+            if (ec) {
+                ec.clear();
+                fs::create_directories(target, ec);
+                if (ec) {
+                    error = "Failed to create target directory";
+                    return false;
+                }
+                target_canon = fs::weakly_canonical(target, ec);
+                if (ec) {
+                    ec.clear();
+                    target_canon = target;
+                }
+            }
+
+            if (source_canon == target_canon) return true;
+
+            const bool was_running = m_running.load();
+            if (was_running) stop();
+
+            fs::create_directories(target, ec);
+            if (ec) {
+                error = "Failed to create target directory";
+                if (was_running) start();
+                return false;
+            }
+
+            if (fs::exists(source) && !fs::is_empty(source)) {
+                fs::copy(source, target, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    error = "Failed to copy existing database files";
+                    if (was_running) start();
+                    return false;
+                }
+            }
+
+            set_database_root(target);
+            if (was_running) start();
+            return true;
         }
 
         void DBService::stop() {
