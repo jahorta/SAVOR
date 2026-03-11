@@ -8,6 +8,7 @@
 #include "imgui.h"
 
 #include <unordered_map>
+#include <cstdio>
 
 using simcore::db::DbResult;
 using simcore::db::DbErrorKind;
@@ -114,7 +115,12 @@ namespace soasim::ui::adapters {
         a.columns = {
             {"ID", 80.f, [](auto& r) { return std::to_string(r.id); }},
             {"Savestate", 100.f, [](auto& r) { return std::to_string(r.savestate_id); }},
-            {"Neutral", 120.f, [](auto& r) { return r.neutral_seed ? std::to_string(*r.neutral_seed) : std::string(); }},
+            {"Neutral", 120.f, [](auto& r) {
+                if (!r.neutral_seed) return std::string();
+                char buf[16]{};
+                std::snprintf(buf, sizeof(buf), "0x%08X", (unsigned int)*r.neutral_seed);
+                return std::string(buf);
+            }},
             {"Status", 100.f, [](auto& r) { return r.status; }},
             {"Complete", 80.f, [](auto& r) { return r.complete ? "1" : "0"; }},
         };
