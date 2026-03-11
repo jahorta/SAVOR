@@ -400,6 +400,9 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresul
     r.ps.ctx.get(simcore::keys::battle::FAKE_ATTACK_USED_BEFORE, before);
     r.ps.ctx.get(simcore::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
     out.fake_attacks_used = before + cur;
+    r.ps.ctx.get(simcore::keys::core::PRED_PASSED, out.pred_passed);
+    r.ps.ctx.get(simcore::keys::core::PRED_TOTAL, out.pred_total);
+    r.ps.ctx.get(simcore::keys::core::PRED_ABORT_RUN, out.pred_abort_run);
     r.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
 
     IniDoc ini;

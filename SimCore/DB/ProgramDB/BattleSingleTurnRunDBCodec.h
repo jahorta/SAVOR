@@ -54,6 +54,9 @@ namespace simcore::db::codec::battle::singleturn {
         uint32_t rng_seed{0};
         uint32_t battle_outcome{0};
         uint32_t fake_attacks_used{0};
+        uint32_t pred_passed{0};
+        uint32_t pred_total{0};
+        uint32_t pred_abort_run{0};
         std::string savestate_path;
         int64_t output_savestate_id{-1};
 
@@ -68,6 +71,9 @@ namespace simcore::db::codec::battle::singleturn {
             r.rng_seed = section.get_u32("rng_seed", 0);
             r.battle_outcome = section.get_u32("battle_outcome", 0);
             r.fake_attacks_used = section.get_u32("fake_attacks_used", 0);
+            r.pred_passed = section.get_u32("pred_passed", 0);
+            r.pred_total = section.get_u32("pred_total", 0);
+            r.pred_abort_run = section.get_u32("pred_abort_run", 0);
             r.savestate_path = section.get("savestate_path", "");
             r.output_savestate_id = section.get_i64("output_savestate_id", -1);
             return r;
@@ -81,6 +87,9 @@ namespace simcore::db::codec::battle::singleturn {
             doc.set(SECTION_NAME, "rng_seed", std::to_string(rng_seed));
             doc.set(SECTION_NAME, "battle_outcome", std::to_string(battle_outcome));
             doc.set(SECTION_NAME, "fake_attacks_used", std::to_string(fake_attacks_used));
+            doc.set(SECTION_NAME, "pred_passed", std::to_string(pred_passed));
+            doc.set(SECTION_NAME, "pred_total", std::to_string(pred_total));
+            doc.set(SECTION_NAME, "pred_abort_run", std::to_string(pred_abort_run));
             doc.set(SECTION_NAME, "savestate_path", savestate_path);
             doc.set(SECTION_NAME, "output_savestate_id", std::to_string(output_savestate_id));
         }

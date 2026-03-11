@@ -23,11 +23,15 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <array>
 
 using namespace simcore::db;
 using namespace std::chrono;
 
 namespace {
+    static constexpr const char* kIconSuccess = (const char*)u8"\u25CF";
+    static constexpr const char* kIconNoSuccess = (const char*)u8"\u25CB";
+
     struct WaveMeta {
         int64_t root_group_id{-1};
         uint32_t wave_turn{1};
@@ -53,11 +57,26 @@ namespace {
         }
     };
 
+    struct JobResultSummary {
+        uint32_t fake_used{};
+        uint32_t vi_start{};
+        uint32_t vi_end{};
+        uint32_t delta_vi{};
+        uint32_t rng_seed{};
+        uint32_t battle_outcome{};
+        uint32_t pred_passed{};
+        uint32_t pred_total{};
+        uint32_t pred_abort_run{};
+        bool has_results{false};
+        bool success_outcome{false};
+    };
+
     struct WaveRow {
         int64_t job_set_id{};
         int64_t created_at{};
         uint32_t wave_turn{1};
         std::string status_summary;
+        bool has_success_outcome{false};
     };
 
     struct GroupRow {
@@ -67,6 +86,7 @@ namespace {
         int64_t created_at{};
         int total_waves{};
         std::string status_summary;
+        bool has_success_outcome{false};
         std::vector<WaveRow> waves;
     };
 
@@ -74,6 +94,28 @@ namespace {
         int64_t job_id{};
         std::string state;
         uint32_t fake_used{};
+        uint32_t delta_vi{};
+        uint32_t vi_start{};
+        uint32_t vi_end{};
+        uint32_t rng_seed{};
+        uint32_t battle_outcome{};
+        uint32_t pred_passed{};
+        uint32_t pred_total{};
+        uint32_t pred_abort_run{};
+        bool has_results{false};
+    };
+
+    enum class SortMetric {
+        PredicatesPassed = 0,
+        DeltaVI = 1,
+        FakeAttacks = 2,
+        JobId = 3,
+        RngSeed = 4,
+    };
+
+    struct SortKey {
+        SortMetric metric{SortMetric::PredicatesPassed};
+        bool ascending{true};
     };
 
     struct State {
@@ -98,6 +140,15 @@ namespace {
         bool auto_refresh{true};
         int refresh_seconds{3};
         steady_clock::time_point last_fetch{};
+
+        bool winners_only{true};
+        bool show_duplicates{false};
+        bool success_only{true};
+        std::array<SortKey, 3> sort_keys{ {
+            { SortMetric::PredicatesPassed, false },
+            { SortMetric::DeltaVI, true },
+            { SortMetric::FakeAttacks, true }
+        } };
     };
 
     static State& S() { static State s; return s; }
@@ -125,6 +176,49 @@ namespace {
             else if (j.state == "SUCCEEDED_DUPLICATE") ++d;
         }
         return "Q:" + std::to_string(q) + " R:" + std::to_string(r) + " F:" + std::to_string(f) + " W:" + std::to_string(w) + " D:" + std::to_string(d);
+    }
+
+    static bool is_success_outcome(uint32_t battle_outcome) {
+        return battle_outcome == (uint32_t)simcore::battle::Outcome::ReachedNextTurn;
+    }
+
+    static bool is_winner_state(const std::string& state) {
+        return state == "SUCCEEDED_WINNER";
+    }
+
+    static bool is_duplicate_state(const std::string& state) {
+        return state == "SUCCEEDED_DUPLICATE";
+    }
+
+    static std::unordered_map<int64_t, JobResultSummary> load_job_results_map(const std::vector<int64_t>& ids) {
+        std::unordered_map<int64_t, JobResultSummary> out;
+        if (ids.empty()) return out;
+
+        auto res = JobEventsRepo::GetLatestPayloadByJobs(ids, "RESULTS");
+        if (!res.ok) return out;
+
+        for (auto& r : res.value) {
+            if (!r.payload.has_value()) continue;
+            IniDoc ini = IniDoc::parse(*r.payload);
+            if (!ini.has_section("BattleSingleTurn.Results")) continue;
+            auto kv = ini.section_kv("BattleSingleTurn.Results");
+
+            JobResultSummary s{};
+            s.has_results = true;
+            s.fake_used = kv.get_u32("fake_attacks_used", 0);
+            s.vi_start = kv.get_u32("vi_start", 0);
+            s.vi_end = kv.get_u32("vi_end", 0);
+            s.delta_vi = (s.vi_end >= s.vi_start) ? (s.vi_end - s.vi_start) : 0;
+            s.rng_seed = kv.get_u32("rng_seed", 0);
+            s.battle_outcome = kv.get_u32("battle_outcome", 0);
+            s.pred_passed = kv.get_u32("pred_passed", 0);
+            s.pred_total = kv.get_u32("pred_total", 0);
+            s.pred_abort_run = kv.get_u32("pred_abort_run", 0);
+            s.success_outcome = is_success_outcome(s.battle_outcome);
+            out[r.job_id] = s;
+        }
+
+        return out;
     }
 
     static int64_t resolve_root(const JobSetRow& js) {
@@ -167,8 +261,23 @@ namespace {
 
             auto jobs = JobsRepo::GetByJobSet(js.value.job_set_id);
             std::string status = jobs.ok ? summarize_states(jobs.value) : "(error)";
+            bool has_success = false;
+            if (jobs.ok && !jobs.value.empty()) {
+                std::vector<int64_t> ids;
+                ids.reserve(jobs.value.size());
+                for (auto& j : jobs.value) ids.push_back(j.job_id);
+                auto result_map = load_job_results_map(ids);
+                for (auto& j : jobs.value) {
+                    auto it = result_map.find(j.job_id);
+                    if (it != result_map.end() && it->second.success_outcome) {
+                        has_success = true;
+                        break;
+                    }
+                }
+            }
 
-            g.waves.push_back({ js.value.job_set_id, js.value.created_at, meta.wave_turn, status });
+            g.waves.push_back({ js.value.job_set_id, js.value.created_at, meta.wave_turn, status, has_success });
+            g.has_success_outcome = g.has_success_outcome || has_success;
         }
 
         std::vector<GroupRow> groups;
@@ -180,7 +289,8 @@ namespace {
                 return a.created_at < b.created_at;
             });
             g.total_waves = (int)g.waves.size();
-            g.status_summary = g.waves.empty() ? "" : g.waves.back().status_summary;
+            const std::string base = g.waves.empty() ? std::string{} : g.waves.back().status_summary;
+            g.status_summary = std::string(g.has_success_outcome ? kIconSuccess : kIconNoSuccess) + " " + base;
             groups.push_back(g);
         }
 
@@ -200,21 +310,92 @@ namespace {
         ids.reserve(jobs.value.size());
         for (auto& j : jobs.value) ids.push_back(j.job_id);
 
-        std::unordered_map<int64_t, uint32_t> fake_used;
-        auto res = JobEventsRepo::GetLatestPayloadByJobs(ids, "RESULTS");
-        if (res.ok) {
-            for (auto& r : res.value) {
-                if (!r.payload.has_value()) continue;
-                IniDoc ini = IniDoc::parse(*r.payload);
-                if (!ini.has_section("BattleSingleTurn.Results")) continue;
-                fake_used[r.job_id] = ini.section_kv("BattleSingleTurn.Results").get_u32("fake_attacks_used", 0);
+        auto result_map = load_job_results_map(ids);
+        for (auto& j : jobs.value) {
+            JobResultSummary rs{};
+            auto it = result_map.find(j.job_id);
+            if (it != result_map.end()) rs = it->second;
+
+            out.push_back({
+                j.job_id,
+                j.state,
+                rs.fake_used,
+                rs.delta_vi,
+                rs.vi_start,
+                rs.vi_end,
+                rs.rng_seed,
+                rs.battle_outcome,
+                rs.pred_passed,
+                rs.pred_total,
+                rs.pred_abort_run,
+                rs.has_results
+            });
+        }
+        return out;
+    }
+
+    static int compare_u32(uint32_t a, uint32_t b) {
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+    }
+
+    static int compare_i64(int64_t a, int64_t b) {
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+    }
+
+    static int compare_metric(const JobViewRow& a, const JobViewRow& b, SortMetric metric) {
+        switch (metric) {
+        case SortMetric::PredicatesPassed: return compare_u32(a.pred_passed, b.pred_passed);
+        case SortMetric::DeltaVI:
+            return compare_u32(a.delta_vi, b.delta_vi);
+        case SortMetric::FakeAttacks:
+            return compare_u32(a.fake_used, b.fake_used);
+        case SortMetric::RngSeed:
+            return compare_u32(a.rng_seed, b.rng_seed);
+        case SortMetric::JobId:
+        default:
+            return compare_i64(a.job_id, b.job_id);
+        }
+    }
+
+    static const char* sort_metric_label(SortMetric metric) {
+        switch (metric) {
+        case SortMetric::PredicatesPassed: return "Predicates Passed";
+        case SortMetric::DeltaVI: return "Delta VI";
+        case SortMetric::FakeAttacks: return "Fake Attacks";
+        case SortMetric::RngSeed: return "RNG Seed";
+        case SortMetric::JobId:
+        default: return "Job ID";
+        }
+    }
+
+    static std::vector<JobViewRow> build_visible_sorted_jobs(const std::vector<JobViewRow>& all_jobs) {
+        auto& s = S();
+        std::vector<JobViewRow> out;
+        out.reserve(all_jobs.size());
+        for (const auto& j : all_jobs) {
+            const bool winner = is_winner_state(j.state);
+            const bool duplicate = is_duplicate_state(j.state);
+
+            if (s.winners_only) {
+                if (!winner && !(s.show_duplicates && duplicate)) continue;
             }
+            if (s.success_only && (!j.has_results || !is_success_outcome(j.battle_outcome))) continue;
+            out.push_back(j);
         }
 
-        for (auto& j : jobs.value) {
-            out.push_back({ j.job_id, j.state, fake_used.count(j.job_id) ? fake_used[j.job_id] : 0 });
-        }
-        std::sort(out.begin(), out.end(), [](const JobViewRow& a, const JobViewRow& b) { return a.job_id < b.job_id; });
+        std::sort(out.begin(), out.end(), [&](const JobViewRow& a, const JobViewRow& b) {
+            for (const auto& key : s.sort_keys) {
+                int cmp = compare_metric(a, b, key.metric);
+                if (cmp == 0) continue;
+                return key.ascending ? (cmp < 0) : (cmp > 0);
+            }
+            return a.job_id < b.job_id;
+        });
+
         return out;
     }
 
@@ -337,11 +518,14 @@ void ExplorerRunsPane::Draw() {
     ImGui::SetNextItemWidth(90);
     ImGui::SliderInt("Every (s)", &s.refresh_seconds, 1, 10);
 
-    const float avail_w = ImGui::GetContentRegionAvail().x;
-    const float col_l = avail_w * 0.32f;
-    const float col_c = avail_w * 0.24f;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float splitter_h = 8.0f;
+    const float section_h = (avail.y - splitter_h) * 0.5f;
 
-    ImGui::BeginChild("left_groups", ImVec2(col_l, 0), true);
+    ImGui::BeginChild("top_row", ImVec2(0, section_h), false);
+    ImGui::Columns(2, "top_cols", true);
+
+    ImGui::BeginChild("left_groups", ImVec2(0, 0), true);
     ImGui::TextUnformatted("Run Groups");
     ImGui::Separator();
     if (ImGui::BeginTable("groups_tbl", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
@@ -359,7 +543,8 @@ void ExplorerRunsPane::Draw() {
 
             ImGui::TableSetColumnIndex(0);
             bool sel = (s.selected_root == g.root_group_id);
-            if (ImGui::Selectable(std::to_string((long long)g.root_group_id).c_str(), sel, ImGuiSelectableFlags_SpanAllColumns)) {
+            std::string group_label = std::string(g.has_success_outcome ? kIconSuccess : kIconNoSuccess) + " " + std::to_string((long long)g.root_group_id);
+            if (ImGui::Selectable(group_label.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns)) {
                 s.selected_root = g.root_group_id;
                 s.selected_wave = -1;
                 s.selected_job = -1;
@@ -377,10 +562,9 @@ void ExplorerRunsPane::Draw() {
         ImGui::EndTable();
     }
     ImGui::EndChild();
+    ImGui::NextColumn();
 
-    ImGui::SameLine();
-
-    ImGui::BeginChild("center_tree", ImVec2(col_c, 0), true);
+    ImGui::BeginChild("center_tree", ImVec2(0, 0), true);
     ImGui::TextUnformatted("Wave Tree");
     ImGui::Separator();
 
@@ -400,7 +584,7 @@ void ExplorerRunsPane::Draw() {
                 std::sort(ws.begin(), ws.end(), [](const WaveRow* a, const WaveRow* b) { return a->created_at < b->created_at; });
                 for (auto* w : ws) {
                     bool sel = s.selected_wave == w->job_set_id;
-                    std::string wlabel = "Wave " + std::to_string((long long)w->job_set_id);
+                    std::string wlabel = std::string(w->has_success_outcome ? kIconSuccess : kIconNoSuccess) + " Wave " + std::to_string((long long)w->job_set_id);
                     if (ImGui::Selectable(wlabel.c_str(), sel)) {
                         s.selected_wave = w->job_set_id;
                         s.selected_job = -1;
@@ -417,21 +601,70 @@ void ExplorerRunsPane::Draw() {
     }
 
     ImGui::EndChild();
+    ImGui::Columns(1);
+    ImGui::EndChild();
 
-    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(0, splitter_h));
 
-    ImGui::BeginChild("right_split", ImVec2(0, 0), true);
-    ImGui::Columns(2, "right_cols", true);
+    ImGui::BeginChild("bottom_row", ImVec2(0, 0), false);
+    ImGui::Columns(2, "bottom_cols", true);
+
+    ImGui::BeginChild("jobs_section", ImVec2(0, 0), true);
 
     ImGui::TextUnformatted("Wave Jobs");
     ImGui::Separator();
-    if (ImGui::BeginTable("jobs_tbl", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
+
+    ImGui::Checkbox("Winner only subset", &s.winners_only);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!s.winners_only);
+    ImGui::Checkbox("Show duplicates", &s.show_duplicates);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Checkbox("Success outcome only", &s.success_only);
+
+    const SortMetric metric_options[] = {
+        SortMetric::PredicatesPassed,
+        SortMetric::DeltaVI,
+        SortMetric::FakeAttacks,
+        SortMetric::RngSeed,
+        SortMetric::JobId,
+    };
+    const int metric_count = (int)(sizeof(metric_options) / sizeof(metric_options[0]));
+    for (int i = 0; i < (int)s.sort_keys.size(); ++i) {
+        ImGui::PushID(i + 9000);
+        ImGui::SetNextItemWidth(150);
+        int cur = 0;
+        for (int k = 0; k < metric_count; ++k) {
+            if (metric_options[k] == s.sort_keys[i].metric) { cur = k; break; }
+        }
+        if (ImGui::BeginCombo((std::string("Sort ") + std::to_string(i + 1)).c_str(), sort_metric_label(s.sort_keys[i].metric))) {
+            for (int k = 0; k < metric_count; ++k) {
+                const bool selected = cur == k;
+                if (ImGui::Selectable(sort_metric_label(metric_options[k]), selected)) {
+                    s.sort_keys[i].metric = metric_options[k];
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Asc", &s.sort_keys[i].ascending);
+        ImGui::PopID();
+    }
+
+    auto visible_jobs = build_visible_sorted_jobs(s.jobs);
+
+    if (ImGui::BeginTable("jobs_tbl", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupColumn("Job ID");
         ImGui::TableSetupColumn("Job State");
-        ImGui::TableSetupColumn("Cumulative Fake Attacks");
+        ImGui::TableSetupColumn("Outcome");
+        ImGui::TableSetupColumn("Predicates");
+        ImGui::TableSetupColumn("Delta VI");
+        ImGui::TableSetupColumn("Fake Attacks");
+        ImGui::TableSetupColumn("RNG Seed");
         ImGui::TableHeadersRow();
 
-        for (auto& j : s.jobs) {
+        for (auto& j : visible_jobs) {
             ImGui::PushID((int)j.job_id);
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -441,15 +674,23 @@ void ExplorerRunsPane::Draw() {
                 kick_details_fetch(j.job_id);
             }
             ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(j.state.c_str());
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%u", j.fake_used);
+            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(simcore::battle::get_outcome_string((simcore::battle::Outcome)j.battle_outcome).c_str());
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
+            ImGui::TableSetColumnIndex(4); ImGui::Text("%u", j.delta_vi);
+            ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.fake_used);
+            ImGui::TableSetColumnIndex(6); ImGui::Text("%u", j.rng_seed);
             ImGui::PopID();
         }
 
         ImGui::EndTable();
     }
 
+    ImGui::TextDisabled("Visible jobs: %zu / %zu", visible_jobs.size(), s.jobs.size());
+    ImGui::EndChild();
+
     ImGui::NextColumn();
 
+    ImGui::BeginChild("details_section", ImVec2(0, 0), true);
     ImGui::TextUnformatted("Details");
     ImGui::Separator();
     bool can_trigger = selected_job_can_trigger();
@@ -471,6 +712,8 @@ void ExplorerRunsPane::Draw() {
 
     ImGui::SeparatorText("Progress Log");
     ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(-1, 0), ImGuiInputTextFlags_ReadOnly);
+
+    ImGui::EndChild();
 
     ImGui::Columns(1);
     ImGui::EndChild();
