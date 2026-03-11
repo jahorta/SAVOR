@@ -166,10 +166,27 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     wave.set_section(t_ini);
 
     for (auto& st : starts) {
+
+        std::unordered_set<std::string> seenIt{};
+
         for (auto& plan : plans.value) {
             auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(plan.plan_id);
             if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
             if (wave.cur_turn < 1 || wave.cur_turn > turns.value.size()) continue;
+
+
+            auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(plan.plan_id, turns.value[wave.cur_turn - 1].turn_index);
+            if (!actorsR.ok) return DbResult<int64_t>::Err(actorsR.error);
+
+            std::stringstream ss{};
+            ss << std::format("{}", turns.value[wave.cur_turn - 1].fake_atk_count);
+            for (auto& a : actorsR.value) {
+                ss << std::format(":{}", a.atom_id);
+            }
+            std::string turn_plan = ss.str();
+
+            if (seenIt.contains(turn_plan)) continue;
+            seenIt.insert(turn_plan);
 
             STJob jb{};
             jb.plan_id = plan.plan_id;
