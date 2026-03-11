@@ -9,6 +9,8 @@
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/ProgramKindsRepo.h"
 
+#include <mutex>
+
 using namespace std::chrono;
 
 namespace {
@@ -25,6 +27,7 @@ namespace {
         std::future<simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>> fut_kinds;
         bool kinds_in_flight = false;
         std::unordered_map<int, std::string> program_names;
+        std::mutex progress_summary_mu;
         std::unordered_map<int64_t, std::string> progress_summary;
 
         int64_t selected_job_id = 0;
@@ -97,6 +100,7 @@ namespace {
                     m[p.job_id] = std::move(v);
                 }
             }
+            std::lock_guard<std::mutex> lk(s.progress_summary_mu);
             s.progress_summary = std::move(m);
             }).detach();
     }
@@ -289,7 +293,11 @@ void JobsPane::Draw() {
         ImGui::TableSetupColumn("progress", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
-        std::unordered_map<int64_t, std::string> summaries{ s.progress_summary };
+        std::unordered_map<int64_t, std::string> summaries;
+        {
+            std::lock_guard<std::mutex> lk(s.progress_summary_mu);
+            summaries = s.progress_summary;
+        }
 
         ImGuiListClipper clipper;
         clipper.Begin((int)s.page.items.size());
