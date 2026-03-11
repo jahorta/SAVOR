@@ -183,6 +183,19 @@ namespace simcore {
 		Unknown = 0xffffffff,  // catch-all
 	};
 
+	static inline const char* RunToBpOutcomeToString(uint32_t outcome)
+	{
+		switch (static_cast<RunToBpOutcome>(outcome)) {
+		case RunToBpOutcome::Hit: return "Hit";
+		case RunToBpOutcome::Timeout: return "Timeout";
+		case RunToBpOutcome::ViStalled: return "ViStalled";
+		case RunToBpOutcome::MovieEnded: return "MovieEnded";
+		case RunToBpOutcome::Aborted: return "Aborted";
+		case RunToBpOutcome::Unknown: return "Unknown";
+		default: return "UnrecognizedRunOutcome";
+		}
+	}
+
 	// ----- VM -----
 	class PhaseScriptVM {
 	public:

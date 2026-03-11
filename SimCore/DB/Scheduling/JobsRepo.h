@@ -64,6 +64,7 @@ namespace simcore::db {
             int limit,
             RetryPolicy rp = {});
         static std::future<DbResult<void>> RequeueAsync(int64_t job_id, RetryPolicy rp = {});
+        static std::future<DbResult<void>> RestartFailedAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> CancelIfNotRunningAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});
 
@@ -103,6 +104,7 @@ namespace simcore::db {
             return ListRecentAfterAsync(scope, after, limit, rp).get();
         }
         static inline DbResult<void> Requeue(int64_t job_id) { return RequeueAsync(job_id).get(); }
+        static inline DbResult<void> RestartFailed(int64_t job_id) { return RestartFailedAsync(job_id).get(); }
         static inline DbResult<void> CancelIfNotRunning(int64_t job_id) { return CancelIfNotRunningAsync(job_id).get(); }
         static inline DbResult<void> BumpPriority(int64_t job_id, int delta) { return BumpPriorityAsync(job_id, delta).get(); }
     };

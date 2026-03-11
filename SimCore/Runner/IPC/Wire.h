@@ -37,6 +37,24 @@ namespace simcore {
         WERR_UnknownError = 0xffffffff
     };
 
+    static inline const char* WErrToString(uint32_t err)
+    {
+        switch (err) {
+        case WERR_None: return "None";
+        case WERR_SysMissing: return "SysMissing";
+        case WERR_BootFail: return "BootFail";
+        case WERR_LoadGame: return "LoadGame";
+        case WERR_VMInit: return "VMInit";
+        case WERR_WriteReady: return "WriteReady";
+        case WERR_NoProgramLoaded: return "NoProgramLoaded";
+        case WERR_DecodePayloadFail: return "DecodePayloadFail";
+        case WERR_EncodePayloadFail: return "EncodePayloadFail";
+        case WERR_NoGameIsoRecorded: return "NoGameIsoRecorded";
+        case WERR_UnknownError: return "UnknownError";
+        default: return "UnrecognizedWErr";
+        }
+    }
+
     enum : uint8_t {
         WSTATE_NoProgram = 0,
         WSTATE_ProgramReady = 1

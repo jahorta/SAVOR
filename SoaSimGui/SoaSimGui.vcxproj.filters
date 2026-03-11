@@ -153,6 +153,9 @@
     <ClInclude Include="src\GUI\Widgets\InputTextMultilineWrap.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\SettingsPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources\SoaSimGui.rc">
@@ -235,6 +238,9 @@
       <Filter>Components</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\SeedProbePane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\SettingsPane.cpp">
       <Filter>GUI\Panes</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Widgets\AddrProgramEditor.cpp">

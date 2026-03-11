@@ -1,4 +1,5 @@
 #include "BattleContextDBCodec.h"
+#include "ResultErrorFormatting.h"
 #include "../../Utils/IniDoc.h"
 #include "../DBCore/DbResult.h"
 #include "../DBCore/ObjectStore.h"
@@ -144,13 +145,13 @@ DbResult<std::string> BattleContextDBCodec::decode_results_from_db(std::optional
     if (job_id) {
         auto rows = simcore::db::JobEventsRepo::ListByJobAndKind(*job_id, "RESULTS");
         if (!rows.ok) return DbResult<std::string>::Err(rows.error);
-        for (size_t i = 0; i < rows.value.size(); ++i) { if (i) out.push_back('\n'); if (rows.value[i].payload) out.append(*rows.value[i].payload); }
+        for (size_t i = 0; i < rows.value.size(); ++i) { if (i) out.push_back('\n'); if (rows.value[i].payload) out.append(simcore::db::codec::HumanizeResultIniErrors(*rows.value[i].payload)); }
         return DbResult<std::string>::Ok(out);
     }
     if (job_set_id) {
         auto rows = simcore::db::JobEventsRepo::ListByJobSetAndKind(*job_set_id, "RESULTS");
         if (!rows.ok) return DbResult<std::string>::Err(rows.error);
-        for (size_t i = 0; i < rows.value.size(); ++i) { if (i) out.push_back('\n'); if (rows.value[i].payload) out.append(*rows.value[i].payload); }
+        for (size_t i = 0; i < rows.value.size(); ++i) { if (i) out.push_back('\n'); if (rows.value[i].payload) out.append(simcore::db::codec::HumanizeResultIniErrors(*rows.value[i].payload)); }
         return DbResult<std::string>::Ok(out);
     }
     return DbResult<std::string>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "need job_id or job_set_id" });

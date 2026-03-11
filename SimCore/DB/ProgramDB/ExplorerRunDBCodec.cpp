@@ -1,5 +1,6 @@
 // SimCore/DB/ProgramDB/ExplorerRunDBCodec.cpp
 #include "ExplorerRunDBCodec.h"
+#include "ResultErrorFormatting.h"
 #include "../../Utils/IniDoc.h"
 #include "../DBCore/CoordinatorClock.h"
 #include "../DBCore/DbResult.h"
@@ -300,7 +301,7 @@ DbResult<std::string> ExplorerRunDBCodec::decode_results_from_db(std::optional<i
     if (job_id) {
         auto s = JobEventsRepo::GetLatestPayload(*job_id, "RESULTS");
         if (!s.ok) return DbResult<std::string>::Err(s.error);
-        return DbResult<std::string>::Ok(s.value.value_or(std::string{}));
+        return DbResult<std::string>::Ok(simcore::db::codec::HumanizeResultIniErrors(s.value.value_or(std::string{})));
     }
 
     if (job_set_id) {
@@ -317,7 +318,7 @@ DbResult<std::string> ExplorerRunDBCodec::decode_results_from_db(std::optional<i
                 cur_job = e.job_id;
             }
             out.push_back('\n');
-            if (e.payload) out.append(*e.payload);
+            if (e.payload) out.append(simcore::db::codec::HumanizeResultIniErrors(*e.payload));
         }
         return DbResult<std::string>::Ok(std::move(out));
     }

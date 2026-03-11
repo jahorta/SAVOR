@@ -40,6 +40,9 @@ public:
     int         GuiCfgGetInt(const std::string& section, const std::string& key, int def = 0) const;
     void        GuiCfgSetInt(const std::string& section, const std::string& key, int v);
 
+    std::string GetDatabaseRoot() const;
+    bool        ApplyDatabaseRootChange(const std::string& new_root, std::string& error);
+
 private:
     bool createDeviceSwapchain(HWND hwnd);
     void destroyDevice();

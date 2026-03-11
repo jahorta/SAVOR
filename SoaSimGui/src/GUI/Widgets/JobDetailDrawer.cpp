@@ -95,23 +95,26 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
     ImGui::Text("Job: %lld  |  Set: %lld  |  ProgramKind: %s  |  State: %s",
         (long long)job.job_id, (long long)job.job_set_id, kind_name, job.state.c_str());
 
-    bool requeue_blocked = (job.state == "QUEUED" || job.state == "CLAIMED" || job.state == "RUNNING");
+    bool requeue_blocked = (job.state == "QUEUED" || job.state == "CLAIMED" || job.state == "RUNNING" || job.state == "FAILED");
     ImGui::BeginDisabled(requeue_blocked);
     if (ImGui::Button("Requeue")) {
-        if (job.state == "FAILED") {
-            g.requeue_opts_open = true;
-            ImGui::OpenPopup("Requeue Options");
-        }
-        else {
-            FutureQueue::Enqueue<DbResult<void>>(
-                DataService::RequeueJobAsync(job.job_id),
-                [](const DbResult<void>& r) { if (r.ok) GuiToastBus::Success("Job requeued"); else GuiToastBus::Error("Requeue failed", r.error.message); },
-                [](std::exception_ptr) { GuiToastBus::Error("Requeue failed", "exception"); }
-            );
-        }
+        FutureQueue::Enqueue<DbResult<void>>(
+            DataService::RequeueJobAsync(job.job_id),
+            [](const DbResult<void>& r) { if (r.ok) GuiToastBus::Success("Job requeued"); else GuiToastBus::Error("Requeue failed", r.error.message); },
+            [](std::exception_ptr) { GuiToastBus::Error("Requeue failed", "exception"); }
+        );
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && requeue_blocked) {
-        ImGui::SetTooltip("Cannot requeue while job is QUEUED/CLAIMED/RUNNING");
+        if (job.state == "FAILED") ImGui::SetTooltip("FAILED jobs require Restart (resets attempts)");
+        else ImGui::SetTooltip("Cannot requeue while job is QUEUED/CLAIMED/RUNNING");
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(job.state != "FAILED");
+    if (ImGui::Button("Restart")) {
+        g.requeue_opts_open = true;
+        ImGui::OpenPopup("Restart Failed Job");
     }
     ImGui::EndDisabled();
 
@@ -144,9 +147,9 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
     ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowFocus();
 
-    // Requeue Options modal (FAILED only)
-    if (ImGui::BeginPopupModal("Requeue Options", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("This job failed. Edit INI before requeue?");
+    // Restart options modal (FAILED only)
+    if (ImGui::BeginPopupModal("Restart Failed Job", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("This job failed. Restart will reset attempts to 0 and queue it again.");
         ImGui::Separator();
         if (ImGui::Button("Edit INI...")) {
             std::string ini_text;
@@ -162,11 +165,11 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
             g.requeue_opts_open = false;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Just Requeue")) {
+        if (ImGui::Button("Restart")) {
             FutureQueue::Enqueue<DbResult<void>>(
-                DataService::RequeueJobAsync(job.job_id),
-                [](const DbResult<void>& r) { if (r.ok) GuiToastBus::Success("Job requeued"); else GuiToastBus::Error("Requeue failed", r.error.message); },
-                [](std::exception_ptr) { GuiToastBus::Error("Requeue failed", "exception"); }
+                DataService::RestartFailedJobAsync(job.job_id),
+                [](const DbResult<void>& r) { if (r.ok) GuiToastBus::Success("Job restarted"); else GuiToastBus::Error("Restart failed", r.error.message); },
+                [](std::exception_ptr) { GuiToastBus::Error("Restart failed", "exception"); }
             );
             ImGui::CloseCurrentPopup();
             g.requeue_opts_open = false;
@@ -195,22 +198,22 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
                         return;
                     }
                     FutureQueue::Enqueue<DbResult<void>>(
-                        DataService::RequeueJobAsync(job.job_id),
+                        DataService::RestartFailedJobAsync(job.job_id),
                         [&](const DbResult<void>& rr) {
                             g.ini_editor.in_flight = false;
                             if (rr.ok) {
-                                GuiToastBus::Success("Updated INI & requeued");
+                                GuiToastBus::Success("Updated INI & restarted");
                                 g.ini_editor.dismiss_after_success = true;
                             }
                             else {
                                 g.ini_editor.error_msg = rr.error.message;
-                                GuiToastBus::Error("Requeue failed", rr.error.message);
+                                GuiToastBus::Error("Restart failed", rr.error.message);
                             }
                         },
                         [&](std::exception_ptr) {
                             g.ini_editor.in_flight = false;
                             g.ini_editor.error_msg = std::string("exception");
-                            GuiToastBus::Error("Requeue failed", "exception");
+                            GuiToastBus::Error("Restart failed", "exception");
                         }
                     );
                 },
@@ -335,4 +338,3 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
     }
     return open;
 }
-

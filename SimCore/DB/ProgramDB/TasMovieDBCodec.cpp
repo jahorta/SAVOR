@@ -1,5 +1,6 @@
 // SimCore/DB/ProgramDB/TasMovieDBCodec.cpp
 #include "TasMovieDBCodec.h"
+#include "ResultErrorFormatting.h"
 
 #include <filesystem>
 
@@ -236,12 +237,12 @@ DbResult<std::string> TasMovieDBCodec::decode_results_from_db(std::optional<int6
     if (job_id) {
         auto p = simcore::db::JobEventsRepo::GetLatestPayload(*job_id, "RESULTS");
         if (!p.ok) return DbResult<std::string>::Err(p.error);
-        if (p.value.has_value()) out = p.value.value();
+        if (p.value.has_value()) out = simcore::db::codec::HumanizeResultIniErrors(p.value.value());
     }
     else if (job_set_id) {
         auto v = simcore::db::JobEventsRepo::ListByJobSetAndKind(*job_set_id, "RESULTS");
         if (!v.ok) return DbResult<std::string>::Err(v.error);
-        for (auto& e : v.value) { if (e.payload) { out.append(*e.payload); out.push_back('\n'); } }
+        for (auto& e : v.value) { if (e.payload) { out.append(simcore::db::codec::HumanizeResultIniErrors(*e.payload)); out.push_back('\n'); } }
     }
     else {
         return DbResult<std::string>::Err({ DbErrorKind::InvalidArgument, 0, "must supply job_id or job_set_id" });

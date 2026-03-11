@@ -377,7 +377,7 @@ namespace simcore {
                         mp.finish();
                         uint32_t run_outcome;
                         r.ps.ctx.get(keys::core::DW_RUN_OUTCOME_CODE, run_outcome);
-                        SCLOGE("[seedmap] Result recieved not okay. w_err:%d ps_err:%d", r.ps.w_err, run_outcome);
+                        SCLOGE("[seedmap] Result recieved not okay. w_err:%s ps_err:%s", simcore::WErrToString(r.ps.w_err), simcore::RunToBpOutcomeToString(run_outcome));
                         return out;
                     }
 
@@ -568,7 +568,7 @@ namespace simcore {
 
             if (!r.ps.ok) {
                 uint32_t oc = 0; r.ps.ctx.get(keys::core::DW_RUN_OUTCOME_CODE, oc);
-                SCLOGE("[seedcombos] VM error t=%d w_err=%d ps=%u", it->second.target, r.ps.w_err, oc);
+                SCLOGE("[seedcombos] VM error t=%d w_err=%s ps=%s", it->second.target, simcore::WErrToString(r.ps.w_err), simcore::RunToBpOutcomeToString(oc));
                 jobs.erase(it);
                 continue;
             }
