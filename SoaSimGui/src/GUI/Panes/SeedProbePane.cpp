@@ -752,15 +752,6 @@ namespace {
                 {
                     auto fn = s.savestate_filename_cache.get(r.savestate_id);
                     if (fn) ImGui::TextUnformatted(fn->c_str());
-                    const bool selection_changed = (s.selected_probe_id != r.id);
-                    if (selection_changed) {
-                        s.polling_probe_id = r.id;
-                        s.last_completed_count = -1;
-                        s.next_poll_time_s = 0.0;
-                        s.poll_in_flight = false;
-                        force_refresh_probe_data(r.id);
-                    }
-                    else ImGui::TextDisabled("");
                 }
 
                 bool sel = (s.selected_probe_id == r.id);
@@ -771,7 +762,15 @@ namespace {
                     ImGuiSelectableFlags_SpanAllColumns,
                     ImVec2(0, row_h))) 
                 {
+                    const bool selection_changed = (s.selected_probe_id != r.id);
                     s.selected_probe_id = r.id;
+                    if (selection_changed) {
+                        s.polling_probe_id = r.id;
+                        s.last_completed_count = -1;
+                        s.next_poll_time_s = 0.0;
+                        s.poll_in_flight = false;
+                        force_refresh_probe_data(r.id);
+                    }
                     ensure_probe_cached(r.id);
                     ensure_lists_cached(r.id);
                 }
@@ -959,6 +958,8 @@ void SeedProbePane::OnActivated() {
 
 void SeedProbePane::Draw() {
     ImGui::Begin("SeedProbe Pane");
+
+    drain_ui_apply_queue();
 
     ImVec2 full = ImGui::GetContentRegionAvail();
     float leftW = std::max(300.0f, full.x * 0.38f);
