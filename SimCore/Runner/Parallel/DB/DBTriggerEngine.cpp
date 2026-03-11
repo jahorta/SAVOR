@@ -4,10 +4,13 @@
 #include "../../DB/Scheduling/JobsRepo.h"
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../DB/ProgramDB/IProgramDBCodec.h"
+#include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
 #include "../../DB/Scheduling/JobEventsRepo.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../../Utils/IniDoc.h"
 #include <sqlite3.h>
+#include <algorithm>
+#include <limits>
 
 using simcore::db::DbResult;
 using simcore::db::JobsRepo;
@@ -179,15 +182,69 @@ namespace {
 
 namespace simcore {
 
+    static uint32_t double_u32_limit(uint32_t v) {
+        if (v == 0) return 0;
+        const uint64_t doubled = static_cast<uint64_t>(v) * 2ull;
+        return static_cast<uint32_t>((std::min)(doubled, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
+    }
+
+    static DbResult<void> maybe_expand_limits_for_timeout_retry(const simcore::db::JobRow& jr, std::string& detail) {
+        if (!jr.vm_kv.has_value() || jr.vm_kv->empty()) return DbResult<void>::Ok();
+
+        auto latest = simcore::db::JobEventsRepo::GetLatestPayload(jr.job_id, "RESULTS");
+        if (!latest.ok || !latest.value.has_value() || latest.value->empty()) return DbResult<void>::Ok();
+
+        IniDoc result_doc = IniDoc::parse(*latest.value);
+        uint32_t dw_err = static_cast<uint32_t>(simcore::RunToBpOutcome::Unknown);
+        if (result_doc.has_section("BattleSingleTurn.Results")) {
+            dw_err = result_doc.section_kv("BattleSingleTurn.Results").get_u32("dw_err", dw_err);
+        }
+        else if (result_doc.has_section(simcore::db::codec::battle::run::ResultsIni::SECTION_NAME)) {
+            dw_err = result_doc.section_kv(simcore::db::codec::battle::run::ResultsIni::SECTION_NAME).get_u32("dw_err", dw_err);
+        }
+        else {
+            return DbResult<void>::Ok();
+        }
+
+        const bool hit_timeout = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::Timeout);
+        const bool hit_vi_stall = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::ViStalled);
+        if (!hit_timeout && !hit_vi_stall) return DbResult<void>::Ok();
+
+        IniDoc vm_doc = IniDoc::parse(*jr.vm_kv);
+        if (!vm_doc.has_section(simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME)) return DbResult<void>::Ok();
+
+        auto bp = simcore::db::codec::battle::run::BlueprintIni::from_section(vm_doc);
+        const uint32_t old_run = bp.run_ms;
+        const uint32_t old_vi = bp.vi_stall_ms;
+
+        if (hit_timeout) bp.run_ms = double_u32_limit(bp.run_ms);
+        if (hit_vi_stall) bp.vi_stall_ms = double_u32_limit(bp.vi_stall_ms);
+
+        if (bp.run_ms == old_run && bp.vi_stall_ms == old_vi) return DbResult<void>::Ok();
+
+        bp.set_section(vm_doc);
+        auto set = simcore::db::JobsRepo::SetVmKv(jr.job_id, vm_doc.to_string_sorted());
+        if (!set.ok) return DbResult<void>::Err(set.error);
+
+        if (hit_timeout) detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(bp.run_ms) + " ";
+        if (hit_vi_stall) detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(bp.vi_stall_ms);
+        return DbResult<void>::Ok();
+    }
+
     static DbResult<bool> maybe_auto_retry_failed_explorer(const simcore::db::JobRow& jr) {
         if (jr.program_kind != simcore::PK_BattleSingleTurnRunner) return DbResult<bool>::Ok(false);
         if (jr.state != "FAILED") return DbResult<bool>::Ok(false);
         if (jr.attempts >= jr.max_attempts) return DbResult<bool>::Ok(false);
 
+        std::string detail;
+        auto tune = maybe_expand_limits_for_timeout_retry(jr, detail);
+        if (!tune.ok) return DbResult<bool>::Err(tune.error);
+
         auto rr = JobsRepo::Requeue(jr.job_id);
         if (!rr.ok) return DbResult<bool>::Err(rr.error);
 
         std::string payload = "attempt " + std::to_string(jr.attempts) + "/" + std::to_string(jr.max_attempts);
+        if (!detail.empty()) payload += " | adjusted " + detail;
         (void)simcore::db::JobEventsRepo::Append(jr.job_id, "AUTO_RETRY", payload);
         return DbResult<bool>::Ok(true);
     }
