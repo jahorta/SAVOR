@@ -187,6 +187,11 @@ namespace simcore {
         return static_cast<uint32_t>((std::min)(doubled, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
     }
 
+    static uint32_t add_u32_limit(uint32_t v, uint32_t delta) {
+        const uint64_t sum = static_cast<uint64_t>(v) + static_cast<uint64_t>(delta);
+        return static_cast<uint32_t>((std::min)(sum, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
+    }
+
     static DbResult<void> maybe_expand_limits_for_timeout_retry(const simcore::db::JobRow& jr, const simcore::programs::RetryTuningInfo& info, std::string& detail) {
         if (!jr.vm_kv.has_value() || jr.vm_kv->empty()) return DbResult<void>::Ok();
 
@@ -211,18 +216,49 @@ namespace simcore {
         const uint32_t old_run = bp.get_u32("run_ms", 0);
         const uint32_t old_vi = bp.get_u32("vi_stall_ms", 0);
 
-        const uint32_t new_run = hit_timeout ? double_u32_limit(old_run) : old_run;
-        const uint32_t new_vi = hit_vi_stall ? double_u32_limit(old_vi) : old_vi;
+        const bool run_is_zero = old_run == 0;
+        const bool vi_is_zero = old_vi == 0;
+        const bool has_headroom_x10 = bp.has("headroom_x10");
 
-        if (new_run == old_run && new_vi == old_vi) return DbResult<void>::Ok();
+        uint32_t new_run = old_run;
+        uint32_t new_vi = old_vi;
+        uint32_t old_headroom_x10 = 0;
+        uint32_t new_headroom_x10 = 0;
+
+        if ((run_is_zero || vi_is_zero) && has_headroom_x10) {
+            old_headroom_x10 = bp.get_u32("headroom_x10", 0);
+            new_headroom_x10 = add_u32_limit(old_headroom_x10, 5);
+            vm_doc.set(info.blueprint_section_name, "headroom_x10", std::to_string(new_headroom_x10));
+            detail += "headroom_x10:" + std::to_string(old_headroom_x10) + "->" + std::to_string(new_headroom_x10);
+        }
+        else if (run_is_zero || vi_is_zero) {
+            if (run_is_zero) {
+                new_run = add_u32_limit(old_run, 50000);
+            }
+            if (vi_is_zero) {
+                new_vi = add_u32_limit(old_vi, 3000);
+            }
+        }
+        else {
+            new_run = hit_timeout ? double_u32_limit(old_run) : old_run;
+            new_vi = hit_vi_stall ? double_u32_limit(old_vi) : old_vi;
+        }
+
+        if (new_run == old_run && new_vi == old_vi && new_headroom_x10 == old_headroom_x10) return DbResult<void>::Ok();
 
         if (new_run != old_run) vm_doc.set(info.blueprint_section_name, "run_ms", std::to_string(new_run));
         if (new_vi != old_vi) vm_doc.set(info.blueprint_section_name, "vi_stall_ms", std::to_string(new_vi));
         auto set = simcore::db::JobsRepo::SetVmKv(jr.job_id, vm_doc.to_string_sorted());
         if (!set.ok) return DbResult<void>::Err(set.error);
 
-        if (new_run != old_run) detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(new_run) + " ";
-        if (new_vi != old_vi) detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(new_vi);
+        if (new_run != old_run) {
+            if (!detail.empty()) detail += " ";
+            detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(new_run);
+        }
+        if (new_vi != old_vi) {
+            if (!detail.empty()) detail += " ";
+            detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(new_vi);
+        }
         return DbResult<void>::Ok();
     }
 
