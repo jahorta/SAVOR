@@ -400,7 +400,7 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at, savestate_id "
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, attempts, queued_at, savestate_id "
             "FROM jobs ";
 
         // WHERE
@@ -454,8 +454,9 @@ namespace simcore::db {
                 r.program_kind = sqlite3_column_int(st, 2);
                 r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 r.priority = sqlite3_column_int(st, 4);
-                r.queued_at = sqlite3_column_int64(st, 5);
-                if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 6);
+                r.attempts = sqlite3_column_int(st, 5);
+                r.queued_at = sqlite3_column_int64(st, 6);
+                if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 7);
                 page.items.push_back(std::move(r));
             }
             else if (rc == SQLITE_DONE) {
@@ -497,7 +498,7 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT job_id, job_set_id, program_kind, state, priority, queued_at, savestate_id FROM jobs ";
+        sql << "SELECT job_id, job_set_id, program_kind, state, priority, attempts, queued_at, savestate_id FROM jobs ";
 
         bool hasWhere = false;
         auto add_and = [&](bool cond) { if (cond) { sql << (hasWhere ? " AND " : " WHERE "); hasWhere = true; } };
@@ -546,8 +547,9 @@ namespace simcore::db {
                 r.program_kind = sqlite3_column_int(st, 2);
                 r.state = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 r.priority = sqlite3_column_int(st, 4);
-                r.queued_at = sqlite3_column_int64(st, 5);                
-                if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 6);
+                r.attempts = sqlite3_column_int(st, 5);
+                r.queued_at = sqlite3_column_int64(st, 6);
+                if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.savestate_id = sqlite3_column_int64(st, 7);
                 page.items.push_back(std::move(r));
             }
             else if (rc == SQLITE_DONE) {

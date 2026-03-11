@@ -278,12 +278,13 @@ void JobsPane::Draw() {
     apply_pending_scroll_if_any();
     maybe_refresh();
 
-    if (ImGui::BeginTable("JobsTable", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
+    if (ImGui::BeginTable("JobsTable", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("id");
         ImGui::TableSetupColumn("job_set_id");
         ImGui::TableSetupColumn("savestate_id");
         ImGui::TableSetupColumn("program_kind");
         ImGui::TableSetupColumn("state");
+        ImGui::TableSetupColumn("attempts");
         ImGui::TableSetupColumn("queued_at");
         ImGui::TableSetupColumn("progress", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
@@ -319,11 +320,13 @@ void JobsPane::Draw() {
                 ImGui::TableSetColumnIndex(4);
                 ImGui::TextUnformatted(r.state.c_str());
                 ImGui::TableSetColumnIndex(5);
+                ImGui::TextUnformatted(std::to_string(r.attempts).c_str());
+                ImGui::TableSetColumnIndex(6);
                 {
                     auto ts = fmt_time(r.queued_at);
                     ImGui::TextUnformatted(ts.c_str());
                 }
-                ImGui::TableSetColumnIndex(6);
+                ImGui::TableSetColumnIndex(7);
                 {
                     auto it = summaries.find(r.job_id);
 
