@@ -13,6 +13,7 @@
 #include <future>
 #include <optional>
 #include <string>
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +64,45 @@ namespace {
 #endif
         std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
         return std::string(buf);
+    }
+
+    static void draw_segmented_progress(int64_t succeeded, int64_t failed, int64_t total) {
+        const float width = ImGui::GetContentRegionAvail().x;
+        const float height = ImGui::GetTextLineHeight();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 sz(width, height);
+        ImGui::InvisibleButton("##seg_progress", sz);
+
+        auto* dl = ImGui::GetWindowDrawList();
+        const ImU32 col_bg = ImGui::GetColorU32(ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+        const ImU32 col_success = ImGui::GetColorU32(ImVec4(0.20f, 0.70f, 0.25f, 1.0f));
+        const ImU32 col_failed = ImGui::GetColorU32(ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
+        const ImU32 col_remain = ImGui::GetColorU32(ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+
+        dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), col_bg, 3.0f);
+
+        if (total <= 0) return;
+
+        const int64_t success_clamped = (std::max)(int64_t(0), (std::min)(succeeded, total));
+        const int64_t failed_clamped = (std::max)(int64_t(0), (std::min)(failed, total - success_clamped));
+        const int64_t remain = (std::max)(int64_t(0), total - success_clamped - failed_clamped);
+
+        const float success_w = sz.x * (float)success_clamped / (float)total;
+        const float failed_w = sz.x * (float)failed_clamped / (float)total;
+        const float remain_w = sz.x * (float)remain / (float)total;
+
+        float x0 = p.x;
+        if (success_w > 0.0f) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + success_w, p.y + sz.y), col_success);
+            x0 += success_w;
+        }
+        if (failed_w > 0.0f) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + failed_w, p.y + sz.y), col_failed, 0.0f);
+            x0 += failed_w;
+        }
+        if (remain_w > 0.0f) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + remain_w, p.y + sz.y), col_remain);
+        }
     }
 
     static void kick_fetch() {
@@ -276,9 +316,13 @@ void JobSetsPane::Draw() {
 
             ImGui::TableSetColumnIndex(4);
             {
-                const float frac = (r.total_jobs > 0) ? (float)r.completed_jobs / (float)r.total_jobs : 0.0f;
-                std::string overlay = std::to_string((long long)r.completed_jobs) + " / " + std::to_string((long long)r.total_jobs);
-                ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay.c_str());
+                draw_segmented_progress(r.succeeded_jobs, r.failed_jobs, r.total_jobs);
+                ImGui::TextDisabled("ok:%lld fail:%lld rem:%lld | done:%lld / %lld",
+                    (long long)r.succeeded_jobs,
+                    (long long)r.failed_jobs,
+                    (long long)((std::max)(int64_t(0), r.total_jobs - r.succeeded_jobs - r.failed_jobs)),
+                    (long long)r.completed_jobs,
+                    (long long)r.total_jobs);
                 if (r.expected_total.has_value()) {
                     ImGui::TextDisabled("planned: %lld", (long long)*r.expected_total);
                 }

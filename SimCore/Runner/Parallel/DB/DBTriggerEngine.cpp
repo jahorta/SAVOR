@@ -4,8 +4,12 @@
 #include "../../DB/Scheduling/JobsRepo.h"
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../DB/ProgramDB/IProgramDBCodec.h"
+#include "../../DB/Scheduling/JobEventsRepo.h"
+#include "../../Runner/IPC/Wire.h"
 #include "../../Utils/IniDoc.h"
 #include <sqlite3.h>
+#include <algorithm>
+#include <limits>
 
 using simcore::db::DbResult;
 using simcore::db::JobsRepo;
@@ -177,10 +181,78 @@ namespace {
 
 namespace simcore {
 
+    static uint32_t double_u32_limit(uint32_t v) {
+        if (v == 0) return 0;
+        const uint64_t doubled = static_cast<uint64_t>(v) * 2ull;
+        return static_cast<uint32_t>((std::min)(doubled, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
+    }
+
+    static DbResult<void> maybe_expand_limits_for_timeout_retry(const simcore::db::JobRow& jr, const simcore::programs::RetryTuningInfo& info, std::string& detail) {
+        if (!jr.vm_kv.has_value() || jr.vm_kv->empty()) return DbResult<void>::Ok();
+
+        auto latest = simcore::db::JobEventsRepo::GetLatestPayload(jr.job_id, "RESULTS");
+        if (!latest.ok || !latest.value.has_value() || latest.value->empty()) return DbResult<void>::Ok();
+
+        IniDoc result_doc = IniDoc::parse(*latest.value);
+        uint32_t dw_err = static_cast<uint32_t>(simcore::RunToBpOutcome::Unknown);
+        if (!result_doc.has_section(info.results_section_name)) {
+            return DbResult<void>::Ok();
+        }
+        dw_err = result_doc.section_kv(info.results_section_name).get_u32("dw_err", dw_err);
+
+        const bool hit_timeout = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::Timeout);
+        const bool hit_vi_stall = dw_err == static_cast<uint32_t>(simcore::RunToBpOutcome::ViStalled);
+        if (!hit_timeout && !hit_vi_stall) return DbResult<void>::Ok();
+
+        IniDoc vm_doc = IniDoc::parse(*jr.vm_kv);
+        if (!vm_doc.has_section(info.blueprint_section_name)) return DbResult<void>::Ok();
+        IniKV bp = vm_doc.section_kv(info.blueprint_section_name);
+
+        const uint32_t old_run = bp.get_u32("run_ms", 0);
+        const uint32_t old_vi = bp.get_u32("vi_stall_ms", 0);
+
+        const uint32_t new_run = hit_timeout ? double_u32_limit(old_run) : old_run;
+        const uint32_t new_vi = hit_vi_stall ? double_u32_limit(old_vi) : old_vi;
+
+        if (new_run == old_run && new_vi == old_vi) return DbResult<void>::Ok();
+
+        if (new_run != old_run) vm_doc.set(info.blueprint_section_name, "run_ms", std::to_string(new_run));
+        if (new_vi != old_vi) vm_doc.set(info.blueprint_section_name, "vi_stall_ms", std::to_string(new_vi));
+        auto set = simcore::db::JobsRepo::SetVmKv(jr.job_id, vm_doc.to_string_sorted());
+        if (!set.ok) return DbResult<void>::Err(set.error);
+
+        if (new_run != old_run) detail += "run_ms:" + std::to_string(old_run) + "->" + std::to_string(new_run) + " ";
+        if (new_vi != old_vi) detail += "vi_stall_ms:" + std::to_string(old_vi) + "->" + std::to_string(new_vi);
+        return DbResult<void>::Ok();
+    }
+
+    static DbResult<bool> maybe_auto_retry_failed_job(const simcore::db::JobRow& jr) {
+        auto* info = simcore::programs::get_retry_tuning_info((uint8_t)jr.program_kind);
+        if (!info) return DbResult<bool>::Ok(false);
+        if (jr.state != "FAILED") return DbResult<bool>::Ok(false);
+        if (jr.attempts >= jr.max_attempts) return DbResult<bool>::Ok(false);
+
+        std::string detail;
+        auto tune = maybe_expand_limits_for_timeout_retry(jr, *info, detail);
+        if (!tune.ok) return DbResult<bool>::Err(tune.error);
+
+        auto rr = JobsRepo::Requeue(jr.job_id);
+        if (!rr.ok) return DbResult<bool>::Err(rr.error);
+
+        std::string payload = "attempt " + std::to_string(jr.attempts) + "/" + std::to_string(jr.max_attempts);
+        if (!detail.empty()) payload += " | adjusted " + detail;
+        (void)simcore::db::JobEventsRepo::Append(jr.job_id, "AUTO_RETRY", payload);
+        return DbResult<bool>::Ok(true);
+    }
+
     DbResult<void> TriggerEngine::after_terminal(int64_t job_id) {
         auto jres = JobsRepo::Get(job_id);
         if (!jres.ok) return DbResult<void>::Err(jres.error);
         const auto jr = jres.value;
+
+        auto retry = maybe_auto_retry_failed_job(jr);
+        if (!retry.ok) return DbResult<void>::Err(retry.error);
+        if (retry.value) return DbResult<void>::Ok();
 
         // Job-scoped triggers
         {
