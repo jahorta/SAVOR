@@ -11,6 +11,7 @@ struct JobLite {
     int program_kind{};
     std::string state;
     int priority{};
+    int attempts{};
     int64_t queued_at{};
 };
 
