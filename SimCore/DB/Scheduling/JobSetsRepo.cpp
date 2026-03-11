@@ -151,7 +151,7 @@ namespace simcore::db {
     {
         auto* db = env.handle();
         std::ostringstream sql;
-        sql << "SELECT js.job_set_id, js.program_kind, "
+        sql << "SELECT js.job_set_id, js.parent_job_set_id, js.program_kind, "
             "CASE WHEN js.purpose IS NULL THEN '' ELSE js.purpose END AS purpose, "
             "CASE WHEN js.created_at IS NULL THEN 0  ELSE js.created_at END AS created_at, "
             "COALESCE(p.total, 0) AS total_jobs, "
@@ -196,18 +196,21 @@ namespace simcore::db {
             if (rc == SQLITE_ROW) {
                 JobSetLite r{};
                 r.job_set_id = sqlite3_column_int64(st, 0);
-                r.program_kind = sqlite3_column_int(st, 1);
-                if (sqlite3_column_type(st, 2) != SQLITE_NULL)
-                    r.purpose = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 2)));
+                if (sqlite3_column_type(st, 1) != SQLITE_NULL) {
+                    r.parent_job_set_id = sqlite3_column_int64(st, 1);
+                }
+                r.program_kind = sqlite3_column_int(st, 2);
+                if (sqlite3_column_type(st, 3) != SQLITE_NULL)
+                    r.purpose = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)));
                 else
                     r.purpose.clear();
-                r.created_at = sqlite3_column_int64(st, 3);
-                r.total_jobs = sqlite3_column_int64(st, 4);
-                r.completed_jobs = sqlite3_column_int64(st, 5);
-                r.succeeded_jobs = sqlite3_column_int64(st, 6);
-                r.failed_jobs = sqlite3_column_int64(st, 7);
-                if (sqlite3_column_type(st, 8) != SQLITE_NULL) {
-                    r.expected_total = sqlite3_column_int64(st, 8);
+                r.created_at = sqlite3_column_int64(st, 4);
+                r.total_jobs = sqlite3_column_int64(st, 5);
+                r.completed_jobs = sqlite3_column_int64(st, 6);
+                r.succeeded_jobs = sqlite3_column_int64(st, 7);
+                r.failed_jobs = sqlite3_column_int64(st, 8);
+                if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 9);
                 }
                 page.items.push_back(std::move(r));
             }
@@ -316,6 +319,106 @@ namespace simcore::db {
     {
         return DBService::instance().submit_res<std::optional<int64_t>>(OpType::Read, Priority::Normal, {},
             [=](DbEnv& env) { return impl_get_parent(env, job_set_id); });
+    }
+
+
+    static DbResult<std::vector<JobSetLite>> impl_list_families_for_seeds(
+        DbEnv& env,
+        const std::vector<int64_t>& seed_job_set_ids)
+    {
+        if (seed_job_set_ids.empty()) {
+            return DbResult<std::vector<JobSetLite>>::Ok({});
+        }
+
+        auto* db = env.handle();
+        std::ostringstream sql;
+        sql
+            << "WITH RECURSIVE seeds(job_set_id) AS (";
+        for (size_t i = 0; i < seed_job_set_ids.size(); ++i) {
+            if (i != 0) sql << " UNION ALL ";
+            sql << "SELECT ?" << (i + 1);
+        }
+        sql
+            << "), "
+            << "ancestors(job_set_id, parent_job_set_id) AS ("
+            << "  SELECT js.job_set_id, js.parent_job_set_id FROM job_sets js JOIN seeds s ON s.job_set_id = js.job_set_id "
+            << "  UNION "
+            << "  SELECT p.job_set_id, p.parent_job_set_id "
+            << "  FROM job_sets p JOIN ancestors a ON a.parent_job_set_id = p.job_set_id"
+            << "), "
+            << "roots(job_set_id) AS ("
+            << "  SELECT DISTINCT a.job_set_id FROM ancestors a "
+            << "  WHERE a.parent_job_set_id IS NULL "
+            << "     OR NOT EXISTS (SELECT 1 FROM job_sets p WHERE p.job_set_id = a.parent_job_set_id)"
+            << "), "
+            << "tree(job_set_id) AS ("
+            << "  SELECT job_set_id FROM roots "
+            << "  UNION "
+            << "  SELECT c.job_set_id FROM job_sets c JOIN tree t ON c.parent_job_set_id = t.job_set_id"
+            << ") "
+            << "SELECT js.job_set_id, js.parent_job_set_id, js.program_kind, "
+            << "CASE WHEN js.purpose IS NULL THEN '' ELSE js.purpose END AS purpose, "
+            << "CASE WHEN js.created_at IS NULL THEN 0 ELSE js.created_at END AS created_at, "
+            << "COALESCE(p.total, 0) AS total_jobs, "
+            << "COALESCE(p.terminal, 0) AS completed_jobs, "
+            << "COALESCE(p.succeeded, 0) AS succeeded_jobs, "
+            << "COALESCE(p.failed, 0) AS failed_jobs, "
+            << "js.expected_total "
+            << "FROM tree t "
+            << "JOIN job_sets js ON js.job_set_id = t.job_set_id "
+            << "LEFT JOIN v_job_set_progress_h p ON p.job_set_id = js.job_set_id "
+            << "ORDER BY js.created_at DESC, js.job_set_id DESC";
+
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<std::vector<JobSetLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+        }
+
+        for (size_t i = 0; i < seed_job_set_ids.size(); ++i) {
+            sqlite3_bind_int64(st, static_cast<int>(i + 1), seed_job_set_ids[i]);
+        }
+
+        std::vector<JobSetLite> out;
+        while (true) {
+            int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                JobSetLite r{};
+                r.job_set_id = sqlite3_column_int64(st, 0);
+                if (sqlite3_column_type(st, 1) != SQLITE_NULL) {
+                    r.parent_job_set_id = sqlite3_column_int64(st, 1);
+                }
+                r.program_kind = sqlite3_column_int(st, 2);
+                if (sqlite3_column_type(st, 3) != SQLITE_NULL)
+                    r.purpose = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)));
+                else
+                    r.purpose.clear();
+                r.created_at = sqlite3_column_int64(st, 4);
+                r.total_jobs = sqlite3_column_int64(st, 5);
+                r.completed_jobs = sqlite3_column_int64(st, 6);
+                r.succeeded_jobs = sqlite3_column_int64(st, 7);
+                r.failed_jobs = sqlite3_column_int64(st, 8);
+                if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 9);
+                }
+                out.push_back(std::move(r));
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                auto err = DbResult<std::vector<JobSetLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "step failed" });
+                sqlite3_finalize(st);
+                return err;
+            }
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<std::vector<JobSetLite>>::Ok(std::move(out));
+    }
+
+    std::future<DbResult<std::vector<JobSetLite>>> JobSetsRepo::ListFamiliesForSeedsAsync(const std::vector<int64_t>& seed_job_set_ids, RetryPolicy rp) {
+        return DBService::instance().submit_res<std::vector<JobSetLite>>(OpType::Read, Priority::Normal, rp,
+            [seed_job_set_ids](DbEnv& env) { return impl_list_families_for_seeds(env, seed_job_set_ids); });
     }
 
     static DbResult<void> impl_exec_simple(sqlite3* db, const char* sql, const char* stage) {

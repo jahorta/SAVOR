@@ -91,6 +91,7 @@ namespace simcore::db {
         static std::future<DbResult<Page<JobLite>>>      FetchJobsPage(const JobsListScope& scope, const PagedQuery<>& q, RetryPolicy rp = {});
         static std::future<DbResult<Page<JobEventLite>>> FetchJobEventsPage(const JobEventsListScope& scope, const PagedQuery<>& q, RetryPolicy rp = {});
         static std::future<DbResult<Page<JobSetLite>>>   FetchJobSetsPage(const JobSetsListScope& scope, const PagedQuery<>& q, RetryPolicy rp = {});
+        static std::future<DbResult<std::vector<JobSetLite>>> FetchJobSetFamiliesForSeedsAsync(const std::vector<int64_t>& seed_job_set_ids, RetryPolicy rp = {});
 
         class PollHandle {
         public:

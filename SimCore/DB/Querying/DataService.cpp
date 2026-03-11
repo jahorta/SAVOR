@@ -72,6 +72,10 @@ namespace simcore::db {
         return JobSetsRepo::ListRecentAsync(scope, q.before, q.limit, rp);
     }
 
+    std::future<DbResult<std::vector<JobSetLite>>> DataService::FetchJobSetFamiliesForSeedsAsync(const std::vector<int64_t>& seed_job_set_ids, RetryPolicy rp) {
+        return JobSetsRepo::ListFamiliesForSeedsAsync(seed_job_set_ids, rp);
+    }
+
     class DataService::JobsPoller : public DataService::PollHandle {
     public:
         JobsPoller(JobsListScope scope, std::chrono::milliseconds interval, int limit, SnapshotMailbox<Page<JobLite>>& out, RetryPolicy rp)
