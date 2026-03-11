@@ -10,6 +10,7 @@
 #include "Panes/ArtifactsPane.h"
 #include "Panes/SeedProbePane.h"
 #include "Panes/ExplorerRunsPane.h"
+#include "Panes/SettingsPane.h"
 
 #include "../Models/GuiLayoutStore.h"
 
@@ -22,6 +23,7 @@
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <fstream>
+#include <filesystem>
 #include "../Components/FutureQueue.h"
 #include "../Components/DropInbox.h"
 
@@ -101,6 +103,12 @@ bool GuiApp::Init(HWND hwnd) {
     }
 
     // Start DB + heartbeat
+    {
+        auto db_root_cfg = g_doc.get("Settings", "db_root", "");
+        if (!db_root_cfg.empty()) {
+            simcore::db::DBService::instance().set_database_root(db_root_cfg);
+        }
+    }
     simcore::db::DBService::instance().start();
     hb_.start(&status_);
     FutureQueue::Start();
@@ -189,6 +197,9 @@ void GuiApp::RenderFrame() {
     case GuiPane::ExplorerRuns:
         if (pane_swap) ExplorerRunsPane::OnActivated();
         ExplorerRunsPane::Draw();
+        break;
+    case GuiPane::Settings:
+        SettingsPane::Draw();
         break;
     default:
         ImGui::Begin("Content");
@@ -317,4 +328,19 @@ int GuiApp::GuiCfgGetInt(const std::string& section, const std::string& key, int
 
 void GuiApp::GuiCfgSetInt(const std::string& section, const std::string& key, int v) {
     g_doc.set(section, key, std::to_string(v));
+}
+
+
+std::string GuiApp::GetDatabaseRoot() const {
+    return simcore::db::DBService::instance().database_root().string();
+}
+
+bool GuiApp::ApplyDatabaseRootChange(const std::string& new_root, std::string& error) {
+    const bool had_coordinator = CoordinatorRunning();
+    if (had_coordinator) StopCoordinator();
+
+    hb_.stop();
+    const bool ok = simcore::db::DBService::instance().relocate_database_root(new_root, error);
+    hb_.start(&status_);
+    return ok;
 }

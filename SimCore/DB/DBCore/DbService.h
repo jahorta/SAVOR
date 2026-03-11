@@ -14,8 +14,10 @@
 #include <queue>
 #include <thread>
 #include <vector>
+#include <string>
 #include <array>
 #include <atomic>
+#include <filesystem>
 #include "DbResult.h"
 #include "DbRetryPolicy.h"
 
@@ -94,6 +96,17 @@ namespace simcore {
             // started, this has no effect.
             // It will always create/start a database located at (exe dir)/db/SoaSimDB.sqlite3
             void start();
+
+            // Optional override for the database root directory.
+            // Must be set before start().
+            void set_database_root(std::filesystem::path root);
+
+            // The active database root (or default root if never overridden).
+            std::filesystem::path database_root() const;
+
+            // Relocate the DB root by stopping the service, copying existing data,
+            // updating root, and restarting.
+            bool relocate_database_root(const std::filesystem::path& new_root, std::string& error);
 
             // Stop the service, flush pending tasks and join threads.
             // After stop(), no more tasks can be submitted until start().
@@ -185,6 +198,7 @@ namespace simcore {
             std::condition_variable m_notFull;
 
             std::atomic<bool> m_running{ false };
+            std::filesystem::path m_db_root;
 
             mutable std::mutex m_metrics_mtx;
             Stats m_stats{};
