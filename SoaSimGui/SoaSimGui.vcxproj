@@ -161,6 +161,7 @@
     <ClInclude Include="src\Components\ToastBus.h" />
     <ClInclude Include="src\Components\Win32Dialogs.h" />
     <ClInclude Include="src\GUI\App.h" />
+    <ClInclude Include="src\GUI\GuiCommon.h" />
     <ClInclude Include="src\GUI\Panes\ArtifactsPane.h" />
     <ClInclude Include="src\GUI\Panes\BattleRunSettingsPane.h" />
     <ClInclude Include="src\GUI\Panes\CoordinatorPane.h" />
