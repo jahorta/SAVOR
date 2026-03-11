@@ -51,21 +51,16 @@ namespace simcore {
         interrupt_in_flight_jobs_with_event();
         const size_t n = cfg_.max_concurrent_processes;
         desired_workers_.store(cfg_.desired_workers);
-        slots_.reserve(n);
-        for (size_t i = 0; i < n; ++i) {
-            auto s = std::make_unique<Slot>();
-            s->id = i;
-            s->proc = std::make_unique<ProcessWorker>();
-            s->proc->set_progress_queue(&progress_q_);
-            s->running.store(false);
-            s->phase = Slot::Phase::Uninitialized;
-            slots_.push_back(std::move(s));
-        }
-        for (size_t i = 0; i < desired_workers_.load() && i < slots_.size(); ++i) {
-            slots_[i]->running.store(true);
-            slots_[i]->phase = Slot::Phase::PendingStart;
-            enqueue_startup_slot(i);
-        }
+        auto s = std::make_unique<Slot>();
+        s->id = 0;
+        s->proc = std::make_unique<ProcessWorker>();
+        s->proc->set_progress_queue(&progress_q_);
+        s->running.store(false);
+        s->phase = Slot::Phase::Uninitialized;
+        slots_.push_back(std::move(s));
+        slots_[0]->running.store(true);
+        slots_[0]->phase = Slot::Phase::PendingStart;
+        enqueue_startup_slot(0);
         paused_.store(cfg_.start_to_paused);
         stop_.store(false);
         controller_ = std::thread([this] { set_this_thread_name_utf8("WKC-Controller"); controller_loop(); });
@@ -354,8 +349,16 @@ namespace simcore {
             advance_startup_once();
 
             // scale up
-            while (active_slot_count() < desired_workers_.load()) {
-                bool activated = false;
+            if (active_slot_count() < desired_workers_.load()) {
+                for (int i = slots_.size(); i < desired_workers_; i++) {
+                    auto s = std::make_unique<Slot>();
+                    s->id = i;
+                    s->proc = std::make_unique<ProcessWorker>();
+                    s->proc->set_progress_queue(&progress_q_);
+                    s->running.store(false);
+                    s->phase = Slot::Phase::Uninitialized;
+                    slots_.push_back(std::move(s));
+                }
                 for (auto& sp : slots_) {
                     auto& s = *sp;
                     if (s.running.load()) continue;
@@ -368,10 +371,8 @@ namespace simcore {
                     s.startup_attempts = 0;
                     s.phase = Slot::Phase::PendingStart;
                     enqueue_startup_slot(s.id);
-                    activated = true;
                     break;
                 }
-                if (!activated) break;
             }
 
             // scale down (idle-only shrink to avoid preempt)
