@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include "../Querying/DataService.h"
 
 using BRBp = simcore::db::codec::battle::run::BlueprintIni;
 using STJob = simcore::db::codec::battle::singleturn::JobIni;
@@ -411,8 +412,24 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresul
 }
 
 DbResult<std::string> BattleSingleTurnRunDBCodec::build_artifact_ini_from_db(int64_t job_id) {
-    ExplorerRunDBCodec c;
-    return c.build_artifact_ini_from_db(job_id);
+    ArtifactIniBuilder artifacts{};
+
+    auto jr = simcore::db::JobsRepo::Get(job_id);
+    if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+
+    if (!jr.value.vm_kv) return DbResult<std::string>::Err(jr.error);
+
+    IniKV kv = IniDoc::parse(*jr.value.vm_kv).section_kv(STJob::SECTION_NAME);
+    const uint64_t savestate_id = kv.get_i64("savestate_id", 0);
+
+    auto ss = SavestateRepo::Get(savestate_id);
+    if (!ss.ok) return DbResult<std::string>::Err(ss.error);
+    if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
+        "No Savestate found..." });
+
+    artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+
+    return DbResult<std::string>::Ok(artifacts.to_string());
 }
 
 DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) {
