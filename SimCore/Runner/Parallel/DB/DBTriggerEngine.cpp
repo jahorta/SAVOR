@@ -4,6 +4,8 @@
 #include "../../DB/Scheduling/JobsRepo.h"
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../DB/ProgramDB/IProgramDBCodec.h"
+#include "../../DB/Scheduling/JobEventsRepo.h"
+#include "../../Runner/IPC/Wire.h"
 #include "../../Utils/IniDoc.h"
 #include <sqlite3.h>
 
@@ -177,10 +179,27 @@ namespace {
 
 namespace simcore {
 
+    static DbResult<bool> maybe_auto_retry_failed_explorer(const simcore::db::JobRow& jr) {
+        if (jr.program_kind != simcore::PK_BattleSingleTurnRunner) return DbResult<bool>::Ok(false);
+        if (jr.state != "FAILED") return DbResult<bool>::Ok(false);
+        if (jr.attempts >= jr.max_attempts) return DbResult<bool>::Ok(false);
+
+        auto rr = JobsRepo::Requeue(jr.job_id);
+        if (!rr.ok) return DbResult<bool>::Err(rr.error);
+
+        std::string payload = "attempt " + std::to_string(jr.attempts) + "/" + std::to_string(jr.max_attempts);
+        (void)simcore::db::JobEventsRepo::Append(jr.job_id, "AUTO_RETRY", payload);
+        return DbResult<bool>::Ok(true);
+    }
+
     DbResult<void> TriggerEngine::after_terminal(int64_t job_id) {
         auto jres = JobsRepo::Get(job_id);
         if (!jres.ok) return DbResult<void>::Err(jres.error);
         const auto jr = jres.value;
+
+        auto retry = maybe_auto_retry_failed_explorer(jr);
+        if (!retry.ok) return DbResult<void>::Err(retry.error);
+        if (retry.value) return DbResult<void>::Ok();
 
         // Job-scoped triggers
         {

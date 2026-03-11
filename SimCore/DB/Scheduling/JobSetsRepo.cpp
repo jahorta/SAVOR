@@ -156,6 +156,8 @@ namespace simcore::db {
             "CASE WHEN js.created_at IS NULL THEN 0  ELSE js.created_at END AS created_at, "
             "COALESCE(p.total, 0) AS total_jobs, "
             "COALESCE(p.terminal, 0) AS completed_jobs, "
+            "COALESCE(p.succeeded, 0) AS succeeded_jobs, "
+            "COALESCE(p.failed, 0) AS failed_jobs, "
             "js.expected_total "
             "FROM job_sets js "
             "LEFT JOIN v_job_set_progress_h p ON p.job_set_id = js.job_set_id ";
@@ -202,8 +204,10 @@ namespace simcore::db {
                 r.created_at = sqlite3_column_int64(st, 3);
                 r.total_jobs = sqlite3_column_int64(st, 4);
                 r.completed_jobs = sqlite3_column_int64(st, 5);
-                if (sqlite3_column_type(st, 6) != SQLITE_NULL) {
-                    r.expected_total = sqlite3_column_int64(st, 6);
+                r.succeeded_jobs = sqlite3_column_int64(st, 6);
+                r.failed_jobs = sqlite3_column_int64(st, 7);
+                if (sqlite3_column_type(st, 8) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 8);
                 }
                 page.items.push_back(std::move(r));
             }

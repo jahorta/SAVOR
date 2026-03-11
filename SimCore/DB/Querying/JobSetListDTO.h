@@ -10,6 +10,8 @@ struct JobSetLite {
     int64_t created_at{}; // if not present in schema, set to 0 on read
     int64_t total_jobs{};
     int64_t completed_jobs{};
+    int64_t succeeded_jobs{};
+    int64_t failed_jobs{};
     std::optional<int64_t> expected_total{};
 };
 

@@ -414,6 +414,18 @@ namespace simcore::db {
         return fut;
     }
 
+    std::future<DbResult<void>> DataService::RestartFailedJobAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<void>> pr;
+        auto fut = pr.get_future();
+        std::thread([job_id, rp, p = std::move(pr)]() mutable {
+            auto r = JobsRepo::RestartFailedAsync(job_id, rp).get();
+            if (!r.ok) { p.set_value(DbResult<void>::Err(r.error)); return; }
+            (void)JobEventsRepo::AppendAsync(job_id, "RESTART", std::nullopt, rp).get();
+            p.set_value(DbResult<void>::Ok());
+            }).detach();
+        return fut;
+    }
+
     std::future<DbResult<void>> DataService::CancelJobAsync(int64_t job_id, RetryPolicy rp) {
         std::promise<DbResult<void>> pr;
         auto fut = pr.get_future();
