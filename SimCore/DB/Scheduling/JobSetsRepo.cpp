@@ -167,6 +167,22 @@ namespace simcore::db {
 
         if (scope.program_kind) { add_and(true); sql << "js.program_kind=?"; }
         if (scope.min_job_set_id) { add_and(true); sql << "js.job_set_id >= ?"; }
+        if (scope.state_filter.has_value()) {
+            switch (*scope.state_filter) {
+            case JobSetStateFilter::Completed:
+                add_and(true);
+                sql << "COALESCE(p.total, 0) > 0 AND COALESCE(p.terminal, 0) = COALESCE(p.total, 0)";
+                break;
+            case JobSetStateFilter::Incomplete:
+                add_and(true);
+                sql << "COALESCE(p.total, 0) > 0 AND COALESCE(p.terminal, 0) < COALESCE(p.total, 0)";
+                break;
+            case JobSetStateFilter::HasFailures:
+                add_and(true);
+                sql << "COALESCE(p.total, 0) > 0 AND COALESCE(p.failed, 0) > 0";
+                break;
+            }
+        }
         if (before) {
             add_and(true);
             sql << "(js.created_at < ? OR (js.created_at = ? AND js.job_set_id < ?))";

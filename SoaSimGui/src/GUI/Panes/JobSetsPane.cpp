@@ -61,6 +61,16 @@ namespace {
         return s;
     }
 
+    static const char* state_filter_label(const std::optional<JobSetStateFilter>& f) {
+        if (!f.has_value()) return "All";
+        switch (*f) {
+        case JobSetStateFilter::Completed: return "Completed";
+        case JobSetStateFilter::Incomplete: return "Incomplete";
+        case JobSetStateFilter::HasFailures: return "Has failures";
+        }
+        return "All";
+    }
+
     static std::string fmt_time(int64_t epoch_sec) {
         std::time_t t = (std::time_t)epoch_sec;
         char buf[32]{ 0 };
@@ -246,6 +256,7 @@ void JobSetsPane::Draw() {
     ImGui::Begin("Job Sets", nullptr, ImGuiWindowFlags_NoMove);
 
     static int selected_kind = -1;
+    static std::optional<JobSetStateFilter> selected_state{};
     static int page_sz = s.page_limit;
     static bool auto_ref = s.auto_refresh;
     static int refresh_sec = s.refresh_seconds;
@@ -263,9 +274,27 @@ void JobSetsPane::Draw() {
     }
 
     ImGui::SameLine();
+    if (ImGui::BeginCombo("State", state_filter_label(selected_state))) {
+        const bool all_selected = !selected_state.has_value();
+        if (ImGui::Selectable("All", all_selected)) selected_state.reset();
+
+        bool completed_selected = selected_state == JobSetStateFilter::Completed;
+        if (ImGui::Selectable("Completed", completed_selected)) selected_state = JobSetStateFilter::Completed;
+
+        bool incomplete_selected = selected_state == JobSetStateFilter::Incomplete;
+        if (ImGui::Selectable("Incomplete", incomplete_selected)) selected_state = JobSetStateFilter::Incomplete;
+
+        bool failed_selected = selected_state == JobSetStateFilter::HasFailures;
+        if (ImGui::Selectable("Has failures", failed_selected)) selected_state = JobSetStateFilter::HasFailures;
+
+        ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
     if (ImGui::Button("Apply")) {
         s.scope = {};
         if (selected_kind >= 0) s.scope.program_kind = selected_kind;
+        s.scope.state_filter = selected_state;
         s.before.reset();
         s.after.reset();
         s.page_limit = page_sz;
@@ -278,6 +307,7 @@ void JobSetsPane::Draw() {
     ImGui::SameLine();
     if (ImGui::Button("Reset")) {
         selected_kind = -1;
+        selected_state.reset();
         s.scope = {};
         s.before.reset();
         s.after.reset();
