@@ -290,12 +290,33 @@ namespace {
         int legend_max_pos{ 32 };
         std::vector<int> legend_all_deltas; // raw deltas (we'll dedupe/sample per draw)
 
+        // polling
+        int64_t polling_probe_id{ -1 };
+        int last_completed_count{ -1 };
+        double next_poll_time_s{ 0.0 };
+        bool poll_in_flight{ false };
+
         void reset_selection() {
             selected_probe_id = -1;
+            polling_probe_id = -1;
+            last_completed_count = -1;
+            next_poll_time_s = 0.0;
+            poll_in_flight = false;
         }
     };
 
     static UIState s;
+
+
+    static bool is_selected_probe(int64_t probe_id) {
+        return probe_id > 0 && s.selected_probe_id == probe_id;
+    }
+
+    static void invalidate_graph_cache_for_probe(int64_t probe_id) {
+        s.graph_cache.erase(GraphCacheKey{ probe_id, simcore::ElementFamily::Main });
+        s.graph_cache.erase(GraphCacheKey{ probe_id, simcore::ElementFamily::CStick });
+        s.graph_cache.erase(GraphCacheKey{ probe_id, simcore::ElementFamily::Triggers });
+    }
 
     static void fetch_page() {
         PagedQuery<> q;
@@ -389,6 +410,158 @@ namespace {
                 }
             );
         }
+    }
+
+    static void force_refresh_probe_data(int64_t probe_id) {
+        FutureQueue::Enqueue(
+            SeedProbeRepo::GetAsync(probe_id),
+            [probe_id](DbResult<SeedProbeRow> r) {
+                if (!r.ok) {
+                    GuiToastBus::Error("Unable to refresh SeedProbeRow");
+                    return;
+                }
+                if (!is_selected_probe(probe_id)) return;
+                s.probe_cache.set(probe_id, r.value);
+            },
+            [](std::exception_ptr) {
+                GuiToastBus::Error("Exception while refreshing SeedProbeRow");
+            }
+        );
+
+        FutureQueue::Enqueue(
+            DeltaSeedRepo::ListGridForProbeAsync(probe_id),
+            [probe_id](DbResult<std::vector<DeltaSeedRow>> r) {
+                if (!r.ok) {
+                    GuiToastBus::Error("Unable to refresh grid DeltaSeed rows");
+                    return;
+                }
+                if (!is_selected_probe(probe_id)) return;
+                s.grid_cache.set(probe_id, r.value);
+                invalidate_graph_cache_for_probe(probe_id);
+                s.last_completed_count = (int)r.value.size();
+            },
+            [](std::exception_ptr) {
+                GuiToastBus::Error("Exception while refreshing grid DeltaSeed rows");
+            }
+        );
+
+        FutureQueue::Enqueue(
+            DeltaSeedRepo::ListUniqueForProbeAsync(probe_id),
+            [probe_id](DbResult<std::vector<DeltaSeedRow>> r) {
+                if (!r.ok) {
+                    GuiToastBus::Error("Unable to refresh unique DeltaSeed rows");
+                    return;
+                }
+                if (!is_selected_probe(probe_id)) return;
+                s.unique_cache.set(probe_id, r.value);
+            },
+            [](std::exception_ptr) {
+                GuiToastBus::Error("Exception while refreshing unique DeltaSeed rows");
+            }
+        );
+    }
+
+    static void poll_selected_probe_if_due() {
+        if (s.selected_probe_id <= 0) {
+            s.polling_probe_id = -1;
+            s.poll_in_flight = false;
+            return;
+        }
+
+        auto pr = s.probe_cache.get(s.selected_probe_id);
+        if (!pr || pr->status != "running") {
+            s.polling_probe_id = -1;
+            s.poll_in_flight = false;
+            return;
+        }
+
+        if (s.polling_probe_id != s.selected_probe_id) {
+            s.polling_probe_id = s.selected_probe_id;
+            s.last_completed_count = -1;
+            s.next_poll_time_s = 0.0;
+            s.poll_in_flight = false;
+        }
+
+        const double now = ImGui::GetTime();
+        if (s.poll_in_flight || now < s.next_poll_time_s) return;
+
+        const int64_t probe_id = s.selected_probe_id;
+        s.poll_in_flight = true;
+        s.next_poll_time_s = now + 2.0;
+
+        FutureQueue::Enqueue(
+            SeedProbeRepo::GetAsync(probe_id),
+            [probe_id](DbResult<SeedProbeRow> rowr) {
+                if (!is_selected_probe(probe_id)) {
+                    s.poll_in_flight = false;
+                    return;
+                }
+                if (!rowr.ok) {
+                    GuiToastBus::Error("Unable to poll selected seedprobe");
+                    s.poll_in_flight = false;
+                    return;
+                }
+
+                s.probe_cache.set(probe_id, rowr.value);
+                if (rowr.value.status != "running") {
+                    force_refresh_probe_data(probe_id);
+                    s.poll_in_flight = false;
+                    return;
+                }
+
+                FutureQueue::Enqueue(
+                    DeltaSeedRepo::ListGridForProbeAsync(probe_id),
+                    [probe_id](DbResult<std::vector<DeltaSeedRow>> gridr) {
+                        if (!is_selected_probe(probe_id)) {
+                            s.poll_in_flight = false;
+                            return;
+                        }
+                        if (!gridr.ok) {
+                            GuiToastBus::Error("Unable to poll grid DeltaSeed rows");
+                            s.poll_in_flight = false;
+                            return;
+                        }
+
+                        const int completed_count = (int)gridr.value.size();
+                        const bool progressed = (s.last_completed_count < 0) || (completed_count > s.last_completed_count);
+                        s.last_completed_count = completed_count;
+
+                        if (!progressed) {
+                            s.poll_in_flight = false;
+                            return;
+                        }
+
+                        s.grid_cache.set(probe_id, gridr.value);
+                        invalidate_graph_cache_for_probe(probe_id);
+
+                        FutureQueue::Enqueue(
+                            DeltaSeedRepo::ListUniqueForProbeAsync(probe_id),
+                            [probe_id](DbResult<std::vector<DeltaSeedRow>> uniqr) {
+                                if (is_selected_probe(probe_id) && uniqr.ok) {
+                                    s.unique_cache.set(probe_id, uniqr.value);
+                                }
+                                else if (is_selected_probe(probe_id) && !uniqr.ok) {
+                                    GuiToastBus::Error("Unable to poll unique DeltaSeed rows");
+                                }
+                                s.poll_in_flight = false;
+                            },
+                            [](std::exception_ptr) {
+                                GuiToastBus::Error("Exception while polling unique DeltaSeed rows");
+                                s.poll_in_flight = false;
+                            }
+                        );
+                    },
+                    [](std::exception_ptr) {
+                        GuiToastBus::Error("Exception while polling grid DeltaSeed rows");
+                        s.poll_in_flight = false;
+                    }
+                );
+            },
+            [](std::exception_ptr) {
+                GuiToastBus::Error("Exception while polling selected seedprobe");
+                s.poll_in_flight = false;
+            }
+        );
     }
 
     static void build_graph_cache_if_needed(int64_t probe_id) {
@@ -494,7 +667,15 @@ namespace {
                 {
                     auto fn = s.savestate_filename_cache.get(r.savestate_id);
                     if (fn) ImGui::TextUnformatted(fn->c_str());
-                    else ImGui::TextDisabled("…");
+                    const bool selection_changed = (s.selected_probe_id != r.id);
+                    if (selection_changed) {
+                        s.polling_probe_id = r.id;
+                        s.last_completed_count = -1;
+                        s.next_poll_time_s = 0.0;
+                        s.poll_in_flight = false;
+                        force_refresh_probe_data(r.id);
+                    }
+                    else ImGui::TextDisabled("Â…");
                 }
 
                 bool sel = (s.selected_probe_id == r.id);
@@ -534,7 +715,7 @@ namespace {
         }
 
         auto pr = s.probe_cache.get(s.selected_probe_id);
-        if (!pr) { ImGui::TextDisabled("Loading probe…"); return; }
+        if (!pr) { ImGui::TextDisabled("Loading probeÂ…"); return; }
 
         auto sav = SavestateRepo::GetByProbeId(s.selected_probe_id);
         std::string ss_name;
@@ -579,7 +760,7 @@ namespace {
                     // Title
                     ImGui::TextUnformatted(labels[i]);
 
-                    // Reserve the full column footprint (per × side), then center the square inside it
+                    // Reserve the full column footprint (per Ã— side), then center the square inside it
                     ImVec2 column_tl = ImGui::GetCursorScreenPos();
                     ImGui::Dummy(ImVec2(per, side));
 
@@ -621,7 +802,7 @@ namespace {
         if (ImGui::BeginChild("C", ImVec2(0, 0), true)) {
             auto uopt = s.unique_cache.get(s.selected_probe_id);
             if (!uopt) {
-                ImGui::TextDisabled("Loading unique rows…");
+                ImGui::TextDisabled("Loading unique rowsÂ…");
             }
             else {
                 const bool have_neutral = (pr->neutral_seed >= 0);
@@ -655,13 +836,15 @@ namespace {
 
                     // Sorted unique rows (by resulting seed)
                     if (!have_neutral) {
-                        // We can’t compute resulting seeds without neutral; show a hint.
+                        // We canÂ’t compute resulting seeds without neutral; show a hint.
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
                         ImGui::TextDisabled("Unique results require a neutral seed.");
                         ImGui::TableNextColumn();
                         ImGui::TextDisabled("n/a");
                     }
+    poll_selected_probe_if_due();
+
                     else {
                         for (auto& [seed, row] : items) {
                             ImGui::TableNextRow();
