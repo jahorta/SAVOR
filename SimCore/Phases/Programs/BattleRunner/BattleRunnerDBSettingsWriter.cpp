@@ -50,7 +50,7 @@ namespace simcore::phases {
                 if (!atom.ok) return DbResult<void>::Err(atom.error);
                 actors.emplace_back( actor_slot, atom.value );
             }
-            const int32_t fake_cnt = count_fake_in_turn(tp);
+            const int32_t fake_cnt = tp.fake_attack_count;
             auto rt = BattlePlanTurnRepo::ReplaceTurnByPlan(plan_id, turn_idx, fake_cnt, std::move(actors));
             if (!rt.ok) return DbResult<void>::Err(rt.error);
         }
