@@ -11,10 +11,12 @@
 #include <chrono>
 #include <ctime>
 #include <future>
+#include <functional>
 #include <optional>
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace std::chrono;
@@ -36,9 +38,15 @@ namespace {
         std::future<simcore::db::DbResult<Page<JobSetLite>>> fut_page;
         bool fetch_in_flight = false;
 
+        std::future<simcore::db::DbResult<std::vector<JobSetLite>>> fut_family;
+        bool family_in_flight = false;
+        std::vector<JobSetLite> family_items;
+
         std::future<simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>> fut_kinds;
         bool kinds_in_flight = false;
         std::unordered_map<int, std::string> program_names;
+
+        std::unordered_set<int64_t> expanded_job_set_ids;
 
         int64_t pending_delete_job_set_id = 0;
         bool request_delete_modal_open = false;
@@ -105,6 +113,15 @@ namespace {
         }
     }
 
+    static void kick_family_fetch(const std::vector<JobSetLite>& seeds) {
+        auto& s = S();
+        std::vector<int64_t> ids;
+        ids.reserve(seeds.size());
+        for (const auto& r : seeds) ids.push_back(r.job_set_id);
+        s.family_in_flight = true;
+        s.fut_family = simcore::db::DataService::FetchJobSetFamiliesForSeedsAsync(ids);
+    }
+
     static void kick_fetch() {
         auto& s = S();
         if (s.fetch_in_flight) return;
@@ -121,8 +138,8 @@ namespace {
     static void maybe_refresh() {
         auto& s = S();
         if (!s.auto_refresh) return;
-        if (s.before || s.after) return; // only newest page
-        if (s.fetch_in_flight) return;
+        if (s.before || s.after) return;
+        if (s.fetch_in_flight || s.family_in_flight) return;
         if (duration_cast<seconds>(steady_clock::now() - s.last_fetch).count() >= s.refresh_seconds) {
             kick_fetch();
         }
@@ -139,9 +156,26 @@ namespace {
         s.fetch_in_flight = false;
         if (r.ok) {
             s.page = std::move(r.value);
+            s.family_items = s.page.items;
+            kick_family_fetch(s.page.items);
         }
         else {
             s.page = {};
+            s.family_items.clear();
+        }
+    }
+
+    static void consume_family_if_ready() {
+        auto& s = S();
+        if (!s.family_in_flight) return;
+        using namespace std::chrono_literals;
+        if (!s.fut_family.valid()) return;
+        if (s.fut_family.wait_for(0ms) != std::future_status::ready) return;
+
+        auto r = s.fut_family.get();
+        s.family_in_flight = false;
+        if (r.ok) {
+            s.family_items = std::move(r.value);
         }
     }
 
@@ -186,15 +220,24 @@ namespace {
             GuiToastBus::Error("Delete failed", r.error.message);
         }
     }
+
+    static void prune_expansion_state(const std::vector<JobSetLite>& rows) {
+        auto& s = S();
+        std::unordered_set<int64_t> present;
+        present.reserve(rows.size());
+        for (const auto& r : rows) present.insert(r.job_set_id);
+        for (auto it = s.expanded_job_set_ids.begin(); it != s.expanded_job_set_ids.end();) {
+            if (present.find(*it) == present.end()) it = s.expanded_job_set_ids.erase(it);
+            else ++it;
+        }
+    }
 }
 
 void JobSetsPane::OnActivated() {
     auto& s = S();
-    s.before.reset();
-    s.after.reset();
     s.program_names.clear();
     kick_kinds_fetch();
-    if (!s.fetch_in_flight) kick_fetch();
+    if (!s.fetch_in_flight && s.family_items.empty()) kick_fetch();
 }
 
 void JobSetsPane::Draw() {
@@ -228,6 +271,7 @@ void JobSetsPane::Draw() {
         s.page_limit = page_sz;
         s.auto_refresh = auto_ref;
         s.refresh_seconds = refresh_sec;
+        s.family_items.clear();
         kick_fetch();
     }
 
@@ -243,6 +287,7 @@ void JobSetsPane::Draw() {
         auto_ref = true;
         s.refresh_seconds = 2;
         refresh_sec = 2;
+        s.family_items.clear();
         kick_fetch();
     }
 
@@ -262,6 +307,7 @@ void JobSetsPane::Draw() {
     if (ImGui::Button("Prev")) {
         s.after = s.page.prev;
         s.before.reset();
+        s.family_items.clear();
         kick_fetch();
     }
     if (!has_prev) ImGui::EndDisabled();
@@ -271,6 +317,7 @@ void JobSetsPane::Draw() {
     if (ImGui::Button("Next")) {
         s.before = s.page.next;
         s.after.reset();
+        s.family_items.clear();
         kick_fetch();
     }
     if (!has_next) ImGui::EndDisabled();
@@ -278,6 +325,7 @@ void JobSetsPane::Draw() {
     ImGui::Separator();
 
     consume_fetch_if_ready();
+    consume_family_if_ready();
     consume_kinds_fetch_if_ready();
     consume_delete_if_ready();
     maybe_refresh();
@@ -291,59 +339,113 @@ void JobSetsPane::Draw() {
         ImGui::TableSetupColumn("open_jobs");
         ImGui::TableHeadersRow();
 
-        for (const auto& r : s.page.items) {
-            ImGui::PushID((int)r.job_set_id);
+        const auto& rows = s.family_items;
+        prune_expansion_state(rows);
+
+        std::unordered_map<int64_t, const JobSetLite*> by_id;
+        std::unordered_map<int64_t, std::vector<const JobSetLite*>> children;
+        std::vector<const JobSetLite*> roots;
+        by_id.reserve(rows.size());
+        children.reserve(rows.size());
+
+        for (const auto& r : rows) by_id[r.job_set_id] = &r;
+        for (const auto& r : rows) {
+            if (r.parent_job_set_id.has_value()) {
+                auto pit = by_id.find(*r.parent_job_set_id);
+                if (pit != by_id.end()) {
+                    children[*r.parent_job_set_id].push_back(&r);
+                    continue;
+                }
+            }
+            roots.push_back(&r);
+        }
+
+        auto sorter = [](const JobSetLite* a, const JobSetLite* b) {
+            if (a->created_at != b->created_at) return a->created_at > b->created_at;
+            return a->job_set_id > b->job_set_id;
+        };
+        std::sort(roots.begin(), roots.end(), sorter);
+        for (auto& kv : children) std::sort(kv.second.begin(), kv.second.end(), sorter);
+
+        std::unordered_set<int64_t> active;
+        active.reserve(rows.size());
+
+        std::function<void(const JobSetLite*)> draw_node = [&](const JobSetLite* r) {
+            if (!r) return;
+            if (active.find(r->job_set_id) != active.end()) return;
+            active.insert(r->job_set_id);
+
+            ImGui::PushID((int)r->job_set_id);
             ImGui::TableNextRow();
 
             ImGui::TableSetColumnIndex(0);
-            ImGui::Text("%lld", (long long)r.job_set_id);
+            auto itc = children.find(r->job_set_id);
+            const bool has_children = (itc != children.end() && !itc->second.empty());
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAllColumns;
+            if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+            const bool remembered_open = s.expanded_job_set_ids.find(r->job_set_id) != s.expanded_job_set_ids.end();
+            ImGui::SetNextItemOpen(remembered_open, ImGuiCond_Always);
+            bool is_open = ImGui::TreeNodeEx("##node", flags, "%lld", (long long)r->job_set_id);
+            if (has_children && ImGui::IsItemToggledOpen()) {
+                if (is_open) s.expanded_job_set_ids.insert(r->job_set_id);
+                else s.expanded_job_set_ids.erase(r->job_set_id);
+            }
 
             ImGui::TableSetColumnIndex(1);
             {
-                auto it = s.program_names.find(r.program_kind);
+                auto it = s.program_names.find(r->program_kind);
                 if (it != s.program_names.end()) ImGui::TextUnformatted(it->second.c_str());
-                else ImGui::Text("kind %d", r.program_kind);
+                else ImGui::Text("kind %d", r->program_kind);
             }
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(r.purpose.empty() ? "(none)" : r.purpose.c_str());
+            ImGui::TextUnformatted(r->purpose.empty() ? "(none)" : r->purpose.c_str());
 
             ImGui::TableSetColumnIndex(3);
             {
-                auto ts = fmt_time(r.created_at);
+                auto ts = fmt_time(r->created_at);
                 ImGui::TextUnformatted(ts.c_str());
             }
 
             ImGui::TableSetColumnIndex(4);
             {
-                draw_segmented_progress(r.succeeded_jobs, r.failed_jobs, r.total_jobs);
+                draw_segmented_progress(r->succeeded_jobs, r->failed_jobs, r->total_jobs);
                 ImGui::TextDisabled("ok:%lld fail:%lld rem:%lld | done:%lld / %lld",
-                    (long long)r.succeeded_jobs,
-                    (long long)r.failed_jobs,
-                    (long long)((std::max)(int64_t(0), r.total_jobs - r.succeeded_jobs - r.failed_jobs)),
-                    (long long)r.completed_jobs,
-                    (long long)r.total_jobs);
-                if (r.expected_total.has_value()) {
-                    ImGui::TextDisabled("planned: %lld", (long long)*r.expected_total);
+                    (long long)r->succeeded_jobs,
+                    (long long)r->failed_jobs,
+                    (long long)((std::max)(int64_t(0), r->total_jobs - r->succeeded_jobs - r->failed_jobs)),
+                    (long long)r->completed_jobs,
+                    (long long)r->total_jobs);
+                if (r->expected_total.has_value()) {
+                    ImGui::TextDisabled("planned: %lld", (long long)*r->expected_total);
                 }
             }
 
             ImGui::TableSetColumnIndex(5);
             if (ImGui::SmallButton("Open Jobs")) {
-                JobsPane::FocusJobSet(r.job_set_id);
+                JobsPane::FocusJobSet(r->job_set_id);
                 GuiLeftNav::SetActive(GuiPane::Jobs);
             }
 
             ImGui::SameLine();
             ImGui::BeginDisabled(s.delete_in_flight);
             if (ImGui::SmallButton("Delete")) {
-                s.pending_delete_job_set_id = r.job_set_id;
+                s.pending_delete_job_set_id = r->job_set_id;
                 s.request_delete_modal_open = true;
             }
             ImGui::EndDisabled();
 
+            if (has_children && is_open) {
+                for (const auto* c : itc->second) draw_node(c);
+                ImGui::TreePop();
+            }
+
             ImGui::PopID();
-        }
+            active.erase(r->job_set_id);
+        };
+
+        for (const auto* r : roots) draw_node(r);
 
         ImGui::EndTable();
     }
