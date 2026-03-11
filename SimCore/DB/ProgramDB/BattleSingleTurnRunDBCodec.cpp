@@ -324,17 +324,27 @@ DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id
 
     bool ok = success && r.w_err == 0 && r.dw_err == 0 && !r.savestate_path.empty() && std::filesystem::exists(r.savestate_path);
     if (ok) {
-        auto obj = simcore::db::ObjectStore::FinalizeFromFile(r.savestate_path, simcore::db::Compression::None, std::filesystem::path(r.savestate_path).filename().string());
-        if (!obj.ok) return DbResult<void>::Err(obj.error);
+        DbResult<void> save = DbResult<void>::Ok();
+        if (r.battle_outcome == (uint32_t)simcore::battle::Outcome::ReachedNextTurn || r.battle_outcome == (uint32_t)simcore::battle::Outcome::Victory) {
+            auto obj = simcore::db::ObjectStore::FinalizeFromFile(r.savestate_path, simcore::db::Compression::None, std::filesystem::path(r.savestate_path).filename().string());
+            if (!obj.ok) save = DbResult<void>::Err(obj.error);
+            else {
+                auto plan = simcore::db::SavestateRepo::Plan(simcore::db::SavestateType::BATTLE, "BattleSingleTurnRunner");
+                if (!plan.ok) save = DbResult<void>::Err(plan.error);
+                else {
+                    auto fin = simcore::db::SavestateRepo::Finalize(plan.value, obj.value.id);
+                    if (!fin.ok) save =  DbResult<void>::Err(fin.error);
+                    else{
+                        r.output_savestate_id = plan.value;
+                        r.set_section(ini);
+                    }
+                }
+            }
+        }
+
         std::filesystem::remove(r.savestate_path);
+        if (!save.ok) return save;
 
-        auto plan = simcore::db::SavestateRepo::Plan(simcore::db::SavestateType::BATTLE, "BattleSingleTurnRunner");
-        if (!plan.ok) return DbResult<void>::Err(plan.error);
-        auto fin = simcore::db::SavestateRepo::Finalize(plan.value, obj.value.id);
-        if (!fin.ok) return DbResult<void>::Err(fin.error);
-
-        r.output_savestate_id = plan.value;
-        r.set_section(ini);
         auto ev2 = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", ini.to_string_sorted());
         if (!ev2.ok) return DbResult<void>::Err(ev2.error);
 
@@ -425,7 +435,7 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_artifact_ini_from_db(int
     auto ss = SavestateRepo::Get(savestate_id);
     if (!ss.ok) return DbResult<std::string>::Err(ss.error);
     if (!ss.value.has_value()) return DbResult<std::string>::Err({ DbErrorKind::NotFound, 0,
-        "No Savestate found..." });
+        "No Savestate found/saved..." });
 
     artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
 
