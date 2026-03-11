@@ -1,4 +1,4 @@
-#include "ExplorerRunsPane.h"
+﻿#include "ExplorerRunsPane.h"
 
 #include "imgui.h"
 #include "DB/Querying/DataService.h"
@@ -29,8 +29,8 @@ using namespace simcore::db;
 using namespace std::chrono;
 
 namespace {
-    static constexpr const char* kIconSuccess = (const char*)u8"\u25CF";
-    static constexpr const char* kIconNoSuccess = (const char*)u8"\u25CB";
+    static constexpr const char* kIconSuccess = "\xE2\x97\x8F"; // U+25CF
+    static constexpr const char* kIconNoSuccess = "\xE2\x97\x8B"; // U+25CB
 
     struct WaveMeta {
         int64_t root_group_id{-1};
