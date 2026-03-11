@@ -938,15 +938,17 @@ namespace {
                             ImGui::TextUnformatted(hex.c_str());
                         }
                     }
-                    poll_selected_probe_if_due();
-
-                    drain_ui_apply_queue();
 
                     ImGui::EndTable();
                 }
             }
         }
         ImGui::EndChild();
+
+        poll_selected_probe_if_due();
+
+        drain_ui_apply_queue();
+
     }
 
 } // anon
