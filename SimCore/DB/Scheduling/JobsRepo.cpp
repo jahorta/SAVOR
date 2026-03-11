@@ -17,7 +17,7 @@ namespace simcore::db {
                 const char* sql =
                     "INSERT INTO jobs(job_set_id,program_kind,program_version,program_ref_id,"
                     "fingerprint,priority,state,attempts,max_attempts,queued_at,vm_kv,savestate_id) "
-                    "VALUES(?,?,?,?,?,?, 'QUEUED',0,5,strftime('%s','now'),?,?) "
+                    "VALUES(?,?,?,?,?,?, 'QUEUED',0,3,strftime('%s','now'),?,?) "
                     "ON CONFLICT(fingerprint) DO UPDATE SET fingerprint=fingerprint "
                     "RETURNING job_id";
 
@@ -594,6 +594,29 @@ namespace simcore::db {
     std::future<DbResult<void>> JobsRepo::RequeueAsync(int64_t job_id, RetryPolicy rp) {
         return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
             [=](DbEnv& e) { return impl_requeue(e, job_id); });
+    }
+
+    static inline DbResult<void> impl_restart_failed(DbEnv& env, int64_t job_id) {
+        sqlite3* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        int rc = sqlite3_prepare_v2(db,
+            "UPDATE jobs "
+            "SET state='QUEUED', attempts=0, claimed_by_token=NULL, lease_expires_at=NULL "
+            "WHERE job_id=?1 AND state='FAILED';",
+            -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare restart_failed" });
+        sqlite3_bind_int64(st, 1, job_id);
+        rc = sqlite3_step(st);
+        int changes = sqlite3_changes(db);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "exec restart_failed" });
+        if (changes == 0) return DbResult<void>::Err({ DbErrorKind::InvalidState, 0, "restart requires FAILED job" });
+        return DbResult<void>::Ok();
+    }
+
+    std::future<DbResult<void>> JobsRepo::RestartFailedAsync(int64_t job_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_restart_failed(e, job_id); });
     }
 
     static inline DbResult<void> impl_cancel_if_not_running(DbEnv& env, int64_t job_id) {
