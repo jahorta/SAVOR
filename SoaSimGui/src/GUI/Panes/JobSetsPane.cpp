@@ -411,7 +411,7 @@ void JobSetsPane::Draw() {
             ImGui::TableSetColumnIndex(0);
             auto itc = children.find(r->job_set_id);
             const bool has_children = (itc != children.end() && !itc->second.empty());
-            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAllColumns;
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_AllowItemOverlap;
             if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
             const bool remembered_open = s.expanded_job_set_ids.find(r->job_set_id) != s.expanded_job_set_ids.end();
