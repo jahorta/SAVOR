@@ -555,7 +555,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
     if (!root.ok) return DbResult<int64_t>::Err(root.error);
 
 
-    std::string desc = std::format("Wave {}: {}({})", next.cur_turn, jb.delta_seed_id, jb.fake_attacks_used_before);
+    std::string desc = std::format("Wave {}: {}({})", next.cur_turn, jb.delta_seed_id, r.fake_attacks_used);
     auto js = simcore::db::JobSetsRepo::CreateChild(jr.value.job_set_id, desc, kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
     if (!js.ok) return DbResult<int64_t>::Err(js.error);
 
