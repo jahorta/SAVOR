@@ -30,6 +30,11 @@ namespace simcore::db {
 
     struct ProgramKindKV { int id; std::string name; };
 
+    struct JobSetPriorityBoostResult {
+        int new_priority{};
+        int64_t changed_jobs{};
+    };
+
     struct UiConfigRowDTO { int64_t id{}, preset_id{}; int32_t turn_index{}, actor_slot{}; int64_t created_at{}; };
 
     struct ArtifactRefLite {
@@ -144,6 +149,7 @@ namespace simcore::db {
         static std::future<DbResult<void>> RestartFailedJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> CancelJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});
+        static std::future<DbResult<JobSetPriorityBoostResult>> BoostJobSetPriorityTreeAsync(int64_t root_job_set_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> DeleteJobSetAsync(int64_t job_set_id, RetryPolicy rp = {});
 
         static std::future<DbResult<int64_t>> CreateJobSetAsync(
