@@ -692,7 +692,6 @@ void ExplorerRunsPane::Draw() {
 
     ImGui::NextColumn();
 
-    ImGui::BeginChild("details_section", ImVec2(0, 0), true);
     ImGui::TextUnformatted("Details");
     ImGui::Separator();
     bool can_trigger = selected_job_can_trigger();
@@ -703,6 +702,7 @@ void ExplorerRunsPane::Draw() {
     ImGui::InputInt("##max_fake_attacks_override", &s.max_fake_attacks_override);
     ImGui::EndDisabled();
 
+    ImGui::SameLine();
     ImGui::BeginDisabled(!can_trigger);
     if (ImGui::Button("Trigger Next Wave") && s.selected_job > 0) {
         std::optional<uint32_t> ov{};
@@ -732,12 +732,17 @@ void ExplorerRunsPane::Draw() {
     }
     ImGui::EndDisabled();
 
-    ImGui::SeparatorText("Results Log");
-    ImGui::InputTextMultiline("##results", &s.results_log, ImVec2(-1, ImGui::GetTextLineHeight() * 8), ImGuiInputTextFlags_ReadOnly);
+    ImGui::BeginChild("details_section", ImVec2(0, 0), true);
 
-    ImGui::SeparatorText("Progress Log");
-    ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(-1, 0), ImGuiInputTextFlags_ReadOnly);
+    ImGui::TextUnformatted("Results Log");
+    ImGui::InputTextMultiline("##results", &s.results_log, ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
 
+    ImGui::NextColumn();
+
+    ImGui::TextUnformatted("Progress Log");
+    ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+
+    ImGui::Columns(1);
     ImGui::EndChild();
 
     ImGui::Columns(1);
