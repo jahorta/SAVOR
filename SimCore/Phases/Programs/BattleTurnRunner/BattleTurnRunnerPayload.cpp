@@ -155,7 +155,11 @@ namespace phase::battle::turnrunner {
         out_ctx[simcore::keys::core::RUN_MS] = run_ms;
         out_ctx[simcore::keys::core::VI_STALL_MS] = vi_stall_ms;
 
-        out_ctx[simcore::keys::battle::ACTIVE_TURN] = current_turn;
+        // Single-turn runner payload carries exactly one local turn plan.
+        // Materialization indexes TURN_PLANS with ACTIVE_TURN as a 1-based index,
+        // so keep ACTIVE_TURN local (=1) while preserving the caller-provided
+        // global turn number in TURN_OUTPUT_INDEX for bookkeeping/output.
+        out_ctx[simcore::keys::battle::ACTIVE_TURN] = (uint32_t)1;
         out_ctx[simcore::keys::battle::TURN_INPUT_INDEX] = (uint32_t)1;
         out_ctx[simcore::keys::battle::TURN_OUTPUT_INDEX] = current_turn;
         out_ctx[simcore::keys::battle::HAS_INITIAL_INPUT] = has_initial_input ? 1u : 0u;

@@ -418,6 +418,7 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresul
     r.ps.ctx.get(simcore::keys::core::VI_LAST, out.vi_end);
     r.ps.ctx.get(simcore::keys::seed::RNG_SEED, out.rng_seed);
     r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, out.battle_outcome);
+    r.ps.ctx.get(simcore::keys::battle::PLAN_MATERIALIZE_ERR, out.plan_materialize_err);
 
     uint32_t before = 0, cur = 0;
     r.ps.ctx.get(simcore::keys::battle::FAKE_ATTACK_USED_BEFORE, before);

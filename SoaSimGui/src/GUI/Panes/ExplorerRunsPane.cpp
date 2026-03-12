@@ -4,6 +4,7 @@
 #include "DB/Querying/DataService.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "Phases/Programs/BattleRunner/BattleOutcome.h"
+#include "Core/Input/SoaBattle/PlanWriter.h"
 #include "Runner/IPC/Wire.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include "DB/Scheduling/JobSetsRepo.h"
@@ -65,6 +66,7 @@ namespace {
         uint32_t delta_vi{};
         uint32_t rng_seed{};
         uint32_t battle_outcome{};
+        uint32_t plan_materialize_err{};
         uint32_t pred_passed{};
         uint32_t pred_total{};
         uint32_t pred_abort_run{};
@@ -101,6 +103,7 @@ namespace {
         uint32_t vi_end{};
         uint32_t rng_seed{};
         uint32_t battle_outcome{};
+        uint32_t plan_materialize_err{};
         uint32_t pred_passed{};
         uint32_t pred_total{};
         uint32_t pred_abort_run{};
@@ -215,6 +218,7 @@ namespace {
             s.delta_vi = (s.vi_end >= s.vi_start) ? (s.vi_end - s.vi_start) : 0;
             s.rng_seed = kv.get_u32("rng_seed", 0);
             s.battle_outcome = kv.get_u32("battle_outcome", 0);
+            s.plan_materialize_err = kv.get_u32("plan_materialize_err", 0);
             s.pred_passed = kv.get_u32("pred_passed", 0);
             s.pred_total = kv.get_u32("pred_total", 0);
             s.pred_abort_run = kv.get_u32("pred_abort_run", 0);
@@ -336,6 +340,7 @@ namespace {
                 rs.vi_end,
                 rs.rng_seed,
                 rs.battle_outcome,
+                rs.plan_materialize_err,
                 rs.pred_passed,
                 rs.pred_total,
                 rs.pred_abort_run,
@@ -665,10 +670,11 @@ void ExplorerRunsPane::Draw() {
 
     auto visible_jobs = build_visible_sorted_jobs(s.jobs);
 
-    if (ImGui::BeginTable("jobs_tbl", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
+    if (ImGui::BeginTable("jobs_tbl", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupColumn("Job ID");
         ImGui::TableSetupColumn("Job State");
         ImGui::TableSetupColumn("Outcome");
+        ImGui::TableSetupColumn("Materialize Err");
         ImGui::TableSetupColumn("Predicates");
         ImGui::TableSetupColumn("Delta VI");
         ImGui::TableSetupColumn("Fake Attacks");
@@ -686,10 +692,11 @@ void ExplorerRunsPane::Draw() {
             }
             ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(j.state.c_str());
             ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(simcore::battle::get_outcome_string((simcore::battle::Outcome)j.battle_outcome).c_str());
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%u", j.delta_vi);
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.fake_used);
-            ImGui::TableSetColumnIndex(6); ImGui::Text("0x%08X", j.rng_seed);
+            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(soa::battle::actions::get_materialize_err_string((soa::battle::actions::MaterializeErr)j.plan_materialize_err).c_str());
+            ImGui::TableSetColumnIndex(4); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
+            ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.delta_vi);
+            ImGui::TableSetColumnIndex(6); ImGui::Text("%u", j.fake_used);
+            ImGui::TableSetColumnIndex(7); ImGui::Text("0x%08X", j.rng_seed);
             ImGui::PopID();
         }
 
