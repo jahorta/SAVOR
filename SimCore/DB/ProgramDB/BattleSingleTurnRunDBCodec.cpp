@@ -531,7 +531,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
 }
 
 
-DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable, std::optional<uint32_t> max_fake_attacks_override) {
+DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable, std::optional<uint32_t> additional_fake_attacks) {
     auto jr = simcore::db::JobsRepo::Get(source_job_id);
     if (!jr.ok) return DbResult<int64_t>::Err(jr.error);
     if (!jr.value.vm_kv.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
@@ -545,11 +545,8 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
     IniDoc rdoc = IniDoc::parse(*rr.value);
     STRes r = STRes::from_section(rdoc);
 
-    if (max_fake_attacks_override.has_value()) {
-        if (*max_fake_attacks_override < r.fake_attacks_used) {
-            return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "max_fake_attacks_override must be >= already used fake attacks" });
-        }
-        bp.max_fake_attacks = *max_fake_attacks_override;
+    if (additional_fake_attacks.has_value()) {
+        bp.max_fake_attacks += *additional_fake_attacks;
     }
 
     if (r.output_savestate_id <= 0) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "source job has no continuation savestate" });

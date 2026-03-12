@@ -713,7 +713,7 @@ void ExplorerRunsPane::Draw() {
     ImGui::TextUnformatted("Details");
     ImGui::Separator();
     bool can_trigger = selected_job_can_trigger();
-    ImGui::Checkbox("Override max_fake_attacks", &s.override_max_fake_attacks);
+    ImGui::Checkbox("Add more fake attacks", &s.override_max_fake_attacks);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100.0f);
     ImGui::BeginDisabled(!s.override_max_fake_attacks);
@@ -734,10 +734,7 @@ void ExplorerRunsPane::Draw() {
                 ov = static_cast<uint32_t>(s.max_fake_attacks_override);
             }
         }
-        if (!valid_override) {
-            // no-op
-        }
-        else {
+        if (valid_override) {
             auto r = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(s.selected_job, false, ov);
             if (r.ok) {
                 GuiToastBus::Info("Queued next wave job set " + std::to_string(r.value));
