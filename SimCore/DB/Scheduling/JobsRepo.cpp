@@ -5,6 +5,8 @@
 
 namespace simcore::db {
 
+    static constexpr int kSavestateAffinityPriorityThreshold = 100;
+
     static DbResult<int64_t> impl_create_or_get(DbEnv& env,
             int64_t job_set_id, int program_kind, int program_version,
             int64_t program_ref_id, const std::string& fingerprint, int priority,
@@ -146,7 +148,22 @@ namespace simcore::db {
 
         int64_t cand_id = 0;
 
-        const char* sel =
+        int max_queued_priority = 0;
+        sqlite3_stmt* maxp = nullptr;
+        rc = sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(priority), 0) FROM jobs WHERE state='QUEUED';", -1, &maxp, nullptr);
+        if (rc != SQLITE_OK) {
+            sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr);
+            sqlite3_exec(db, "RELEASE claim_job;", nullptr, nullptr, nullptr);
+            return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare max queued priority" });
+        }
+        if (sqlite3_step(maxp) == SQLITE_ROW) {
+            max_queued_priority = sqlite3_column_int(maxp, 0);
+        }
+        sqlite3_finalize(maxp);
+
+        const bool use_savestate_affinity = (max_queued_priority < kSavestateAffinityPriorityThreshold);
+
+        const char* sel_affinity =
             "SELECT j.job_id "
             "FROM jobs j "
             "JOIN program_kinds pk ON pk.kind_id = j.program_kind "
@@ -161,8 +178,19 @@ namespace simcore::db {
             "  j.queued_at ASC "
             "LIMIT 1;";
 
+        const char* sel_no_affinity =
+            "SELECT j.job_id "
+            "FROM jobs j "
+            "JOIN program_kinds pk ON pk.kind_id = j.program_kind "
+            "WHERE j.state IN ('QUEUED','INTERRUPTED') "
+            "ORDER BY "
+            "  CASE WHEN j.state='INTERRUPTED' THEN 1 ELSE 0 END DESC, "
+            "  (pk.base_priority + j.priority + ((strftime('%s','now') - j.queued_at) * ?1)) DESC, "
+            "  j.queued_at ASC "
+            "LIMIT 1;";
+
         sqlite3_stmt* st = nullptr;
-        rc = sqlite3_prepare_v2(db, sel, -1, &st, nullptr);
+        rc = sqlite3_prepare_v2(db, use_savestate_affinity ? sel_affinity : sel_no_affinity, -1, &st, nullptr);
         if (rc != SQLITE_OK) 
         { 
             sqlite3_exec(db, "ROLLBACK TO claim_job;", nullptr, nullptr, nullptr); 
@@ -170,9 +198,14 @@ namespace simcore::db {
             return DbResult<std::optional<JobRow>>::Err({ map_sqlite_err(rc), rc, "prepare sel" }); 
         }
 
-        if (preferred_savestate_id) sqlite3_bind_int64(st, 1, *preferred_savestate_id);
-        else                        sqlite3_bind_null(st, 1);
-        sqlite3_bind_double(st, 2, aging_factor);
+        if (use_savestate_affinity) {
+            if (preferred_savestate_id) sqlite3_bind_int64(st, 1, *preferred_savestate_id);
+            else                        sqlite3_bind_null(st, 1);
+            sqlite3_bind_double(st, 2, aging_factor);
+        }
+        else {
+            sqlite3_bind_double(st, 1, aging_factor);
+        }
 
         if (sqlite3_step(st) == SQLITE_ROW) cand_id = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
@@ -674,7 +707,7 @@ namespace simcore::db {
             "  UNION ALL "
             "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
             "), maxp(new_priority) AS ("
-            "  SELECT COALESCE(MAX(priority), 0) + 1 FROM jobs"
+            "  SELECT MAX(100, COALESCE(MAX(priority), 99) + 1) FROM jobs WHERE state='QUEUED'"
             ") "
             "UPDATE jobs "
             "SET priority=(SELECT new_priority FROM maxp) "
