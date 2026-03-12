@@ -132,10 +132,18 @@ namespace {
     }
 }
 
+// Only used for the first wave
 DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& blueprint_ini) {
     IniDoc ini = IniDoc::parse(blueprint_ini);
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
+
+    if (wave.cur_turn != 1) 
+    {
+        DbError waveError{};
+        waveError.message = "Only use encode job into db for the first wave.";
+        return DbResult<int64_t>::Err(waveError);
+    }
 
     auto root = resolve_root_group_id_for_jobset(job_set_id);
     if (!root.ok) return DbResult<int64_t>::Err(root.error);
@@ -145,21 +153,14 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
     if (!plans.ok) return DbResult<int64_t>::Err(plans.error);
 
-    std::vector<std::pair<int64_t, int64_t>> starts;
-    if (wave.cur_turn <= 1) {
-        auto deltas = simcore::db::DeltaSeedRepo::ListUniqueForProbe(bp.seed_probe_id);
-        if (!deltas.ok) return DbResult<int64_t>::Err(deltas.error);
-        auto probe = simcore::db::SeedProbeRepo::Get(bp.seed_probe_id);
-        if (!probe.ok) return DbResult<int64_t>::Err(probe.error);
-        for (auto& d : deltas.value) starts.push_back({ probe.value.savestate_id, d.id });
-    }
-    else {
-        auto jobs = simcore::db::JobsRepo::GetByJobSet(job_set_id);
-        if (!jobs.ok) return DbResult<int64_t>::Err(jobs.error);
-        for (auto& j : jobs.value) {
-            if (j.savestate_id.has_value()) starts.push_back({ j.savestate_id.value(), -1 });
-        }
-    }
+    auto deltas = simcore::db::DeltaSeedRepo::ListUniqueForProbe(bp.seed_probe_id);
+    if (!deltas.ok) return DbResult<int64_t>::Err(deltas.error);
+    auto probe = simcore::db::SeedProbeRepo::Get(bp.seed_probe_id);
+    if (!probe.ok) return DbResult<int64_t>::Err(probe.error);
+
+
+    std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t>> starts;
+    for (auto& d : deltas.value) starts.push_back({ probe.value.savestate_id, d.id , probe.value.neutral_seed, d.seed_delta});
 
     int64_t enqueued = 0;
     IniDoc t_ini{};
@@ -169,6 +170,12 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     for (auto& st : starts) {
 
         std::unordered_set<std::string> seenIt{};
+
+        std::string desc = std::format("Wave {}: {:#X}+({})", wave.cur_turn, std::get<2>(st), std::get<3>(st));
+        auto rng = simcore::db::JobSetsRepo::CreateChild(job_set_id, desc, kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
+        if (!rng.ok) return DbResult<int64_t>::Err(rng.error);
+
+        int64_t enq_start = enqueued;
 
         for (auto& plan : plans.value) {
             auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(plan.plan_id);
@@ -190,37 +197,38 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
 
             STJob jb{};
             jb.plan_id = plan.plan_id;
-            jb.delta_seed_id = st.second;
-            jb.savestate_id = st.first;
+            jb.delta_seed_id = std::get<1>(st);
+            jb.savestate_id = std::get<0>(st);
             jb.turn_index = wave.cur_turn;
             jb.fake_attacks_used_before = 0;
             jb.fake_attacks_this_turn = 0;
             jb.action_key = action_key_for_plan_turn(plan.plan_id, wave.cur_turn - 1);
 
-            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, st.second > 0 ? st.second : 0);
+            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
             for (uint32_t fake = 0; fake <= bp.max_fake_attacks; ++fake) {
                 jb.fake_attacks_this_turn = fake;
                 const std::string vm = jb.append_section(t_ini).to_string_sorted();
                 const std::string fp = hash::sha256(vm.data(), vm.size());
-                auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+                auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(rng.value, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
                 if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
                 auto ev = simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
                 if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
                 ++enqueued;
             }
+
         }
+
+        (void)simcore::db::JobSetsRepo::SetExpectedTotal(rng.value, enqueued - enq_start);
     }
 
     (void)simcore::db::JobSetsRepo::SetExpectedTotal(job_set_id, enqueued);
 
-    if (bp.auto_wave_trigger_enable) {
-        IniKV cond;
-        cond.add("type", "ALL_FINISHED");
-        auto tr = simcore::db::TriggersRepo::AddForJobSet(job_set_id, kPK, cond.to_string_sorted(), ini.to_string_sorted());
-        if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
-    }
+    IniKV cond;
+    cond.add("type", "ALL_FINISHED");
+    auto tr = simcore::db::TriggersRepo::AddForJobSet(job_set_id, kPK, cond.to_string_sorted(), ini.to_string_sorted());
+    if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
 
     return DbResult<int64_t>::Ok(enqueued);
 }
@@ -451,8 +459,6 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
 
-    if (!bp.auto_wave_trigger_enable) return DbResult<void>::Ok();
-
     auto results = simcore::db::JobEventsRepo::ListByJobSetAndKind(ctx.prev_job_set_id, "RESULTS");
     if (!results.ok) return DbResult<void>::Err(results.error);
 
@@ -481,7 +487,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         s.action_key = jb.action_key;
         all.push_back(s);
 
-        const std::string key = std::to_string(s.rng_seed) + "|" + s.action_key;
+        const std::string key = std::to_string(s.rng_seed);
         auto it = best.find(key);
         if (it == best.end() || s.fake_used < it->second.fake_used || (s.fake_used == it->second.fake_used && s.job_id < it->second.job_id)) {
             best[key] = s;
@@ -499,74 +505,11 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         }
     }
 
+    if (!bp.auto_wave_trigger_enable) return DbResult<void>::Ok();
     if (best.empty()) return DbResult<void>::Ok();
 
-    std::vector<Survivor> winners;
-    winners.reserve(best.size());
-    for (auto& kv : best) winners.push_back(kv.second);
-
-    auto links = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
-    if (!links.ok) return DbResult<void>::Err(links.error);
-    bool has_next_turn = false;
-    for (auto& pl : links.value) {
-        auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
-        if (turns.ok && wave.cur_turn < turns.value.size()) { has_next_turn = true; break; }
-    }
-    if (!has_next_turn) return DbResult<void>::Ok();
-
-    auto root = resolve_root_group_id_for_jobset(ctx.prev_job_set_id);
-    if (!root.ok) return DbResult<void>::Err(root.error);
-
-    STWave next{ .cur_turn = wave.cur_turn + 1 };
-
-    auto js = simcore::db::JobSetsRepo::CreateChild(ctx.prev_job_set_id, "BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
-    if (!js.ok) return DbResult<void>::Err(js.error);
-    auto sm = set_wave_meta_for_jobset(js.value, root.value, next.cur_turn, bp);
-    if (!sm.ok) return DbResult<void>::Err(sm.error);
-    next.set_section(ini);
-
-    // Build jobs directly from winners x plan turn options
-    IniDoc t_ini{};
-    bp.set_section(t_ini);
-    next.set_section(t_ini);
-    int64_t enqueued = 0;
-
-    for (auto& w : winners) {
-        for (auto& pl : links.value) {
-            auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
-            if (!turns.ok) continue;
-            if (next.cur_turn < 1 || next.cur_turn > turns.value.size()) continue;
-
-            STJob jb{};
-            jb.plan_id = pl.plan_id;
-            jb.delta_seed_id = w.delta_seed_id;
-            jb.savestate_id = w.savestate_id;
-            jb.turn_index = next.cur_turn;
-            jb.fake_attacks_used_before = w.fake_used;
-            jb.action_key = action_key_for_plan_turn(pl.plan_id, next.cur_turn - 1);
-
-            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (w.delta_seed_id > 0) ? w.delta_seed_id : 0);
-            if (!run.ok) continue;
-
-            if (w.fake_used > bp.max_fake_attacks) continue;
-            const uint32_t remaining = bp.max_fake_attacks - w.fake_used;
-            for (uint32_t fake = 0; fake <= remaining; ++fake) {
-                jb.fake_attacks_this_turn = fake;
-                const std::string vm = jb.append_section(t_ini).to_string_sorted();
-                const std::string fp = hash::sha256(vm.data(), vm.size());
-                auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
-                if (cj.ok) ++enqueued;
-            }
-        }
-    }
-
-    (void)simcore::db::JobSetsRepo::SetExpectedTotal(js.value, enqueued);
-
-    if (bp.auto_wave_trigger_enable) {
-        IniKV cond;
-        cond.add("type", "ALL_FINISHED");
-        auto tr = simcore::db::TriggersRepo::AddForJobSet(js.value, kPK, cond.to_string_sorted(), ini.to_string_sorted());
-        if (!tr.ok) return DbResult<void>::Err(tr.error);
+    for (auto& w : winner_jobs) {
+        enqueue_next_wave_from_job(w, bp.auto_wave_trigger_enable, std::nullopt);
     }
 
     return DbResult<void>::Ok();
@@ -611,7 +554,9 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
     auto root = resolve_root_group_id_for_jobset(jr.value.job_set_id);
     if (!root.ok) return DbResult<int64_t>::Err(root.error);
 
-    auto js = simcore::db::JobSetsRepo::CreateChild(jr.value.job_set_id, "BattleSingleTurnWave", kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
+
+    std::string desc = std::format("Wave {}: {}({})", next.cur_turn, jb.delta_seed_id, jb.fake_attacks_used_before);
+    auto js = simcore::db::JobSetsRepo::CreateChild(jr.value.job_set_id, desc, kPK, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt);
     if (!js.ok) return DbResult<int64_t>::Err(js.error);
 
     auto sm = set_wave_meta_for_jobset(js.value, root.value, next.cur_turn, bp);
@@ -622,10 +567,24 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
     next.set_section(t_ini);
 
     int64_t enqueued = 0;
+    std::unordered_set<std::string> seenIt{};
+
     for (auto& pl : links.value) {
         auto turns = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(pl.plan_id);
         if (!turns.ok) continue;
         if (next.cur_turn < 1 || next.cur_turn > turns.value.size()) continue;
+
+        auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(pl.plan_id, turns.value[next.cur_turn - 1].turn_index);
+        if (!actorsR.ok) return DbResult<int64_t>::Err(actorsR.error);
+
+        std::stringstream ss{};
+        for (auto& a : actorsR.value) {
+            ss << std::format(":{}", a.atom_id);
+        }
+        std::string turn_plan = ss.str();
+
+        if (seenIt.contains(turn_plan)) continue;
+        seenIt.insert(turn_plan);
 
         STJob nj{};
         nj.plan_id = pl.plan_id;
@@ -655,16 +614,13 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
 
     (void)simcore::db::JobSetsRepo::SetExpectedTotal(js.value, enqueued);
 
-    bool arm = auto_wave_trigger_enable || bp.auto_wave_trigger_enable;
-    if (arm) {
-        IniDoc tr_ini{};
-        bp.set_section(tr_ini);
-        next.set_section(tr_ini);
-        IniKV cond;
-        cond.add("type", "ALL_FINISHED");
-        auto tr = simcore::db::TriggersRepo::AddForJobSet(js.value, kPK, cond.to_string_sorted(), tr_ini.to_string_sorted());
-        if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
-    }
+    IniDoc tr_ini{};
+    bp.set_section(tr_ini);
+    next.set_section(tr_ini);
+    IniKV cond;
+    cond.add("type", "ALL_FINISHED");
+    auto tr = simcore::db::TriggersRepo::AddForJobSet(js.value, kPK, cond.to_string_sorted(), tr_ini.to_string_sorted());
+    if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
 
     return DbResult<int64_t>::Ok(js.value);
 }
