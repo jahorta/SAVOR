@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <stdexcept>
 #include "DbResult.h"
 #include "DbRetryPolicy.h"
 
@@ -122,7 +123,11 @@ namespace simcore {
                 auto fut = task->promise.get_future();
                 {
                     std::unique_lock<std::mutex> lock(m_mutex);
-                    m_notFull.wait(lock, [this]() { return m_running && m_size < m_maxQueue; });
+                    m_notFull.wait(lock, [this]() { return !m_running || m_size < m_maxQueue; });
+                    if (!m_running) {
+                        task->promise.set_exception(std::make_exception_ptr(std::runtime_error("DBService is stopped")));
+                        return fut;
+                    }
                     record_submit(prio);
                     m_queues[static_cast<std::size_t>(prio)].push(QueuedTask{ task, std::chrono::steady_clock::now(), prio });
                     ++m_size;
