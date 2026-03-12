@@ -734,15 +734,18 @@ void ExplorerRunsPane::Draw() {
 
     ImGui::BeginChild("details_section", ImVec2(0, 0), true);
 
-    ImGui::TextUnformatted("Results Log");
-    ImGui::InputTextMultiline("##results", &s.results_log, ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::BeginTable("details_logs_tbl", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Results Log");
+        ImGui::InputTextMultiline("##results", &s.results_log, ImVec2(-1.0f, 0), ImGuiInputTextFlags_ReadOnly);
 
-    ImGui::NextColumn();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Progress Log");
+        ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(-1.0f, 0), ImGuiInputTextFlags_ReadOnly);
 
-    ImGui::TextUnformatted("Progress Log");
-    ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+        ImGui::EndTable();
+    }
 
-    ImGui::Columns(1);
     ImGui::EndChild();
 
     ImGui::Columns(1);
