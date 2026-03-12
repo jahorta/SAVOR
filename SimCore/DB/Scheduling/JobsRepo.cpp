@@ -655,4 +655,59 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_bump_priority(e, job_id, delta); });
     }
 
+    static inline DbResult<JobPriorityBoostResult> impl_boost_priority_for_job_set_tree(DbEnv& env, int64_t root_job_set_id) {
+        sqlite3* db = env.handle();
+
+        sqlite3_stmt* exists = nullptr;
+        int rc = sqlite3_prepare_v2(db, "SELECT 1 FROM job_sets WHERE job_set_id=? LIMIT 1", -1, &exists, nullptr);
+        if (rc != SQLITE_OK) return DbResult<JobPriorityBoostResult>::Err({ map_sqlite_err(rc), rc, "prepare boost exists" });
+        sqlite3_bind_int64(exists, 1, root_job_set_id);
+        rc = sqlite3_step(exists);
+        sqlite3_finalize(exists);
+        if (rc != SQLITE_ROW) {
+            return DbResult<JobPriorityBoostResult>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "job_set not found" });
+        }
+
+        const char* sql =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            "), maxp(new_priority) AS ("
+            "  SELECT COALESCE(MAX(priority), 0) + 1 FROM jobs"
+            ") "
+            "UPDATE jobs "
+            "SET priority=(SELECT new_priority FROM maxp) "
+            "WHERE job_set_id IN (SELECT job_set_id FROM tree) "
+            "RETURNING job_id, priority;";
+
+        sqlite3_stmt* st = nullptr;
+        rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<JobPriorityBoostResult>::Err({ map_sqlite_err(rc), rc, "prepare boost update" });
+        sqlite3_bind_int64(st, 1, root_job_set_id);
+
+        JobPriorityBoostResult out{};
+        while (true) {
+            rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                out.changed_job_ids.push_back(sqlite3_column_int64(st, 0));
+                out.new_priority = sqlite3_column_int(st, 1);
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                sqlite3_finalize(st);
+                return DbResult<JobPriorityBoostResult>::Err({ map_sqlite_err(rc), rc, "exec boost update" });
+            }
+        }
+        sqlite3_finalize(st);
+        return DbResult<JobPriorityBoostResult>::Ok(std::move(out));
+    }
+
+    std::future<DbResult<JobPriorityBoostResult>> JobsRepo::BoostPriorityForJobSetTreeAsync(int64_t root_job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<JobPriorityBoostResult>(OpType::Write, Priority::High, rp,
+            [=](DbEnv& e) { return impl_boost_priority_for_job_set_tree(e, root_job_set_id); });
+    }
+
 } // namespace simcore::db
