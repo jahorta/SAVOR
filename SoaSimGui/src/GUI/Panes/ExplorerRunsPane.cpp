@@ -670,11 +670,10 @@ void ExplorerRunsPane::Draw() {
 
     auto visible_jobs = build_visible_sorted_jobs(s.jobs);
 
-    if (ImGui::BeginTable("jobs_tbl", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
+    if (ImGui::BeginTable("jobs_tbl", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupColumn("Job ID");
         ImGui::TableSetupColumn("Job State");
         ImGui::TableSetupColumn("Outcome");
-        ImGui::TableSetupColumn("Materialize Err");
         ImGui::TableSetupColumn("Predicates");
         ImGui::TableSetupColumn("Delta VI");
         ImGui::TableSetupColumn("Fake Attacks");
@@ -691,12 +690,30 @@ void ExplorerRunsPane::Draw() {
                 kick_details_fetch(j.job_id);
             }
             ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(j.state.c_str());
-            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(simcore::battle::get_outcome_string((simcore::battle::Outcome)j.battle_outcome).c_str());
-            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(soa::battle::actions::get_materialize_err_string((soa::battle::actions::MaterializeErr)j.plan_materialize_err).c_str());
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.delta_vi);
-            ImGui::TableSetColumnIndex(6); ImGui::Text("%u", j.fake_used);
-            ImGui::TableSetColumnIndex(7); ImGui::Text("0x%08X", j.rng_seed);
+
+            if (j.state.c_str() == "QUEUED" || j.state.c_str() == "CLAIMED" || j.state.c_str() == "RUNNING") {
+                ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted("---");
+                ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted("---");
+                ImGui::TableSetColumnIndex(4); ImGui::TextUnformatted("---");
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.fake_used);
+                ImGui::TableSetColumnIndex(6); ImGui::TextUnformatted("---");
+            }
+            else {
+                std::string outcomeTxt{};
+                if ((simcore::battle::Outcome)j.battle_outcome == simcore::battle::Outcome::PlanMaterializeFailure) {
+                    outcomeTxt = "M:" + soa::battle::actions::get_materialize_err_string((soa::battle::actions::MaterializeErr)j.plan_materialize_err);
+                }
+                else {
+                    outcomeTxt = simcore::RunToBpOutcomeToString(j.battle_outcome);
+                }
+                ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(outcomeTxt.c_str());
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
+                ImGui::TableSetColumnIndex(4); ImGui::Text("%u", j.delta_vi);
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%u", j.fake_used);
+                ImGui::TableSetColumnIndex(6); ImGui::Text("0x%08X", j.rng_seed);
+            }
+
+            
             ImGui::PopID();
         }
 
