@@ -53,6 +53,9 @@ namespace {
         std::future<simcore::db::DbResult<void>> fut_delete;
         bool delete_in_flight = false;
 
+        std::future<simcore::db::DbResult<simcore::db::JobSetPriorityBoostResult>> fut_boost;
+        bool boost_in_flight = false;
+
         steady_clock::time_point last_fetch{};
     };
 
@@ -241,6 +244,30 @@ namespace {
             else ++it;
         }
     }
+
+    static void consume_boost_if_ready() {
+        auto& s = S();
+        if (!s.boost_in_flight) return;
+        using namespace std::chrono_literals;
+        if (!s.fut_boost.valid()) return;
+        if (s.fut_boost.wait_for(0ms) != std::future_status::ready) return;
+
+        auto r = s.fut_boost.get();
+        s.boost_in_flight = false;
+        if (r.ok) {
+            const std::string msg =
+                std::to_string((long long)r.value.changed_jobs) + " jobs set to priority " + std::to_string(r.value.new_priority);
+            GuiToastBus::Success(
+                "Job set boosted",
+                msg.c_str());
+            s.before.reset();
+            s.after.reset();
+            kick_fetch();
+        }
+        else {
+            GuiToastBus::Error("Boost failed", r.error.message);
+        }
+    }
 }
 
 void JobSetsPane::OnActivated() {
@@ -358,6 +385,7 @@ void JobSetsPane::Draw() {
     consume_family_if_ready();
     consume_kinds_fetch_if_ready();
     consume_delete_if_ready();
+    consume_boost_if_ready();
     maybe_refresh();
 
     if (ImGui::BeginTable("JobSetsTable", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
@@ -457,6 +485,14 @@ void JobSetsPane::Draw() {
                 JobsPane::FocusJobSet(r->job_set_id);
                 GuiLeftNav::SetActive(GuiPane::Jobs);
             }
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(s.delete_in_flight || s.boost_in_flight);
+            if (ImGui::SmallButton("Boost")) {
+                s.boost_in_flight = true;
+                s.fut_boost = simcore::db::DataService::BoostJobSetPriorityTreeAsync(r->job_set_id);
+            }
+            ImGui::EndDisabled();
 
             ImGui::SameLine();
             ImGui::BeginDisabled(s.delete_in_flight);

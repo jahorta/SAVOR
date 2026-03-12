@@ -31,6 +31,11 @@ namespace simcore::db {
         std::optional<std::string> vm_kv{};
     };
 
+    struct JobPriorityBoostResult {
+        int new_priority{};
+        std::vector<int64_t> changed_job_ids;
+    };
+
     class JobsRepo {
     public:
 
@@ -67,6 +72,7 @@ namespace simcore::db {
         static std::future<DbResult<void>> RestartFailedAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> CancelIfNotRunningAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});
+        static std::future<DbResult<JobPriorityBoostResult>> BoostPriorityForJobSetTreeAsync(int64_t root_job_set_id, RetryPolicy rp = {});
 
 
         // Blocking methods
@@ -107,6 +113,9 @@ namespace simcore::db {
         static inline DbResult<void> RestartFailed(int64_t job_id) { return RestartFailedAsync(job_id).get(); }
         static inline DbResult<void> CancelIfNotRunning(int64_t job_id) { return CancelIfNotRunningAsync(job_id).get(); }
         static inline DbResult<void> BumpPriority(int64_t job_id, int delta) { return BumpPriorityAsync(job_id, delta).get(); }
+        static inline DbResult<JobPriorityBoostResult> BoostPriorityForJobSetTree(int64_t root_job_set_id) {
+            return BoostPriorityForJobSetTreeAsync(root_job_set_id).get();
+        }
     };
 
     
