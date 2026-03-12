@@ -337,11 +337,19 @@ DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id
     IniDoc ini = IniDoc::parse(results_ini);
     STRes r = STRes::from_section(ini);
 
+    bool bad_materialize = (r.battle_outcome == (uint32_t)simcore::battle::Outcome::PlanMaterializeFailure
+        && (r.plan_materialize_err != (uint32_t)soa::battle::actions::MaterializeErr::NoValidTarget
+            && r.plan_materialize_err != (uint32_t)soa::battle::actions::MaterializeErr::OutOfTurns
+            && r.plan_materialize_err != (uint32_t)soa::battle::actions::MaterializeErr::NotEnoughResource
+           )
+        );
+
     if (success 
         && r.w_err == 0 
         && r.dw_err == 0
-        && r.battle_outcome != (uint32_t)simcore::battle::Outcome::PlanMaterializeFailure
-        && r.battle_outcome != (uint32_t)simcore::battle::Outcome::Unknown) {
+        && !bad_materialize
+        && r.battle_outcome != (uint32_t)simcore::battle::Outcome::Unknown
+        ) {
         DbResult<void> save = DbResult<void>::Ok();
         if (r.battle_outcome == (uint32_t)simcore::battle::Outcome::ReachedNextTurn || r.battle_outcome == (uint32_t)simcore::battle::Outcome::Victory) {
             auto obj = simcore::db::ObjectStore::FinalizeFromFile(r.savestate_path, simcore::db::Compression::None, std::filesystem::path(r.savestate_path).filename().string());
