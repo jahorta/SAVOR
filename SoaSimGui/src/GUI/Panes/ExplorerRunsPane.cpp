@@ -136,6 +136,8 @@ namespace {
         bool details_in_flight{false};
         std::string results_log;
         std::string progress_log;
+        bool override_max_fake_attacks{false};
+        int max_fake_attacks_override{0};
 
         bool auto_refresh{true};
         int refresh_seconds{3};
@@ -694,15 +696,38 @@ void ExplorerRunsPane::Draw() {
     ImGui::TextUnformatted("Details");
     ImGui::Separator();
     bool can_trigger = selected_job_can_trigger();
+    ImGui::Checkbox("Override max_fake_attacks", &s.override_max_fake_attacks);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::BeginDisabled(!s.override_max_fake_attacks);
+    ImGui::InputInt("##max_fake_attacks_override", &s.max_fake_attacks_override);
+    ImGui::EndDisabled();
+
     ImGui::BeginDisabled(!can_trigger);
     if (ImGui::Button("Trigger Next Wave") && s.selected_job > 0) {
-        auto r = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(s.selected_job);
-        if (r.ok) {
-            GuiToastBus::Info("Queued next wave job set " + std::to_string(r.value));
-            kick_groups_fetch();
+        std::optional<uint32_t> ov{};
+        bool valid_override = true;
+        if (s.override_max_fake_attacks) {
+            if (s.max_fake_attacks_override < 0) {
+                GuiToastBus::Error("max_fake_attacks override must be >= 0");
+                valid_override = false;
+            }
+            else {
+                ov = static_cast<uint32_t>(s.max_fake_attacks_override);
+            }
+        }
+        if (!valid_override) {
+            // no-op
         }
         else {
-            GuiToastBus::Error("Unable to queue next wave", r.error.message);
+            auto r = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(s.selected_job, false, ov);
+            if (r.ok) {
+                GuiToastBus::Info("Queued next wave job set " + std::to_string(r.value));
+                kick_groups_fetch();
+            }
+            else {
+                GuiToastBus::Error("Unable to queue next wave", r.error.message);
+            }
         }
     }
     ImGui::EndDisabled();

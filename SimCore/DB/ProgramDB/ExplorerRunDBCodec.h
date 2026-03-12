@@ -19,6 +19,7 @@ namespace simcore::db::codec::battle::run {
         bool        progress_enable{ true };
         bool        use_single_turn_runner{ false };
         bool        auto_wave_trigger_enable{ false };
+        uint32_t    max_fake_attacks{ 0 };
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
             BlueprintIni bp{};
@@ -32,6 +33,7 @@ namespace simcore::db::codec::battle::run {
             bp.progress_enable = section.get_bool("progress_enable", true);
             bp.use_single_turn_runner = section.get_bool("use_single_turn_runner", false);
             bp.auto_wave_trigger_enable = section.get_bool("auto_wave_trigger_enable", false);
+            bp.max_fake_attacks = section.get_u32("max_fake_attacks", 0);
             return bp;
         }
         inline void set_section(IniDoc& doc) const {
@@ -44,6 +46,7 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
             doc.set(SECTION_NAME, "use_single_turn_runner", use_single_turn_runner ? "1" : "0");
             doc.set(SECTION_NAME, "auto_wave_trigger_enable", auto_wave_trigger_enable ? "1" : "0");
+            doc.set(SECTION_NAME, "max_fake_attacks", std::to_string(max_fake_attacks));
         }
         inline std::string to_string() const {
             IniDoc doc{};
@@ -58,6 +61,7 @@ namespace simcore::db::codec::battle::run {
         int64_t     plan_id;
         int64_t     delta_seed_id;
         int64_t     savestate_id;
+        std::string fake_attacks_by_turn_csv;
 
         static inline JobIni from_section(const IniDoc& doc) {
             JobIni job{};
@@ -66,6 +70,7 @@ namespace simcore::db::codec::battle::run {
             job.plan_id = section.get_i64("plan_id", -1);
             job.delta_seed_id = section.get_i64("delta_seed_id", -1);
             job.savestate_id = section.get_i64("savestate_id", -1);
+            job.fake_attacks_by_turn_csv = section.get("fake_attacks_by_turn_csv", "");
             return job;
         }
         inline void set_section(IniDoc& doc) const {
@@ -73,6 +78,7 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "plan_id", std::to_string(plan_id));
             doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
             doc.set(SECTION_NAME, "delta_seed_id", std::to_string(delta_seed_id));
+            doc.set(SECTION_NAME, "fake_attacks_by_turn_csv", fake_attacks_by_turn_csv);
         }
         IniDoc append_section(const IniDoc& doc) const {
             IniDoc newDoc{ doc };

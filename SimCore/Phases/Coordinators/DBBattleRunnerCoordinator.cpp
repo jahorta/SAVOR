@@ -20,6 +20,11 @@ using simcore::db::SettingsPredicateRow;
 namespace simcore {
     namespace phase {
 
+        static inline soa::battle::actions::BattlePath normalize_fake_counts(soa::battle::actions::BattlePath p) {
+            for (auto& t : p) t.fake_attack_count = 0;
+            return p;
+        }
+
         static inline std::string roll_settings_fp(const std::vector<std::string>& pred_fps,
             const std::vector<std::string>& plan_fps) {
             std::string s;
@@ -63,7 +68,8 @@ namespace simcore {
 
             std::vector<int64_t> out; out.reserve(plans.size());
             for (const auto& p : plans) {
-                const std::string fp = soa::battle::actions::fingerprint_battle_plan(p.path);
+                auto norm_path = normalize_fake_counts(p.path);
+                const std::string fp = soa::battle::actions::fingerprint_battle_plan(norm_path);
 
                 auto ep = BattlePlanRepo::Ensure(p.name, fp, (int32_t)p.path.size());
                 if (!ep.ok) return DbResult<std::vector<int64_t>>::Err(ep.error);
@@ -88,7 +94,7 @@ namespace simcore {
                         actors.push_back(TurnActorBindingByPlan{ ai, a.value });
                     }
 
-                    auto rt = BattlePlanTurnRepo::ReplaceTurnByPlan(plan_id, t, (int32_t)tp.fake_attack_count, std::move(actors));
+                    auto rt = BattlePlanTurnRepo::ReplaceTurnByPlan(plan_id, t, std::move(actors));
                     if (!rt.ok) return DbResult<std::vector<int64_t>>::Err(rt.error);
                 }
             }
@@ -159,7 +165,7 @@ namespace simcore {
 
             // 2) plans -> fps (computed from BattlePath)
             std::vector<std::string> plan_fps; plan_fps.reserve(plans.size());
-            for (const auto& p : plans) plan_fps.push_back(soa::battle::actions::fingerprint_battle_plan(p.path));
+            for (const auto& p : plans) plan_fps.push_back(soa::battle::actions::fingerprint_battle_plan(normalize_fake_counts(p.path)));
 
             // 3) ensure settings row (dedupe by settings_fingerprint)
             const std::string settings_fp = roll_settings_fp(pred_fps, plan_fps);

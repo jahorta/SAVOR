@@ -7,8 +7,8 @@ namespace simcore::db {
         sqlite3* db = env.handle();
         sqlite3_stmt* st{};
         const char* sql =
-            "INSERT INTO authoring_templates(name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,fake_attack_budget,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,strftime('%s','now'),strftime('%s','now')) RETURNING id;";
+            "INSERT INTO authoring_templates(name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,strftime('%s','now'),strftime('%s','now')) RETURNING id;";
         if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
             return DbResult<int64_t>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
 
@@ -17,9 +17,8 @@ namespace simcore::db {
         if (r.seed_probe_id) sqlite3_bind_int64(st, 3, *r.seed_probe_id); else sqlite3_bind_null(st, 3);
         sqlite3_bind_text(st, 4, r.ui_config_ini.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 5, r.predicate_specs_ini.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(st, 6, r.fake_attack_budget);
-        if (r.last_materialized_settings_id) sqlite3_bind_int64(st, 7, *r.last_materialized_settings_id); else sqlite3_bind_null(st, 7);
-        if (r.last_codec_version_seen) sqlite3_bind_int(st, 8, *r.last_codec_version_seen); else sqlite3_bind_null(st, 8);
+        if (r.last_materialized_settings_id) sqlite3_bind_int64(st, 6, *r.last_materialized_settings_id); else sqlite3_bind_null(st, 6);
+        if (r.last_codec_version_seen) sqlite3_bind_int(st, 7, *r.last_codec_version_seen); else sqlite3_bind_null(st, 7);
 
         int rc = sqlite3_step(st);
         if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
@@ -35,7 +34,7 @@ namespace simcore::db {
         sqlite3* db = env.handle();
         sqlite3_stmt* st{};
         const char* sql =
-            "UPDATE authoring_templates SET name=?,description=?,seed_probe_id=?,ui_config_ini=?,predicate_specs_ini=?,fake_attack_budget=?,last_materialized_settings_id=?,last_codec_version_seen=?,updated_at=strftime('%s','now') "
+            "UPDATE authoring_templates SET name=?,description=?,seed_probe_id=?,ui_config_ini=?,predicate_specs_ini=?,last_materialized_settings_id=?,last_codec_version_seen=?,updated_at=strftime('%s','now') "
             "WHERE id=?;";
         if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
             return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
@@ -45,10 +44,9 @@ namespace simcore::db {
         if (r.seed_probe_id) sqlite3_bind_int64(st, 3, *r.seed_probe_id); else sqlite3_bind_null(st, 3);
         sqlite3_bind_text(st, 4, r.ui_config_ini.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 5, r.predicate_specs_ini.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(st, 6, r.fake_attack_budget);
-        if (r.last_materialized_settings_id) sqlite3_bind_int64(st, 7, *r.last_materialized_settings_id); else sqlite3_bind_null(st, 7);
-        if (r.last_codec_version_seen) sqlite3_bind_int(st, 8, *r.last_codec_version_seen); else sqlite3_bind_null(st, 8);
-        sqlite3_bind_int64(st, 9, r.id);
+        if (r.last_materialized_settings_id) sqlite3_bind_int64(st, 6, *r.last_materialized_settings_id); else sqlite3_bind_null(st, 6);
+        if (r.last_codec_version_seen) sqlite3_bind_int(st, 7, *r.last_codec_version_seen); else sqlite3_bind_null(st, 7);
+        sqlite3_bind_int64(st, 8, r.id);
 
         int rc = sqlite3_step(st);
         sqlite3_finalize(st);
@@ -73,7 +71,7 @@ namespace simcore::db {
         sqlite3* db = env.handle();
         sqlite3_stmt* st{};
         const char* sql =
-            "SELECT id,name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,fake_attack_budget,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at "
+            "SELECT id,name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at "
             "FROM authoring_templates WHERE id=?;";
         if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
             return DbResult<AuthoringTemplateRow>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
@@ -87,11 +85,10 @@ namespace simcore::db {
         if (sqlite3_column_type(st, 3) != SQLITE_NULL) r.seed_probe_id = sqlite3_column_int64(st, 3);
         r.ui_config_ini = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
         r.predicate_specs_ini = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
-        r.fake_attack_budget = sqlite3_column_int(st, 6);
-        if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.last_materialized_settings_id = sqlite3_column_int64(st, 7);
-        if (sqlite3_column_type(st, 8) != SQLITE_NULL) r.last_codec_version_seen = sqlite3_column_int(st, 8);
-        r.created_at = sqlite3_column_int64(st, 9);
-        r.updated_at = sqlite3_column_int64(st, 10);
+        if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.last_materialized_settings_id = sqlite3_column_int64(st, 6);
+        if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.last_codec_version_seen = sqlite3_column_int(st, 7);
+        r.created_at = sqlite3_column_int64(st, 8);
+        r.updated_at = sqlite3_column_int64(st, 9);
         sqlite3_finalize(st);
         return DbResult<AuthoringTemplateRow>::Ok(std::move(r));
     }
@@ -100,7 +97,7 @@ namespace simcore::db {
         sqlite3* db = env.handle();
         sqlite3_stmt* st{};
         const char* sql =
-            "SELECT id,name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,fake_attack_budget,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at "
+            "SELECT id,name,description,seed_probe_id,ui_config_ini,predicate_specs_ini,last_materialized_settings_id,last_codec_version_seen,created_at,updated_at "
             "FROM authoring_templates WHERE LOWER(name)=LOWER(?) LIMIT 1;";
         if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
             return DbResult<std::optional<AuthoringTemplateRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
@@ -114,11 +111,10 @@ namespace simcore::db {
         if (sqlite3_column_type(st, 3) != SQLITE_NULL) r.seed_probe_id = sqlite3_column_int64(st, 3);
         r.ui_config_ini = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
         r.predicate_specs_ini = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
-        r.fake_attack_budget = sqlite3_column_int(st, 6);
-        if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.last_materialized_settings_id = sqlite3_column_int64(st, 7);
-        if (sqlite3_column_type(st, 8) != SQLITE_NULL) r.last_codec_version_seen = sqlite3_column_int(st, 8);
-        r.created_at = sqlite3_column_int64(st, 9);
-        r.updated_at = sqlite3_column_int64(st, 10);
+        if (sqlite3_column_type(st, 6) != SQLITE_NULL) r.last_materialized_settings_id = sqlite3_column_int64(st, 6);
+        if (sqlite3_column_type(st, 7) != SQLITE_NULL) r.last_codec_version_seen = sqlite3_column_int(st, 7);
+        r.created_at = sqlite3_column_int64(st, 8);
+        r.updated_at = sqlite3_column_int64(st, 9);
         sqlite3_finalize(st);
         return DbResult<std::optional<AuthoringTemplateRow>>::Ok(std::move(r));
     }

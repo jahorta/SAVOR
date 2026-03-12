@@ -65,6 +65,7 @@ namespace simcore::db::phasebuilder {
         bp.progress_enable = true;
         bp.use_single_turn_runner = false;
         bp.auto_wave_trigger_enable = false;
+        bp.max_fake_attacks = 0;
         bp.set_section(doc);
         return doc;
     }

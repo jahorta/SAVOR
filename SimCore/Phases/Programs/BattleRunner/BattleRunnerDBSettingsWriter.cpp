@@ -50,8 +50,7 @@ namespace simcore::phases {
                 if (!atom.ok) return DbResult<void>::Err(atom.error);
                 actors.emplace_back( actor_slot, atom.value );
             }
-            const int32_t fake_cnt = tp.fake_attack_count;
-            auto rt = BattlePlanTurnRepo::ReplaceTurnByPlan(plan_id, turn_idx, fake_cnt, std::move(actors));
+            auto rt = BattlePlanTurnRepo::ReplaceTurnByPlan(plan_id, turn_idx, std::move(actors));
             if (!rt.ok) return DbResult<void>::Err(rt.error);
         }
         return DbResult<void>::Ok();
@@ -68,7 +67,9 @@ namespace simcore::phases {
         using soa::battle::actions::fingerprint_battle_plan;
 
         BattleExplorer ex("");
-        auto paths = ex.enumerate_paths(bc, a.ui); // deterministic expansion
+        auto no_fake_ui = a.ui;
+        no_fake_ui.fakeattack_budget = 0;
+        auto paths = ex.enumerate_paths(bc, no_fake_ui); // deterministic expansion without fake-attack variants
 
         std::vector<std::string> plan_fps;
         std::vector<int64_t>     plan_ids;

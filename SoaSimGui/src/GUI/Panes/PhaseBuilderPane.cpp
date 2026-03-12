@@ -344,6 +344,7 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     bool progress_enable = bp.progress_enable;
     bool use_single_turn_runner = bp.use_single_turn_runner;
     bool auto_wave_trigger_enable = bp.auto_wave_trigger_enable;
+    int max_fake_attacks = (int)bp.max_fake_attacks;
 
     if (ImGui::Button("Pick SeedProbe...")) {
         ImGui::OpenPopup("PB_SeedProbe");
@@ -434,6 +435,7 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     if (ImGui::Checkbox("progress_enable", &progress_enable)) { inst().ini_dirty_ = true; }
     if (ImGui::Checkbox("use_single_turn_runner", &use_single_turn_runner)) { inst().ini_dirty_ = true; }
     if (ImGui::Checkbox("auto_wave_trigger_enable", &auto_wave_trigger_enable)) { inst().ini_dirty_ = true; }
+    if (ImGui::InputInt("max_fake_attacks", &max_fake_attacks)) { inst().ini_dirty_ = true; }
 
     if (inst().ini_dirty_) {
         bp.settings_id = settings_id;
@@ -444,6 +446,7 @@ void PhaseBuilderPane::drawExplorerRunForm() {
         bp.progress_enable = progress_enable;
         bp.use_single_turn_runner = use_single_turn_runner;
         bp.auto_wave_trigger_enable = auto_wave_trigger_enable;
+        bp.max_fake_attacks = (uint32_t)std::max(0, max_fake_attacks);
         bp.set_section(*inst().ini_);
     }
 }
