@@ -186,7 +186,7 @@ namespace simcore {
 	static inline const char* RunToBpOutcomeToString(uint32_t outcome)
 	{
 		switch (static_cast<RunToBpOutcome>(outcome)) {
-		case RunToBpOutcome::Hit: return "Hit";
+		case RunToBpOutcome::Hit: return "Finished";
 		case RunToBpOutcome::Timeout: return "Timeout";
 		case RunToBpOutcome::ViStalled: return "ViStalled";
 		case RunToBpOutcome::MovieEnded: return "MovieEnded";
