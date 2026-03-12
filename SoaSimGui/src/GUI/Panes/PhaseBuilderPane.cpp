@@ -263,6 +263,7 @@ void PhaseBuilderPane::drawTasMovieForm() {
     int priority = bp.priority;
     int run_ms = (int)bp.run_ms;
     int vi_ms = (int)bp.vi_stall_ms;
+    int headroom = (int)bp.headroom_x10;
     bool progress_enable = bp.progress_enable;
     bool auto_queue = bp.auto_queue_seeds;
 
@@ -298,7 +299,10 @@ void PhaseBuilderPane::drawTasMovieForm() {
     ImGui::Text("run_ms                     ");
 
     ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
-    ImGui::Text("vi_stall_ms");
+    ImGui::Text("vi_stall_ms                ");
+
+    ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
+    ImGui::Text("headroom_x10");
 
     // Next row
     ImGui::SetNextItemWidth(80);
@@ -312,6 +316,11 @@ void PhaseBuilderPane::drawTasMovieForm() {
     ImGui::SetNextItemWidth(110);
     if (ImGui::InputInt("##vi_stall_ms", &vi_ms)) { inst().ini_dirty_ = true; }
 
+    ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
+    ImGui::SetNextItemWidth(110);
+    if (ImGui::InputInt("##headroom", &headroom)) { inst().ini_dirty_ = true; }
+
+
     if (ImGui::Checkbox("progress_enable", &progress_enable)) { inst().ini_dirty_ = true; }
     ImGui::SameLine();
     if (ImGui::Checkbox("auto_queue_seeds", &auto_queue)) { inst().ini_dirty_ = true; }
@@ -323,6 +332,7 @@ void PhaseBuilderPane::drawTasMovieForm() {
         bp.priority = priority;
         bp.run_ms = (uint32_t)run_ms;
         bp.vi_stall_ms = (uint32_t)vi_ms;
+        bp.headroom_x10 = (uint32_t)headroom;
         bp.progress_enable = progress_enable;
         bp.auto_queue_seeds = auto_queue;
         bp.set_section(*inst().ini_);
