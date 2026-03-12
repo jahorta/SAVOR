@@ -23,7 +23,6 @@
 #include <unordered_map>
 #include <algorithm>
 #include <chrono>
-#include <ctime>
 #include <array>
 
 using namespace simcore::db;
@@ -85,7 +84,6 @@ namespace {
 
     struct GroupRow {
         int64_t root_group_id{};
-        std::string tas_movie;
         std::string settings_label;
         int64_t created_at{};
         int total_waves{};
@@ -159,19 +157,6 @@ namespace {
     };
 
     static State& S() { static State s; return s; }
-
-    static std::string fmt_time(int64_t epoch_sec) {
-        std::time_t t = (std::time_t)epoch_sec;
-        char buf[32]{ 0 };
-    #if defined(_WIN32)
-        std::tm tm{};
-        localtime_s(&tm, &t);
-    #else
-        std::tm tm = *std::localtime(&t);
-    #endif
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-        return std::string(buf);
-    }
 
     static std::string summarize_states(const std::vector<JobRow>& jobs) {
         int q = 0, r = 0, f = 0, w = 0, d = 0;
@@ -270,9 +255,6 @@ namespace {
             if (!meta.settings_name.empty()) settings = meta.settings_name;
             g.settings_label = settings;
 
-            if (meta.tas_movie_id > 0) g.tas_movie = std::to_string(meta.tas_movie_id);
-            else g.tas_movie = "unknown";
-
             auto jobs = JobsRepo::GetByJobSet(js.value.job_set_id);
             std::string status = jobs.ok ? summarize_states(jobs.value) : "(error)";
             bool has_success = false;
@@ -305,7 +287,7 @@ namespace {
             });
             g.total_waves = (int)g.waves.size();
             const std::string base = g.waves.empty() ? std::string{} : g.waves.back().status_summary;
-            g.status_summary = std::string(g.has_success_outcome ? kIconSuccess : kIconNoSuccess) + " " + base;
+            g.status_summary = base;
             groups.push_back(g);
         }
 
@@ -544,11 +526,10 @@ void ExplorerRunsPane::Draw() {
     ImGui::BeginChild("left_groups", ImVec2(0, 0), true);
     ImGui::TextUnformatted("Run Groups");
     ImGui::Separator();
-    if (ImGui::BeginTable("groups_tbl", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    if (ImGui::BeginTable("groups_tbl", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
         ImGui::TableSetupColumn("Root Group ID");
-        ImGui::TableSetupColumn("Tas Movie");
         ImGui::TableSetupColumn("Explorer Settings");
-        ImGui::TableSetupColumn("Created");
+        ImGui::TableSetupColumn("Results");
         ImGui::TableSetupColumn("Total Waves");
         ImGui::TableSetupColumn("Status Summary");
         ImGui::TableHeadersRow();
@@ -559,7 +540,7 @@ void ExplorerRunsPane::Draw() {
 
             ImGui::TableSetColumnIndex(0);
             bool sel = (s.selected_root == g.root_group_id);
-            std::string group_label = std::string(g.has_success_outcome ? kIconSuccess : kIconNoSuccess) + " " + std::to_string((long long)g.root_group_id);
+            std::string group_label = std::to_string((long long)g.root_group_id);
             if (ImGui::Selectable(group_label.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns)) {
                 s.selected_root = g.root_group_id;
                 s.selected_wave = -1;
@@ -568,11 +549,31 @@ void ExplorerRunsPane::Draw() {
                 s.results_log.clear();
                 s.progress_log.clear();
             }
-            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(g.tas_movie.c_str());
-            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(g.settings_label.c_str());
-            ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(fmt_time(g.created_at).c_str());
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%d", g.total_waves);
-            ImGui::TableSetColumnIndex(5); ImGui::TextUnformatted(g.status_summary.c_str());
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(g.settings_label.c_str());
+
+            ImGui::TableSetColumnIndex(2);
+            std::unordered_map<uint32_t, bool> turn_has_success;
+            for (const auto& w : g.waves) {
+                auto it = turn_has_success.find(w.wave_turn);
+                if (it == turn_has_success.end()) {
+                    turn_has_success.emplace(w.wave_turn, w.has_success_outcome);
+                }
+                else {
+                    it->second = it->second || w.has_success_outcome;
+                }
+            }
+            std::vector<uint32_t> turns;
+            turns.reserve(turn_has_success.size());
+            for (const auto& kv : turn_has_success) turns.push_back(kv.first);
+            std::sort(turns.begin(), turns.end());
+            for (size_t i = 0; i < turns.size(); ++i) {
+                if (i > 0) ImGui::SameLine(0.0f, 3.0f);
+                const bool has_success = turn_has_success[turns[i]];
+                ImGui::TextUnformatted(has_success ? kIconSuccess : kIconNoSuccess);
+            }
+
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%d", g.total_waves);
+            ImGui::TableSetColumnIndex(4); ImGui::TextUnformatted(g.status_summary.c_str());
             ImGui::PopID();
         }
         ImGui::EndTable();
