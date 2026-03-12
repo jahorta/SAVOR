@@ -43,6 +43,7 @@ namespace phase::battle::turnrunner {
         put_u32(out, spec.run_ms);
         put_u32(out, spec.vi_stall_ms);
         put_u32(out, spec.current_turn);
+        put_u32(out, spec.max_turn);
         put_u32(out, spec.has_initial_input ? 1u : 0u);
 
         const auto* f = reinterpret_cast<const uint8_t*>(&spec.initial);
@@ -91,6 +92,7 @@ namespace phase::battle::turnrunner {
         uint32_t version = 0;
         uint32_t run_ms = 0, vi_stall_ms = 0;
         uint32_t current_turn = 1;
+        uint32_t max_turn = 1;
         uint32_t has_initial_input = 0;
 
         if (!get_u32(p, e, version)) return false;
@@ -98,6 +100,7 @@ namespace phase::battle::turnrunner {
         if (!get_u32(p, e, run_ms)) return false;
         if (!get_u32(p, e, vi_stall_ms)) return false;
         if (!get_u32(p, e, current_turn)) return false;
+        if (!get_u32(p, e, max_turn)) return false;
         if (!get_u32(p, e, has_initial_input)) return false;
 
         if (p + sizeof(GCInputFrame) > e) return false;
@@ -166,7 +169,7 @@ namespace phase::battle::turnrunner {
         out_ctx[simcore::keys::battle::INITIAL_INPUT] = initial;
 
         out_ctx[simcore::keys::battle::TURN_PLANS] = path;
-        out_ctx[simcore::keys::battle::LAST_TURN] = (uint32_t)1;
+        out_ctx[simcore::keys::battle::LAST_TURN] = max_turn;
 
         out_ctx[simcore::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
         out_ctx[simcore::keys::battle::FAKE_ATTACK_BUDGET_MAX] = budget_max;

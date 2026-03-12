@@ -5,6 +5,7 @@
 #include "../../Runner/Script/KeyRegistry.h"
 #include "../../Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "../../Phases/Programs/BattleRunner/BattleOutcome.h"
+#include "../../Core/Input/SoaBattle/PlanWriter.h"
 
 #include "../Scheduling/JobsRepo.h"
 #include "../Scheduling/JobSetsRepo.h"
@@ -299,6 +300,7 @@ DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t 
     spec.run_ms = bp.run_ms;
     spec.vi_stall_ms = bp.vi_stall_ms;
     spec.current_turn = jb.turn_index;
+    spec.max_turn = turnsR.value.size();
     spec.turn_plan = std::move(turn);
     spec.predicates = std::move(preds);
     spec.fake_attack_budget_max = bp.max_fake_attacks;

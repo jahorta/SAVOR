@@ -16,6 +16,7 @@ namespace phase::battle::turnrunner {
         uint32_t run_ms{ 0 };
         uint32_t vi_stall_ms{ 0 };
         uint32_t current_turn{ 1 };
+        uint32_t max_turn{ 1 };
         bool has_initial_input{ false };
         simcore::GCInputFrame initial{};
 

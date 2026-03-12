@@ -28,6 +28,7 @@ namespace phase::battle::turnrunner {
     static const std::string LabelRetPredFail = "RET_PRED_FAILURE";
     static const std::string LabelRetMaterializeFail = "RET_PLAN_MAT_FAILURE";
     static const std::string LabelRetDWErr = "RET_DW_RUN_ERROR";
+    static const std::string LabelRetOutOfTurns = "RET_OUT_OF_TURNS";
 
     inline simcore::PhaseScript MakeBattleTurnRunnerProgram(uint32_t long_timeout = 120000)
     {
@@ -90,10 +91,15 @@ namespace phase::battle::turnrunner {
 
         // return labels read ending RNG before returning
         ps.ops.push_back(simcore::OpLabel(LabelRetReachedNext));
+        ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::TURN_OUTPUT_INDEX, 1u));
+        ps.ops.push_back(simcore::OpGotoIfKeys(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, simcore::keys::battle::LAST_TURN, LabelRetOutOfTurns));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
-        ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::TURN_OUTPUT_INDEX, 1u));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
+
+        ps.ops.push_back(simcore::OpLabel(LabelRetOutOfTurns));
+        ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
+        ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::HitTurnLimit));
 
         ps.ops.push_back(simcore::OpLabel(LabelRetVictory));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
