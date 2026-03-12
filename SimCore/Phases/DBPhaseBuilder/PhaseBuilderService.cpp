@@ -59,6 +59,7 @@ namespace simcore::db::phasebuilder {
                 auto d = SeedProbeRepo::Get(bp.seed_probe_id);
                 if (!d.ok || d.value.status != "done") errs.push_back({ "BattleRun.Blueprint.seed_probe_id","seed probe not found or not done" });
             }
+            if (bp.max_fake_attacks > 100000) errs.push_back({ "BattleRun.Blueprint.max_fake_attacks","too large" });
             break;
         }
         default: break;
@@ -183,7 +184,7 @@ namespace simcore::db::phasebuilder {
                 auto tp = PreviewTas(ini); if (tp.ok) expected_total = tp.value.jobs;
             }
             else if (program_kind == PK_BattleTurnRunner || program_kind == PK_BattleSingleTurnRunner) {
-                expected_total = 1;
+                expected_total.reset();
             }
             else {
                 expected_total.reset(); // SeedProbe left for codec to update later

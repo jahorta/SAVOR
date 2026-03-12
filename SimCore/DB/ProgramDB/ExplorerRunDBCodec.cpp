@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <sstream>
 
 using simcore::db::BattlePlanAtomRepo;
 using simcore::db::BattlePlanTurnRepo;
@@ -55,6 +56,49 @@ using SeedProbeBp = simcore::db::codec::seedprobe::BlueprintIni;
 
 static constexpr int kPK = PK_BattleTurnRunner;                                     // from Wire.h
 static constexpr int kProgramVersion = phase::battle::runner::PayloadVersion;       // from BattleRunnerPayload.h
+
+namespace {
+    static void dfs_fake_vectors(std::size_t idx, uint32_t remaining, std::vector<uint32_t>& cur, std::vector<std::vector<uint32_t>>& out) {
+        if (idx + 1 == cur.size()) {
+            cur[idx] = remaining;
+            out.push_back(cur);
+            return;
+        }
+        for (uint32_t i = 0; i <= remaining; ++i) {
+            cur[idx] = i;
+            dfs_fake_vectors(idx + 1, remaining - i, cur, out);
+        }
+    }
+
+    static std::vector<std::vector<uint32_t>> enumerate_fake_vectors(std::size_t turns, uint32_t max_sum) {
+        if (turns == 0) return {};
+        std::vector<std::vector<uint32_t>> out;
+        std::vector<uint32_t> cur(turns, 0);
+        for (uint32_t sum = 0; sum <= max_sum; ++sum) dfs_fake_vectors(0, sum, cur, out);
+        return out;
+    }
+
+    static std::string to_csv(const std::vector<uint32_t>& vals) {
+        std::string out;
+        for (size_t i = 0; i < vals.size(); ++i) {
+            if (i) out.push_back(',');
+            out += std::to_string(vals[i]);
+        }
+        return out;
+    }
+
+    static std::vector<uint32_t> parse_csv_u32(const std::string& csv) {
+        std::vector<uint32_t> out;
+        if (csv.empty()) return out;
+        std::stringstream ss(csv);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            if (tok.empty()) continue;
+            out.push_back(static_cast<uint32_t>(std::stoul(tok)));
+        }
+        return out;
+    }
+}
 
 DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& controls_ini)
 {
@@ -86,7 +130,7 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
     for (auto delta_row : deltas.value) {
 
         std::string meta = std::format("delta_id={}", delta_row.id);
-        auto delta_group = JobSetsRepo::CreateChild(job_set_id, "Explorer Run Delta Group", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, meta, plans.value.size());
+        auto delta_group = JobSetsRepo::CreateChild(job_set_id, "Explorer Run Delta Group", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, meta, std::nullopt);
         if (!delta_group.ok) return DbResult<int64_t>::Err(delta_group.error);
 
         for (auto plan_row : plans.value) {
@@ -96,24 +140,32 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
             jb_ini.plan_id = plan_row.plan_id;
             jb_ini.delta_seed_id = delta_row.id;
 
+            auto turns = BattlePlanTurnRepo::LoadTurnsByPlan(plan_row.plan_id);
+            if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
+            auto fake_vectors = enumerate_fake_vectors(turns.value.size(), bp_ini.max_fake_attacks);
+
             auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_row.plan_id, delta_row.id);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
-            std::string to_hash = "ExplorerRun|" + std::to_string(kProgramVersion) + "|" +
-                std::to_string(run.value) + "|" + std::to_string(plan_row.plan_id) + "|" + std::to_string(delta_row.id) + "|" +
-                std::to_string(run_ms) + "|" + std::to_string(vi_stall_ms);
-            const std::string fingerprint = hash::sha256(to_hash.data(), to_hash.size());
+            for (const auto& fv : fake_vectors) {
+                jb_ini.fake_attacks_by_turn_csv = to_csv(fv);
+                std::string to_hash = "ExplorerRun|" + std::to_string(kProgramVersion) + "|" +
+                    std::to_string(run.value) + "|" + std::to_string(plan_row.plan_id) + "|" + std::to_string(delta_row.id) + "|" +
+                    std::to_string(run_ms) + "|" + std::to_string(vi_stall_ms) + "|" + jb_ini.fake_attacks_by_turn_csv;
+                const std::string fingerprint = hash::sha256(to_hash.data(), to_hash.size());
 
-            auto cj = JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kProgramVersion, run.value, fingerprint, priority, jb_ini.append_section(t_ini).to_string_preserve_order(), savestate_id);
-            if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
+                auto cj = JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kProgramVersion, run.value, fingerprint, priority, jb_ini.append_section(t_ini).to_string_preserve_order(), savestate_id);
+                if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
 
-            auto ev = JobEventsRepo::Append(cj.value, "ENQUEUED");
-            if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
+                auto ev = JobEventsRepo::Append(cj.value, "ENQUEUED");
+                if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
 
-            enqueued++;
+                enqueued++;
+            }
         }
     }
 
+    (void)JobSetsRepo::SetExpectedTotal(job_set_id, enqueued);
     return DbResult<int64_t>::Ok(enqueued);
 }
 
@@ -146,9 +198,13 @@ DbResult<simcore::PSJob> ExplorerRunDBCodec::decode_job_from_db(int64_t job_id)
     auto turnsR = simcore::db::BattlePlanTurnRepo::LoadTurnsByPlan(plan_id);
     if (!turnsR.ok) return DbResult<simcore::PSJob>::Err(turnsR.error);
 
+    auto fake_vec = parse_csv_u32(jb_ini.fake_attacks_by_turn_csv);
+    if (fake_vec.size() != turnsR.value.size()) fake_vec.assign(turnsR.value.size(), 0);
+
     BattlePath path;
-    for (auto& t : turnsR.value) {
-        TurnPlan plan{ .fake_attack_count = static_cast<uint32_t>(t.fake_atk_count) };
+    for (size_t i = 0; i < turnsR.value.size(); ++i) {
+        auto& t = turnsR.value[i];
+        TurnPlan plan{ .fake_attack_count = fake_vec[i] };
         auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(plan_id, t.turn_index);
         if (!actorsR.ok) return DbResult<simcore::PSJob>::Err(actorsR.error);
         for (auto& a : actorsR.value) {

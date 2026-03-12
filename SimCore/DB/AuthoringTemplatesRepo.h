@@ -17,7 +17,6 @@ namespace simcore::db {
         std::optional<int64_t> seed_probe_id;
         std::string ui_config_ini;
         std::string predicate_specs_ini;
-        int32_t     fake_attack_budget{};
         std::optional<int64_t> last_materialized_settings_id;
         std::optional<int32_t> last_codec_version_seen;
         int64_t     created_at{};

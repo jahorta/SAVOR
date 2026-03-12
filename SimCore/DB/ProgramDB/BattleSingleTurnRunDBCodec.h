@@ -15,6 +15,7 @@ namespace simcore::db::codec::battle::singleturn {
         int64_t savestate_id{-1};
         uint32_t turn_index{1};
         uint32_t fake_attacks_used_before{0};
+        uint32_t fake_attacks_this_turn{0};
         std::string action_key;
 
         static inline JobIni from_section(const IniDoc& doc) {
@@ -26,6 +27,7 @@ namespace simcore::db::codec::battle::singleturn {
             job.savestate_id = section.get_i64("savestate_id", -1);
             job.turn_index = section.get_u32("turn_index", 1);
             job.fake_attacks_used_before = section.get_u32("fake_attacks_used_before", 0);
+            job.fake_attacks_this_turn = section.get_u32("fake_attacks_this_turn", 0);
             job.action_key = section.get("action_key", "");
             return job;
         }
@@ -36,6 +38,7 @@ namespace simcore::db::codec::battle::singleturn {
             doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
             doc.set(SECTION_NAME, "turn_index", std::to_string(turn_index));
             doc.set(SECTION_NAME, "fake_attacks_used_before", std::to_string(fake_attacks_used_before));
+            doc.set(SECTION_NAME, "fake_attacks_this_turn", std::to_string(fake_attacks_this_turn));
             doc.set(SECTION_NAME, "action_key", action_key);
         }
         IniDoc append_section(const IniDoc& doc) const {
@@ -126,5 +129,5 @@ struct BattleSingleTurnRunDBCodec final : IProgramDBCodec {
     DbResult<std::string> build_artifact_ini_from_db(int64_t job_id) override;
     DbResult<void> phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) override;
 
-    static DbResult<int64_t> enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable = false);
+    static DbResult<int64_t> enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable = false, std::optional<uint32_t> max_fake_attacks_override = std::nullopt);
 };

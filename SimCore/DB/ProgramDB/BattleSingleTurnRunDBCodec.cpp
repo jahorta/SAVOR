@@ -180,7 +180,6 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
             if (!actorsR.ok) return DbResult<int64_t>::Err(actorsR.error);
 
             std::stringstream ss{};
-            ss << std::format("{}", turns.value[wave.cur_turn - 1].fake_atk_count);
             for (auto& a : actorsR.value) {
                 ss << std::format(":{}", a.atom_id);
             }
@@ -195,20 +194,26 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
             jb.savestate_id = st.first;
             jb.turn_index = wave.cur_turn;
             jb.fake_attacks_used_before = 0;
+            jb.fake_attacks_this_turn = 0;
             jb.action_key = action_key_for_plan_turn(plan.plan_id, wave.cur_turn - 1);
 
             auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, st.second > 0 ? st.second : 0);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
-            const std::string vm = jb.append_section(t_ini).to_string_sorted();
-            const std::string fp = hash::sha256(vm.data(), vm.size());
-            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
-            if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
-            auto ev = simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
-            if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
-            ++enqueued;
+            for (uint32_t fake = 0; fake <= bp.max_fake_attacks; ++fake) {
+                jb.fake_attacks_this_turn = fake;
+                const std::string vm = jb.append_section(t_ini).to_string_sorted();
+                const std::string fp = hash::sha256(vm.data(), vm.size());
+                auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+                if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
+                auto ev = simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
+                if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
+                ++enqueued;
+            }
         }
     }
+
+    (void)simcore::db::JobSetsRepo::SetExpectedTotal(job_set_id, enqueued);
 
     if (bp.auto_wave_trigger_enable) {
         IniKV cond;
@@ -233,8 +238,7 @@ DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t 
     if (!turnsR.ok) return DbResult<simcore::PSJob>::Err(turnsR.error);
     if (jb.turn_index < 1 || jb.turn_index > turnsR.value.size()) return DbResult<simcore::PSJob>::Err({ DbErrorKind::InvalidArgument, 0, "turn_index out of range" });
 
-    auto& t = turnsR.value[jb.turn_index - 1];
-    soa::battle::actions::TurnPlan turn{ .fake_attack_count = static_cast<uint32_t>(t.fake_atk_count) };
+    soa::battle::actions::TurnPlan turn{ .fake_attack_count = jb.fake_attacks_this_turn };
     auto actorsR = simcore::db::BattlePlanTurnRepo::ListActorsByPlan(jb.plan_id, (int32_t)(jb.turn_index - 1));
     if (!actorsR.ok) return DbResult<simcore::PSJob>::Err(actorsR.error);
     for (auto& a : actorsR.value) {
@@ -289,6 +293,7 @@ DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t 
     spec.current_turn = jb.turn_index;
     spec.turn_plan = std::move(turn);
     spec.predicates = std::move(preds);
+    spec.fake_attack_budget_max = bp.max_fake_attacks;
     spec.fake_attacks_used_before_turn = jb.fake_attacks_used_before;
 
     if (jb.turn_index == 1 && jb.delta_seed_id > 0) {
@@ -524,6 +529,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     IniDoc t_ini{};
     bp.set_section(t_ini);
     next.set_section(t_ini);
+    int64_t enqueued = 0;
 
     for (auto& w : winners) {
         for (auto& pl : links.value) {
@@ -541,11 +547,20 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
 
             auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (w.delta_seed_id > 0) ? w.delta_seed_id : 0);
             if (!run.ok) continue;
-            const std::string vm = jb.append_section(t_ini).to_string_sorted();
-            const std::string fp = hash::sha256(vm.data(), vm.size());
-            (void)simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+
+            if (w.fake_used > bp.max_fake_attacks) continue;
+            const uint32_t remaining = bp.max_fake_attacks - w.fake_used;
+            for (uint32_t fake = 0; fake <= remaining; ++fake) {
+                jb.fake_attacks_this_turn = fake;
+                const std::string vm = jb.append_section(t_ini).to_string_sorted();
+                const std::string fp = hash::sha256(vm.data(), vm.size());
+                auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, jb.savestate_id);
+                if (cj.ok) ++enqueued;
+            }
         }
     }
+
+    (void)simcore::db::JobSetsRepo::SetExpectedTotal(js.value, enqueued);
 
     if (bp.auto_wave_trigger_enable) {
         IniKV cond;
@@ -558,7 +573,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
 }
 
 
-DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable) {
+DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable, std::optional<uint32_t> max_fake_attacks_override) {
     auto jr = simcore::db::JobsRepo::Get(source_job_id);
     if (!jr.ok) return DbResult<int64_t>::Err(jr.error);
     if (!jr.value.vm_kv.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
@@ -571,6 +586,13 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
     if (!rr.ok || !rr.value.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "results payload missing" });
     IniDoc rdoc = IniDoc::parse(*rr.value);
     STRes r = STRes::from_section(rdoc);
+
+    if (max_fake_attacks_override.has_value()) {
+        if (*max_fake_attacks_override < r.fake_attacks_used) {
+            return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "max_fake_attacks_override must be >= already used fake attacks" });
+        }
+        bp.max_fake_attacks = *max_fake_attacks_override;
+    }
 
     if (r.output_savestate_id <= 0) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "source job has no continuation savestate" });
     if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "source job did not reach next turn" });
@@ -616,15 +638,22 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
         auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
         if (!run.ok) continue;
 
-        const std::string vm = nj.append_section(t_ini).to_string_sorted();
-        const std::string fp = hash::sha256(vm.data(), vm.size());
-        auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id);
-        if (!cj.ok) continue;
-        (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
-        ++enqueued;
+        if (r.fake_attacks_used > bp.max_fake_attacks) continue;
+        const uint32_t remaining = bp.max_fake_attacks - r.fake_attacks_used;
+        for (uint32_t fake = 0; fake <= remaining; ++fake) {
+            nj.fake_attacks_this_turn = fake;
+            const std::string vm = nj.append_section(t_ini).to_string_sorted();
+            const std::string fp = hash::sha256(vm.data(), vm.size());
+            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id);
+            if (!cj.ok) continue;
+            (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
+            ++enqueued;
+        }
     }
 
     if (enqueued <= 0) return DbResult<int64_t>::Err({ DbErrorKind::InvalidState, 0, "no jobs enqueued for next wave" });
+
+    (void)simcore::db::JobSetsRepo::SetExpectedTotal(js.value, enqueued);
 
     bool arm = auto_wave_trigger_enable || bp.auto_wave_trigger_enable;
     if (arm) {
