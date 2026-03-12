@@ -265,7 +265,7 @@ namespace simcore {
             {
                 uint32_t turn = 0;
                 ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, turn);
-
+                
                 if (turn == 0) {
                     ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::InvalidTurnIdxZero;
                     ctx[keys::core::PLAN_DONE] = (uint32_t)1;

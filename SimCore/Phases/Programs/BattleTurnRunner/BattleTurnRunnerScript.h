@@ -43,7 +43,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::ACTIVE_TURN, simcore::PSCmp::GT, 1u, LabelAfterPrelude));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, 1u, LabelAfterPrelude));
 
         // Turn 1 path: apply initial input only if caller supplied it.
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::HAS_INITIAL_INPUT, simcore::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));
@@ -63,7 +63,7 @@ namespace phase::battle::turnrunner {
 
         // current_turn > 1 path: run a single frame to avoid desync before materialization
         ps.ops.push_back(simcore::OpLabel(LabelAfterPrelude));
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_INPUT_INDEX, simcore::PSCmp::LE, 1u, LabelApplyTurn));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::LE, 1u, LabelApplyTurn));
         ps.ops.push_back(simcore::OpStepFrames(1, true));
 
         // Build and apply exactly one turn
@@ -71,7 +71,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpBuildTurnInputFromActions());
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::PLAN_MATERIALIZE_ERR, simcore::PSCmp::NE, 0u, LabelRetMaterializeFail));
 
-        ps.ops.push_back(simcore::OpApplyPlanFrameFrom(simcore::keys::battle::TURN_INPUT_INDEX));
+        ps.ops.push_back(simcore::OpApplyPlanFrameFrom(simcore::keys::battle::ACTIVE_TURN));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PLAN_DONE, simcore::PSCmp::EQ, 1u, LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpGoto(LabelApplyTurn));
 
