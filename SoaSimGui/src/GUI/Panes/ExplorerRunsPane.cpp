@@ -30,6 +30,7 @@ using namespace std::chrono;
 
 namespace {
     static constexpr const char* kIconSuccess = "\xE2\x97\x8F"; // U+25CF
+    static constexpr const char* kIconPartialSuccess = "\xE2\x97\x90"; // U+25D0
     static constexpr const char* kIconNoSuccess = "\xE2\x97\x8B"; // U+25CB
 
     struct WaveMeta {
@@ -76,6 +77,7 @@ namespace {
         int64_t created_at{};
         uint32_t wave_turn{1};
         std::string status_summary;
+        bool has_winner{false};
         bool has_success_outcome{false};
     };
 
@@ -223,6 +225,12 @@ namespace {
         return out;
     }
 
+    static const char* wave_status_icon(bool has_winner, bool has_success_outcome) {
+        if (has_winner) return kIconSuccess;
+        if (has_success_outcome) return kIconPartialSuccess;
+        return kIconNoSuccess;
+    }
+
     static int64_t resolve_root(const JobSetRow& js) {
         WaveMeta m = WaveMeta::from_text(js.meta_text);
         if (m.root_group_id > 0) return m.root_group_id;
@@ -264,21 +272,22 @@ namespace {
             auto jobs = JobsRepo::GetByJobSet(js.value.job_set_id);
             std::string status = jobs.ok ? summarize_states(jobs.value) : "(error)";
             bool has_success = false;
+            bool has_winner = false;
             if (jobs.ok && !jobs.value.empty()) {
                 std::vector<int64_t> ids;
                 ids.reserve(jobs.value.size());
                 for (auto& j : jobs.value) ids.push_back(j.job_id);
                 auto result_map = load_job_results_map(ids);
                 for (auto& j : jobs.value) {
+                    has_winner = has_winner || is_winner_state(j.state);
                     auto it = result_map.find(j.job_id);
                     if (it != result_map.end() && it->second.success_outcome) {
                         has_success = true;
-                        break;
                     }
                 }
             }
 
-            g.waves.push_back({ js.value.job_set_id, js.value.created_at, meta.wave_turn, status, has_success });
+            g.waves.push_back({ js.value.job_set_id, js.value.created_at, meta.wave_turn, status, has_winner, has_success });
             g.has_success_outcome = g.has_success_outcome || has_success;
         }
 
@@ -586,7 +595,7 @@ void ExplorerRunsPane::Draw() {
                 std::sort(ws.begin(), ws.end(), [](const WaveRow* a, const WaveRow* b) { return a->created_at < b->created_at; });
                 for (auto* w : ws) {
                     bool sel = s.selected_wave == w->job_set_id;
-                    std::string wlabel = std::string(w->has_success_outcome ? kIconSuccess : kIconNoSuccess) + " Wave " + std::to_string((long long)w->job_set_id);
+                    std::string wlabel = std::string(wave_status_icon(w->has_winner, w->has_success_outcome)) + " Wave " + std::to_string((long long)w->job_set_id);
                     if (ImGui::Selectable(wlabel.c_str(), sel)) {
                         s.selected_wave = w->job_set_id;
                         s.selected_job = -1;
