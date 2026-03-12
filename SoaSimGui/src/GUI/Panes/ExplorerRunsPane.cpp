@@ -734,14 +734,31 @@ void ExplorerRunsPane::Draw() {
 
     ImGui::BeginChild("details_section", ImVec2(0, 0), true);
 
-    if (ImGui::BeginTable("details_logs_tbl", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Results Log");
-        ImGui::InputTextMultiline("##results", &s.results_log, ImVec2(-1.0f, 0), ImGuiInputTextFlags_ReadOnly);
+    const ImGuiTableFlags details_log_table_flags = ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_BordersInnerV |
+        ImGuiTableFlags_BordersOuter |
+        ImGuiTableFlags_SizingStretchProp |
+        ImGuiTableFlags_ScrollY;
+    if (ImGui::BeginTable("details_logs_tbl", 2, details_log_table_flags, ImVec2(0.0f, 0.0f))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Progress Log");
+        ImGui::TableSetupColumn("Results Log");
 
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Progress Log");
-        ImGui::InputTextMultiline("##progress", &s.progress_log, ImVec2(-1.0f, 0), ImGuiInputTextFlags_ReadOnly);
+        ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, IM_COL32(50, 70, 96, 255));
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(224, 237, 255, 255));
+        ImGui::TableHeadersRow();
+        ImGui::PopStyleColor(2);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(s.progress_log.c_str());
+        ImGui::PopTextWrapPos();
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(s.results_log.c_str());
+        ImGui::PopTextWrapPos();
 
         ImGui::EndTable();
     }
