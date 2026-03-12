@@ -56,6 +56,7 @@ namespace simcore::db::codec::battle::singleturn {
         uint32_t vi_end{0};
         uint32_t rng_seed{0};
         uint32_t battle_outcome{0};
+        uint32_t plan_materialize_err{0};
         uint32_t fake_attacks_used{0};
         uint32_t pred_passed{0};
         uint32_t pred_total{0};
@@ -73,6 +74,7 @@ namespace simcore::db::codec::battle::singleturn {
             r.vi_end = section.get_u32("vi_end", 0);
             r.rng_seed = section.get_u32("rng_seed", 0);
             r.battle_outcome = section.get_u32("battle_outcome", 0);
+            r.plan_materialize_err = section.get_u32("plan_materialize_err", 0);
             r.fake_attacks_used = section.get_u32("fake_attacks_used", 0);
             r.pred_passed = section.get_u32("pred_passed", 0);
             r.pred_total = section.get_u32("pred_total", 0);
@@ -89,6 +91,7 @@ namespace simcore::db::codec::battle::singleturn {
             doc.set(SECTION_NAME, "vi_end", std::to_string(vi_end));
             doc.set(SECTION_NAME, "rng_seed", std::to_string(rng_seed));
             doc.set(SECTION_NAME, "battle_outcome", std::to_string(battle_outcome));
+            doc.set(SECTION_NAME, "plan_materialize_err", std::to_string(plan_materialize_err));
             doc.set(SECTION_NAME, "fake_attacks_used", std::to_string(fake_attacks_used));
             doc.set(SECTION_NAME, "pred_passed", std::to_string(pred_passed));
             doc.set(SECTION_NAME, "pred_total", std::to_string(pred_total));
