@@ -182,9 +182,12 @@ namespace simcore {
         }
 
         void DBService::stop() {
-            if (!m_running.exchange(false)) return;
-            { std::lock_guard<std::mutex> lock(m_mutex); }
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_running.exchange(false)) return;
+            }
             m_hasTask.notify_all();
+            m_notFull.notify_all();
             if (m_worker.joinable()) m_worker.join();
             m_env.reset();
             for (auto& q : m_queues) while (!q.empty()) q.pop();
