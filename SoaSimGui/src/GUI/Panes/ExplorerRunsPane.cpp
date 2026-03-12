@@ -692,6 +692,8 @@ void ExplorerRunsPane::Draw() {
 
     ImGui::NextColumn();
 
+    ImGui::BeginChild("details_section", ImVec2(0, 0), true);
+
     ImGui::TextUnformatted("Details");
     ImGui::Separator();
     bool can_trigger = selected_job_can_trigger();
@@ -731,8 +733,6 @@ void ExplorerRunsPane::Draw() {
         }
     }
     ImGui::EndDisabled();
-
-    ImGui::BeginChild("details_section", ImVec2(0, 0), true);
 
     const ImGuiTableFlags details_log_table_flags = ImGuiTableFlags_Resizable |
         ImGuiTableFlags_BordersInnerV |
