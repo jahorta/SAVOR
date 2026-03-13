@@ -18,6 +18,13 @@ using simcore::db::TriggersRepo;
 
 namespace {
 
+    static int64_t resolve_condition_job_set_id(const simcore::db::TriggerRow& t, const simcore::db::JobRow& jr) {
+        // Job-set-wide conditions should be evaluated in the trigger's scope.
+        // Fallback to the terminal job's set id for unexpected scope values.
+        if (t.scope == "job_set") return t.scope_id;
+        return jr.job_set_id;
+    }
+
     static DbResult<bool> condition_each_job_terminal(const IniKV& cond, const simcore::db::JobRow& jr) {
         const bool success_only = cond.get_i64("success_only", 0) != 0;
         if (success_only) {
@@ -128,6 +135,7 @@ namespace {
     static DbResult<void> handle_trigger(const simcore::db::TriggerRow& t, const simcore::db::JobRow& jr) {
         IniKV cond = IniDoc::parse(t.condition).section_kv(IniDoc::GLOBAL);
         bool satisfied = false;
+        const int64_t cond_job_set_id = resolve_condition_job_set_id(t, jr);
 
         std::string type = cond.get("type");
         if (type == "EACH_JOB_TERMINAL") {
@@ -136,17 +144,17 @@ namespace {
             satisfied = r.value;
         }
         else if (type == "ALL_SUCCEEDED") {
-            auto r = condition_all_succeeded(jr.job_set_id);
+            auto r = condition_all_succeeded(cond_job_set_id);
             if (!r.ok) return DbResult<void>::Err(r.error);
             satisfied = r.value;
         }
         else if (type == "WINNERS_COMPLETE") {
-            auto r = condition_winners_complete(jr.job_set_id, cond);
+            auto r = condition_winners_complete(cond_job_set_id, cond);
             if (!r.ok) return DbResult<void>::Err(r.error);
             satisfied = r.value;
         }
         else if (type == "ALL_FINISHED") {
-            auto r = condition_all_finished(jr.job_set_id);
+            auto r = condition_all_finished(cond_job_set_id);
             if (!r.ok) return DbResult<void>::Err(r.error);
             satisfied = r.value;
         }
@@ -317,7 +325,7 @@ namespace simcore {
                 auto list = TriggersRepo::ListActiveByJobSet(*cur);
                 if (!list.ok) return DbResult<void>::Err(list.error);
                 for (auto& t : list.value) {
-                    auto r = handle_trigger(t, jr); // handle_trigger uses t.scope='job_set' and will read progress for t.scope_id
+                    auto r = handle_trigger(t, jr); // handle_trigger evaluates job-set-wide conditions against t.scope_id.
                     if (!r.ok) return r;
                 }
                 auto next = JobSetsRepo::GetParent(*cur);
