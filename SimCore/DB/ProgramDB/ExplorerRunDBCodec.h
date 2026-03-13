@@ -19,6 +19,7 @@ namespace simcore::db::codec::battle::run {
         bool        progress_enable{ true };
         bool        use_single_turn_runner{ false };
         bool        auto_wave_trigger_enable{ false };
+        uint32_t    min_fake_attacks{ 0 };
         uint32_t    max_fake_attacks{ 0 };
 
         static inline BlueprintIni from_section(const IniDoc& doc) {
@@ -33,6 +34,7 @@ namespace simcore::db::codec::battle::run {
             bp.progress_enable = section.get_bool("progress_enable", true);
             bp.use_single_turn_runner = section.get_bool("use_single_turn_runner", false);
             bp.auto_wave_trigger_enable = section.get_bool("auto_wave_trigger_enable", false);
+            bp.min_fake_attacks = section.get_u32("min_fake_attacks", 0);
             bp.max_fake_attacks = section.get_u32("max_fake_attacks", 0);
             return bp;
         }
@@ -46,6 +48,7 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "progress_enable", progress_enable ? "1" : "0");
             doc.set(SECTION_NAME, "use_single_turn_runner", use_single_turn_runner ? "1" : "0");
             doc.set(SECTION_NAME, "auto_wave_trigger_enable", auto_wave_trigger_enable ? "1" : "0");
+            doc.set(SECTION_NAME, "min_fake_attacks", std::to_string(min_fake_attacks));
             doc.set(SECTION_NAME, "max_fake_attacks", std::to_string(max_fake_attacks));
         }
         inline std::string to_string() const {

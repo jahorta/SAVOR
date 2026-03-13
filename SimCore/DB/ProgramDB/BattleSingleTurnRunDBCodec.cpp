@@ -24,6 +24,7 @@
 #include "../SavestateRepo.h"
 #include "../DBCore/ObjectStore.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
@@ -208,7 +209,8 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
             auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
-            for (uint32_t fake = 0; fake <= bp.max_fake_attacks; ++fake) {
+            const uint32_t fake_min = std::min(bp.min_fake_attacks, bp.max_fake_attacks);
+            for (uint32_t fake = fake_min; fake <= bp.max_fake_attacks; ++fake) {
                 jb.fake_attacks_this_turn = fake;
                 const std::string vm = jb.append_section(t_ini).to_string_sorted();
                 const std::string fp = hash::sha256(vm.data(), vm.size());
@@ -611,7 +613,9 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
 
         if (r.fake_attacks_used > bp.max_fake_attacks) continue;
         const uint32_t remaining = bp.max_fake_attacks - r.fake_attacks_used;
-        for (uint32_t fake = 0; fake <= remaining; ++fake) {
+        const uint32_t needed_to_reach_min = (r.fake_attacks_used < bp.min_fake_attacks) ? (bp.min_fake_attacks - r.fake_attacks_used) : 0;
+        if (needed_to_reach_min > remaining) continue;
+        for (uint32_t fake = needed_to_reach_min; fake <= remaining; ++fake) {
             nj.fake_attacks_this_turn = fake;
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
             const std::string fp = hash::sha256(vm.data(), vm.size());
