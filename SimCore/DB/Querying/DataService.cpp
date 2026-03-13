@@ -478,6 +478,28 @@ namespace simcore::db {
         return fut;
     }
 
+
+    std::future<DbResult<JobSetCancelQueuedResult>> DataService::CancelQueuedJobsForJobSetTreeAsync(int64_t root_job_set_id, RetryPolicy rp) {
+        std::promise<DbResult<JobSetCancelQueuedResult>> pr;
+        auto fut = pr.get_future();
+        std::thread([root_job_set_id, rp, p = std::move(pr)]() mutable {
+            auto r = JobsRepo::CancelQueuedForJobSetTreeAsync(root_job_set_id, rp).get();
+            if (!r.ok) {
+                p.set_value(DbResult<JobSetCancelQueuedResult>::Err(r.error));
+                return;
+            }
+
+            for (auto job_id : r.value.canceled_job_ids) {
+                (void)JobEventsRepo::AppendAsync(job_id, "CANCEL", std::nullopt, rp).get();
+            }
+
+            JobSetCancelQueuedResult out{};
+            out.canceled_jobs = (int64_t)r.value.canceled_job_ids.size();
+            p.set_value(DbResult<JobSetCancelQueuedResult>::Ok(out));
+            }).detach();
+        return fut;
+    }
+
     std::future<DbResult<void>> DataService::DeleteJobSetAsync(int64_t job_set_id, RetryPolicy rp) {
         return JobSetsRepo::DeleteTreeAsync(job_set_id, rp);
     }
