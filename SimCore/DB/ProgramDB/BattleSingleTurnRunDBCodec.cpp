@@ -476,7 +476,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
 
-    auto results = simcore::db::JobEventsRepo::ListByJobSetAndKind(ctx.prev_job_set_id, "RESULTS");
+    auto results = simcore::db::JobEventsRepo::ListByJobSetTreeAndKind(ctx.prev_job_set_id, "RESULTS");
     if (!results.ok) return DbResult<void>::Err(results.error);
 
     std::unordered_map<int64_t, simcore::db::JobEventRow> latest_result_by_job;
