@@ -13,8 +13,10 @@
 #include "DB/ExplorerSettingsRepo.h"
 #include "DB/SeedProbeRepo.h"
 #include "DB/DeltaSeedRepo.h"
-#include "DB/BattlePlanRepo.h"
+#include "DB/BattlePlanTurnRepo.h"
+#include "DB/BattlePlanAtomRepo.h"
 #include "DB/Querying/PagedQuery.h"
+#include "Core/Input/InputPlanFmt.h"
 #include "Utils/IniDoc.h"
 #include "../../Components/ToastBus.h"
 
@@ -458,14 +460,25 @@ namespace {
                 auto d = DeltaSeedRepo::Get(st_job.delta_seed_id);
                 if (d.ok && d.value.has_value()) {
                     auto input = d.value->input;
-                    initial_frame = input.to_frame_hex();
+                    initial_frame = DescribeFrameCompact(input);
                 }
             }
 
             std::string plan_short_desc = "(unknown)";
-            if (st_job.plan_id > 0) {
-                auto p = BattlePlanRepo::Get(st_job.plan_id);
-                if (p.ok) plan_short_desc = p.value.name.empty() ? "(unnamed)" : p.value.name;
+            if (st_job.plan_id > 0 && st_job.turn_index > 0) {
+                soa::battle::actions::TurnPlan turn_plan{ .fake_attack_count = st_job.fake_attacks_this_turn };
+                auto actorsR = BattlePlanTurnRepo::ListActorsByPlan(st_job.plan_id, static_cast<int32_t>(st_job.turn_index - 1));
+                if (actorsR.ok) {
+                    for (const auto& a : actorsR.value) {
+                        auto atom = BattlePlanAtomRepo::Get(a.atom_id);
+                        if (!atom.ok) continue;
+                        soa::battle::actions::ActionPlan ap{ .actor_slot = static_cast<uint8_t>(atom.value.actor_slot), .macro = static_cast<soa::battle::actions::BattleAction>(atom.value.action_type) };
+                        if (atom.value.target_slot >= -1 && atom.value.target_slot < 12) ap.params.target_slot = static_cast<uint8_t>(atom.value.target_slot);
+                        if (atom.value.param_item_id >= 0) ap.params.item_id = static_cast<uint16_t>(atom.value.param_item_id);
+                        turn_plan.spec.push_back(std::move(ap));
+                    }
+                }
+                plan_short_desc = soa::battle::actions::get_turn_plan_summary(turn_plan);
             }
 
             std::string out;
