@@ -115,6 +115,13 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
     const uint32_t run_ms = bp_ini.run_ms;
     const uint32_t vi_stall_ms = bp_ini.vi_stall_ms;
 
+    if (settings_id <= 0 || seed_probe_id <= 0) {
+        return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "settings_id and seed_probe_id are required." });
+    }
+
+    auto selected_delta_ids = BlueprintIni::parse_ids_csv(bp_ini.delta_seed_ids_csv);
+    const bool include_all_deltas = selected_delta_ids.empty() || std::find(selected_delta_ids.begin(), selected_delta_ids.end(), 0) != selected_delta_ids.end();
+
     auto deltas = DeltaSeedRepo::ListUniqueForProbe(seed_probe_id);
     if (!deltas.ok) return DbResult<int64_t>::Err(deltas.error);
 
@@ -130,10 +137,15 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
     bp_ini.set_section(t_ini);
 
     for (auto delta_row : deltas.value) {
+        if (!include_all_deltas && std::find(selected_delta_ids.begin(), selected_delta_ids.end(), delta_row.id) == selected_delta_ids.end()) {
+            continue;
+        }
 
         std::string meta = std::format("delta_id={}", delta_row.id);
         auto delta_group = JobSetsRepo::CreateChild(job_set_id, "Explorer Run Delta Group", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, meta, std::nullopt);
         if (!delta_group.ok) return DbResult<int64_t>::Err(delta_group.error);
+
+        int64_t delta_enqueued = 0;
 
         for (auto plan_row : plans.value) {
 
@@ -156,15 +168,18 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
                     std::to_string(run_ms) + "|" + std::to_string(vi_stall_ms) + "|" + jb_ini.fake_attacks_by_turn_csv;
                 const std::string fingerprint = hash::sha256(to_hash.data(), to_hash.size());
 
-                auto cj = JobsRepo::CreateOrGetByFingerprint(job_set_id, kPK, kProgramVersion, run.value, fingerprint, priority, jb_ini.append_section(t_ini).to_string_preserve_order(), savestate_id);
+                auto cj = JobsRepo::CreateOrGetByFingerprint(delta_group.value, kPK, kProgramVersion, run.value, fingerprint, priority, jb_ini.append_section(t_ini).to_string_preserve_order(), savestate_id);
                 if (!cj.ok) return DbResult<int64_t>::Err(cj.error);
 
                 auto ev = JobEventsRepo::Append(cj.value, "ENQUEUED");
                 if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
 
                 enqueued++;
+                delta_enqueued++;
             }
         }
+
+        (void)JobSetsRepo::SetExpectedTotal(delta_group.value, delta_enqueued);
     }
 
     (void)JobSetsRepo::SetExpectedTotal(job_set_id, enqueued);

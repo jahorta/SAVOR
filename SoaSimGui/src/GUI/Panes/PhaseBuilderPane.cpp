@@ -12,6 +12,10 @@
 #include "../Popups/IdRepoAdapters.h"      // Make*Adapter(...) factories
 #include "../../Components/FutureQueue.h"
 #include "../../Components/ToastBus.h"
+#include <unordered_map>
+#include <unordered_set>
+#include <format>
+#include <algorithm>
 
 using simcore::db::DbResult;
 using simcore::db::ProgramKindKV;
@@ -46,8 +50,13 @@ namespace {
         int unique_seed_count_ = -1;
 
         SubmitState submit_state_ = SubmitState::Idle;
-        std::future<simcore::db::DbResult<std::pair<int64_t, int>>> submit_future_;
+        std::future<simcore::db::DbResult<std::pair<int64_t, int64_t>>> submit_future_;
         std::optional<int64_t> created_job_set_id_;
+        int64_t created_job_set_count_{ 0 };
+        std::vector<int64_t> selected_settings_ids_;
+        std::vector<int64_t> selected_seed_probe_ids_;
+        std::unordered_map<int64_t, std::vector<simcore::db::DeltaSeedRow>> probe_delta_rows_;
+        std::unordered_map<int64_t, std::unordered_set<int64_t>> selected_delta_ids_by_probe_;
         std::string submit_err_;
     };
     UiValues& inst() { static UiValues s; return s; }
@@ -359,12 +368,19 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     int min_fake_attacks = (int)bp.min_fake_attacks;
     int max_fake_attacks = (int)bp.max_fake_attacks;
 
-    if (ImGui::Button("Pick SeedProbe...")) {
+    if (ImGui::Button("Add SeedProbe...")) {
         ImGui::OpenPopup("PB_SeedProbe");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear SeedProbes")) {
+        inst().selected_seed_probe_ids_.clear();
+        inst().probe_delta_rows_.clear();
+        inst().selected_delta_ids_by_probe_.clear();
+        inst().ini_dirty_ = true;
     }
 
     {
-        using RowT = simcore::db::SeedProbeLite; // or: simcore::db::BattleRunGroupRow
+        using RowT = simcore::db::SeedProbeLite;
         static soasim::ui::LedgerPicker<RowT> picker;
         static bool init = false;
         if (!init) {
@@ -377,34 +393,40 @@ void PhaseBuilderPane::drawExplorerRunForm() {
         picker.open = ImGui::IsPopupOpen("PB_SeedProbe");
         picker.Draw([&](const soasim::ui::PickResult& pr, const std::optional<RowT>& row) {
             if (pr.ok && row) {
-                // Autofill from the selected group row
-                seed_probe_id = row->id; // when codec refactor lands, write seed_probe_id instead
-                inst().ini_dirty_ = true;
-                inst().unique_seed_count_ = -1;
-                FutureQueue::Enqueue(
-                    DeltaSeedRepo::ListUniqueForProbeAsync(row->id),
-                    // on success
-                    [](DbResult<std::vector<DeltaSeedRow>> rows)
-                    {
-                        if (rows.ok) inst().unique_seed_count_ = rows.value.size();
-                        else GuiToastBus::Error("Unable to get Unique seed count", rows.error.message);
-                    },
-                    // on error
-                    [](std::exception_ptr)
-                    {
-                        GuiToastBus::Error("Error getting Unique seed count");
-                    }
-                );
+                seed_probe_id = row->id;
+                if (std::find(inst().selected_seed_probe_ids_.begin(), inst().selected_seed_probe_ids_.end(), row->id) == inst().selected_seed_probe_ids_.end()) {
+                    inst().selected_seed_probe_ids_.push_back(row->id);
+                    inst().ini_dirty_ = true;
+                    FutureQueue::Enqueue(
+                        DeltaSeedRepo::ListUniqueForProbeAsync(row->id),
+                        [probe_id = row->id](DbResult<std::vector<DeltaSeedRow>> rows)
+                        {
+                            if (rows.ok) {
+                                inst().probe_delta_rows_[probe_id] = rows.value;
+                            }
+                            else GuiToastBus::Error("Unable to load unique deltas", rows.error.message);
+                        },
+                        [](std::exception_ptr)
+                        {
+                            GuiToastBus::Error("Error loading unique deltas");
+                        }
+                    );
+                }
             }
             });
     }
 
-    if (ImGui::Button("Pick ExplorerSettings...")) {
+    if (ImGui::Button("Add ExplorerSettings...")) {
         ImGui::OpenPopup("PB_ExplorerSettings");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear Settings")) {
+        inst().selected_settings_ids_.clear();
+        inst().ini_dirty_ = true;
     }
 
     {
-        using RowT = simcore::db::ExplorerSettingsLite; // or: simcore::db::BattleRunGroupRow
+        using RowT = simcore::db::ExplorerSettingsLite;
         static soasim::ui::LedgerPicker<RowT> picker;
         static bool init = false;
         if (!init) {
@@ -417,30 +439,65 @@ void PhaseBuilderPane::drawExplorerRunForm() {
         picker.open = ImGui::IsPopupOpen("PB_ExplorerSettings");
         picker.Draw([&](const soasim::ui::PickResult& pr, const std::optional<RowT>& row) {
             if (pr.ok && row) {
-                // Autofill from the selected group row
                 settings_id = row->id;
-                inst().ini_dirty_ = true;
-                inst().battle_plan_count_ = -1;
-                FutureQueue::Enqueue(
-                    ExplorerSettingsPlanLinkRepo::GetPlanCountAsync(row->id),
-                    // on success
-                    [](DbResult<int> count)
-                    {
-                        if (count.ok) inst().battle_plan_count_ = count.value;
-                        else GuiToastBus::Error("Unable to get BattlePlan count", count.error.message);
-                    },
-                    // on error
-                    [](std::exception_ptr)
-                    {
-                        GuiToastBus::Error("Error getting BattlePlan count");
-                    }
-                );
+                if (std::find(inst().selected_settings_ids_.begin(), inst().selected_settings_ids_.end(), row->id) == inst().selected_settings_ids_.end()) {
+                    inst().selected_settings_ids_.push_back(row->id);
+                    inst().ini_dirty_ = true;
+                }
             }
             });
     }
 
-    ImGui::Text("settings_id: %lld | ", settings_id); ImGui::SameLine();
-    ImGui::Text("seed_probe_id: %lld", seed_probe_id); ImGui::SameLine();
+    ImGui::Text("settings_id: %lld | seed_probe_id: %lld", settings_id, seed_probe_id);
+    ImGui::Text("selected settings: %zu", inst().selected_settings_ids_.size());
+    ImGui::Text("selected seed probes: %zu", inst().selected_seed_probe_ids_.size());
+
+    ImGui::SeparatorText("Delta Seed Selection");
+    ImGui::TextDisabled("Default behavior is all deltas (blueprint stores 0). Click buttons to pick specific deltas per seed probe.");
+    if (ImGui::BeginTable("PB_DeltaSeedTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("SeedProbe");
+        ImGui::TableSetupColumn("Delta Seed IDs");
+        ImGui::TableHeadersRow();
+
+        for (const auto probe_id : inst().selected_seed_probe_ids_) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%lld", (long long)probe_id);
+            ImGui::TableSetColumnIndex(1);
+
+            auto rows_it = inst().probe_delta_rows_.find(probe_id);
+            if (rows_it == inst().probe_delta_rows_.end()) {
+                ImGui::TextDisabled("Loading unique deltas...");
+                continue;
+            }
+
+            auto& selected = inst().selected_delta_ids_by_probe_[probe_id];
+            if (ImGui::SmallButton((std::string("All##") + std::to_string(probe_id)).c_str())) {
+                selected.clear();
+                inst().ini_dirty_ = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton((std::string("Select All##") + std::to_string(probe_id)).c_str())) {
+                selected.clear();
+                for (const auto& d : rows_it->second) selected.insert(d.id);
+                inst().ini_dirty_ = true;
+            }
+
+            for (const auto& d : rows_it->second) {
+                ImGui::SameLine();
+                const bool is_selected = selected.contains(d.id);
+                std::string label = std::format("{} [{}]##delta_{}_{}", d.seed_delta, d.id, probe_id, d.id);
+                if (is_selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.55f, 0.2f, 1.0f));
+                if (ImGui::SmallButton(label.c_str())) {
+                    if (is_selected) selected.erase(d.id);
+                    else selected.insert(d.id);
+                    inst().ini_dirty_ = true;
+                }
+                if (is_selected) ImGui::PopStyleColor();
+            }
+        }
+        ImGui::EndTable();
+    }
 
     if (ImGui::InputInt("priority", &priority)) { inst().ini_dirty_ = true; }
     if (ImGui::InputInt("run_ms", &run_ms)) { inst().ini_dirty_ = true; }
@@ -452,8 +509,12 @@ void PhaseBuilderPane::drawExplorerRunForm() {
     if (ImGui::InputInt("max_fake_attacks", &max_fake_attacks)) { inst().ini_dirty_ = true; }
 
     if (inst().ini_dirty_) {
+        if (!inst().selected_settings_ids_.empty()) settings_id = inst().selected_settings_ids_.front();
+        if (!inst().selected_seed_probe_ids_.empty()) seed_probe_id = inst().selected_seed_probe_ids_.front();
+
         bp.settings_id = settings_id;
         bp.seed_probe_id = seed_probe_id;
+        bp.delta_seed_ids_csv = "0";
         bp.priority = priority;
         bp.run_ms = (uint32_t)run_ms;
         bp.vi_stall_ms = (uint32_t)vi_ms;
@@ -565,37 +626,96 @@ void PhaseBuilderPane::startSubmitAsync() {
     inst().submit_state_ = SubmitState::Working;
     inst().submit_err_.clear();
     inst().created_job_set_id_.reset();
+    inst().created_job_set_count_ = 0;
 
     int pk = inst().kinds_[inst().selected_kind_idx_].id;
     auto ini_sorted = inst().ini_->to_string_sorted();
     auto purpose = inst().purpose_;
     auto meta = inst().meta_text_;
     auto preview_copy = inst().preview_;
+    auto selected_settings = inst().selected_settings_ids_;
+    auto selected_seed_probes = inst().selected_seed_probe_ids_;
+    auto selected_delta_by_probe = inst().selected_delta_ids_by_probe_;
 
     if (pk == simcore::PK_BattleTurnRunner and inst().ini_.value().get_bool(simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME, "use_single_turn_runner")) {
         pk = simcore::PK_BattleSingleTurnRunner;
     }
 
-    inst().submit_future_ = std::async(std::launch::async, [pk, ini_sorted, purpose, meta, preview_copy]() -> DbResult<std::pair<int64_t, int>> {
-        auto jsf = simcore::db::DataService::CreateJobSetAsync(purpose.empty() ? std::optional<std::string>{} : std::optional<std::string>{ purpose }, pk, {}, {}, {}, meta, {}, {});
-        auto jsr = jsf.get();
-        if (!jsr.ok) return DbResult<std::pair<int64_t, int>>::Err(jsr.error);
-        int64_t job_set_id = jsr.value;
+    inst().submit_future_ = std::async(std::launch::async, [pk, ini_sorted, purpose, meta, preview_copy, selected_settings, selected_seed_probes, selected_delta_by_probe]() -> DbResult<std::pair<int64_t, int64_t>> {
+        IniDoc base_ini = IniDoc::parse(ini_sorted);
+        auto battle_bp = simcore::db::codec::battle::run::BlueprintIni::from_section(base_ini);
 
-        auto encf = simcore::db::DataService::EncodeJobSetWithCodecAsync(pk, job_set_id, ini_sorted, {});
-        auto encr = encf.get();
-        if (!encr.ok) return DbResult<std::pair<int64_t, int>>::Err(encr.error);
+        std::vector<int64_t> settings = selected_settings;
+        std::vector<int64_t> probes = selected_seed_probes;
+        if (settings.empty() && battle_bp.settings_id > 0) settings.push_back(battle_bp.settings_id);
+        if (probes.empty() && battle_bp.seed_probe_id > 0) probes.push_back(battle_bp.seed_probe_id);
 
-        if (preview_copy && (pk == simcore::PK_TasMovie || pk == simcore::PK_BattleTurnRunner)) {
-            int64_t expected = 0;
-            if (pk == simcore::PK_TasMovie && preview_copy->tasmovie) expected = preview_copy->tasmovie->jobs;
-            if (pk == simcore::PK_BattleTurnRunner && preview_copy->explorer) expected = preview_copy->explorer->jobs;
-            auto setf = simcore::db::DataService::SetJobSetExpectedTotalAsync(job_set_id, expected, {});
-            auto setr = setf.get();
-            if (!setr.ok) return DbResult<std::pair<int64_t, int>>::Err(setr.error);
+        if ((pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner) && (settings.empty() || probes.empty())) {
+            return DbResult<std::pair<int64_t, int64_t>>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "Select at least one settings and one seed probe." });
         }
 
-        return DbResult<std::pair<int64_t, int>>::Ok({ job_set_id, pk });
+        int64_t first_job_set_id = -1;
+        int64_t created_count = 0;
+
+        if (pk == simcore::PK_BattleTurnRunner || pk == simcore::PK_BattleSingleTurnRunner) {
+            for (const auto settings_id : settings) {
+                for (const auto seed_probe_id : probes) {
+                    IniDoc combo_ini = base_ini;
+                    auto combo_bp = simcore::db::codec::battle::run::BlueprintIni::from_section(combo_ini);
+                    combo_bp.settings_id = settings_id;
+                    combo_bp.seed_probe_id = seed_probe_id;
+
+                    auto it = selected_delta_by_probe.find(seed_probe_id);
+                    if (it == selected_delta_by_probe.end() || it->second.empty()) {
+                        combo_bp.delta_seed_ids_csv = "0";
+                    }
+                    else {
+                        std::vector<int64_t> ids(it->second.begin(), it->second.end());
+                        std::sort(ids.begin(), ids.end());
+                        combo_bp.delta_seed_ids_csv = simcore::db::codec::battle::run::BlueprintIni::to_ids_csv(ids);
+                    }
+                    combo_bp.set_section(combo_ini);
+
+                    std::string combo_purpose = purpose;
+                    if (!combo_purpose.empty()) combo_purpose += " | ";
+                    combo_purpose += std::format("settings={} seed_probe={}", settings_id, seed_probe_id);
+
+                    auto jsf = simcore::db::DataService::CreateJobSetAsync(combo_purpose.empty() ? std::optional<std::string>{} : std::optional<std::string>{ combo_purpose }, pk, {}, {}, {}, meta, {}, {});
+                    auto jsr = jsf.get();
+                    if (!jsr.ok) return DbResult<std::pair<int64_t, int64_t>>::Err(jsr.error);
+                    int64_t job_set_id = jsr.value;
+                    if (first_job_set_id < 0) first_job_set_id = job_set_id;
+
+                    auto encf = simcore::db::DataService::EncodeJobSetWithCodecAsync(pk, job_set_id, combo_ini.to_string_sorted(), {});
+                    auto encr = encf.get();
+                    if (!encr.ok) return DbResult<std::pair<int64_t, int64_t>>::Err(encr.error);
+
+                    created_count++;
+                }
+            }
+        }
+        else {
+            auto jsf = simcore::db::DataService::CreateJobSetAsync(purpose.empty() ? std::optional<std::string>{} : std::optional<std::string>{ purpose }, pk, {}, {}, {}, meta, {}, {});
+            auto jsr = jsf.get();
+            if (!jsr.ok) return DbResult<std::pair<int64_t, int64_t>>::Err(jsr.error);
+            int64_t job_set_id = jsr.value;
+            first_job_set_id = job_set_id;
+
+            auto encf = simcore::db::DataService::EncodeJobSetWithCodecAsync(pk, job_set_id, ini_sorted, {});
+            auto encr = encf.get();
+            if (!encr.ok) return DbResult<std::pair<int64_t, int64_t>>::Err(encr.error);
+
+            if (preview_copy && pk == simcore::PK_TasMovie) {
+                int64_t expected = 0;
+                if (preview_copy->tasmovie) expected = preview_copy->tasmovie->jobs;
+                auto setf = simcore::db::DataService::SetJobSetExpectedTotalAsync(job_set_id, expected, {});
+                auto setr = setf.get();
+                if (!setr.ok) return DbResult<std::pair<int64_t, int64_t>>::Err(setr.error);
+            }
+            created_count = 1;
+        }
+
+        return DbResult<std::pair<int64_t, int64_t>>::Ok({ first_job_set_id, created_count });
         });
 }
 
@@ -607,6 +727,7 @@ void PhaseBuilderPane::drawSubmit() {
                 auto r = inst().submit_future_.get();
                 if (r.ok) {
                     inst().created_job_set_id_ = r.value.first;
+                    inst().created_job_set_count_ = r.value.second;
                     inst().submit_state_ = SubmitState::Done;
                 }
                 else {
@@ -623,7 +744,7 @@ void PhaseBuilderPane::drawSubmit() {
     }
 
     if (inst().submit_state_ == SubmitState::Done && inst().created_job_set_id_) {
-        ImGui::Text("Created Job Set ID: %lld", (long long)*inst().created_job_set_id_);
+        ImGui::Text("Created %lld job set(s). First Job Set ID: %lld", (long long)inst().created_job_set_count_, (long long)*inst().created_job_set_id_);
     }
 
     bool can_submit = inst().ini_.has_value() && inst().validation_errors_.empty() && inst().selected_kind_idx_ >= 0 && inst().selected_kind_idx_ < (int)inst().kinds_.size();
