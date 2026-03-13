@@ -12,6 +12,8 @@
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/ExplorerSettingsRepo.h"
 #include "DB/SeedProbeRepo.h"
+#include "DB/DeltaSeedRepo.h"
+#include "DB/BattlePlanRepo.h"
 #include "DB/Querying/PagedQuery.h"
 #include "Utils/IniDoc.h"
 #include "../../Components/ToastBus.h"
@@ -136,9 +138,11 @@ namespace {
 
         std::future<DbResult<IniDoc>> fut_results;
         std::future<DbResult<std::string>> fut_progress;
+        std::future<DbResult<std::string>> fut_blueprint_info;
         bool details_in_flight{false};
         std::string results_log;
         std::string progress_log;
+        std::string blueprint_info;
         bool override_max_fake_attacks{false};
         int max_fake_attacks_override{0};
 
@@ -441,6 +445,38 @@ namespace {
             }
             return DbResult<std::string>::Ok(std::move(out));
         });
+        s.fut_blueprint_info = std::async(std::launch::async, [job_id]() -> DbResult<std::string> {
+            auto jr = JobsRepo::Get(job_id);
+            if (!jr.ok) return DbResult<std::string>::Err(jr.error);
+            if (!jr.value.vm_kv.has_value()) return DbResult<std::string>::Ok("(job has no vm_kv)");
+
+            IniDoc job_ini = IniDoc::parse(*jr.value.vm_kv);
+            auto st_job = simcore::db::codec::battle::singleturn::JobIni::from_section(job_ini);
+
+            std::string initial_frame = "(none)";
+            if (st_job.delta_seed_id > 0) {
+                auto d = DeltaSeedRepo::Get(st_job.delta_seed_id);
+                if (d.ok && d.value.has_value()) {
+                    auto input = d.value->input;
+                    initial_frame = input.to_frame_hex();
+                }
+            }
+
+            std::string plan_short_desc = "(unknown)";
+            if (st_job.plan_id > 0) {
+                auto p = BattlePlanRepo::Get(st_job.plan_id);
+                if (p.ok) plan_short_desc = p.value.name.empty() ? "(unnamed)" : p.value.name;
+            }
+
+            std::string out;
+            out += "delta_seed_id: ";
+            out += std::to_string(st_job.delta_seed_id);
+            out += "\ninitial_frame_input: ";
+            out += initial_frame;
+            out += "\nbattle_action_plan: ";
+            out += plan_short_desc;
+            return DbResult<std::string>::Ok(std::move(out));
+        });
     }
 
     static bool has_selected_group(const std::vector<GroupRow>& groups, int64_t root_id) {
@@ -490,6 +526,7 @@ namespace {
                     s.jobs.clear();
                     s.results_log.clear();
                     s.progress_log.clear();
+                    s.blueprint_info.clear();
                 }
                 else if (!has_selected_waves(s.groups, s.selected_root, s.selected_waves)) {
                     s.selected_waves.clear();
@@ -497,6 +534,7 @@ namespace {
                     s.jobs.clear();
                     s.results_log.clear();
                     s.progress_log.clear();
+                    s.blueprint_info.clear();
                 }
                 else if (!s.selected_waves.empty()) {
                     kick_jobs_fetch(s.selected_waves);
@@ -512,6 +550,7 @@ namespace {
                     s.selected_job = -1;
                     s.results_log.clear();
                     s.progress_log.clear();
+                    s.blueprint_info.clear();
                 }
                 else {
                     kick_details_fetch(s.selected_job);
@@ -519,14 +558,17 @@ namespace {
             }
         }
 
-        if (s.details_in_flight && s.fut_results.valid() && s.fut_progress.valid()
+        if (s.details_in_flight && s.fut_results.valid() && s.fut_progress.valid() && s.fut_blueprint_info.valid()
             && s.fut_results.wait_for(0ms) == std::future_status::ready
-            && s.fut_progress.wait_for(0ms) == std::future_status::ready) {
+            && s.fut_progress.wait_for(0ms) == std::future_status::ready
+            && s.fut_blueprint_info.wait_for(0ms) == std::future_status::ready) {
             auto rr = s.fut_results.get();
             auto pr = s.fut_progress.get();
+            auto br = s.fut_blueprint_info.get();
             s.details_in_flight = false;
             s.results_log = rr.ok ? rr.value.to_string_sorted() : "(no results)";
             s.progress_log = pr.ok ? pr.value : "(no progress)";
+            s.blueprint_info = br.ok ? br.value : "(no blueprint info)";
         }
 
         if (s.auto_refresh && !s.groups_in_flight) {
@@ -615,6 +657,7 @@ void ExplorerRunsPane::Draw() {
                 s.jobs.clear();
                 s.results_log.clear();
                 s.progress_log.clear();
+                s.blueprint_info.clear();
             }
             ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(g.settings_label.c_str());
 
@@ -686,6 +729,7 @@ void ExplorerRunsPane::Draw() {
                         s.selected_job = -1;
                         s.results_log.clear();
                         s.progress_log.clear();
+                        s.blueprint_info.clear();
                         if (!s.selected_waves.empty()) {
                             kick_jobs_fetch(s.selected_waves);
                         }
@@ -858,6 +902,12 @@ void ExplorerRunsPane::Draw() {
         ImGuiTableFlags_BordersOuter |
         ImGuiTableFlags_SizingStretchProp |
         ImGuiTableFlags_ScrollY;
+
+    ImGui::SeparatorText("Job Blueprint");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(s.blueprint_info.empty() ? "(select a job to view blueprint info)" : s.blueprint_info.c_str());
+    ImGui::PopTextWrapPos();
+
     if (ImGui::BeginTable("details_logs_tbl", 2, details_log_table_flags, ImVec2(0.0f, 0.0f))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Progress Log");
