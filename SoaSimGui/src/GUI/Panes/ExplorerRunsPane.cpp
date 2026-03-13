@@ -705,7 +705,7 @@ void ExplorerRunsPane::Draw() {
                     outcomeTxt = "M:" + soa::battle::actions::get_materialize_err_string((soa::battle::actions::MaterializeErr)j.plan_materialize_err);
                 }
                 else {
-                    outcomeTxt = simcore::RunToBpOutcomeToString(j.battle_outcome);
+                    outcomeTxt = simcore::battle::get_outcome_string((simcore::battle::Outcome)j.battle_outcome);
                 }
                 ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(outcomeTxt.c_str());
                 ImGui::TableSetColumnIndex(3); ImGui::Text("%u/%u%s", j.pred_passed, j.pred_total, j.pred_abort_run ? " (ABORT)" : "");
