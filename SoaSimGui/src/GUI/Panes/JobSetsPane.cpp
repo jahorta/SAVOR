@@ -9,6 +9,7 @@
 #include "DB/Querying/PagedQuery.h"
 
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <future>
 #include <functional>
@@ -87,7 +88,7 @@ namespace {
         return std::string(buf);
     }
 
-    static void draw_segmented_progress(int64_t succeeded, int64_t failed, int64_t total) {
+    static void draw_segmented_progress(int64_t succeeded, int64_t failed, int64_t completed, int64_t total) {
         const float width = ImGui::GetContentRegionAvail().x;
         const float height = ImGui::GetTextLineHeight();
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -124,6 +125,23 @@ namespace {
         if (remain_w > 0.0f) {
             dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + remain_w, p.y + sz.y), col_remain);
         }
+
+        char label[128]{ 0 };
+        std::snprintf(label, sizeof(label), "ok:%lld rem:%lld fail:%lld done:%lld/%lld",
+            (long long)success_clamped,
+            (long long)remain,
+            (long long)failed_clamped,
+            (long long)completed,
+            (long long)total);
+
+        const ImVec2 text_sz = ImGui::CalcTextSize(label);
+        const ImVec2 text_pos(
+            p.x + (sz.x - text_sz.x) * 0.5f,
+            p.y + (sz.y - text_sz.y) * 0.5f);
+        const ImU32 text_shadow = ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.85f));
+        const ImU32 text_fg = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.98f));
+        dl->AddText(ImVec2(text_pos.x + 1.0f, text_pos.y + 1.0f), text_shadow, label);
+        dl->AddText(text_pos, text_fg, label);
     }
 
     static void kick_family_fetch(const std::vector<JobSetLite>& seeds) {
@@ -468,16 +486,7 @@ void JobSetsPane::Draw() {
 
             ImGui::TableSetColumnIndex(4);
             {
-                draw_segmented_progress(r->succeeded_jobs, r->failed_jobs, r->total_jobs);
-                ImGui::TextDisabled("ok:%lld fail:%lld rem:%lld | done:%lld / %lld",
-                    (long long)r->succeeded_jobs,
-                    (long long)r->failed_jobs,
-                    (long long)((std::max)(int64_t(0), r->total_jobs - r->succeeded_jobs - r->failed_jobs)),
-                    (long long)r->completed_jobs,
-                    (long long)r->total_jobs);
-                if (r->expected_total.has_value()) {
-                    ImGui::TextDisabled("planned: %lld", (long long)*r->expected_total);
-                }
+                draw_segmented_progress(r->succeeded_jobs, r->failed_jobs, r->completed_jobs, r->total_jobs);
             }
 
             ImGui::TableSetColumnIndex(5);
