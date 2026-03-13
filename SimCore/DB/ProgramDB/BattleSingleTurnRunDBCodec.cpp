@@ -229,7 +229,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     (void)simcore::db::JobSetsRepo::SetExpectedTotal(job_set_id, enqueued);
 
     IniKV cond;
-    cond.add("type", "ALL_FINISHED");
+    cond.add("type", "ALL_SUCCEEDED");
     auto tr = simcore::db::TriggersRepo::AddForJobSet(job_set_id, kPK, cond.to_string_sorted(), ini.to_string_sorted());
     if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
 
