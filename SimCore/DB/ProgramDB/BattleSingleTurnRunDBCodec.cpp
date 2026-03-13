@@ -527,7 +527,6 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_WINNER");
         } else {
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_DUPLICATE");
-            (void)simcore::db::SavestateRepo::Delete(s.savestate_id);
         }
     }
 
