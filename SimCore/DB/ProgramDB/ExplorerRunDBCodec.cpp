@@ -32,6 +32,7 @@
 #include "../../Runner/Parallel/DB/DBTriggerEngine.h"
 
 #include <sqlite3.h>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
@@ -70,11 +71,12 @@ namespace {
         }
     }
 
-    static std::vector<std::vector<uint32_t>> enumerate_fake_vectors(std::size_t turns, uint32_t max_sum) {
+    static std::vector<std::vector<uint32_t>> enumerate_fake_vectors(std::size_t turns, uint32_t min_sum, uint32_t max_sum) {
         if (turns == 0) return {};
         std::vector<std::vector<uint32_t>> out;
         std::vector<uint32_t> cur(turns, 0);
-        for (uint32_t sum = 0; sum <= max_sum; ++sum) dfs_fake_vectors(0, sum, cur, out);
+        const uint32_t start_sum = std::min(min_sum, max_sum);
+        for (uint32_t sum = start_sum; sum <= max_sum; ++sum) dfs_fake_vectors(0, sum, cur, out);
         return out;
     }
 
@@ -142,7 +144,7 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
 
             auto turns = BattlePlanTurnRepo::LoadTurnsByPlan(plan_row.plan_id);
             if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
-            auto fake_vectors = enumerate_fake_vectors(turns.value.size(), bp_ini.max_fake_attacks);
+            auto fake_vectors = enumerate_fake_vectors(turns.value.size(), bp_ini.min_fake_attacks, bp_ini.max_fake_attacks);
 
             auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_row.plan_id, delta_row.id);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);

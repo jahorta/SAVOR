@@ -60,6 +60,7 @@ namespace simcore::db::phasebuilder {
                 if (!d.ok || d.value.status != "done") errs.push_back({ "BattleRun.Blueprint.seed_probe_id","seed probe not found or not done" });
             }
             if (bp.max_fake_attacks > 100000) errs.push_back({ "BattleRun.Blueprint.max_fake_attacks","too large" });
+            if (bp.min_fake_attacks > bp.max_fake_attacks) errs.push_back({ "BattleRun.Blueprint.min_fake_attacks","must be <= max_fake_attacks" });
             break;
         }
         default: break;
