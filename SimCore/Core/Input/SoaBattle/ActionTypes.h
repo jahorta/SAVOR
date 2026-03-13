@@ -93,22 +93,27 @@ namespace soa::battle::actions {
         for (int i = 0; i < bp.size(); i++) {
             auto tp = bp[i];
             path.emplace_back(sep + (offset ? "    " : " ") + "Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
-            for (auto sp : tp.spec) {
-                std::string actor = " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
-                if (sp.macro == BattleAction::Attack)
-                    actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
-                if (sp.macro == BattleAction::UseItem) 
-                {
-                    actor = actor + ":[" + std::to_string(sp.params.item_id) + "]";
-                    actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
-                }
-                path.emplace_back(actor);
-            }
+            path.emplace_back(get_turn_plan_summary(tp, offset));
         }
 
         std::string out;
         for (auto s : path) out.append(s);
         return out;
+    }
+
+    inline std::string get_turn_plan_summary(TurnPlan tp, bool offset = true) {
+        std::stringstream actor{};
+        for (auto sp : tp.spec) {
+            actor << " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
+            if (sp.macro == BattleAction::Attack)
+                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            if (sp.macro == BattleAction::UseItem)
+            {
+                actor << ":[" + std::to_string(sp.params.item_id) + "]";
+                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            }
+        }
+        return actor.str();
     }
 
 } // namespace soa::battle::actions
