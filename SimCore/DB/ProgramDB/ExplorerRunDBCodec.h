@@ -4,6 +4,8 @@
 #include "../../Runner/Script/PhaseScriptVM.h"
 #include "../../Utils/IniDoc.h"
 #include "../../Runner/IPC/Wire.h"
+#include <sstream>
+#include <vector>
 
 using simcore::TriggerCtx;
 
@@ -11,8 +13,9 @@ namespace simcore::db::codec::battle::run {
     struct BlueprintIni {
         static constexpr const char* SECTION_NAME = "BattleRun.Blueprint";
 
-        int64_t     settings_id;
-        int64_t     seed_probe_id;
+        int64_t     settings_id{ -1 };
+        int64_t     seed_probe_id{ -1 };
+        std::string delta_seed_ids_csv{"0"};
         int         priority{ 0 };
         uint32_t    run_ms{};
         uint32_t    vi_stall_ms{};
@@ -28,6 +31,7 @@ namespace simcore::db::codec::battle::run {
             IniKV section = doc.section_kv(SECTION_NAME);
             bp.settings_id = section.get_i64("settings_id", -1);
             bp.seed_probe_id = section.get_i64("seed_probe_id", -1);
+            bp.delta_seed_ids_csv = section.get("delta_seed_ids_csv", "0");
             bp.priority = section.get_i64("priority", 0);
             bp.run_ms = section.get_u32("run_ms", 0);
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
@@ -42,6 +46,7 @@ namespace simcore::db::codec::battle::run {
             doc.ensure_section(SECTION_NAME);
             doc.set(SECTION_NAME, "settings_id", std::to_string(settings_id));
             doc.set(SECTION_NAME, "seed_probe_id", std::to_string(seed_probe_id));
+            doc.set(SECTION_NAME, "delta_seed_ids_csv", delta_seed_ids_csv.empty() ? "0" : delta_seed_ids_csv);
             doc.set(SECTION_NAME, "priority", std::to_string(priority));
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
             doc.set(SECTION_NAME, "vi_stall_ms", std::to_string(vi_stall_ms));
@@ -55,6 +60,29 @@ namespace simcore::db::codec::battle::run {
             IniDoc doc{};
             set_section(doc);
             return doc.to_string_preserve_order();
+        }
+        static inline std::vector<int64_t> parse_ids_csv(const std::string& csv) {
+            std::vector<int64_t> out;
+            if (csv.empty()) return out;
+            std::stringstream ss(csv);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) {
+                if (tok.empty()) continue;
+                try {
+                    out.push_back(std::stoll(tok));
+                }
+                catch (...) {
+                }
+            }
+            return out;
+        }
+        static inline std::string to_ids_csv(const std::vector<int64_t>& ids) {
+            std::string out;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                if (i) out.push_back(',');
+                out += std::to_string(ids[i]);
+            }
+            return out;
         }
     };
 

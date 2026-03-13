@@ -140,11 +140,15 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
 
-    if (wave.cur_turn != 1) 
+    if (wave.cur_turn != 1)
     {
         DbError waveError{};
         waveError.message = "Only use encode job into db for the first wave.";
         return DbResult<int64_t>::Err(waveError);
+    }
+
+    if (bp.settings_id <= 0 || bp.seed_probe_id <= 0) {
+        return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, "settings_id and seed_probe_id are required." });
     }
 
     auto root = resolve_root_group_id_for_jobset(job_set_id);
@@ -160,9 +164,14 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
     auto probe = simcore::db::SeedProbeRepo::Get(bp.seed_probe_id);
     if (!probe.ok) return DbResult<int64_t>::Err(probe.error);
 
+    auto selected_delta_ids = BRBp::parse_ids_csv(bp.delta_seed_ids_csv);
+    const bool include_all_deltas = selected_delta_ids.empty() || std::find(selected_delta_ids.begin(), selected_delta_ids.end(), 0) != selected_delta_ids.end();
 
     std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t>> starts;
-    for (auto& d : deltas.value) starts.push_back({ probe.value.savestate_id, d.id , probe.value.neutral_seed, d.seed_delta});
+    for (auto& d : deltas.value) {
+        if (!include_all_deltas && std::find(selected_delta_ids.begin(), selected_delta_ids.end(), d.id) == selected_delta_ids.end()) continue;
+        starts.push_back({ probe.value.savestate_id, d.id , probe.value.neutral_seed, d.seed_delta});
+    }
 
     int64_t enqueued = 0;
     IniDoc t_ini{};
