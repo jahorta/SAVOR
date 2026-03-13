@@ -158,6 +158,7 @@ namespace simcore::db {
             "COALESCE(p.terminal, 0) AS completed_jobs, "
             "COALESCE(p.succeeded, 0) AS succeeded_jobs, "
             "COALESCE(p.failed, 0) AS failed_jobs, "
+            "COALESCE(p.canceled, 0) AS canceled_jobs, "
             "js.expected_total "
             "FROM job_sets js "
             "LEFT JOIN v_job_set_progress_h p ON p.job_set_id = js.job_set_id ";
@@ -225,8 +226,9 @@ namespace simcore::db {
                 r.completed_jobs = sqlite3_column_int64(st, 6);
                 r.succeeded_jobs = sqlite3_column_int64(st, 7);
                 r.failed_jobs = sqlite3_column_int64(st, 8);
-                if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
-                    r.expected_total = sqlite3_column_int64(st, 9);
+                r.canceled_jobs = sqlite3_column_int64(st, 9);
+                if (sqlite3_column_type(st, 10) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 10);
                 }
                 page.items.push_back(std::move(r));
             }
@@ -379,6 +381,7 @@ namespace simcore::db {
             << "COALESCE(p.terminal, 0) AS completed_jobs, "
             << "COALESCE(p.succeeded, 0) AS succeeded_jobs, "
             << "COALESCE(p.failed, 0) AS failed_jobs, "
+            << "COALESCE(p.canceled, 0) AS canceled_jobs, "
             << "js.expected_total "
             << "FROM tree t "
             << "JOIN job_sets js ON js.job_set_id = t.job_set_id "
@@ -413,8 +416,9 @@ namespace simcore::db {
                 r.completed_jobs = sqlite3_column_int64(st, 6);
                 r.succeeded_jobs = sqlite3_column_int64(st, 7);
                 r.failed_jobs = sqlite3_column_int64(st, 8);
-                if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
-                    r.expected_total = sqlite3_column_int64(st, 9);
+                r.canceled_jobs = sqlite3_column_int64(st, 9);
+                if (sqlite3_column_type(st, 10) != SQLITE_NULL) {
+                    r.expected_total = sqlite3_column_int64(st, 10);
                 }
                 out.push_back(std::move(r));
             }

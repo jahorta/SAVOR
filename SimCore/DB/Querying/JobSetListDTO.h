@@ -13,6 +13,7 @@ struct JobSetLite {
     int64_t completed_jobs{};
     int64_t succeeded_jobs{};
     int64_t failed_jobs{};
+    int64_t canceled_jobs{};
     std::optional<int64_t> expected_total{};
 };
 

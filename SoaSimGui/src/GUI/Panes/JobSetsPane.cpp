@@ -57,6 +57,9 @@ namespace {
         std::future<simcore::db::DbResult<simcore::db::JobSetPriorityBoostResult>> fut_boost;
         bool boost_in_flight = false;
 
+        std::future<simcore::db::DbResult<simcore::db::JobSetCancelQueuedResult>> fut_cancel_tree;
+        bool cancel_tree_in_flight = false;
+
         steady_clock::time_point last_fetch{};
     };
 
@@ -88,7 +91,7 @@ namespace {
         return std::string(buf);
     }
 
-    static void draw_segmented_progress(int64_t succeeded, int64_t failed, int64_t completed, int64_t total) {
+    static void draw_segmented_progress(int64_t succeeded, int64_t failed, int64_t canceled, int64_t completed, int64_t total) {
         const float width = ImGui::GetContentRegionAvail().x;
         const float height = ImGui::GetTextLineHeight();
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -96,10 +99,11 @@ namespace {
         ImGui::InvisibleButton("##seg_progress", sz);
 
         auto* dl = ImGui::GetWindowDrawList();
-        const ImU32 col_bg = ImGui::GetColorU32(ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
-        const ImU32 col_success = ImGui::GetColorU32(ImVec4(0.20f, 0.70f, 0.25f, 1.0f));
-        const ImU32 col_failed = ImGui::GetColorU32(ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
-        const ImU32 col_remain = ImGui::GetColorU32(ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        const ImU32 col_bg = ImGui::GetColorU32(ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+        const ImU32 col_success = ImGui::GetColorU32(ImVec4(0.12f, 0.45f, 0.16f, 1.0f));
+        const ImU32 col_failed = ImGui::GetColorU32(ImVec4(0.55f, 0.15f, 0.15f, 1.0f));
+        const ImU32 col_canceled = ImGui::GetColorU32(ImVec4(0.35f, 0.22f, 0.12f, 1.0f));
+        const ImU32 col_remain = ImGui::GetColorU32(ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
 
         dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), col_bg, 3.0f);
 
@@ -107,10 +111,12 @@ namespace {
 
         const int64_t success_clamped = (std::max)(int64_t(0), (std::min)(succeeded, total));
         const int64_t failed_clamped = (std::max)(int64_t(0), (std::min)(failed, total - success_clamped));
-        const int64_t remain = (std::max)(int64_t(0), total - success_clamped - failed_clamped);
+        const int64_t canceled_clamped = (std::max)(int64_t(0), (std::min)(canceled, total - success_clamped - failed_clamped));
+        const int64_t remain = (std::max)(int64_t(0), total - success_clamped - failed_clamped - canceled_clamped);
 
         const float success_w = sz.x * (float)success_clamped / (float)total;
         const float failed_w = sz.x * (float)failed_clamped / (float)total;
+        const float canceled_w = sz.x * (float)canceled_clamped / (float)total;
         const float remain_w = sz.x * (float)remain / (float)total;
 
         float x0 = p.x;
@@ -122,15 +128,20 @@ namespace {
             dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + failed_w, p.y + sz.y), col_failed, 0.0f);
             x0 += failed_w;
         }
+        if (canceled_w > 0.0f) {
+            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + canceled_w, p.y + sz.y), col_canceled, 0.0f);
+            x0 += canceled_w;
+        }
         if (remain_w > 0.0f) {
             dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + remain_w, p.y + sz.y), col_remain);
         }
 
         char label[128]{ 0 };
-        std::snprintf(label, sizeof(label), "ok:%lld rem:%lld fail:%lld done:%lld/%lld",
+        std::snprintf(label, sizeof(label), "ok:%lld rem:%lld fail:%lld can:%lld done:%lld/%lld",
             (long long)success_clamped,
             (long long)remain,
             (long long)failed_clamped,
+            (long long)canceled_clamped,
             (long long)completed,
             (long long)total);
 
@@ -286,6 +297,27 @@ namespace {
             GuiToastBus::Error("Boost failed", r.error.message);
         }
     }
+    static void consume_cancel_tree_if_ready() {
+        auto& s = S();
+        if (!s.cancel_tree_in_flight) return;
+        using namespace std::chrono_literals;
+        if (!s.fut_cancel_tree.valid()) return;
+        if (s.fut_cancel_tree.wait_for(0ms) != std::future_status::ready) return;
+
+        auto r = s.fut_cancel_tree.get();
+        s.cancel_tree_in_flight = false;
+        if (r.ok) {
+            const std::string msg = std::to_string((long long)r.value.canceled_jobs) + " queued jobs canceled";
+            GuiToastBus::Warn("Job set queue canceled", msg.c_str());
+            s.before.reset();
+            s.after.reset();
+            kick_fetch();
+        }
+        else {
+            GuiToastBus::Error("Cancel queued failed", r.error.message);
+        }
+    }
+
 }
 
 void JobSetsPane::OnActivated() {
@@ -404,6 +436,7 @@ void JobSetsPane::Draw() {
     consume_kinds_fetch_if_ready();
     consume_delete_if_ready();
     consume_boost_if_ready();
+    consume_cancel_tree_if_ready();
     maybe_refresh();
 
     if (ImGui::BeginTable("JobSetsTable", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
@@ -486,7 +519,7 @@ void JobSetsPane::Draw() {
 
             ImGui::TableSetColumnIndex(4);
             {
-                draw_segmented_progress(r->succeeded_jobs, r->failed_jobs, r->completed_jobs, r->total_jobs);
+                draw_segmented_progress(r->succeeded_jobs, r->failed_jobs, r->canceled_jobs, r->completed_jobs, r->total_jobs);
             }
 
             ImGui::TableSetColumnIndex(5);
@@ -496,7 +529,7 @@ void JobSetsPane::Draw() {
             }
 
             ImGui::SameLine();
-            ImGui::BeginDisabled(s.delete_in_flight || s.boost_in_flight);
+            ImGui::BeginDisabled(s.delete_in_flight || s.boost_in_flight || s.cancel_tree_in_flight);
             if (ImGui::SmallButton("Boost")) {
                 s.boost_in_flight = true;
                 s.fut_boost = simcore::db::DataService::BoostJobSetPriorityTreeAsync(r->job_set_id);
@@ -504,7 +537,15 @@ void JobSetsPane::Draw() {
             ImGui::EndDisabled();
 
             ImGui::SameLine();
-            ImGui::BeginDisabled(s.delete_in_flight);
+            ImGui::BeginDisabled(s.delete_in_flight || s.boost_in_flight || s.cancel_tree_in_flight);
+            if (ImGui::SmallButton("Cancel queued")) {
+                s.cancel_tree_in_flight = true;
+                s.fut_cancel_tree = simcore::db::DataService::CancelQueuedJobsForJobSetTreeAsync(r->job_set_id);
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(s.delete_in_flight || s.cancel_tree_in_flight);
             if (ImGui::SmallButton("Delete")) {
                 s.pending_delete_job_set_id = r->job_set_id;
                 s.request_delete_modal_open = true;

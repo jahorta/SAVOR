@@ -742,5 +742,57 @@ namespace simcore::db {
         return DBService::instance().submit_res<JobPriorityBoostResult>(OpType::Write, Priority::High, rp,
             [=](DbEnv& e) { return impl_boost_priority_for_job_set_tree(e, root_job_set_id); });
     }
+    static inline DbResult<JobSetCancelQueuedResult> impl_cancel_queued_for_job_set_tree(DbEnv& env, int64_t root_job_set_id) {
+        sqlite3* db = env.handle();
+
+        sqlite3_stmt* exists = nullptr;
+        int rc = sqlite3_prepare_v2(db, "SELECT 1 FROM job_sets WHERE job_set_id=? LIMIT 1", -1, &exists, nullptr);
+        if (rc != SQLITE_OK) return DbResult<JobSetCancelQueuedResult>::Err({ map_sqlite_err(rc), rc, "prepare cancel tree exists" });
+        sqlite3_bind_int64(exists, 1, root_job_set_id);
+        rc = sqlite3_step(exists);
+        sqlite3_finalize(exists);
+        if (rc != SQLITE_ROW) {
+            return DbResult<JobSetCancelQueuedResult>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "job_set not found" });
+        }
+
+        const char* sql =
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?1 "
+            "  UNION ALL "
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id=t.job_set_id"
+            ") "
+            "UPDATE jobs "
+            "SET state='CANCELED', claimed_by_token=NULL, lease_expires_at=NULL "
+            "WHERE job_set_id IN (SELECT job_set_id FROM tree) "
+            "  AND state IN ('QUEUED','INTERRUPTED','CLAIMED') "
+            "RETURNING job_id;";
+
+        sqlite3_stmt* st = nullptr;
+        rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+        if (rc != SQLITE_OK) return DbResult<JobSetCancelQueuedResult>::Err({ map_sqlite_err(rc), rc, "prepare cancel tree update" });
+        sqlite3_bind_int64(st, 1, root_job_set_id);
+
+        JobSetCancelQueuedResult out{};
+        while (true) {
+            rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                out.canceled_job_ids.push_back(sqlite3_column_int64(st, 0));
+            }
+            else if (rc == SQLITE_DONE) {
+                break;
+            }
+            else {
+                sqlite3_finalize(st);
+                return DbResult<JobSetCancelQueuedResult>::Err({ map_sqlite_err(rc), rc, "exec cancel tree update" });
+            }
+        }
+        sqlite3_finalize(st);
+        return DbResult<JobSetCancelQueuedResult>::Ok(std::move(out));
+    }
+
+    std::future<DbResult<JobSetCancelQueuedResult>> JobsRepo::CancelQueuedForJobSetTreeAsync(int64_t root_job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<JobSetCancelQueuedResult>(OpType::Write, Priority::High, rp,
+            [=](DbEnv& e) { return impl_cancel_queued_for_job_set_tree(e, root_job_set_id); });
+    }
 
 } // namespace simcore::db
