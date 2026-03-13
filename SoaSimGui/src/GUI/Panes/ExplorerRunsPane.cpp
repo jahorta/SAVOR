@@ -434,17 +434,73 @@ namespace {
         });
     }
 
+    static bool has_selected_group(const std::vector<GroupRow>& groups, int64_t root_id) {
+        for (const auto& g : groups) {
+            if (g.root_group_id == root_id) return true;
+        }
+        return false;
+    }
+
+    static bool has_selected_wave(const std::vector<GroupRow>& groups, int64_t root_id, int64_t wave_id) {
+        if (wave_id <= 0) return true;
+        for (const auto& g : groups) {
+            if (g.root_group_id != root_id) continue;
+            for (const auto& w : g.waves) {
+                if (w.job_set_id == wave_id) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    static bool has_selected_job(const std::vector<JobViewRow>& jobs, int64_t job_id) {
+        for (const auto& j : jobs) {
+            if (j.job_id == job_id) return true;
+        }
+        return false;
+    }
+
     static void consume_fetches() {
         auto& s = S();
         if (s.groups_in_flight && s.fut_groups.valid() && s.fut_groups.wait_for(0ms) == std::future_status::ready) {
             auto r = s.fut_groups.get();
             s.groups_in_flight = false;
-            if (r.ok) s.groups = std::move(r.value);
+            if (r.ok) {
+                s.groups = std::move(r.value);
+                if (!has_selected_group(s.groups, s.selected_root)) {
+                    s.selected_root = -1;
+                    s.selected_wave = -1;
+                    s.selected_job = -1;
+                    s.jobs.clear();
+                    s.results_log.clear();
+                    s.progress_log.clear();
+                }
+                else if (!has_selected_wave(s.groups, s.selected_root, s.selected_wave)) {
+                    s.selected_wave = -1;
+                    s.selected_job = -1;
+                    s.jobs.clear();
+                    s.results_log.clear();
+                    s.progress_log.clear();
+                }
+                else if (s.selected_wave > 0) {
+                    kick_jobs_fetch(s.selected_wave);
+                }
+            }
         }
         if (s.jobs_in_flight && s.fut_jobs.valid() && s.fut_jobs.wait_for(0ms) == std::future_status::ready) {
             auto r = s.fut_jobs.get();
             s.jobs_in_flight = false;
-            if (r.ok) s.jobs = std::move(r.value);
+            if (r.ok) {
+                s.jobs = std::move(r.value);
+                if (!has_selected_job(s.jobs, s.selected_job)) {
+                    s.selected_job = -1;
+                    s.results_log.clear();
+                    s.progress_log.clear();
+                }
+                else {
+                    kick_details_fetch(s.selected_job);
+                }
+            }
         }
 
         if (s.details_in_flight && s.fut_results.valid() && s.fut_progress.valid()
@@ -489,14 +545,9 @@ namespace {
 
 void ExplorerRunsPane::OnActivated() {
     auto& s = S();
-    s.selected_root = -1;
-    s.selected_wave = -1;
-    s.selected_job = -1;
-    s.groups.clear();
-    s.jobs.clear();
-    s.results_log.clear();
-    s.progress_log.clear();
     kick_groups_fetch();
+    if (s.selected_wave > 0) kick_jobs_fetch(s.selected_wave);
+    if (s.selected_job > 0) kick_details_fetch(s.selected_job);
 }
 
 void ExplorerRunsPane::Draw() {
