@@ -62,18 +62,18 @@ namespace simcore::db {
         return JobEventsRepo::ListPagedByTimeAsync(scope, q.before, q.limit, rp);
     }
 
-    std::future<DbResult<Page<JobSetLite>>> DataService::FetchJobSetsPage(const JobSetsListScope& scope, const PagedQuery<>& q, RetryPolicy rp) {
+    std::future<DbResult<JobSetPageWithFamilies>> DataService::FetchJobSetsPageWithFamilies(const JobSetsListScope& scope, const PagedQuery<>& q, RetryPolicy rp) {
         if (q.order != PageOrder::Desc) {
-            std::promise<DbResult<Page<JobSetLite>>> p; p.set_value(invalid_arg_sets("only DESC supported")); return p.get_future();
+            std::promise<DbResult<JobSetPageWithFamilies>> p;
+            p.set_value(DbResult<JobSetPageWithFamilies>::Err({ DbErrorKind::InvalidArgument, 0, "only DESC supported" }));
+            return p.get_future();
         }
         if (q.after.has_value()) {
-            std::promise<DbResult<Page<JobSetLite>>> p; p.set_value(invalid_arg_sets("after not supported by repos yet")); return p.get_future();
+            std::promise<DbResult<JobSetPageWithFamilies>> p;
+            p.set_value(DbResult<JobSetPageWithFamilies>::Err({ DbErrorKind::InvalidArgument, 0, "after not supported by repos yet" }));
+            return p.get_future();
         }
-        return JobSetsRepo::ListRecentAsync(scope, q.before, q.limit, rp);
-    }
-
-    std::future<DbResult<std::vector<JobSetLite>>> DataService::FetchJobSetFamiliesForSeedsAsync(const std::vector<int64_t>& seed_job_set_ids, RetryPolicy rp) {
-        return JobSetsRepo::ListFamiliesForSeedsAsync(seed_job_set_ids, rp);
+        return JobSetsRepo::ListRecentWithFamiliesAsync(scope, q.before, q.limit, rp);
     }
 
     class DataService::JobsPoller : public DataService::PollHandle {

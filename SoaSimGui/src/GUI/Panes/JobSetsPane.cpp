@@ -36,11 +36,8 @@ namespace {
         std::optional<KeysetCursor> after{};
 
         Page<JobSetLite> page{};
-        std::future<simcore::db::DbResult<Page<JobSetLite>>> fut_page;
+        std::future<simcore::db::DbResult<simcore::db::JobSetPageWithFamilies>> fut_page;
         bool fetch_in_flight = false;
-
-        std::future<simcore::db::DbResult<std::vector<JobSetLite>>> fut_family;
-        bool family_in_flight = false;
         std::vector<JobSetLite> family_items;
 
         std::future<simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>> fut_kinds;
@@ -155,14 +152,6 @@ namespace {
         dl->AddText(text_pos, text_fg, label);
     }
 
-    static void kick_family_fetch(const std::vector<JobSetLite>& seeds) {
-        auto& s = S();
-        std::vector<int64_t> ids;
-        ids.reserve(seeds.size());
-        for (const auto& r : seeds) ids.push_back(r.job_set_id);
-        s.family_in_flight = true;
-        s.fut_family = simcore::db::DataService::FetchJobSetFamiliesForSeedsAsync(ids);
-    }
 
     static void kick_fetch() {
         auto& s = S();
@@ -174,14 +163,14 @@ namespace {
         q.before = s.before;
         q.after = s.after;
         q.limit = s.page_limit;
-        s.fut_page = simcore::db::DataService::FetchJobSetsPage(s.scope, q);
+        s.fut_page = simcore::db::DataService::FetchJobSetsPageWithFamilies(s.scope, q);
     }
 
     static void maybe_refresh() {
         auto& s = S();
         if (!s.auto_refresh) return;
         if (s.before || s.after) return;
-        if (s.fetch_in_flight || s.family_in_flight) return;
+        if (s.fetch_in_flight) return;
         if (duration_cast<seconds>(steady_clock::now() - s.last_fetch).count() >= s.refresh_seconds) {
             kick_fetch();
         }
@@ -197,9 +186,8 @@ namespace {
         auto r = s.fut_page.get();
         s.fetch_in_flight = false;
         if (r.ok) {
-            s.page = std::move(r.value);
-            s.family_items = s.page.items;
-            kick_family_fetch(s.page.items);
+            s.page = std::move(r.value.page);
+            s.family_items = std::move(r.value.family_items);
         }
         else {
             s.page = {};
@@ -207,19 +195,6 @@ namespace {
         }
     }
 
-    static void consume_family_if_ready() {
-        auto& s = S();
-        if (!s.family_in_flight) return;
-        using namespace std::chrono_literals;
-        if (!s.fut_family.valid()) return;
-        if (s.fut_family.wait_for(0ms) != std::future_status::ready) return;
-
-        auto r = s.fut_family.get();
-        s.family_in_flight = false;
-        if (r.ok) {
-            s.family_items = std::move(r.value);
-        }
-    }
 
     static void kick_kinds_fetch() {
         auto& s = S();
@@ -432,7 +407,6 @@ void JobSetsPane::Draw() {
     ImGui::Separator();
 
     consume_fetch_if_ready();
-    consume_family_if_ready();
     consume_kinds_fetch_if_ready();
     consume_delete_if_ready();
     consume_boost_if_ready();
