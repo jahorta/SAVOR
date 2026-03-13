@@ -127,7 +127,7 @@ namespace {
         std::vector<GroupRow> groups;
 
         int64_t selected_root{-1};
-        int64_t selected_wave{-1};
+        std::vector<int64_t> selected_waves;
 
         std::future<DbResult<std::vector<JobViewRow>>> fut_jobs;
         bool jobs_in_flight{false};
@@ -332,6 +332,15 @@ namespace {
         return out;
     }
 
+    static std::vector<JobViewRow> build_jobs_for_waves(const std::vector<int64_t>& wave_job_set_ids) {
+        std::vector<JobViewRow> out;
+        for (int64_t wave_job_set_id : wave_job_set_ids) {
+            auto wave_jobs = build_jobs_for_wave(wave_job_set_id);
+            out.insert(out.end(), wave_jobs.begin(), wave_jobs.end());
+        }
+        return out;
+    }
+
     static int compare_u32(uint32_t a, uint32_t b) {
         if (a < b) return -1;
         if (a > b) return 1;
@@ -407,12 +416,12 @@ namespace {
         });
     }
 
-    static void kick_jobs_fetch(int64_t wave_job_set_id) {
+    static void kick_jobs_fetch(const std::vector<int64_t>& wave_job_set_ids) {
         auto& s = S();
         if (s.jobs_in_flight) return;
         s.jobs_in_flight = true;
-        s.fut_jobs = std::async(std::launch::async, [wave_job_set_id]() -> DbResult<std::vector<JobViewRow>> {
-            return DbResult<std::vector<JobViewRow>>::Ok(build_jobs_for_wave(wave_job_set_id));
+        s.fut_jobs = std::async(std::launch::async, [wave_job_set_ids]() -> DbResult<std::vector<JobViewRow>> {
+            return DbResult<std::vector<JobViewRow>>::Ok(build_jobs_for_waves(wave_job_set_ids));
         });
     }
 
@@ -441,14 +450,21 @@ namespace {
         return false;
     }
 
-    static bool has_selected_wave(const std::vector<GroupRow>& groups, int64_t root_id, int64_t wave_id) {
-        if (wave_id <= 0) return true;
+    static bool has_selected_waves(const std::vector<GroupRow>& groups, int64_t root_id, const std::vector<int64_t>& wave_ids) {
+        if (wave_ids.empty()) return true;
         for (const auto& g : groups) {
             if (g.root_group_id != root_id) continue;
-            for (const auto& w : g.waves) {
-                if (w.job_set_id == wave_id) return true;
+            for (int64_t wave_id : wave_ids) {
+                bool found = false;
+                for (const auto& w : g.waves) {
+                    if (w.job_set_id == wave_id) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
             }
-            return false;
+            return true;
         }
         return false;
     }
@@ -469,21 +485,21 @@ namespace {
                 s.groups = std::move(r.value);
                 if (!has_selected_group(s.groups, s.selected_root)) {
                     s.selected_root = -1;
-                    s.selected_wave = -1;
+                    s.selected_waves.clear();
                     s.selected_job = -1;
                     s.jobs.clear();
                     s.results_log.clear();
                     s.progress_log.clear();
                 }
-                else if (!has_selected_wave(s.groups, s.selected_root, s.selected_wave)) {
-                    s.selected_wave = -1;
+                else if (!has_selected_waves(s.groups, s.selected_root, s.selected_waves)) {
+                    s.selected_waves.clear();
                     s.selected_job = -1;
                     s.jobs.clear();
                     s.results_log.clear();
                     s.progress_log.clear();
                 }
-                else if (s.selected_wave > 0) {
-                    kick_jobs_fetch(s.selected_wave);
+                else if (!s.selected_waves.empty()) {
+                    kick_jobs_fetch(s.selected_waves);
                 }
             }
         }
@@ -546,7 +562,7 @@ namespace {
 void ExplorerRunsPane::OnActivated() {
     auto& s = S();
     kick_groups_fetch();
-    if (s.selected_wave > 0) kick_jobs_fetch(s.selected_wave);
+    if (!s.selected_waves.empty()) kick_jobs_fetch(s.selected_waves);
     if (s.selected_job > 0) kick_details_fetch(s.selected_job);
 }
 
@@ -558,7 +574,7 @@ void ExplorerRunsPane::Draw() {
 
     if (ImGui::Button("Refresh")) {
         kick_groups_fetch();
-        if (s.selected_wave > 0) kick_jobs_fetch(s.selected_wave);
+        if (!s.selected_waves.empty()) kick_jobs_fetch(s.selected_waves);
         if (s.selected_job > 0) kick_details_fetch(s.selected_job);
     }
     ImGui::SameLine();
@@ -594,7 +610,7 @@ void ExplorerRunsPane::Draw() {
             std::string group_label = std::to_string((long long)g.root_group_id);
             if (ImGui::Selectable(group_label.c_str(), sel, ImGuiSelectableFlags_SpanAllColumns)) {
                 s.selected_root = g.root_group_id;
-                s.selected_wave = -1;
+                s.selected_waves.clear();
                 s.selected_job = -1;
                 s.jobs.clear();
                 s.results_log.clear();
@@ -651,14 +667,31 @@ void ExplorerRunsPane::Draw() {
                 auto& ws = by_turn[t];
                 std::sort(ws.begin(), ws.end(), [](const WaveRow* a, const WaveRow* b) { return a->created_at < b->created_at; });
                 for (auto* w : ws) {
-                    bool sel = s.selected_wave == w->job_set_id;
+                    bool sel = std::find(s.selected_waves.begin(), s.selected_waves.end(), w->job_set_id) != s.selected_waves.end();
                     std::string wlabel = std::string(wave_status_icon(w->has_winner, w->has_success_outcome)) + " Wave " + std::to_string((long long)w->job_set_id);
                     if (ImGui::Selectable(wlabel.c_str(), sel)) {
-                        s.selected_wave = w->job_set_id;
+                        const bool multi_select = ImGui::GetIO().KeyCtrl;
+                        if (multi_select) {
+                            if (sel) {
+                                s.selected_waves.erase(std::remove(s.selected_waves.begin(), s.selected_waves.end(), w->job_set_id), s.selected_waves.end());
+                            }
+                            else {
+                                s.selected_waves.push_back(w->job_set_id);
+                            }
+                        }
+                        else {
+                            s.selected_waves = { w->job_set_id };
+                        }
+
                         s.selected_job = -1;
                         s.results_log.clear();
                         s.progress_log.clear();
-                        kick_jobs_fetch(s.selected_wave);
+                        if (!s.selected_waves.empty()) {
+                            kick_jobs_fetch(s.selected_waves);
+                        }
+                        else {
+                            s.jobs.clear();
+                        }
                     }
                     ImGui::SameLine();
                     ImGui::TextDisabled("(%s)", w->status_summary.c_str());
@@ -680,6 +713,10 @@ void ExplorerRunsPane::Draw() {
     ImGui::BeginChild("jobs_section", ImVec2(0, 0), true);
 
     ImGui::TextUnformatted("Wave Jobs");
+    if (!s.selected_waves.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu wave%s selected)", s.selected_waves.size(), s.selected_waves.size() == 1 ? "" : "s");
+    }
     ImGui::Separator();
 
     ImGui::Checkbox("Winner only subset", &s.winners_only);
