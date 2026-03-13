@@ -93,6 +93,8 @@ void PhaseBuilderPane::drawKindPicker() {
         inst().kinds_[inst().selected_kind_idx_].name.c_str() : "(loading)")) {
 
         for (int i = 0; i < (int)inst().kinds_.size(); ++i) {
+            if (inst().kinds_[i].name == "BattleSingleTurnRunner") continue;
+
             bool sel = (i == inst().selected_kind_idx_);
             if (ImGui::Selectable(inst().kinds_[i].name.c_str(), sel)) {
                 inst().selected_kind_idx_ = i;
