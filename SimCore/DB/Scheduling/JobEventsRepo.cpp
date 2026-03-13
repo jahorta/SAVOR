@@ -106,6 +106,45 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_list_set(e, job_set_id, kind); });
     }
 
+
+    static DbResult<std::vector<JobEventRow>> impl_list_set_tree(DbEnv& env, int64_t root_job_set_id, const std::string& kind) {
+        auto* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "WITH RECURSIVE tree(job_set_id) AS ("
+            "  SELECT ?"
+            "  UNION ALL"
+            "  SELECT js.job_set_id FROM job_sets js JOIN tree t ON js.parent_job_set_id = t.job_set_id"
+            ")"
+            "SELECT je.event_id, je.job_id, je.ts, je.event_kind, je.payload"
+            " FROM job_events je"
+            " JOIN jobs j ON j.job_id = je.job_id"
+            " JOIN tree t ON t.job_set_id = j.job_set_id"
+            " WHERE je.event_kind=?"
+            " ORDER BY je.event_id", -1, &st, nullptr) != SQLITE_OK) {
+            return DbResult<std::vector<JobEventRow>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+        }
+        sqlite3_bind_int64(st, 1, root_job_set_id);
+        sqlite3_bind_text(st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
+        std::vector<JobEventRow> v;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            JobEventRow e{};
+            e.event_id = sqlite3_column_int64(st, 0);
+            e.job_id = sqlite3_column_int64(st, 1);
+            e.ts = sqlite3_column_int64(st, 2);
+            e.event_kind = (const char*)sqlite3_column_text(st, 3);
+            if (sqlite3_column_type(st, 4) != SQLITE_NULL) e.payload = std::string((const char*)sqlite3_column_text(st, 4));
+            v.push_back(std::move(e));
+        }
+        sqlite3_finalize(st);
+        return DbResult<std::vector<JobEventRow>>::Ok(std::move(v));
+    }
+
+    std::future<DbResult<std::vector<JobEventRow>>> JobEventsRepo::ListByJobSetTreeAndKindAsync(int64_t root_job_set_id, std::string kind, RetryPolicy rp) {
+        return DBService::instance().submit_res<std::vector<JobEventRow>>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_list_set_tree(e, root_job_set_id, kind); });
+    }
+
     static DbResult<std::vector<JobEventRow>> impl_list_job(DbEnv& env, int64_t job_id, const std::string& kind) {
         auto* db = env.handle();
         sqlite3_stmt* st = nullptr;

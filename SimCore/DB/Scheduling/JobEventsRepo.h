@@ -30,6 +30,7 @@ namespace simcore::db {
         static std::future<DbResult<std::optional<std::string>>> GetFirstPayloadAsync(int64_t job_id, std::string kind, RetryPolicy rp = {});
         static std::future<DbResult<std::optional<std::string>>> GetLatestPayloadAsync(int64_t job_id, std::string kind, RetryPolicy rp = {});
         static std::future<DbResult<std::vector<JobEventRow>>>   ListByJobSetAndKindAsync(int64_t job_set_id, std::string kind, RetryPolicy rp = {});
+        static std::future<DbResult<std::vector<JobEventRow>>>   ListByJobSetTreeAndKindAsync(int64_t root_job_set_id, std::string kind, RetryPolicy rp = {});
         static std::future<DbResult<std::vector<JobEventRow>>>   ListByJobAndKindAsync(int64_t job_id, std::string kind, RetryPolicy rp = {});
         static std::future<DbResult<Page<JobEventLite>>> ListPagedByTimeAsync(
             const JobEventsListScope& scope,
@@ -51,6 +52,9 @@ namespace simcore::db {
         }
         static inline DbResult<std::vector<JobEventRow>> ListByJobSetAndKind(int64_t job_set_id, std::string kind) {
             return ListByJobSetAndKindAsync(job_set_id, std::move(kind)).get();
+        }
+        static inline DbResult<std::vector<JobEventRow>> ListByJobSetTreeAndKind(int64_t root_job_set_id, std::string kind) {
+            return ListByJobSetTreeAndKindAsync(root_job_set_id, std::move(kind)).get();
         }
         static inline DbResult<std::vector<JobEventRow>> ListByJobAndKind(int64_t job_id, std::string kind) {
             return ListByJobAndKindAsync(job_id, std::move(kind)).get();
