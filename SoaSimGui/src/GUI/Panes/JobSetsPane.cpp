@@ -307,7 +307,7 @@ namespace {
         auto r = s.fut_cancel_tree.get();
         s.cancel_tree_in_flight = false;
         if (r.ok) {
-            const std::string msg = std::to_string((long long)r.value.canceled_jobs) + " queued jobs canceled";
+            const std::string msg = std::to_string((long long)r.value.canceled_job_ids.size()) + " queued jobs canceled";
             GuiToastBus::Warn("Job set queue canceled", msg.c_str());
             s.before.reset();
             s.after.reset();

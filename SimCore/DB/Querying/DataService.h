@@ -35,10 +35,6 @@ namespace simcore::db {
         int64_t changed_jobs{};
     };
 
-    struct JobSetCancelQueuedResult {
-        int64_t canceled_jobs{};
-    };
-
     struct UiConfigRowDTO { int64_t id{}, preset_id{}; int32_t turn_index{}, actor_slot{}; int64_t created_at{}; };
 
     struct ArtifactRefLite {

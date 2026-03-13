@@ -493,9 +493,7 @@ namespace simcore::db {
                 (void)JobEventsRepo::AppendAsync(job_id, "CANCEL", std::nullopt, rp).get();
             }
 
-            JobSetCancelQueuedResult out{};
-            out.canceled_jobs = (int64_t)r.value.canceled_job_ids.size();
-            p.set_value(DbResult<JobSetCancelQueuedResult>::Ok(out));
+            p.set_value(DbResult<JobSetCancelQueuedResult>::Ok(r.value));
             }).detach();
         return fut;
     }
