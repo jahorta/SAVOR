@@ -174,7 +174,7 @@ namespace {
 
         simcore::TriggerCtx ctx{};
         ctx.prev_job_id = jr.job_id;
-        ctx.prev_job_set_id = jr.job_set_id;
+        ctx.prev_job_set_id = cond_job_set_id;
         ctx.prev_program_kind = jr.program_kind;
         ctx.prev_success = (jr.state == "SUCCEEDED");
         ctx.scope = t.scope.c_str();
