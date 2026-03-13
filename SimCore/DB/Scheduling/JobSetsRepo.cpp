@@ -5,6 +5,10 @@
 
 namespace simcore::db {
 
+    static DbResult<std::vector<JobSetLite>> impl_list_families_for_seeds(
+        DbEnv& env,
+        const std::vector<int64_t>& seed_job_set_ids);
+
     static DbResult<int64_t> impl_create(DbEnv& env,
         const std::optional<std::string>& purpose, int program_kind,
         const std::optional<std::string>& created_by,
@@ -260,6 +264,38 @@ namespace simcore::db {
         if (limit <= 0) limit = 50;
         return DBService::instance().submit_res<Page<JobSetLite>>(OpType::Read, Priority::Normal, rp,
             [=](DbEnv& e) { return impl_list_recent_job_sets(e, scope, before, limit); });
+    }
+
+    std::future<DbResult<JobSetPageWithFamilies>> JobSetsRepo::ListRecentWithFamiliesAsync(
+        const JobSetsListScope& scope,
+        std::optional<KeysetCursor> before,
+        int limit,
+        RetryPolicy rp)
+    {
+        if (limit <= 0) limit = 50;
+        return DBService::instance().submit_res<JobSetPageWithFamilies>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& env) -> DbResult<JobSetPageWithFamilies> {
+                auto page_res = impl_list_recent_job_sets(env, scope, before, limit);
+                if (!page_res.ok) {
+                    return DbResult<JobSetPageWithFamilies>::Err(page_res.error);
+                }
+
+                std::vector<int64_t> seed_ids;
+                seed_ids.reserve(page_res.value.items.size());
+                for (const auto& item : page_res.value.items) {
+                    seed_ids.push_back(item.job_set_id);
+                }
+
+                auto fam_res = impl_list_families_for_seeds(env, seed_ids);
+                if (!fam_res.ok) {
+                    return DbResult<JobSetPageWithFamilies>::Err(fam_res.error);
+                }
+
+                JobSetPageWithFamilies out{};
+                out.page = std::move(page_res.value);
+                out.family_items = std::move(fam_res.value);
+                return DbResult<JobSetPageWithFamilies>::Ok(std::move(out));
+            });
     }
 
     static DbResult<int64_t> impl_create_child(DbEnv& env,

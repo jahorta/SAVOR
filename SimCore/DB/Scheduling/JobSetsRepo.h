@@ -13,6 +13,11 @@
 
 namespace simcore::db {
 
+    struct JobSetPageWithFamilies {
+        Page<JobSetLite> page;
+        std::vector<JobSetLite> family_items;
+    };
+
     struct JobSetRow {
         int64_t job_set_id{};
         std::optional<std::string> purpose{};
@@ -42,6 +47,12 @@ namespace simcore::db {
         static std::future<DbResult<void>> SetMetaTextAsync(int64_t job_set_id, std::optional<std::string> meta_text, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetExpectedTotalAsync(int64_t job_set_id, std::optional<int64_t> expected_total, RetryPolicy rp = {});
         static std::future<DbResult<Page<JobSetLite>>> ListRecentAsync(
+            const JobSetsListScope& scope,
+            std::optional<KeysetCursor> before, // created_at DESC, job_set_id DESC
+            int limit,
+            RetryPolicy rp = {}
+        );
+        static std::future<DbResult<JobSetPageWithFamilies>> ListRecentWithFamiliesAsync(
             const JobSetsListScope& scope,
             std::optional<KeysetCursor> before, // created_at DESC, job_set_id DESC
             int limit,
