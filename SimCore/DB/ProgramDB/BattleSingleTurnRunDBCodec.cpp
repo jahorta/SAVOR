@@ -479,11 +479,20 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     auto results = simcore::db::JobEventsRepo::ListByJobSetAndKind(ctx.prev_job_set_id, "RESULTS");
     if (!results.ok) return DbResult<void>::Err(results.error);
 
+    std::unordered_map<int64_t, simcore::db::JobEventRow> latest_result_by_job;
+    latest_result_by_job.reserve(results.value.size());
+    for (const auto& e : results.value) {
+        auto it = latest_result_by_job.find(e.job_id);
+        if (it == latest_result_by_job.end() || e.event_id > it->second.event_id) {
+            latest_result_by_job[e.job_id] = e;
+        }
+    }
+
     std::unordered_map<std::string, Survivor> best;
     std::unordered_set<int64_t> winner_jobs;
     std::vector<Survivor> all;
 
-    for (auto& e : results.value) {
+    for (auto& [job_id, e] : latest_result_by_job) {
         if (!e.payload.has_value()) continue;
         IniDoc rdoc = IniDoc::parse(*e.payload);
         if (!rdoc.has_section(STRes::SECTION_NAME)) continue;
@@ -491,12 +500,12 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         if (r.output_savestate_id <= 0) continue;
         if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) continue;
 
-        auto jr = simcore::db::JobsRepo::Get(e.job_id);
+        auto jr = simcore::db::JobsRepo::Get(job_id);
         if (!jr.ok || !jr.value.vm_kv.has_value()) continue;
         STJob jb = STJob::from_section(IniDoc::parse(*jr.value.vm_kv));
 
         Survivor s{};
-        s.job_id = e.job_id;
+        s.job_id = job_id;
         s.savestate_id = r.output_savestate_id;
         s.delta_seed_id = jb.delta_seed_id;
         s.fake_used = r.fake_attacks_used;
