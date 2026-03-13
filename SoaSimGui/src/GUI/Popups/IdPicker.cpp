@@ -22,9 +22,10 @@ namespace soasim::ui {
         // Center on first appear relative to main viewport (only as a starting point).
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSizeConstraints(ImVec2(720, 150), ImVec2(vp->WorkSize.x, vp->WorkSize.y));
+        ImGui::SetNextWindowSize(ImVec2(960, 700), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(720, 500), ImVec2(vp->WorkSize.x, vp->WorkSize.y));
 
-        if (ImGui::BeginPopupModal(args.modal_id, &open, ImGuiWindowFlags_NoResize)) {
+        if (ImGui::BeginPopupModal(args.modal_id, &open, ImGuiWindowFlags_None)) {
             if (search_buffer.empty() && !args.initial_search.empty()) search_buffer = args.initial_search;
             if (refresh) { page.reset(); refresh = false; }
             if (!page.has_value()) { adapter.submit_request(args.initial_query, search_buffer); }
@@ -33,7 +34,7 @@ namespace soasim::ui {
             ImGui::SetNextItemWidth(-200);
             if (ImGui::InputText("##search", &search_buffer)) do_search = true;
             ImGui::SameLine();
-            if (adapter.open_aux_filter) { if (ImGui::Button("Filter…")) adapter.open_aux_filter(); }
+            if (adapter.open_aux_filter) { if (ImGui::Button("Filterâ€¦")) adapter.open_aux_filter(); }
 			ImGui::SameLine();
             if (ImGui::Button("Refresh")) { refresh = true; }
 
