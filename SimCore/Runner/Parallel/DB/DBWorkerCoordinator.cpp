@@ -559,4 +559,52 @@ namespace simcore {
         worker_status_.SetEventBufferCapacity(n);
     }
 
+    WorkerCoordinator::DebugStartResult WorkerCoordinator::StartDebug(int64_t job_id, const std::string& started_by) {
+        DebugStartResult out{};
+        auto adm = simcore::db::DebugSessionsRepo::StartDebug(job_id, started_by, 0);
+        if (!adm.ok) {
+            out.ok = false;
+            out.error = adm.error.message;
+            return out;
+        }
+
+        out.ok = true;
+        out.request_id = adm.value.request_id;
+        out.status = adm.value.initial_status;
+
+        std::thread([req_id = out.request_id]() {
+            Sleep(100);
+            const std::string token = std::string("dbg-") + std::to_string((long long)req_id);
+            (void)simcore::db::DebugSessionsRepo::MarkAttachReady(req_id, std::nullopt, token,
+                "ipc://vm/" + token,
+                "ipc://dolphin/" + token);
+            Sleep(100);
+            (void)simcore::db::DebugSessionsRepo::MarkActive(req_id);
+        }).detach();
+
+        return out;
+    }
+
+    DbResult<void> WorkerCoordinator::StopDebug(int64_t session_id) {
+        return simcore::db::DebugSessionsRepo::MarkStopped(session_id);
+    }
+
+    DbResult<void> WorkerCoordinator::CancelStartDebug(int64_t request_id) {
+        auto s = simcore::db::DebugSessionsRepo::GetById(request_id);
+        if (!s.ok) return DbResult<void>::Err(s.error);
+        if (!s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "debug session not found" });
+        if (s.value->state != "starting") {
+            return DbResult<void>::Err({ DbErrorKind::Conflict, SQLITE_CONSTRAINT, "TooLate" });
+        }
+        return simcore::db::DebugSessionsRepo::MarkFailed(request_id, "Canceled", "Canceled during startup");
+    }
+
+    DbResult<std::optional<simcore::db::DebugSessionRow>> WorkerCoordinator::GetDebugSession(int64_t session_id) const {
+        return simcore::db::DebugSessionsRepo::GetById(session_id);
+    }
+
+    DbResult<std::optional<simcore::db::DebugSessionRow>> WorkerCoordinator::GetActiveDebugSessionForJob(int64_t job_id) const {
+        return simcore::db::DebugSessionsRepo::GetActiveByJobId(job_id);
+    }
+
 } // namespace simcore

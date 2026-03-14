@@ -1,8 +1,10 @@
 #include "JobDetailDrawer.h"
 #include "../../Components/ToastBus.h"
 #include "../../Components/FutureQueue.h"
+#include "../App.h"
 #include "../Popups/IniEditor.h"
 #include "Utils/String.h"
+#include <chrono>
 using namespace simcore::db;
 
 namespace {
@@ -30,6 +32,10 @@ namespace {
         IniEditorModalState ini_editor;
         ImGuiID popup_viewport_id = 0;
 
+        std::optional<int64_t> debug_request_id;
+        std::optional<simcore::db::DebugSessionRow> debug_session;
+        std::chrono::steady_clock::time_point next_debug_refresh{};
+
         void reset() {
             if (events_handle) { events_handle->stop(); events_handle.reset(); }
             // clear latest snapshot(s) without blocking
@@ -49,6 +55,9 @@ namespace {
 
             // reset future to an empty state
             decoded_fut = std::future<DbResult<std::string>>{};
+            debug_request_id.reset();
+            debug_session.reset();
+            next_debug_refresh = {};
         }
     };
 
@@ -125,6 +134,36 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
             [](const DbResult<void>& r) { if (r.ok) GuiToastBus::Warn("Job canceled"); else GuiToastBus::Error("Cancel failed", r.error.message); },
             [](std::exception_ptr) { GuiToastBus::Error("Cancel failed", "exception"); }
         );
+    }
+
+    ImGui::SameLine();
+    const bool is_terminal = (job.state == "SUCCEEDED" || job.state == "FAILED" || job.state == "CANCELED" || job.state == "SUPERSEDED" || job.state == "SUCCEEDED_WINNER" || job.state == "SUCCEEDED_DUPLICATE");
+    ImGui::BeginDisabled(!is_terminal);
+    if (ImGui::Button("Start Visual Debug")) {
+        auto sr = g_app.StartVisualDebug(job.job_id, "gui");
+        if (sr.ok) {
+            g.debug_request_id = sr.request_id;
+            GuiToastBus::Info("Debug startup", "request " + std::to_string((long long)sr.request_id));
+        }
+        else {
+            GuiToastBus::Error("Start Visual Debug failed", sr.error);
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !is_terminal) {
+        ImGui::SetTooltip("Only terminal-state jobs are debug-eligible");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Stop Debugging")) {
+        if (g.debug_session.has_value()) {
+            auto rr = g_app.StopVisualDebug(g.debug_session->id);
+            if (rr.ok) GuiToastBus::Warn("Debug session stopped");
+            else GuiToastBus::Error("Stop Debugging failed", rr.error.message);
+        }
+        else {
+            GuiToastBus::Warn("No active debug session", "Nothing to stop");
+        }
     }
     static int bump_delta = 1;
     ImGui::SameLine();
@@ -227,12 +266,47 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
     }
     ImGui::Separator();
 
+    if (std::chrono::steady_clock::now() >= g.next_debug_refresh) {
+        g.next_debug_refresh = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        auto ar = g_app.GetActiveVisualDebugSessionForJob(job.job_id);
+        if (ar.ok) {
+            g.debug_session = ar.value;
+            if (g.debug_session.has_value()) g.debug_request_id = g.debug_session->id;
+        }
+    }
+
     if (ImGui::BeginTabBar("job_tabs")) {
         if (ImGui::BeginTabItem("Overview")) {
             ImGui::Text("Priority: %d", job.priority);
             ImGui::Text("Queued at: %lld", (long long)job.queued_at);
+            if (g.debug_request_id.has_value()) {
+                ImGui::Text("Debug Request: %lld", (long long)*g.debug_request_id);
+            }
             ImGui::EndTabItem();
             active_tab = 0;
+        }
+
+        if (ImGui::BeginTabItem("Visual Debugger")) {
+            if (!g_app.CoordinatorRunning()) {
+                ImGui::TextUnformatted("Coordinator must be running to use Visual Debugger.");
+            }
+            else if (!g.debug_session.has_value()) {
+                ImGui::TextUnformatted("No active debug session for this job.");
+            }
+            else {
+                const auto& ds = *g.debug_session;
+                ImGui::Text("Session %lld | state: %s", (long long)ds.id, ds.state.c_str());
+                ImGui::Text("VM endpoint: %s", ds.vm_endpoint.value_or("<pending>").c_str());
+                ImGui::Text("Dolphin endpoint: %s", ds.dolphin_endpoint.value_or("<pending>").c_str());
+                ImGui::Separator();
+                ImGui::TextUnformatted("Execution Controls");
+                ImGui::Button("Step VM Instruction");
+                ImGui::SameLine(); ImGui::Button("Step Frame");
+                ImGui::SameLine(); ImGui::Button("Run To BP");
+                ImGui::SameLine(); ImGui::Button("Pause");
+                ImGui::TextWrapped("Control-plane scaffolding is wired. Side-channel endpoint command handlers are intentionally staged for follow-up integration.");
+            }
+            ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("Events")) {
