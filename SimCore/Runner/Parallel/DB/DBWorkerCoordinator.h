@@ -170,6 +170,7 @@ namespace simcore {
         std::optional<int64_t> active_debug_session_id_;
         std::unordered_map<int64_t, DebugRuntimeSnapshot> debug_snapshots_;
         std::unordered_map<int64_t, std::unordered_set<int64_t>> debug_breakpoints_;
+        std::chrono::steady_clock::time_point next_stale_debug_cleanup_{};
 
         static int64_t debug_now_sec();
         DbResult<void> mutate_debug_session_(int64_t session_id, const std::function<void(DebugRuntimeSnapshot&)>& mutator);
