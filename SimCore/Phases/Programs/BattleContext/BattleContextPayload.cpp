@@ -37,6 +37,7 @@ namespace phase::battle::ctx {
 
 		out_ctx[simcore::keys::core::RUN_MS] = run_ms;
 		out_ctx[simcore::keys::core::VI_STALL_MS] = vi_stall_ms;
+		out_ctx[simcore::keys::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
 
 		return true;
 	}

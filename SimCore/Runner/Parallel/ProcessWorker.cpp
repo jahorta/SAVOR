@@ -4,13 +4,14 @@
 #include "../../Utils/ThreadName.h"
 #include "../Script/KeyRegistry.h"
 #include "../Script/PSContextCodec.h"
+#include "DB/DBWorkerCoordinator.h"
 
 namespace simcore {
 
     static bool CreateChild(const ProcStartParams& p,
         HANDLE& hInWrite, HANDLE& hOutRead,
         HANDLE& hProcess, HANDLE& hThread,
-        unsigned long& dwProcessId)
+        unsigned long& dwProcessId, HANDLE& hJobOut)
     {
         SECURITY_ATTRIBUTES saAttr{ sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
 
@@ -34,7 +35,7 @@ namespace simcore {
             << " --worker"
             << " --id " << p.worker_id
             << " --iso \"" << p.iso_path << "\""
-            << " --qtbase \"" << p.qt_base_dir << "\""
+            << " --qtbase \"" << p.dolphin_base_dir << "\""
             << " --userdir \"" << p.user_dir << "\""
             << " --vmctrl";
 
@@ -43,13 +44,29 @@ namespace simcore {
         BOOL ok = CreateProcessA(
             NULL, cmdline.data(), NULL, NULL, TRUE,
             CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+        
         // Close handles not needed by parent
         CloseHandle(hOutWrite);
         CloseHandle(hInRead);
 
         if (!ok) {
-            CloseHandle(hOutReadTmp); CloseHandle(hInWriteTmp);
+            CloseHandle(hOutReadTmp); 
+            CloseHandle(hInWriteTmp);
             return false;
+        }
+
+        // Create a Job and assign the child so we can kill the whole subtree later
+        HANDLE hJob = CreateJobObjectA(NULL, NULL);
+        if (hJob) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+            jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) ||
+                !AssignProcessToJobObject(hJob, pi.hProcess))
+            {
+                // If job setup fails, just close it; we'll fall back to TerminateProcess
+                CloseHandle(hJob);
+                hJob = NULL;
+            }
         }
 
         hOutRead = hOutReadTmp;
@@ -57,6 +74,7 @@ namespace simcore {
         hProcess = pi.hProcess;
         hThread = pi.hThread;
         dwProcessId = pi.dwProcessId;
+        hJobOut = hJob;
         return true;
     }
 
@@ -66,7 +84,7 @@ namespace simcore {
     {
         out_ = outq;
         id_ = p.worker_id;
-        if (!CreateChild(p, hChildStd_IN_Wr, hChildStd_OUT_Rd, hProcess, hThread, dwProcessId))
+        if (!CreateChild(p, hChildStd_IN_Wr, hChildStd_OUT_Rd, hProcess, hThread, dwProcessId, hJob))
             return false;
 
         running_.store(true);
@@ -84,8 +102,14 @@ namespace simcore {
         const BYTE* b = static_cast<const BYTE*>(p);
         DWORD w = 0;
         while (n) {
-            if (!WriteFile(h, b, (DWORD)std::min(n, (size_t)0x7FFFFFFF), &w, NULL)) return false;
-            if (w == 0) return false;
+            if (!WriteFile(h, b, (DWORD)std::min(n, (size_t)0x7FFFFFFF), &w, NULL)) 
+            {
+                return false;
+            }
+            if (w == 0) 
+            {
+                return false;
+            }
             b += w; n -= w;
         }
         return true;
@@ -194,7 +218,7 @@ namespace simcore {
             if (ready_received_.load()) {
                 return ready_ok_.load();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         return false;
     }
@@ -271,13 +295,6 @@ namespace simcore {
                 PRProgress p{};
                 p.worker_id = id_;
                 p.job_id = wp.job_id;
-                p.epoch = wp.epoch;
-                p.phase_code = wp.phase_code;
-                p.cur_frames = wp.cur_frames;
-                p.total_frames = wp.total_frames;
-                p.elapsed_ms = wp.elapsed_ms;
-                p.flags = wp.status_flags;
-                p.poll_ms = wp.poll_ms_used;
                 p.text.assign(wp.text, strnlen(wp.text, sizeof(wp.text)));
 
                 {
@@ -286,7 +303,7 @@ namespace simcore {
                     have_progress_ = true;
                 }
 
-                if (progress_out_)
+                if (progress_out_ && wp.record_progress)
                     progress_out_->push(std::move(p));
 
                 continue;
@@ -304,11 +321,86 @@ namespace simcore {
     void ProcessWorker::stop()
     {
         if (!running_.exchange(false)) return;
-        if (hChildStd_IN_Wr) { CloseHandle(hChildStd_IN_Wr); hChildStd_IN_Wr = NULL; }
+
+        // kill first (so reader unblocks), then join/close
+        if (hJob) {
+            TerminateJobObject(hJob, /*exit_code*/1);
+        }
+        else if (hProcess) {
+            TerminateProcess(hProcess, /*exit_code*/1);
+        }
+
         if (reader_.joinable()) reader_.join();
+
+        if (hChildStd_IN_Wr) { CloseHandle(hChildStd_IN_Wr); hChildStd_IN_Wr = NULL; }
         if (hChildStd_OUT_Rd) { CloseHandle(hChildStd_OUT_Rd); hChildStd_OUT_Rd = NULL; }
+
+        if (hProcess) { 
+            WaitForSingleObject(hProcess, 2000);
+            CloseHandle(hProcess); hProcess = NULL; 
+        }
+
         if (hThread) { CloseHandle(hThread); hThread = NULL; }
-        if (hProcess) { CloseHandle(hProcess); hProcess = NULL; }
+
         ack_.cancel_all();
+    }
+
+    void ProcessWorker::NotifySpawned(const std::string& host, int pid, const std::string& boot_uuid) {
+        if (observer_) observer_->RegisterWorker(/*assumed*/ (int64_t)pid, host, pid, boot_uuid);
+        if (observer_) observer_->RecordEvent(/*assumed*/ (int64_t)pid, WorkerEventKind::Spawned);
+        if (observer_) observer_->UpdateState(/*assumed*/ (int64_t)pid, WorkerStateKind::Spawning);
+    }
+
+    void ProcessWorker::NotifyDraining() {
+        if (!observer_) return;
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Draining);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Draining);
+    }
+
+    void ProcessWorker::NotifyExiting() {
+        if (!observer_) return;
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Exiting);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Exiting);
+    }
+
+    void ProcessWorker::NotifyJobClaimed(int64_t job_id, int program_kind) {
+        if (!observer_) return;
+        observer_->SetCurrentJob((int64_t)id_, job_id, program_kind);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Leasing);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Claimed, job_id);
+    }
+
+    void ProcessWorker::NotifyMarkRunning(int64_t job_id) {
+        if (!observer_) return;
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Running);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::MarkRunning, job_id);
+    }
+
+    void ProcessWorker::NotifyLeaseRenewed(int64_t job_id, int64_t lease_expires_at, int attempts, int max_attempts) {
+        if (!observer_) return;
+        observer_->SetLeaseInfo((int64_t)id_, lease_expires_at, attempts, max_attempts);
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::RenewLease, job_id);
+        observer_->RecordHeartbeat((int64_t)id_);
+        observer_->RecordDbSuccess((int64_t)id_);
+    }
+
+    void ProcessWorker::NotifyJobFinished(int64_t job_id) {
+        if (!observer_) return;
+        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Finished, job_id);
+        observer_->SetCurrentJob((int64_t)id_, std::nullopt, std::nullopt);
+        observer_->UpdateState((int64_t)id_, WorkerStateKind::Idle);
+    }
+
+    void ProcessWorker::NotifyHeartbeat() {
+        if (observer_) observer_->RecordHeartbeat((int64_t)id_);
+    }
+
+    void ProcessWorker::NotifyDbSuccess() {
+        if (observer_) observer_->RecordDbSuccess((int64_t)id_);
+    }
+
+    void ProcessWorker::NotifyError(const std::string& err) {
+        if (!observer_) return;
+        observer_->RecordError((int64_t)id_, err);
     }
 } // namespace simcore

@@ -3,8 +3,11 @@
 #include <vector>
 
 #include "Core/InputCommon/GCPadStatus.h"
+#include "../../Utils/Hex.h"
 
 namespace simcore {
+
+    enum ElementFamily : uint8_t { Neutral = 0, Main, CStick, Triggers };
 
 	// GC-like buttons (you can add more later)
     enum : uint16_t {
@@ -57,6 +60,33 @@ namespace simcore {
         static inline GCInputFrame new_stk_c(uint8_t x, uint8_t y) { GCInputFrame f{}; f.c_x = x; f.c_y = y; return f; }
         static inline GCInputFrame new_trigger(uint8_t l, uint8_t r) { GCInputFrame f{}; f.trig_l = l; f.trig_r = r; return f; }
 
+        inline std::string to_frame_hex() {
+            static_assert(std::is_trivially_copyable_v<GCInputFrame>, "GCInputFrame must be trivially copyable");
+            static_assert(sizeof(GCInputFrame) == 8, "GCInputFrame must be 8 bytes");
+            unsigned char buf[sizeof(GCInputFrame)];
+            std::memcpy(buf, this, sizeof(buf));
+            return bytes_to_hex(buf, sizeof(buf));
+        }
+
+        inline size_t get_family() const {
+            if (main_x != 128 || main_y != 128) return (size_t)ElementFamily::Main;
+            if (c_x != 128 || c_y != 128) return (size_t)ElementFamily::CStick;
+            if (trig_l != 0 || trig_r != 0) return (size_t)ElementFamily::Triggers;
+            return (size_t)ElementFamily::Neutral;
+        }
+
+        bool operator==(const GCInputFrame& other) const {
+            return (
+                buttons == other.buttons &&
+                main_x == other.main_x &&
+                main_y == other.main_y&&
+                c_x == other.c_x &&
+                c_y == other.c_y&&
+                trig_l == other.trig_l &&
+                trig_r == other.trig_r
+                );
+        }
+
     private:
 
         inline GCInputFrame& btn(uint16_t b) { buttons = buttons | b; return *this; }
@@ -64,8 +94,6 @@ namespace simcore {
         inline GCInputFrame& stk_c(uint8_t x, uint8_t y) { c_x = x; c_y = y; return *this; }
         inline GCInputFrame& trigger(uint8_t l, uint8_t r) { trig_l = l; trig_r = r; return *this; }
 	};
-
-    
 
     // Convert signed stick component (-128..127) to 0..255, centered at 128.
     inline constexpr uint8_t SaturateStickToU8(int v_signed)

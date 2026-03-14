@@ -23,12 +23,15 @@ namespace simcore {
 		ARM_PHASE_BPS_ONCE,
 		LOAD_SNAPSHOT,
 		CAPTURE_SNAPSHOT,
+		REBOOT_CORE,
 
 		APPLY_INPUT_FROM,          // key -> GCInputFrame
 		STEP_FRAMES,               // literal step count ok to keep
 		RUN_UNTIL_BP,              // uses current timeout
 		SET_TIMEOUT,               // imm -> time out in ms
 		SET_TIMEOUT_FROM,          // key -> uint32
+		START_DETERMINISIC_RUN,
+		END_DETERMINISTIC_RUN,
 
 		READ_U8, READ_U16, READ_U32, READ_F32, READ_F64, GET_BATTLE_CONTEXT,
 
@@ -46,8 +49,7 @@ namespace simcore {
 		GOTO_IF_KEYS,
 		RETURN_RESULT,             // keyimm -> put result (imm) into context (key)
 		CAPTURE_PRED_BASELINES,       
-		EVAL_PREDICATES_AT_HIT_BP,    
-		RECORD_PROGRESS_AT_BP, 
+		EVAL_PREDICATES_AT_HIT_BP,
 		ARM_BPS_FROM_PRED_TABLE,
 		SET_U32,                    // ctx[key] = imm
 		ADD_U32,                    // ctx[key] += imm
@@ -83,8 +85,6 @@ namespace simcore {
 	struct PSArg_ImmU32 { uint32_t v; };
 	struct PSArg_KeyImm { simcore::keys::KeyId key; uint32_t imm; };
 
-	
-
 	// Only one of these will be used depending on `code`
 	struct PSOp {           
 		PSOpCode         code{};
@@ -108,12 +108,12 @@ namespace simcore {
 	inline PSOp OpCapturePredBaselines() { PSOp o; o.code = PSOpCode::CAPTURE_PRED_BASELINES; return o; }
 	inline PSOp OpArmBpsFromPredTable() { PSOp o; o.code = PSOpCode::ARM_BPS_FROM_PRED_TABLE; return o; }
 	inline PSOp OpEvalPredicatesAtHitBP() { PSOp o; o.code = PSOpCode::EVAL_PREDICATES_AT_HIT_BP; return o; }
-	inline PSOp OpRecordProgressAtBP() { PSOp o; o.code = PSOpCode::RECORD_PROGRESS_AT_BP; return o; }
 	inline PSOp OpSetU32(simcore::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpAddU32(simcore::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpApplyPlanFrameFrom(simcore::keys::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
 
+	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 
 	inline PSOp OpGcSlotASet(simcore::keys::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
 	inline PSOp OpApplyInputFrom(simcore::keys::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
@@ -140,6 +140,9 @@ namespace simcore {
 	inline PSOp OpLoadSnapshot() { PSOp o; o.code = PSOpCode::LOAD_SNAPSHOT; return o; }
 	inline PSOp OpCaptureSnapshot() { PSOp o; o.code = PSOpCode::CAPTURE_SNAPSHOT; return o; }
 	inline PSOp OpRunUntilBp() { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP; return o; }
+	inline PSOp OpStartDeterministicRun() { PSOp o; o.code = PSOpCode::START_DETERMINISIC_RUN; return o; }
+	inline PSOp OpEndDeterministicRun() { PSOp o; o.code = PSOpCode::END_DETERMINISTIC_RUN; return o; }
+	inline PSOp OpRebootCore() { PSOp o; o.code = PSOpCode::REBOOT_CORE; return o; }
 
 
 	struct PhaseScript {
@@ -176,8 +179,22 @@ namespace simcore {
 		ViStalled = 2,  // VI didn't advance for the configured stall window
 		MovieEnded = 3,  // movie playback ended before any breakpoint fired
 		Aborted = 4,  // reserved for future external aborts
-		Unknown = 5,  // catch-all
+
+		Unknown = 0xffffffff,  // catch-all
 	};
+
+	static inline const char* RunToBpOutcomeToString(uint32_t outcome)
+	{
+		switch (static_cast<RunToBpOutcome>(outcome)) {
+		case RunToBpOutcome::Hit: return "Finished";
+		case RunToBpOutcome::Timeout: return "Timeout";
+		case RunToBpOutcome::ViStalled: return "ViStalled";
+		case RunToBpOutcome::MovieEnded: return "MovieEnded";
+		case RunToBpOutcome::Aborted: return "Aborted";
+		case RunToBpOutcome::Unknown: return "Unknown";
+		default: return "UnrecognizedRunOutcome";
+		}
+	}
 
 	// ----- VM -----
 	class PhaseScriptVM {

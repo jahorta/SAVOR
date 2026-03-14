@@ -16,7 +16,7 @@ namespace simcore::tasmovie {
         PhaseScript p{};
         p.canonical_bp_keys = { bp::prebattle::BeforeRandSeedSet }; // adjust if your header exposes a helper list
 
-        // 1) Make sure the disc matches the movie.
+        // 1) Make sure the disc matches the movie and reset game state.
         p.ops.push_back(OpRequireDiscGameIdFrom(keys::tas::DISC_ID6));
 
         // 2) Start movie playback from the DTM path provided by the job.
@@ -30,9 +30,15 @@ namespace simcore::tasmovie {
 
         // 5) Always stop playback cleanly.
         p.ops.push_back(OpMovieStop());
+        p.ops.push_back(OpGotoIf(keys::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0, "DW_ERR"));
 
         // 6) Save a state named after the DTM path (worker decides whether to save-on-fail by consulting context).
         p.ops.push_back(OpSaveSavestateFrom(keys::tas::SAVE_PATH));
+        p.ops.push_back(OpStepFrames(1, true));  // Prevents worker from not detecting a save-state load if the worker uses the above saved save state.
+        p.ops.push_back(OpReturnResult(keys::tas::MOVIE_FAILED, 0));
+
+        p.ops.push_back(OpLabel("DW_ERR"));
+        p.ops.push_back(OpReturnResult(keys::tas::MOVIE_FAILED, 1));
 
         return p;
     }

@@ -24,7 +24,7 @@
   X(battle, EndTurn,               208, 0x800702a0u, "EndTurn") \
   X(battle, EndBattleVictory,      209, 0x800706d8u, "Battle_Victory") \
   X(battle, EndBattleDefeat,       210, 0x8007066cu, "Battle_Defeat") \
-  X(battle, BattleLoadComplete,    211, 0x800307a0u, "BattleInitComplete") \
+  X(battle, BattleLoadComplete,    211, 0x800307a0u, "BattleLoadComplete") \
 
 #define BP_TABLE_ALL(X) \
   BP_TABLE_OVERWORLD(X) \

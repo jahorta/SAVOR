@@ -24,11 +24,36 @@ namespace simcore {
         WERR_LoadGame = 3,
         WERR_VMInit = 4,
         WERR_WriteReady = 6,
+
         // Job errors
-        WERR_NoProgramLoaded = 5,
-        WERR_DecodePayloadFail = 7,
-        WERR_EncodePayloadFail = 8,
+        WERR_NoProgramLoaded = 16,
+        WERR_DecodePayloadFail = 17,
+        WERR_EncodePayloadFail = 18,
+
+        // Ctx errors
+        WERR_NoGameIsoRecorded = 32,
+
+        // Unknown
+        WERR_UnknownError = 0xffffffff
     };
+
+    static inline const char* WErrToString(uint32_t err)
+    {
+        switch (err) {
+        case WERR_None: return "None";
+        case WERR_SysMissing: return "SysMissing";
+        case WERR_BootFail: return "BootFail";
+        case WERR_LoadGame: return "LoadGame";
+        case WERR_VMInit: return "VMInit";
+        case WERR_WriteReady: return "WriteReady";
+        case WERR_NoProgramLoaded: return "NoProgramLoaded";
+        case WERR_DecodePayloadFail: return "DecodePayloadFail";
+        case WERR_EncodePayloadFail: return "EncodePayloadFail";
+        case WERR_NoGameIsoRecorded: return "NoGameIsoRecorded";
+        case WERR_UnknownError: return "UnknownError";
+        default: return "UnrecognizedWErr";
+        }
+    }
 
     enum : uint8_t {
         WSTATE_NoProgram = 0,
@@ -41,6 +66,7 @@ namespace simcore {
         PK_TasMovie = 2,
         PK_BattleTurnRunner = 3, 
         PK_BattleContextProbe = 4,
+        PK_BattleSingleTurnRunner = 5,
     };
 
     // Payload used for TAS jobs (paths are NUL-terminated, Windows MAX_PATH safe)
@@ -95,14 +121,8 @@ namespace simcore {
     {
         uint32_t tag;         // = MSG_PROGRESS
         uint64_t job_id;      // mirrors WireJobHeader::job_id
-        uint32_t epoch;       // mirrors WireJobHeader::epoch
-        uint32_t phase_code;  // 0=Unknown, 1=RunInputs, 2=RunUntilBp
-        uint32_t cur_frames;  // VI/frame approximation (numerator)
-        uint32_t total_frames;// TAS total frames if known, else 0 (unknown)
-        uint32_t elapsed_ms;  // since entry into long loop
-        uint32_t status_flags;// bitfield (see ProgressFlags)
-        uint32_t poll_ms_used;// effective poll cadence
-        char     text[64];    // short hint, UTF-8, NUL-terminated if shorter
+        bool     record_progress;
+        char     text[1025];    // short hint, UTF-8, NUL-terminated if shorter
     };
 #pragma pack(pop)
 
@@ -129,17 +149,5 @@ namespace simcore {
         uint32_t epoch;
         uint32_t payload_len;  // number of bytes that follow immediately
     };
-
-#pragma pack(push,1)
-    struct WireActionPlan {
-        uint8_t actor_slot;
-        uint8_t is_prelude;
-        uint8_t macro;   // BattleAction
-        uint8_t _pad0;
-        uint32_t target_mask;
-    };
-#pragma pack(pop)
-
-    static_assert(sizeof(WireActionPlan) == 8, "WireActionPlan size drift");
 
 } // namespace simcore

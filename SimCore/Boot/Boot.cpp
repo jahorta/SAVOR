@@ -39,8 +39,8 @@ namespace simboot {
         }
 
         // 2) Require & remember the portable DolphinQt base
-        if (!dw.SetRequiredDolphinQtBaseDir(opts.dolphin_qt_base, &err)) {
-            if (error_out) *error_out = "SetRequiredDolphinQtBaseDir failed: " + err;
+        if (!dw.SetDolphinQtBaseDir(opts.dolphin_qt_base, &err)) {
+            if (error_out) *error_out = "SetDolphinQtBaseDir failed: " + err;
             return false;
         }
 
@@ -72,7 +72,7 @@ namespace simboot {
 
         BootOptions opts;
         opts.user_dir = cfg->user_dir;
-        opts.dolphin_qt_base = cfg->qt_base_dir;
+        opts.dolphin_qt_base = cfg->dolphin_base_dir;
         opts.force_resync_from_base = false;   // usually not needed; set true if you want to refresh
         opts.save_config_on_success = false;   // already have one
         opts.config_path = config_path;

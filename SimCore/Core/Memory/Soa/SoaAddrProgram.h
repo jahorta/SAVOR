@@ -9,6 +9,8 @@ namespace simcore {
 
 namespace addrprog {
 
+	static constexpr size_t PROG_VERSION = 1;
+
 	// Compact stackless sequence of ops operating on a single working VA.
 	enum Op : uint8_t {
 		END = 0x00,   // stop; final VA is current

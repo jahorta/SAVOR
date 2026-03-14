@@ -157,6 +157,7 @@
     <ClCompile Include="SandboxConfig.cpp" />
     <ClCompile Include="SeedProbe.cpp" />
     <ClCompile Include="SimCoreSandbox.cpp" />
+    <ClCompile Include="TASMovieDBEnqueue.cpp" />
     <ClCompile Include="TASMoviePlayer.cpp" />
     <ClCompile Include="utils.cpp" />
   </ItemGroup>
@@ -170,6 +171,7 @@
     <ClInclude Include="MenuConfig.h" />
     <ClInclude Include="SandboxConfig.h" />
     <ClInclude Include="SeedProbe.h" />
+    <ClInclude Include="TASMovieDBEnqueue.h" />
     <ClInclude Include="TASMoviePlayer.h" />
     <ClInclude Include="utils.h" />
   </ItemGroup>

@@ -35,7 +35,7 @@ TEST(Wrapper, ImportFromDolphinQtBase_CopiesSysAndUserIfPortable)
 
     // Import
     std::string err;
-    ASSERT_TRUE(w.SetRequiredDolphinQtBaseDir(qt, &err)) << "Error at " << err;
+    ASSERT_TRUE(w.SetDolphinQtBaseDir(qt, &err)) << "Error at " << err;
     ASSERT_TRUE(w.SyncFromDolphinQtBase(false, &err)) << "Error at " << err;
 
     // Assert files now exist only under OUR user dir

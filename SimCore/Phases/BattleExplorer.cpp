@@ -123,12 +123,16 @@ namespace simcore::battleexplorer {
         return bc;
     }
 
-    // Split a bitmask into single-bit masks in ascending bit order.
-    static std::vector<uint32_t> MasksFromBits(uint32_t mask) {
-        std::vector<uint32_t> out;
+    // Convert set bits in a mask to concrete slot indices (0..31).
+    static std::vector<uint8_t> BitsToSlots(uint32_t mask) {
+        std::vector<uint8_t> out;
         while (mask) {
             uint32_t lsb = mask & (0u - mask);
-            out.push_back(lsb);
+            // find index of lsb without compiler intrinsics
+            uint8_t bit = 0;
+            uint32_t t = lsb;
+            while ((t & 1u) == 0u) { ++bit; t >>= 1; }
+            out.push_back(bit);
             mask ^= lsb;
         }
         return out;
@@ -136,23 +140,25 @@ namespace simcore::battleexplorer {
 
     // Default "any enemy" domain. If you later want to use bc to filter
     // only present/targetable enemies, do it inside this function.
-    static std::vector<uint32_t>
+    static std::vector<uint8_t>
         DomainAnyEnemy(const soa::battle::ctx::BattleContext& bc) {
-        uint32_t mask = 0;
-        for (int i = 4; i < 12; ++i) if(bc.slots[i].present == 1) mask |= (1u << i); // slots 4..11 and check if present
-        return MasksFromBits(mask);
+        std::vector<uint8_t> out;
+        for (uint8_t i = 4; i < 12; ++i) {
+            if (bc.slots[i].present == 1) out.push_back(i);
+        }
+        return out;
     }
 
-    static std::vector<uint32_t>
-        DomainOneOf(uint32_t mask /*already editor-chosen*/) {
-        return MasksFromBits(mask);
+    static std::vector<uint8_t>
+        DomainOneOf(uint32_t mask /*editor-chosen*/) {
+        return BitsToSlots(mask);
     }
 
     // Per-turn compiler: from a symbolic UI_Turn to all concrete TurnPlanSpec choices.
     // Supports ConcreteMask, AnyEnemy, OneOfMask, SameAsVar (with cycle detection).
     static std::vector<TurnPlanSpec>
         CompileTurnSpecs(const soa::battle::ctx::BattleContext& bc, const UI_Turn& ui_turn) {
-        // Skeleton with params except possibly target_mask (0 until assigned).
+        // Skeleton with params except possibly target_slot (0 until assigned).
         TurnPlanSpec base; base.reserve(ui_turn.size());
 
         // Quick lookup: actor_slot -> index in TurnPlanSpec
@@ -162,39 +168,50 @@ namespace simcore::battleexplorer {
         struct Var {
             uint8_t actor;
             TargetBindingKind kind;
-            std::vector<uint32_t> domain;       // for AnyEnemy / OneOfMask
+            std::vector<uint8_t> domain;       // slots for AnyEnemy / OneOfMask
             std::optional<uint8_t> bind_to;     // actor we mirror, for SameAsVar
         };
         std::vector<Var> vars;
 
-        // Concrete targets (already fixed)
-        std::unordered_map<uint8_t, uint32_t> concrete;
+        // Known concretes from UI (actor -> slot)
+        std::unordered_map<uint8_t, uint8_t> concrete;
+
+        // helper: single-bit mask -> slot, or -1 if invalid
+        auto MaskToSingleSlot = [](uint32_t m) -> int {
+            if (m == 0 || (m & (m - 1)) != 0) return -1; // not exactly one bit
+            uint8_t bit = 0; uint32_t t = m;
+            while ((t & 1u) == 0u) { ++bit; t >>= 1; }
+            return static_cast<int>(bit);
+            };
 
         // Pass 1: lay down actions and collect variables
         for (const auto& ua : ui_turn) {
             ActionPlan ap{};
             ap.actor_slot = ua.actor_slot;
-            ap.is_prelude = false;
             ap.macro = ua.macro;
             ap.params = ua.params;
 
             switch (ua.target.kind) {
-            case TargetBindingKind::SingleEnemy:
-                ap.params.target_mask = ua.target.mask;
-                concrete[ua.actor_slot] = ua.target.mask;
+            case TargetBindingKind::SingleEnemy: {
+                int s = MaskToSingleSlot(ua.target.mask);
+                if (s < 4 || s > 11) return {};        // invalid or out of enemy slot range
+                ap.params.target_slot = static_cast<uint8_t>(s);
+                concrete[ua.actor_slot] = static_cast<uint8_t>(s);
                 break;
+            }
             case TargetBindingKind::MultipleEnemies: {
-                ap.params.target_mask = 0;
+                ap.params.target_slot = 0xFF;          // unassigned sentinel
                 auto dom = DomainOneOf(ua.target.mask);
+                if (dom.empty()) return {};
                 vars.push_back(Var{ ua.actor_slot, ua.target.kind, std::move(dom), std::nullopt });
                 break;
             }
             case TargetBindingKind::AnyEnemy:
-                ap.params.target_mask = 0;
+                ap.params.target_slot = 0xFF;          // unassigned sentinel
                 vars.push_back(Var{ ua.actor_slot, ua.target.kind, DomainAnyEnemy(bc), std::nullopt });
                 break;
             case TargetBindingKind::SameAsOtherPC:
-                ap.params.target_mask = 0;
+                ap.params.target_slot = 0xFF;          // unassigned sentinel
                 vars.push_back(Var{ ua.actor_slot, ua.target.kind, {}, std::make_optional(ua.target.var_id) });
                 break;
             }
@@ -278,7 +295,7 @@ namespace simcore::battleexplorer {
         // Prime cur with known concretes
         for (auto [actor, m] : concrete) {
             auto it = actor_to_idx.find(actor);
-            if (it != actor_to_idx.end()) cur[it->second].params.target_mask = m;
+            if (it != actor_to_idx.end()) cur[it->second].params.target_slot = m;
         }
 
         std::function<void(std::size_t)> dfs = [&](std::size_t oi) {
@@ -291,7 +308,7 @@ namespace simcore::battleexplorer {
             // If already concrete at UI-level, skip (safety)
             if (auto itc = concrete.find(actor); itc != concrete.end()) {
                 auto itp = actor_to_idx.find(actor);
-                if (itp != actor_to_idx.end()) cur[itp->second].params.target_mask = itc->second;
+                if (itp != actor_to_idx.end()) cur[itp->second].params.target_slot = itc->second;
                 dfs(oi + 1);
                 return;
             }
@@ -302,22 +319,22 @@ namespace simcore::battleexplorer {
 
             // SameAs - copy from referenced actor (either concrete or assigned earlier).
             if (v.bind_to) {
-                uint32_t ref_mask = 0;
+                uint8_t ref_slot = 0xFF;
                 auto ref = *v.bind_to;
 
                 if (auto itc = concrete.find(ref); itc != concrete.end()) {
-                    ref_mask = itc->second;
+                    ref_slot = itc->second;
                 }
                 else {
                     auto itr = actor_to_idx.find(ref);
                     if (itr == actor_to_idx.end()) return;
-                    ref_mask = cur[itr->second].params.target_mask;
-                    if (ref_mask == 0) return; // not yet assigned (should not happen due to ordering)
+                    ref_slot = cur[itr->second].params.target_slot;
+                    if (ref_slot == 0xFF) return; // not yet assigned (should not happen due to ordering)
                 }
 
                 auto itp = actor_to_idx.find(actor);
                 if (itp == actor_to_idx.end()) return;
-                cur[itp->second].params.target_mask = ref_mask;
+                cur[itp->second].params.target_slot = ref_slot;
                 dfs(oi + 1);
                 return;
             }
@@ -326,8 +343,8 @@ namespace simcore::battleexplorer {
             auto itp = actor_to_idx.find(actor);
             if (itp == actor_to_idx.end()) { dfs(oi + 1); return; }
 
-            for (uint32_t m : v.domain) {
-                cur[itp->second].params.target_mask = m;
+            for (uint8_t s : v.domain) {
+                cur[itp->second].params.target_slot = s;
                 dfs(oi + 1);
             }
             };

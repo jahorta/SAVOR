@@ -6,6 +6,9 @@
 
 namespace soa::battle::ctx::codec {
 
+    static constexpr const char* ext = ".bctx";
+    static constexpr const int ver = 1;
+
 	// Extracts the full context from a MEM1 snapshot (fills materialized structs)
 	bool extract_from_mem1(const simcore::MemView& view, BattleContext& out);
 

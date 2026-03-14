@@ -9,6 +9,8 @@ namespace simcore::battle {
         PlanMaterializeFailure =    0x0003u,
         TurnsExhausted =            0x0004u,
         DWRunErr =                  0x0005u,
+        ReachedNextTurn =           0x0006u,
+        HitTurnLimit =              0x0007u,
         Unknown =                   0xFFFFu,
     };
 
@@ -20,6 +22,8 @@ namespace simcore::battle {
         case Outcome::PlanMaterializeFailure: return "Input Plan Materialize failure";
         case Outcome::TurnsExhausted: return "Turns Exhausted";
         case Outcome::DWRunErr: return "DW Run Error";
+        case Outcome::ReachedNextTurn: return "Reached Next Turn";
+        case Outcome::HitTurnLimit: return "Hit Turn Limit";
         }
         return "Unknown Outcome";
     }

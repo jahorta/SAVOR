@@ -7,6 +7,13 @@
 #include "BattleRunner/BattleRunnerScript.h"
 #include "BattleContext/BattleContextScript.h"
 #include "BattleContext/BattleContextPayload.h"
+#include "BattleTurnRunner/BattleTurnRunnerPayload.h"
+#include "BattleTurnRunner/BattleTurnRunnerScript.h"
+#include "../../DB/ProgramDB/SeedProbeDBCodec.h"
+#include "../../DB/ProgramDB/TasMovieDBCodec.h"
+#include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
+#include "../../DB/ProgramDB/BattleContextDBCodec.h"
+#include "../../DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace simcore::programs {
@@ -24,6 +31,8 @@ namespace simcore::programs {
             return phase::battle::runner::MakeBattleRunnerProgram();
         case PK_BattleContextProbe:
             return phase::battle::ctx::MakeBattleContextProbeProgram();
+        case PK_BattleSingleTurnRunner:
+            return phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
         default:
             return PhaseScript{};
         }
@@ -49,8 +58,43 @@ namespace simcore::programs {
             return phase::battle::runner::decode_payload(payload, out_ctx);
         case PK_BattleContextProbe:
             return phase::battle::ctx::decode_payload(payload, out_ctx);
+        case PK_BattleSingleTurnRunner:
+            return phase::battle::turnrunner::decode_payload(payload, out_ctx);
         default:
             return false;
+        }
+    }
+
+    const RetryTuningInfo* get_retry_tuning_info(uint8_t program_kind)
+    {
+        static const RetryTuningInfo seedprobe_info{
+            simcore::db::codec::seedprobe::BlueprintIni::SECTION_NAME,
+            simcore::db::codec::seedprobe::ResultsIni::SECTION_NAME
+        };
+        static const RetryTuningInfo tasmovie_info{
+            simcore::db::codec::tas::BlueprintIni::SECTION_NAME,
+            simcore::db::codec::tas::ResultsIni::SECTION_NAME
+        };
+        static const RetryTuningInfo battleturn_info{
+            simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME,
+            simcore::db::codec::battle::run::ResultsIni::SECTION_NAME
+        };
+        static const RetryTuningInfo battlecontext_info{
+            simcore::db::battle::ctx::BlueprintIni::SECTION_NAME,
+            simcore::db::battle::ctx::ResultsIni::SECTION_NAME
+        };
+        static const RetryTuningInfo battlest_info{
+            simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME,
+            simcore::db::codec::battle::singleturn::ResultsIni::SECTION_NAME
+        };
+
+        switch (program_kind) {
+        case PK_SeedProbe: return &seedprobe_info;
+        case PK_TasMovie: return &tasmovie_info;
+        case PK_BattleTurnRunner: return &battleturn_info;
+        case PK_BattleContextProbe: return &battlecontext_info;
+        case PK_BattleSingleTurnRunner: return &battlest_info;
+        default: return nullptr;
         }
     }
 

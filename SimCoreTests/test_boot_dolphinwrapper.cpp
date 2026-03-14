@@ -73,7 +73,7 @@ TEST(Boot, BootDolphinWrapper_SyncsPortableBaseAndSavesConfig)
     auto loaded = simcore::SimConfigIO::Load(cfg_path, &err);
     ASSERT_TRUE(loaded.has_value()) << "Load config failed: " << err;
     EXPECT_EQ(fs::weakly_canonical(loaded->user_dir), fs::weakly_canonical(user));
-    EXPECT_EQ(fs::weakly_canonical(loaded->qt_base_dir), fs::weakly_canonical(qt));
+    EXPECT_EQ(fs::weakly_canonical(loaded->dolphin_base_dir), fs::weakly_canonical(qt));
 }
 
 TEST(Boot, BootDolphinWrapperFromSavedConfig_Reloads)

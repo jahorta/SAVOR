@@ -101,10 +101,8 @@ namespace simcore::tas_movie {
         for (auto& jm : all_jobs) {
             simcore::tasmovie::EncodeSpec spec{};
             spec.dtm_path = jm.dtm;
-            spec.save_dir = args.out_dir;
             spec.run_ms = 0;
             spec.vi_stall_ms = args.vi_stall_ms;
-            spec.save_on_fail = args.save_on_fail;
             spec.progress_enable = true; // <- per-job toggle
 
             std::vector<uint8_t> blob;
@@ -195,8 +193,8 @@ namespace simcore::tas_movie {
                 }
 
                 // Advance using VI frames if available; fallback to elapsed_ms heuristic.
-                uint64_t cur = p.cur_frames ? p.cur_frames : p.elapsed_ms / 16;
-                mp.advanceTo(wid, cur);
+                //uint64_t cur = p.cur_frames ? p.cur_frames : p.elapsed_ms / 16;/*
+                //mp.advanceTo(wid, cur);*/
                 mp.setSuffix(wid, p.text);
             }
 

@@ -66,12 +66,11 @@ namespace phase::battle::runner {
         ps.ops.push_back(OpRunUntilBp());
         ps.ops.push_back(OpGotoIf(DW_Outcome, PSCmp::NE, 0, LabelDWErr));
         ps.ops.push_back(OpEvalPredicatesAtHitBP()); // Sets whether all predicates passed into keys::core::PRED_ALL_PASSED
-        ps.ops.push_back(OpRecordProgressAtBP());
 
         // Check exit conditions
+        ps.ops.push_back(OpGotoIf(keys::core::PRED_ABORT_RUN, PSCmp::EQ, (uint32_t)1, LabelPredFail));
         ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Victory, LabelVictory));
         ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Defeat, LabelDefeat));
-        ps.ops.push_back(OpGotoIf(keys::core::PRED_ALL_PASSED, PSCmp::EQ, (uint32_t)0, LabelPredFail));
 
         
         // If we are not to the next input bp, keep running

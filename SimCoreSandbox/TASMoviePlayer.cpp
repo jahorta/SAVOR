@@ -26,7 +26,7 @@ namespace sandbox {
         for (;;) {
             std::cout << "\n--- TAS Movie -> BP -> Savestate ---\n";
             std::cout << "ISO:                 " << (g.iso_path.empty() ? "<unset>" : g.iso_path) << "\n";
-            std::cout << "Dolphin base:        " << (g.qt_base_dir.empty() ? "<unset>" : g.qt_base_dir) << "\n";
+            std::cout << "Dolphin base:        " << (g.dolphin_base_dir.empty() ? "<unset>" : g.dolphin_base_dir) << "\n";
             std::cout << "Workers:             " << g.workers << "\n";
             std::cout << "DTM path:            " << (a.base_dtm.empty() ? "<unset>" : a.base_dtm) << "\n";
             std::cout << "Output dir:          " << (a.out_dir.empty() ? "<unset>" : a.out_dir) << "\n";
@@ -51,12 +51,12 @@ namespace sandbox {
             else if (c == "6") { std::cout << "ID6 (exactly 6 chars): "; std::string s; std::getline(std::cin, s); a.gameid = s.size() > 6 ? s.substr(0, 6) : s; }
             else if (c == "r" || c == "R")
             {
-                if (g.iso_path.empty() || g.qt_base_dir.empty() || a.base_dtm.empty() || a.out_dir.empty()) {
+                if (g.iso_path.empty() || g.dolphin_base_dir.empty() || a.base_dtm.empty() || a.out_dir.empty()) {
                     std::cout << "Please set ISO, Dolphin base, DTM, and output dir first.\n";
                     continue;
                 }
                 if (a.rtc_delta_hi < a.rtc_delta_lo) { std::cout << "RTC end must be >= start.\n"; continue; }
-                if (!ensure_sys_from_base_or_warn(g.qt_base_dir)) continue;
+                if (!ensure_sys_from_base_or_warn(g.dolphin_base_dir)) continue;
 
                 simcore::PSInit init{};
                 init.savestate_path.clear();

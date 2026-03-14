@@ -22,8 +22,8 @@ bool ensure_sys_from_base_or_warn(const std::string& base)
 simcore::BootPlan make_boot_plan(const AppState& g)
 {
     simcore::BootPlan boot{};
-    boot.boot.user_dir = (g.exe_dir / ".work" / "runner").string(); // per-worker subdirs are derived later
-    boot.boot.dolphin_qt_base = g.qt_base_dir;
+    boot.boot.user_dir = (g.exe_dir / ".workers").string(); // per-worker subdirs are derived later
+    boot.boot.dolphin_qt_base = g.dolphin_base_dir;
     boot.boot.force_resync_from_base = true;
     boot.boot.save_config_on_success = true;
     boot.iso_path = g.iso_path;

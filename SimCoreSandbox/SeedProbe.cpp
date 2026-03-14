@@ -150,8 +150,8 @@ namespace sandbox {
         simcore::RngSeedDeltaArgs a{};
         a.savestate_path = g.default_savestate;
         a.samples_per_axis = 8;
-        a.min_value = 0x30;
-        a.max_value = 0xCF;
+        a.min_value = 0x30;  //48
+        a.max_value = 0xCF;  //207
         a.cap_trigger_top = true;
 
         bool find_combos = false;
@@ -160,7 +160,7 @@ namespace sandbox {
         {
             std::cout << "\n--- RNGSeedDeltaMap ---\n";
             std::cout << "ISO:              " << (g.iso_path.empty() ? "<unset>" : g.iso_path) << "\n";
-            std::cout << "Dolphin base:     " << (g.qt_base_dir.empty() ? "<unset>" : g.qt_base_dir) << "\n";
+            std::cout << "Dolphin base:     " << (g.dolphin_base_dir.empty() ? "<unset>" : g.dolphin_base_dir) << "\n";
             std::cout << "Workers:          " << g.workers << "\n";
             std::cout << "Savestate:        " << (a.savestate_path.empty() ? "<unset>" : a.savestate_path) << "\n";
             std::cout << "samples_per_axis: " << a.samples_per_axis << "\n";
@@ -193,11 +193,11 @@ namespace sandbox {
             else if (c == "8") { std::cout << "combos_sampler_tries: "; std::string s; std::getline(std::cin, s); if (!s.empty()) a.combos_sampler_tries = std::max(1, std::stoi(s)); }
             else if (c == "r" || c == "R")
             {
-                if (g.iso_path.empty() || g.qt_base_dir.empty() || a.savestate_path.empty()) {
+                if (g.iso_path.empty() || g.dolphin_base_dir.empty() || a.savestate_path.empty()) {
                     std::cout << "Please set ISO, Dolphin base, and savestate first.\n";
                     continue;
                 }
-                if (!ensure_sys_from_base_or_warn(g.qt_base_dir)) continue;
+                if (!ensure_sys_from_base_or_warn(g.dolphin_base_dir)) continue;
 
                 // Runner
                 simcore::ParallelPhaseScriptRunner runner(g.workers);

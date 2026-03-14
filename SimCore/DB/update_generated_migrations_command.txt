@@ -1,0 +1,18 @@
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop';" ^
+  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
+  "$out='$(IntDir)GeneratedMigrations.h';" ^
+  "$stamp='$(IntDir)Migrations.files.txt';" ^
+  "$srcDir='$(ProjectDir)DB\migration';" ^
+  "$files=Get-ChildItem -Path $srcDir -Filter *.sql -File | Sort-Object Name;" ^
+  "$names=($files | ForEach-Object Name) -join [Environment]::NewLine;" ^
+  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
+  "if($prev -eq $names){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "$head='// generated' + [Environment]::NewLine + '#pragma once' + [Environment]::NewLine + '#include <vector>' + [Environment]::NewLine + '#include <string>' + [Environment]::NewLine + 'namespace simcore{namespace db{ static inline const std::vector<std::pair<std::string,std::string>> kEmbeddedMigrations = {';" ^
+  "$tmp = $out + '.tmp';" ^
+  "Set-Content -Path $tmp -Value $head -Encoding UTF8;" ^
+  "foreach($f in $files){ $name=$f.Name; $txt=[IO.File]::ReadAllText($f.FullName); Add-Content -Path $tmp -Value ('  {\"'+$name+'\", R\"SQL('+$txt+')SQL\"},') -Encoding UTF8; }" ^
+  "Add-Content -Path $tmp -Value ('}; }} // ns') -Encoding UTF8;" ^
+  "Move-Item -Force -Path $tmp -Destination $out;" ^
+  "Set-Content -Path $stamp -Value $names -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to new files.'"

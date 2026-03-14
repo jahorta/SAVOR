@@ -40,6 +40,7 @@ namespace addr {
         static const uint32_t base(AddrKey k);
         static const Region region(AddrKey k);
         static const char* name(AddrKey k);
+        static const bool exists(AddrKey k);
     };
 
     // ergonomic aliases: addr::core::X, addr::battle::Y, addr::derived::Z

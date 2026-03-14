@@ -19,6 +19,8 @@
 #include "MenuConfig.h"
 #include "SeedProbe.h"
 #include "TASMoviePlayer.h"
+#include "TASMovieDBEnqueue.h"
+#include "DB/DBCore/DbService.h"
 #include "utils.h"
 #include "MenuBattleExplorer.h"
 
@@ -30,8 +32,8 @@ static void init_logging(AppState& g )
     char exePath[MAX_PATH]{};
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     g.exe_dir = fs::path(exePath).parent_path();
-    log::Logger::get().set_levels(log::Level::Info, log::Level::Debug);
-    log::Logger::get().open_file((g.exe_dir / "sandbox.log").string().c_str(), false);
+    logger::Logger::get().set_levels(logger::Level::Info, logger::Level::Debug);
+    logger::Logger::get().open_file((g.exe_dir / "sandbox.log").string().c_str(), false);
     SCLOGI("[sandbox] Starting...");
 }
 
@@ -46,6 +48,7 @@ static void menu_loop(AppState& g)
         std::cout << "3) TAS Movie -> BP -> Savestate (scaffold)\n";
         std::cout << "4) Battle Context\n";
         std::cout << "5) Battle Runner\n";
+        std::cout << "6) TAS Movie (DB enqueue)\n";
         std::cout << "q) Quit\n";
         std::cout << "> ";
 
@@ -57,6 +60,7 @@ static void menu_loop(AppState& g)
         else if (choice == "3") sandbox::menu_tas_movie(g);
         else if (choice == "4") sandbox::get_battle_context(g);
         else if (choice == "5") sandbox::run_battle_explorer_menu(g);
+        else if (choice == "6") sandbox::menu_tas_movie_db_enqueue(g);
         else {
             std::cout << "Unknown option.\n";
         }
@@ -76,6 +80,7 @@ int main(int, char**)
     }
 
     init_logging(g);
+    simcore::db::DBService::instance().start();
     menu_loop(g);
     save_appstate_ini(g, ini_path);
     return 0;

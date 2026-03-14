@@ -1,0 +1,2 @@
+Vendored on 10/4/25 directly from docking branch.
+Last commit to docking branch was 8f3f428

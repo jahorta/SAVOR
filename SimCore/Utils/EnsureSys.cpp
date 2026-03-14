@@ -42,12 +42,12 @@ namespace simcore {
         }
     }
 
-    bool EnsureSysBesideExe(const std::string& qt_base_dir)
+    bool EnsureSysBesideExe(const std::string& dolphin_base_dir)
     {
         namespace fs = std::filesystem;
         const fs::path exe_dir = exe_dir_utf8();
         const fs::path dst = exe_dir / "Sys";
-        const fs::path src = fs::path(qt_base_dir) / "Sys";
+        const fs::path src = fs::path(dolphin_base_dir) / "Sys";
 
         // already good?
         if (fs::exists(dst / "GC" / "dsp_coef.bin")) return true;

@@ -55,7 +55,7 @@ TEST(FrameStep, BootGameThenStepOnce)
     ScopedEmu emu;
     std::string err;
     ASSERT_TRUE(emu.w.SetUserDirectory(userdir)) << "Error setting User base dir";
-    ASSERT_TRUE(emu.w.SetRequiredDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
+    ASSERT_TRUE(emu.w.SetDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
     ASSERT_TRUE(emu.w.SyncFromDolphinQtBase(false, &err)) << "Error syncing Qt base dir: " << err;
     ASSERT_TRUE(emu.w.loadGame(iso->c_str()));        // boots emu core
     ASSERT_TRUE(emu.w.isRunning());
@@ -84,7 +84,7 @@ TEST(FrameStep, LoadSavestateThenStepOnce)
     ScopedEmu emu;
     std::string err;
     ASSERT_TRUE(emu.w.SetUserDirectory(userdir)) << "Error setting User base dir";
-    ASSERT_TRUE(emu.w.SetRequiredDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
+    ASSERT_TRUE(emu.w.SetDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
     ASSERT_TRUE(emu.w.SyncFromDolphinQtBase(false, &err)) << "Error syncing Qt base dir: " << err;
     ASSERT_TRUE(emu.w.loadGame(iso->c_str()));
     ASSERT_TRUE(emu.w.loadSavestate(state->c_str()));

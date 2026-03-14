@@ -4,12 +4,12 @@
   <PropertyGroup Label="UserMacros">
     <DOLPHIN_ROOT>$(SolutionDir)third-party\dolphin-2506a</DOLPHIN_ROOT>
     <GTEST_ROOT>$(SolutionDir)third-party\googletest-1.17.0</GTEST_ROOT>
-    <VIGEM_ROOT>$(SolutionDir)third-party\vigem-1.21.256</VIGEM_ROOT>
+    <SQLITE_ROOT>$(SolutionDir)third-party\sqlite</SQLITE_ROOT>
   </PropertyGroup>
   <PropertyGroup />
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(DOLPHIN_ROOT)\include\Source;$(DOLPHIN_ROOT)\include\Source\Core;$(DOLPHIN_ROOT)\include\Externals\fmt\fmt\include;$(DOLPHIN_ROOT)\include\Externals\lz4\lz4\lib;$(DOLPHIN_ROOT)\include\Externals\zlib-ng;$(GTEST_ROOT)\googletest\include;$(GTEST_ROOT)\googlemock-include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SQLITE_ROOT)\include;$(DOLPHIN_ROOT)\include\Source;$(DOLPHIN_ROOT)\include\Source\Core;$(DOLPHIN_ROOT)\include\Externals\fmt\fmt\include;$(DOLPHIN_ROOT)\include\Externals\lz4\lz4\lib;$(DOLPHIN_ROOT)\include\Externals\mbedtls\include;$(DOLPHIN_ROOT)\include\Externals\zlib-ng;$(GTEST_ROOT)\googletest\include;$(GTEST_ROOT)\googlemock-include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -28,8 +28,8 @@
     <BuildMacro Include="GTEST_ROOT">
       <Value>$(GTEST_ROOT)</Value>
     </BuildMacro>
-    <BuildMacro Include="VIGEM_ROOT">
-      <Value>$(VIGEM_ROOT)</Value>
+    <BuildMacro Include="SQLITE_ROOT">
+      <Value>$(SQLITE_ROOT)</Value>
     </BuildMacro>
   </ItemGroup>
 </Project>

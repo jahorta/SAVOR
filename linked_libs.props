@@ -2,10 +2,12 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup />
+  <PropertyGroup>
+    <IgnoreImportLibrary>true</IgnoreImportLibrary>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <Link>
-      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);build_pch.lib;core.lib;discio.lib;common.lib;audiocommon.lib;inputcommon.lib;uicommon.lib;videocommon.lib;videod3d.lib;videod3d12.lib;videod3dcommon.lib;videonull.lib;videoogl.lib;videosoftware.lib;mbedcrypto.lib;mbedtls.lib;mbedx509.lib;enet.lib;FatFs.lib;bdisasm.lib;sfml-network.lib;sfml-system.lib;usb.lib;imgui.lib;implot.lib;spirv_cross.lib;FreeSurround.lib;spng.lib;hidapi.lib;lz4.lib;lzo2.lib;pugixml.lib;zstd.lib;bzip2.lib;lzma.lib;tinygltf.lib;glslang.lib;xxhash.lib;opengl32.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);build_pch.lib;core.lib;discio.lib;common.lib;videocommon.lib;videod3d.lib;videod3d12.lib;videod3dcommon.lib;videonull.lib;videoogl.lib;videosoftware.lib;imgui.lib;implot.lib;audiocommon.lib;inputcommon.lib;uicommon.lib;mbedcrypto.lib;mbedtls.lib;mbedx509.lib;enet.lib;FatFs.lib;bdisasm.lib;sfml-network.lib;sfml-system.lib;usb.lib;spirv_cross.lib;FreeSurround.lib;spng.lib;hidapi.lib;lz4.lib;lzo2.lib;pugixml.lib;zstd.lib;bzip2.lib;lzma.lib;tinygltf.lib;glslang.lib;xxhash.lib;opengl32.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup />

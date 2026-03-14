@@ -42,4 +42,8 @@ namespace addr {
         return r ? r->name : "";
     }
 
+    const bool Registry::exists(AddrKey k) {
+        return find(k) != nullptr;
+    }
+
 } // namespace addr

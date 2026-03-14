@@ -94,8 +94,8 @@ namespace simcore {
             ps.worker_id = w->id;
             ps.exe_path = workerExe;
             ps.iso_path = boot.iso_path;
-            ps.qt_base_dir = boot.boot.dolphin_qt_base.string();
-            ps.user_dir = (boot.boot.user_dir / ("runner-" + std::to_string(w->id)) / "User").string();
+            ps.dolphin_base_dir = boot.boot.dolphin_qt_base.string();
+            ps.user_dir = (boot.boot.user_dir / ("worker-" + std::to_string(w->id)) / "User").string();
             ps.vm_control = true;
 
             if (!w->proc->start(ps, out_.get())) {
@@ -192,16 +192,7 @@ namespace simcore {
                 if (!w->running.load()) continue;
                 if (w->proc->is_failed()) {
                     uint32_t err = w->proc->ready_error();
-                    const char* why = "unknown";
-                    switch (err) {
-                    case WERR_SysMissing: why = "Sys missing"; break;
-                    case WERR_BootFail:   why = "Boot failed"; break;
-                    case WERR_LoadGame:   why = "LoadGame failed"; break;
-                    case WERR_VMInit:     why = "VM init failed"; break;
-                    case WERR_WriteReady: why = "Write READY failed"; break;
-                    default: break;
-                    }
-                    SCLOGE("[Runner %zu] init failed (err=%u: %s)", w->id, err, why);
+                    SCLOGE("[Runner %zu] init failed (err=%u: %s)", w->id, err, simcore::WErrToString(err));
                 }
                 else {
                     // exited silently before READY

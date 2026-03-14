@@ -3,8 +3,19 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <chrono>
+#include <iostream>
 
 namespace simcore::tas {
+
+	static constexpr std::chrono::year_month_day date{
+		std::chrono::year{2000},
+		std::chrono::month{1},
+		std::chrono::day{1}
+	};
+	static constexpr std::chrono::hh_mm_ss time{ std::chrono::hours{0} + std::chrono::minutes{0} + std::chrono::seconds{0} };
+	static constexpr std::chrono::system_clock::time_point base = std::chrono::sys_days{ date } + time.to_duration();
+	static constexpr uint64_t base_sec = static_cast<uint64_t>(base.time_since_epoch().count()) / 10000000;
 
 	struct DtmInfo {
 		std::array<char, 6> game_id{};
@@ -15,7 +26,7 @@ namespace simcore::tas {
 		uint64_t input_count{ 0 };           // 0x015
 		uint64_t lag_count{ 0 };             // 0x01D
 		uint32_t rerecord_count{ 0 };        // 0x02D
-		std::array<uint8_t, 16> game_md5{};// 0x071
+		std::array<uint8_t, 16> game_md5{};  // 0x071
 		uint64_t recording_start_time{ 0 };  // 0x081
 		uint8_t memcard_bits{ 0 };           // 0x097
 		bool memcard_blank{ false };         // 0x098
@@ -45,7 +56,7 @@ namespace simcore::tas {
 		const std::vector<uint8_t>& bytes() const { return m_bytes; }
 
 		DtmInfo info() const;
-		void set_recording_start_time(uint64_t unix_time);
+		void set_recording_start_time(uint64_t unix_time, bool is_delta = true);
 
 	private:
 		template <class T> static T read_le(const uint8_t* p);

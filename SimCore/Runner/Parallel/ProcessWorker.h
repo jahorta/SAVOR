@@ -10,6 +10,7 @@
 #include "TSQueue.h"
 #include "PRTypes.h"
 #include "../Breakpoints/BPRegistry.h"
+#include "WorkerTelemetry.h"
 
 
 namespace simcore {
@@ -18,7 +19,7 @@ namespace simcore {
 		size_t worker_id{ 0 };
 		std::string exe_path;     // path to SimCoreSandbox.exe
 		std::string iso_path;
-		std::string qt_base_dir;
+		std::string dolphin_base_dir;
 		std::string user_dir;     // unique per worker
 		bool vm_control{ false };
 	};
@@ -64,6 +65,8 @@ namespace simcore {
 		}
 	};
 
+	class WorkerCoordinator;
+
 	class ProcessWorker {
 	public:
 		ProcessWorker() = default;
@@ -101,6 +104,25 @@ namespace simcore {
 			return true;
 		}
 
+		void AttachObserver(WorkerCoordinator* coord) { observer_ = coord; }
+
+		void NotifySpawned(const std::string& host, int pid, const std::string& boot_uuid);
+		void NotifyDraining();
+		void NotifyExiting();
+
+		void NotifyJobClaimed(int64_t job_id, int program_kind);
+		void NotifyMarkRunning(int64_t job_id);
+		void NotifyLeaseRenewed(int64_t job_id, int64_t lease_expires_at, int attempts, int max_attempts);
+		void NotifyJobFinished(int64_t job_id);
+
+		void NotifyHeartbeat();
+		void NotifyDbSuccess();
+		void NotifyError(const std::string& err);
+
+		int64_t GetPid() const {
+			return (int64_t)dwProcessId;
+		}
+
 	private:
 		void reader_thread();
 
@@ -109,6 +131,7 @@ namespace simcore {
 		HANDLE hProcess{ NULL };
 		HANDLE hThread{ NULL };
 		unsigned long dwProcessId{ 0 };
+		HANDLE hJob{ 0 };
 
 		std::thread reader_;
 		TSQueue<PRResult>* out_{ nullptr };
@@ -127,6 +150,8 @@ namespace simcore {
 		PRProgress last_progress_{};
 		bool have_progress_{ false };
 		TSQueue<PRProgress>* progress_out_{ nullptr };
+
+		WorkerCoordinator* observer_{ nullptr };
 	};
 
 } // namespace simcore

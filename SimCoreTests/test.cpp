@@ -26,7 +26,7 @@ TEST(DiscProbe, AcceptsValidDiscIfPresent) {
     ScopedEmu emu;
     std::string err;
     ASSERT_TRUE(emu.w.SetUserDirectory(userdir)) << "Error setting User base dir";
-    ASSERT_TRUE(emu.w.SetRequiredDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
+    ASSERT_TRUE(emu.w.SetDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
     ASSERT_TRUE(emu.w.SyncFromDolphinQtBase(false, &err)) << "Error syncing Qt base dir: " << err;
     ASSERT_TRUE(emu.w.loadGame(iso));
 
@@ -49,7 +49,7 @@ TEST(Savestate, CanLoadStartingPoint) {
     ScopedEmu emu;
     std::string err;
     ASSERT_TRUE(emu.w.SetUserDirectory(userdir)) << "Error setting User base dir";
-    ASSERT_TRUE(emu.w.SetRequiredDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
+    ASSERT_TRUE(emu.w.SetDolphinQtBaseDir(qtdir, &err)) << "Error setting Qt base dir: " << err;
     ASSERT_TRUE(emu.w.SyncFromDolphinQtBase(false, &err)) << "Error syncing Qt base dir: " << err;
     ASSERT_TRUE(emu.w.loadGame(iso));
     ASSERT_TRUE(emu.w.loadSavestate(state));

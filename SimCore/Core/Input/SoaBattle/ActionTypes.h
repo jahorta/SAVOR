@@ -14,16 +14,54 @@ namespace soa::battle::actions {
         UseItem = 4
     };
 
+    static constexpr size_t ACTION_PARAM_WIRE_SIZE = 3;
     struct ActionParameters {
-        uint32_t target_mask = 0;   // single-target for now
+        uint8_t target_slot = 0;   // single-target, use -1 for first available enemy
         uint16_t item_id = 0xFFFF; // valid when macro==UseItem
+
+        /* Wire spec (uint8_t) (3 bytes)
+        [0] target_slot
+        [1..2] item_id
+        */
+        static void to_wire(const actions::ActionParameters ap, std::vector<std::uint8_t>& out) {
+            out.push_back(ap.target_slot);
+            out.push_back(static_cast<uint8_t>(ap.item_id & 0xFF));
+            out.push_back(static_cast<uint8_t>((ap.item_id >> 8) & 0xFF));
+        }
+        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionParameters& ap) {
+            if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PARAM_WIRE_SIZE)) return false;
+
+            ap.target_slot = *cur; cur += 1;
+            ap.item_id = static_cast<uint16_t>(*cur); cur += 2;
+            return true;
+        }
     };
 
+    static constexpr size_t ACTION_PLAN_SIZE = 2 + ACTION_PARAM_WIRE_SIZE;
     struct ActionPlan {
         uint8_t actor_slot = 0;     // 0..3
-        uint8_t is_prelude = 0;     // 1 if prelude
         BattleAction macro{};
         ActionParameters params{};
+
+
+        /* Wire spec (uint8_t) (5 bytes)
+        [0] actor_slot
+        [1] macro
+        [2..4] ActionParameters (3 bytes)
+        */
+        static void to_wire(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out) {
+            out.push_back(ap.actor_slot);
+            out.push_back(static_cast<uint8_t>(ap.macro));
+            ActionParameters::to_wire(ap.params, out);
+        }
+        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionPlan& ap) {
+            if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PLAN_SIZE)) return false;
+
+            ap.actor_slot = *cur; cur += 1;
+            ap.macro = static_cast<BattleAction>(*cur); cur += 1;
+            ActionParameters::from_wire(cur, end, ap.params);
+            return true;
+        }
     };
 
     using TurnPlanSpec = std::vector<ActionPlan>; 
@@ -45,35 +83,37 @@ namespace soa::battle::actions {
         }
     }
 
-    inline int resolveTargetIndex(uint32_t mask) {
-        if (!mask) return -1;
-        for (int i = 4; i < 12; ++i) {
-            if (mask & (1u << (i & 31u))) return i;
-        }
-        return -1;
+    inline int resolveTargetIndex(uint32_t slot) {
+        // slot is already a concrete 0..11; anything else = "unset/auto"
+        return (slot <= 11u) ? static_cast<int>(slot) : -1;
     }
 
-    inline std::string get_battle_path_summary(BattlePath bp) {
+    inline std::string get_battle_path_summary(BattlePath bp, std::string sep = "\n", bool offset = true) {
         std::vector<std::string> path;
         for (int i = 0; i < bp.size(); i++) {
             auto tp = bp[i];
-            path.emplace_back("\n    Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
-            for (auto sp : tp.spec) {
-                std::string actor = " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
-                if (sp.macro == BattleAction::Attack) 
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_mask)) + "]";
-                if (sp.macro == BattleAction::UseItem) 
-                {
-                    actor = actor + ":[" + std::to_string(sp.params.item_id) + "]";
-                    actor = actor + ":[" + std::to_string(resolveTargetIndex(sp.params.target_mask)) + "]";
-                }
-                path.emplace_back(actor);
-            }
+            path.emplace_back(sep + (offset ? "    " : " ") + "Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
+            path.emplace_back(get_turn_plan_summary(tp, offset));
         }
 
         std::string out;
         for (auto s : path) out.append(s);
         return out;
+    }
+
+    inline std::string get_turn_plan_summary(TurnPlan tp, bool offset = true) {
+        std::stringstream actor{};
+        for (auto sp : tp.spec) {
+            actor << " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
+            if (sp.macro == BattleAction::Attack)
+                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            if (sp.macro == BattleAction::UseItem)
+            {
+                actor << ":[" + std::to_string(sp.params.item_id) + "]";
+                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            }
+        }
+        return actor.str();
     }
 
 } // namespace soa::battle::actions

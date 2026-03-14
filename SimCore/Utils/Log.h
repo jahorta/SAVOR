@@ -5,7 +5,7 @@
 #include <string>
 #include <atomic>
 
-namespace simcore::log {
+namespace simcore::logger {
 
     enum class Level : int { Debug = 0, Trace, Info, Warn, Error, Fatal, Off };
 
@@ -47,17 +47,17 @@ namespace simcore::log {
     };
 
     // Internal macros for SimCore sources
-#define SCLOGT(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Trace)) L.logf(::simcore::log::Level::Trace, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
-#define SCLOGD(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Debug)) L.logf(::simcore::log::Level::Debug, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
-#define SCLOGI(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Info )) L.logf(::simcore::log::Level::Info , __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
-#define SCLOGW(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Warn )) L.logf(::simcore::log::Level::Warn , __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
-#define SCLOGE(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Error)) L.logf(::simcore::log::Level::Error, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
-#define SCLOGF(fmt, ...) do{ auto& L=::simcore::log::Logger::get(); \
- if (L.enabled_any(::simcore::log::Level::Fatal)) L.logf(::simcore::log::Level::Fatal, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGT(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Trace)) L.logf(::simcore::logger::Level::Trace, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGD(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Debug)) L.logf(::simcore::logger::Level::Debug, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGI(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Info )) L.logf(::simcore::logger::Level::Info , __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGW(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Warn )) L.logf(::simcore::logger::Level::Warn , __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGE(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Error)) L.logf(::simcore::logger::Level::Error, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+#define SCLOGF(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Fatal)) L.logf(::simcore::logger::Level::Fatal, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
 
 } // namespace simcore::log

@@ -9,16 +9,22 @@
 namespace simcore::pred {
 
 #pragma pack(push,1)
-    enum class PredFlag : uint8_t {
+    enum class PredFlag : uint32_t {
         CaptureBaseline = 1 << 0,
         Active = 1 << 1,
-        RhsIsKey = 1 << 2,
+        LhsIsKey = 1 << 2,
         LhsIsProg = 1 << 3,
-        RhsIsProg = 1 << 4
+        RhsIsKey = 1 << 4,
+        RhsIsProg = 1 << 5,
+        LhsIsNeg = 1 << 6,
+        RhsIsNeg = 1 << 7,
+        AbortOnFail = 1 << 8
     };
 
     inline constexpr PredFlag operator|(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) | uint8_t(b)); }
     inline constexpr PredFlag operator&(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) & uint8_t(b)); }
+
+    static constexpr int PredNameLength = 32;
 
     struct PredicateRecord {
         uint16_t id;
@@ -26,7 +32,7 @@ namespace simcore::pred {
         uint8_t  kind;                // 0 ABS, 1 DELTA
         uint8_t  width;               // 1,2,4,8
         uint8_t  cmp;                 // 0==,1!=,2<,3<=,4>,5>=
-        uint8_t  flags;               // PredFlag bits
+        uint32_t  flags;               // PredFlag bits
         uint32_t turn_mask;           // 0 => treat as all-ones
 
         // LHS
@@ -39,9 +45,11 @@ namespace simcore::pred {
         uint16_t rhs_addr_key;        // region for RHS key or program
         uint32_t rhs_addrprog_offset; // program offset within [records || blob] (0 = none)
 
-        void set_flag(PredFlag f) { flags |= uint8_t(f); }
-        void clear_flag(PredFlag f) { flags &= ~uint8_t(f); }
-        bool has_flag(PredFlag f) const { return (flags & uint8_t(f)) != 0; }
+        char name[PredNameLength+1];               // short name for identification
+
+        void set_flag(PredFlag f) { flags |= uint32_t(f); }
+        void clear_flag(PredFlag f) { flags &= ~uint32_t(f); }
+        bool has_flag(PredFlag f) const { return (flags & uint32_t(f)) != 0; }
     };
 #pragma pack(pop)
 
@@ -60,13 +68,14 @@ namespace simcore::pred {
         return "(?)";
     }
 
+    static constexpr size_t SPEC_VERSION = 1;
     struct Spec {
         uint16_t id{ 0 };
         uint16_t required_bp{ 0 };
         PredKind kind{ PredKind::ABS };
-        uint8_t  width{ 0 };
+        uint8_t  width{ 4 };
         CmpOp    cmp{ CmpOp::EQ };
-        uint8_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
+        uint32_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
 
         uint32_t lhs_addr{ 0 };                   // LHS absolute VA (legacy path)
         std::optional<addr::AddrKey> lhs_key{};     // LHS anchor (symbolic), optional
@@ -78,18 +87,22 @@ namespace simcore::pred {
 
         // NEW: embedded address programs (may be empty)
         std::vector<uint8_t> lhs_prog;          // must start with OP_BASE_KEY if non-empty
+        std::string lhs_prog_desc;
         std::vector<uint8_t> rhs_prog;          // must start with OP_BASE_KEY if non-empty
-
+        std::string rhs_prog_desc;
+        std::string name{};
         std::string desc{};
 
-        void set_flag(PredFlag f) { flags |= uint8_t(f); }
-        void clear_flag(PredFlag f) { flags &= ~uint8_t(f); }
-        bool has_flag(PredFlag f) const { return (flags & uint8_t(f)) != 0; }
+        void set_flag(PredFlag f) { flags |= uint32_t(f); }
+        void clear_flag(PredFlag f) { flags &= ~uint32_t(f); }
+        bool has_flag(PredFlag f) const { return (flags & uint32_t(f)) != 0; }
 
         void set_every_turn() { turn_mask = 0xFFFFFFFFu; }
         void set_turns(const std::vector<uint8_t> turns) { for (const auto i : turns) if (i > 0 && i <= 32) turn_mask = turn_mask | (1 << (i - 1)); }
         void set_turn(const uint8_t turn) {if ( turn > 0 && turn <= 32) turn_mask = turn_mask | (1 << (turn - 1)); }
     };
+
+    std::string fingerprint(const Spec& s);
 
     // One-and-done builder: fills records and returns packed program blob.
     bool BuildTable(const std::vector<Spec>& specs,

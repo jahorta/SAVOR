@@ -9,6 +9,8 @@ using namespace simcore;
 
 namespace phase::battle::runner {
 
+    static constexpr int PayloadVersion = 1;
+
     // encode side (parent)
     struct EncodeSpec {
         uint32_t run_ms{ 0 };
