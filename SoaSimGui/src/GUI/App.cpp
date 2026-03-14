@@ -160,12 +160,12 @@ void GuiApp::RenderFrame() {
     {
         bool has_active_debug = false;
         auto recent_dbg = simcore::db::DebugSessionsRepo::ListRecent(20);
-        if (recent_dbg.ok) {
-            for (const auto& s : recent_dbg.value) {
-                if (s.state == "starting" || s.state == "launching_worker" || s.state == "attach_ready" || s.state == "active" || s.state == "stopping") {
-                    has_active_debug = true;
-                    break;
-                }
+		if (recent_dbg.ok) {
+			for (const auto& s : recent_dbg.value) {
+				if (simcore::db::DebugSessionsRepo::IsActiveState(s.state)) {
+					has_active_debug = true;
+					break;
+				}
             }
         }
         GuiLeftNav::SetDebuggerHookActive(has_active_debug);

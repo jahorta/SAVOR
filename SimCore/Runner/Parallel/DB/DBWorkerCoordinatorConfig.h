@@ -13,6 +13,9 @@ struct WorkerCoordinatorConfig {
     uint32_t lease_seconds{ 30 };
     double   aging_factor{ 0.0 };
     uint32_t idle_keepalive_ms{ 300000 };
+    uint32_t stale_debug_cleanup_interval_ms{ 30000 };
+    int64_t stale_debug_max_age_seconds{ 30 };
+    int64_t debug_slot_id{ 0 };
     bool start_to_paused{ true };
 
     std::string worker_exe_path;

@@ -65,6 +65,7 @@ namespace {
     };
 
     static TabState g;
+    static std::chrono::steady_clock::time_point g_next_debug_slot_busy_toast = std::chrono::steady_clock::time_point::min();
 }
 
 static void DrawIniDoc(const IniDoc& doc) {
@@ -150,7 +151,11 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
         }
         else {
             if (sr.error == "DebugSlotBusy") {
-                GuiToastBus::Info("Debug Slot Busy", "Debugger is currently in use.");
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= g_next_debug_slot_busy_toast) {
+                    GuiToastBus::Info("Debug Slot Busy", "Debugger is currently in use.");
+                    g_next_debug_slot_busy_toast = now + std::chrono::seconds(2);
+                }
             }
             else if (sr.error == "JobNotTerminal") {
                 GuiToastBus::Warn("Job not terminal", "Only terminal jobs can be debugged.");
@@ -176,6 +181,26 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
             GuiToastBus::Warn("No active debug session", "Nothing to stop");
         }
     }
+
+    ImGui::SameLine();
+    const bool can_cancel_start = g.debug_session.has_value() && (g.debug_session->state == "starting" || g.debug_session->state == "launching_worker");
+    ImGui::BeginDisabled(!can_cancel_start);
+    if (ImGui::Button("Cancel Debug Start")) {
+        auto rr = g_app.CancelVisualDebugStart(g.debug_session->id);
+        if (rr.ok) {
+            GuiToastBus::Warn("Debug startup canceled");
+            g.debug_session.reset();
+            g.debug_runtime.reset();
+            g.debug_request_id.reset();
+        }
+        else if (rr.error.message == "TooLate") {
+            GuiToastBus::Info("Too late to cancel", "Use Stop Debugging once attached.");
+        }
+        else {
+            GuiToastBus::Error("Cancel Debug Start failed", rr.error.message);
+        }
+    }
+    ImGui::EndDisabled();
     static int bump_delta = 1;
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60);

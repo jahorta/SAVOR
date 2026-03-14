@@ -52,7 +52,8 @@ namespace simcore {
 
     void WorkerCoordinator::start() {
         if (!slots_.empty()) return;
-        (void)simcore::db::DebugSessionsRepo::CleanupOrphanedActiveSessions(30);
+        (void)simcore::db::DebugSessionsRepo::CleanupOrphanedActiveSessions(cfg_.stale_debug_max_age_seconds);
+        next_stale_debug_cleanup_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.stale_debug_cleanup_interval_ms);
         interrupt_in_flight_jobs_with_event();
         const size_t n = cfg_.max_concurrent_processes;
         desired_workers_.store(cfg_.desired_workers);
@@ -351,6 +352,11 @@ namespace simcore {
 
             sweep_expired_leases();
 
+            if (std::chrono::steady_clock::now() >= next_stale_debug_cleanup_) {
+                (void)simcore::db::DebugSessionsRepo::CleanupOrphanedActiveSessions(cfg_.stale_debug_max_age_seconds);
+                next_stale_debug_cleanup_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.stale_debug_cleanup_interval_ms);
+            }
+
             advance_startup_once();
 
             // scale up
@@ -566,7 +572,16 @@ namespace simcore {
 
     WorkerCoordinator::DebugStartResult WorkerCoordinator::StartDebug(int64_t job_id, const std::string& started_by) {
         DebugStartResult out{};
-        auto adm = simcore::db::DebugSessionsRepo::StartDebug(job_id, started_by, 0);
+        {
+            std::lock_guard<std::mutex> lk(debug_mu_);
+            if (active_debug_session_id_.has_value()) {
+                out.ok = false;
+                out.error = "DebugSlotBusy";
+                return out;
+            }
+        }
+
+        auto adm = simcore::db::DebugSessionsRepo::StartDebug(job_id, started_by, cfg_.debug_slot_id);
         if (!adm.ok) {
             out.ok = false;
             out.error = adm.error.message;
@@ -579,11 +594,6 @@ namespace simcore {
 
         {
             std::lock_guard<std::mutex> lk(debug_mu_);
-            if (active_debug_session_id_.has_value() && *active_debug_session_id_ != out.request_id) {
-                out.ok = false;
-                out.error = "DebugSlotBusy";
-                return out;
-            }
             active_debug_session_id_ = out.request_id;
             DebugRuntimeSnapshot snap{};
             snap.session_id = out.request_id;
@@ -597,12 +607,14 @@ namespace simcore {
         }
 
         std::thread([req_id = out.request_id]() {
-            (void)simcore::db::DebugSessionsRepo::MarkLaunching(req_id);
+            auto launching = simcore::db::DebugSessionsRepo::MarkLaunching(req_id);
+            if (!launching.ok) return;
             Sleep(80);
             const std::string token = std::string("dbg-") + std::to_string((long long)req_id);
-            (void)simcore::db::DebugSessionsRepo::MarkAttachReady(req_id, std::nullopt, token,
+            auto attach = simcore::db::DebugSessionsRepo::MarkAttachReady(req_id, std::nullopt, token,
                 "ipc://vm/" + token,
                 "ipc://dolphin/" + token);
+            if (!attach.ok) return;
             Sleep(100);
             (void)simcore::db::DebugSessionsRepo::MarkActive(req_id);
                     }).detach();
@@ -633,7 +645,7 @@ namespace simcore {
             debug_snapshots_.erase(request_id);
             debug_breakpoints_.erase(request_id);
         }
-        return simcore::db::DebugSessionsRepo::MarkFailed(request_id, "Canceled", "Canceled during startup");
+        return simcore::db::DebugSessionsRepo::MarkFailed(request_id, "CancelStartAccepted", "Canceled during startup");
     }
 
     DbResult<void> WorkerCoordinator::mutate_debug_session_(int64_t session_id, const std::function<void(DebugRuntimeSnapshot&)>& mutator) {

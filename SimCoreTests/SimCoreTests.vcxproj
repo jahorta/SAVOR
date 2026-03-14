@@ -131,6 +131,7 @@
     <ClCompile Include="test.cpp" />
     <ClCompile Include="test_boot_dolphinwrapper.cpp" />
     <ClCompile Include="test_branching.cpp" />
+    <ClCompile Include="test_debug_sessions_repo.cpp" />
     <ClCompile Include="test_framestep.cpp" />
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />

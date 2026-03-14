@@ -35,6 +35,8 @@ namespace simcore::db {
 
     class DebugSessionsRepo {
     public:
+        static bool IsActiveState(const std::string& state);
+
         static std::future<DbResult<StartDebugAdmissionResult>> StartDebugAsync(int64_t job_id, std::string started_by, int64_t slot_id = 0, RetryPolicy rp = {});
         static std::future<DbResult<void>> MarkLaunchingAsync(int64_t session_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> MarkAttachReadyAsync(int64_t session_id, std::optional<int64_t> worker_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, RetryPolicy rp = {});

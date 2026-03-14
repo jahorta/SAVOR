@@ -22,13 +22,13 @@ void DebuggerPane::Draw() {
         return;
     }
 
-    bool has_active = false;
-    for (const auto& s : lr.value) {
-        if (s.state == "starting" || s.state == "launching_worker" || s.state == "attach_ready" || s.state == "active" || s.state == "stopping") {
-            has_active = true;
-            break;
-        }
-    }
+	bool has_active = false;
+	for (const auto& s : lr.value) {
+		if (simcore::db::DebugSessionsRepo::IsActiveState(s.state)) {
+			has_active = true;
+			break;
+		}
+	}
     GuiLeftNav::SetDebuggerHookActive(has_active);
 
     if (ImGui::BeginTable("dbg_sessions", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
