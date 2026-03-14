@@ -6,6 +6,7 @@
 #include "Panes/JobSetsPane.h"
 #include "Panes/CoordinatorPane.h"
 #include "Panes/PhaseBuilderPane.h"
+#include "Panes/DebuggerPane.h"
 #include "Panes/BattleRunSettingsPane.h"
 #include "Panes/ArtifactsPane.h"
 #include "Panes/SeedProbePane.h"
@@ -17,6 +18,7 @@
 #include "Utils/IniDoc.h"
 #include "Utils/Log.h"
 #include "DB/DBCore/DbService.h"
+#include "DB/Scheduling/DebugSessionsRepo.h"
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -155,6 +157,19 @@ void GuiApp::RenderFrame() {
     const float kLeftNavW = 250.0f;
     const float status_h = ImGui::GetFrameHeight() + 2.0f + 1.0f;  // taller bar so the green badge doesn't clip
 
+    {
+        bool has_active_debug = false;
+        auto recent_dbg = simcore::db::DebugSessionsRepo::ListRecent(20);
+        if (recent_dbg.ok) {
+            for (const auto& s : recent_dbg.value) {
+                if (s.state == "starting" || s.state == "launching_worker" || s.state == "attach_ready" || s.state == "active" || s.state == "stopping") {
+                    has_active_debug = true;
+                    break;
+                }
+            }
+        }
+        GuiLeftNav::SetDebuggerHookActive(has_active_debug);
+    }
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + kTopBarH), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(kLeftNavW, vp->Size.y - kTopBarH - status_h), ImGuiCond_Always);
     GuiLeftNav::Draw();
@@ -175,6 +190,10 @@ void GuiApp::RenderFrame() {
     case GuiPane::Jobs:
         if (pane_swap) JobsPane::OnActivated();
         JobsPane::Draw();
+        break;
+    case GuiPane::Debugger:
+        if (pane_swap) DebuggerPane::OnActivated();
+        DebuggerPane::Draw();
         break;
     case GuiPane::Workers:
         CoordinatorPane::Draw();
@@ -328,6 +347,36 @@ DbResult<void> GuiApp::CancelVisualDebugStart(int64_t request_id) {
     return wc_->CancelStartDebug(request_id);
 }
 
+DbResult<void> GuiApp::StepVisualDebugVmInstruction(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->StepDebugVmInstruction(session_id);
+}
+
+DbResult<void> GuiApp::StepVisualDebugFrame(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->StepDebugFrame(session_id);
+}
+
+DbResult<void> GuiApp::RunVisualDebugToBreakpoint(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->RunToDebugBreakpoint(session_id);
+}
+
+DbResult<void> GuiApp::PauseVisualDebug(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->PauseDebugSession(session_id);
+}
+
+DbResult<void> GuiApp::ToggleVisualDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->ToggleDebugBreakpoint(session_id, step_id, enabled);
+}
+
+DbResult<simcore::WorkerCoordinator::DebugRuntimeSnapshot> GuiApp::GetVisualDebugRuntimeSnapshot(int64_t session_id) const {
+    if (!wc_) return DbResult<simcore::WorkerCoordinator::DebugRuntimeSnapshot>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->GetDebugRuntimeSnapshot(session_id);
+}
+
 DbResult<std::optional<simcore::db::DebugSessionRow>> GuiApp::GetVisualDebugSession(int64_t session_id) const {
     if (!wc_) return DbResult<std::optional<simcore::db::DebugSessionRow>>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
     return wc_->GetDebugSession(session_id);
@@ -336,6 +385,10 @@ DbResult<std::optional<simcore::db::DebugSessionRow>> GuiApp::GetVisualDebugSess
 DbResult<std::optional<simcore::db::DebugSessionRow>> GuiApp::GetActiveVisualDebugSessionForJob(int64_t job_id) const {
     if (!wc_) return DbResult<std::optional<simcore::db::DebugSessionRow>>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
     return wc_->GetActiveDebugSessionForJob(job_id);
+}
+
+DbResult<std::vector<simcore::db::DebugSessionRow>> GuiApp::ListRecentVisualDebugSessions(int limit) const {
+    return simcore::db::DebugSessionsRepo::ListRecent(limit);
 }
 
 std::string GuiApp::GuiCfgGet(const std::string& section, const std::string& key, const std::string& def) const {

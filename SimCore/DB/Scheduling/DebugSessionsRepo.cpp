@@ -1,6 +1,5 @@
 #include "DebugSessionsRepo.h"
 
-#include "JobsRepo.h"
 #include <sqlite3.h>
 
 namespace simcore::db {
@@ -63,22 +62,39 @@ namespace simcore::db {
         return DBService::instance().submit_res<StartDebugAdmissionResult>(OpType::Write, Priority::High, rp,
             [=](DbEnv& env) -> DbResult<StartDebugAdmissionResult> {
                 sqlite3* db = env.handle();
+                sqlite3_stmt* st{};
                 int rc = sqlite3_exec(db, "SAVEPOINT start_debug;", nullptr, nullptr, nullptr);
                 if (rc != SQLITE_OK) return DbResult<StartDebugAdmissionResult>::Err({ map_sqlite_err(rc), rc, "begin" });
 
-                auto job_r = JobsRepo::Get(job_id);
-                if (!job_r.ok) {
+                rc = sqlite3_prepare_v2(db, "SELECT state FROM jobs WHERE job_id=?1;", -1, &st, nullptr);
+                if (rc != SQLITE_OK) {
                     sqlite3_exec(db, "ROLLBACK TO start_debug;", nullptr, nullptr, nullptr);
                     sqlite3_exec(db, "RELEASE start_debug;", nullptr, nullptr, nullptr);
-                    return DbResult<StartDebugAdmissionResult>::Err(job_r.error);
+                    return DbResult<StartDebugAdmissionResult>::Err({ map_sqlite_err(rc), rc, "prepare job lookup" });
                 }
-                if (!is_terminal_state(job_r.value.state)) {
+                sqlite3_bind_int64(st, 1, job_id);
+                rc = sqlite3_step(st);
+                if (rc == SQLITE_DONE) {
+                    sqlite3_finalize(st);
                     sqlite3_exec(db, "ROLLBACK TO start_debug;", nullptr, nullptr, nullptr);
                     sqlite3_exec(db, "RELEASE start_debug;", nullptr, nullptr, nullptr);
-                    return DbResult<StartDebugAdmissionResult>::Err({ DbErrorKind::InvalidArgument, SQLITE_CONSTRAINT, "DebugRequiresTerminalJob" });
+                    return DbResult<StartDebugAdmissionResult>::Err({ DbErrorKind::NotFound, SQLITE_NOTFOUND, "JobNotFound" });
+                }
+                if (rc != SQLITE_ROW) {
+                    sqlite3_finalize(st);
+                    sqlite3_exec(db, "ROLLBACK TO start_debug;", nullptr, nullptr, nullptr);
+                    sqlite3_exec(db, "RELEASE start_debug;", nullptr, nullptr, nullptr);
+                    return DbResult<StartDebugAdmissionResult>::Err({ map_sqlite_err(rc), rc, "select job" });
+                }
+                const unsigned char* state_text = sqlite3_column_text(st, 0);
+                const std::string job_state = state_text ? reinterpret_cast<const char*>(state_text) : std::string();
+                sqlite3_finalize(st);
+                if (!is_terminal_state(job_state)) {
+                    sqlite3_exec(db, "ROLLBACK TO start_debug;", nullptr, nullptr, nullptr);
+                    sqlite3_exec(db, "RELEASE start_debug;", nullptr, nullptr, nullptr);
+                    return DbResult<StartDebugAdmissionResult>::Err({ DbErrorKind::InvalidArgument, SQLITE_CONSTRAINT, "JobNotTerminal" });
                 }
 
-                sqlite3_stmt* st{};
                 rc = sqlite3_prepare_v2(db,
                     "SELECT id FROM debug_sessions WHERE job_id=?1 AND state IN ('starting','attach_ready','active','stopping') LIMIT 1;",
                     -1, &st, nullptr);
@@ -144,7 +160,27 @@ namespace simcore::db {
             });
     }
 
-    std::future<DbResult<void>> DebugSessionsRepo::MarkAttachReadyAsync(int64_t session_id, std::optional<int64_t> worker_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, RetryPolicy rp) {
+
+    std::future<DbResult<void>> DebugSessionsRepo::MarkLaunchingAsync(int64_t session_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& env) -> DbResult<void> {
+                sqlite3* db = env.handle();
+                sqlite3_stmt* st{};
+                int rc = sqlite3_prepare_v2(db,
+                    "UPDATE debug_sessions SET state='launching_worker',updated_at=strftime('%s','now') WHERE id=?1 AND state='starting';",
+                    -1, &st, nullptr);
+                if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
+                sqlite3_bind_int64(st, 1, session_id);
+                rc = sqlite3_step(st);
+                const int rows = sqlite3_changes(db);
+                sqlite3_finalize(st);
+                if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
+                if (rows <= 0) return DbResult<void>::Err({ DbErrorKind::Conflict, SQLITE_CONSTRAINT, "TooLate" });
+                return DbResult<void>::Ok();
+            });
+    }
+
+std::future<DbResult<void>> DebugSessionsRepo::MarkAttachReadyAsync(int64_t session_id, std::optional<int64_t> worker_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, RetryPolicy rp) {
         return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
             [=](DbEnv& env) -> DbResult<void> {
                 sqlite3* db = env.handle();
@@ -213,7 +249,29 @@ namespace simcore::db {
             });
     }
 
-    std::future<DbResult<std::optional<DebugSessionRow>>> DebugSessionsRepo::GetByIdAsync(int64_t session_id, RetryPolicy rp) {
+
+    std::future<DbResult<int>> DebugSessionsRepo::CleanupOrphanedActiveSessionsAsync(int64_t max_age_seconds, RetryPolicy rp) {
+        return DBService::instance().submit_res<int>(OpType::Write, Priority::Normal, rp,
+            [=](DbEnv& env) -> DbResult<int> {
+                sqlite3* db = env.handle();
+                sqlite3_stmt* st{};
+                int rc = sqlite3_prepare_v2(db,
+                    "UPDATE debug_sessions "
+                    "SET state='failed', failure_code='CoordinatorRestartCleanup', failure_detail='Recovered stale debug session', lock_released_at=strftime('%s','now'), updated_at=strftime('%s','now') "
+                    "WHERE state IN ('starting','launching_worker','attach_ready','active','stopping') "
+                    "AND updated_at <= (strftime('%s','now') - ?1);",
+                    -1, &st, nullptr);
+                if (rc != SQLITE_OK) return DbResult<int>::Err({ map_sqlite_err(rc), rc, "prepare" });
+                sqlite3_bind_int64(st, 1, max_age_seconds);
+                rc = sqlite3_step(st);
+                const int rows = sqlite3_changes(db);
+                sqlite3_finalize(st);
+                if (rc != SQLITE_DONE) return DbResult<int>::Err({ map_sqlite_err(rc), rc, "update" });
+                return DbResult<int>::Ok(rows);
+            });
+    }
+
+std::future<DbResult<std::optional<DebugSessionRow>>> DebugSessionsRepo::GetByIdAsync(int64_t session_id, RetryPolicy rp) {
         return DBService::instance().submit_res<std::optional<DebugSessionRow>>(OpType::Read, Priority::Normal, rp,
             [=](DbEnv& env) { return get_by_id_impl(env, session_id); });
     }

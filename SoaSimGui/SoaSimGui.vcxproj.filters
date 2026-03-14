@@ -69,6 +69,9 @@
     <ClInclude Include="src\GUI\Panes\JobsPane.h">
       <Filter>GUI\Panes</Filter>
     </ClInclude>
+    <ClInclude Include="src\GUI\Panes\DebuggerPane.h">
+      <Filter>GUI\Panes</Filter>
+    </ClInclude>
     <ClInclude Include="src\GUI\Widgets\JobDetailDrawer.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
@@ -193,6 +196,9 @@
       <Filter>Models</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Panes\JobsPane.cpp">
+      <Filter>GUI\Panes</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GUI\Panes\DebuggerPane.cpp">
       <Filter>GUI\Panes</Filter>
     </ClCompile>
     <ClCompile Include="src\GUI\Widgets\JobDetailDrawer.cpp">

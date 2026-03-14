@@ -8,6 +8,10 @@
 #include <chrono>
 #include <thread>
 #include <deque>
+#include <functional>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include "../PRTypes.h"
 #include "../ProcessWorker.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
@@ -56,9 +60,32 @@ namespace simcore {
             std::string error;
         };
 
+        struct DebugRuntimeSnapshot {
+            int64_t session_id{ 0 };
+            int64_t job_id{ 0 };
+            std::string vm_state{ "VM_PAUSED" };
+            std::string emu_state{ "EMU_PAUSED" };
+            std::string ux_mode{ "FRAME_STEP_DEFAULT" };
+            std::string break_reason{ "paused" };
+            std::string script_name{ "<unknown>" };
+            uint32_t script_pc{ 0 };
+            int64_t frame_index{ 0 };
+            std::string current_input{ "<none>" };
+            int64_t sequence{ 0 };
+            int64_t timestamp{ 0 };
+            bool frame_ready{ false };
+            std::vector<int64_t> breakpoints;
+        };
+
         DebugStartResult StartDebug(int64_t job_id, const std::string& started_by = "gui");
         DbResult<void> StopDebug(int64_t session_id);
         DbResult<void> CancelStartDebug(int64_t request_id);
+        DbResult<void> StepDebugVmInstruction(int64_t session_id);
+        DbResult<void> StepDebugFrame(int64_t session_id);
+        DbResult<void> RunToDebugBreakpoint(int64_t session_id);
+        DbResult<void> PauseDebugSession(int64_t session_id);
+        DbResult<void> ToggleDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled);
+        DbResult<DebugRuntimeSnapshot> GetDebugRuntimeSnapshot(int64_t session_id) const;
         DbResult<std::optional<simcore::db::DebugSessionRow>> GetDebugSession(int64_t session_id) const;
         DbResult<std::optional<simcore::db::DebugSessionRow>> GetActiveDebugSessionForJob(int64_t job_id) const;
 
@@ -138,6 +165,14 @@ namespace simcore {
 
         std::deque<size_t> startup_queue_;
         std::optional<size_t> startup_in_flight_slot_;
+
+        mutable std::mutex debug_mu_;
+        std::optional<int64_t> active_debug_session_id_;
+        std::unordered_map<int64_t, DebugRuntimeSnapshot> debug_snapshots_;
+        std::unordered_map<int64_t, std::unordered_set<int64_t>> debug_breakpoints_;
+
+        static int64_t debug_now_sec();
+        DbResult<void> mutate_debug_session_(int64_t session_id, const std::function<void(DebugRuntimeSnapshot&)>& mutator);
     };
 
 } // namespace simcore
