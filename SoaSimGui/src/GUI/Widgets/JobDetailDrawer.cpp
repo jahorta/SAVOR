@@ -5,6 +5,7 @@
 #include "../Popups/IniEditor.h"
 #include "Utils/String.h"
 #include <chrono>
+#include <algorithm>
 using namespace simcore::db;
 
 namespace {
@@ -34,6 +35,7 @@ namespace {
 
         std::optional<int64_t> debug_request_id;
         std::optional<simcore::db::DebugSessionRow> debug_session;
+        std::optional<simcore::WorkerCoordinator::DebugRuntimeSnapshot> debug_runtime;
         std::chrono::steady_clock::time_point next_debug_refresh{};
 
         void reset() {
@@ -57,6 +59,7 @@ namespace {
             decoded_fut = std::future<DbResult<std::string>>{};
             debug_request_id.reset();
             debug_session.reset();
+            debug_runtime.reset();
             next_debug_refresh = {};
         }
     };
@@ -146,7 +149,15 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
             GuiToastBus::Info("Debug startup", "request " + std::to_string((long long)sr.request_id));
         }
         else {
-            GuiToastBus::Error("Start Visual Debug failed", sr.error);
+            if (sr.error == "DebugSlotBusy") {
+                GuiToastBus::Info("Debug Slot Busy", "Debugger is currently in use.");
+            }
+            else if (sr.error == "JobNotTerminal") {
+                GuiToastBus::Warn("Job not terminal", "Only terminal jobs can be debugged.");
+            }
+            else {
+                GuiToastBus::Error("Start Visual Debug failed", sr.error);
+            }
         }
     }
     ImGui::EndDisabled();
@@ -272,6 +283,10 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
         if (ar.ok) {
             g.debug_session = ar.value;
             if (g.debug_session.has_value()) g.debug_request_id = g.debug_session->id;
+            if (g.debug_session.has_value()) {
+                auto sr = g_app.GetVisualDebugRuntimeSnapshot(g.debug_session->id);
+                if (sr.ok) g.debug_runtime = sr.value;
+            }
         }
     }
 
@@ -300,11 +315,54 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
                 ImGui::Text("Dolphin endpoint: %s", ds.dolphin_endpoint.value_or("<pending>").c_str());
                 ImGui::Separator();
                 ImGui::TextUnformatted("Execution Controls");
-                ImGui::Button("Step VM Instruction");
-                ImGui::SameLine(); ImGui::Button("Step Frame");
-                ImGui::SameLine(); ImGui::Button("Run To BP");
-                ImGui::SameLine(); ImGui::Button("Pause");
-                ImGui::TextWrapped("Control-plane scaffolding is wired. Side-channel endpoint command handlers are intentionally staged for follow-up integration.");
+                if (ImGui::Button("Step VM Instruction")) {
+                    auto rr = g_app.StepVisualDebugVmInstruction(ds.id);
+                    if (!rr.ok) GuiToastBus::Error("Step VM failed", rr.error.message);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Step Frame")) {
+                    auto rr = g_app.StepVisualDebugFrame(ds.id);
+                    if (!rr.ok) GuiToastBus::Error("Step Frame failed", rr.error.message);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Run To BP")) {
+                    auto rr = g_app.RunVisualDebugToBreakpoint(ds.id);
+                    if (!rr.ok) GuiToastBus::Error("Run To BP failed", rr.error.message);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Pause")) {
+                    auto rr = g_app.PauseVisualDebug(ds.id);
+                    if (!rr.ok) GuiToastBus::Error("Pause failed", rr.error.message);
+                }
+
+                if (g.debug_runtime.has_value()) {
+                    const auto& rt = *g.debug_runtime;
+                    ImGui::Separator();
+                    ImGui::Text("VM: %s | EMU: %s | MODE: %s", rt.vm_state.c_str(), rt.emu_state.c_str(), rt.ux_mode.c_str());
+                    ImGui::Text("Script Position: %s @ 0x%08X", rt.script_name.c_str(), rt.script_pc);
+                    ImGui::Text("Current Input: %s", rt.current_input.c_str());
+                    ImGui::Text("Frame: %lld | seq: %lld | reason: %s", (long long)rt.frame_index, (long long)rt.sequence, rt.break_reason.c_str());
+
+                    ImGui::SeparatorText("Breakpoints");
+                    if (ImGui::BeginTable("dbg_bp_tbl", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                        ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
+                        ImGui::TableSetupColumn("Script Step");
+                        ImGui::TableHeadersRow();
+                        for (int step = 0; step < 8; ++step) {
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            const bool enabled = std::find(rt.breakpoints.begin(), rt.breakpoints.end(), step) != rt.breakpoints.end();
+                            ImGui::PushID(step);
+                            if (ImGui::Selectable(enabled ? "●" : " ", false, ImGuiSelectableFlags_SpanAllColumns)) {
+                                (void)g_app.ToggleVisualDebugBreakpoint(ds.id, step, !enabled);
+                            }
+                            ImGui::PopID();
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::Text("Step %d", step);
+                        }
+                        ImGui::EndTable();
+                    }
+                }
             }
             ImGui::EndTabItem();
         }

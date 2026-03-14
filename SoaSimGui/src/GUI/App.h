@@ -37,8 +37,15 @@ public:
     simcore::WorkerCoordinator::DebugStartResult StartVisualDebug(int64_t job_id, const std::string& started_by = "gui");
     DbResult<void> StopVisualDebug(int64_t session_id);
     DbResult<void> CancelVisualDebugStart(int64_t request_id);
+    DbResult<void> StepVisualDebugVmInstruction(int64_t session_id);
+    DbResult<void> StepVisualDebugFrame(int64_t session_id);
+    DbResult<void> RunVisualDebugToBreakpoint(int64_t session_id);
+    DbResult<void> PauseVisualDebug(int64_t session_id);
+    DbResult<void> ToggleVisualDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled);
+    DbResult<simcore::WorkerCoordinator::DebugRuntimeSnapshot> GetVisualDebugRuntimeSnapshot(int64_t session_id) const;
     DbResult<std::optional<simcore::db::DebugSessionRow>> GetVisualDebugSession(int64_t session_id) const;
     DbResult<std::optional<simcore::db::DebugSessionRow>> GetActiveVisualDebugSessionForJob(int64_t job_id) const;
+    DbResult<std::vector<simcore::db::DebugSessionRow>> ListRecentVisualDebugSessions(int limit = 50) const;
 
     std::string GuiCfgGet(const std::string& section, const std::string& key, const std::string& def = "") const;
     void        GuiCfgSet(const std::string& section, const std::string& key, const std::string& val);
