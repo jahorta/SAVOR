@@ -399,6 +399,9 @@
     <ClInclude Include="DB\Scheduling\JobEventsRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
+    <ClInclude Include="DB\Scheduling\DebugSessionsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
     <ClInclude Include="DB\Scheduling\JobSetsRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
@@ -720,6 +723,9 @@
       <Filter>DB\ProgramCodecs</Filter>
     </ClCompile>
     <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\DebugSessionsRepo.cpp">
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
     <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp">

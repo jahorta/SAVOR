@@ -15,6 +15,7 @@
 #include "../../../DB/Scheduling/JobEventsRepo.h"
 #include "DBWorkerCoordinatorConfig.h"
 #include "../WorkerStatusRegistry.h"
+#include "../../../DB/Scheduling/DebugSessionsRepo.h"
 
 namespace simcore {
 
@@ -47,6 +48,19 @@ namespace simcore {
         void set_target_workers(size_t n);
         void set_paused(bool p);
         bool is_paused() const { return paused_.load(); }
+
+        struct DebugStartResult {
+            bool ok{ false };
+            int64_t request_id{ 0 };
+            std::string status;
+            std::string error;
+        };
+
+        DebugStartResult StartDebug(int64_t job_id, const std::string& started_by = "gui");
+        DbResult<void> StopDebug(int64_t session_id);
+        DbResult<void> CancelStartDebug(int64_t request_id);
+        DbResult<std::optional<simcore::db::DebugSessionRow>> GetDebugSession(int64_t session_id) const;
+        DbResult<std::optional<simcore::db::DebugSessionRow>> GetActiveDebugSessionForJob(int64_t job_id) const;
 
     private:
         struct Slot {

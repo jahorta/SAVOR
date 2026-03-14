@@ -34,6 +34,12 @@ public:
     void   SetCoordinatorEventBufferCapacity(size_t n);
     std::vector<WorkerSnapshot> CoordinatorSnapshot() const;
 
+    simcore::WorkerCoordinator::DebugStartResult StartVisualDebug(int64_t job_id, const std::string& started_by = "gui");
+    DbResult<void> StopVisualDebug(int64_t session_id);
+    DbResult<void> CancelVisualDebugStart(int64_t request_id);
+    DbResult<std::optional<simcore::db::DebugSessionRow>> GetVisualDebugSession(int64_t session_id) const;
+    DbResult<std::optional<simcore::db::DebugSessionRow>> GetActiveVisualDebugSessionForJob(int64_t job_id) const;
+
     std::string GuiCfgGet(const std::string& section, const std::string& key, const std::string& def = "") const;
     void        GuiCfgSet(const std::string& section, const std::string& key, const std::string& val);
 
@@ -64,3 +70,5 @@ private:
     size_t desired_workers_{ 0 };
     bool paused_{ false };
 };
+
+extern GuiApp g_app;

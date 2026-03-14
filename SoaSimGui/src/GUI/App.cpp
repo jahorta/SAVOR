@@ -308,6 +308,36 @@ std::vector<WorkerSnapshot> GuiApp::CoordinatorSnapshot() const {
     return wc_->GetClusterSnapshot();
 }
 
+simcore::WorkerCoordinator::DebugStartResult GuiApp::StartVisualDebug(int64_t job_id, const std::string& started_by) {
+    if (!wc_) {
+        simcore::WorkerCoordinator::DebugStartResult r{};
+        r.ok = false;
+        r.error = "CoordinatorNotRunning";
+        return r;
+    }
+    return wc_->StartDebug(job_id, started_by);
+}
+
+DbResult<void> GuiApp::StopVisualDebug(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->StopDebug(session_id);
+}
+
+DbResult<void> GuiApp::CancelVisualDebugStart(int64_t request_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->CancelStartDebug(request_id);
+}
+
+DbResult<std::optional<simcore::db::DebugSessionRow>> GuiApp::GetVisualDebugSession(int64_t session_id) const {
+    if (!wc_) return DbResult<std::optional<simcore::db::DebugSessionRow>>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->GetDebugSession(session_id);
+}
+
+DbResult<std::optional<simcore::db::DebugSessionRow>> GuiApp::GetActiveVisualDebugSessionForJob(int64_t job_id) const {
+    if (!wc_) return DbResult<std::optional<simcore::db::DebugSessionRow>>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->GetActiveDebugSessionForJob(job_id);
+}
+
 std::string GuiApp::GuiCfgGet(const std::string& section, const std::string& key, const std::string& def) const {
     // Assumes IniDoc supports get(section,key,default)
     return g_doc.get(section, key, def);
