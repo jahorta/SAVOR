@@ -708,7 +708,20 @@ namespace simcore {
 
             {
                 std::lock_guard<std::mutex> lk(debug_mu_);
-                auto server = std::make_unique<simcore::debug::LocalDebugControlServer>(req_id, job_id, token, vm_endpoint, dolphin_endpoint);
+                simcore::ReadyVideoSurfaceInfo surface_info{};
+                if (debug_worker_proc_) {
+                    surface_info = debug_worker_proc_->getReadyVideoSurfaceInfo();
+                }
+                auto server = std::make_unique<simcore::debug::LocalDebugControlServer>(
+                    req_id,
+                    job_id,
+                    token,
+                    vm_endpoint,
+                    dolphin_endpoint,
+                    surface_info.width,
+                    surface_info.height,
+                    surface_info.pixel_format,
+                    surface_info.color_space);
                 auto snap = server->Snapshot();
                 if (snap.ok) debug_snapshots_[req_id] = snap.value;
                 debug_control_servers_[req_id] = std::move(server);

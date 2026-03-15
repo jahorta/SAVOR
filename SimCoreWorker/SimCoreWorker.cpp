@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 
 #include "Utils/Log.h"
 #include "Boot/Boot.h"
@@ -176,6 +177,8 @@ int main(int argc, char** argv)
 
     host.ConfigurePortsStandardPadP1();
 
+    auto surface_info = host.getVideoSurfaceInfo();
+
     // ----- New control-mode only -----
     BreakpointMap bpmap = bp::BPRegistry::as_map();
     PhaseScriptVM vm(host, bpmap);
@@ -183,6 +186,12 @@ int main(int argc, char** argv)
     // Advertise "NoProgram" at startup
     {
         WireReady wrdy{}; wrdy.tag = MSG_READY; wrdy.ok = 1; wrdy.state = WSTATE_NoProgram; wrdy.error = WERR_None;
+        if (surface_info.has_value()) {
+            wrdy.video_width = surface_info->width;
+            wrdy.video_height = surface_info->height;
+            strncpy_s(wrdy.video_pixel_format, surface_info->pixel_format.c_str(), _TRUNCATE);
+            strncpy_s(wrdy.video_color_space, surface_info->color_space.c_str(), _TRUNCATE);
+        }
         if (!write_all(hOut, &wrdy, sizeof(wrdy))) {
             SCLOGE("[Worker %zu] failed to write READY(NoProgram)", worker_id);
             return SEND_READY_FAILED;
