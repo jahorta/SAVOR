@@ -94,6 +94,7 @@ int main(int argc, char** argv)
     size_t worker_id = 0;
     std::string iso, sav, qtbase, userdir, logfile; 
     uint32_t timeout_ms = 10000;
+    bool render_enabled = false;
 
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -101,6 +102,7 @@ int main(int argc, char** argv)
         else if (k == "--iso") iso = argv_next(i, argc, argv);
         else if (k == "--qtbase") qtbase = argv_next(i, argc, argv);
         else if (k == "--userdir") userdir = argv_next(i, argc, argv);
+        else if (k == "--render-enabled") render_enabled = true;
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -120,6 +122,7 @@ int main(int argc, char** argv)
 
     SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s userdir=%s timeout=%u",
         worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), userdir.c_str(), timeout_ms);
+    SCLOGI("[Worker %zu] launch mode=%s", worker_id, render_enabled ? "render-enabled" : "headless");
 
     // Use inherited anonymous pipes as binary channels
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -149,6 +152,7 @@ int main(int argc, char** argv)
     boot.iso_path = iso;
 
     DolphinWrapper host;
+    host.setLaunchMode(render_enabled ? DolphinLaunchMode::RenderEnabled : DolphinLaunchMode::Headless);
 
     SCLOGD("[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
         worker_id, boot.boot.user_dir.c_str(), boot.boot.dolphin_qt_base.c_str());

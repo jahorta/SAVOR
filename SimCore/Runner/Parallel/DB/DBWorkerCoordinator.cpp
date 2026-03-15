@@ -6,6 +6,7 @@
 #include <mutex>  // for std::once_flag / std::call_once
 #include <chrono>
 #include <algorithm>
+#include <filesystem>
 
 #include "../../../Utils/ThreadName.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
@@ -77,6 +78,10 @@ namespace simcore {
     void WorkerCoordinator::stop() {
         if (stop_.exchange(true)) return;
         interrupt_in_flight_jobs_with_event();
+        {
+            std::lock_guard<std::mutex> lk(debug_mu_);
+            stop_debug_worker_locked();
+        }
         startup_in_flight_slot_.reset();
         startup_queue_.clear();
         for (auto& s : slots_) { shutdown_slot(*s); }
@@ -606,16 +611,60 @@ namespace simcore {
             debug_breakpoints_[out.request_id].clear();
         }
 
-        std::thread([req_id = out.request_id]() {
+        std::thread([this, req_id = out.request_id]() {
             auto launching = simcore::db::DebugSessionsRepo::MarkLaunching(req_id);
             if (!launching.ok) return;
-            Sleep(80);
+
+            auto proc = std::make_unique<ProcessWorker>();
+            proc->set_progress_queue(&progress_q_);
+
+            const auto worker_root = std::filesystem::path(cfg_.worker_dir_root) / ("debug-session-" + std::to_string((long long)req_id));
+            std::error_code ec;
+            std::filesystem::create_directories(worker_root, ec);
+
+            ProcStartParams ps{};
+            ps.worker_id = static_cast<size_t>(100000 + (req_id % 50000));
+            ps.exe_path = cfg_.worker_exe_path;
+            ps.iso_path = cfg_.iso_path;
+            ps.dolphin_base_dir = cfg_.dolphin_base_dir;
+            ps.user_dir = worker_root.string();
+            ps.debug_render_enabled = true;
+
+            if (!proc->start(ps, &results_q_) || !proc->wait_ready(cfg_.child_launch_timeout_ms)) {
+                (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "WorkerLaunchFailed", "Failed to launch render-enabled debug worker");
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                if (active_debug_session_id_.has_value() && *active_debug_session_id_ == req_id) active_debug_session_id_.reset();
+                debug_snapshots_.erase(req_id);
+                debug_breakpoints_.erase(req_id);
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                if (!active_debug_session_id_.has_value() || *active_debug_session_id_ != req_id) {
+                    proc->stop();
+                    return;
+                }
+                stop_debug_worker_locked();
+                debug_worker_session_id_ = req_id;
+                debug_worker_proc_ = std::move(proc);
+            }
+
             const std::string token = std::string("dbg-") + std::to_string((long long)req_id);
             auto attach = simcore::db::DebugSessionsRepo::MarkAttachReady(req_id, std::nullopt, token,
                 "ipc://vm/" + token,
                 "ipc://dolphin/" + token);
-            if (!attach.ok) return;
-            Sleep(100);
+            if (!attach.ok) {
+                {
+                    std::lock_guard<std::mutex> lk(debug_mu_);
+                    if (debug_worker_session_id_.has_value() && *debug_worker_session_id_ == req_id) {
+                        stop_debug_worker_locked();
+                    }
+                }
+                (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "WorkerLaunchFailed", "Failed to publish debug attach metadata");
+                return;
+            }
+
             (void)simcore::db::DebugSessionsRepo::MarkActive(req_id);
                     }).detach();
 
@@ -626,6 +675,7 @@ namespace simcore {
         {
             std::lock_guard<std::mutex> lk(debug_mu_);
             if (active_debug_session_id_.has_value() && *active_debug_session_id_ == session_id) active_debug_session_id_.reset();
+            if (debug_worker_session_id_.has_value() && *debug_worker_session_id_ == session_id) stop_debug_worker_locked();
             debug_snapshots_.erase(session_id);
             debug_breakpoints_.erase(session_id);
         }
@@ -642,10 +692,19 @@ namespace simcore {
         {
             std::lock_guard<std::mutex> lk(debug_mu_);
             if (active_debug_session_id_.has_value() && *active_debug_session_id_ == request_id) active_debug_session_id_.reset();
+            if (debug_worker_session_id_.has_value() && *debug_worker_session_id_ == request_id) stop_debug_worker_locked();
             debug_snapshots_.erase(request_id);
             debug_breakpoints_.erase(request_id);
         }
         return simcore::db::DebugSessionsRepo::MarkFailed(request_id, "CancelStartAccepted", "Canceled during startup");
+    }
+
+    void WorkerCoordinator::stop_debug_worker_locked() {
+        if (debug_worker_proc_) {
+            debug_worker_proc_->stop();
+            debug_worker_proc_.reset();
+        }
+        debug_worker_session_id_.reset();
     }
 
     DbResult<void> WorkerCoordinator::mutate_debug_session_(int64_t session_id, const std::function<void(DebugRuntimeSnapshot&)>& mutator) {

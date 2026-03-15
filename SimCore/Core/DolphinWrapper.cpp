@@ -51,6 +51,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdarg>
+#include <mutex>
 
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
@@ -83,6 +84,34 @@ namespace simcore {
         wsi.type = WindowSystemType::Headless;
         return wsi;
     }
+
+#if defined(_WIN32)
+    static HWND CreateHiddenRenderWindow() {
+        static const wchar_t* kClassName = L"SOASimDolphinRenderHost";
+        static std::once_flag s_once;
+        std::call_once(s_once, []() {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = kClassName;
+            (void)RegisterClassW(&wc);
+            });
+
+        return CreateWindowExW(
+            0,
+            kClassName,
+            L"SOASimDolphinRenderHost",
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            1280,
+            720,
+            nullptr,
+            nullptr,
+            GetModuleHandleW(nullptr),
+            nullptr);
+    }
+#endif
 
     // --- load settings helpers --------------------------------------------------
 
@@ -178,6 +207,7 @@ namespace simcore {
         g_controller_interface.Shutdown();
         Core::Shutdown(*m_system);
         UICommon::Shutdown();
+        releaseRenderSurface();
     }
 
     void DolphinWrapper::stop() {
@@ -197,7 +227,7 @@ namespace simcore {
             shutdownCore();
         }
 
-        const WindowSystemInfo wsi = MakeHeadlessWSI();
+        const WindowSystemInfo wsi = buildWSIForLaunchMode();
 
         m_wsi = wsi;
 
@@ -221,7 +251,60 @@ namespace simcore {
         while (!Core::IsRunning(*m_system) && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_until(steady_clock::now() + milliseconds(1));
 
+        if (Core::IsRunning(*m_system)) {
+            DolphinVideoSurfaceInfo info{};
+            if (m_launch_mode == DolphinLaunchMode::RenderEnabled) {
+                info.width = 1280;
+                info.height = 720;
+                info.pixel_format = "RGBA8";
+                info.color_space = "sRGB";
+            }
+            else {
+                info.pixel_format = "NONE";
+                info.color_space = "NONE";
+            }
+            m_video_surface_info = std::move(info);
+        }
+
         return Core::IsRunning(*m_system);
+    }
+
+    std::optional<DolphinVideoSurfaceInfo> DolphinWrapper::getVideoSurfaceInfo() const {
+        return m_video_surface_info;
+    }
+
+    WindowSystemInfo DolphinWrapper::buildWSIForLaunchMode() {
+        if (m_launch_mode == DolphinLaunchMode::Headless) {
+            releaseRenderSurface();
+            return MakeHeadlessWSI();
+        }
+
+#if defined(_WIN32)
+        if (m_render_window_handle == nullptr) {
+            m_render_window_handle = CreateHiddenRenderWindow();
+        }
+        if (m_render_window_handle != nullptr) {
+            WindowSystemInfo wsi{};
+            wsi.type = WindowSystemType::Windows;
+            wsi.render_window = m_render_window_handle;
+            wsi.render_surface = m_render_window_handle;
+            SCLOGI("[DW] Launch mode render-enabled (Windows hidden surface)");
+            return wsi;
+        }
+        SCLOGW("[DW] Render-enabled launch requested, but hidden window create failed; falling back headless");
+#else
+        SCLOGW("[DW] Render-enabled launch requested on unsupported platform; falling back headless");
+#endif
+        return MakeHeadlessWSI();
+    }
+
+    void DolphinWrapper::releaseRenderSurface() {
+#if defined(_WIN32)
+        if (m_render_window_handle != nullptr) {
+            DestroyWindow(static_cast<HWND>(m_render_window_handle));
+            m_render_window_handle = nullptr;
+        }
+#endif
     }
 
     bool DolphinWrapper::runOnCpuThread(const std::function<void()>& fn, const bool waitForCompletion) const
@@ -1480,4 +1563,3 @@ namespace simcore {
     }
 
 } // namespace simcore
-

@@ -22,6 +22,7 @@ namespace simcore {
 		std::string dolphin_base_dir;
 		std::string user_dir;     // unique per worker
 		bool vm_control{ false };
+		bool debug_render_enabled{ false };
 	};
 
 	struct AckWait
