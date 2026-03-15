@@ -16,6 +16,7 @@
 #include "../../IPC/Wire.h"
 #include "DBTriggerEngine.h"
 #include "../../../Utils/ModulePath.h"
+#include "../../Debug/DebugControlChannel.h"
 
 namespace simcore {
 
@@ -80,6 +81,10 @@ namespace simcore {
         interrupt_in_flight_jobs_with_event();
         {
             std::lock_guard<std::mutex> lk(debug_mu_);
+            for (auto& kv : debug_control_servers_) {
+                if (kv.second) kv.second->Stop();
+            }
+            debug_control_servers_.clear();
             stop_debug_worker_locked();
         }
         startup_in_flight_slot_.reset();
@@ -611,7 +616,7 @@ namespace simcore {
             debug_breakpoints_[out.request_id].clear();
         }
 
-        std::thread([this, req_id = out.request_id]() {
+        std::thread([this, req_id = out.request_id, job_id]() {
             auto launching = simcore::db::DebugSessionsRepo::MarkLaunching(req_id);
             if (!launching.ok) return;
 
@@ -651,9 +656,11 @@ namespace simcore {
             }
 
             const std::string token = std::string("dbg-") + std::to_string((long long)req_id);
+            const std::string vm_endpoint = "ipc://vm/" + token;
+            const std::string dolphin_endpoint = "ipc://dolphin/" + token;
             auto attach = simcore::db::DebugSessionsRepo::MarkAttachReady(req_id, std::nullopt, token,
-                "ipc://vm/" + token,
-                "ipc://dolphin/" + token);
+                vm_endpoint,
+                dolphin_endpoint);
             if (!attach.ok) {
                 {
                     std::lock_guard<std::mutex> lk(debug_mu_);
@@ -663,6 +670,14 @@ namespace simcore {
                 }
                 (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "WorkerLaunchFailed", "Failed to publish debug attach metadata");
                 return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                auto server = std::make_unique<simcore::debug::LocalDebugControlServer>(req_id, job_id, token, vm_endpoint, dolphin_endpoint);
+                auto snap = server->Snapshot();
+                if (snap.ok) debug_snapshots_[req_id] = snap.value;
+                debug_control_servers_[req_id] = std::move(server);
             }
 
             (void)simcore::db::DebugSessionsRepo::MarkActive(req_id);
@@ -676,6 +691,11 @@ namespace simcore {
             std::lock_guard<std::mutex> lk(debug_mu_);
             if (active_debug_session_id_.has_value() && *active_debug_session_id_ == session_id) active_debug_session_id_.reset();
             if (debug_worker_session_id_.has_value() && *debug_worker_session_id_ == session_id) stop_debug_worker_locked();
+            auto it_server = debug_control_servers_.find(session_id);
+            if (it_server != debug_control_servers_.end()) {
+                it_server->second->Stop();
+                debug_control_servers_.erase(it_server);
+            }
             debug_snapshots_.erase(session_id);
             debug_breakpoints_.erase(session_id);
         }
@@ -687,12 +707,17 @@ namespace simcore {
         if (!s.ok) return DbResult<void>::Err(s.error);
         if (!s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "debug session not found" });
         if (s.value->state != "starting" && s.value->state != "launching_worker") {
-            return DbResult<void>::Err({ DbErrorKind::Conflict, SQLITE_CONSTRAINT, "TooLate" });
+            return DbResult<void>::Err({ DbErrorKind::Constraint, SQLITE_CONSTRAINT, "TooLate" });
         }
         {
             std::lock_guard<std::mutex> lk(debug_mu_);
             if (active_debug_session_id_.has_value() && *active_debug_session_id_ == request_id) active_debug_session_id_.reset();
             if (debug_worker_session_id_.has_value() && *debug_worker_session_id_ == request_id) stop_debug_worker_locked();
+            auto it_server = debug_control_servers_.find(request_id);
+            if (it_server != debug_control_servers_.end()) {
+                it_server->second->Stop();
+                debug_control_servers_.erase(it_server);
+            }
             debug_snapshots_.erase(request_id);
             debug_breakpoints_.erase(request_id);
         }
@@ -717,69 +742,96 @@ namespace simcore {
     }
 
     DbResult<void> WorkerCoordinator::StepDebugVmInstruction(int64_t session_id) {
-        return mutate_debug_session_(session_id, [](DebugRuntimeSnapshot& s) {
-            s.vm_state = "VM_STEPPING_INSTR";
-            s.ux_mode = "VM_INSTR_DEBUG";
-            s.script_pc += 4;
-            s.break_reason = "vm_step";
-            s.sequence++;
-            s.vm_state = "VM_PAUSED";
-        });
+        std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::VM;
+        cmd.env.command = simcore::debug::CommandType::StepVmInstruction;
+        auto rr = it->second->Send(s.value->vm_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
     }
 
     DbResult<void> WorkerCoordinator::StepDebugFrame(int64_t session_id) {
-        return mutate_debug_session_(session_id, [](DebugRuntimeSnapshot& s) {
-            s.emu_state = "EMU_FRAME_STEP";
-            s.ux_mode = "FRAME_STEP_DEFAULT";
-            s.frame_index += 1;
-            s.current_input = "A=1 B=0 X=0 Y=0";
-            s.frame_ready = true;
-            s.break_reason = "frame_step";
-            s.sequence++;
-            s.emu_state = "EMU_PAUSED";
-        });
+        std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+        cmd.env.command = simcore::debug::CommandType::StepFrame;
+        auto rr = it->second->Send(s.value->dolphin_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
     }
 
     DbResult<void> WorkerCoordinator::RunToDebugBreakpoint(int64_t session_id) {
-        return mutate_debug_session_(session_id, [this, session_id](DebugRuntimeSnapshot& s) {
-            s.emu_state = "EMU_RUN_TO_BP";
-            s.ux_mode = "RUN_TO_BP_ACTIVE";
-            s.frame_index += 3;
-            s.script_pc += 16;
-            s.break_reason = debug_breakpoints_[session_id].empty() ? "run_to_bp_timeout" : "breakpoint_hit";
-            s.sequence++;
-            s.emu_state = "EMU_PAUSED";
-            s.ux_mode = "FRAME_STEP_DEFAULT";
-            s.frame_ready = true;
-        });
+        std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+        cmd.env.command = simcore::debug::CommandType::RunToBreakpoint;
+        auto rr = it->second->Send(s.value->dolphin_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
     }
 
     DbResult<void> WorkerCoordinator::PauseDebugSession(int64_t session_id) {
-        return mutate_debug_session_(session_id, [](DebugRuntimeSnapshot& s) {
-            s.vm_state = "VM_PAUSED";
-            s.emu_state = "EMU_PAUSED";
-            s.break_reason = "paused";
-            s.sequence++;
-        });
+        std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+        cmd.env.command = simcore::debug::CommandType::Pause;
+        auto rr = it->second->Send(s.value->dolphin_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
     }
 
     DbResult<void> WorkerCoordinator::ToggleDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled) {
         std::lock_guard<std::mutex> lk(debug_mu_);
-        auto it_snap = debug_snapshots_.find(session_id);
-        if (it_snap == debug_snapshots_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
-        auto& bps = debug_breakpoints_[session_id];
-        if (enabled) bps.insert(step_id);
-        else bps.erase(step_id);
-        auto& s = it_snap->second;
-        s.breakpoints.assign(bps.begin(), bps.end());
-        std::sort(s.breakpoints.begin(), s.breakpoints.end());
-        s.sequence++;
-        s.timestamp = debug_now_sec();
-        return DbResult<void>::Ok();
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::VM;
+        cmd.env.command = simcore::debug::CommandType::ToggleBreakpoint;
+        cmd.step_id = step_id;
+        cmd.enabled = enabled;
+        auto rr = it->second->Send(s.value->vm_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
     }
 
     DbResult<WorkerCoordinator::DebugRuntimeSnapshot> WorkerCoordinator::GetDebugRuntimeSnapshot(int64_t session_id) const {
         std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it_server = debug_control_servers_.find(session_id);
+        if (it_server != debug_control_servers_.end()) {
+            auto snap = it_server->second->Snapshot();
+            if (snap.ok) {
+                return snap;
+            }
+        }
         auto it = debug_snapshots_.find(session_id);
         if (it == debug_snapshots_.end()) return DbResult<DebugRuntimeSnapshot>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
         return DbResult<DebugRuntimeSnapshot>::Ok(it->second);

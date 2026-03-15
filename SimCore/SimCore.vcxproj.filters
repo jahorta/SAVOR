@@ -231,6 +231,9 @@
     <ClInclude Include="Runner\IPC\Wire.h">
       <Filter>Runner</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Debug\DebugControlChannel.h">
+      <Filter>Runner</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Parallel\TSQueue.h">
       <Filter>Runner</Filter>
     </ClInclude>
@@ -774,6 +777,9 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Debug\DebugControlChannel.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">
