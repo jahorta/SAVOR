@@ -200,6 +200,29 @@ namespace simcore {
         return ack_.wait_for(10000);
     }
 
+    bool ProcessWorker::ctl_debug_preload_job(uint64_t job_id, const std::vector<uint8_t>& payload) {
+        WireJobHeader hdr{};
+        hdr.tag = MSG_DEBUG_PRELOAD_JOB;
+        hdr.job_id = job_id;
+        hdr.epoch = 0;
+        hdr.payload_len = static_cast<uint32_t>(payload.size());
+
+        ack_.request('D');
+        if (!write_all(hChildStd_IN_Wr, &hdr.tag, sizeof(hdr.tag))) {
+            ack_.cancel_all();
+            return false;
+        }
+        if (!write_all(hChildStd_IN_Wr, &hdr, sizeof(hdr))) {
+            ack_.cancel_all();
+            return false;
+        }
+        if (!payload.empty() && !write_all(hChildStd_IN_Wr, payload.data(), payload.size())) {
+            ack_.cancel_all();
+            return false;
+        }
+        return ack_.wait_for(10000);
+    }
+
     bool ProcessWorker::send_job(uint64_t job_id, uint64_t epoch, const PSJob& job)
     {
         if (!running_.load()) return false;

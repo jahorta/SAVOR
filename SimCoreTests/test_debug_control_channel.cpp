@@ -53,3 +53,33 @@ TEST(DebugControlChannel, RejectsBadToken) {
     EXPECT_FALSE(rr.ok);
     EXPECT_EQ(rr.error.message, "InvalidSessionToken");
 }
+
+TEST(DebugControlChannel, SetModeFrameStepInterruptsRunToBreakpoint) {
+    simcore::debug::LocalDebugControlServer server(
+        77,
+        11,
+        "tok",
+        "ipc://vm/tok",
+        "ipc://dolphin/tok");
+
+    simcore::debug::ControlCommand run_cmd{};
+    run_cmd.env.session_id = 77;
+    run_cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+    run_cmd.env.command = simcore::debug::CommandType::RunToBreakpoint;
+    auto rr = server.Send("ipc://dolphin/tok", "tok", run_cmd);
+    ASSERT_TRUE(rr.ok);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    simcore::debug::ControlCommand mode_cmd{};
+    mode_cmd.env.session_id = 77;
+    mode_cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+    mode_cmd.env.command = simcore::debug::CommandType::SetModeFrameStep;
+    rr = server.Send("ipc://dolphin/tok", "tok", mode_cmd);
+    ASSERT_TRUE(rr.ok);
+
+    auto snap = server.Snapshot();
+    ASSERT_TRUE(snap.ok);
+    EXPECT_EQ(snap.value.emu_state, "EMU_PAUSED");
+    EXPECT_EQ(snap.value.ux_mode, "FRAME_STEP_DEFAULT");
+}

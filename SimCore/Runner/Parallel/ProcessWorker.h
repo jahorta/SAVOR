@@ -4,6 +4,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <vector>
 #include <windows.h>
 #include "../../Core/Input/InputPlan.h"
 #include "../Script/PhaseScriptVM.h"  // for PSResult
@@ -80,6 +81,7 @@ namespace simcore {
 		bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
 		bool ctl_run_init_once();
 		bool ctl_activate_main();
+		bool ctl_debug_preload_job(uint64_t job_id, const std::vector<uint8_t>& payload);
 
 		bool is_ready()  const { return ready_received_.load() && ready_ok_.load(); }
 		bool is_failed() const { return ready_received_.load() && !ready_ok_.load(); }

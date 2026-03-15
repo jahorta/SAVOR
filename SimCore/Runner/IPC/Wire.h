@@ -14,7 +14,8 @@ namespace simcore {
         MSG_SET_PROGRAM = 0x10,
         MSG_RUN_INIT_ONCE = 0x11,
         MSG_ACTIVATE_MAIN = 0x12,
-        MSG_ACK = 0x13
+        MSG_ACK = 0x13,
+        MSG_DEBUG_PRELOAD_JOB = 0x14
     };
 
     enum : uint32_t {
