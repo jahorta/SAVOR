@@ -373,22 +373,29 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
                     ImGui::Text("Current Input: %s", rt.current_input.c_str());
                     ImGui::Text("Frame: %lld | seq: %lld | reason: %s", (long long)rt.frame_index, (long long)rt.sequence, rt.break_reason.c_str());
 
-                    ImGui::SeparatorText("Breakpoints");
+                    ImGui::SeparatorText("Breakpoints (script step / instruction index)");
+                    ImGui::TextUnformatted("Breakpoint markers target VM instruction indices in the current script.");
                     if (ImGui::BeginTable("dbg_bp_tbl", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                         ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
                         ImGui::TableSetupColumn("Script Step");
                         ImGui::TableHeadersRow();
-                        for (int step = 0; step < 8; ++step) {
+                        for (const auto& step : rt.script_steps) {
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0);
-                            const bool enabled = std::find(rt.breakpoints.begin(), rt.breakpoints.end(), step) != rt.breakpoints.end();
-                            ImGui::PushID(step);
-                            if (ImGui::Selectable(enabled ? "●" : " ", false, ImGuiSelectableFlags_SpanAllColumns)) {
-                                (void)g_app.ToggleVisualDebugBreakpoint(ds.id, step, !enabled);
+                            const bool enabled = std::find(rt.breakpoints.begin(), rt.breakpoints.end(), step.step_id) != rt.breakpoints.end();
+                            ImGui::PushID(static_cast<int>(step.step_id));
+                            if (enabled) {
+                                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 70, 70, 255));
+                            }
+                            if (ImGui::SmallButton(enabled ? "●" : " ")) {
+                                (void)g_app.ToggleVisualDebugBreakpoint(ds.id, step.step_id, !enabled);
+                            }
+                            if (enabled) {
+                                ImGui::PopStyleColor();
                             }
                             ImGui::PopID();
                             ImGui::TableSetColumnIndex(1);
-                            ImGui::Text("Step %d", step);
+                            ImGui::Text("%s", step.label.c_str());
                         }
                         ImGui::EndTable();
                     }

@@ -2,6 +2,7 @@
 
 #include "../../DB/DBCore/DbResult.h"
 #include "../Parallel/DB/DBWorkerCoordinator.h"
+#include "../Script/PhaseScriptVM.h"
 #include "VideoFrameRing.h"
 #include <atomic>
 #include <condition_variable>
@@ -10,6 +11,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace simcore::debug {
 
@@ -43,7 +45,7 @@ namespace simcore::debug {
 
     class LocalDebugControlServer {
     public:
-        LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, uint32_t video_width = 640, uint32_t video_height = 480, std::string video_pixel_format = "BGRA8", std::string video_color_space = "sRGB");
+        LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, std::vector<simcore::PSOp> script_ops = {}, uint32_t video_width = 640, uint32_t video_height = 480, std::string video_pixel_format = "BGRA8", std::string video_color_space = "sRGB");
         ~LocalDebugControlServer();
 
         simcore::db::DbResult<void> Send(const std::string& endpoint, const std::string& token, const ControlCommand& cmd);
@@ -71,6 +73,13 @@ namespace simcore::debug {
         VideoFrameRingProducer video_ring_;
         uint64_t next_frame_id_{ 1 };
         std::vector<uint8_t> frame_scratch_;
+        std::vector<simcore::WorkerCoordinator::DebugRuntimeSnapshot::ScriptStep> script_steps_;
+        std::vector<simcore::PSOp> script_ops_;
+        size_t current_step_index_{ 0 };
+
+        void seed_script_steps_();
+        void sync_script_location_();
+        bool has_breakpoint_on_current_step_() const;
 
         void publish_frame_(uint32_t width, uint32_t height, uint8_t phase);
 

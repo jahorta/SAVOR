@@ -65,6 +65,11 @@ namespace simcore {
         };
 
         struct DebugRuntimeSnapshot {
+            struct ScriptStep {
+                int64_t step_id{ 0 };
+                std::string label;
+            };
+
             int64_t session_id{ 0 };
             int64_t job_id{ 0 };
             std::string vm_state{ "VM_PAUSED" };
@@ -84,6 +89,7 @@ namespace simcore {
             std::string video_pixel_format{ "UNKNOWN" };
             std::string video_color_space{ "UNKNOWN" };
             std::vector<int64_t> breakpoints;
+            std::vector<ScriptStep> script_steps;
         };
 
         DebugStartResult StartDebug(int64_t job_id, const std::string& started_by = "gui");

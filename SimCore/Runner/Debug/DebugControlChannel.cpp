@@ -12,11 +12,12 @@ namespace {
 
 namespace simcore::debug {
 
-    LocalDebugControlServer::LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, uint32_t video_width, uint32_t video_height, std::string video_pixel_format, std::string video_color_space)
+    LocalDebugControlServer::LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, std::vector<simcore::PSOp> script_ops, uint32_t video_width, uint32_t video_height, std::string video_pixel_format, std::string video_color_space)
         : session_id_(session_id),
         token_(std::move(token)),
         vm_endpoint_(std::move(vm_endpoint)),
-        dolphin_endpoint_(std::move(dolphin_endpoint)) {
+        dolphin_endpoint_(std::move(dolphin_endpoint)),
+        script_ops_(std::move(script_ops)) {
         snapshot_.session_id = session_id;
         snapshot_.job_id = job_id;
         snapshot_.vm_state = "VM_PAUSED";
@@ -36,6 +37,9 @@ namespace simcore::debug {
         snapshot_.video_width = video_width > 0 ? video_width : 640;
         snapshot_.video_height = video_height > 0 ? video_height : 480;
 
+        seed_script_steps_();
+        sync_script_location_();
+
         VideoRingConfig cfg{};
         cfg.mapping_name = snapshot_.video_ring_name;
         cfg.slot_count = 4;
@@ -44,6 +48,48 @@ namespace simcore::debug {
 
         frame_scratch_.resize(static_cast<size_t>(snapshot_.video_width) * static_cast<size_t>(snapshot_.video_height) * 4u);
         publish_frame_(snapshot_.video_width, snapshot_.video_height, 0);
+    }
+
+    void LocalDebugControlServer::seed_script_steps_() {
+        if (script_ops_.empty()) {
+            // Fallback for very early attach or unknown kind; coordinator should
+            // normally provide the real program ops for this debug session.
+            script_ops_.push_back(simcore::OpLoadSnapshot());
+            script_ops_.push_back(simcore::OpRunUntilBp());
+            script_ops_.push_back(simcore::OpCaptureSnapshot());
+            script_ops_.push_back(simcore::OpEmitResult(static_cast<simcore::keys::KeyId>(0)));
+        }
+
+        script_steps_.clear();
+        script_steps_.reserve(script_ops_.size());
+        for (size_t i = 0; i < script_ops_.size(); ++i) {
+            const auto& op = script_ops_[i];
+            script_steps_.push_back({
+                static_cast<int64_t>(i),
+                simcore::PhaseScriptVM::format_psop_label(op)
+                });
+        }
+
+        snapshot_.script_steps = script_steps_;
+        current_step_index_ = 0;
+    }
+
+    void LocalDebugControlServer::sync_script_location_() {
+        if (script_steps_.empty()) {
+            snapshot_.script_pc = 0;
+            snapshot_.script_name = "Script/main";
+            return;
+        }
+        if (current_step_index_ >= script_steps_.size()) current_step_index_ = script_steps_.size() - 1;
+        snapshot_.script_pc = static_cast<uint32_t>(current_step_index_ * 4u);
+        snapshot_.script_name = "Script/main";
+        snapshot_.script_steps = script_steps_;
+    }
+
+    bool LocalDebugControlServer::has_breakpoint_on_current_step_() const {
+        if (script_steps_.empty()) return false;
+        const int64_t step_id = script_steps_[current_step_index_].step_id;
+        return breakpoints_.find(step_id) != breakpoints_.end();
     }
 
     LocalDebugControlServer::~LocalDebugControlServer() {
@@ -90,7 +136,10 @@ namespace simcore::debug {
             std::lock_guard<std::mutex> lk(mu_);
             snapshot_.vm_state = "VM_STEPPING_INSTR";
             snapshot_.ux_mode = "VM_INSTR_DEBUG";
-            snapshot_.script_pc += 4;
+            if (!script_steps_.empty()) {
+                current_step_index_ = (current_step_index_ + 1) % script_steps_.size();
+            }
+            sync_script_location_();
             snapshot_.break_reason = "vm_step";
             snapshot_.sequence++;
             snapshot_.vm_state = "VM_PAUSED";
@@ -142,6 +191,11 @@ namespace simcore::debug {
         }
         case CommandType::ToggleBreakpoint: {
             std::lock_guard<std::mutex> lk(mu_);
+            const auto step_it = std::find_if(script_steps_.begin(), script_steps_.end(),
+                [&](const auto& step) { return step.step_id == cmd.step_id; });
+            if (step_it == script_steps_.end()) {
+                return simcore::db::DbResult<void>::Err({ simcore::db::DbErrorKind::InvalidArgument, -1, "InvalidStepId" });
+            }
             if (cmd.enabled) breakpoints_.insert(cmd.step_id);
             else breakpoints_.erase(cmd.step_id);
             snapshot_.breakpoints.assign(breakpoints_.begin(), breakpoints_.end());
@@ -162,13 +216,16 @@ namespace simcore::debug {
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 snapshot_.frame_index += 1;
-                snapshot_.script_pc += 4;
+                if (!script_steps_.empty()) {
+                    current_step_index_ = (current_step_index_ + 1) % script_steps_.size();
+                }
+                sync_script_location_();
                 snapshot_.current_input = (i % 2 == 0) ? "A=0 B=1 X=0 Y=0" : "A=1 B=0 X=0 Y=0";
                 snapshot_.frame_ready = true;
                 snapshot_.sequence++;
                 snapshot_.timestamp = now_sec();
                 publish_frame_(snapshot_.video_width, snapshot_.video_height, static_cast<uint8_t>((snapshot_.frame_index * 3) & 0xFF));
-                if (!breakpoints_.empty() && (i % 5 == 4)) {
+                if (has_breakpoint_on_current_step_()) {
                     hit_breakpoint = true;
                     break;
                 }

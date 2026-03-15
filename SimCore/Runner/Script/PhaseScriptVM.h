@@ -19,6 +19,7 @@
 namespace simcore {
 
 	// ----- Small, reusable ops -----
+	struct PSOp;
 	enum class PSOpCode : uint8_t {
 		ARM_PHASE_BPS_ONCE,
 		LOAD_SNAPSHOT,
@@ -206,6 +207,8 @@ namespace simcore {
 
 		// Run the program once for a given job
 		PSResult run(const PSJob& job);
+
+		static std::string format_psop_label(const PSOp& op);
 
 	private:
 		simcore::DolphinWrapper& host_;

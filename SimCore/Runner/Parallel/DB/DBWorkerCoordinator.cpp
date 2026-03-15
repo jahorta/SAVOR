@@ -17,6 +17,7 @@
 #include "DBTriggerEngine.h"
 #include "../../../Utils/ModulePath.h"
 #include "../../Debug/DebugControlChannel.h"
+#include "../../../Phases/Programs/ProgramRegistry.h"
 
 namespace simcore {
 
@@ -706,6 +707,9 @@ namespace simcore {
                 return;
             }
 
+            const auto debug_program = simcore::programs::build_main_program(static_cast<uint8_t>(jr.value.program_kind));
+            const auto debug_program_ops = debug_program.ops;
+
             {
                 std::lock_guard<std::mutex> lk(debug_mu_);
                 simcore::ReadyVideoSurfaceInfo surface_info{};
@@ -718,6 +722,7 @@ namespace simcore {
                     token,
                     vm_endpoint,
                     dolphin_endpoint,
+                    debug_program_ops,
                     surface_info.width,
                     surface_info.height,
                     surface_info.pixel_format,

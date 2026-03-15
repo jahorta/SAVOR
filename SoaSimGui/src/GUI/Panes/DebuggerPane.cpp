@@ -8,6 +8,7 @@
 #include <string>
 #include <cstring>
 #include <vector>
+#include <algorithm>
 #include <chrono>
 #include <d3d11.h>
 
@@ -189,6 +190,37 @@ void DebuggerPane::Draw() {
                 if (!rr.ok) GuiToastBus::Error("Stop Debugging failed", rr.error.message);
                 else GuiToastBus::Warn("Debug session stopped");
                 g_video.Reset();
+            }
+
+            ImGui::SeparatorText("Script Steps (VM instruction indices)");
+            ImGui::TextUnformatted("These rows are VM instruction indices used by Step VM and breakpoint toggles.");
+            if (ImGui::BeginTable("dbg_script_steps", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
+                ImGui::TableSetupColumn("Script step / instruction");
+                for (const auto& step : rt.script_steps) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    const bool enabled = std::find(rt.breakpoints.begin(), rt.breakpoints.end(), step.step_id) != rt.breakpoints.end();
+                    ImGui::PushID(static_cast<int>(step.step_id));
+                    if (enabled) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 70, 70, 255));
+                    if (ImGui::SmallButton(enabled ? "●" : " ")) {
+                        auto tr = g_app.ToggleVisualDebugBreakpoint(g_selected_session_id, step.step_id, !enabled);
+                        if (!tr.ok) GuiToastBus::Error("Toggle breakpoint failed", tr.error.message);
+                    }
+                    if (enabled) ImGui::PopStyleColor();
+                    ImGui::PopID();
+
+                    ImGui::TableSetColumnIndex(1);
+                    const uint32_t step_pc = static_cast<uint32_t>(step.step_id * 4);
+                    const bool is_current = (step_pc == rt.script_pc);
+                    if (is_current) {
+                        ImGui::Text("> %s", step.label.c_str());
+                    }
+                    else {
+                        ImGui::TextUnformatted(step.label.c_str());
+                    }
+                }
+                ImGui::EndTable();
             }
 
             ImGui::SeparatorText("Video Viewport");

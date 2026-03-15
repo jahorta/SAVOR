@@ -730,6 +730,60 @@ namespace simcore {
         return R;
     }
 
+
+    std::string PhaseScriptVM::format_psop_label(const PSOp& op)
+    {
+        auto key_to_string = [](simcore::keys::KeyId k) {
+            return std::string("key:") + std::to_string(static_cast<uint32_t>(k));
+            };
+
+        switch (op.code) {
+        case PSOpCode::APPLY_INPUT_FROM:
+            return std::string("Apply Input from ") + key_to_string(op.key.id);
+        case PSOpCode::STEP_FRAMES:
+            return std::string("Step Frames n=") + std::to_string(op.step.n) +
+                (op.imm.v ? " (disable bps)" : "");
+        case PSOpCode::SET_TIMEOUT:
+            return std::string("Set Timeout ms=") + std::to_string(op.imm.v);
+        case PSOpCode::SET_TIMEOUT_FROM:
+            return std::string("Set Timeout from ") + key_to_string(op.key.id);
+        case PSOpCode::READ_U8:
+        case PSOpCode::READ_U16:
+        case PSOpCode::READ_U32:
+        case PSOpCode::READ_F32:
+        case PSOpCode::READ_F64: {
+            return get_psop_name(op.code) + std::string(" addr=0x") +
+                std::format("{:08X}", op.rd.addr) +
+                " -> " + key_to_string(op.rd.dst);
+        }
+        case PSOpCode::GOTO:
+            return std::string("Goto ") + op.jmp.name;
+        case PSOpCode::GOTO_IF:
+            return std::string("GotoIf ") + key_to_string(op.jcc.key) +
+                " cmp=" + std::to_string(static_cast<uint32_t>(op.jcc.cmp)) +
+                " imm=" + std::to_string(op.jcc.imm) +
+                " -> " + op.jcc.name;
+        case PSOpCode::GOTO_IF_KEYS:
+            return std::string("GotoIf ") + key_to_string(op.jcc2.left) +
+                " cmp=" + std::to_string(static_cast<uint32_t>(op.jcc2.cmp)) +
+                " " + key_to_string(op.jcc2.right) +
+                " -> " + op.jcc2.name;
+        case PSOpCode::RETURN_RESULT:
+            return std::string("Return Result ") + key_to_string(op.keyimm.key) +
+                " code=" + std::to_string(op.keyimm.imm);
+        case PSOpCode::SET_U32:
+            return std::string("Set U32 ") + key_to_string(op.keyimm.key) +
+                " = " + std::to_string(op.keyimm.imm);
+        case PSOpCode::ADD_U32:
+            return std::string("Add U32 ") + key_to_string(op.keyimm.key) +
+                " += " + std::to_string(op.keyimm.imm);
+        case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES:
+            return std::string("Apply InputPlan from ") + key_to_string(op.key.id);
+        default:
+            return get_psop_name(op.code);
+        }
+    }
+
     std::string get_psop_name(PSOpCode op)
     {
         switch (op) {
