@@ -88,32 +88,32 @@ namespace soa::battle::actions {
         return (slot <= 11u) ? static_cast<int>(slot) : -1;
     }
 
+    inline std::string get_turn_plan_summary(TurnPlan tp, std::string sep = "\n", bool offset = true) {
+        std::string actor;
+        for (auto sp : tp.spec) {
+            actor = actor + sep + " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
+            if (sp.macro == BattleAction::Attack)
+                actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            if (sp.macro == BattleAction::UseItem)
+            {
+                actor = actor + ":[" + std::to_string(sp.params.item_id) + "]";
+                actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
+            }
+        }
+        return actor;
+    }
+
     inline std::string get_battle_path_summary(BattlePath bp, std::string sep = "\n", bool offset = true) {
         std::vector<std::string> path;
         for (int i = 0; i < bp.size(); i++) {
             auto tp = bp[i];
             path.emplace_back(sep + (offset ? "    " : " ") + "Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
-            path.emplace_back(get_turn_plan_summary(tp, offset));
+            path.emplace_back(get_turn_plan_summary(tp, sep, offset));
         }
 
         std::string out;
         for (auto s : path) out.append(s);
         return out;
-    }
-
-    inline std::string get_turn_plan_summary(TurnPlan tp, bool offset = true) {
-        std::stringstream actor{};
-        for (auto sp : tp.spec) {
-            actor << " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
-            if (sp.macro == BattleAction::Attack)
-                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
-            if (sp.macro == BattleAction::UseItem)
-            {
-                actor << ":[" + std::to_string(sp.params.item_id) + "]";
-                actor << ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
-            }
-        }
-        return actor.str();
     }
 
 } // namespace soa::battle::actions
