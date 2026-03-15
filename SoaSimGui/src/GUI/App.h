@@ -39,6 +39,7 @@ public:
     DbResult<void> CancelVisualDebugStart(int64_t request_id);
     DbResult<void> StepVisualDebugVmInstruction(int64_t session_id);
     DbResult<void> StepVisualDebugFrame(int64_t session_id);
+    DbResult<void> SetVisualDebugModeFrameStep(int64_t session_id);
     DbResult<void> RunVisualDebugToBreakpoint(int64_t session_id);
     DbResult<void> PauseVisualDebug(int64_t session_id);
     DbResult<void> ToggleVisualDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled);

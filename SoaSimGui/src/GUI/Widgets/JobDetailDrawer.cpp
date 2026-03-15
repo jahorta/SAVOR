@@ -350,6 +350,11 @@ bool JobDetailsDrawer::Draw(const JobLite& job, int& active_tab, std::unordered_
                     if (!rr.ok) GuiToastBus::Error("Step Frame failed", rr.error.message);
                 }
                 ImGui::SameLine();
+                if (ImGui::Button("Frame Step Mode")) {
+                    auto rr = g_app.SetVisualDebugModeFrameStep(ds.id);
+                    if (!rr.ok) GuiToastBus::Error("Frame Step Mode failed", rr.error.message);
+                }
+                ImGui::SameLine();
                 if (ImGui::Button("Run To BP")) {
                     auto rr = g_app.RunVisualDebugToBreakpoint(ds.id);
                     if (!rr.ok) GuiToastBus::Error("Run To BP failed", rr.error.message);

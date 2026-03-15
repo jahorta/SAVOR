@@ -357,6 +357,11 @@ DbResult<void> GuiApp::StepVisualDebugFrame(int64_t session_id) {
     return wc_->StepDebugFrame(session_id);
 }
 
+DbResult<void> GuiApp::SetVisualDebugModeFrameStep(int64_t session_id) {
+    if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
+    return wc_->SetDebugModeFrameStep(session_id);
+}
+
 DbResult<void> GuiApp::RunVisualDebugToBreakpoint(int64_t session_id) {
     if (!wc_) return DbResult<void>::Err({ DbErrorKind::InvalidState, -1, "CoordinatorNotRunning" });
     return wc_->RunToDebugBreakpoint(session_id);

@@ -86,6 +86,7 @@ namespace simcore {
         DbResult<void> CancelStartDebug(int64_t request_id);
         DbResult<void> StepDebugVmInstruction(int64_t session_id);
         DbResult<void> StepDebugFrame(int64_t session_id);
+        DbResult<void> SetDebugModeFrameStep(int64_t session_id);
         DbResult<void> RunToDebugBreakpoint(int64_t session_id);
         DbResult<void> PauseDebugSession(int64_t session_id);
         DbResult<void> ToggleDebugBreakpoint(int64_t session_id, int64_t step_id, bool enabled);

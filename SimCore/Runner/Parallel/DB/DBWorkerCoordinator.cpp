@@ -644,6 +644,40 @@ namespace simcore {
                 return;
             }
 
+            auto jr = simcore::db::JobsRepo::Get(job_id);
+            if (!jr.ok) {
+                proc->stop();
+                (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "JobLoadFailed", "Failed to load job for debug worker bootstrap");
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                if (active_debug_session_id_.has_value() && *active_debug_session_id_ == req_id) active_debug_session_id_.reset();
+                debug_snapshots_.erase(req_id);
+                debug_breakpoints_.erase(req_id);
+                return;
+            }
+
+            auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
+            auto psi = codec.build_psinit_for_job(job_id);
+            if (!psi.ok || !proc->ctl_set_program(static_cast<uint8_t>(jr.value.program_kind), static_cast<uint8_t>(jr.value.program_kind), psi.value) || !proc->ctl_activate_main()) {
+                proc->stop();
+                (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "DebugProgramInitFailed", "Failed to activate debug program on worker");
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                if (active_debug_session_id_.has_value() && *active_debug_session_id_ == req_id) active_debug_session_id_.reset();
+                debug_snapshots_.erase(req_id);
+                debug_breakpoints_.erase(req_id);
+                return;
+            }
+
+            auto job_payload = codec.decode_job_from_db(job_id);
+            if (!job_payload.ok || !proc->ctl_debug_preload_job(static_cast<uint64_t>(job_id), job_payload.value.payload)) {
+                proc->stop();
+                (void)simcore::db::DebugSessionsRepo::MarkFailed(req_id, "DebugPayloadLoadFailed", "Failed to preload debug payload on worker");
+                std::lock_guard<std::mutex> lk(debug_mu_);
+                if (active_debug_session_id_.has_value() && *active_debug_session_id_ == req_id) active_debug_session_id_.reset();
+                debug_snapshots_.erase(req_id);
+                debug_breakpoints_.erase(req_id);
+                return;
+            }
+
             {
                 std::lock_guard<std::mutex> lk(debug_mu_);
                 if (!active_debug_session_id_.has_value() || *active_debug_session_id_ != req_id) {
@@ -767,6 +801,22 @@ namespace simcore {
         cmd.env.session_id = session_id;
         cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
         cmd.env.command = simcore::debug::CommandType::StepFrame;
+        auto rr = it->second->Send(s.value->dolphin_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
+        auto snap = it->second->Snapshot();
+        if (snap.ok) debug_snapshots_[session_id] = snap.value;
+        return rr;
+    }
+
+    DbResult<void> WorkerCoordinator::SetDebugModeFrameStep(int64_t session_id) {
+        std::lock_guard<std::mutex> lk(debug_mu_);
+        auto it = debug_control_servers_.find(session_id);
+        if (it == debug_control_servers_.end()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        auto s = simcore::db::DebugSessionsRepo::GetById(session_id);
+        if (!s.ok || !s.value.has_value()) return DbResult<void>::Err({ DbErrorKind::NotFound, -1, "DebugSessionNotFound" });
+        simcore::debug::ControlCommand cmd{};
+        cmd.env.session_id = session_id;
+        cmd.env.endpoint = simcore::debug::EndpointType::Dolphin;
+        cmd.env.command = simcore::debug::CommandType::SetModeFrameStep;
         auto rr = it->second->Send(s.value->dolphin_endpoint.value_or(""), s.value->session_token.value_or(""), cmd);
         auto snap = it->second->Snapshot();
         if (snap.ok) debug_snapshots_[session_id] = snap.value;

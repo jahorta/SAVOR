@@ -323,6 +323,40 @@ int main(int argc, char** argv)
             (void)write_all(hOut, &wr, sizeof(wr));
             if (wr.ctx_len) (void)write_all(hOut, blob.data(), blob.size());
         }
+        else if (tag == MSG_DEBUG_PRELOAD_JOB) {
+            WireJobHeader jh{};
+            if (!read_exact(hIn, &jh, sizeof(jh))) break;
+            if (jh.tag != tag) break;
+
+            std::vector<uint8_t> payload(jh.payload_len);
+            if (jh.payload_len) {
+                if (!read_all(hIn, payload.data(), payload.size())) break;
+            }
+
+            WireAck ack{};
+            ack.tag = MSG_ACK;
+            ack.code = 'D';
+
+            if (!main_active) {
+                ack.ok = 0;
+                (void)write_all(hOut, &ack, sizeof(ack));
+                SCLOGE("[Worker %zu] DEBUG_PRELOAD_JOB before ACTIVATE_MAIN", worker_id);
+                continue;
+            }
+
+            PSJob pj{};
+            pj.payload = std::move(payload);
+            const bool decode_ok = simcore::programs::decode_payload_for(active_pk, pj.payload, pj.ctx);
+            ack.ok = decode_ok ? 1 : 0;
+            (void)write_all(hOut, &ack, sizeof(ack));
+
+            if (!decode_ok) {
+                SCLOGE("[Worker %zu] DEBUG_PRELOAD_JOB decode failed", worker_id);
+                continue;
+            }
+
+            SCLOGD("[Worker %zu] DEBUG_PRELOAD_JOB ok (job=%llu)", worker_id, (unsigned long long)jh.job_id);
+        }
         else {
             SCLOGD("[Worker %zu] unknown tag=%u (closing)", worker_id, tag);
             break;
