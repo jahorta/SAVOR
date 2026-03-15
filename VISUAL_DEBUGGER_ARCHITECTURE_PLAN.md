@@ -108,7 +108,8 @@ No extra enforcement layer is required beyond this transaction guard policy.
 - For each accepted request:
   - validate and lock via transaction guard,
   - allocate/spawn visual debug worker session,
-  - pass `job_id` and debug launch params.
+  - derive payload from DB using provided `job_id`
+  - send payload and debug launch params.
 - Track session metadata:
   - session ID,
   - mapped job ID,
@@ -136,7 +137,7 @@ No extra enforcement layer is required beyond this transaction guard policy.
 ### 4) Visual Worker / Debug Session Host
 
 - Launch Dolphin in render-enabled (non-headless) mode for debug sessions.
-- Resolve job payload from DB using provided `job_id`.
+- Recieve job payload process worker. 
 - Host two direct-debug endpoints:
   - **VM endpoint**
     - instruction stepping,
