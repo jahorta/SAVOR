@@ -139,6 +139,7 @@
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_run_evaluator.cpp" />
     <ClCompile Include="test_run_evaluator_phases.cpp" />
+    <ClCompile Include="test_video_frame_ring.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
   </ItemGroup>

@@ -234,6 +234,9 @@
     <ClInclude Include="Runner\Debug\DebugControlChannel.h">
       <Filter>Runner</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Debug\VideoFrameRing.h">
+      <Filter>Runner</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Parallel\TSQueue.h">
       <Filter>Runner</Filter>
     </ClInclude>
@@ -780,6 +783,9 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Debug\DebugControlChannel.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Debug\VideoFrameRing.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">

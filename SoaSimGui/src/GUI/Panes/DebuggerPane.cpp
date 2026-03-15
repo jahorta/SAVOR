@@ -3,11 +3,126 @@
 #include "../App.h"
 #include "../Widgets/LeftNav.h"
 #include "../Components/ToastBus.h"
+#include "Runner/Debug/VideoFrameRing.h"
 #include "imgui.h"
 #include <string>
+#include <cstring>
+#include <vector>
+#include <chrono>
+#include <d3d11.h>
 
 namespace {
     int64_t g_selected_session_id = 0;
+
+    struct DebugVideoRenderer {
+        simcore::debug::VideoFrameRingConsumer consumer;
+        std::string active_ring;
+        ID3D11Texture2D* tex{ nullptr };
+        ID3D11ShaderResourceView* srv{ nullptr };
+        uint32_t tex_w{ 0 };
+        uint32_t tex_h{ 0 };
+        uint64_t last_frame_id{ 0 };
+        std::chrono::steady_clock::time_point next_poll{};
+
+        ~DebugVideoRenderer() { Reset(); }
+
+        void Reset() {
+            consumer.Close();
+            active_ring.clear();
+            last_frame_id = 0;
+            tex_w = tex_h = 0;
+            if (srv) { srv->Release(); srv = nullptr; }
+            if (tex) { tex->Release(); tex = nullptr; }
+        }
+
+        bool EnsureOpened(const std::string& ring) {
+            if (ring.empty()) return false;
+            if (ring == active_ring && consumer.IsOpen()) return true;
+            Reset();
+            if (!consumer.Open(ring)) return false;
+            active_ring = ring;
+            return true;
+        }
+
+        void EnsureTexture(ID3D11Device* dev, uint32_t w, uint32_t h) {
+            if (!dev) return;
+            if (tex && tex_w == w && tex_h == h) return;
+            if (srv) { srv->Release(); srv = nullptr; }
+            if (tex) { tex->Release(); tex = nullptr; }
+
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = w;
+            td.Height = h;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DYNAMIC;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+            if (FAILED(dev->CreateTexture2D(&td, nullptr, &tex))) return;
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+            sd.Format = td.Format;
+            sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            sd.Texture2D.MostDetailedMip = 0;
+            sd.Texture2D.MipLevels = 1;
+            if (FAILED(dev->CreateShaderResourceView(tex, &sd, &srv))) {
+                tex->Release();
+                tex = nullptr;
+                return;
+            }
+            tex_w = w;
+            tex_h = h;
+        }
+
+        void PollAndUpload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
+            if (!consumer.IsOpen() || !dev || !ctx) return;
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_poll) return;
+            next_poll = now + std::chrono::milliseconds(16);
+
+            simcore::debug::VideoFrameDesc fd{};
+            std::vector<uint8_t> pixels;
+            if (!consumer.ReadLatest(fd, pixels)) return;
+            if (fd.frame_id == last_frame_id) return;
+            if (fd.width == 0 || fd.height == 0 || fd.stride == 0 || pixels.empty()) return;
+
+            EnsureTexture(dev, fd.width, fd.height);
+            if (!tex) return;
+
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(ctx->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+
+            const uint8_t* src = pixels.data();
+            uint8_t* dst = reinterpret_cast<uint8_t*>(mapped.pData);
+            const uint32_t rows = fd.height;
+            const uint32_t row_bytes = (fd.stride > 0) ? fd.stride : (fd.width * 4u);
+            for (uint32_t y = 0; y < rows; ++y) {
+                std::memcpy(dst + static_cast<size_t>(y) * mapped.RowPitch, src + static_cast<size_t>(y) * row_bytes, (std::min)(row_bytes, mapped.RowPitch));
+            }
+            ctx->Unmap(tex, 0);
+            last_frame_id = fd.frame_id;
+        }
+
+        void DrawImGui(float avail_w, float max_h = 360.0f) {
+            if (!srv || tex_w == 0 || tex_h == 0) {
+                ImGui::TextUnformatted("No video frame available yet.");
+                return;
+            }
+            const float aspect = static_cast<float>(tex_w) / static_cast<float>(tex_h);
+            float draw_w = avail_w;
+            float draw_h = draw_w / aspect;
+            if (draw_h > max_h) {
+                draw_h = max_h;
+                draw_w = draw_h * aspect;
+            }
+            ImGui::Image(reinterpret_cast<ImTextureID>(srv), ImVec2(draw_w, draw_h));
+        }
+    };
+
+    DebugVideoRenderer g_video;
 }
 
 void DebuggerPane::OnActivated() {}
@@ -22,13 +137,13 @@ void DebuggerPane::Draw() {
         return;
     }
 
-	bool has_active = false;
-	for (const auto& s : lr.value) {
-		if (simcore::db::DebugSessionsRepo::IsActiveState(s.state)) {
-			has_active = true;
-			break;
-		}
-	}
+    bool has_active = false;
+    for (const auto& s : lr.value) {
+        if (simcore::db::DebugSessionsRepo::IsActiveState(s.state)) {
+            has_active = true;
+            break;
+        }
+    }
     GuiLeftNav::SetDebuggerHookActive(has_active);
 
     if (ImGui::BeginTable("dbg_sessions", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
@@ -59,6 +174,7 @@ void DebuggerPane::Draw() {
             ImGui::Text("Script: %s @ 0x%08X", rt.script_name.c_str(), rt.script_pc);
             ImGui::Text("Input: %s", rt.current_input.c_str());
             ImGui::Text("Frame: %lld | Seq: %lld", (long long)rt.frame_index, (long long)rt.sequence);
+            ImGui::Text("Video: %ux%u %s %s", rt.video_width, rt.video_height, rt.video_pixel_format.c_str(), rt.video_color_space.c_str());
 
             if (ImGui::Button("Step VM")) (void)g_app.StepVisualDebugVmInstruction(g_selected_session_id);
             ImGui::SameLine();
@@ -72,11 +188,25 @@ void DebuggerPane::Draw() {
                 auto rr = g_app.StopVisualDebug(g_selected_session_id);
                 if (!rr.ok) GuiToastBus::Error("Stop Debugging failed", rr.error.message);
                 else GuiToastBus::Warn("Debug session stopped");
+                g_video.Reset();
+            }
+
+            ImGui::SeparatorText("Video Viewport");
+            if (!g_video.EnsureOpened(rt.video_ring_name)) {
+                ImGui::TextUnformatted("Waiting for video ring attach...");
+            }
+            else {
+                g_video.PollAndUpload(g_app.D3DDevice(), g_app.D3DContext());
+                g_video.DrawImGui(ImGui::GetContentRegionAvail().x, 420.0f);
             }
         }
         else {
             ImGui::TextUnformatted("No runtime snapshot (session may not be active).");
+            g_video.Reset();
         }
+    }
+    else {
+        g_video.Reset();
     }
 
     ImGui::End();
