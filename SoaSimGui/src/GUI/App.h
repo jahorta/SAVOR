@@ -19,6 +19,8 @@ public:
     void RenderFrame();
     void OnResize(UINT w, UINT h);
     bool HandleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    ID3D11Device* D3DDevice() const { return device_; }
+    ID3D11DeviceContext* D3DContext() const { return ctx_; }
 
     void SetAcceptExplorerDrops(bool enable);
     

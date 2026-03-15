@@ -2,6 +2,7 @@
 
 #include "../../DB/DBCore/DbResult.h"
 #include "../Parallel/DB/DBWorkerCoordinator.h"
+#include "VideoFrameRing.h"
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -67,6 +68,11 @@ namespace simcore::debug {
         std::condition_variable cv_;
         simcore::WorkerCoordinator::DebugRuntimeSnapshot snapshot_{};
         std::set<int64_t> breakpoints_;
+        VideoFrameRingProducer video_ring_;
+        uint64_t next_frame_id_{ 1 };
+        std::vector<uint8_t> frame_scratch_;
+
+        void publish_frame_(uint32_t width, uint32_t height, uint8_t phase);
 
         std::atomic<bool> stop_{ false };
         std::atomic<bool> run_active_{ false };

@@ -1,8 +1,10 @@
 #include "gtest/gtest.h"
 
 #include "Runner/Debug/DebugControlChannel.h"
+#include "Runner/Debug/VideoFrameRing.h"
 
 #include <thread>
+#include <vector>
 #include <chrono>
 
 TEST(DebugControlChannel, RunToBreakpointCanBeInterruptedByFrameStep) {
@@ -82,4 +84,28 @@ TEST(DebugControlChannel, SetModeFrameStepInterruptsRunToBreakpoint) {
     ASSERT_TRUE(snap.ok);
     EXPECT_EQ(snap.value.emu_state, "EMU_PAUSED");
     EXPECT_EQ(snap.value.ux_mode, "FRAME_STEP_DEFAULT");
+}
+
+TEST(DebugControlChannel, PublishesVideoRingFrames) {
+    simcore::debug::LocalDebugControlServer server(
+        88,
+        2,
+        "tok",
+        "ipc://vm/tok",
+        "ipc://dolphin/tok");
+
+    auto snap = server.Snapshot();
+    ASSERT_TRUE(snap.ok);
+    ASSERT_FALSE(snap.value.video_ring_name.empty());
+    EXPECT_EQ(snap.value.video_pixel_format, "BGRA8");
+
+    simcore::debug::VideoFrameRingConsumer c;
+    ASSERT_TRUE(c.Open(snap.value.video_ring_name));
+
+    simcore::debug::VideoFrameDesc fd{};
+    std::vector<uint8_t> px;
+    ASSERT_TRUE(c.ReadLatest(fd, px));
+    EXPECT_GT(fd.width, 0u);
+    EXPECT_GT(fd.height, 0u);
+    EXPECT_FALSE(px.empty());
 }

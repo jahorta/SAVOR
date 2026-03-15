@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <chrono>
 
+namespace {
+    static int64_t now_sec() {
+        return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    }
+}
+
 namespace simcore::debug {
 
     LocalDebugControlServer::LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint)
@@ -21,9 +28,22 @@ namespace simcore::debug {
         snapshot_.frame_index = 0;
         snapshot_.current_input = "A=0 B=0 X=0 Y=0";
         snapshot_.sequence = 1;
-        snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+        snapshot_.timestamp = now_sec();
         snapshot_.frame_ready = false;
+        snapshot_.video_pixel_format = "BGRA8";
+        snapshot_.video_color_space = "sRGB";
+        snapshot_.video_ring_name = MakeVideoRingMappingName(session_id, token_);
+        snapshot_.video_width = 640;
+        snapshot_.video_height = 480;
+
+        VideoRingConfig cfg{};
+        cfg.mapping_name = snapshot_.video_ring_name;
+        cfg.slot_count = 4;
+        cfg.max_frame_bytes = snapshot_.video_width * snapshot_.video_height * 4;
+        (void)video_ring_.Open(cfg);
+
+        frame_scratch_.resize(static_cast<size_t>(snapshot_.video_width) * static_cast<size_t>(snapshot_.video_height) * 4u);
+        publish_frame_(snapshot_.video_width, snapshot_.video_height, 0);
     }
 
     LocalDebugControlServer::~LocalDebugControlServer() {
@@ -35,6 +55,7 @@ namespace simcore::debug {
         interrupt_requested_.store(true);
         if (run_thread_.joinable()) run_thread_.join();
         run_active_.store(false);
+        video_ring_.Close();
     }
 
     std::string LocalDebugControlServer::Token() const { return token_; }
@@ -51,8 +72,7 @@ namespace simcore::debug {
         snapshot_.ux_mode = "FRAME_STEP_DEFAULT";
         snapshot_.break_reason = "paused";
         snapshot_.sequence++;
-        snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+        snapshot_.timestamp = now_sec();
     }
 
     simcore::db::DbResult<void> LocalDebugControlServer::Send(const std::string& endpoint, const std::string& token, const ControlCommand& cmd) {
@@ -74,8 +94,7 @@ namespace simcore::debug {
             snapshot_.break_reason = "vm_step";
             snapshot_.sequence++;
             snapshot_.vm_state = "VM_PAUSED";
-            snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            snapshot_.timestamp = now_sec();
             return simcore::db::DbResult<void>::Ok();
         }
         case CommandType::StepFrame:
@@ -90,8 +109,8 @@ namespace simcore::debug {
             snapshot_.break_reason = "frame_step";
             snapshot_.sequence++;
             snapshot_.emu_state = "EMU_PAUSED";
-            snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            snapshot_.timestamp = now_sec();
+            publish_frame_(snapshot_.video_width, snapshot_.video_height, static_cast<uint8_t>(snapshot_.frame_index & 0xFF));
             return simcore::db::DbResult<void>::Ok();
         }
         case CommandType::RunToBreakpoint: {
@@ -104,8 +123,7 @@ namespace simcore::debug {
                 snapshot_.ux_mode = "RUN_TO_BP_ACTIVE";
                 snapshot_.break_reason = "running";
                 snapshot_.sequence++;
-                snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
+                snapshot_.timestamp = now_sec();
             }
             if (run_thread_.joinable()) run_thread_.join();
             run_thread_ = std::thread([this]() { run_to_bp_loop_(); });
@@ -119,8 +137,7 @@ namespace simcore::debug {
             snapshot_.ux_mode = "FRAME_STEP_DEFAULT";
             snapshot_.break_reason = "paused";
             snapshot_.sequence++;
-            snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            snapshot_.timestamp = now_sec();
             return simcore::db::DbResult<void>::Ok();
         }
         case CommandType::ToggleBreakpoint: {
@@ -130,8 +147,7 @@ namespace simcore::debug {
             snapshot_.breakpoints.assign(breakpoints_.begin(), breakpoints_.end());
             std::sort(snapshot_.breakpoints.begin(), snapshot_.breakpoints.end());
             snapshot_.sequence++;
-            snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            snapshot_.timestamp = now_sec();
             return simcore::db::DbResult<void>::Ok();
         }
         default:
@@ -150,8 +166,8 @@ namespace simcore::debug {
                 snapshot_.current_input = (i % 2 == 0) ? "A=0 B=1 X=0 Y=0" : "A=1 B=0 X=0 Y=0";
                 snapshot_.frame_ready = true;
                 snapshot_.sequence++;
-                snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
+                snapshot_.timestamp = now_sec();
+                publish_frame_(snapshot_.video_width, snapshot_.video_height, static_cast<uint8_t>((snapshot_.frame_index * 3) & 0xFF));
                 if (!breakpoints_.empty() && (i % 5 == 4)) {
                     hit_breakpoint = true;
                     break;
@@ -167,8 +183,7 @@ namespace simcore::debug {
             if (interrupt_requested_.load()) snapshot_.break_reason = "interrupted_to_frame_step";
             else snapshot_.break_reason = hit_breakpoint ? "breakpoint_hit" : "run_to_bp_timeout";
             snapshot_.sequence++;
-            snapshot_.timestamp = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            snapshot_.timestamp = now_sec();
         }
 
         run_active_.store(false);
@@ -177,6 +192,34 @@ namespace simcore::debug {
     simcore::db::DbResult<simcore::WorkerCoordinator::DebugRuntimeSnapshot> LocalDebugControlServer::Snapshot() const {
         std::lock_guard<std::mutex> lk(mu_);
         return simcore::db::DbResult<simcore::WorkerCoordinator::DebugRuntimeSnapshot>::Ok(snapshot_);
+    }
+
+    void LocalDebugControlServer::publish_frame_(uint32_t width, uint32_t height, uint8_t phase) {
+        if (!video_ring_.IsOpen()) return;
+        const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+        if (frame_scratch_.size() != expected) frame_scratch_.resize(expected);
+
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                const size_t o = (static_cast<size_t>(y) * width + x) * 4u;
+                frame_scratch_[o + 0] = static_cast<uint8_t>((x + phase) & 0xFF); // B
+                frame_scratch_[o + 1] = static_cast<uint8_t>((y + (phase * 2)) & 0xFF); // G
+                frame_scratch_[o + 2] = static_cast<uint8_t>((phase * 5) & 0xFF); // R
+                frame_scratch_[o + 3] = 255;
+            }
+        }
+
+        VideoFrameDesc d{};
+        d.frame_id = next_frame_id_++;
+        d.timestamp_sec = now_sec();
+        d.width = width;
+        d.height = height;
+        d.stride = width * 4u;
+        d.format = VideoPixelFormat::BGRA8;
+        d.color_space = 1;
+        d.flags = 0;
+        d.data_bytes = static_cast<uint32_t>(frame_scratch_.size());
+        (void)video_ring_.WriteFrame(d, frame_scratch_.data(), frame_scratch_.size());
     }
 
 } // namespace simcore::debug

@@ -78,6 +78,11 @@ namespace simcore {
             int64_t sequence{ 0 };
             int64_t timestamp{ 0 };
             bool frame_ready{ false };
+            std::string video_ring_name;
+            uint32_t video_width{ 0 };
+            uint32_t video_height{ 0 };
+            std::string video_pixel_format{ "UNKNOWN" };
+            std::string video_color_space{ "UNKNOWN" };
             std::vector<int64_t> breakpoints;
         };
 
