@@ -21,6 +21,10 @@
 #include "../WorkerStatusRegistry.h"
 #include "../../../DB/Scheduling/DebugSessionsRepo.h"
 
+namespace simcore::debug {
+    class LocalDebugControlServer;
+}
+
 namespace simcore {
 
     class WorkerCoordinator {
@@ -170,6 +174,7 @@ namespace simcore {
         std::optional<int64_t> active_debug_session_id_;
         std::unordered_map<int64_t, DebugRuntimeSnapshot> debug_snapshots_;
         std::unordered_map<int64_t, std::unordered_set<int64_t>> debug_breakpoints_;
+        std::unordered_map<int64_t, std::unique_ptr<simcore::debug::LocalDebugControlServer>> debug_control_servers_;
         std::unique_ptr<ProcessWorker> debug_worker_proc_;
         std::optional<int64_t> debug_worker_session_id_;
         std::chrono::steady_clock::time_point next_stale_debug_cleanup_{};
