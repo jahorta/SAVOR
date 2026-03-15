@@ -43,7 +43,7 @@ namespace simcore::debug {
 
     class LocalDebugControlServer {
     public:
-        LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint);
+        LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, uint32_t video_width = 640, uint32_t video_height = 480, std::string video_pixel_format = "BGRA8", std::string video_color_space = "sRGB");
         ~LocalDebugControlServer();
 
         simcore::db::DbResult<void> Send(const std::string& endpoint, const std::string& token, const ControlCommand& cmd);

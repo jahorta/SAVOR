@@ -1,6 +1,7 @@
 #include "ProcessWorker.h"
 #include "../IPC/Wire.h"
 #include <sstream>
+#include <cstring>
 #include "../../Utils/ThreadName.h"
 #include "../Script/KeyRegistry.h"
 #include "../Script/PSContextCodec.h"
@@ -262,6 +263,15 @@ namespace simcore {
                 if (!read_all(hChildStd_OUT_Rd, reinterpret_cast<char*>(&wrdy) + 1, sizeof(wrdy) - 1)) break;
                 ready_ok_.store(wrdy.ok != 0);
                 ready_error_.store(wrdy.error);
+                {
+                    std::lock_guard<std::mutex> lk(ready_video_m_);
+                    ready_video_.width = wrdy.video_width;
+                    ready_video_.height = wrdy.video_height;
+                    ready_video_.pixel_format.assign(wrdy.video_pixel_format, strnlen(wrdy.video_pixel_format, sizeof(wrdy.video_pixel_format)));
+                    ready_video_.color_space.assign(wrdy.video_color_space, strnlen(wrdy.video_color_space, sizeof(wrdy.video_color_space)));
+                    if (ready_video_.pixel_format.empty()) ready_video_.pixel_format = "UNKNOWN";
+                    if (ready_video_.color_space.empty()) ready_video_.color_space = "UNKNOWN";
+                }
                 ready_received_.store(true);
                 continue;
             }

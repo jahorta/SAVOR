@@ -12,7 +12,7 @@ namespace {
 
 namespace simcore::debug {
 
-    LocalDebugControlServer::LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint)
+    LocalDebugControlServer::LocalDebugControlServer(int64_t session_id, int64_t job_id, std::string token, std::string vm_endpoint, std::string dolphin_endpoint, uint32_t video_width, uint32_t video_height, std::string video_pixel_format, std::string video_color_space)
         : session_id_(session_id),
         token_(std::move(token)),
         vm_endpoint_(std::move(vm_endpoint)),
@@ -30,11 +30,11 @@ namespace simcore::debug {
         snapshot_.sequence = 1;
         snapshot_.timestamp = now_sec();
         snapshot_.frame_ready = false;
-        snapshot_.video_pixel_format = "BGRA8";
-        snapshot_.video_color_space = "sRGB";
+        snapshot_.video_pixel_format = video_pixel_format.empty() ? "UNKNOWN" : std::move(video_pixel_format);
+        snapshot_.video_color_space = video_color_space.empty() ? "UNKNOWN" : std::move(video_color_space);
         snapshot_.video_ring_name = MakeVideoRingMappingName(session_id, token_);
-        snapshot_.video_width = 640;
-        snapshot_.video_height = 480;
+        snapshot_.video_width = video_width > 0 ? video_width : 640;
+        snapshot_.video_height = video_height > 0 ? video_height : 480;
 
         VideoRingConfig cfg{};
         cfg.mapping_name = snapshot_.video_ring_name;

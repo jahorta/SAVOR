@@ -83,6 +83,10 @@ namespace simcore {
         uint8_t  state; // WSTATE_*
         uint16_t _pad;
         uint32_t error; // WERR_*
+        uint32_t video_width;  // 0 for non-render sessions
+        uint32_t video_height; // 0 for non-render sessions
+        char video_pixel_format[16]; // UTF-8, NUL-terminated when shorter
+        char video_color_space[16];  // UTF-8, NUL-terminated when shorter
     };
 
 #pragma pack(push, 1)

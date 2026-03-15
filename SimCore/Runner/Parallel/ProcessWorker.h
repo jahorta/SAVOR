@@ -16,6 +16,14 @@
 
 namespace simcore {
 
+
+		struct ReadyVideoSurfaceInfo {
+			uint32_t width{ 0 };
+			uint32_t height{ 0 };
+			std::string pixel_format{ "UNKNOWN" };
+			std::string color_space{ "UNKNOWN" };
+		};
+
 	struct ProcStartParams {
 		size_t worker_id{ 0 };
 		std::string exe_path;     // path to SimCoreSandbox.exe
@@ -126,6 +134,11 @@ namespace simcore {
 			return (int64_t)dwProcessId;
 		}
 
+		ReadyVideoSurfaceInfo getReadyVideoSurfaceInfo() const {
+			std::lock_guard<std::mutex> lk(ready_video_m_);
+			return ready_video_;
+		}
+
 	private:
 		void reader_thread();
 
@@ -145,6 +158,8 @@ namespace simcore {
 		std::atomic<bool> ready_received_{ false }; // we saw MSG_READY
 		std::atomic<bool> ready_ok_{ false };       // MSG_READY.ok
 		std::atomic<uint32_t> ready_error_{ 0 };    // MSG_READY.error
+		mutable std::mutex ready_video_m_;
+		ReadyVideoSurfaceInfo ready_video_{};
 
 		AckWait ack_;
 
