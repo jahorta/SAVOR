@@ -24,6 +24,18 @@ namespace addr { enum class AddrKey : uint16_t; struct DolphinAddr; }
 
 namespace simcore {
 
+    enum class DolphinLaunchMode : uint8_t {
+        Headless = 0,
+        RenderEnabled = 1,
+    };
+
+    struct DolphinVideoSurfaceInfo {
+        uint32_t width{ 0 };
+        uint32_t height{ 0 };
+        std::string pixel_format{ "UNKNOWN" };
+        std::string color_space{ "UNKNOWN" };
+    };
+
     struct DiscInfo {
         std::string game_id;  // 6 chars like "GSOE8P"
         std::string region;   // "NTSC-U", "NTSC-J", "PAL", etc.
@@ -47,6 +59,9 @@ namespace simcore {
         Core::System* system() const noexcept { return m_system; }
 
         bool loadGame(const std::string& iso_path);
+        void setLaunchMode(DolphinLaunchMode mode) { m_launch_mode = mode; }
+        DolphinLaunchMode getLaunchMode() const { return m_launch_mode; }
+        std::optional<DolphinVideoSurfaceInfo> getVideoSurfaceInfo() const;
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
         bool saveStateToBuffer(Common::UniqueBuffer<u8>& buffer);
@@ -179,11 +194,18 @@ namespace simcore {
         GCPadOverride m_pad{ 0 };
         std::string m_last_game_iso_path{""};
         WindowSystemInfo m_wsi;
+        DolphinLaunchMode m_launch_mode{ DolphinLaunchMode::Headless };
+        std::optional<DolphinVideoSurfaceInfo> m_video_surface_info;
+#if defined(_WIN32)
+        void* m_render_window_handle{ nullptr };
+#endif
 
         InputPlan m_plan;
         size_t m_cursor = 0;
 
         bool waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate = 10);
+        WindowSystemInfo buildWSIForLaunchMode();
+        void releaseRenderSurface();
 
         std::filesystem::path m_user_dir;
         std::filesystem::path m_qt_base_dir;
