@@ -19,6 +19,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreWorker", "SimCoreWor
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimGui", "SoaSimGui\SoaSimGui.vcxproj", "{7461BD85-9923-4A30-A32C-9F7AD5283943}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimQt", "SoaSimQt\SoaSimQt.vcxproj", "{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -67,6 +69,14 @@ Global
 		{7461BD85-9923-4A30-A32C-9F7AD5283943}.Release|x64.Build.0 = Release|x64
 		{7461BD85-9923-4A30-A32C-9F7AD5283943}.Release|x86.ActiveCfg = Release|Win32
 		{7461BD85-9923-4A30-A32C-9F7AD5283943}.Release|x86.Build.0 = Release|Win32
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Debug|x64.ActiveCfg = Debug|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Debug|x64.Build.0 = Debug|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Debug|x86.ActiveCfg = Debug|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Debug|x86.Build.0 = Debug|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Release|x64.ActiveCfg = Release|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Release|x64.Build.0 = Release|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Release|x86.ActiveCfg = Release|x64
+		{29EE04DE-3529-49FE-BDFD-B6D68B1405EC}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
