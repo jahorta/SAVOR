@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include "Core/InputCommon/GCPadStatus.h"

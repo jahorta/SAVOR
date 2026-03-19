@@ -1,0 +1,17 @@
+function(soasim_apply_project_options)
+  set(CMAKE_C_STANDARD 11 PARENT_SCOPE)
+  set(CMAKE_C_STANDARD_REQUIRED ON PARENT_SCOPE)
+  set(CMAKE_C_EXTENSIONS OFF PARENT_SCOPE)
+
+  set(CMAKE_CXX_STANDARD 20 PARENT_SCOPE)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON PARENT_SCOPE)
+  set(CMAKE_CXX_EXTENSIONS OFF PARENT_SCOPE)
+
+  if(MSVC)
+    add_compile_options(/Zc:preprocessor)
+  endif()
+
+  if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+  endif()
+endfunction()
