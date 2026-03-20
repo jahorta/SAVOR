@@ -200,9 +200,66 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         padding: 6px 8px;
         font-weight: 600;
     }
+    QFrame#coordinatorMetricCard {
+        background-color: #161a22;
+        border: 1px solid #303847;
+        border-radius: 8px;
+    }
+    QLabel#coordinatorMetricCaption,
+    QLabel#coordinatorFieldCaption {
+        color: #8f9bad;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+    QLabel#coordinatorMetricValue {
+        color: #f3f7fb;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    QLabel#coordinatorStateBadge {
+        color: #ffffff;
+        font-size: 18px;
+        font-weight: 700;
+        padding: 2px 0;
+    }
+    QLabel#coordinatorStateBadge[coordinatorState="running"] {
+        color: #71d08c;
+    }
+    QLabel#coordinatorStateBadge[coordinatorState="paused"] {
+        color: #f6c06a;
+    }
+    QLabel#coordinatorStateBadge[coordinatorState="stopped"] {
+        color: #9ca8b8;
+    }
     QLabel#coordinatorValidation {
         color: #f6c06a;
         font-size: 12px;
+        border: 1px solid #5a4630;
+        border-radius: 6px;
+        background-color: #241d15;
+        padding: 8px 10px;
+    }
+    QLabel#coordinatorValidation[validationState="ok"] {
+        color: #9fe0b2;
+        border-color: #294937;
+        background-color: #16241b;
+    }
+    QCheckBox {
+        spacing: 8px;
+        color: #dce3ed;
+    }
+    QCheckBox::indicator {
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border: 1px solid #394150;
+        background-color: #12161d;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #315bca;
+        border-color: #4e75dd;
     }
     QWidget#statusBarWidget {
         background-color: #171b21;
