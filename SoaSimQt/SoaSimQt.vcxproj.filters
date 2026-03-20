@@ -23,6 +23,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Coordinator\CoordinatorController.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Coordinator\CoordinatorUiCommon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Models\WorkerTableModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\CoordinatorPane.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -41,12 +53,21 @@
     <ClInclude Include="JobsTableView.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <QtMoc Include="Widgets\StatusBarWidget.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <QtRcc Include="SoaSimQt.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>
     <QtUic Include="MainWindow.ui">
       <Filter>Form Files</Filter>
     </QtUic>
+    <QtMoc Include="Coordinator\CoordinatorController.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\CoordinatorPane.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <QtMoc Include="MainWindow.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -65,7 +86,19 @@
     <ClCompile Include="JobsTableView.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Coordinator\CoordinatorController.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Models\WorkerTableModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MainWindow.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Widgets\StatusBarWidget.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ResourceCompile Include="$pro_name$.rc">

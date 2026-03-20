@@ -1,8 +1,12 @@
 #include "MainWindow.h"
+#include "Coordinator/CoordinatorController.h"
+#include "GUI/Panes/CoordinatorPane.h"
 #include "GUI/StyleSheet.h"
 #include "JobsPage.h"
 
 #include <QtCore/QStringList>
+
+#include <iterator>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
@@ -14,7 +18,23 @@
 namespace {
 constexpr int kLeftNavWidth = 250;
 constexpr int kTopBarHeight = 24;
-constexpr int kStatusBarMinHeight = 34;
+
+struct PageMetadata {
+    const char* title;
+    const char* description;
+};
+
+constexpr PageMetadata kPageMetadata[] = {
+    { "Job Sets", "Mockup page for job set management and filters." },
+    { "Jobs", "Mockup page for job listings, inspection, and actions." },
+    { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
+    { "Job Builder", "Mockup page for constructing new simulation runs." },
+    { "Battle Run Settings", "Mockup page for tuning battle run configuration." },
+    { "Artifacts", "Mockup page for artifact browsing and import/export flows." },
+    { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
+    { "Explorer Runs", "Mockup page for explorer run history and controls." },
+    { "Settings", "Mockup page for application-wide settings and environment setup." }
+};
 
 QFrame* createPanelFrame(const QString& title, const QString& body)
 {
@@ -39,21 +59,17 @@ QFrame* createPanelFrame(const QString& title, const QString& body)
 
     return panel;
 }
-
-QLabel* createBadge(const QString& text, const QString& objectName)
-{
-    QLabel* badge = new QLabel(text);
-    badge->setObjectName(objectName);
-    badge->setAlignment(Qt::AlignCenter);
-    badge->setMargin(6);
-    return badge;
-}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    coordinatorController_ = new CoordinatorController(this);
     createWidgets();
+
+    connect(&mockStatusTimer_, &QTimer::timeout, this, &MainWindow::tickMockStatusBar);
+    mockStatusTimer_.start(1000);
+    tickMockStatusBar();
 }
 
 MainWindow::~MainWindow()
@@ -66,6 +82,47 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 
     contentStack_->setCurrentIndex(currentRow);
+
+    if (currentRow < static_cast<int>(std::size(kPageMetadata))) {
+        contentTitleLabel_->setText(kPageMetadata[currentRow].title);
+        contentDescriptionLabel_->setText(kPageMetadata[currentRow].description);
+    }
+}
+
+void MainWindow::tickMockStatusBar()
+{
+    if (!statusBarWidget_) {
+        return;
+    }
+
+    ++mockHeartbeatCount_;
+
+    StatusBarSnapshot snapshot;
+    snapshot.connected = true;
+    snapshot.envLabel = QStringLiteral("prod");
+    snapshot.lastRefresh = QDateTime::currentDateTime();
+    snapshot.coordinatorRunning = true;
+    snapshot.coordinatorWorkers = (mockHeartbeatCount_ % 4) + 1;
+
+    if (mockHeartbeatCount_ % 6 == 0) {
+        StatusToast successToast;
+        successToast.severity = StatusToast::Severity::Success;
+        successToast.message = QStringLiteral("Heartbeat healthy");
+        successToast.details = QStringLiteral("Mock update cycle completed successfully.");
+        successToast.count = 1;
+        snapshot.toasts.append(successToast);
+    }
+
+    if (mockHeartbeatCount_ % 10 == 0) {
+        StatusToast warnToast;
+        warnToast.severity = StatusToast::Severity::Warn;
+        warnToast.message = QStringLiteral("Coordinator queue backing up");
+        warnToast.details = QStringLiteral("Mock warning to mirror the inline ImGui status pills.");
+        warnToast.count = 2;
+        snapshot.toasts.append(warnToast);
+    }
+
+    statusBarWidget_->setSnapshot(snapshot);
 }
 
 void MainWindow::createWidgets()
@@ -84,7 +141,7 @@ void MainWindow::createWidgets()
     QWidget* topBar = createTopBar();
     QWidget* navigationPane = createNavigationPane();
     QWidget* contentPane = createContentPane();
-    QWidget* statusBarWidget = createStatusBarWidget();
+    statusBarWidget_ = createStatusBarWidget();
 
     QWidget* body = new QWidget(root);
     body->setObjectName("bodyRegion");
@@ -96,7 +153,7 @@ void MainWindow::createWidgets()
 
     rootLayout->addWidget(topBar);
     rootLayout->addWidget(body, 1);
-    rootLayout->addWidget(statusBarWidget);
+    rootLayout->addWidget(statusBarWidget_);
 
     setStyleSheet(SoaSimQt::GUI::kMainWindowStyleSheet);
 }
@@ -164,7 +221,8 @@ QWidget* MainWindow::createContentPane()
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(createPlaceholderPage("Job Sets", "Mockup page for job set management and filters."));
     contentStack_->addWidget(new JobsPage(contentPane));
-    contentStack_->addWidget(createPlaceholderPage("Workers", "Mockup page for coordinator and worker activity."));
+    coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
+    contentStack_->addWidget(coordinatorPane_);
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
     contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
     contentStack_->addWidget(createPlaceholderPage("Artifacts", "Mockup page for artifact browsing and import/export flows."));
@@ -175,37 +233,15 @@ QWidget* MainWindow::createContentPane()
     layout->addWidget(contentStack_, 1);
 
     if (navigationList_) {
-        navigationList_->setCurrentRow(1);
+        navigationList_->setCurrentRow(2);
     }
 
     return contentPane;
 }
 
-QWidget* MainWindow::createStatusBarWidget()
+StatusBarWidget* MainWindow::createStatusBarWidget()
 {
-    QFrame* statusBarWidget = new QFrame(this);
-    statusBarWidget->setObjectName("statusBarWidget");
-    statusBarWidget->setMinimumHeight(kStatusBarMinHeight);
-
-    QHBoxLayout* layout = new QHBoxLayout(statusBarWidget);
-    layout->setContentsMargins(12, 6, 12, 6);
-    layout->setSpacing(10);
-
-    layout->addWidget(createBadge("Connected", "badgeConnected"));
-
-    QLabel* envLabel = new QLabel("env: placeholder", statusBarWidget);
-    envLabel->setObjectName("statusText");
-    layout->addWidget(envLabel);
-
-    QLabel* refreshLabel = new QLabel("Last refresh: --", statusBarWidget);
-    refreshLabel->setObjectName("statusText");
-    layout->addWidget(refreshLabel);
-
-    layout->addWidget(createBadge("Coordinator: 0", "badgeCoordinator"));
-    layout->addStretch();
-    layout->addWidget(createBadge("Mock toast", "badgeToastInfo"));
-
-    return statusBarWidget;
+    return new StatusBarWidget(this);
 }
 
 QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& description)
@@ -215,9 +251,6 @@ QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& 
     QVBoxLayout* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(12);
-
-    QLabel* titleLabel = new QLabel(title, page);
-    titleLabel->setObjectName("pageTitle");
 
     QLabel* descriptionLabel = new QLabel(description, page);
     descriptionLabel->setObjectName("pageDescription");
@@ -233,10 +266,10 @@ QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& 
     bottomRow->addWidget(createPanelFrame("Lower Panel A", "Reserved for tables, logs, or summary widgets."), 1);
     bottomRow->addWidget(createPanelFrame("Lower Panel B", "Reserved for charts, previews, or secondary controls."), 1);
 
-    layout->addWidget(titleLabel);
     layout->addWidget(descriptionLabel);
     layout->addLayout(topRow, 2);
     layout->addLayout(bottomRow, 1);
 
+    Q_UNUSED(title);
     return page;
 }

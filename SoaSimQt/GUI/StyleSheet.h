@@ -58,7 +58,8 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #9ca8b8;
         font-size: 13px;
     }
-    QFrame#placeholderPanel {
+    QFrame#placeholderPanel,
+    QFrame#coordinatorCard {
         background-color: #1b1f27;
         border: 1px solid #2e3542;
         border-radius: 8px;
@@ -161,7 +162,49 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         background-color: #315bca;
         color: #ffffff;
     }
-    QFrame#statusBarWidget {
+    QLineEdit,
+    QSpinBox,
+    QTableView,
+    QPushButton {
+        background-color: #151922;
+        border: 1px solid #2f3744;
+        border-radius: 6px;
+        color: #e7ebf0;
+        min-height: 30px;
+        padding: 0 10px;
+    }
+    QLineEdit:disabled,
+    QSpinBox:disabled,
+    QPushButton:disabled {
+        color: #7d8794;
+        background-color: #12161d;
+    }
+    QPushButton:hover:!disabled {
+        background-color: #232a36;
+    }
+    QPushButton[coordinatorPaused="true"] {
+        border: 1px solid #dc4040;
+    }
+    QTableView {
+        gridline-color: #2e3542;
+        alternate-background-color: #171b22;
+        selection-background-color: #2d4f8f;
+        padding: 0;
+    }
+    QHeaderView::section {
+        background-color: #171c24;
+        color: #dce3ed;
+        border: none;
+        border-right: 1px solid #2e3542;
+        border-bottom: 1px solid #2e3542;
+        padding: 6px 8px;
+        font-weight: 600;
+    }
+    QLabel#coordinatorValidation {
+        color: #f6c06a;
+        font-size: 12px;
+    }
+    QWidget#statusBarWidget {
         background-color: #171b21;
         border-top: 1px solid #2b313c;
     }
@@ -169,29 +212,40 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #c8d0db;
         font-size: 12px;
     }
-    QLabel#badgeConnected {
+    QLabel#statusSeparator {
+        color: #6d7684;
+        font-size: 12px;
+    }
+    QLabel#statusBadge {
+        color: white;
+        border-radius: 10px;
+        padding: 2px 10px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    QLabel#statusBadge[variant="connected"] {
         background-color: #2ea043;
-        color: white;
-        border-radius: 10px;
-        padding: 2px 10px;
-        font-size: 12px;
-        font-weight: 600;
     }
-    QLabel#badgeCoordinator {
+    QLabel#statusBadge[variant="disconnected"] {
+        background-color: #c23b3b;
+    }
+    QLabel#statusBadge[variant="coordinator-running"] {
         background-color: #315bca;
-        color: white;
-        border-radius: 10px;
-        padding: 2px 10px;
-        font-size: 12px;
-        font-weight: 600;
     }
-    QLabel#badgeToastInfo {
-        background-color: #805ad5;
-        color: white;
-        border-radius: 10px;
-        padding: 2px 10px;
-        font-size: 12px;
-        font-weight: 600;
+    QLabel#statusBadge[variant="coordinator-stopped"] {
+        background-color: rgba(128, 128, 128, 180);
+    }
+    QLabel#statusBadge[variant="info"] {
+        background-color: rgba(64, 128, 255, 180);
+    }
+    QLabel#statusBadge[variant="success"] {
+        background-color: rgba(64, 160, 80, 180);
+    }
+    QLabel#statusBadge[variant="warn"] {
+        background-color: rgba(200, 160, 64, 220);
+    }
+    QLabel#statusBadge[variant="error"] {
+        background-color: rgba(200, 80, 80, 220);
     }
 )";
 } // namespace SoaSimQt::GUI
