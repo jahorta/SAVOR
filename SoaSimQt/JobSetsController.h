@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDateTime>
+#include <QtCore/QFuture>
+#include <QtCore/QFutureWatcher>
 #include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QString>
@@ -8,7 +11,6 @@
 #include "DB/Querying/DataService.h"
 #include "DB/Querying/PagedQuery.h"
 
-#include <future>
 #include <optional>
 #include <vector>
 
@@ -54,6 +56,12 @@ signals:
     void stateChanged();
 
 private:
+    using ProgramKindsResult = simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>;
+    using JobSetPageResult = simcore::db::DbResult<simcore::db::JobSetPageWithFamilies>;
+    using BoostResult = simcore::db::DbResult<simcore::db::JobSetPriorityBoostResult>;
+    using CancelResult = simcore::db::DbResult<simcore::db::JobSetCancelQueuedResult>;
+    using DeleteResult = simcore::db::DbResult<void>;
+
     enum class Operation {
         FetchKinds,
         FetchPage,
@@ -64,7 +72,6 @@ private:
 
     void kickKindsFetch();
     void kickPageFetch();
-    void consumePending();
     void setBusy(Operation operation, bool busy);
     bool canAutoRefresh() const;
     bool anyWorkInFlight() const;
@@ -80,11 +87,10 @@ private:
     bool boostInFlight_ = false;
     bool cancelInFlight_ = false;
     bool deleteInFlight_ = false;
-    std::future<simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>> kindsFuture_;
-    std::future<simcore::db::DbResult<simcore::db::JobSetPageWithFamilies>> pageFuture_;
-    std::future<simcore::db::DbResult<simcore::db::JobSetPriorityBoostResult>> boostFuture_;
-    std::future<simcore::db::DbResult<simcore::db::JobSetCancelQueuedResult>> cancelFuture_;
-    std::future<simcore::db::DbResult<void>> deleteFuture_;
-    QTimer* pollTimer_ = nullptr;
+    QFutureWatcher<ProgramKindsResult> kindsWatcher_;
+    QFutureWatcher<JobSetPageResult> pageWatcher_;
+    QFutureWatcher<BoostResult> boostWatcher_;
+    QFutureWatcher<CancelResult> cancelWatcher_;
+    QFutureWatcher<DeleteResult> deleteWatcher_;
     QTimer* refreshTimer_ = nullptr;
 };
