@@ -22,9 +22,8 @@ void JobsTableView::attachModel(JobsTableModel* model)
 {
     setModel(model);
 
-    QHeaderView* header = horizontalHeader();
-    header->setSectionResizeMode(QHeaderView::ResizeToContents);
-    header->setSectionResizeMode(JobsTableModel::ProgressColumn, QHeaderView::Stretch);
+    horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    horizontalHeader()->setSectionResizeMode(JobsTableModel::ProgressColumn, QHeaderView::Stretch);
 }
 
 const JobsTableModel* JobsTableView::jobsModel() const

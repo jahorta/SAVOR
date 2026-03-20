@@ -24,10 +24,6 @@ JobSetsTreeView::JobSetsTreeView(QWidget* parent)
     setSortingEnabled(false);
     setExpandsOnDoubleClick(true);
     header()->setStretchLastSection(false);
-    header()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    header()->setSectionResizeMode(JobSetsTreeModel::PurposeColumn, QHeaderView::Stretch);
-    header()->setSectionResizeMode(JobSetsTreeModel::ProgressColumn, QHeaderView::Stretch);
-    header()->setSectionResizeMode(JobSetsTreeModel::ActionsColumn, QHeaderView::ResizeToContents);
 
     connect(this, &QWidget::customContextMenuRequested, this, &JobSetsTreeView::showContextMenu);
 }
@@ -35,6 +31,11 @@ JobSetsTreeView::JobSetsTreeView(QWidget* parent)
 void JobSetsTreeView::attachModel(JobSetsTreeModel* model)
 {
     setModel(model);
+
+    header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(JobSetsTreeModel::PurposeColumn, QHeaderView::Stretch);
+    header()->setSectionResizeMode(JobSetsTreeModel::ProgressColumn, QHeaderView::Stretch);
+    header()->setSectionResizeMode(JobSetsTreeModel::ActionsColumn, QHeaderView::ResizeToContents);
 }
 
 void JobSetsTreeView::setActionsEnabled(bool enabled)

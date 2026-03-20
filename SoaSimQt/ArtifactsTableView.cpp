@@ -15,12 +15,13 @@ ArtifactsTableView::ArtifactsTableView(QWidget* parent)
     setShowGrid(false);
     setAlternatingRowColors(true);
     horizontalHeader()->setStretchLastSection(true);
-    horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 }
 
 void ArtifactsTableView::attachModel(ArtifactsTableModel* model)
 {
     setModel(model);
+
+    horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 }
 
 ArtifactsTableModel* ArtifactsTableView::artifactsModel()
