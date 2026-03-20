@@ -23,6 +23,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="GUI\StyleSheet.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtRcc Include="SoaSimQt.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>
