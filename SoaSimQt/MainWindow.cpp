@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "GUI/StyleSheet.h"
+#include "JobsPage.h"
 
 #include <QtCore/QStringList>
 #include <QtWidgets/QFrame>
@@ -160,18 +161,9 @@ QWidget* MainWindow::createContentPane()
     layout->setContentsMargins(20, 18, 20, 18);
     layout->setSpacing(12);
 
-    QLabel* title = new QLabel("Main Content", contentPane);
-    title->setObjectName("pageTitle");
-
-    QLabel* description = new QLabel(
-        "Placeholder shell for the Qt migration. The selected navigation item swaps between mock pages that mirror the SoaSimGui layout.",
-        contentPane);
-    description->setObjectName("pageDescription");
-    description->setWordWrap(true);
-
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(createPlaceholderPage("Job Sets", "Mockup page for job set management and filters."));
-    contentStack_->addWidget(createPlaceholderPage("Jobs", "Mockup page for job listings, inspection, and actions."));
+    contentStack_->addWidget(new JobsPage(contentPane));
     contentStack_->addWidget(createPlaceholderPage("Workers", "Mockup page for coordinator and worker activity."));
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
     contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
@@ -180,8 +172,6 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
     contentStack_->addWidget(createPlaceholderPage("Settings", "Mockup page for application-wide settings and environment setup."));
 
-    layout->addWidget(title);
-    layout->addWidget(description);
     layout->addWidget(contentStack_, 1);
 
     if (navigationList_) {

@@ -97,8 +97,18 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="GUI\StyleSheet.h" />
+    <ClInclude Include="ArtifactsTableModel.h" />
+    <ClInclude Include="ArtifactsTableView.h" />
+    <ClInclude Include="JobsPage.h" />
+    <ClInclude Include="JobsTableModel.h" />
+    <ClInclude Include="JobsTableView.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <QtMoc Include="MainWindow.h" />
+    <ClCompile Include="ArtifactsTableModel.cpp" />
+    <ClCompile Include="ArtifactsTableView.cpp" />
+    <ClCompile Include="JobsPage.cpp" />
+    <ClCompile Include="JobsTableModel.cpp" />
+    <ClCompile Include="JobsTableView.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
