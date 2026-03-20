@@ -112,10 +112,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Coordinator\CoordinatorController.h" />
     <ClInclude Include="Coordinator\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Models\WorkerTableModel.h" />
-    <ClInclude Include="GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="ArtifactsTableModel.h" />
     <ClInclude Include="ArtifactsTableView.h" />
