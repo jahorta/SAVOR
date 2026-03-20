@@ -2,8 +2,11 @@
 
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
-
 #include "Widgets/StatusBarWidget.h"
+
+class CoordinatorController;
+class CoordinatorPane;
+class QLabel;
 
 class QListWidget;
 class QStackedWidget;
@@ -31,6 +34,10 @@ private:
 
     QListWidget* navigationList_ = nullptr;
     QStackedWidget* contentStack_ = nullptr;
+    QLabel* contentTitleLabel_ = nullptr;
+    QLabel* contentDescriptionLabel_ = nullptr;
+    CoordinatorController* coordinatorController_ = nullptr;
+    CoordinatorPane* coordinatorPane_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer mockStatusTimer_;
     int mockHeartbeatCount_ = 0;

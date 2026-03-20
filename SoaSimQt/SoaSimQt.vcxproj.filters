@@ -23,6 +23,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Coordinator\CoordinatorController.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Coordinator\CoordinatorUiCommon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Models\WorkerTableModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\CoordinatorPane.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -35,9 +47,24 @@
     <QtUic Include="MainWindow.ui">
       <Filter>Form Files</Filter>
     </QtUic>
+    <QtMoc Include="Coordinator\CoordinatorController.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\CoordinatorPane.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <QtMoc Include="MainWindow.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClCompile Include="Coordinator\CoordinatorController.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Models\WorkerTableModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MainWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
