@@ -8,7 +8,6 @@
 
 class WorkerTableModel : public QAbstractTableModel
 {
-    Q_OBJECT
 
 public:
     explicit WorkerTableModel(QObject* parent = nullptr);

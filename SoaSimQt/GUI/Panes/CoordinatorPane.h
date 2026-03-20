@@ -3,6 +3,8 @@
 #include <QtWidgets/QWidget>
 
 class CoordinatorController;
+class QCheckBox;
+class QFrame;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -27,7 +29,10 @@ private:
     QWidget* createControlsCard();
     QWidget* createSettingsCard();
     QWidget* createTableCard();
+    QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
+    QLabel* createFieldCaption(const QString& text, QWidget* parent) const;
     void setControlsEnabledForRunningState(bool running);
+    void syncActionButtonStates(bool running, bool valid);
 
     CoordinatorController* controller_ = nullptr;
     QTimer* refreshTimer_ = nullptr;
@@ -38,10 +43,14 @@ private:
     QPushButton* stopButton_ = nullptr;
     QSpinBox* targetWorkersSpin_ = nullptr;
     QLabel* activeWorkersLabel_ = nullptr;
+    QLabel* statusValueLabel_ = nullptr;
+    QLabel* snapshotCountLabel_ = nullptr;
     QLineEdit* isoPathEdit_ = nullptr;
     QLineEdit* dolphinBaseDirEdit_ = nullptr;
     QSpinBox* eventBufferSpin_ = nullptr;
+    QCheckBox* startPausedCheck_ = nullptr;
     QLabel* validationLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
+    QLabel* tableSummaryLabel_ = nullptr;
     QTableView* workerTableView_ = nullptr;
 };

@@ -11,6 +11,7 @@ constexpr auto kIsoPathKey = "iso_path";
 constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
 constexpr auto kEventRingKey = "event_ring";
+constexpr auto kStartPausedKey = "start_paused";
 }
 
 CoordinatorController::CoordinatorController(QObject* parent)
@@ -49,6 +50,11 @@ int CoordinatorController::activeWorkers() const
 int CoordinatorController::eventBufferCapacity() const
 {
     return eventBufferCapacity_;
+}
+
+bool CoordinatorController::startPaused() const
+{
+    return startPaused_;
 }
 
 QString CoordinatorController::isoPath() const
@@ -159,6 +165,17 @@ void CoordinatorController::setEventBufferCapacity(int capacity)
     emit stateChanged();
 }
 
+void CoordinatorController::setStartPaused(bool startPaused)
+{
+    if (startPaused_ == startPaused) {
+        return;
+    }
+
+    startPaused_ = startPaused;
+    persistInt(kStartPausedKey, startPaused_ ? 1 : 0);
+    emit stateChanged();
+}
+
 void CoordinatorController::setIsoPath(const QString& isoPath)
 {
     if (isoPath_ == isoPath) {
@@ -199,6 +216,7 @@ void CoordinatorController::loadSettings()
     dolphinBaseDir_ = settings.value(kDolphinBaseKey).toString();
     targetWorkers_ = (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt());
     eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
+    startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
 
     settings.endGroup();
 }

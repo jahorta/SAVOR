@@ -24,6 +24,7 @@ public:
     int targetWorkers() const;
     int activeWorkers() const;
     int eventBufferCapacity() const;
+    bool startPaused() const;
 
     QString isoPath() const;
     QString dolphinBaseDir() const;
@@ -38,6 +39,7 @@ public slots:
     void togglePaused();
     void setTargetWorkers(int targetWorkers);
     void setEventBufferCapacity(int capacity);
+    void setStartPaused(bool startPaused);
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
     void refreshSnapshot();
