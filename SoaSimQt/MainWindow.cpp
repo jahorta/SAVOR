@@ -66,9 +66,11 @@ MainWindow::MainWindow(QWidget *parent)
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
 
-    connect(&mockStatusTimer_, &QTimer::timeout, this, &MainWindow::tickMockStatusBar);
-    mockStatusTimer_.start(1000);
-    tickMockStatusBar();
+    connect(coordinatorController_, &CoordinatorController::stateChanged, this, &MainWindow::syncStatusBar);
+    connect(coordinatorController_, &CoordinatorController::snapshotChanged, this, &MainWindow::syncStatusBar);
+    connect(&statusBarRefreshTimer_, &QTimer::timeout, this, &MainWindow::syncStatusBar);
+    statusBarRefreshTimer_.start(1000);
+    syncStatusBar();
 }
 
 MainWindow::~MainWindow()
@@ -88,40 +90,17 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 }
 
-void MainWindow::tickMockStatusBar()
+void MainWindow::syncStatusBar()
 {
     if (!statusBarWidget_) {
         return;
     }
 
-    ++mockHeartbeatCount_;
-
-    StatusBarSnapshot snapshot;
-    snapshot.connected = true;
-    snapshot.envLabel = QStringLiteral("prod");
-    snapshot.lastRefresh = QDateTime::currentDateTime();
-    snapshot.coordinatorRunning = true;
-    snapshot.coordinatorWorkers = (mockHeartbeatCount_ % 4) + 1;
-
-    if (mockHeartbeatCount_ % 6 == 0) {
-        StatusToast successToast;
-        successToast.severity = StatusToast::Severity::Success;
-        successToast.message = QStringLiteral("Heartbeat healthy");
-        successToast.details = QStringLiteral("Mock update cycle completed successfully.");
-        successToast.count = 1;
-        snapshot.toasts.append(successToast);
+    if (coordinatorController_ && coordinatorController_->isRunning()) {
+        lastCoordinatorRefresh_ = QDateTime::currentDateTime();
     }
 
-    if (mockHeartbeatCount_ % 10 == 0) {
-        StatusToast warnToast;
-        warnToast.severity = StatusToast::Severity::Warn;
-        warnToast.message = QStringLiteral("Coordinator queue backing up");
-        warnToast.details = QStringLiteral("Mock warning to mirror the inline ImGui status pills.");
-        warnToast.count = 2;
-        snapshot.toasts.append(warnToast);
-    }
-
-    statusBarWidget_->setSnapshot(snapshot);
+    statusBarWidget_->setSnapshot(StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_));
 }
 
 void MainWindow::createWidgets()

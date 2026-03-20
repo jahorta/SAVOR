@@ -5,6 +5,8 @@
 #include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
+class CoordinatorController;
+
 class QHBoxLayout;
 class QLabel;
 
@@ -41,6 +43,7 @@ class StatusBarWidget : public QWidget
 public:
     explicit StatusBarWidget(QWidget* parent = nullptr);
 
+    static StatusBarSnapshot buildSnapshot(const CoordinatorController* controller, const QDateTime& lastRefresh);
     void setSnapshot(const StatusBarSnapshot& snapshot);
 
 private:
