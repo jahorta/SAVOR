@@ -9,6 +9,7 @@ class CoordinatorController;
 
 class QHBoxLayout;
 class QLabel;
+class QTimer;
 
 struct StatusToast
 {
@@ -23,6 +24,8 @@ struct StatusToast
     QString message;
     QString details;
     int count = 1;
+    QDateTime createdAt;
+    int ttlMs = 4000;
 };
 
 struct StatusBarSnapshot
@@ -33,7 +36,6 @@ struct StatusBarSnapshot
     QString lastError;
     bool coordinatorRunning = false;
     int coordinatorWorkers = 0;
-    QList<StatusToast> toasts;
 };
 
 class StatusBarWidget : public QWidget
@@ -45,16 +47,33 @@ public:
 
     static StatusBarSnapshot buildSnapshot(const CoordinatorController* controller, const QDateTime& lastRefresh);
     void setSnapshot(const StatusBarSnapshot& snapshot);
+    void postToast(StatusToast toast);
+    void postToast(StatusToast::Severity severity, const QString& message, const QString& details = QString(), int ttlMs = 4000);
+    void clearToasts();
+
+public slots:
+    void setCoordinatorState(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
 
 private:
+    enum class CoordinatorToastState {
+        Stopped,
+        Running,
+        Paused
+    };
+
     QLabel* createBadge(const QString& text, const QString& variant);
     QLabel* createSeparator();
     void rebuildToasts();
     void updateConnectionBadge();
     void updateRefreshLabel();
     void updateCoordinatorBadge();
+    void pruneExpiredToasts();
+    void scheduleToastExpiry();
 
     StatusBarSnapshot snapshot_;
+    QList<StatusToast> activeToasts_;
+    QString lastValidationMessage_;
+    CoordinatorToastState lastCoordinatorToastState_ = CoordinatorToastState::Stopped;
 
     QLabel* connectionBadge_ = nullptr;
     QLabel* envLabel_ = nullptr;
@@ -62,4 +81,5 @@ private:
     QLabel* coordinatorBadge_ = nullptr;
     QWidget* toastHost_ = nullptr;
     QHBoxLayout* toastLayout_ = nullptr;
+    QTimer* toastExpiryTimer_ = nullptr;
 };

@@ -67,6 +67,7 @@ MainWindow::MainWindow(QWidget *parent)
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
 
+    connect(this, &MainWindow::coordinatorStateChanged, statusBarWidget_, &StatusBarWidget::setCoordinatorState);
     connect(coordinatorController_, &CoordinatorController::stateChanged, this, &MainWindow::syncStatusBar);
     connect(coordinatorController_, &CoordinatorController::snapshotChanged, this, &MainWindow::syncStatusBar);
     connect(&statusBarRefreshTimer_, &QTimer::timeout, this, &MainWindow::syncStatusBar);
@@ -101,7 +102,9 @@ void MainWindow::syncStatusBar()
         lastCoordinatorRefresh_ = QDateTime::currentDateTime();
     }
 
-    statusBarWidget_->setSnapshot(StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_));
+    const StatusBarSnapshot snapshot = StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_);
+    statusBarWidget_->setSnapshot(snapshot);
+    emitCoordinatorStateChanged();
 }
 
 void MainWindow::createWidgets()
@@ -221,6 +224,20 @@ QWidget* MainWindow::createContentPane()
 StatusBarWidget* MainWindow::createStatusBarWidget()
 {
     return new StatusBarWidget(this);
+}
+
+void MainWindow::emitCoordinatorStateChanged()
+{
+    if (!coordinatorController_) {
+        return;
+    }
+
+    emit coordinatorStateChanged(
+        coordinatorController_->isRunning(),
+        coordinatorController_->isPaused(),
+        coordinatorController_->targetWorkers(),
+        coordinatorController_->activeWorkers(),
+        coordinatorController_->validationMessage());
 }
 
 QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& description)
