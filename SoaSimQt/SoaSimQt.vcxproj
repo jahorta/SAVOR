@@ -118,9 +118,14 @@
     <ClInclude Include="ArtifactsTableModel.h" />
     <ClInclude Include="ArtifactsTableView.h" />
     <ClInclude Include="JobsPage.h" />
+    <ClInclude Include="JobSetsPage.h" />
+    <ClInclude Include="JobSetsProgressWidget.h" />
+    <ClInclude Include="JobSetsTreeModel.h" />
     <ClInclude Include="JobsTableModel.h" />
     <ClInclude Include="JobsTableView.h" />
     <QtMoc Include="Widgets\StatusBarWidget.h" />
+    <QtMoc Include="JobSetsController.h" />
+    <QtMoc Include="JobSetsTreeView.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <QtMoc Include="Coordinator\CoordinatorController.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane.h" />
@@ -128,6 +133,11 @@
     <ClCompile Include="ArtifactsTableModel.cpp" />
     <ClCompile Include="ArtifactsTableView.cpp" />
     <ClCompile Include="JobsPage.cpp" />
+    <ClCompile Include="JobSetsController.cpp" />
+    <ClCompile Include="JobSetsPage.cpp" />
+    <ClCompile Include="JobSetsProgressWidget.cpp" />
+    <ClCompile Include="JobSetsTreeModel.cpp" />
+    <ClCompile Include="JobSetsTreeView.cpp" />
     <ClCompile Include="JobsTableModel.cpp" />
     <ClCompile Include="JobsTableView.cpp" />
     <ClCompile Include="Coordinator\CoordinatorController.cpp" />

@@ -247,5 +247,86 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     QLabel#statusBadge[variant="error"] {
         background-color: rgba(200, 80, 80, 220);
     }
+
+    QFrame#jobSetsToolbarPanel,
+    QFrame#jobSetsPagingPanel,
+    QFrame#jobSetsContentPanel {
+        background-color: #1b1f27;
+        border: 1px solid #2e3542;
+        border-radius: 8px;
+    }
+    QComboBox#jobSetsFilterCombo,
+    QSpinBox#jobSetsSpin {
+        background-color: #11151b;
+        border: 1px solid #394150;
+        border-radius: 6px;
+        padding: 8px 10px;
+        min-height: 18px;
+        color: #eef2f7;
+    }
+    QPushButton#jobSetsPrimaryButton,
+    QPushButton#jobSetsSecondaryButton {
+        border-radius: 6px;
+        padding: 8px 14px;
+        min-height: 18px;
+        border: 1px solid #3a4352;
+    }
+    QPushButton#jobSetsPrimaryButton {
+        background-color: #315bca;
+        color: white;
+        border-color: #4f78e0;
+        font-weight: 600;
+    }
+    QPushButton#jobSetsSecondaryButton {
+        background-color: #202633;
+        color: #dce3ed;
+    }
+    QPushButton#jobSetsPrimaryButton:disabled,
+    QPushButton#jobSetsSecondaryButton:disabled,
+    QComboBox#jobSetsFilterCombo:disabled,
+    QSpinBox#jobSetsSpin:disabled {
+        color: #707887;
+        border-color: #2a313d;
+        background-color: #171b22;
+    }
+    QCheckBox#jobSetsCheckBox {
+        color: #dce3ed;
+        spacing: 8px;
+    }
+    QLabel#jobSetsMetaText {
+        color: #aeb8c7;
+        font-size: 12px;
+    }
+    QTreeView#jobSetsTree {
+        background-color: #171b22;
+        alternate-background-color: #1c212b;
+        border: 1px solid #2e3542;
+        border-radius: 8px;
+        padding: 8px;
+        color: #e7ebf0;
+        selection-background-color: #283245;
+    }
+    QHeaderView::section {
+        background-color: #1f2530;
+        color: #aeb8c7;
+        border: none;
+        border-bottom: 1px solid #2e3542;
+        padding: 8px 10px;
+        font-weight: 600;
+    }
+    QLabel#jobSetsInlineMessage {
+        border-radius: 6px;
+        padding: 10px 12px;
+        background-color: #202633;
+        color: #dce3ed;
+    }
+    QLabel#jobSetsInlineMessage[severity="error"] {
+        background-color: #4d2025;
+        color: #ffd7db;
+    }
+    QLabel#jobSetsInlineMessage[severity="info"] {
+        background-color: #1e324f;
+        color: #dbe9ff;
+    }
 )";
 } // namespace SoaSimQt::GUI

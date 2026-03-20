@@ -2,6 +2,7 @@
 #include "Coordinator/CoordinatorController.h"
 #include "GUI/Panes/CoordinatorPane.h"
 #include "GUI/StyleSheet.h"
+#include "JobSetsPage.h"
 #include "JobsPage.h"
 
 #include <QtCore/QStringList>
@@ -25,7 +26,7 @@ struct PageMetadata {
 };
 
 constexpr PageMetadata kPageMetadata[] = {
-    { "Job Sets", "Mockup page for job set management and filters." },
+    { "Job Sets", "Live Job Sets workspace with filtering, paging, expansion state, right-click actions, and progress visuals." },
     { "Jobs", "Mockup page for job listings, inspection, and actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Job Builder", "Mockup page for constructing new simulation runs." },
@@ -198,7 +199,7 @@ QWidget* MainWindow::createContentPane()
     layout->setSpacing(12);
 
     contentStack_ = new QStackedWidget(contentPane);
-    contentStack_->addWidget(createPlaceholderPage("Job Sets", "Mockup page for job set management and filters."));
+    contentStack_->addWidget(new JobSetsPage(contentPane));
     contentStack_->addWidget(new JobsPage(contentPane));
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
@@ -212,7 +213,7 @@ QWidget* MainWindow::createContentPane()
     layout->addWidget(contentStack_, 1);
 
     if (navigationList_) {
-        navigationList_->setCurrentRow(2);
+        navigationList_->setCurrentRow(0);
     }
 
     return contentPane;

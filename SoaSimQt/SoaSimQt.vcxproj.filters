@@ -47,6 +47,15 @@
     <ClInclude Include="JobsPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="JobSetsPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="JobSetsProgressWidget.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="JobSetsTreeModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="JobsTableModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -54,6 +63,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="Widgets\StatusBarWidget.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="JobSetsController.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="JobSetsTreeView.h">
       <Filter>Header Files</Filter>
     </QtMoc>
     <QtRcc Include="SoaSimQt.qrc">
@@ -78,6 +93,21 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="JobsPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobSetsController.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobSetsPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobSetsProgressWidget.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobSetsTreeModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobSetsTreeView.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="JobsTableModel.cpp">
