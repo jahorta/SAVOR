@@ -117,6 +117,7 @@
     <ClInclude Include="GUI\Models\WorkerTableModel.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
+    <QtMoc Include="Widgets\StatusBarWidget.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <QtMoc Include="Coordinator\CoordinatorController.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane.h" />
@@ -125,6 +126,7 @@
     <ClCompile Include="GUI\Models\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
+#include "Widgets/StatusBarWidget.h"
 
 class CoordinatorController;
 class CoordinatorPane;
 class QLabel;
+
 class QListWidget;
 class QStackedWidget;
 class QWidget;
@@ -19,13 +22,14 @@ public:
 
 private slots:
     void handleNavigationChanged(int currentRow);
+    void tickMockStatusBar();
 
 private:
     void createWidgets();
     QWidget* createTopBar();
     QWidget* createNavigationPane();
     QWidget* createContentPane();
-    QWidget* createStatusBarWidget();
+    StatusBarWidget* createStatusBarWidget();
     QWidget* createPlaceholderPage(const QString& title, const QString& description);
 
     QListWidget* navigationList_ = nullptr;
@@ -34,4 +38,7 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
+    StatusBarWidget* statusBarWidget_ = nullptr;
+    QTimer mockStatusTimer_;
+    int mockHeartbeatCount_ = 0;
 };
