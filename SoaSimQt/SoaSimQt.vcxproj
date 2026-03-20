@@ -53,10 +53,16 @@
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="..\ThirdParty.props" />
+    <Import Project="..\linked_libs.props" />
+    <Import Project="..\linked_libs.debug.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="..\ThirdParty.props" />
+    <Import Project="..\linked_libs.props" />
+    <Import Project="..\linked_libs.release.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
@@ -72,7 +78,12 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>_DEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -87,7 +98,12 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -96,11 +112,28 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Coordinator\CoordinatorController.h" />
+    <ClInclude Include="Coordinator\CoordinatorUiCommon.h" />
+    <ClInclude Include="GUI\Models\WorkerTableModel.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
     <QtRcc Include="SoaSimQt.qrc" />
+    <QtMoc Include="Coordinator\CoordinatorController.h" />
+    <QtMoc Include="GUI\Panes\CoordinatorPane.h" />
     <QtMoc Include="MainWindow.h" />
+    <ClCompile Include="Coordinator\CoordinatorController.cpp" />
+    <ClCompile Include="GUI\Models\WorkerTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SimCoreWorker\SimCoreWorker.vcxproj">
+      <Project>{41DB0E12-AB09-4BC8-9647-1D8713A6A73E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SimCore\SimCore.vcxproj">
+      <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')">

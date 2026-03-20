@@ -2,6 +2,9 @@
 
 #include <QtWidgets/QMainWindow>
 
+class CoordinatorController;
+class CoordinatorPane;
+class QLabel;
 class QListWidget;
 class QStackedWidget;
 class QWidget;
@@ -27,4 +30,8 @@ private:
 
     QListWidget* navigationList_ = nullptr;
     QStackedWidget* contentStack_ = nullptr;
+    QLabel* contentTitleLabel_ = nullptr;
+    QLabel* contentDescriptionLabel_ = nullptr;
+    CoordinatorController* coordinatorController_ = nullptr;
+    CoordinatorPane* coordinatorPane_ = nullptr;
 };
