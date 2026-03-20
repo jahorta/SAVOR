@@ -97,9 +97,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="GUI\StyleSheet.h" />
+    <QtMoc Include="Widgets\StatusBarWidget.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <QtMoc Include="MainWindow.h" />
     <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

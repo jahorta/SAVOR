@@ -13,7 +13,6 @@
 namespace {
 constexpr int kLeftNavWidth = 250;
 constexpr int kTopBarHeight = 24;
-constexpr int kStatusBarMinHeight = 34;
 
 QFrame* createPanelFrame(const QString& title, const QString& body)
 {
@@ -38,21 +37,16 @@ QFrame* createPanelFrame(const QString& title, const QString& body)
 
     return panel;
 }
-
-QLabel* createBadge(const QString& text, const QString& objectName)
-{
-    QLabel* badge = new QLabel(text);
-    badge->setObjectName(objectName);
-    badge->setAlignment(Qt::AlignCenter);
-    badge->setMargin(6);
-    return badge;
-}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     createWidgets();
+
+    connect(&mockStatusTimer_, &QTimer::timeout, this, &MainWindow::tickMockStatusBar);
+    mockStatusTimer_.start(1000);
+    tickMockStatusBar();
 }
 
 MainWindow::~MainWindow()
@@ -65,6 +59,42 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 
     contentStack_->setCurrentIndex(currentRow);
+}
+
+void MainWindow::tickMockStatusBar()
+{
+    if (!statusBarWidget_) {
+        return;
+    }
+
+    ++mockHeartbeatCount_;
+
+    StatusBarSnapshot snapshot;
+    snapshot.connected = true;
+    snapshot.envLabel = QStringLiteral("prod");
+    snapshot.lastRefresh = QDateTime::currentDateTime();
+    snapshot.coordinatorRunning = true;
+    snapshot.coordinatorWorkers = (mockHeartbeatCount_ % 4) + 1;
+
+    if (mockHeartbeatCount_ % 6 == 0) {
+        StatusToast successToast;
+        successToast.severity = StatusToast::Severity::Success;
+        successToast.message = QStringLiteral("Heartbeat healthy");
+        successToast.details = QStringLiteral("Mock update cycle completed successfully.");
+        successToast.count = 1;
+        snapshot.toasts.append(successToast);
+    }
+
+    if (mockHeartbeatCount_ % 10 == 0) {
+        StatusToast warnToast;
+        warnToast.severity = StatusToast::Severity::Warn;
+        warnToast.message = QStringLiteral("Coordinator queue backing up");
+        warnToast.details = QStringLiteral("Mock warning to mirror the inline ImGui status pills.");
+        warnToast.count = 2;
+        snapshot.toasts.append(warnToast);
+    }
+
+    statusBarWidget_->setSnapshot(snapshot);
 }
 
 void MainWindow::createWidgets()
@@ -83,7 +113,7 @@ void MainWindow::createWidgets()
     QWidget* topBar = createTopBar();
     QWidget* navigationPane = createNavigationPane();
     QWidget* contentPane = createContentPane();
-    QWidget* statusBarWidget = createStatusBarWidget();
+    statusBarWidget_ = createStatusBarWidget();
 
     QWidget* body = new QWidget(root);
     body->setObjectName("bodyRegion");
@@ -95,7 +125,7 @@ void MainWindow::createWidgets()
 
     rootLayout->addWidget(topBar);
     rootLayout->addWidget(body, 1);
-    rootLayout->addWidget(statusBarWidget);
+    rootLayout->addWidget(statusBarWidget_);
 
     setStyleSheet(SoaSimQt::GUI::kMainWindowStyleSheet);
 }
@@ -191,31 +221,9 @@ QWidget* MainWindow::createContentPane()
     return contentPane;
 }
 
-QWidget* MainWindow::createStatusBarWidget()
+StatusBarWidget* MainWindow::createStatusBarWidget()
 {
-    QFrame* statusBarWidget = new QFrame(this);
-    statusBarWidget->setObjectName("statusBarWidget");
-    statusBarWidget->setMinimumHeight(kStatusBarMinHeight);
-
-    QHBoxLayout* layout = new QHBoxLayout(statusBarWidget);
-    layout->setContentsMargins(12, 6, 12, 6);
-    layout->setSpacing(10);
-
-    layout->addWidget(createBadge("Connected", "badgeConnected"));
-
-    QLabel* envLabel = new QLabel("env: placeholder", statusBarWidget);
-    envLabel->setObjectName("statusText");
-    layout->addWidget(envLabel);
-
-    QLabel* refreshLabel = new QLabel("Last refresh: --", statusBarWidget);
-    refreshLabel->setObjectName("statusText");
-    layout->addWidget(refreshLabel);
-
-    layout->addWidget(createBadge("Coordinator: 0", "badgeCoordinator"));
-    layout->addStretch();
-    layout->addWidget(createBadge("Mock toast", "badgeToastInfo"));
-
-    return statusBarWidget;
+    return new StatusBarWidget(this);
 }
 
 QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& description)

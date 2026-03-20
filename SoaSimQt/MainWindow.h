@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
+
+#include "Widgets/StatusBarWidget.h"
 
 class QListWidget;
 class QStackedWidget;
@@ -16,15 +19,19 @@ public:
 
 private slots:
     void handleNavigationChanged(int currentRow);
+    void tickMockStatusBar();
 
 private:
     void createWidgets();
     QWidget* createTopBar();
     QWidget* createNavigationPane();
     QWidget* createContentPane();
-    QWidget* createStatusBarWidget();
+    StatusBarWidget* createStatusBarWidget();
     QWidget* createPlaceholderPage(const QString& title, const QString& description);
 
     QListWidget* navigationList_ = nullptr;
     QStackedWidget* contentStack_ = nullptr;
+    StatusBarWidget* statusBarWidget_ = nullptr;
+    QTimer mockStatusTimer_;
+    int mockHeartbeatCount_ = 0;
 };
