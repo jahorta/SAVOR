@@ -38,6 +38,21 @@
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ArtifactsTableModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ArtifactsTableView.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="JobsPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="JobsTableModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="JobsTableView.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtMoc Include="Widgets\StatusBarWidget.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -56,6 +71,21 @@
     <QtMoc Include="MainWindow.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClCompile Include="ArtifactsTableModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ArtifactsTableView.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobsPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobsTableModel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="JobsTableView.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Coordinator\CoordinatorController.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

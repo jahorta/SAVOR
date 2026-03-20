@@ -73,6 +73,95 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #9ca8b8;
         font-size: 12px;
     }
+    QFrame#jobsToolbarPanel, QFrame#jobsPagingPanel, QFrame#jobsContentPanel, QFrame#jobsSurfacePanel {
+        background-color: #1b1f27;
+        border: 1px solid #2e3542;
+        border-radius: 8px;
+    }
+    QFrame#jobsContentPanel {
+        background-color: transparent;
+        border: none;
+    }
+    QComboBox#jobsFilterCombo, QLineEdit#jobsFilterEdit, QSpinBox#jobsRefreshSpin {
+        background-color: #12161d;
+        border: 1px solid #394150;
+        border-radius: 6px;
+        color: #e7ebf0;
+        min-height: 34px;
+        padding: 0 10px;
+    }
+    QComboBox#jobsFilterCombo::drop-down {
+        border: none;
+        width: 22px;
+    }
+    QPushButton#jobsPrimaryButton, QPushButton#jobsSecondaryButton {
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 0 12px;
+        font-weight: 600;
+    }
+    QPushButton#jobsPrimaryButton {
+        background-color: #315bca;
+        color: #ffffff;
+        border: 1px solid #4e75dd;
+    }
+    QPushButton#jobsSecondaryButton {
+        background-color: #222834;
+        color: #dfe6f0;
+        border: 1px solid #364153;
+    }
+    QPushButton#jobsPrimaryButton:disabled, QPushButton#jobsSecondaryButton:disabled {
+        color: #7d8796;
+        background-color: #1a1f28;
+        border-color: #2a313c;
+    }
+    QLabel#jobsMetaText {
+        color: #aeb8c7;
+        font-size: 12px;
+    }
+    QLabel#jobsInspectorSummary {
+        color: #edf2f7;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    QLabel#jobsValueLabel {
+        color: #f8fbff;
+        font-weight: 700;
+    }
+    QTableView#jobsTable, QTableView#jobsArtifactsTable, QTextEdit#jobsInspectorText, QTabWidget#jobsInspectorTabs::pane {
+        background-color: #12161d;
+        border: 1px solid #313949;
+        border-radius: 6px;
+        color: #e7ebf0;
+    }
+    QHeaderView::section {
+        background-color: #202632;
+        color: #dfe5ee;
+        border: none;
+        border-right: 1px solid #313949;
+        padding: 8px;
+        font-weight: 600;
+    }
+    QTableView#jobsTable, QTableView#jobsArtifactsTable {
+        padding: 6px;
+    }
+    QTableView#jobsTable::item:selected {
+        background-color: #2d4d8f;
+        color: #ffffff;
+    }
+    QTabBar::tab {
+        background-color: #202632;
+        color: #bac4d3;
+        border: 1px solid #313949;
+        padding: 8px 12px;
+        margin-right: 4px;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+    }
+    QTabBar::tab:selected {
+        background-color: #315bca;
+        color: #ffffff;
+    }
     QLineEdit,
     QSpinBox,
     QTableView,

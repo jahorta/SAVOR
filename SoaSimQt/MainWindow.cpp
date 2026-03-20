@@ -2,6 +2,7 @@
 #include "Coordinator/CoordinatorController.h"
 #include "GUI/Panes/CoordinatorPane.h"
 #include "GUI/StyleSheet.h"
+#include "JobsPage.h"
 
 #include <QtCore/QStringList>
 
@@ -217,16 +218,9 @@ QWidget* MainWindow::createContentPane()
     layout->setContentsMargins(20, 18, 20, 18);
     layout->setSpacing(12);
 
-    contentTitleLabel_ = new QLabel(contentPane);
-    contentTitleLabel_->setObjectName("pageTitle");
-
-    contentDescriptionLabel_ = new QLabel(contentPane);
-    contentDescriptionLabel_->setObjectName("pageDescription");
-    contentDescriptionLabel_->setWordWrap(true);
-
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(createPlaceholderPage("Job Sets", "Mockup page for job set management and filters."));
-    contentStack_->addWidget(createPlaceholderPage("Jobs", "Mockup page for job listings, inspection, and actions."));
+    contentStack_->addWidget(new JobsPage(contentPane));
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
@@ -236,8 +230,6 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
     contentStack_->addWidget(createPlaceholderPage("Settings", "Mockup page for application-wide settings and environment setup."));
 
-    layout->addWidget(contentTitleLabel_);
-    layout->addWidget(contentDescriptionLabel_);
     layout->addWidget(contentStack_, 1);
 
     if (navigationList_) {
