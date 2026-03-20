@@ -26,6 +26,9 @@
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <QtMoc Include="Widgets\StatusBarWidget.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <QtRcc Include="SoaSimQt.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>
@@ -36,6 +39,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClCompile Include="MainWindow.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Widgets\StatusBarWidget.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ResourceCompile Include="$pro_name$.rc">
