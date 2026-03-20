@@ -21,6 +21,9 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+signals:
+    void coordinatorStateChanged(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
+
 private slots:
     void handleNavigationChanged(int currentRow);
     void syncStatusBar();
@@ -32,6 +35,7 @@ private:
     QWidget* createContentPane();
     StatusBarWidget* createStatusBarWidget();
     QWidget* createPlaceholderPage(const QString& title, const QString& description);
+    void emitCoordinatorStateChanged();
 
     QListWidget* navigationList_ = nullptr;
     QStackedWidget* contentStack_ = nullptr;
