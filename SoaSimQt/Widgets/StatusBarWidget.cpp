@@ -1,5 +1,7 @@
 #include "Widgets/StatusBarWidget.h"
 
+#include "Coordinator/CoordinatorController.h"
+
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QStyle>
@@ -30,6 +32,47 @@ QString buildToastText(const StatusToast& toast)
     return toast.message;
 }
 } // namespace
+
+
+StatusBarSnapshot StatusBarWidget::buildSnapshot(const CoordinatorController* controller, const QDateTime& lastRefresh)
+{
+    StatusBarSnapshot snapshot;
+    snapshot.connected = true;
+    snapshot.envLabel = QStringLiteral("prod");
+    snapshot.lastRefresh = lastRefresh;
+    snapshot.coordinatorRunning = controller && controller->isRunning();
+    snapshot.coordinatorWorkers = controller ? controller->activeWorkers() : 0;
+
+    if (!controller) {
+        return snapshot;
+    }
+
+    if (!controller->validationMessage().isEmpty()) {
+        snapshot.lastError = controller->validationMessage();
+
+        StatusToast validationToast;
+        validationToast.severity = StatusToast::Severity::Warn;
+        validationToast.message = QStringLiteral("Coordinator configuration incomplete");
+        validationToast.details = controller->validationMessage();
+        snapshot.toasts.append(validationToast);
+    }
+
+    if (snapshot.coordinatorRunning) {
+        StatusToast coordinatorToast;
+        coordinatorToast.severity = controller->isPaused()
+            ? StatusToast::Severity::Warn
+            : StatusToast::Severity::Success;
+        coordinatorToast.message = controller->isPaused()
+            ? QStringLiteral("Coordinator paused")
+            : QStringLiteral("Coordinator running");
+        coordinatorToast.details = QStringLiteral("Target workers: %1 • Active workers: %2")
+            .arg(controller->targetWorkers())
+            .arg(controller->activeWorkers());
+        snapshot.toasts.append(coordinatorToast);
+    }
+
+    return snapshot;
+}
 
 StatusBarWidget::StatusBarWidget(QWidget* parent)
     : QWidget(parent)

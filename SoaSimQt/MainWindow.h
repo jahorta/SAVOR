@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QtCore/QDateTime>
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 #include "Widgets/StatusBarWidget.h"
@@ -22,7 +23,7 @@ public:
 
 private slots:
     void handleNavigationChanged(int currentRow);
-    void tickMockStatusBar();
+    void syncStatusBar();
 
 private:
     void createWidgets();
@@ -39,6 +40,6 @@ private:
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
-    QTimer mockStatusTimer_;
-    int mockHeartbeatCount_ = 0;
+    QTimer statusBarRefreshTimer_;
+    QDateTime lastCoordinatorRefresh_;
 };
