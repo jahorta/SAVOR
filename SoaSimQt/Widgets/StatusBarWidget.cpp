@@ -2,11 +2,18 @@
 
 #include "Coordinator/CoordinatorController.h"
 
+#include <QtCore/QTimer>
 #include <QtWidgets/QHBoxLayout>
+#include <utility>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QStyle>
 
 namespace {
+constexpr int kDefaultToastTtlMs = 4000;
+constexpr int kValidationToastTtlMs = 5000;
+constexpr int kDuplicateWindowMs = 1500;
+constexpr int kMaxStoredToasts = 6;
+
 QString toastVariant(StatusToast::Severity severity)
 {
     switch (severity) {
@@ -33,7 +40,6 @@ QString buildToastText(const StatusToast& toast)
 }
 } // namespace
 
-
 StatusBarSnapshot StatusBarWidget::buildSnapshot(const CoordinatorController* controller, const QDateTime& lastRefresh)
 {
     StatusBarSnapshot snapshot;
@@ -43,32 +49,8 @@ StatusBarSnapshot StatusBarWidget::buildSnapshot(const CoordinatorController* co
     snapshot.coordinatorRunning = controller && controller->isRunning();
     snapshot.coordinatorWorkers = controller ? controller->activeWorkers() : 0;
 
-    if (!controller) {
-        return snapshot;
-    }
-
-    if (!controller->validationMessage().isEmpty()) {
+    if (controller) {
         snapshot.lastError = controller->validationMessage();
-
-        StatusToast validationToast;
-        validationToast.severity = StatusToast::Severity::Warn;
-        validationToast.message = QStringLiteral("Coordinator configuration incomplete");
-        validationToast.details = controller->validationMessage();
-        snapshot.toasts.append(validationToast);
-    }
-
-    if (snapshot.coordinatorRunning) {
-        StatusToast coordinatorToast;
-        coordinatorToast.severity = controller->isPaused()
-            ? StatusToast::Severity::Warn
-            : StatusToast::Severity::Success;
-        coordinatorToast.message = controller->isPaused()
-            ? QStringLiteral("Coordinator paused")
-            : QStringLiteral("Coordinator running");
-        coordinatorToast.details = QStringLiteral("Target workers: %1 • Active workers: %2")
-            .arg(controller->targetWorkers())
-            .arg(controller->activeWorkers());
-        snapshot.toasts.append(coordinatorToast);
     }
 
     return snapshot;
@@ -79,6 +61,13 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
 {
     setObjectName("statusBarWidget");
     setMinimumHeight(34);
+
+    toastExpiryTimer_ = new QTimer(this);
+    toastExpiryTimer_->setSingleShot(true);
+    connect(toastExpiryTimer_, &QTimer::timeout, this, [this]() {
+        pruneExpiredToasts();
+        rebuildToasts();
+    });
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 6, 12, 6);
@@ -119,7 +108,122 @@ void StatusBarWidget::setSnapshot(const StatusBarSnapshot& snapshot)
     updateConnectionBadge();
     updateRefreshLabel();
     updateCoordinatorBadge();
+    pruneExpiredToasts();
     rebuildToasts();
+}
+
+void StatusBarWidget::postToast(StatusToast toast)
+{
+    if (toast.message.isEmpty()) {
+        return;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    if (!toast.createdAt.isValid()) {
+        toast.createdAt = now;
+    }
+    if (toast.ttlMs <= 0) {
+        toast.ttlMs = kDefaultToastTtlMs;
+    }
+    if (toast.count < 1) {
+        toast.count = 1;
+    }
+
+    pruneExpiredToasts();
+
+    for (StatusToast& activeToast : activeToasts_) {
+        if (activeToast.severity != toast.severity || activeToast.message != toast.message) {
+            continue;
+        }
+
+        const qint64 ageMs = activeToast.createdAt.msecsTo(now);
+        if (ageMs <= kDuplicateWindowMs) {
+            activeToast.count += toast.count;
+            activeToast.createdAt = now;
+            activeToast.ttlMs = qMax(activeToast.ttlMs, toast.ttlMs);
+            if (!toast.details.isEmpty()) {
+                activeToast.details = toast.details;
+            }
+            rebuildToasts();
+            return;
+        }
+    }
+
+    activeToasts_.append(std::move(toast));
+    while (activeToasts_.size() > kMaxStoredToasts) {
+        activeToasts_.removeFirst();
+    }
+
+    rebuildToasts();
+}
+
+void StatusBarWidget::postToast(StatusToast::Severity severity, const QString& message, const QString& details, int ttlMs)
+{
+    StatusToast toast;
+    toast.severity = severity;
+    toast.message = message;
+    toast.details = details;
+    toast.ttlMs = ttlMs;
+    postToast(std::move(toast));
+}
+
+void StatusBarWidget::clearToasts()
+{
+    if (activeToasts_.isEmpty()) {
+        return;
+    }
+
+    activeToasts_.clear();
+    rebuildToasts();
+}
+
+void StatusBarWidget::setCoordinatorState(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage)
+{
+    if (!validationMessage.isEmpty() && validationMessage != lastValidationMessage_) {
+        postToast(
+            StatusToast::Severity::Warn,
+            QStringLiteral("Coordinator configuration incomplete"),
+            validationMessage,
+            kValidationToastTtlMs);
+    }
+    lastValidationMessage_ = validationMessage;
+
+    CoordinatorToastState coordinatorState = CoordinatorToastState::Stopped;
+    if (running) {
+        coordinatorState = paused
+            ? CoordinatorToastState::Paused
+            : CoordinatorToastState::Running;
+    }
+
+    if (coordinatorState != lastCoordinatorToastState_) {
+        switch (coordinatorState) {
+        case CoordinatorToastState::Stopped:
+            postToast(
+                StatusToast::Severity::Info,
+                QStringLiteral("Coordinator stopped"),
+                QStringLiteral("Workers are no longer processing jobs."));
+            break;
+        case CoordinatorToastState::Running:
+            postToast(
+                StatusToast::Severity::Success,
+                QStringLiteral("Coordinator running"),
+                QStringLiteral("Target workers: %1 • Active workers: %2")
+                    .arg(targetWorkers)
+                    .arg(activeWorkers));
+            break;
+        case CoordinatorToastState::Paused:
+            postToast(
+                StatusToast::Severity::Warn,
+                QStringLiteral("Coordinator paused"),
+                QStringLiteral("Target workers: %1 • Active workers: %2")
+                    .arg(targetWorkers)
+                    .arg(activeWorkers),
+                kValidationToastTtlMs);
+            break;
+        }
+    }
+
+    lastCoordinatorToastState_ = coordinatorState;
 }
 
 QLabel* StatusBarWidget::createBadge(const QString& text, const QString& variant)
@@ -149,13 +253,16 @@ void StatusBarWidget::rebuildToasts()
         delete item;
     }
 
-    for (const StatusToast& toast : snapshot_.toasts) {
+    for (const StatusToast& toast : activeToasts_) {
         QLabel* badge = createBadge(buildToastText(toast), toastVariant(toast.severity));
         if (!toast.details.isEmpty()) {
             badge->setToolTip(toast.details);
         }
         toastLayout_->addWidget(badge);
     }
+
+    toastHost_->setVisible(!activeToasts_.isEmpty());
+    scheduleToastExpiry();
 }
 
 void StatusBarWidget::updateConnectionBadge()
@@ -191,4 +298,43 @@ void StatusBarWidget::updateCoordinatorBadge()
 
     style()->unpolish(coordinatorBadge_);
     style()->polish(coordinatorBadge_);
+}
+
+void StatusBarWidget::pruneExpiredToasts()
+{
+    if (activeToasts_.isEmpty()) {
+        return;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (auto it = activeToasts_.begin(); it != activeToasts_.end();) {
+        const qint64 ageMs = it->createdAt.msecsTo(now);
+        if (ageMs > it->ttlMs) {
+            it = activeToasts_.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+void StatusBarWidget::scheduleToastExpiry()
+{
+    if (activeToasts_.isEmpty()) {
+        toastExpiryTimer_->stop();
+        return;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    int nextExpiryMs = 0;
+    bool foundExpiry = false;
+    for (const StatusToast& toast : activeToasts_) {
+        const qint64 ageMs = toast.createdAt.msecsTo(now);
+        const int remainingMs = qMax(0, toast.ttlMs - static_cast<int>(ageMs));
+        if (!foundExpiry || remainingMs < nextExpiryMs) {
+            nextExpiryMs = remainingMs;
+            foundExpiry = true;
+        }
+    }
+
+    toastExpiryTimer_->start(qMax(1, nextExpiryMs));
 }
