@@ -87,7 +87,7 @@ void MainWindow::handleNavigationChanged(int currentRow)
 
     contentStack_->setCurrentIndex(currentRow);
 
-    if (currentRow < static_cast<int>(std::size(kPageMetadata))) {
+    if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
         contentTitleLabel_->setText(kPageMetadata[currentRow].title);
         contentDescriptionLabel_->setText(kPageMetadata[currentRow].description);
     }
@@ -201,6 +201,16 @@ QWidget* MainWindow::createContentPane()
     layout->setContentsMargins(20, 18, 20, 18);
     layout->setSpacing(12);
 
+    contentTitleLabel_ = new QLabel(contentPane);
+    contentTitleLabel_->setObjectName("contentTitle");
+
+    contentDescriptionLabel_ = new QLabel(contentPane);
+    contentDescriptionLabel_->setObjectName("contentDescription");
+    contentDescriptionLabel_->setWordWrap(true);
+
+    layout->addWidget(contentTitleLabel_);
+    layout->addWidget(contentDescriptionLabel_);
+
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(new JobSetsPage(contentPane));
     contentStack_->addWidget(new JobsPage(contentPane));
@@ -217,6 +227,9 @@ QWidget* MainWindow::createContentPane()
 
     if (navigationList_) {
         navigationList_->setCurrentRow(0);
+    } else if constexpr (std::size(kPageMetadata) > 0) {
+        contentTitleLabel_->setText(kPageMetadata[0].title);
+        contentDescriptionLabel_->setText(kPageMetadata[0].description);
     }
 
     return contentPane;
