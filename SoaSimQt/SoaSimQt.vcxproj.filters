@@ -34,6 +34,9 @@
     <Filter Include="GUI\Panes\SeedProbe">
       <UniqueIdentifier>{1aa4c3a0-3f5d-465b-9c6c-e14dc9e9af86}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\Artifacts">
+      <UniqueIdentifier>{9a267a3f-42f8-4db8-9540-c08a4d67f9e5}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Widgets">
       <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
     </Filter>
@@ -47,6 +50,18 @@
     </QtRcc>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\MainWindow.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
@@ -118,6 +133,12 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\MainWindow.h">
       <Filter>GUI</Filter>
     </QtMoc>
@@ -147,6 +168,12 @@
     </QtMoc>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>GUI</Filter>
     </ClInclude>
