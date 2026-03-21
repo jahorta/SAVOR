@@ -54,6 +54,7 @@ public:
 
 signals:
     void stateChanged();
+    void rowsChanged();
 
 private:
     using ProgramKindsResult = simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>;
