@@ -27,8 +27,8 @@ void initializeDatabase()
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QCoreApplication::setOrganizationName("OpenAI");
-    QCoreApplication::setApplicationName("SoaSimQt");
+    QCoreApplication::setOrganizationName("JahortaInc");
+    QCoreApplication::setApplicationName("Skies of Arcadia Simulator");
 
     initializeDatabase();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
