@@ -112,6 +112,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
@@ -128,12 +132,20 @@
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp" />
     <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeController.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
@@ -144,6 +156,10 @@
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbePage.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h" />
