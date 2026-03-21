@@ -94,6 +94,19 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #aeb8c7;
         font-size: 12px;
     }
+    QToolButton#settingsSectionToggle {
+        background-color: transparent;
+        border: none;
+        color: #f3f7fb;
+        font-size: 18px;
+        font-weight: 700;
+        padding: 0;
+        text-align: left;
+    }
+    QToolButton#settingsSectionToggle:hover {
+        background-color: transparent;
+        color: #ffffff;
+    }
     QLabel#settingsFieldLabel {
         color: #8f9bad;
         font-size: 11px;

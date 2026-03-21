@@ -22,17 +22,13 @@ public:
 
 private slots:
     void refreshUi();
-    void browseForIsoPath();
-    void browseForDolphinBaseDir();
 
 private:
     void createWidgets();
     void configureTable();
     QWidget* createControlsCard();
-    QWidget* createSettingsCard();
     QWidget* createTableCard();
     QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
-    QLabel* createFieldCaption(const QString& text, QWidget* parent) const;
     void setControlsEnabledForRunningState(bool running);
     void syncActionButtonStates(bool running, bool valid);
 
@@ -43,16 +39,10 @@ private:
     QPushButton* startButton_ = nullptr;
     QPushButton* pauseButton_ = nullptr;
     QPushButton* stopButton_ = nullptr;
-    QPushButton* isoBrowseButton_ = nullptr;
-    QPushButton* dolphinBrowseButton_ = nullptr;
     QSpinBox* targetWorkersSpin_ = nullptr;
     QLabel* activeWorkersLabel_ = nullptr;
     QLabel* statusValueLabel_ = nullptr;
     QLabel* snapshotCountLabel_ = nullptr;
-    QLineEdit* isoPathEdit_ = nullptr;
-    QLineEdit* dolphinBaseDirEdit_ = nullptr;
-    QSpinBox* eventBufferSpin_ = nullptr;
-    QCheckBox* startPausedCheck_ = nullptr;
     QLabel* validationLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
