@@ -73,6 +73,90 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #9ca8b8;
         font-size: 12px;
     }
+
+    QFrame#settingsCard {
+        background-color: #1b1f27;
+        border: 1px solid #2e3542;
+        border-radius: 8px;
+    }
+    QLabel#settingsSectionEyebrow {
+        color: #8f9bad;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+    }
+    QLabel#settingsSectionTitle {
+        color: #f3f7fb;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    QLabel#settingsSectionDescription {
+        color: #aeb8c7;
+        font-size: 12px;
+    }
+    QLabel#settingsFieldLabel {
+        color: #8f9bad;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    QLabel#settingsValueLabel {
+        color: #eef3f9;
+        font-size: 13px;
+        font-weight: 600;
+        background-color: #12161d;
+        border: 1px solid #313949;
+        border-radius: 6px;
+        padding: 8px 10px;
+    }
+    QLineEdit#settingsPathEdit {
+        min-height: 34px;
+        background-color: #12161d;
+        border: 1px solid #394150;
+        border-radius: 6px;
+        color: #e7ebf0;
+        padding: 0 10px;
+    }
+    QLabel#settingsValidation,
+    QLabel#settingsStatus {
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 12px;
+    }
+    QLabel#settingsValidation[validationState="invalid"] {
+        color: #f6c06a;
+        border: 1px solid #5a4630;
+        background-color: #241d15;
+    }
+    QLabel#settingsValidation[validationState="valid"] {
+        color: #9fe0b2;
+        border: 1px solid #294937;
+        background-color: #16241b;
+    }
+    QLabel#settingsStatus[statusKind="info"] {
+        color: #b9d7ff;
+        border: 1px solid #31496a;
+        background-color: #16202d;
+    }
+    QLabel#settingsStatus[statusKind="warning"] {
+        color: #f6c06a;
+        border: 1px solid #5a4630;
+        background-color: #241d15;
+    }
+    QLabel#settingsStatus[statusKind="success"] {
+        color: #9fe0b2;
+        border: 1px solid #294937;
+        background-color: #16241b;
+    }
+    QLabel#settingsStatus[statusKind="failure"] {
+        color: #ffb4b4;
+        border: 1px solid #61363d;
+        background-color: #2a171b;
+    }
+    QLabel#settingsStatus[statusKind="working"] {
+        color: #c9c2ff;
+        border: 1px solid #433f70;
+        background-color: #1b1931;
+    }
     QFrame#jobsToolbarPanel, QFrame#jobsPagingPanel, QFrame#jobsContentPanel, QFrame#jobsSurfacePanel {
         background-color: #1b1f27;
         border: 1px solid #2e3542;

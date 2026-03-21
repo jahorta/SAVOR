@@ -4,6 +4,7 @@
 #include "GUI/StyleSheet.h"
 #include "GUI/Panes/JobSetsPane/JobSetsPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
+#include "GUI/Panes/SettingsPane/SettingsPage.h"
 
 #include <QtCore/QStringList>
 
@@ -34,7 +35,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Artifacts", "Mockup page for artifact browsing and import/export flows." },
     { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
     { "Explorer Runs", "Mockup page for explorer run history and controls." },
-    { "Settings", "Mockup page for application-wide settings and environment setup." }
+    { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
 };
 
 QFrame* createPanelFrame(const QString& title, const QString& body)
@@ -221,7 +222,7 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(createPlaceholderPage("Artifacts", "Mockup page for artifact browsing and import/export flows."));
     contentStack_->addWidget(createPlaceholderPage("Seed Probe", "Mockup page for seed probing tools and diagnostics."));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
-    contentStack_->addWidget(createPlaceholderPage("Settings", "Mockup page for application-wide settings and environment setup."));
+    contentStack_->addWidget(new SettingsPage(contentStack_));
 
     layout->addWidget(contentStack_, 1);
 
