@@ -382,7 +382,7 @@ void SeedProbePage::rebuildLegend(const QVector<int>& deltas)
         return;
     }
 
-    const int step = std::max(1, deltas.size() / 12);
+    const int step = std::max(1.0f, (float)(deltas.size() / 12));
     for (int i = 0; i < deltas.size(); i += step) {
         const int value = deltas[i];
         const QString label = value > 0 ? QStringLiteral("+%1").arg(value) : QString::number(value);
