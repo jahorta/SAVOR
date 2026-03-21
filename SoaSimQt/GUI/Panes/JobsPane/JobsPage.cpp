@@ -1,115 +1,43 @@
 #include "JobsPage.h"
 
-#include <QtCore/QDateTime>
+#include "ArtifactsTableModel.h"
+#include "ArtifactsTableView.h"
+#include "JobsController.h"
+#include "JobsTableModel.h"
+#include "JobsTableView.h"
+
 #include <QtCore/QSignalBlocker>
-#include <QtCore/QTimer>
+#include <QtCore/QStringList>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QHeaderView>
 #include <QtCore/QItemSelectionModel>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtCore/QDateTime>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStyle>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 
-#include "ArtifactsTableModel.h"
-#include "ArtifactsTableView.h"
-#include "JobsTableModel.h"
-#include "JobsTableView.h"
-
 #include <algorithm>
-#include <optional>
-#include <vector>
-
-namespace {
-constexpr int kJobsPageSize = 8;
-} // namespace
-
-struct JobsPage::MockJob {
-    qint64 jobId = 0;
-    qint64 jobSetId = 0;
-    std::optional<qint64> savestateId;
-    QString programKind;
-    QString state;
-    int attempts = 0;
-    QString queuedAt;
-    QString progress;
-    int priority = 0;
-    QStringList events;
-    QString payload;
-    QString results;
-    QStringList artifacts;
-    QStringList decodedProgress;
-};
 
 JobsPage::JobsPage(QWidget* parent)
     : QWidget(parent)
+    , controller_(new JobsController(this))
 {
-    buildMockJobs();
     createWidgets();
     wireSignals();
-    syncControlsToState();
-    applyFilters();
-}
-
-void JobsPage::buildMockJobs()
-{
-    allJobs_ = {
-        {41021, 2101, 915, "BattleSim", "RUNNING", 1, "2026-03-20 10:12:03", "Step 183 / 600 • exploring branch 44", 12,
-         {"10:12:03 CLAIMED by worker-2", "10:12:05 RUNNING", "10:14:17 PROGRESS snapshot saved"},
-         "[job]\nseed=10881\nmode=BattleTower\ntrainer=Palmer\n", "[results]\noutcome=pending\n", {"trace.log (32 KB)", "battle.mp4 (4.2 MB)"},
-         {"Loaded savestate 915", "Advanced to battle 183", "Win rate estimate: 61.2%"}},
-        {41020, 2101, 914, "BattleSim", "FAILED", 3, "2026-03-20 10:08:22", "AI mismatch at turn 27", 7,
-         {"10:08:22 CLAIMED by worker-5", "10:09:02 RUNNING", "10:09:19 FAILED: desync"},
-         "[job]\nseed=10880\nmode=BattleTower\ntrainer=Palmer\n", "[results]\noutcome=failed\nturn=27\n", {"failure_dump.zip (512 KB)"},
-         {"RNG advanced unexpectedly", "Expected move Protect, saw Quick Attack"}},
-        {41019, 2100, std::nullopt, "SeedSearch", "QUEUED", 0, "2026-03-20 10:07:41", "Waiting for worker claim", 4,
-         {"10:07:41 QUEUED"},
-         "[job]\nseed_range=100000-120000\nfilters=timid,synchronize\n", "[results]\noutcome=pending\n", {},
-         {"Queued for search worker"}},
-        {41018, 2099, 910, "BattleSim", "SUCCEEDED", 1, "2026-03-20 10:03:55", "Completed in 00:07:18", 15,
-         {"10:03:55 CLAIMED by worker-1", "10:04:03 RUNNING", "10:11:13 SUCCEEDED"},
-         "[job]\nseed=10870\nmode=Factory\nround=42\n", "[results]\noutcome=winner\nscore=42\n", {"result.ini (2 KB)", "trace.log (12 KB)", "summary.png (180 KB)"},
-         {"Simulation started", "Reached round 42", "Winner confirmed"}},
-        {41017, 2099, 909, "BattleSim", "CANCELED", 2, "2026-03-20 10:02:41", "Canceled by operator", 6,
-         {"10:02:41 CLAIMED by worker-3", "10:03:02 RUNNING", "10:03:19 CANCELED"},
-         "[job]\nseed=10869\nmode=Factory\nround=41\n", "[results]\noutcome=canceled\n", {"partial_trace.log (7 KB)"},
-         {"Execution interrupted by user"}},
-        {41016, 2098, 907, "Explorer", "RUNNING", 1, "2026-03-20 09:58:31", "Wave 9 / 12 • 3 active leaves", 11,
-         {"09:58:31 CLAIMED by worker-6", "09:58:42 RUNNING", "10:05:04 PROGRESS decoded"},
-         "[job]\nwave_count=12\nbranching=aggressive\n", "[results]\noutcome=pending\n", {"explorer.dot (96 KB)"},
-         {"Wave 9 started", "3 promising branches remain", "Best score so far: 188"}},
-        {41015, 2097, 902, "SeedSearch", "SUCCEEDED", 1, "2026-03-20 09:44:10", "Found 12 matching seeds", 9,
-         {"09:44:10 CLAIMED by worker-4", "09:44:21 RUNNING", "09:46:32 SUCCEEDED"},
-         "[job]\nseed_range=70000-90000\nfilters=adamant,31atk\n", "[results]\noutcome=success\nmatches=12\n", {"matches.csv (14 KB)", "results.ini (1 KB)"},
-         {"12 matches exported", "Best seed: 81234"}},
-        {41014, 2097, 901, "BattleSim", "INTERRUPTED", 2, "2026-03-20 09:40:48", "Worker heartbeat lost", 5,
-         {"09:40:48 CLAIMED by worker-9", "09:41:02 RUNNING", "09:43:11 INTERRUPTED"},
-         "[job]\nseed=10844\nmode=BattleTower\ntrainer=Argenta\n", "[results]\noutcome=interrupted\n", {"worker-heartbeat.txt (512 B)"},
-         {"Heartbeat timeout exceeded", "Eligible for requeue"}},
-        {41013, 2096, 900, "Explorer", "QUEUED", 0, "2026-03-20 09:35:22", "Queued behind 4 higher-priority jobs", 3,
-         {"09:35:22 QUEUED"},
-         "[job]\nwave_count=8\nbranching=balanced\n", "[results]\noutcome=pending\n", {},
-         {"Awaiting worker capacity"}},
-        {41012, 2095, std::nullopt, "BattleSim", "SUPERSEDED", 1, "2026-03-20 09:22:17", "Superseded by rerun 41021", 2,
-         {"09:22:17 CLAIMED by worker-1", "09:24:02 SUPERSEDED"},
-         "[job]\nseed=10777\nmode=BattleTower\ntrainer=Palmer\n", "[results]\noutcome=superseded\n", {"old-summary.txt (2 KB)"},
-         {"Superseded after new parameters were submitted"}},
-        {41011, 2094, 884, "BattleSim", "SUCCEEDED_WINNER", 1, "2026-03-20 09:04:08", "Winner result promoted", 14,
-         {"09:04:08 CLAIMED by worker-2", "09:05:01 RUNNING", "09:10:44 SUCCEEDED_WINNER"},
-         "[job]\nseed=10601\nmode=BattleFactory\n", "[results]\noutcome=winner\nscore=55\n", {"winner.replay (900 KB)"},
-         {"Winner promoted into summary set"}},
-        {41010, 2094, 883, "BattleSim", "SUCCEEDED_DUPLICATE", 1, "2026-03-20 09:00:03", "Duplicate of winner job", 13,
-         {"09:00:03 CLAIMED by worker-7", "09:00:44 RUNNING", "09:06:13 SUCCEEDED_DUPLICATE"},
-         "[job]\nseed=10600\nmode=BattleFactory\n", "[results]\noutcome=duplicate\n", {"duplicate-note.txt (1 KB)"},
-         {"Duplicate terminal state noted"}}
-    };
+    controller_->loadInitial();
 }
 
 void JobsPage::createWidgets()
@@ -118,13 +46,11 @@ void JobsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel("Jobs", this);
+    titleLabel_ = new QLabel(QStringLiteral("Jobs"), this);
     titleLabel_->setObjectName("pageTitle");
     rootLayout->addWidget(titleLabel_);
 
-    descriptionLabel_ = new QLabel(
-        "Qt implementation of the Jobs workspace with mock filters, paging, selection, inspector interactions, and model/view tables.",
-        this);
+    descriptionLabel_ = new QLabel(QStringLiteral("Live Jobs workspace backed by DataService with cursor paging, inspector detail tabs, backend actions, and structured artifacts metadata."), this);
     descriptionLabel_->setObjectName("pageDescription");
     descriptionLabel_->setWordWrap(true);
     rootLayout->addWidget(descriptionLabel_);
@@ -137,43 +63,46 @@ void JobsPage::createWidgets()
     filterLayout->setVerticalSpacing(10);
 
     kindFilter_ = new QComboBox(filterPanel);
-    kindFilter_->setObjectName("jobsFilterCombo");
     stateFilter_ = new QComboBox(filterPanel);
-    stateFilter_->setObjectName("jobsFilterCombo");
     jobSetFilter_ = new QLineEdit(filterPanel);
-    jobSetFilter_->setObjectName("jobsFilterEdit");
-    jobSetFilter_->setPlaceholderText("job_set_id");
-    applyButton_ = new QPushButton("Apply", filterPanel);
-    applyButton_->setObjectName("jobsPrimaryButton");
-    resetButton_ = new QPushButton("Reset", filterPanel);
-    resetButton_->setObjectName("jobsSecondaryButton");
-    autoRefreshCheck_ = new QCheckBox("Auto refresh", filterPanel);
-    autoRefreshCheck_->setObjectName("jobsCheckBox");
+    pageSizeSpin_ = new QSpinBox(filterPanel);
+    applyButton_ = new QPushButton(QStringLiteral("Apply"), filterPanel);
+    resetButton_ = new QPushButton(QStringLiteral("Reset"), filterPanel);
+    autoRefreshCheck_ = new QCheckBox(QStringLiteral("Auto refresh"), filterPanel);
     refreshSecondsSpin_ = new QSpinBox(filterPanel);
+
+    kindFilter_->setObjectName("jobsFilterCombo");
+    stateFilter_->setObjectName("jobsFilterCombo");
+    jobSetFilter_->setObjectName("jobsFilterEdit");
+    pageSizeSpin_->setObjectName("jobsRefreshSpin");
+    applyButton_->setObjectName("jobsPrimaryButton");
+    resetButton_->setObjectName("jobsSecondaryButton");
+    autoRefreshCheck_->setObjectName("jobsCheckBox");
     refreshSecondsSpin_->setObjectName("jobsRefreshSpin");
-    refreshSecondsSpin_->setRange(1, 5);
-    refreshSecondsSpin_->setSuffix(" s");
 
-    kindFilter_->addItem("All kinds", QString());
-    kindFilter_->addItems({"BattleSim", "Explorer", "SeedSearch"});
+    pageSizeSpin_->setRange(10, 500); pageSizeSpin_->setSingleStep(10);
+    refreshSecondsSpin_->setRange(1, 5); refreshSecondsSpin_->setSuffix(QStringLiteral(" s"));
+    jobSetFilter_->setPlaceholderText(QStringLiteral("job_set_id"));
 
-    stateFilter_->addItem("All states", QString());
-    stateFilter_->addItems({
-        "QUEUED", "CLAIMED", "RUNNING", "INTERRUPTED", "SUCCEEDED", "FAILED", "CANCELED",
-        "SUPERSEDED", "SUCCEEDED_WINNER", "SUCCEEDED_DUPLICATE"
-    });
+    kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
+    stateFilter_->addItem(QStringLiteral("All states"), QVariant());
+    for (const QString& state : QStringList{QStringLiteral("QUEUED"), QStringLiteral("CLAIMED"), QStringLiteral("RUNNING"), QStringLiteral("INTERRUPTED"), QStringLiteral("SUCCEEDED"), QStringLiteral("FAILED"), QStringLiteral("CANCELED"), QStringLiteral("SUPERSEDED"), QStringLiteral("SUCCEEDED_WINNER"), QStringLiteral("SUCCEEDED_DUPLICATE")}) {
+        stateFilter_->addItem(state, state);
+    }
 
-    filterLayout->addWidget(new QLabel("Kind", filterPanel), 0, 0);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Kind"), filterPanel), 0, 0);
     filterLayout->addWidget(kindFilter_, 1, 0);
-    filterLayout->addWidget(new QLabel("State", filterPanel), 0, 1);
+    filterLayout->addWidget(new QLabel(QStringLiteral("State"), filterPanel), 0, 1);
     filterLayout->addWidget(stateFilter_, 1, 1);
-    filterLayout->addWidget(new QLabel("Job Set", filterPanel), 0, 2);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Job Set"), filterPanel), 0, 2);
     filterLayout->addWidget(jobSetFilter_, 1, 2);
-    filterLayout->addWidget(applyButton_, 1, 3);
-    filterLayout->addWidget(resetButton_, 1, 4);
-    filterLayout->addWidget(autoRefreshCheck_, 0, 5, 1, 2, Qt::AlignBottom);
-    filterLayout->addWidget(refreshSecondsSpin_, 1, 5);
-    filterLayout->addWidget(new QLabel("Interval", filterPanel), 1, 6);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Page size"), filterPanel), 0, 3);
+    filterLayout->addWidget(pageSizeSpin_, 1, 3);
+    filterLayout->addWidget(applyButton_, 1, 4);
+    filterLayout->addWidget(resetButton_, 1, 5);
+    filterLayout->addWidget(autoRefreshCheck_, 0, 6, 1, 2, Qt::AlignBottom);
+    filterLayout->addWidget(refreshSecondsSpin_, 1, 6);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Interval"), filterPanel), 1, 7);
     filterLayout->setColumnStretch(2, 1);
     rootLayout->addWidget(filterPanel);
 
@@ -187,153 +116,92 @@ void JobsPage::createWidgets()
     pageControls->setObjectName("jobsPagingPanel");
     QHBoxLayout* pageLayout = new QHBoxLayout(pageControls);
     pageLayout->setContentsMargins(16, 12, 16, 12);
-    pageLayout->setSpacing(10);
-
-    prevButton_ = new QPushButton("Prev", pageControls);
-    prevButton_->setObjectName("jobsSecondaryButton");
-    nextButton_ = new QPushButton("Next", pageControls);
-    nextButton_->setObjectName("jobsSecondaryButton");
-    refreshButton_ = new QPushButton("Refresh now", pageControls);
-    refreshButton_->setObjectName("jobsSecondaryButton");
+    prevButton_ = new QPushButton(QStringLiteral("Prev"), pageControls);
+    nextButton_ = new QPushButton(QStringLiteral("Next"), pageControls);
+    refreshButton_ = new QPushButton(QStringLiteral("Refresh now"), pageControls);
     pageSummaryLabel_ = new QLabel(pageControls);
-    pageSummaryLabel_->setObjectName("jobsMetaText");
     lastRefreshLabel_ = new QLabel(pageControls);
+    prevButton_->setObjectName("jobsSecondaryButton");
+    nextButton_->setObjectName("jobsSecondaryButton");
+    refreshButton_->setObjectName("jobsSecondaryButton");
+    pageSummaryLabel_->setObjectName("jobsMetaText");
     lastRefreshLabel_->setObjectName("jobsMetaText");
-
-    pageLayout->addWidget(prevButton_);
-    pageLayout->addWidget(nextButton_);
-    pageLayout->addWidget(refreshButton_);
-    pageLayout->addSpacing(8);
-    pageLayout->addWidget(pageSummaryLabel_);
-    pageLayout->addStretch();
-    pageLayout->addWidget(lastRefreshLabel_);
+    pageLayout->addWidget(prevButton_); pageLayout->addWidget(nextButton_); pageLayout->addWidget(refreshButton_); pageLayout->addSpacing(8); pageLayout->addWidget(pageSummaryLabel_); pageLayout->addStretch(); pageLayout->addWidget(lastRefreshLabel_);
     contentLayout->addWidget(pageControls);
 
     QSplitter* splitter = new QSplitter(Qt::Horizontal, contentPanel);
     splitter->setChildrenCollapsible(false);
-    splitter->setHandleWidth(8);
 
     QFrame* tablePanel = new QFrame(splitter);
     tablePanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* tableLayout = new QVBoxLayout(tablePanel);
     tableLayout->setContentsMargins(16, 16, 16, 16);
-    tableLayout->setSpacing(10);
-
-    QLabel* tableTitle = new QLabel("Jobs Table", tablePanel);
-    tableTitle->setObjectName("panelTitle");
-    QLabel* tableBody = new QLabel(
-        "Single-click updates the inspector. Double-click also focuses the Overview tab, now using Qt's model/view table architecture.",
-        tablePanel);
-    tableBody->setObjectName("panelBody");
-    tableBody->setWordWrap(true);
-
+    tableLayout->addWidget(new QLabel(QStringLiteral("Jobs Table"), tablePanel));
     jobsTable_ = new JobsTableView(tablePanel);
     jobsModel_ = new JobsTableModel(jobsTable_);
     jobsTable_->attachModel(jobsModel_);
-
-    tableLayout->addWidget(tableTitle);
-    tableLayout->addWidget(tableBody);
     tableLayout->addWidget(jobsTable_, 1);
 
     QFrame* inspectorPanel = new QFrame(splitter);
     inspectorPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspectorPanel);
     inspectorLayout->setContentsMargins(16, 16, 16, 16);
-    inspectorLayout->setSpacing(10);
-
-    QLabel* inspectorTitle = new QLabel("Job Inspector", inspectorPanel);
-    inspectorTitle->setObjectName("panelTitle");
-    inspectorSummary_ = new QLabel("Select a job to inspect details.", inspectorPanel);
+    inspectorSummary_ = new QLabel(QStringLiteral("Select a job to inspect details."), inspectorPanel);
     inspectorSummary_->setObjectName("jobsInspectorSummary");
     inspectorSummary_->setWordWrap(true);
+    inspectorLayout->addWidget(new QLabel(QStringLiteral("Job Inspector"), inspectorPanel));
+    inspectorLayout->addWidget(inspectorSummary_);
 
     QHBoxLayout* actionLayout = new QHBoxLayout();
-    actionLayout->setSpacing(8);
-    requeueButton_ = new QPushButton("Requeue", inspectorPanel);
-    requeueButton_->setObjectName("jobsSecondaryButton");
-    restartButton_ = new QPushButton("Restart", inspectorPanel);
-    restartButton_->setObjectName("jobsSecondaryButton");
-    cancelButton_ = new QPushButton("Cancel", inspectorPanel);
-    cancelButton_->setObjectName("jobsSecondaryButton");
+    requeueButton_ = new QPushButton(QStringLiteral("Requeue"), inspectorPanel);
+    restartButton_ = new QPushButton(QStringLiteral("Restart"), inspectorPanel);
+    cancelButton_ = new QPushButton(QStringLiteral("Cancel"), inspectorPanel);
     bumpDeltaSpin_ = new QSpinBox(inspectorPanel);
-    bumpDeltaSpin_->setObjectName("jobsRefreshSpin");
-    bumpDeltaSpin_->setRange(-9, 9);
-    bumpDeltaSpin_->setValue(1);
-    applyBumpButton_ = new QPushButton("Apply bump", inspectorPanel);
-    applyBumpButton_->setObjectName("jobsPrimaryButton");
-    inspectorRefreshButton_ = new QPushButton("Refresh detail", inspectorPanel);
-    inspectorRefreshButton_->setObjectName("jobsSecondaryButton");
-    actionLayout->addWidget(requeueButton_);
-    actionLayout->addWidget(restartButton_);
-    actionLayout->addWidget(cancelButton_);
-    actionLayout->addWidget(new QLabel("Delta", inspectorPanel));
-    actionLayout->addWidget(bumpDeltaSpin_);
-    actionLayout->addWidget(applyBumpButton_);
-    actionLayout->addStretch();
-    actionLayout->addWidget(inspectorRefreshButton_);
+    applyBumpButton_ = new QPushButton(QStringLiteral("Apply bump"), inspectorPanel);
+    inspectorRefreshButton_ = new QPushButton(QStringLiteral("Refresh detail"), inspectorPanel);
+    bumpDeltaSpin_->setRange(-9, 9); bumpDeltaSpin_->setValue(1);
+    requeueButton_->setObjectName("jobsSecondaryButton"); restartButton_->setObjectName("jobsSecondaryButton"); cancelButton_->setObjectName("jobsSecondaryButton"); applyBumpButton_->setObjectName("jobsPrimaryButton"); inspectorRefreshButton_->setObjectName("jobsSecondaryButton");
+    actionLayout->addWidget(requeueButton_); actionLayout->addWidget(restartButton_); actionLayout->addWidget(cancelButton_); actionLayout->addWidget(new QLabel(QStringLiteral("Delta"), inspectorPanel)); actionLayout->addWidget(bumpDeltaSpin_); actionLayout->addWidget(applyBumpButton_); actionLayout->addStretch(); actionLayout->addWidget(inspectorRefreshButton_);
+    inspectorLayout->addLayout(actionLayout);
 
     inspectorTabs_ = new QTabWidget(inspectorPanel);
-    inspectorTabs_->setObjectName("jobsInspectorTabs");
-
     QWidget* overviewTab = new QWidget(inspectorTabs_);
     QVBoxLayout* overviewLayout = new QVBoxLayout(overviewTab);
-    overviewLayout->setContentsMargins(12, 12, 12, 12);
-    overviewLayout->setSpacing(10);
     QGridLayout* overviewGrid = new QGridLayout();
-    overviewGrid->setHorizontalSpacing(10);
-    overviewGrid->setVerticalSpacing(8);
-    overviewPriorityValue_ = new QLabel("--", overviewTab);
-    overviewPriorityValue_->setObjectName("jobsValueLabel");
-    overviewQueuedValue_ = new QLabel("--", overviewTab);
-    overviewQueuedValue_->setObjectName("jobsValueLabel");
-    overviewSelectionHint_ = new QLabel("Choose a row from the table to populate the inspector.", overviewTab);
-    overviewSelectionHint_->setObjectName("panelBody");
+    overviewPriorityValue_ = new QLabel(QStringLiteral("--"), overviewTab);
+    overviewQueuedValue_ = new QLabel(QStringLiteral("--"), overviewTab);
+    overviewSelectionHint_ = new QLabel(QStringLiteral("Choose a row from the table to populate the inspector."), overviewTab);
     overviewSelectionHint_->setWordWrap(true);
-    overviewGrid->addWidget(new QLabel("Priority", overviewTab), 0, 0);
-    overviewGrid->addWidget(overviewPriorityValue_, 0, 1);
-    overviewGrid->addWidget(new QLabel("Queued At", overviewTab), 1, 0);
-    overviewGrid->addWidget(overviewQueuedValue_, 1, 1);
-    overviewLayout->addLayout(overviewGrid);
-    overviewLayout->addWidget(overviewSelectionHint_);
-    overviewLayout->addStretch();
+    overviewGrid->addWidget(new QLabel(QStringLiteral("Priority"), overviewTab), 0, 0); overviewGrid->addWidget(overviewPriorityValue_, 0, 1); overviewGrid->addWidget(new QLabel(QStringLiteral("Queued At"), overviewTab), 1, 0); overviewGrid->addWidget(overviewQueuedValue_, 1, 1);
+    overviewLayout->addLayout(overviewGrid); overviewLayout->addWidget(overviewSelectionHint_); overviewLayout->addStretch();
 
     eventsText_ = createReadOnlyTextEdit();
-    progressText_ = createReadOnlyTextEdit();
     payloadText_ = createReadOnlyTextEdit();
+    progressText_ = createReadOnlyTextEdit();
     resultsText_ = createReadOnlyTextEdit();
-
     QWidget* artifactsTab = new QWidget(inspectorTabs_);
     QVBoxLayout* artifactsLayout = new QVBoxLayout(artifactsTab);
-    artifactsLayout->setContentsMargins(12, 12, 12, 12);
-    artifactsLayout->setSpacing(8);
     artifactsTable_ = new ArtifactsTableView(artifactsTab);
     artifactsModel_ = new ArtifactsTableModel(artifactsTable_);
     artifactsTable_->attachModel(artifactsModel_);
     artifactsLayout->addWidget(artifactsTable_);
-
-    inspectorTabs_->addTab(overviewTab, "Overview");
-    inspectorTabs_->addTab(eventsText_, "Events");
-    inspectorTabs_->addTab(payloadText_, "Payload");
-    inspectorTabs_->addTab(artifactsTab, "Artifacts");
-    inspectorTabs_->addTab(progressText_, "Progress");
-    inspectorTabs_->addTab(resultsText_, "Results");
-
-    inspectorLayout->addWidget(inspectorTitle);
-    inspectorLayout->addWidget(inspectorSummary_);
-    inspectorLayout->addLayout(actionLayout);
+    inspectorTabs_->addTab(overviewTab, QStringLiteral("Overview"));
+    inspectorTabs_->addTab(eventsText_, QStringLiteral("Events"));
+    inspectorTabs_->addTab(payloadText_, QStringLiteral("Payload"));
+    inspectorTabs_->addTab(artifactsTab, QStringLiteral("Artifacts"));
+    inspectorTabs_->addTab(progressText_, QStringLiteral("Progress"));
+    inspectorTabs_->addTab(resultsText_, QStringLiteral("Results"));
     inspectorLayout->addWidget(inspectorTabs_, 1);
 
-    splitter->addWidget(tablePanel);
-    splitter->addWidget(inspectorPanel);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
-    splitter->setSizes({900, 520});
-
+    splitter->addWidget(tablePanel); splitter->addWidget(inspectorPanel); splitter->setStretchFactor(0, 3); splitter->setStretchFactor(1, 2);
     contentLayout->addWidget(splitter, 1);
-    rootLayout->addWidget(contentPanel, 1);
 
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->start(refreshSeconds_ * 1000);
+    inlineMessageLabel_ = new QLabel(contentPanel);
+    inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
+    inlineMessageLabel_->setWordWrap(true);
+    contentLayout->addWidget(inlineMessageLabel_);
+
+    rootLayout->addWidget(contentPanel, 1);
 }
 
 QTextEdit* JobsPage::createReadOnlyTextEdit()
@@ -346,314 +214,173 @@ QTextEdit* JobsPage::createReadOnlyTextEdit()
 
 void JobsPage::wireSignals()
 {
+    connect(controller_, &JobsController::stateChanged, this, [this]() {
+        syncControlsFromController();
+        refreshModel();
+        updateInspector();
+        updateStatusWidgets();
+    });
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
-        selectedProgramKind_ = kindFilter_->currentText() == "All kinds" ? QString() : kindFilter_->currentText();
-        selectedState_ = stateFilter_->currentText() == "All states" ? QString() : stateFilter_->currentText();
-        selectedJobSetId_ = jobSetFilter_->text().trimmed();
-        autoRefreshEnabled_ = autoRefreshCheck_->isChecked();
-        refreshSeconds_ = refreshSecondsSpin_->value();
-        refreshTimer_->setInterval(refreshSeconds_ * 1000);
-        pageStartIndex_ = 0;
-        applyFilters();
-        refreshMockProgress();
+        controller_->applyFilters(selectedProgramKind(), selectedState(), selectedJobSetId(), pageSizeSpin_->value());
     });
+    connect(resetButton_, &QPushButton::clicked, controller_, &JobsController::resetFilters);
+    connect(refreshButton_, &QPushButton::clicked, controller_, &JobsController::requestRefresh);
+    connect(prevButton_, &QPushButton::clicked, controller_, &JobsController::requestPreviousPage);
+    connect(nextButton_, &QPushButton::clicked, controller_, &JobsController::requestNextPage);
+    connect(autoRefreshCheck_, &QCheckBox::toggled, controller_, &JobsController::setAutoRefreshEnabled);
+    connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &JobsController::setRefreshSeconds);
+    connect(requeueButton_, &QPushButton::clicked, controller_, &JobsController::requeueSelectedJob);
+    connect(cancelButton_, &QPushButton::clicked, controller_, &JobsController::cancelSelectedJob);
+    connect(applyBumpButton_, &QPushButton::clicked, this, [this]() { controller_->bumpSelectedJobPriority(bumpDeltaSpin_->value()); });
+    connect(inspectorRefreshButton_, &QPushButton::clicked, controller_, &JobsController::refreshSelectedJobDetail);
+    connect(restartButton_, &QPushButton::clicked, this, &JobsPage::handleRestartRequested);
 
-    connect(resetButton_, &QPushButton::clicked, this, [this]() {
-        selectedProgramKind_.clear();
-        selectedState_.clear();
-        selectedJobSetId_.clear();
-        autoRefreshEnabled_ = true;
-        refreshSeconds_ = 2;
-        pageStartIndex_ = 0;
-        syncControlsToState();
-        applyFilters();
-        refreshMockProgress();
+    connect(jobsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, [this](const QModelIndex& current, const QModelIndex&) {
+        if (!current.isValid()) return;
+        if (const JobsTableModel::Row* row = jobsModel_->rowAt(current.row())) controller_->selectJob(row->jobId);
     });
-
-    connect(autoRefreshCheck_, &QCheckBox::toggled, this, [this](bool checked) {
-        autoRefreshEnabled_ = checked;
-    });
-
-    connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
-        refreshSeconds_ = value;
-        refreshTimer_->setInterval(refreshSeconds_ * 1000);
-    });
-
-    connect(prevButton_, &QPushButton::clicked, this, [this]() {
-        pageStartIndex_ = std::max(0, pageStartIndex_ - kJobsPageSize);
-        populateTable();
-    });
-
-    connect(nextButton_, &QPushButton::clicked, this, [this]() {
-        if (pageStartIndex_ + kJobsPageSize < static_cast<int>(filteredJobs_.size())) {
-            pageStartIndex_ += kJobsPageSize;
-            populateTable();
-        }
-    });
-
-    connect(refreshButton_, &QPushButton::clicked, this, [this]() {
-        refreshMockProgress();
-    });
-
-    connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (autoRefreshEnabled_) {
-            refreshMockProgress();
-        }
-    });
-
-    connect(jobsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
-        [this](const QModelIndex& current, const QModelIndex&) {
-            if (!current.isValid()) {
-                return;
-            }
-            if (const JobsTableModel::Row* row = jobsModel_->rowAt(current.row())) {
-                selectedJobId_ = row->jobId;
-                if (const MockJob* job = selectedJob()) {
-                    updateInspector(*job);
-                }
-            }
-        });
 
     connect(jobsTable_, &JobsTableView::doubleClicked, this, [this](const QModelIndex& current) {
         if (current.isValid()) {
             jobsTable_->selectRow(current.row());
             inspectorTabs_->setCurrentIndex(0);
-            inspectorTabs_->setFocus();
-        }
-    });
-
-    const auto triggerSelectionRefresh = [this]() {
-        if (const MockJob* job = selectedJob()) {
-            updateInspector(*job);
-        }
-    };
-
-    connect(requeueButton_, &QPushButton::clicked, this, [this, triggerSelectionRefresh]() {
-        if (MockJob* job = selectedJobMutable()) {
-            job->state = "QUEUED";
-            job->progress = "Requeued from inspector";
-            job->events.prepend(timestampPrefix() + " REQUEUED manually");
-            triggerSelectionRefresh();
-            populateTable();
-        }
-    });
-
-    connect(restartButton_, &QPushButton::clicked, this, [this, triggerSelectionRefresh]() {
-        if (MockJob* job = selectedJobMutable()) {
-            job->state = "QUEUED";
-            job->attempts = 0;
-            job->progress = "Restart requested from inspector";
-            job->events.prepend(timestampPrefix() + " RESTART requested");
-            triggerSelectionRefresh();
-            populateTable();
-        }
-    });
-
-    connect(cancelButton_, &QPushButton::clicked, this, [this, triggerSelectionRefresh]() {
-        if (MockJob* job = selectedJobMutable()) {
-            job->state = "CANCELED";
-            job->progress = "Canceled from inspector";
-            job->events.prepend(timestampPrefix() + " CANCELED manually");
-            triggerSelectionRefresh();
-            populateTable();
-        }
-    });
-
-    connect(applyBumpButton_, &QPushButton::clicked, this, [this, triggerSelectionRefresh]() {
-        if (MockJob* job = selectedJobMutable()) {
-            job->priority += bumpDeltaSpin_->value();
-            job->events.prepend(timestampPrefix() + QString(" PRIORITY bumped by %1").arg(bumpDeltaSpin_->value()));
-            triggerSelectionRefresh();
-        }
-    });
-
-    connect(inspectorRefreshButton_, &QPushButton::clicked, this, [this, triggerSelectionRefresh]() {
-        if (MockJob* job = selectedJobMutable()) {
-            job->events.prepend(timestampPrefix() + " DETAIL refresh requested");
-            triggerSelectionRefresh();
         }
     });
 }
 
-void JobsPage::syncControlsToState()
+void JobsPage::syncControlsFromController()
 {
+    const auto& state = controller_->viewState();
     {
         QSignalBlocker blocker(kindFilter_);
-        kindFilter_->setCurrentIndex(selectedProgramKind_.isEmpty() ? 0 : std::max(0, kindFilter_->findText(selectedProgramKind_)));
+        const QVariant currentData = state.scope.program_kind.has_value() ? QVariant(*state.scope.program_kind) : QVariant();
+        kindFilter_->clear(); kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
+        QList<int> ids = state.programNames.keys(); std::sort(ids.begin(), ids.end());
+        for (int id : ids) kindFilter_->addItem(state.programNames.value(id), id);
+        const int idx = currentData.isValid() ? kindFilter_->findData(currentData) : 0;
+        kindFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
     }
     {
         QSignalBlocker blocker(stateFilter_);
-        stateFilter_->setCurrentIndex(selectedState_.isEmpty() ? 0 : std::max(0, stateFilter_->findText(selectedState_)));
+        const QVariant target = !state.scope.states.empty() ? QVariant(QString::fromStdString(state.scope.states.front())) : QVariant();
+        const int idx = target.isValid() ? stateFilter_->findData(target) : 0;
+        stateFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
     }
-    jobSetFilter_->setText(selectedJobSetId_);
-    autoRefreshCheck_->setChecked(autoRefreshEnabled_);
-    refreshSecondsSpin_->setValue(refreshSeconds_);
+    { QSignalBlocker blocker(jobSetFilter_); jobSetFilter_->setText(state.scope.job_set_id.has_value() ? QString::number(*state.scope.job_set_id) : QString()); }
+    { QSignalBlocker blocker(pageSizeSpin_); pageSizeSpin_->setValue(state.pageLimit); }
+    { QSignalBlocker blocker(autoRefreshCheck_); autoRefreshCheck_->setChecked(state.autoRefresh); }
+    { QSignalBlocker blocker(refreshSecondsSpin_); refreshSecondsSpin_->setValue(state.refreshSeconds); }
+
+    const bool enabled = !state.actionsBusy;
+    prevButton_->setEnabled(state.page.prev.has_value() && enabled);
+    nextButton_->setEnabled(state.page.next.has_value() && enabled);
+    refreshButton_->setEnabled(enabled);
+    applyButton_->setEnabled(enabled);
+    resetButton_->setEnabled(enabled);
 }
 
-void JobsPage::applyFilters()
+void JobsPage::refreshModel()
 {
-    filteredJobs_.clear();
-    for (const MockJob& job : allJobs_) {
-        if (!selectedProgramKind_.isEmpty() && job.programKind != selectedProgramKind_) {
-            continue;
-        }
-        if (!selectedState_.isEmpty() && job.state != selectedState_) {
-            continue;
-        }
-        if (!selectedJobSetId_.isEmpty() && QString::number(job.jobSetId) != selectedJobSetId_) {
-            continue;
-        }
-        filteredJobs_.push_back(&job);
+    const auto& state = controller_->viewState();
+    std::vector<JobsTableModel::Row> rows;
+    rows.reserve(state.page.items.size());
+    for (const JobLite& job : state.page.items) {
+        rows.push_back(JobsTableModel::Row{
+            job.job_id,
+            job.job_set_id,
+            job.savestate_id,
+            state.programNames.value(job.program_kind, QStringLiteral("kind %1").arg(job.program_kind)),
+            QString::fromStdString(job.state),
+            job.attempts,
+            QDateTime::fromSecsSinceEpoch(job.queued_at).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+            state.progressSummary.value(job.job_id, QStringLiteral("..."))
+        });
     }
-
-    if (pageStartIndex_ >= static_cast<int>(filteredJobs_.size())) {
-        pageStartIndex_ = std::max(0, static_cast<int>(filteredJobs_.size()) - kJobsPageSize);
+    jobsModel_->setRows(rows);
+    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+        if (rows[row].jobId == state.selectedJobId) {
+            jobsTable_->selectRow(row);
+            break;
+        }
     }
-
-    populateTable();
-    syncInspectorAfterFilter();
-    updatePageControls();
 }
 
-void JobsPage::populateTable()
+void JobsPage::updateInspector()
 {
-    const int endIndex = std::min(pageStartIndex_ + kJobsPageSize, static_cast<int>(filteredJobs_.size()));
-    std::vector<JobsTableModel::Row> visibleRows;
-    visibleRows.reserve(std::max(0, endIndex - pageStartIndex_));
-    for (int i = pageStartIndex_; i < endIndex; ++i) {
-        const MockJob& job = *filteredJobs_[i];
-        visibleRows.push_back(JobsTableModel::Row{ job.jobId, job.jobSetId, job.savestateId, job.programKind, job.state, job.attempts, job.queuedAt, job.progress });
-    }
-
-    jobsModel_->setRows(visibleRows);
-
-    if (const MockJob* selected = selectedJob()) {
-        const int visibleRow = visibleRowForJob(selected->jobId);
-        if (visibleRow >= 0) {
-            jobsTable_->selectRow(visibleRow);
-            jobsTable_->scrollTo(jobsModel_->index(visibleRow, 0));
-        }
-    }
-
-    updatePageControls();
-}
-
-void JobsPage::updatePageControls()
-{
-    const int total = static_cast<int>(filteredJobs_.size());
-    const int start = total == 0 ? 0 : pageStartIndex_ + 1;
-    const int end = std::min(pageStartIndex_ + kJobsPageSize, total);
-    pageSummaryLabel_->setText(QString("Showing %1-%2 of %3 mock jobs").arg(start).arg(end).arg(total));
-    prevButton_->setEnabled(pageStartIndex_ > 0);
-    nextButton_->setEnabled(pageStartIndex_ + kJobsPageSize < total);
-    lastRefreshLabel_->setText(QString("Last refresh: %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss")));
-}
-
-void JobsPage::syncInspectorAfterFilter()
-{
-    if (const MockJob* current = selectedJob()) {
-        updateInspector(*current);
+    const auto& state = controller_->viewState();
+    const JobLite* selected = nullptr;
+    for (const JobLite& job : state.page.items) if (job.job_id == state.selectedJobId) { selected = &job; break; }
+    if (!selected) {
+        inspectorSummary_->setText(QStringLiteral("Select a job to inspect details."));
+        overviewPriorityValue_->setText(QStringLiteral("--")); overviewQueuedValue_->setText(QStringLiteral("--")); overviewSelectionHint_->setText(QStringLiteral("No jobs match the current filters."));
+        eventsText_->clear(); payloadText_->clear(); progressText_->clear(); resultsText_->clear(); artifactsModel_->setArtifacts({});
+        requeueButton_->setEnabled(false); restartButton_->setEnabled(false); cancelButton_->setEnabled(false); applyBumpButton_->setEnabled(false); inspectorRefreshButton_->setEnabled(false);
         return;
     }
 
-    if (!filteredJobs_.empty()) {
-        selectedJobId_ = filteredJobs_.front()->jobId;
-        updateInspector(*filteredJobs_.front());
-    } else {
-        selectedJobId_ = 0;
-        clearInspector();
+    inspectorSummary_->setText(QStringLiteral("Job %1 | Set %2 | ProgramKind %3 | State %4")
+        .arg(selected->job_id).arg(selected->job_set_id).arg(state.programNames.value(selected->program_kind, QStringLiteral("kind %1").arg(selected->program_kind))).arg(QString::fromStdString(selected->state)));
+    overviewPriorityValue_->setText(QString::number(selected->priority));
+    overviewQueuedValue_->setText(QDateTime::fromSecsSinceEpoch(selected->queued_at).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    overviewSelectionHint_->setText(QStringLiteral("Attempts: %1\nProgress: %2").arg(selected->attempts).arg(state.progressSummary.value(selected->job_id, QStringLiteral("..."))));
+
+    QStringList eventLines;
+    for (const JobEventLite& event : state.detail.events) {
+        eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.ts).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(event.payload_preview.has_value() ? QStringLiteral("  %1").arg(QString::fromStdString(*event.payload_preview)) : QString());
     }
-}
-
-void JobsPage::updateInspector(const MockJob& job)
-{
-    inspectorSummary_->setText(
-        QString("Job %1 | Set %2 | ProgramKind %3 | State %4")
-            .arg(job.jobId)
-            .arg(job.jobSetId)
-            .arg(job.programKind)
-            .arg(job.state));
-    overviewPriorityValue_->setText(QString::number(job.priority));
-    overviewQueuedValue_->setText(job.queuedAt);
-    overviewSelectionHint_->setText(QString("Attempts: %1\nProgress: %2").arg(job.attempts).arg(job.progress));
-
-    eventsText_->setPlainText(job.events.join('\n'));
-    progressText_->setPlainText(job.decodedProgress.join('\n'));
-    payloadText_->setPlainText(job.payload);
-    resultsText_->setPlainText(job.results);
-    artifactsModel_->setArtifacts(job.artifacts);
+    eventsText_->setPlainText(eventLines.join('\n'));
+    payloadText_->setPlainText(state.detail.payloadText);
+    progressText_->setPlainText(state.detail.decodedProgressText);
+    resultsText_->setPlainText(state.detail.resultsText);
+    artifactsModel_->setArtifacts(state.detail.artifacts);
     artifactsTable_->resizeColumnsToContents();
 
-    requeueButton_->setEnabled(job.state != "RUNNING" && job.state != "CLAIMED");
-    restartButton_->setEnabled(job.state == "FAILED");
-    cancelButton_->setEnabled(job.state != "SUCCEEDED" && job.state != "CANCELED" && job.state != "SUCCEEDED_WINNER" && job.state != "SUCCEEDED_DUPLICATE");
-    applyBumpButton_->setEnabled(true);
-    inspectorRefreshButton_->setEnabled(true);
+    const bool actionsEnabled = !state.actionsBusy;
+    requeueButton_->setEnabled(actionsEnabled && selected->state != "QUEUED" && selected->state != "CLAIMED" && selected->state != "RUNNING" && selected->state != "FAILED");
+    restartButton_->setEnabled(actionsEnabled && selected->state == "FAILED");
+    cancelButton_->setEnabled(actionsEnabled && selected->state != "SUCCEEDED" && selected->state != "CANCELED" && selected->state != "SUCCEEDED_WINNER" && selected->state != "SUCCEEDED_DUPLICATE");
+    applyBumpButton_->setEnabled(actionsEnabled);
+    inspectorRefreshButton_->setEnabled(actionsEnabled && state.selectedJobId > 0);
 }
 
-void JobsPage::clearInspector()
+void JobsPage::updateStatusWidgets()
 {
-    inspectorSummary_->setText("Select a job to inspect details.");
-    overviewPriorityValue_->setText("--");
-    overviewQueuedValue_->setText("--");
-    overviewSelectionHint_->setText("No jobs match the current filters.");
-    eventsText_->clear();
-    progressText_->clear();
-    payloadText_->clear();
-    resultsText_->clear();
-    artifactsModel_->setArtifacts({});
-    requeueButton_->setEnabled(false);
-    restartButton_->setEnabled(false);
-    cancelButton_->setEnabled(false);
-    applyBumpButton_->setEnabled(false);
-    inspectorRefreshButton_->setEnabled(false);
-}
-
-int JobsPage::visibleRowForJob(qint64 jobId) const
-{
-    const int endIndex = std::min(pageStartIndex_ + kJobsPageSize, static_cast<int>(filteredJobs_.size()));
-    for (int i = pageStartIndex_; i < endIndex; ++i) {
-        if (filteredJobs_[i]->jobId == jobId) {
-            return i - pageStartIndex_;
-        }
+    const auto& state = controller_->viewState();
+    pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(state.page.items.size()).arg(state.pageLimit));
+    lastRefreshLabel_->setText(state.lastRefresh.isValid() ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP"))) : QStringLiteral("Last refresh: --"));
+    if (!state.errorMessage.isEmpty()) {
+        inlineMessageLabel_->setProperty("severity", QStringLiteral("error")); inlineMessageLabel_->setText(state.errorMessage); inlineMessageLabel_->show();
+    } else if (!state.infoMessage.isEmpty()) {
+        inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(state.infoMessage); inlineMessageLabel_->show();
+    } else if (state.loading) {
+        inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(QStringLiteral("Loading jobs…")); inlineMessageLabel_->show();
+    } else if (state.page.items.empty()) {
+        inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(QStringLiteral("No jobs matched the current filters.")); inlineMessageLabel_->show();
+    } else {
+        inlineMessageLabel_->hide();
     }
-    return -1;
+    style()->unpolish(inlineMessageLabel_); style()->polish(inlineMessageLabel_);
 }
 
-const JobsPage::MockJob* JobsPage::selectedJob() const
-{
-    auto it = std::find_if(allJobs_.cbegin(), allJobs_.cend(), [this](const MockJob& job) {
-        return job.jobId == selectedJobId_;
-    });
-    return it == allJobs_.cend() ? nullptr : &(*it);
-}
+std::optional<int> JobsPage::selectedProgramKind() const { const QVariant data = kindFilter_->currentData(); return data.isValid() ? std::optional<int>(data.toInt()) : std::nullopt; }
+std::optional<QString> JobsPage::selectedState() const { const QVariant data = stateFilter_->currentData(); return data.isValid() ? std::optional<QString>(data.toString()) : std::nullopt; }
+std::optional<qint64> JobsPage::selectedJobSetId() const { bool ok = false; const qint64 value = jobSetFilter_->text().trimmed().toLongLong(&ok); return ok ? std::optional<qint64>(value) : std::nullopt; }
 
-JobsPage::MockJob* JobsPage::selectedJobMutable()
+void JobsPage::handleRestartRequested()
 {
-    auto it = std::find_if(allJobs_.begin(), allJobs_.end(), [this](const MockJob& job) {
-        return job.jobId == selectedJobId_;
-    });
-    return it == allJobs_.end() ? nullptr : &(*it);
-}
-
-void JobsPage::refreshMockProgress()
-{
-    for (MockJob& job : allJobs_) {
-        if (job.state == "RUNNING") {
-            job.progress += " • refreshed";
-            job.events.prepend(timestampPrefix() + " AUTO refresh snapshot");
-        } else if (job.state == "QUEUED") {
-            job.progress = "Queued • refreshed at " + QDateTime::currentDateTime().toString("hh:mm:ss");
-        }
-    }
-    populateTable();
-    if (const MockJob* current = selectedJob()) {
-        updateInspector(*current);
-    }
-    updatePageControls();
-}
-
-QString JobsPage::timestampPrefix() const
-{
-    return QDateTime::currentDateTime().toString("hh:mm:ss");
+    const auto& state = controller_->viewState();
+    if (state.selectedJobId <= 0) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Restart Failed Job"));
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can optionally edit the current job INI first."), &dialog));
+    QPlainTextEdit* iniEdit = new QPlainTextEdit(&dialog);
+    iniEdit->setPlainText(state.detail.payloadText);
+    layout->addWidget(iniEdit, 1);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save INI & Restart"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() == QDialog::Accepted) controller_->restartSelectedFailedJob(iniEdit->toPlainText());
 }

@@ -1,7 +1,10 @@
 #pragma once
 
 #include <QtCore/QAbstractTableModel>
-#include <QtCore/QStringList>
+
+#include "DB/Querying/DataService.h"
+
+#include <vector>
 
 class ArtifactsTableModel final : public QAbstractTableModel
 {
@@ -13,8 +16,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QVariant data(const QModelIndex& index, int role) const override;
 
-    void setArtifacts(const QStringList& artifacts);
+    void setArtifacts(const std::vector<simcore::db::ArtifactRefLite>& artifacts);
 
 private:
-    QStringList artifacts_;
+    std::vector<simcore::db::ArtifactRefLite> artifacts_;
 };

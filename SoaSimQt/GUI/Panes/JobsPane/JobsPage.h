@@ -1,12 +1,12 @@
 #pragma once
 
-#include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
-#include <vector>
+#include <optional>
 
 class ArtifactsTableModel;
 class ArtifactsTableView;
+class JobsController;
 class JobsTableModel;
 class JobsTableView;
 class QCheckBox;
@@ -17,64 +17,47 @@ class QPushButton;
 class QSpinBox;
 class QTabWidget;
 class QTextEdit;
-class QTimer;
 
 class JobsPage final : public QWidget
 {
 public:
-    struct MockJob;
-
     explicit JobsPage(QWidget* parent = nullptr);
 
 private:
-    void buildMockJobs();
     void createWidgets();
     void wireSignals();
-    void syncControlsToState();
-    void applyFilters();
-    void populateTable();
-    void updatePageControls();
-    void syncInspectorAfterFilter();
-    void updateInspector(const MockJob& job);
-    void clearInspector();
-    int visibleRowForJob(qint64 jobId) const;
-    const MockJob* selectedJob() const;
-    MockJob* selectedJobMutable();
-    void refreshMockProgress();
-    QString timestampPrefix() const;
+    void syncControlsFromController();
+    void refreshModel();
+    void updateInspector();
+    void updateStatusWidgets();
     QTextEdit* createReadOnlyTextEdit();
+    std::optional<int> selectedProgramKind() const;
+    std::optional<QString> selectedState() const;
+    std::optional<qint64> selectedJobSetId() const;
+    void handleRestartRequested();
 
-    std::vector<MockJob> allJobs_;
-    std::vector<const MockJob*> filteredJobs_;
-
-    QString selectedProgramKind_;
-    QString selectedState_;
-    QString selectedJobSetId_;
-    bool autoRefreshEnabled_ = true;
-    int refreshSeconds_ = 2;
-    int pageStartIndex_ = 0;
-    qint64 selectedJobId_ = 0;
+    JobsController* controller_ = nullptr;
+    JobsTableModel* jobsModel_ = nullptr;
+    ArtifactsTableModel* artifactsModel_ = nullptr;
 
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
-
     QComboBox* kindFilter_ = nullptr;
     QComboBox* stateFilter_ = nullptr;
     QLineEdit* jobSetFilter_ = nullptr;
+    QSpinBox* pageSizeSpin_ = nullptr;
     QPushButton* applyButton_ = nullptr;
     QPushButton* resetButton_ = nullptr;
     QCheckBox* autoRefreshCheck_ = nullptr;
     QSpinBox* refreshSecondsSpin_ = nullptr;
-
     QPushButton* prevButton_ = nullptr;
     QPushButton* nextButton_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QLabel* pageSummaryLabel_ = nullptr;
     QLabel* lastRefreshLabel_ = nullptr;
+    QLabel* inlineMessageLabel_ = nullptr;
 
     JobsTableView* jobsTable_ = nullptr;
-    JobsTableModel* jobsModel_ = nullptr;
-
     QLabel* inspectorSummary_ = nullptr;
     QPushButton* requeueButton_ = nullptr;
     QPushButton* restartButton_ = nullptr;
@@ -83,7 +66,6 @@ private:
     QPushButton* applyBumpButton_ = nullptr;
     QPushButton* inspectorRefreshButton_ = nullptr;
     QTabWidget* inspectorTabs_ = nullptr;
-
     QLabel* overviewPriorityValue_ = nullptr;
     QLabel* overviewQueuedValue_ = nullptr;
     QLabel* overviewSelectionHint_ = nullptr;
@@ -92,7 +74,4 @@ private:
     QTextEdit* payloadText_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     ArtifactsTableView* artifactsTable_ = nullptr;
-    ArtifactsTableModel* artifactsModel_ = nullptr;
-
-    QTimer* refreshTimer_ = nullptr;
 };
