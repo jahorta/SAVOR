@@ -131,6 +131,9 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp">
       <Filter>GUI\Panes\SeedProbe</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
@@ -162,6 +165,9 @@
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h">
       <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h">
+      <Filter>GUI\Widgets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
       <Filter>GUI\Widgets</Filter>

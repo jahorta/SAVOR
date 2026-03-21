@@ -46,7 +46,7 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
 
-    void setRows(const std::vector<JobSetLite>& rows, const QHash<int, QString>& programNames);
+    void syncRows(const std::vector<JobSetLite>& rows, const QHash<int, QString>& programNames);
     bool containsJobSetId(qint64 jobSetId) const;
     QModelIndex indexForJobSetId(qint64 jobSetId, int column = 0) const;
 
@@ -62,6 +62,18 @@ private:
 
     Node* nodeFromIndex(const QModelIndex& index) const;
     static int rowOfChild(const Node* parent, const Node* child);
+
+    QModelIndex indexForNode(const Node* node, int column = 0) const;
+    int depthOf(const Node* node) const;
+    Node* desiredParentFor(const JobSetLite& row, const QSet<qint64>& incomingIds) const;
+    int insertionRowForParent(const Node* parent, const Item& item, const Node* skipNode = nullptr) const;
+    static std::unique_ptr<Node> takeChild(Node* parent, int row);
+    void registerNodeRecursive(Node* node);
+    void unregisterNodeRecursive(Node* node);
+    void insertNode(std::unique_ptr<Node> node, Node* parent);
+    void removeNode(Node* node);
+    void moveNode(Node* node, Node* newParent);
+    void emitNodeDataChanged(Node* node);
 
     std::unique_ptr<Node> root_;
     QHash<qint64, Node*> byId_;

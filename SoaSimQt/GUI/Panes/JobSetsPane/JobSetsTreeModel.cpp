@@ -4,7 +4,19 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <utility>
 
+namespace {
+
+bool jobSetLess(const JobSetsTreeModel::Item& a, const JobSetsTreeModel::Item& b)
+{
+    if (a.jobSet.created_at != b.jobSet.created_at) {
+        return a.jobSet.created_at > b.jobSet.created_at;
+    }
+    return a.jobSet.job_set_id > b.jobSet.job_set_id;
+}
+
+}
 
 JobSetsTreeModel::JobSetsTreeModel(QObject* parent)
     : QAbstractItemModel(parent)
@@ -116,18 +128,50 @@ QVariant JobSetsTreeModel::headerData(int section, Qt::Orientation orientation, 
     }
 }
 
-void JobSetsTreeModel::setRows(const std::vector<JobSetLite>& rows, const QHash<int, QString>& programNames)
+void JobSetsTreeModel::syncRows(const std::vector<JobSetLite>& rows, const QHash<int, QString>& programNames)
 {
-    beginResetModel();
-    root_ = std::make_unique<Node>();
-    byId_.clear();
+    QSet<qint64> incomingIds;
+    incomingIds.reserve(static_cast<qsizetype>(rows.size()));
+    std::unordered_map<qint64, const JobSetLite*> desiredById;
+    desiredById.reserve(rows.size());
+
+    for (const JobSetLite& row : rows) {
+        incomingIds.insert(row.job_set_id);
+        desiredById.emplace(row.job_set_id, &row);
+    }
+
+    std::vector<qint64> staleIds;
+    staleIds.reserve(static_cast<size_t>(byId_.size()));
+    for (auto it = byId_.cbegin(); it != byId_.cend(); ++it) {
+        if (!incomingIds.contains(it.key())) {
+            staleIds.push_back(it.key());
+        }
+    }
+
+    std::sort(staleIds.begin(), staleIds.end(), [&](qint64 lhs, qint64 rhs) {
+        return depthOf(byId_.value(lhs)) > depthOf(byId_.value(rhs));
+    });
+
+    for (qint64 staleId : staleIds) {
+        Node* node = byId_.value(staleId, nullptr);
+        if (node) {
+            removeNode(node);
+        }
+    }
+
+    for (const JobSetLite& row : rows) {
+        Node* node = byId_.value(row.job_set_id, nullptr);
+        if (node) {
+            node->item.jobSet = row;
+            node->item.programKindName = programNames.value(row.program_kind);
+        }
+    }
 
     std::vector<const JobSetLite*> ordered;
     ordered.reserve(rows.size());
     for (const JobSetLite& row : rows) {
         ordered.push_back(&row);
     }
-
     std::sort(ordered.begin(), ordered.end(), [](const JobSetLite* a, const JobSetLite* b) {
         if (a->created_at != b->created_at) {
             return a->created_at > b->created_at;
@@ -135,44 +179,48 @@ void JobSetsTreeModel::setRows(const std::vector<JobSetLite>& rows, const QHash<
         return a->job_set_id > b->job_set_id;
     });
 
-    std::unordered_map<qint64, std::unique_ptr<Node>> pending;
-    pending.reserve(rows.size());
-
     for (const JobSetLite* row : ordered) {
-        auto node = std::make_unique<Node>();
-        node->item.jobSet = *row;
-        node->item.programKindName = programNames.value(row->program_kind);
-        byId_.insert(row->job_set_id, node.get());
-        pending.emplace(row->job_set_id, std::move(node));
+        if (!byId_.contains(row->job_set_id)) {
+            auto node = std::make_unique<Node>();
+            node->item.jobSet = *row;
+            node->item.programKindName = programNames.value(row->program_kind);
+            insertNode(std::move(node), desiredParentFor(*row, incomingIds));
+        }
     }
 
+    std::vector<qint64> orderedIds;
+    orderedIds.reserve(ordered.size());
     for (const JobSetLite* row : ordered) {
-        std::unique_ptr<Node> node = std::move(pending[row->job_set_id]);
-        Node* parentNode = root_.get();
-        if (row->parent_job_set_id.has_value()) {
-            auto parentIt = byId_.find(*row->parent_job_set_id);
-            if (parentIt != byId_.end()) {
-                parentNode = parentIt.value();
-            }
-        }
-        node->parent = parentNode;
-        parentNode->children.push_back(std::move(node));
+        orderedIds.push_back(row->job_set_id);
     }
 
-    std::function<void(Node*)> sortChildren = [&](Node* node) {
-        std::sort(node->children.begin(), node->children.end(), [](const std::unique_ptr<Node>& a, const std::unique_ptr<Node>& b) {
-            if (a->item.jobSet.created_at != b->item.jobSet.created_at) {
-                return a->item.jobSet.created_at > b->item.jobSet.created_at;
-            }
-            return a->item.jobSet.job_set_id > b->item.jobSet.job_set_id;
-        });
-        for (const std::unique_ptr<Node>& child : node->children) {
-            sortChildren(child.get());
+    for (qint64 jobSetId : orderedIds) {
+        Node* node = byId_.value(jobSetId, nullptr);
+        const JobSetLite* desiredRow = desiredById[jobSetId];
+        if (!node || !desiredRow) {
+            continue;
         }
-    };
-    sortChildren(root_.get());
 
-    endResetModel();
+        Node* desiredParent = desiredParentFor(*desiredRow, incomingIds);
+        if (node->parent != desiredParent) {
+            moveNode(node, desiredParent);
+            continue;
+        }
+
+        const int desiredRowIndex = insertionRowForParent(desiredParent, node->item, node);
+        const int currentRow = rowOfChild(desiredParent, node);
+        if (desiredRowIndex >= 0 && currentRow >= 0 && desiredRowIndex != currentRow) {
+            moveNode(node, desiredParent);
+        }
+    }
+
+    for (qint64 jobSetId : orderedIds) {
+        Node* node = byId_.value(jobSetId, nullptr);
+        if (!node) {
+            continue;
+        }
+        emitNodeDataChanged(node);
+    }
 }
 
 bool JobSetsTreeModel::containsJobSetId(qint64 jobSetId) const
@@ -229,4 +277,173 @@ int JobSetsTreeModel::rowOfChild(const Node* parent, const Node* child)
     }
 
     return -1;
+}
+
+QModelIndex JobSetsTreeModel::indexForNode(const Node* node, int column) const
+{
+    if (!node || node == root_.get() || !node->parent || column < 0 || column >= ColumnCount) {
+        return {};
+    }
+
+    const int row = rowOfChild(node->parent, node);
+    return row >= 0 ? createIndex(row, column, const_cast<Node*>(node)) : QModelIndex{};
+}
+
+int JobSetsTreeModel::depthOf(const Node* node) const
+{
+    int depth = 0;
+    for (const Node* current = node; current && current->parent; current = current->parent) {
+        ++depth;
+    }
+    return depth;
+}
+
+JobSetsTreeModel::Node* JobSetsTreeModel::desiredParentFor(const JobSetLite& row, const QSet<qint64>& incomingIds) const
+{
+    if (!row.parent_job_set_id.has_value() || !incomingIds.contains(*row.parent_job_set_id)) {
+        return root_.get();
+    }
+    return byId_.value(*row.parent_job_set_id, root_.get());
+}
+
+int JobSetsTreeModel::insertionRowForParent(const Node* parent, const Item& item, const Node* skipNode) const
+{
+    if (!parent) {
+        return 0;
+    }
+
+    int row = 0;
+    for (const std::unique_ptr<Node>& child : parent->children) {
+        if (child.get() == skipNode) {
+            continue;
+        }
+        if (jobSetLess(item, child->item)) {
+            ++row;
+            continue;
+        }
+        break;
+    }
+    return row;
+}
+
+std::unique_ptr<JobSetsTreeModel::Node> JobSetsTreeModel::takeChild(Node* parent, int row)
+{
+    std::unique_ptr<Node> node = std::move(parent->children[static_cast<size_t>(row)]);
+    parent->children.erase(parent->children.begin() + row);
+    return node;
+}
+
+void JobSetsTreeModel::registerNodeRecursive(Node* node)
+{
+    if (!node) {
+        return;
+    }
+
+    byId_.insert(node->item.jobSet.job_set_id, node);
+    for (const std::unique_ptr<Node>& child : node->children) {
+        child->parent = node;
+        registerNodeRecursive(child.get());
+    }
+}
+
+void JobSetsTreeModel::unregisterNodeRecursive(Node* node)
+{
+    if (!node) {
+        return;
+    }
+
+    for (const std::unique_ptr<Node>& child : node->children) {
+        unregisterNodeRecursive(child.get());
+    }
+    byId_.remove(node->item.jobSet.job_set_id);
+}
+
+void JobSetsTreeModel::insertNode(std::unique_ptr<Node> node, Node* parent)
+{
+    if (!node) {
+        return;
+    }
+
+    if (!parent) {
+        parent = root_.get();
+    }
+
+    const int row = insertionRowForParent(parent, node->item);
+    QModelIndex parentIndex = indexForNode(parent);
+    beginInsertRows(parentIndex, row, row);
+    node->parent = parent;
+    Node* rawNode = node.get();
+    parent->children.insert(parent->children.begin() + row, std::move(node));
+    registerNodeRecursive(rawNode);
+    endInsertRows();
+}
+
+void JobSetsTreeModel::removeNode(Node* node)
+{
+    if (!node || !node->parent) {
+        return;
+    }
+
+    Node* parent = node->parent;
+    const int row = rowOfChild(parent, node);
+    if (row < 0) {
+        return;
+    }
+
+    QModelIndex parentIndex = indexForNode(parent);
+    beginRemoveRows(parentIndex, row, row);
+    std::unique_ptr<Node> removed = takeChild(parent, row);
+    unregisterNodeRecursive(removed.get());
+    endRemoveRows();
+}
+
+void JobSetsTreeModel::moveNode(Node* node, Node* newParent)
+{
+    if (!node || !node->parent) {
+        return;
+    }
+
+    if (!newParent) {
+        newParent = root_.get();
+    }
+
+    Node* oldParent = node->parent;
+    const int oldRow = rowOfChild(oldParent, node);
+    if (oldRow < 0) {
+        return;
+    }
+
+    const int newRow = insertionRowForParent(newParent, node->item, node);
+    if (oldParent == newParent && (newRow == oldRow || newRow == oldRow + 1)) {
+        return;
+    }
+
+    QModelIndex oldParentIndex = indexForNode(oldParent);
+    QModelIndex newParentIndex = indexForNode(newParent);
+    if (!beginMoveRows(oldParentIndex, oldRow, oldRow, newParentIndex, newRow)) {
+        return;
+    }
+
+    std::unique_ptr<Node> moved = takeChild(oldParent, oldRow);
+    moved->parent = newParent;
+    int adjustedNewRow = newRow;
+    if (oldParent == newParent && newRow > oldRow) {
+        adjustedNewRow -= 1;
+    }
+    newParent->children.insert(newParent->children.begin() + adjustedNewRow, std::move(moved));
+    endMoveRows();
+}
+
+void JobSetsTreeModel::emitNodeDataChanged(Node* node)
+{
+    if (!node || node == root_.get()) {
+        return;
+    }
+
+    const QModelIndex topLeft = indexForNode(node, 0);
+    const QModelIndex bottomRight = indexForNode(node, ColumnCount - 1);
+    if (topLeft.isValid() && bottomRight.isValid()) {
+        emit dataChanged(topLeft, bottomRight);
+    }
+
 }

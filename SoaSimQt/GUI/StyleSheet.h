@@ -262,6 +262,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     QLineEdit,
     QSpinBox,
     QTableView,
+    QTreeView,
     QPushButton {
         background-color: #151922;
         border: 1px solid #2f3744;
@@ -282,7 +283,8 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     QPushButton[coordinatorPaused="true"] {
         border: 1px solid #dc4040;
     }
-    QTableView {
+    QTableView,
+    QTreeView {
         gridline-color: #2e3542;
         alternate-background-color: #171b22;
         selection-background-color: #2d4f8f;

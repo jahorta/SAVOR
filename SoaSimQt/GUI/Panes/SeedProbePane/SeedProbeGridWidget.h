@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtCore/QVector>
+#include <QtGui/QColor>
 #include <QtWidgets/QWidget>
 
 class SeedProbeGridWidget final : public QWidget
@@ -27,6 +28,8 @@ public:
     void setGridData(const GridData& data);
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
+
+    static QColor colorForDelta(int delta, int minNeg, int maxPos);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
