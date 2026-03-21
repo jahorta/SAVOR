@@ -137,8 +137,10 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
+    <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
+    <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\MainWindow.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
