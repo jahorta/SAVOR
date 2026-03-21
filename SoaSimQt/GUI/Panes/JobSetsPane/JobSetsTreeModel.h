@@ -55,6 +55,7 @@ private:
         Item item;
         Node* parent = nullptr;
         std::vector<std::unique_ptr<Node>> children;
+        int rowInParent = -1;
     };
 
     static QString formatTime(qint64 epochSeconds);
@@ -62,6 +63,8 @@ private:
 
     Node* nodeFromIndex(const QModelIndex& index) const;
     static int rowOfChild(const Node* parent, const Node* child);
+    static bool itemsAffectDisplay(const Item& lhs, const Item& rhs);
+    static void refreshChildRows(Node* parent, int startRow = 0);
 
     QModelIndex indexForNode(const Node* node, int column = 0) const;
     int depthOf(const Node* node) const;
@@ -73,7 +76,7 @@ private:
     void insertNode(std::unique_ptr<Node> node, Node* parent);
     void removeNode(Node* node);
     void moveNode(Node* node, Node* newParent);
-    void emitNodeDataChanged(Node* node);
+    void emitDataChangedBatches(const std::vector<Node*>& changedNodes);
 
     std::unique_ptr<Node> root_;
     QHash<qint64, Node*> byId_;
