@@ -242,7 +242,7 @@ void JobSetsPage::refreshModel()
     const bool wasAtBottom = verticalScrollBar && previousValue >= verticalScrollBar->maximum();
 
     programNames_ = state.programNames;
-    treeModel_->setRows(state.familyItems, state.programNames);
+    treeModel_->syncRows(state.familyItems, state.programNames);
 
     QSet<qint64> pruned;
     for (qint64 id : currentExpanded) {
