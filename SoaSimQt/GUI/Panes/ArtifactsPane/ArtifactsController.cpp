@@ -184,11 +184,12 @@ void ArtifactsController::requestPreviousPage()
 
 void ArtifactsController::selectArtifact(qint64 artifactId)
 {
-    if (artifactId <= 0) {
-        state_.selectedArtifactId = 0;
-    } else {
-        state_.selectedArtifactId = artifactId;
+    const qint64 normalizedArtifactId = artifactId > 0 ? artifactId : 0;
+    if (state_.selectedArtifactId == normalizedArtifactId) {
+        return;
     }
+
+    state_.selectedArtifactId = normalizedArtifactId;
     emitStateChanged();
 }
 
