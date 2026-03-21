@@ -152,7 +152,6 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
-    <ClInclude Include="GUI\Widgets\LedgerPickerDialog.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
