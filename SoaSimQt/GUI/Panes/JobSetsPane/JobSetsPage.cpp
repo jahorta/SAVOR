@@ -146,9 +146,9 @@ void JobSetsPage::wireSignals()
 {
     connect(controller_, &JobSetsController::stateChanged, this, [this]() {
         syncControlsFromController();
-        refreshModel();
         updateStatusWidgets();
     });
+    connect(controller_, &JobSetsController::rowsChanged, this, &JobSetsPage::refreshModel);
 
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
         controller_->applyFilters(selectedProgramKind(), selectedStateFilter(), pageSizeSpin_->value());

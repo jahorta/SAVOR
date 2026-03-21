@@ -42,6 +42,7 @@ JobSetsController::JobSetsController(QObject* parent)
                 for (const ProgramKindKV& kind : result.value) {
                     state_.programNames.insert(kind.id, QString::fromStdString(kind.name));
                 }
+                emit rowsChanged();
             } else {
                 state_.errorMessage = QStringLiteral("Program kinds failed: %1").arg(QString::fromStdString(result.error.message));
             }
@@ -76,6 +77,7 @@ JobSetsController::JobSetsController(QObject* parent)
             state_.familyItems.clear();
             state_.errorMessage = describeException("Job sets failed");
         }
+        emit rowsChanged();
         emitStateChanged();
     });
 
@@ -183,7 +185,6 @@ void JobSetsController::applyFilters(const std::optional<int>& programKind, cons
     after_.reset();
     state_.errorMessage.clear();
     state_.infoMessage.clear();
-    state_.familyItems.clear();
     kickPageFetch();
 }
 
@@ -197,7 +198,6 @@ void JobSetsController::resetFilters()
     after_.reset();
     state_.errorMessage.clear();
     state_.infoMessage.clear();
-    state_.familyItems.clear();
     refreshTimer_->start(state_.refreshSeconds * 1000);
     kickPageFetch();
     emitStateChanged();
@@ -231,7 +231,6 @@ void JobSetsController::requestNextPage()
 
     before_ = state_.page.next;
     after_.reset();
-    state_.familyItems.clear();
     kickPageFetch();
 }
 
@@ -243,7 +242,6 @@ void JobSetsController::requestPreviousPage()
 
     after_ = state_.page.prev;
     before_.reset();
-    state_.familyItems.clear();
     kickPageFetch();
 }
 
