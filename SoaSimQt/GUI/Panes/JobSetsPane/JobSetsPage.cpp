@@ -234,8 +234,7 @@ void JobSetsPage::syncControlsFromController()
 void JobSetsPage::refreshModel()
 {
     const auto& state = controller_->viewState();
-    QSet<qint64> currentExpanded = expandedIds_;
-    currentExpanded.unite(treeView_->expandedJobSetIds());
+    QSet<qint64> currentExpanded = treeView_->expandedJobSetIds();
 
     QScrollBar* verticalScrollBar = treeView_->verticalScrollBar();
     const int previousValue = verticalScrollBar ? verticalScrollBar->value() : 0;
@@ -250,11 +249,8 @@ void JobSetsPage::refreshModel()
             pruned.insert(id);
         }
     }
-    expandedIds_ = pruned;
-    treeView_->restoreExpandedJobSetIds(expandedIds_);
-    QMetaObject::invokeMethod(this, [this, previousValue, wasAtBottom]() {
-        restoreScrollPosition(previousValue, wasAtBottom);
-    }, Qt::QueuedConnection);
+    treeView_->restoreExpandedJobSetIds(pruned);
+    restoreScrollPosition(previousValue, wasAtBottom);
 }
 
 void JobSetsPage::restoreScrollPosition(int previousValue, bool wasAtBottom)

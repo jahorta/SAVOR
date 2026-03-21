@@ -61,7 +61,6 @@ private:
     void restoreScrollPosition(int previousValue, bool wasAtBottom);
 
     QHash<int, QString> programNames_;
-    QSet<qint64> expandedIds_;
     std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
     QTimer* loadingStateTimer_ = nullptr;
     bool delayedLoadingVisible_ = false;
