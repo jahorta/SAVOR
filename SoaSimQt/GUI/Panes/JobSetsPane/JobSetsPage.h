@@ -4,12 +4,14 @@
 #include <QtCore/QSet>
 #include <QtWidgets/QWidget>
 
+#include <memory>
+
 #include "DB/Querying/JobSetListDTO.h"
+#include "JobSetsProgressDelegate.h"
 
 #include <optional>
 
 class JobSetsController;
-class JobSetsProgressWidget;
 class JobSetsTreeModel;
 class JobSetsTreeView;
 class QCheckBox;
@@ -28,7 +30,6 @@ private:
     void wireSignals();
     void syncControlsFromController();
     void refreshModel();
-    void rebuildProgressWidgets();
     void updateStatusWidgets();
     std::optional<int> selectedProgramKind() const;
     std::optional<JobSetStateFilter> selectedStateFilter() const;
@@ -54,6 +55,9 @@ private:
     QLabel* lastRefreshLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
 
+    void restoreScrollPosition(int previousValue, bool wasAtBottom);
+
     QHash<int, QString> programNames_;
     QSet<qint64> expandedIds_;
+    std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
 };
