@@ -63,6 +63,8 @@ QFrame* createPanelFrame(const QString& title, const QString& body)
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    setWindowTitle("Skies of Arcadia Simulator");
+    
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
 
