@@ -144,10 +144,8 @@
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
-    <ClInclude Include="GUI\Panes\SettingsPane\SettingsPage.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
-    <ClInclude Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />
