@@ -1,7 +1,7 @@
 #include "JobSetsPage.h"
 
 #include "JobSetsController.h"
-#include "JobSetsProgressWidget.h"
+#include "JobSetsProgressDelegate.h"
 #include "JobSetsTreeModel.h"
 #include "JobSetsTreeView.h"
 
@@ -17,6 +17,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QVBoxLayout>
 
@@ -26,10 +27,12 @@ JobSetsPage::JobSetsPage(QWidget* parent)
     : QWidget(parent)
     , controller_(new JobSetsController(this))
     , treeModel_(new JobSetsTreeModel(this))
+    , progressDelegate_(std::make_unique<JobSetsProgressDelegate>(this))
 {
     createWidgets();
     wireSignals();
     treeView_->attachModel(treeModel_);
+    treeView_->setItemDelegateForColumn(JobSetsTreeModel::ProgressColumn, progressDelegate_.get());
     controller_->loadInitial();
 }
 
@@ -230,6 +233,10 @@ void JobSetsPage::refreshModel()
     QSet<qint64> currentExpanded = expandedIds_;
     currentExpanded.unite(treeView_->expandedJobSetIds());
 
+    QScrollBar* verticalScrollBar = treeView_->verticalScrollBar();
+    const int previousValue = verticalScrollBar ? verticalScrollBar->value() : 0;
+    const bool wasAtBottom = verticalScrollBar && previousValue >= verticalScrollBar->maximum();
+
     programNames_ = state.programNames;
     treeModel_->setRows(state.familyItems, state.programNames);
 
@@ -241,31 +248,24 @@ void JobSetsPage::refreshModel()
     }
     expandedIds_ = pruned;
     treeView_->restoreExpandedJobSetIds(expandedIds_);
-    treeView_->expandToDepth(0);
-    rebuildProgressWidgets();
+    QMetaObject::invokeMethod(this, [this, previousValue, wasAtBottom]() {
+        restoreScrollPosition(previousValue, wasAtBottom);
+    }, Qt::QueuedConnection);
 }
 
-void JobSetsPage::rebuildProgressWidgets()
+void JobSetsPage::restoreScrollPosition(int previousValue, bool wasAtBottom)
 {
-    auto attachWidgets = [&](const QModelIndex& parentIndex, auto&& attachWidgetsRef) -> void {
-        const int rows = treeModel_->rowCount(parentIndex);
-        for (int row = 0; row < rows; ++row) {
-            const QModelIndex child = treeModel_->index(row, JobSetsTreeModel::ProgressColumn, parentIndex);
-            if (child.isValid()) {
-                auto* progress = new JobSetsProgressWidget(treeView_);
-                progress->setProgress(
-                    child.data(JobSetsTreeModel::SucceededJobsRole).toLongLong(),
-                    child.data(JobSetsTreeModel::FailedJobsRole).toLongLong(),
-                    child.data(JobSetsTreeModel::CanceledJobsRole).toLongLong(),
-                    child.data(JobSetsTreeModel::CompletedJobsRole).toLongLong(),
-                    child.data(JobSetsTreeModel::TotalJobsRole).toLongLong());
-                treeView_->setIndexWidget(child, progress);
-            }
-            attachWidgetsRef(treeModel_->index(row, 0, parentIndex), attachWidgetsRef);
-        }
-    };
+    QScrollBar* verticalScrollBar = treeView_->verticalScrollBar();
+    if (!verticalScrollBar) {
+        return;
+    }
 
-    attachWidgets(QModelIndex{}, attachWidgets);
+    if (wasAtBottom) {
+        verticalScrollBar->setValue(verticalScrollBar->maximum());
+        return;
+    }
+
+    verticalScrollBar->setValue(std::clamp(previousValue, verticalScrollBar->minimum(), verticalScrollBar->maximum()));
 }
 
 void JobSetsPage::updateStatusWidgets()
