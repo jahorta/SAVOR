@@ -1,7 +1,7 @@
 #include "CoordinatorPane.h"
 
-#include "../../Coordinator/CoordinatorController.h"
-#include "../Models/WorkerTableModel.h"
+#include "CoordinatorController.h"
+#include "WorkerTableModel.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
