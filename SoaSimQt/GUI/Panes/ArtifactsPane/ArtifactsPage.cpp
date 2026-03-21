@@ -299,12 +299,23 @@ void ArtifactsPage::refreshModel()
     }
     tableModel_->setRows(rows);
 
-    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
-        if (rows[row].artifact.id == state.selectedArtifactId) {
-            artifactsTable_->selectRow(row);
-            break;
+    if (QItemSelectionModel* selectionModel = artifactsTable_->selectionModel()) {
+        QSignalBlocker blocker(selectionModel);
+        bool matchedSelection = false;
+        for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+            if (rows[row].artifact.id == state.selectedArtifactId) {
+                artifactsTable_->selectRow(row);
+                matchedSelection = true;
+                break;
+            }
+        }
+
+        if (!matchedSelection) {
+            selectionModel->clearSelection();
+            selectionModel->setCurrentIndex(QModelIndex(), QItemSelectionModel::NoUpdate);
         }
     }
+
     artifactsTable_->resizeColumnsToContents();
 }
 
