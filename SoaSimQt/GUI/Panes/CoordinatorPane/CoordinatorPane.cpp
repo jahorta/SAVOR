@@ -41,7 +41,8 @@ void CoordinatorPane::refreshUi()
 {
     const bool running = controller_->isRunning();
     const bool paused = controller_->isPaused();
-    const bool valid = controller_->validationMessage().isEmpty();
+    const QString validationMessage = controller_->validationMessage();
+    const bool valid = validationMessage.isEmpty();
     const auto& snapshot = controller_->snapshot();
 
     {
@@ -64,9 +65,23 @@ void CoordinatorPane::refreshUi()
     pauseButton_->style()->unpolish(pauseButton_);
     pauseButton_->style()->polish(pauseButton_);
 
-    validationLabel_->setText(valid
-        ? QStringLiteral("Configuration looks good. You can start the coordinator when ready.")
-        : controller_->validationMessage());
+    QString validationText = QStringLiteral("Configuration looks good. You can start the coordinator when ready.");
+    if (!valid) {
+        QStringList issueLinks;
+        if (validationMessage.contains(QStringLiteral("ISO path is required."))) {
+            issueLinks.append(QStringLiteral("<a href=\"settings://iso\">ISO path is required.</a>"));
+        }
+        if (validationMessage.contains(QStringLiteral("Dolphin base directory is required."))) {
+            issueLinks.append(QStringLiteral("<a href=\"settings://dolphin\">Dolphin base directory is required.</a>"));
+        }
+        if (issueLinks.isEmpty()) {
+            validationText = validationMessage.toHtmlEscaped();
+        } else {
+            validationText = issueLinks.join(QStringLiteral(" "));
+            validationText += QStringLiteral(" <a href=\"settings://coordinator\">Open coordinator settings.</a>");
+        }
+    }
+    validationLabel_->setText(validationText);
     validationLabel_->setProperty("validationState", valid ? QStringLiteral("ok") : QStringLiteral("warn"));
     validationLabel_->style()->unpolish(validationLabel_);
     validationLabel_->style()->polish(validationLabel_);
@@ -167,7 +182,11 @@ QWidget* CoordinatorPane::createControlsCard()
     validationLabel_ = new QLabel(card);
     validationLabel_->setObjectName("coordinatorValidation");
     validationLabel_->setWordWrap(true);
+    validationLabel_->setTextFormat(Qt::RichText);
+    validationLabel_->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    validationLabel_->setOpenExternalLinks(false);
     rootLayout->addWidget(validationLabel_);
+    connect(validationLabel_, &QLabel::linkActivated, this, &CoordinatorPane::handleValidationLinkActivated);
 
     connect(startButton_, &QPushButton::clicked, controller_, &CoordinatorController::startCoordinator);
     connect(pauseButton_, &QPushButton::clicked, controller_, &CoordinatorController::togglePaused);
@@ -240,4 +259,19 @@ void CoordinatorPane::setControlsEnabledForRunningState(bool running)
 void CoordinatorPane::syncActionButtonStates(bool running, bool valid)
 {
     startButton_->setEnabled(!running && valid);
+}
+
+void CoordinatorPane::handleValidationLinkActivated(const QString& link)
+{
+    if (link == QStringLiteral("settings://iso")) {
+        emit settingsNavigationRequested(SettingsFocusTarget::IsoPath);
+        return;
+    }
+    if (link == QStringLiteral("settings://dolphin")) {
+        emit settingsNavigationRequested(SettingsFocusTarget::DolphinBaseDir);
+        return;
+    }
+    if (link == QStringLiteral("settings://coordinator")) {
+        emit settingsNavigationRequested(SettingsFocusTarget::CoordinatorSection);
+    }
 }

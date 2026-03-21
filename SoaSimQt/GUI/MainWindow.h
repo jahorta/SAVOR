@@ -26,6 +26,7 @@ signals:
 
 private slots:
     void handleNavigationChanged(int currentRow);
+    void handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFocusTarget target);
     void syncStatusBar();
 
 private:
@@ -43,6 +44,7 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
+    SettingsPage* settingsPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;

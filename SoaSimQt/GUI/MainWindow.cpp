@@ -94,6 +94,30 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 }
 
+void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFocusTarget target)
+{
+    if (!navigationList_ || !settingsPage_) {
+        return;
+    }
+
+    navigationList_->setCurrentRow(8);
+
+    SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
+    switch (target) {
+    case CoordinatorPane::SettingsFocusTarget::IsoPath:
+        focusTarget = SettingsPage::CoordinatorFocusTarget::IsoPath;
+        break;
+    case CoordinatorPane::SettingsFocusTarget::DolphinBaseDir:
+        focusTarget = SettingsPage::CoordinatorFocusTarget::DolphinBaseDir;
+        break;
+    case CoordinatorPane::SettingsFocusTarget::CoordinatorSection:
+        focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
+        break;
+    }
+
+    settingsPage_->focusCoordinatorSettings(focusTarget);
+}
+
 void MainWindow::syncStatusBar()
 {
     if (!statusBarWidget_) {
@@ -217,12 +241,14 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(new JobsPage(contentPane));
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
+    connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
     contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
     contentStack_->addWidget(createPlaceholderPage("Artifacts", "Mockup page for artifact browsing and import/export flows."));
     contentStack_->addWidget(createPlaceholderPage("Seed Probe", "Mockup page for seed probing tools and diagnostics."));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
-    contentStack_->addWidget(new SettingsPage(coordinatorController_, contentStack_));
+    settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
+    contentStack_->addWidget(settingsPage_);
 
     layout->addWidget(contentStack_, 1);
 
