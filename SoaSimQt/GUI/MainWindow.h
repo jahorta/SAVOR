@@ -4,6 +4,9 @@
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 #include "GUI/Widgets/StatusBarWidget.h"
+#include "GUI/Panes/CoordinatorPane/CoordinatorPane.h"
+#include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "GUI/Panes/SettingsPane/SettingsPage.h"
 
 class CoordinatorController;
 class CoordinatorPane;
