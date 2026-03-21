@@ -22,13 +22,18 @@
 #include <QtWidgets/QVBoxLayout>
 
 namespace {
-QFrame* createLegendSwatch(const QString& text, QWidget* parent)
+QFrame* createLegendSwatch(const QString& text, const QColor& color, QWidget* parent)
 {
     QFrame* frame = new QFrame(parent);
     frame->setObjectName("seedProbeLegendChip");
     QHBoxLayout* layout = new QHBoxLayout(frame);
-    layout->setContentsMargins(10, 4, 10, 4);
+    layout->setContentsMargins(8, 4, 8, 4);
+    layout->setSpacing(6);
+    QFrame* swatch = new QFrame(frame);
+    swatch->setFixedSize(12, 12);
+    swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid rgba(255,255,255,0.18);").arg(color.name()));
     QLabel* label = new QLabel(text, frame);
+    layout->addWidget(swatch);
     layout->addWidget(label);
     return frame;
 }
@@ -170,10 +175,10 @@ void SeedProbePage::createWidgets()
     QFrame* graphsPanel = new QFrame(detailWidget);
     graphsPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* graphsLayout = new QVBoxLayout(graphsPanel);
-    graphsLayout->setContentsMargins(16, 16, 16, 16);
+    graphsLayout->setContentsMargins(12, 12, 12, 12);
     graphsLayout->addWidget(new QLabel(QStringLiteral("Delta Maps"), graphsPanel));
     QHBoxLayout* graphRow = new QHBoxLayout();
-    graphRow->setSpacing(12);
+    graphRow->setSpacing(8);
     mainGrid_ = new SeedProbeGridWidget(graphsPanel);
     mainGrid_->setTitle(QStringLiteral("Main Stick"));
     cStickGrid_ = new SeedProbeGridWidget(graphsPanel);
@@ -185,7 +190,7 @@ void SeedProbePage::createWidgets()
     graphRow->addWidget(triggerGrid_, 1);
     graphsLayout->addLayout(graphRow);
     legendLayout_ = new QHBoxLayout();
-    legendLayout_->setSpacing(8);
+    legendLayout_->setSpacing(6);
     graphsLayout->addLayout(legendLayout_);
     detailLayout->addWidget(graphsPanel);
 
@@ -207,10 +212,13 @@ void SeedProbePage::createWidgets()
     detailLayout->addStretch();
     detailScroll->setWidget(detailWidget);
 
+    const int detailWidth = (mainGrid_->sizeHint().width() * 3) + (graphRow->spacing() * 2) + 24;
+    detailScroll->setMinimumWidth(detailWidth);
+    detailScroll->setMaximumWidth(detailWidth + 32);
     splitter->addWidget(leftPanel);
     splitter->addWidget(detailScroll);
-    splitter->setStretchFactor(0, 2);
-    splitter->setStretchFactor(1, 5);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
     contentLayout->addWidget(splitter, 1);
 
     inlineMessageLabel_ = new QLabel(contentPanel);
@@ -369,7 +377,7 @@ void SeedProbePage::rebuildLegend(const QVector<int>& deltas)
     }
 
     if (deltas.isEmpty()) {
-        legendLayout_->addWidget(createLegendSwatch(QStringLiteral("No legend data"), this));
+        legendLayout_->addWidget(createLegendSwatch(QStringLiteral("No legend data"), QColor(90, 96, 110), this));
         legendLayout_->addStretch();
         return;
     }
@@ -378,12 +386,12 @@ void SeedProbePage::rebuildLegend(const QVector<int>& deltas)
     for (int i = 0; i < deltas.size(); i += step) {
         const int value = deltas[i];
         const QString label = value > 0 ? QStringLiteral("+%1").arg(value) : QString::number(value);
-        legendLayout_->addWidget(createLegendSwatch(label, this));
+        legendLayout_->addWidget(createLegendSwatch(label, SeedProbeGridWidget::colorForDelta(value, deltas.front(), deltas.back()), this));
     }
     if ((deltas.size() - 1) % step != 0) {
         const int value = deltas.back();
         const QString label = value > 0 ? QStringLiteral("+%1").arg(value) : QString::number(value);
-        legendLayout_->addWidget(createLegendSwatch(label, this));
+        legendLayout_->addWidget(createLegendSwatch(label, SeedProbeGridWidget::colorForDelta(value, deltas.front(), deltas.back()), this));
     }
     legendLayout_->addStretch();
 }
