@@ -6,14 +6,10 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
 #include <QtWidgets/QAbstractItemView>
-#include <QtWidgets/QCheckBox>
-#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
-#include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
@@ -52,22 +48,6 @@ void CoordinatorPane::refreshUi()
         const QSignalBlocker blocker(targetWorkersSpin_);
         targetWorkersSpin_->setValue(controller_->targetWorkers());
     }
-    {
-        const QSignalBlocker blocker(eventBufferSpin_);
-        eventBufferSpin_->setValue(controller_->eventBufferCapacity());
-    }
-    {
-        const QSignalBlocker blocker(isoPathEdit_);
-        isoPathEdit_->setText(controller_->isoPath());
-    }
-    {
-        const QSignalBlocker blocker(dolphinBaseDirEdit_);
-        dolphinBaseDirEdit_->setText(controller_->dolphinBaseDir());
-    }
-    {
-        const QSignalBlocker blocker(startPausedCheck_);
-        startPausedCheck_->setChecked(controller_->startPaused());
-    }
 
     activeWorkersLabel_->setText(running
         ? QString::number(controller_->activeWorkers())
@@ -103,32 +83,6 @@ void CoordinatorPane::refreshUi()
     workerTableModel_->setSnapshots(snapshot);
 }
 
-void CoordinatorPane::browseForIsoPath()
-{
-    const QString initialPath = isoPathEdit_->text().trimmed();
-    const QString selectedPath = QFileDialog::getOpenFileName(
-        this,
-        QStringLiteral("Select Skies of Arcadia ISO"),
-        initialPath);
-
-    if (!selectedPath.isEmpty()) {
-        isoPathEdit_->setText(selectedPath);
-    }
-}
-
-void CoordinatorPane::browseForDolphinBaseDir()
-{
-    const QString initialPath = dolphinBaseDirEdit_->text().trimmed();
-    const QString selectedDir = QFileDialog::getExistingDirectory(
-        this,
-        QStringLiteral("Select Dolphin base directory"),
-        initialPath);
-
-    if (!selectedDir.isEmpty()) {
-        dolphinBaseDirEdit_->setText(selectedDir);
-    }
-}
-
 void CoordinatorPane::createWidgets()
 {
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -138,7 +92,6 @@ void CoordinatorPane::createWidgets()
     workerTableModel_ = new WorkerTableModel(this);
 
     layout->addWidget(createControlsCard());
-    layout->addWidget(createSettingsCard());
     layout->addWidget(createTableCard(), 1);
 }
 
@@ -203,7 +156,6 @@ QWidget* CoordinatorPane::createControlsCard()
     targetWorkersSpin_->setMinimum(1);
     targetWorkersSpin_->setMaximum(9999);
     targetWorkersSpin_->setPrefix("Target: ");
-
     controlsLayout->addWidget(startButton_);
     controlsLayout->addWidget(pauseButton_);
     controlsLayout->addWidget(stopButton_);
@@ -212,91 +164,15 @@ QWidget* CoordinatorPane::createControlsCard()
 
     rootLayout->addLayout(controlsLayout);
 
+    validationLabel_ = new QLabel(card);
+    validationLabel_->setObjectName("coordinatorValidation");
+    validationLabel_->setWordWrap(true);
+    rootLayout->addWidget(validationLabel_);
+
     connect(startButton_, &QPushButton::clicked, controller_, &CoordinatorController::startCoordinator);
     connect(pauseButton_, &QPushButton::clicked, controller_, &CoordinatorController::togglePaused);
     connect(stopButton_, &QPushButton::clicked, controller_, &CoordinatorController::stopCoordinator);
     connect(targetWorkersSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &CoordinatorController::setTargetWorkers);
-
-    return card;
-}
-
-QWidget* CoordinatorPane::createSettingsCard()
-{
-    QFrame* card = new QFrame(this);
-    card->setObjectName("coordinatorCard");
-
-    QVBoxLayout* rootLayout = new QVBoxLayout(card);
-    rootLayout->setContentsMargins(16, 16, 16, 16);
-    rootLayout->setSpacing(12);
-
-    QLabel* heading = new QLabel("Coordinator Settings", card);
-    heading->setObjectName("panelTitle");
-
-    QLabel* body = new QLabel("These fields mirror the SoaSimGui pre-start inputs. They remain visible while running, but only editable while the coordinator is stopped.", card);
-    body->setObjectName("panelBody");
-    body->setWordWrap(true);
-
-    rootLayout->addWidget(heading);
-    rootLayout->addWidget(body);
-
-    QGridLayout* formLayout = new QGridLayout();
-    formLayout->setHorizontalSpacing(12);
-    formLayout->setVerticalSpacing(10);
-
-    isoPathEdit_ = new QLineEdit(card);
-    isoPathEdit_->setPlaceholderText("Path to SkiesOfArcadia iso");
-    isoBrowseButton_ = new QPushButton("Browse…", card);
-
-    dolphinBaseDirEdit_ = new QLineEdit(card);
-    dolphinBaseDirEdit_->setPlaceholderText("Path to DolphinQt base directory with portable.txt");
-    dolphinBrowseButton_ = new QPushButton("Browse…", card);
-
-    eventBufferSpin_ = new QSpinBox(card);
-    eventBufferSpin_->setObjectName("jobsRefreshSpin");
-    eventBufferSpin_->setMinimum(8);
-    eventBufferSpin_->setMaximum(1000000);
-    eventBufferSpin_->setPrefix("Event ring: ");
-
-    startPausedCheck_ = new QCheckBox("Start paused", card);
-
-    QHBoxLayout* isoLayout = new QHBoxLayout();
-    isoLayout->setContentsMargins(0, 0, 0, 0);
-    isoLayout->setSpacing(8);
-    isoLayout->addWidget(isoPathEdit_, 1);
-    isoLayout->addWidget(isoBrowseButton_);
-
-    QHBoxLayout* dolphinLayout = new QHBoxLayout();
-    dolphinLayout->setContentsMargins(0, 0, 0, 0);
-    dolphinLayout->setSpacing(8);
-    dolphinLayout->addWidget(dolphinBaseDirEdit_, 1);
-    dolphinLayout->addWidget(dolphinBrowseButton_);
-
-    formLayout->addWidget(createFieldCaption("ISO", card), 0, 0);
-    formLayout->addLayout(isoLayout, 0, 1);
-    formLayout->addWidget(createFieldCaption("Dolphin base", card), 1, 0);
-    formLayout->addLayout(dolphinLayout, 1, 1);
-    formLayout->addWidget(createFieldCaption("Buffer + startup", card), 2, 0);
-
-    QHBoxLayout* compactControls = new QHBoxLayout();
-    compactControls->setSpacing(10);
-    compactControls->addWidget(eventBufferSpin_);
-    compactControls->addWidget(startPausedCheck_);
-    compactControls->addStretch();
-    formLayout->addLayout(compactControls, 2, 1);
-
-    validationLabel_ = new QLabel(card);
-    validationLabel_->setObjectName("coordinatorValidation");
-    validationLabel_->setWordWrap(true);
-
-    rootLayout->addLayout(formLayout);
-    rootLayout->addWidget(validationLabel_);
-
-    connect(isoPathEdit_, &QLineEdit::textChanged, controller_, &CoordinatorController::setIsoPath);
-    connect(dolphinBaseDirEdit_, &QLineEdit::textChanged, controller_, &CoordinatorController::setDolphinBaseDir);
-    connect(isoBrowseButton_, &QPushButton::clicked, this, &CoordinatorPane::browseForIsoPath);
-    connect(dolphinBrowseButton_, &QPushButton::clicked, this, &CoordinatorPane::browseForDolphinBaseDir);
-    connect(eventBufferSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &CoordinatorController::setEventBufferCapacity);
-    connect(startPausedCheck_, &QCheckBox::toggled, controller_, &CoordinatorController::setStartPaused);
 
     return card;
 }
@@ -355,23 +231,10 @@ QWidget* CoordinatorPane::createMetricCard(const QString& caption, QLabel** valu
     return frame;
 }
 
-QLabel* CoordinatorPane::createFieldCaption(const QString& text, QWidget* parent) const
-{
-    QLabel* label = new QLabel(text, parent);
-    label->setObjectName("coordinatorFieldCaption");
-    return label;
-}
-
 void CoordinatorPane::setControlsEnabledForRunningState(bool running)
 {
     pauseButton_->setEnabled(running);
     stopButton_->setEnabled(running);
-    isoPathEdit_->setEnabled(!running);
-    isoBrowseButton_->setEnabled(!running);
-    dolphinBaseDirEdit_->setEnabled(!running);
-    dolphinBrowseButton_->setEnabled(!running);
-    eventBufferSpin_->setEnabled(!running);
-    startPausedCheck_->setEnabled(!running);
 }
 
 void CoordinatorPane::syncActionButtonStates(bool running, bool valid)

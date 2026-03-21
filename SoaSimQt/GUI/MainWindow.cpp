@@ -222,7 +222,7 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(createPlaceholderPage("Artifacts", "Mockup page for artifact browsing and import/export flows."));
     contentStack_->addWidget(createPlaceholderPage("Seed Probe", "Mockup page for seed probing tools and diagnostics."));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
-    contentStack_->addWidget(new SettingsPage(contentStack_));
+    contentStack_->addWidget(new SettingsPage(coordinatorController_, contentStack_));
 
     layout->addWidget(contentStack_, 1);
 
