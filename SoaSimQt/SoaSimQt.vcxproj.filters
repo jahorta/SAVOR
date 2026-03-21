@@ -37,6 +37,9 @@
     <Filter Include="GUI\Panes\Artifacts">
       <UniqueIdentifier>{9a267a3f-42f8-4db8-9540-c08a4d67f9e5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\JobBuilder">
+      <UniqueIdentifier>{17d08e24-b230-4462-aad2-f682ce9200ba}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Widgets">
       <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
     </Filter>
@@ -73,6 +76,9 @@
     </ClCompile>
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
+      <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
@@ -182,6 +188,12 @@
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
       <Filter>GUI\Panes\Coordinator</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\LedgerPickerDialog.h">
+      <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">
       <Filter>GUI\Panes\Jobs</Filter>
