@@ -51,14 +51,6 @@ void SeedProbePage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel(QStringLiteral("Seed Probe"), this);
-    titleLabel_->setObjectName("pageTitle");
-    descriptionLabel_ = new QLabel(QStringLiteral("Qt migration of the Seed Probe workspace with paged probe browsing, live probe details, custom delta maps, and unique-seed inspection."), this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(titleLabel_);
-    rootLayout->addWidget(descriptionLabel_);
-
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobsToolbarPanel");
     QGridLayout* toolbarLayout = new QGridLayout(toolbarPanel);

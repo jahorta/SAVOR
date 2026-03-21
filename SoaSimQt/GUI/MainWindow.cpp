@@ -65,7 +65,6 @@ QFrame* createPanelFrame(const QString& title, const QString& body)
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("Skies of Arcadia Simulator");
     
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
@@ -76,6 +75,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&statusBarRefreshTimer_, &QTimer::timeout, this, &MainWindow::syncStatusBar);
     statusBarRefreshTimer_.start(1000);
     syncStatusBar();
+
+    setWindowTitle("Skies of Arcadia Simulator");
 }
 
 MainWindow::~MainWindow()
@@ -227,15 +228,21 @@ QWidget* MainWindow::createContentPane()
     layout->setContentsMargins(20, 18, 20, 18);
     layout->setSpacing(12);
 
+    QHBoxLayout* topLayout = new QHBoxLayout(contentPane);
+    topLayout->setContentsMargins(20, 18, 20, 18);
+    topLayout->setSpacing(12);
+
     contentTitleLabel_ = new QLabel(contentPane);
-    contentTitleLabel_->setObjectName("contentTitle");
+    contentTitleLabel_->setObjectName("pageTitle");
 
     contentDescriptionLabel_ = new QLabel(contentPane);
-    contentDescriptionLabel_->setObjectName("contentDescription");
+    contentDescriptionLabel_->setObjectName("pageDescription");
     contentDescriptionLabel_->setWordWrap(true);
 
-    layout->addWidget(contentTitleLabel_);
-    layout->addWidget(contentDescriptionLabel_);
+    topLayout->addWidget(contentTitleLabel_, 0);
+    topLayout->addWidget(contentDescriptionLabel_, 1);
+
+    layout->addLayout(topLayout);
 
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(new JobSetsPage(contentPane));
@@ -245,8 +252,8 @@ QWidget* MainWindow::createContentPane()
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
     contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
-    contentStack_->addWidget(new SeedProbePage(contentStack_));
     contentStack_->addWidget(new ArtifactsPage(contentPane));
+    contentStack_->addWidget(new SeedProbePage(contentStack_));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
     contentStack_->addWidget(settingsPage_);

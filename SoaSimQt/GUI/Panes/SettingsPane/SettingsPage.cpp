@@ -91,17 +91,6 @@ void SettingsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel("Settings", this);
-    titleLabel_->setObjectName("pageTitle");
-    rootLayout->addWidget(titleLabel_);
-
-    descriptionLabel_ = new QLabel(
-        "Application-wide configuration for storage, coordinator defaults, and future environment preferences.",
-        this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(descriptionLabel_);
-
     const CollapsibleSection storageSection = createCollapsibleSection(
         "SETTINGS SECTION",
         "Database Storage",

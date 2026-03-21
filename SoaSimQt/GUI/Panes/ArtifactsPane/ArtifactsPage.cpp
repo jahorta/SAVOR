@@ -66,15 +66,6 @@ void ArtifactsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel(QStringLiteral("Artifacts"), this);
-    titleLabel_->setObjectName("pageTitle");
-    rootLayout->addWidget(titleLabel_);
-
-    descriptionLabel_ = new QLabel(QStringLiteral("Standalone artifact browser for object-store search, paging, import, and materialize/export flows modeled after SoaSimGui."), this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(descriptionLabel_);
-
     rootsBannerLabel_ = new QLabel(this);
     rootsBannerLabel_->setObjectName("jobSetsInlineMessage");
     rootsBannerLabel_->setProperty("severity", QStringLiteral("error"));

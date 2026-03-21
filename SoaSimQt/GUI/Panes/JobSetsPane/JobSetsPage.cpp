@@ -42,17 +42,6 @@ void JobSetsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel(QStringLiteral("Job Sets"), this);
-    titleLabel_->setObjectName("pageTitle");
-    rootLayout->addWidget(titleLabel_);
-
-    descriptionLabel_ = new QLabel(
-        QStringLiteral("Qt migration of the Job Sets workspace with live filters, cursor paging, preserved tree expansion state, right-click actions, and segmented progress visuals."),
-        this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(descriptionLabel_);
-
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobSetsToolbarPanel");
     QGridLayout* toolbarLayout = new QGridLayout(toolbarPanel);

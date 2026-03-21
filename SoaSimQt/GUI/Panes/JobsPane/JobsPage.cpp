@@ -46,15 +46,6 @@ void JobsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel(QStringLiteral("Jobs"), this);
-    titleLabel_->setObjectName("pageTitle");
-    rootLayout->addWidget(titleLabel_);
-
-    descriptionLabel_ = new QLabel(QStringLiteral("Live Jobs workspace backed by DataService with cursor paging, inspector detail tabs, backend actions, and structured artifacts metadata."), this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(descriptionLabel_);
-
     QFrame* filterPanel = new QFrame(this);
     filterPanel->setObjectName("jobsToolbarPanel");
     QGridLayout* filterLayout = new QGridLayout(filterPanel);
