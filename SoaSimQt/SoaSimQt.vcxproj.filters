@@ -28,6 +28,9 @@
     <Filter Include="GUI\Panes\JobSets">
       <UniqueIdentifier>{261281c3-0f0b-4795-bab6-754af65fd8cc}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\Settings">
+      <UniqueIdentifier>{9f1dcdf7-ec5e-4588-b8cf-a298c2975d5f}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Widgets">
       <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
     </Filter>
@@ -83,6 +86,9 @@
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp">
+      <Filter>GUI\Panes\Settings</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
@@ -108,6 +114,9 @@
     </QtMoc>
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
       <Filter>GUI\Widgets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h">
+      <Filter>GUI\Panes\Settings</Filter>
     </QtMoc>
   </ItemGroup>
   <ItemGroup>
@@ -143,6 +152,9 @@
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h">
       <Filter>GUI\Panes\JobSets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\SettingsPane\SettingsPage.h">
+      <Filter>GUI\Panes\Settings</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
