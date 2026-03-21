@@ -118,6 +118,7 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
+    <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
@@ -148,6 +149,8 @@
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
+    <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
+    <ClInclude Include="GUI\Widgets\LedgerPickerDialog.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
