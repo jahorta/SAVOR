@@ -114,6 +114,7 @@
   <ItemGroup>
     <ClInclude Include="Coordinator\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Models\WorkerTableModel.h" />
+    <QtMoc Include="GUI\Panes\SettingsPage.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="ArtifactsTableModel.h" />
     <ClInclude Include="ArtifactsTableView.h" />
@@ -143,6 +144,7 @@
     <ClCompile Include="Coordinator\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Models\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane.cpp" />
+    <ClCompile Include="GUI\Panes\SettingsPage.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />

@@ -35,6 +35,9 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <QtMoc Include="GUI\Panes\SettingsPage.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -123,6 +126,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\CoordinatorPane.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SettingsPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MainWindow.cpp">

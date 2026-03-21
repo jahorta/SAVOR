@@ -8,6 +8,7 @@
 class CoordinatorController;
 class CoordinatorPane;
 class QLabel;
+class SettingsPage;
 
 class QListWidget;
 class QStackedWidget;
@@ -43,6 +44,7 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
+    SettingsPage* settingsPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;

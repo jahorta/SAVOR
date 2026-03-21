@@ -246,6 +246,43 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         border-color: #294937;
         background-color: #16241b;
     }
+    QLabel#settingsCurrentValue {
+        color: #f3f7fb;
+        font-size: 13px;
+        font-weight: 600;
+        background-color: #12161d;
+        border: 1px solid #313949;
+        border-radius: 6px;
+        padding: 8px 10px;
+    }
+    QLabel#settingsStatus {
+        color: #a8c7ff;
+        font-size: 12px;
+        border: 1px solid #2c4368;
+        border-radius: 6px;
+        background-color: #142033;
+        padding: 8px 10px;
+    }
+    QLabel#settingsStatus[settingsState="warn"] {
+        color: #f6c06a;
+        border-color: #5a4630;
+        background-color: #241d15;
+    }
+    QLabel#settingsStatus[settingsState="error"] {
+        color: #ffb3b3;
+        border-color: #6a3131;
+        background-color: #2a1717;
+    }
+    QLabel#settingsStatus[settingsState="success"] {
+        color: #9fe0b2;
+        border-color: #294937;
+        background-color: #16241b;
+    }
+    QLabel#settingsStatus[settingsState="working"] {
+        color: #d8e6ff;
+        border-color: #40537a;
+        background-color: #1a2437;
+    }
     QCheckBox {
         spacing: 8px;
         color: #dce3ed;
