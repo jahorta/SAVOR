@@ -132,6 +132,10 @@
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp" />
     <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeController.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
@@ -152,6 +156,10 @@
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbePage.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h" />
