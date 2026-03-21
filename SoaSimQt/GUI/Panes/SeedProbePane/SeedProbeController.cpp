@@ -224,12 +224,41 @@ SeedProbeController::SeedProbeController(QObject* parent)
         emitStateChanged();
     });
 
+    connect(&runningRefreshWatcher_, &QFutureWatcher<RunningProbeUpdateResult>::finished, this, [this]() {
+        try {
+            const auto result = runningRefreshWatcher_.result();
+            runningRefreshInFlight_ = false;
+            if (result.ok) {
+                state_.lastRefresh = QDateTime::currentDateTime();
+                state_.errorMessage.clear();
+                for (const RunningProbeUpdate& update : result.value) {
+                    for (ProbeSummary& row : state_.probeRows) {
+                        if (row.probeId == update.probeId) {
+                            row.status = update.statusText;
+                            break;
+                        }
+                    }
+                    if (state_.selectedProbeId == update.probeId) {
+                        state_.statusText = update.statusText;
+                    }
+                }
+            } else {
+                state_.errorMessage = QStringLiteral("Seed probe refresh failed: %1").arg(QString::fromStdString(result.error.message));
+            }
+        } catch (...) {
+            runningRefreshInFlight_ = false;
+            state_.errorMessage = describeException("Seed probe refresh failed");
+        }
+        emitStateChanged();
+    });
+
     connect(&detailWatcher_, &QFutureWatcher<DetailBundleResult>::finished, this, [this]() {
         try {
             const auto result = detailWatcher_.result();
             detailInFlight_ = false;
             state_.loadingDetail = false;
             if (result.ok && detailRequestProbeId_ == state_.selectedProbeId) {
+                state_.lastRefresh = QDateTime::currentDateTime();
                 state_.neutralSeedText = neutralSeedText(result.value.probe);
                 state_.probeIdText = QString::number(result.value.probe.id);
                 state_.statusText = QString::fromStdString(result.value.probe.status);
@@ -254,12 +283,32 @@ SeedProbeController::SeedProbeController(QObject* parent)
 
     refreshTimer_ = new QTimer(this);
     connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (canAutoRefresh()) {
-            if (state_.selectedProbeId > 0 && state_.statusText.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0) {
-                kickDetailFetch(state_.selectedProbeId, true);
-            } else {
-                requestRefresh();
+        if (!canAutoRefresh()) {
+            return;
+        }
+
+        QVector<qint64> runningProbeIds;
+        runningProbeIds.reserve(state_.probeRows.size());
+        for (const ProbeSummary& row : state_.probeRows) {
+            if (row.status.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0) {
+                runningProbeIds.push_back(row.probeId);
             }
+        }
+
+        if (runningProbeIds.isEmpty()) {
+            return;
+        }
+
+        const bool selectedIsRunning = std::any_of(state_.probeRows.cbegin(), state_.probeRows.cend(), [this](const ProbeSummary& row) {
+            return row.probeId == state_.selectedProbeId
+                && row.status.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0;
+        });
+        if (selectedIsRunning) {
+            kickDetailFetch(state_.selectedProbeId, true);
+            runningProbeIds.erase(std::remove(runningProbeIds.begin(), runningProbeIds.end(), state_.selectedProbeId), runningProbeIds.end());
+        }
+        if (!runningProbeIds.isEmpty()) {
+            kickRunningRefresh(runningProbeIds);
         }
     });
     refreshTimer_->start(state_.refreshSeconds * 1000);
@@ -475,7 +524,29 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
 
 bool SeedProbeController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_;
+    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_ && !runningRefreshInFlight_;
+}
+
+
+void SeedProbeController::kickRunningRefresh(const QVector<qint64>& probeIds)
+{
+    if (probeIds.isEmpty() || runningRefreshInFlight_) {
+        return;
+    }
+
+    runningRefreshInFlight_ = true;
+    runningRefreshWatcher_.setFuture(runDataServiceCall([probeIds]() -> RunningProbeUpdateResult {
+        QVector<RunningProbeUpdate> updates;
+        updates.reserve(probeIds.size());
+        for (qint64 probeId : probeIds) {
+            const auto probeResult = SeedProbeRepo::GetAsync(probeId).get();
+            if (!probeResult.ok) {
+                return RunningProbeUpdateResult::Err(probeResult.error);
+            }
+            updates.push_back({ probeId, QString::fromStdString(probeResult.value.status) });
+        }
+        return RunningProbeUpdateResult::Ok(std::move(updates));
+    }));
 }
 
 void SeedProbeController::emitStateChanged()

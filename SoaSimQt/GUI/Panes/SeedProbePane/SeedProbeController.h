@@ -100,6 +100,12 @@ private:
         QVector<ProbeSummary> rows;
     };
     using ListBundleResult = simcore::db::DbResult<ListBundle>;
+    struct RunningProbeUpdate {
+        qint64 probeId = 0;
+        QString statusText;
+    };
+    using RunningProbeUpdateResult = simcore::db::DbResult<QVector<RunningProbeUpdate>>;
+
     struct DetailBundle {
         simcore::db::SeedProbeRow probe;
         QString savestateText;
@@ -113,6 +119,7 @@ private:
 
     void kickPageFetch();
     void kickDetailFetch(qint64 probeId, bool force = false);
+    void kickRunningRefresh(const QVector<qint64>& probeIds);
     bool canAutoRefresh() const;
     void emitStateChanged();
 
@@ -122,8 +129,10 @@ private:
     bool initialLoadStarted_ = false;
     bool pageInFlight_ = false;
     bool detailInFlight_ = false;
+    bool runningRefreshInFlight_ = false;
     qint64 detailRequestProbeId_ = 0;
     QFutureWatcher<ListBundleResult> pageWatcher_;
     QFutureWatcher<DetailBundleResult> detailWatcher_;
+    QFutureWatcher<RunningProbeUpdateResult> runningRefreshWatcher_;
     QTimer* refreshTimer_ = nullptr;
 };
