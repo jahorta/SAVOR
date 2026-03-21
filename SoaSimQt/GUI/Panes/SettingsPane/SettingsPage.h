@@ -18,7 +18,14 @@ class SettingsPage : public QWidget
     Q_OBJECT
 
 public:
+    enum class CoordinatorFocusTarget {
+        Section,
+        IsoPath,
+        DolphinBaseDir
+    };
+
     explicit SettingsPage(CoordinatorController* coordinatorController, QWidget* parent = nullptr);
+    void focusCoordinatorSettings(CoordinatorFocusTarget target);
 
     enum class StatusKind {
         Info,
@@ -68,6 +75,7 @@ private:
     QSpinBox* eventBufferSpin_ = nullptr;
     QCheckBox* startPausedCheck_ = nullptr;
     QLabel* coordinatorValidationLabel_ = nullptr;
+    QToolButton* coordinatorSectionToggle_ = nullptr;
 
     QString activeRoot_;
     QString persistedRoot_;

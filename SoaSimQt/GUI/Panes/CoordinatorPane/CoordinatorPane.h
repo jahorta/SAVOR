@@ -18,10 +18,20 @@ class CoordinatorPane : public QWidget
     Q_OBJECT
 
 public:
+    enum class SettingsFocusTarget {
+        CoordinatorSection,
+        IsoPath,
+        DolphinBaseDir
+    };
+
     explicit CoordinatorPane(CoordinatorController* controller, QWidget* parent = nullptr);
+
+signals:
+    void settingsNavigationRequested(SettingsFocusTarget target);
 
 private slots:
     void refreshUi();
+    void handleValidationLinkActivated(const QString& link);
 
 private:
     void createWidgets();

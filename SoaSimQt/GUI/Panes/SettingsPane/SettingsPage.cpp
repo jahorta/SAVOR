@@ -61,6 +61,30 @@ SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget
     }
 }
 
+void SettingsPage::focusCoordinatorSettings(CoordinatorFocusTarget target)
+{
+    if (coordinatorSectionToggle_ && !coordinatorSectionToggle_->isChecked()) {
+        coordinatorSectionToggle_->setChecked(true);
+    }
+
+    QWidget* focusTarget = nullptr;
+    switch (target) {
+    case CoordinatorFocusTarget::IsoPath:
+        focusTarget = isoPathEdit_;
+        break;
+    case CoordinatorFocusTarget::DolphinBaseDir:
+        focusTarget = dolphinBaseDirEdit_;
+        break;
+    case CoordinatorFocusTarget::Section:
+        focusTarget = coordinatorSectionToggle_;
+        break;
+    }
+
+    if (focusTarget) {
+        focusTarget->setFocus(Qt::OtherFocusReason);
+    }
+}
+
 void SettingsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
@@ -142,6 +166,7 @@ void SettingsPage::createWidgets()
         "RUNTIME SECTION",
         "Coordinator",
         "Coordinator startup defaults now live here so the Workers page can focus on runtime control and telemetry.");
+    coordinatorSectionToggle_ = coordinatorSection.toggleButton;
 
     QVBoxLayout* coordinatorLayout = new QVBoxLayout(coordinatorSection.content);
     coordinatorLayout->setContentsMargins(0, 0, 0, 0);
