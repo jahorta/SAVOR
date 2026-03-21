@@ -5,6 +5,7 @@
 #include "GUI/Panes/JobSetsPane/JobSetsPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
+#include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 
 #include <QtCore/QStringList>
 
@@ -32,7 +33,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Job Builder", "Mockup page for constructing new simulation runs." },
     { "Battle Run Settings", "Mockup page for tuning battle run configuration." },
-    { "Artifacts", "Mockup page for artifact browsing and import/export flows." },
+    { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
     { "Explorer Runs", "Mockup page for explorer run history and controls." },
     { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
@@ -244,7 +245,7 @@ QWidget* MainWindow::createContentPane()
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     contentStack_->addWidget(createPlaceholderPage("Job Builder", "Mockup page for constructing new simulation runs."));
     contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
-    contentStack_->addWidget(createPlaceholderPage("Artifacts", "Mockup page for artifact browsing and import/export flows."));
+    contentStack_->addWidget(new ArtifactsPage(contentPane));
     contentStack_->addWidget(createPlaceholderPage("Seed Probe", "Mockup page for seed probing tools and diagnostics."));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
