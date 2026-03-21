@@ -62,6 +62,9 @@
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsController.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\JobsPage.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClCompile>
@@ -109,6 +112,9 @@
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\JobsPane\JobsController.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
@@ -133,6 +139,9 @@
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsController.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h">

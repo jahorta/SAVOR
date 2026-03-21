@@ -122,6 +122,7 @@
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\JobsController.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp" />
@@ -135,6 +136,7 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
+    <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
@@ -143,6 +145,7 @@
     <ClInclude Include="GUI\Panes\SettingsPane\SettingsPage.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
+    <ClInclude Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />

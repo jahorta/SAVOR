@@ -28,7 +28,7 @@ struct PageMetadata {
 
 constexpr PageMetadata kPageMetadata[] = {
     { "Job Sets", "Live Job Sets workspace with filtering, paging, expansion state, right-click actions, and progress visuals." },
-    { "Jobs", "Mockup page for job listings, inspection, and actions." },
+    { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Job Builder", "Mockup page for constructing new simulation runs." },
     { "Battle Run Settings", "Mockup page for tuning battle run configuration." },
@@ -151,7 +151,7 @@ QWidget* MainWindow::createTopBar()
     QHBoxLayout* layout = new QHBoxLayout(topBar);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    QLabel* title = new QLabel("SoaSimQt Mockup", topBar);
+    QLabel* title = new QLabel("SoaSimQt", topBar);
     title->setObjectName("topBarTitle");
     layout->addWidget(title);
     layout->addStretch();
