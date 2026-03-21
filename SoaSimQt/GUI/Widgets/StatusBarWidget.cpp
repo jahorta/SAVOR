@@ -1,6 +1,6 @@
-#include "Widgets/StatusBarWidget.h"
+#include "GUI/Widgets/StatusBarWidget.h"
 
-#include "Coordinator/CoordinatorController.h"
+#include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 
 #include <QtCore/QTimer>
 #include <QtWidgets/QHBoxLayout>

@@ -3,7 +3,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
-#include "Widgets/StatusBarWidget.h"
+#include "GUI/Widgets/StatusBarWidget.h"
 
 class CoordinatorController;
 class CoordinatorPane;

@@ -1,14 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>qml;cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
-    </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;hm;inl;inc;xsd</Extensions>
-    </Filter>
     <Filter Include="Resource Files">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>qrc;rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
@@ -21,124 +13,136 @@
       <UniqueIdentifier>{639EADAA-A684-42e4-A9AD-28FC9BCB8F7C}</UniqueIdentifier>
       <Extensions>ts</Extensions>
     </Filter>
+    <Filter Include="GUI">
+      <UniqueIdentifier>{7db4c122-4ece-4e90-837b-a6f52462b212}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes">
+      <UniqueIdentifier>{d14de17a-882c-4af9-8194-d01599d4c921}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Coordinator">
+      <UniqueIdentifier>{612b34d4-a752-48e9-8d9c-5ff5543c40a1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Jobs">
+      <UniqueIdentifier>{06f0a36c-8c26-4d8f-afa1-57f916d29e64}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\JobSets">
+      <UniqueIdentifier>{261281c3-0f0b-4795-bab6-754af65fd8cc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Widgets">
+      <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Main">
+      <UniqueIdentifier>{bcdb69ab-3657-441c-81b2-9e6637d77f29}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Coordinator\CoordinatorController.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Coordinator\CoordinatorUiCommon.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Models\WorkerTableModel.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\CoordinatorPane.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\StyleSheet.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ArtifactsTableModel.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ArtifactsTableView.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobsPage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobSetsPage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobSetsProgressWidget.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobSetsTreeModel.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobsTableModel.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JobsTableView.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <QtMoc Include="Widgets\StatusBarWidget.h">
-      <Filter>Header Files</Filter>
-    </QtMoc>
-    <QtMoc Include="JobSetsController.h">
-      <Filter>Header Files</Filter>
-    </QtMoc>
-    <QtMoc Include="JobSetsTreeView.h">
-      <Filter>Header Files</Filter>
-    </QtMoc>
     <QtRcc Include="SoaSimQt.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>
-    <QtUic Include="MainWindow.ui">
-      <Filter>Form Files</Filter>
-    </QtUic>
-    <QtMoc Include="Coordinator\CoordinatorController.h">
-      <Filter>Header Files</Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="GUI\MainWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsPage.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp">
+      <Filter>Main</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <QtMoc Include="GUI\MainWindow.h">
+      <Filter>GUI</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\CoordinatorPane.h">
-      <Filter>Header Files</Filter>
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
-    <QtMoc Include="MainWindow.h">
-      <Filter>Header Files</Filter>
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
-    <ClCompile Include="ArtifactsTableModel.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ArtifactsTableView.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobsPage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobSetsController.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobSetsPage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobSetsProgressWidget.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobSetsTreeModel.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobSetsTreeView.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobsTableModel.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JobsTableView.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Coordinator\CoordinatorController.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Models\WorkerTableModel.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\CoordinatorPane.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MainWindow.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Widgets\StatusBarWidget.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ResourceCompile Include="$pro_name$.rc">
-    </ResourceCompile>
-    <None Include="$pro_name$.ico">
-      <Filter>Resource Files</Filter>
-    </None>
-    <None Include="$pro_name$.def">
-      <Filter>Resource Files</Filter>
-    </None>
-
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GUI\StyleSheet.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -1,9 +1,9 @@
 #include "MainWindow.h"
-#include "Coordinator/CoordinatorController.h"
-#include "GUI/Panes/CoordinatorPane.h"
+#include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "GUI/Panes/CoordinatorPane/CoordinatorPane.h"
 #include "GUI/StyleSheet.h"
-#include "JobSetsPage.h"
-#include "JobsPage.h"
+#include "GUI/Panes/JobSetsPane/JobSetsPage.h"
+#include "GUI/Panes/JobsPane/JobsPage.h"
 
 #include <QtCore/QStringList>
 
