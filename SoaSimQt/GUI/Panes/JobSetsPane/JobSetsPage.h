@@ -19,6 +19,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QTimer;
 
 class JobSetsPage final : public QWidget
 {
@@ -31,6 +32,7 @@ private:
     void syncControlsFromController();
     void refreshModel();
     void updateStatusWidgets();
+    void updateLoadingIndicatorState();
     std::optional<int> selectedProgramKind() const;
     std::optional<JobSetStateFilter> selectedStateFilter() const;
     void handleDeleteRequested(qint64 jobSetId);
@@ -52,6 +54,7 @@ private:
     QPushButton* nextButton_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QLabel* pageSummaryLabel_ = nullptr;
+    QLabel* pageStatusLabel_ = nullptr;
     QLabel* lastRefreshLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
 
@@ -60,4 +63,6 @@ private:
     QHash<int, QString> programNames_;
     QSet<qint64> expandedIds_;
     std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
+    QTimer* loadingStateTimer_ = nullptr;
+    bool delayedLoadingVisible_ = false;
 };

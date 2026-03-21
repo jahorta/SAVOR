@@ -7,6 +7,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QTimer>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFrame>
@@ -111,6 +112,9 @@ void JobSetsPage::createWidgets()
     pageSummaryLabel_->setObjectName("jobSetsMetaText");
     lastRefreshLabel_ = new QLabel(pagingPanel);
     lastRefreshLabel_->setObjectName("jobSetsMetaText");
+    pageStatusLabel_ = new QLabel(pagingPanel);
+    pageStatusLabel_->setObjectName("jobSetsMetaText");
+    pageStatusLabel_->hide();
 
     pagingLayout->addWidget(prevButton_);
     pagingLayout->addWidget(nextButton_);
@@ -118,6 +122,8 @@ void JobSetsPage::createWidgets()
     pagingLayout->addSpacing(8);
     pagingLayout->addWidget(pageSummaryLabel_);
     pagingLayout->addStretch();
+    pagingLayout->addWidget(pageStatusLabel_);
+    pagingLayout->addSpacing(12);
     pagingLayout->addWidget(lastRefreshLabel_);
 
     contentLayout->addWidget(pagingPanel);
@@ -129,6 +135,9 @@ void JobSetsPage::createWidgets()
     inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
     inlineMessageLabel_->setWordWrap(true);
     contentLayout->addWidget(inlineMessageLabel_);
+
+    loadingStateTimer_ = new QTimer(this);
+    loadingStateTimer_->setSingleShot(true);
 
     rootLayout->addWidget(contentPanel, 1);
 }
@@ -154,6 +163,12 @@ void JobSetsPage::wireSignals()
     connect(treeView_, &JobSetsTreeView::boostRequested, controller_, &JobSetsController::boostJobSetTree);
     connect(treeView_, &JobSetsTreeView::cancelQueuedRequested, controller_, &JobSetsController::cancelQueuedForTree);
     connect(treeView_, &JobSetsTreeView::deleteRequested, this, &JobSetsPage::handleDeleteRequested);
+    connect(loadingStateTimer_, &QTimer::timeout, this, [this]() {
+        if (controller_->viewState().loading && !controller_->viewState().familyItems.empty()) {
+            delayedLoadingVisible_ = true;
+            updateStatusWidgets();
+        }
+    });
 }
 
 void JobSetsPage::syncControlsFromController()
@@ -260,10 +275,18 @@ void JobSetsPage::restoreScrollPosition(int previousValue, bool wasAtBottom)
 void JobSetsPage::updateStatusWidgets()
 {
     const auto& state = controller_->viewState();
+    updateLoadingIndicatorState();
+
     pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(state.familyItems.size()).arg(state.pageLimit));
     lastRefreshLabel_->setText(state.lastRefresh.isValid()
         ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP")))
         : QStringLiteral("Last refresh: --"));
+    if (state.loading && (state.familyItems.empty() || delayedLoadingVisible_)) {
+        pageStatusLabel_->setText(QStringLiteral("Loading job sets…"));
+        pageStatusLabel_->show();
+    } else {
+        pageStatusLabel_->hide();
+    }
 
     if (!state.errorMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("error"));
@@ -273,7 +296,7 @@ void JobSetsPage::updateStatusWidgets()
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(state.infoMessage);
         inlineMessageLabel_->show();
-    } else if (state.loading) {
+    } else if (state.loading && state.familyItems.empty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(QStringLiteral("Loading job sets…"));
         inlineMessageLabel_->show();
@@ -287,6 +310,28 @@ void JobSetsPage::updateStatusWidgets()
 
     style()->unpolish(inlineMessageLabel_);
     style()->polish(inlineMessageLabel_);
+}
+
+void JobSetsPage::updateLoadingIndicatorState()
+{
+    const auto& state = controller_->viewState();
+    if (!state.loading) {
+        delayedLoadingVisible_ = false;
+        loadingStateTimer_->stop();
+        return;
+    }
+
+    if (state.familyItems.empty()) {
+        delayedLoadingVisible_ = true;
+        loadingStateTimer_->stop();
+        return;
+    }
+
+    if (delayedLoadingVisible_ || loadingStateTimer_->isActive()) {
+        return;
+    }
+
+    loadingStateTimer_->start(1000);
 }
 
 std::optional<int> JobSetsPage::selectedProgramKind() const
