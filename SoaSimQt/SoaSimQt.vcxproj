@@ -166,7 +166,6 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h" />
