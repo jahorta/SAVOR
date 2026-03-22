@@ -138,14 +138,15 @@ void SettingsPage::createWidgets()
     formLayout->setColumnStretch(1, 1);
     storageLayout->addLayout(formLayout);
 
+    QHBoxLayout* switchLayout = new QHBoxLayout();
+
     QLabel* switchDescription = new QLabel(
         "Point SoaSimQt at another existing database root without copying data. The selected directory must contain SoaSimDB.sqlite3.",
         storageSection.content);
     switchDescription->setObjectName("settingsSectionDescription");
     switchDescription->setWordWrap(true);
-    storageLayout->addWidget(switchDescription);
+    switchLayout->addWidget(switchDescription, 1);
 
-    QHBoxLayout* switchLayout = new QHBoxLayout();
     switchLayout->setSpacing(10);
     switchLayout->addStretch();
     useExistingButton_ = new QPushButton("Use Existing Database…", storageSection.content);
@@ -154,14 +155,15 @@ void SettingsPage::createWidgets()
     switchLayout->addWidget(useExistingButton_);
     storageLayout->addLayout(switchLayout);
 
+    QHBoxLayout* resetLayout = new QHBoxLayout();
+
     QLabel* resetDescription = new QLabel(
         "Delete the active database root and recreate it from scratch. This removes the SQLite database, stored artifacts, and temporary files in the active root.",
         storageSection.content);
     resetDescription->setObjectName("settingsSectionDescription");
     resetDescription->setWordWrap(true);
-    storageLayout->addWidget(resetDescription);
+    resetLayout->addWidget(resetDescription, 1);
 
-    QHBoxLayout* resetLayout = new QHBoxLayout();
     resetLayout->setSpacing(10);
     resetLayout->addStretch();
     resetDatabaseButton_ = new QPushButton("Delete && Remake Database…", storageSection.content);
@@ -170,14 +172,15 @@ void SettingsPage::createWidgets()
     resetLayout->addWidget(resetDatabaseButton_);
     storageLayout->addLayout(resetLayout);
 
+    QHBoxLayout* snapshotLayout = new QHBoxLayout();
+
     QLabel* snapshotDescription = new QLabel(
         "Save a compressed snapshot of the database plus object-store artifacts, or load a snapshot into a target root. Snapshots do not include temporary cache files.",
         storageSection.content);
     snapshotDescription->setObjectName("settingsSectionDescription");
     snapshotDescription->setWordWrap(true);
-    storageLayout->addWidget(snapshotDescription);
+    snapshotLayout->addWidget(snapshotDescription, 1);
 
-    QHBoxLayout* snapshotLayout = new QHBoxLayout();
     snapshotLayout->setSpacing(10);
     snapshotLayout->addStretch();
     saveSnapshotButton_ = new QPushButton("Save Snapshot…", storageSection.content);
