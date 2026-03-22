@@ -23,6 +23,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtCore/QDateTime>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -34,7 +35,7 @@
 #include <algorithm>
 
 namespace {
-void selectFlatRow(QAbstractItemView* view, int row)
+void selectFlatRow(QAbstractItemView* view, int row, bool ensureVisible = true)
 {
     if (!view || !view->model()) {
         return;
@@ -46,7 +47,28 @@ void selectFlatRow(QAbstractItemView* view, int row)
     }
 
     view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-    view->scrollTo(index);
+    if (ensureVisible) {
+        view->scrollTo(index);
+    }
+}
+
+void restoreScrollPosition(QAbstractItemView* view, int previousValue, bool wasAtBottom)
+{
+    if (!view) {
+        return;
+    }
+
+    QScrollBar* verticalScrollBar = view->verticalScrollBar();
+    if (!verticalScrollBar) {
+        return;
+    }
+
+    if (wasAtBottom) {
+        verticalScrollBar->setValue(verticalScrollBar->maximum());
+        return;
+    }
+
+    verticalScrollBar->setValue(std::clamp(previousValue, verticalScrollBar->minimum(), verticalScrollBar->maximum()));
 }
 }
 
@@ -323,6 +345,10 @@ void JobsPage::syncControlsFromController()
 void JobsPage::refreshModel()
 {
     const auto& state = controller_->viewState();
+    QScrollBar* verticalScrollBar = jobsTable_->verticalScrollBar();
+    const int previousScrollValue = verticalScrollBar ? verticalScrollBar->value() : 0;
+    const bool wasAtBottom = verticalScrollBar && previousScrollValue >= verticalScrollBar->maximum();
+
     std::vector<JobsTableModel::Row> rows;
     rows.reserve(state.page.items.size());
     for (const JobLite& job : state.page.items) {
@@ -340,10 +366,11 @@ void JobsPage::refreshModel()
     jobsModel_->setRows(rows);
     for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
         if (rows[row].jobId == state.selectedJobId) {
-            selectFlatRow(jobsTable_, row);
+            selectFlatRow(jobsTable_, row, false);
             break;
         }
     }
+    restoreScrollPosition(jobsTable_, previousScrollValue, wasAtBottom);
 }
 
 void JobsPage::updateInspector()
