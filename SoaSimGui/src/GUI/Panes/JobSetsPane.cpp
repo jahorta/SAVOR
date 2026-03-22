@@ -116,22 +116,26 @@ namespace {
         const float canceled_w = sz.x * (float)canceled_clamped / (float)total;
         const float remain_w = sz.x * (float)remain / (float)total;
 
+        const float rounding = 3.0f;
+        const bool has_success = success_w > 0.0f;
+        const bool has_failed = failed_w > 0.0f;
+        const bool has_canceled = canceled_w > 0.0f;
+        const bool has_remain = remain_w > 0.0f;
+
+        auto draw_segment = [&](float& x, float w, ImU32 color, bool round_left, bool round_right) {
+            if (w <= 0.0f) return;
+            ImDrawFlags flags = ImDrawFlags_None;
+            if (round_left) flags |= ImDrawFlags_RoundCornersLeft;
+            if (round_right) flags |= ImDrawFlags_RoundCornersRight;
+            dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + w, p.y + sz.y), color, (flags != ImDrawFlags_None) ? rounding : 0.0f, flags);
+            x += w;
+        };
+
         float x0 = p.x;
-        if (success_w > 0.0f) {
-            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + success_w, p.y + sz.y), col_success);
-            x0 += success_w;
-        }
-        if (failed_w > 0.0f) {
-            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + failed_w, p.y + sz.y), col_failed, 0.0f);
-            x0 += failed_w;
-        }
-        if (canceled_w > 0.0f) {
-            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + canceled_w, p.y + sz.y), col_canceled, 0.0f);
-            x0 += canceled_w;
-        }
-        if (remain_w > 0.0f) {
-            dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x0 + remain_w, p.y + sz.y), col_remain);
-        }
+        draw_segment(x0, success_w, col_success, true, !has_failed && !has_canceled && !has_remain);
+        draw_segment(x0, failed_w, col_failed, !has_success, !has_canceled && !has_remain);
+        draw_segment(x0, canceled_w, col_canceled, !has_success && !has_failed, !has_remain);
+        draw_segment(x0, remain_w, col_remain, !has_success && !has_failed && !has_canceled, true);
 
         char label[128]{ 0 };
         std::snprintf(label, sizeof(label), "ok:%lld rem:%lld fail:%lld can:%lld done:%lld/%lld",
