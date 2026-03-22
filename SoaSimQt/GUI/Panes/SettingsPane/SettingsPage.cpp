@@ -15,6 +15,7 @@
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
@@ -152,6 +153,22 @@ void SettingsPage::createWidgets()
     connect(useExistingButton_, &QPushButton::clicked, this, &SettingsPage::handleUseExistingDatabaseClicked);
     switchLayout->addWidget(useExistingButton_);
     storageLayout->addLayout(switchLayout);
+
+    QLabel* resetDescription = new QLabel(
+        "Delete the active database root and recreate it from scratch. This removes the SQLite database, stored artifacts, and temporary files in the active root.",
+        storageSection.content);
+    resetDescription->setObjectName("settingsSectionDescription");
+    resetDescription->setWordWrap(true);
+    storageLayout->addWidget(resetDescription);
+
+    QHBoxLayout* resetLayout = new QHBoxLayout();
+    resetLayout->setSpacing(10);
+    resetLayout->addStretch();
+    resetDatabaseButton_ = new QPushButton("Delete && Remake Database…", storageSection.content);
+    resetDatabaseButton_->setObjectName("jobsSecondaryButton");
+    connect(resetDatabaseButton_, &QPushButton::clicked, this, &SettingsPage::handleResetDatabaseClicked);
+    resetLayout->addWidget(resetDatabaseButton_);
+    storageLayout->addLayout(resetLayout);
 
     QLabel* snapshotDescription = new QLabel(
         "Save a compressed snapshot of the database plus object-store artifacts, or load a snapshot into a target root. Snapshots do not include temporary cache files.",
@@ -352,6 +369,7 @@ void SettingsPage::refreshStorageUi()
     refreshActiveRoot();
     const bool enabled = !storageBusy_;
     if (moveDatabaseButton_) moveDatabaseButton_->setEnabled(enabled);
+    if (resetDatabaseButton_) resetDatabaseButton_->setEnabled(enabled);
     if (useExistingButton_) useExistingButton_->setEnabled(enabled);
     if (saveSnapshotButton_) saveSnapshotButton_->setEnabled(enabled);
     if (loadSnapshotButton_) loadSnapshotButton_->setEnabled(enabled);
@@ -399,6 +417,50 @@ void SettingsPage::handleMoveDatabaseClicked()
         [target = targetRoot.toStdString()]() {
             std::string error;
             const bool ok = simcore::db::DBService::instance().relocate_database_root(target, true, error);
+            return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
+        });
+}
+
+void SettingsPage::handleResetDatabaseClicked()
+{
+    if (activeRoot_.isEmpty()) {
+        setStatus(StatusKind::Warning, "The active database root is unknown, so it cannot be reset.");
+        return;
+    }
+
+    const auto answer = QMessageBox::warning(
+        this,
+        "Delete and Remake Database",
+        QStringLiteral("Delete and remake the active database root?\n\nActive root:\n%1\n\nThis permanently deletes the SQLite database, stored artifacts, and temporary files in this root. SoaSimQt will then recreate a fresh empty database in the same location.")
+            .arg(activeRoot_),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    bool confirmed = false;
+    const QString confirmationText = QInputDialog::getText(
+        this,
+        "Type delete to confirm",
+        QStringLiteral("Type delete to permanently remove and recreate this database root:\n%1").arg(activeRoot_),
+        QLineEdit::Normal,
+        QString(),
+        &confirmed);
+    if (!confirmed) {
+        return;
+    }
+    if (confirmationText.trimmed() != QStringLiteral("delete")) {
+        setStatus(StatusKind::Warning, "Database reset cancelled because the confirmation text did not match \"delete\".");
+        return;
+    }
+
+    startStorageOperation(
+        StorageOperation::ResetDatabase,
+        QStringLiteral("Deleting and remaking database storage at %1…").arg(activeRoot_),
+        []() {
+            std::string error;
+            const bool ok = simcore::db::DBService::instance().reset_database_root(error);
             return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
         });
 }
@@ -565,6 +627,7 @@ void SettingsPage::handleStorageOperationFinished()
 
     switch (completedOp) {
     case StorageOperation::MoveDatabase:
+    case StorageOperation::ResetDatabase:
     case StorageOperation::UseExistingDatabase:
     case StorageOperation::LoadSnapshot: {
         QSettings settings;
@@ -582,6 +645,9 @@ void SettingsPage::handleStorageOperationFinished()
     switch (completedOp) {
     case StorageOperation::MoveDatabase:
         setStatus(StatusKind::Success, QStringLiteral("Database storage moved successfully. Active root: %1").arg(activeRoot_));
+        break;
+    case StorageOperation::ResetDatabase:
+        setStatus(StatusKind::Success, QStringLiteral("Database storage was deleted and recreated successfully. Active root: %1").arg(activeRoot_));
         break;
     case StorageOperation::UseExistingDatabase:
         setStatus(StatusKind::Success, QStringLiteral("Switched to the selected existing database root: %1").arg(activeRoot_));
