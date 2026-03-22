@@ -825,8 +825,11 @@ std::optional<BattleRunSettingsPage::PredicateDraft> BattleRunSettingsPage::make
         return std::nullopt;
     }
 
+    auto req_bp = bp::BPRegistry::match((uint32_t)result.value.required_bp);
+
     predicateRowCache_.insert(predicateId, result.value);
-    predicateLiteCache_.insert(predicateId, PredicateSpecLite{ result.value.id, result.value.name, result.value.description, result.value.required_bp, result.value.abort_on_fail });
+    predicateLiteCache_.insert(predicateId, PredicateSpecLite{ result.value.id, result.value.name, result.value.description, 
+        req_bp.value(), ((uint32_t)result.value.flags & (uint32_t)simcore::pred::PredFlag::AbortOnFail)});
     return PredicateDraft{ predicateId, QString::fromStdString(result.value.name), QString::fromStdString(result.value.description) };
 }
 
@@ -837,7 +840,7 @@ bool BattleRunSettingsPage::addPredicateToDraft(const qint64 predicateId, const 
         return false;
     }
 
-    const int targetRow = insertRow.has_value() ? std::clamp(insertRow.value(), 0, predicates_.size()) : predicates_.size();
+    const int targetRow = insertRow.has_value() ? std::clamp(insertRow.value(), 0, (int)predicates_.size()) : predicates_.size();
     predicates_.insert(targetRow, draft.value());
     refreshPredicateDraftView();
     predicateDraftList_->setCurrentRow(targetRow);

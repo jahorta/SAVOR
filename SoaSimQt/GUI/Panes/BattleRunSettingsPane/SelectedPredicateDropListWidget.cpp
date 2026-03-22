@@ -60,7 +60,7 @@ void SelectedPredicateDropListWidget::dropEvent(QDropEvent* event)
     qint64 predicateId = 0;
     if (canAccept(event->mimeData(), &predicateId)) {
         setDropActive(false);
-        emit predicateDropped(predicateId, insertionRowAt(event->pos()));
+        emit predicateDropped(predicateId, insertionRowAt(event->position().toPoint()));
         event->acceptProposedAction();
         return;
     }
