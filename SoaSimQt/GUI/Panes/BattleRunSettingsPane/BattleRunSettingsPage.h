@@ -26,7 +26,8 @@ class QListWidget;
 class QPushButton;
 class QPlainTextEdit;
 class QSpinBox;
-class QTableWidget;
+class QStandardItemModel;
+class QTreeView;
 class QVBoxLayout;
 class BattleContextTreeWidget;
 
@@ -163,16 +164,19 @@ private:
     QLineEdit* actionSearchEdit_ = nullptr;
     QPushButton* actionRefreshButton_ = nullptr;
     QPushButton* actionNewButton_ = nullptr;
-    QTableWidget* actionTable_ = nullptr;
+    QTreeView* actionTable_ = nullptr;
+    QStandardItemModel* actionTableModel_ = nullptr;
 
     QLineEdit* predicateSearchEdit_ = nullptr;
     QPushButton* predicateRefreshButton_ = nullptr;
     QPushButton* predicateNewButton_ = nullptr;
-    QTableWidget* predicateTable_ = nullptr;
+    QTreeView* predicateTable_ = nullptr;
+    QStandardItemModel* predicateTableModel_ = nullptr;
 
     QLineEdit* templateSearchEdit_ = nullptr;
     QPushButton* templateRefreshButton_ = nullptr;
-    QTableWidget* templateTable_ = nullptr;
+    QTreeView* templateTable_ = nullptr;
+    QStandardItemModel* templateTableModel_ = nullptr;
 
     QLabel* inlineMessageLabel_ = nullptr;
     QSpinBox* fakeAttackBudgetSpin_ = nullptr;
