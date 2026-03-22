@@ -46,7 +46,7 @@ void JobSetsPage::createWidgets()
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobSetsToolbarPanel");
     QGridLayout* toolbarLayout = new QGridLayout(toolbarPanel);
-    toolbarLayout->setContentsMargins(16, 14, 16, 14);
+    toolbarLayout->setContentsMargins(8, 7, 8, 7);
     toolbarLayout->setHorizontalSpacing(12);
     toolbarLayout->setVerticalSpacing(10);
 
@@ -86,7 +86,8 @@ void JobSetsPage::createWidgets()
     toolbarLayout->addWidget(autoRefreshCheck_, 0, 5, 1, 2, Qt::AlignBottom);
     toolbarLayout->addWidget(refreshSecondsSpin_, 1, 5);
     toolbarLayout->addWidget(new QLabel(QStringLiteral("Interval"), toolbarPanel), 1, 6);
-    toolbarLayout->setColumnStretch(6, 1);
+    toolbarLayout->setColumnStretch(0, 1);
+    toolbarLayout->setColumnStretch(1, 1);
 
     rootLayout->addWidget(toolbarPanel);
 
@@ -99,7 +100,7 @@ void JobSetsPage::createWidgets()
     QFrame* pagingPanel = new QFrame(contentPanel);
     pagingPanel->setObjectName("jobSetsPagingPanel");
     QHBoxLayout* pagingLayout = new QHBoxLayout(pagingPanel);
-    pagingLayout->setContentsMargins(16, 12, 16, 12);
+    pagingLayout->setContentsMargins(8, 7, 8, 7);
     pagingLayout->setSpacing(10);
 
     prevButton_ = new QPushButton(QStringLiteral("Prev"), pagingPanel);

@@ -222,7 +222,7 @@ QWidget* CoordinatorPane::createTableCard()
     configureTable();
 
     layout->addLayout(headerLayout);
-    layout->addWidget(stoppedLabel_);
+    layout->addWidget(stoppedLabel_, 1);
     layout->addWidget(workerTableView_, 1);
 
     return card;

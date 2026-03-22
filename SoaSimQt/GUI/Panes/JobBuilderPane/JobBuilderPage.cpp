@@ -346,29 +346,35 @@ void JobBuilderPage::createWidgets()
     explorerLayout->addStretch();
     formStack_->addWidget(explorerForm_);
 
+    QWidget* centerPanel = new QWidget(splitLayout_);
+    QVBoxLayout* centerLayout = new QVBoxLayout(centerPanel);
+    centerLayout->setContentsMargins(0, 0, 0, 0);
+    centerLayout->setSpacing(12);
+
+    {
+        QVBoxLayout* cardLayout = nullptr;
+        QFrame* card = createCard(QStringLiteral("Validation"), centerPanel, &cardLayout);
+        validationText_ = new QPlainTextEdit(card);
+        validationText_->setReadOnly(true);
+        validationText_->setMinimumHeight(140);
+        cardLayout->addWidget(validationText_);
+        centerLayout->addWidget(card);
+    }
+    {
+        QVBoxLayout* cardLayout = nullptr;
+        QFrame* card = createCard(QStringLiteral("Preview"), centerPanel, &cardLayout);
+        previewText_ = new QPlainTextEdit(card);
+        previewText_->setReadOnly(true);
+        previewText_->setMinimumHeight(180);
+        cardLayout->addWidget(previewText_);
+        centerLayout->addWidget(card);
+    }
+
     QWidget* rightPanel = new QWidget(splitLayout_);
     QVBoxLayout* rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(12);
 
-    {
-        QVBoxLayout* cardLayout = nullptr;
-        QFrame* card = createCard(QStringLiteral("Validation"), rightPanel, &cardLayout);
-        validationText_ = new QPlainTextEdit(card);
-        validationText_->setReadOnly(true);
-        validationText_->setMinimumHeight(140);
-        cardLayout->addWidget(validationText_);
-        rightLayout->addWidget(card);
-    }
-    {
-        QVBoxLayout* cardLayout = nullptr;
-        QFrame* card = createCard(QStringLiteral("Preview"), rightPanel, &cardLayout);
-        previewText_ = new QPlainTextEdit(card);
-        previewText_->setReadOnly(true);
-        previewText_->setMinimumHeight(180);
-        cardLayout->addWidget(previewText_);
-        rightLayout->addWidget(card);
-    }
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("Submit"), rightPanel, &cardLayout);
@@ -398,9 +404,11 @@ void JobBuilderPage::createWidgets()
     }
 
     splitLayout_->addWidget(leftPanel);
+    splitLayout_->addWidget(centerPanel);
     splitLayout_->addWidget(rightPanel);
-    splitLayout_->setStretchFactor(0, 3);
-    splitLayout_->setStretchFactor(1, 2);
+    splitLayout_->setStretchFactor(0, 2);
+    splitLayout_->setStretchFactor(1, 1);
+    splitLayout_->setStretchFactor(2, 1);
     rootLayout->addWidget(splitLayout_, 1);
 }
 

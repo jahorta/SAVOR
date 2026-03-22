@@ -226,11 +226,11 @@ QWidget* MainWindow::createContentPane()
     contentPane->setObjectName("contentPane");
 
     QVBoxLayout* layout = new QVBoxLayout(contentPane);
-    layout->setContentsMargins(20, 18, 20, 18);
+    layout->setContentsMargins(20, 9, 20, 9);
     layout->setSpacing(12);
 
     QHBoxLayout* topLayout = new QHBoxLayout(contentPane);
-    topLayout->setContentsMargins(20, 18, 20, 18);
+    topLayout->setContentsMargins(0, 0, 0, 0);
     topLayout->setSpacing(12);
 
     contentTitleLabel_ = new QLabel(contentPane);
