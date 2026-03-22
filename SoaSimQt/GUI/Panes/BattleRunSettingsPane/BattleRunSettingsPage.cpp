@@ -13,6 +13,7 @@
 #include "Core/Input/SoaBattle/ActionTypes.h"
 #include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Core/Memory/Soa/SoaConstants.h"
+#include "Core/Memory/Soa/SoaAddrProgram.h"
 #include "PresetEditorDialog.h"
 #include "PredicateEditorDialog.h"
 #include "TemplateSaveDialog.h"

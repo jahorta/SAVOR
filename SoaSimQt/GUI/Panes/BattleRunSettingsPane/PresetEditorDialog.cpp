@@ -650,13 +650,13 @@ void PresetEditorDialog::refreshUi()
         }
         targetPreview = selectedSlot >= 0 ? QStringLiteral("Single target slot %1.").arg(selectedSlot) : QStringLiteral("Choose a target slot.");
     } else if (isMulti) {
-        QStringList slots;
+        QStringList slots_;
         for (int slot = 4; slot <= 11; ++slot) {
             if (multiTargetChecks_.at(slot - 4)->isChecked()) {
-                slots << QString::number(slot);
+                slots_ << QString::number(slot);
             }
         }
-        targetPreview = slots.isEmpty() ? QStringLiteral("Choose one or more target slots.") : QStringLiteral("Selected slots: %1").arg(slots.join(QStringLiteral(", ")));
+        targetPreview = slots_.isEmpty() ? QStringLiteral("Choose one or more target slots.") : QStringLiteral("Selected slots: %1").arg(slots_.join(QStringLiteral(", ")));
     } else if (isSamePc) {
         targetPreview = QStringLiteral("Target follows %1.").arg(samePcCombo_->currentText());
     } else if (isByKind) {
