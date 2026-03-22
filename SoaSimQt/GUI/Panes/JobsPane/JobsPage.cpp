@@ -202,7 +202,7 @@ void JobsPage::createWidgets()
     inspectorTabs_->addTab(resultsText_, QStringLiteral("Results"));
     inspectorLayout->addWidget(inspectorTabs_, 1);
 
-    splitter->addWidget(tablePanel); splitter->addWidget(inspectorPanel); splitter->setStretchFactor(0, 3); splitter->setStretchFactor(1, 2);
+    splitter->addWidget(tablePanel); splitter->addWidget(inspectorPanel); splitter->setStretchFactor(0, 2); splitter->setStretchFactor(1, 1);
     contentLayout->addWidget(splitter, 1);
 
     inlineMessageLabel_ = new QLabel(contentPanel);
