@@ -65,7 +65,6 @@ public:
     void refreshSelectedJobDetail();
     void requeueSelectedJob();
     void cancelSelectedJob();
-    void bumpSelectedJobPriority(int delta);
     void restartSelectedFailedJob(std::optional<QString> iniOverride = std::nullopt);
 
 signals:
@@ -88,7 +87,7 @@ private:
     using JobDetailResult = simcore::db::DbResult<JobDetailBundle>;
     using VoidResult = simcore::db::DbResult<void>;
 
-    enum class Operation { FetchKinds, FetchPage, FetchDetail, Requeue, Cancel, Bump, Restart };
+    enum class Operation { FetchKinds, FetchPage, FetchDetail, Requeue, Cancel, Restart };
 
     void kickKindsFetch();
     void kickPageFetch();
@@ -109,7 +108,6 @@ private:
     bool detailInFlight_ = false;
     bool requeueInFlight_ = false;
     bool cancelInFlight_ = false;
-    bool bumpInFlight_ = false;
     bool restartInFlight_ = false;
     qint64 detailRequestJobId_ = 0;
     qint64 actionJobId_ = 0;
@@ -118,7 +116,6 @@ private:
     QFutureWatcher<JobDetailResult> detailWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;
     QFutureWatcher<VoidResult> cancelWatcher_;
-    QFutureWatcher<VoidResult> bumpWatcher_;
     QFutureWatcher<VoidResult> restartWatcher_;
     QTimer* refreshTimer_ = nullptr;
 };
