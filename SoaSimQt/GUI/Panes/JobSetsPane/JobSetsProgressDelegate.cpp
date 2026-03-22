@@ -71,36 +71,27 @@ void JobSetsProgressDelegate::paint(QPainter* painter, const QStyleOptionViewIte
         const qreal width = outer.width();
         qreal x = outer.left();
 
-        auto drawSegment = [&](qint64 amount, const QColor& color, bool roundLeft, bool roundRight) {
+        QPainterPath clipPath;
+        clipPath.addRoundedRect(outer, 6.0, 6.0);
+        painter->save();
+        painter->setClipPath(clipPath);
+
+        auto drawSegment = [&](qint64 amount, const QColor& color) {
             if (amount <= 0) {
                 return;
             }
 
             const qreal segmentWidth = width * static_cast<qreal>(amount) / static_cast<qreal>(total);
-            QRectF segment(x, outer.top(), segmentWidth, outer.height());
-            QPainterPath path;
-            constexpr qreal radius = 6.0;
-
-            if (roundLeft || roundRight) {
-                path.addRoundedRect(segment, radius, radius);
-                if (!roundLeft) {
-                    path.addRect(segment.left(), segment.top(), radius, segment.height());
-                }
-                if (!roundRight) {
-                    path.addRect(segment.right() - radius, segment.top(), radius, segment.height());
-                }
-                painter->fillPath(path, color);
-            } else {
-                painter->fillRect(segment, color);
-            }
+            const QRectF segment(x, outer.top(), segmentWidth, outer.height());
+            painter->fillRect(segment, color);
             x += segmentWidth;
         };
 
-        const bool onlySuccess = failedClamped == 0 && canceledClamped == 0 && remain == 0;
-        drawSegment(successClamped, success, true, onlySuccess);
-        drawSegment(failedClamped, failedColor, successClamped == 0, canceledClamped == 0 && remain == 0);
-        drawSegment(canceledClamped, canceledColor, successClamped == 0 && failedClamped == 0, remain == 0);
-        drawSegment(remain, remaining, successClamped == 0 && failedClamped == 0 && canceledClamped == 0, true);
+        drawSegment(successClamped, success);
+        drawSegment(failedClamped, failedColor);
+        drawSegment(canceledClamped, canceledColor);
+        drawSegment(remain, remaining);
+        painter->restore();
     }
 
     painter->setPen(QColor(244, 247, 250));
