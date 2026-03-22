@@ -5,6 +5,7 @@
 #include <QtCore/QIODevice>
 #include <QtCore/QString>
 #include <QtCore/Qt>
+#include <QtCore/QMimeData>
 
 class QMimeData;
 
