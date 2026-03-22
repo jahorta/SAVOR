@@ -83,6 +83,9 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
@@ -239,6 +242,12 @@
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
       <Filter>GUI\Panes\Coordinator</Filter>
+    </ClInclude>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
