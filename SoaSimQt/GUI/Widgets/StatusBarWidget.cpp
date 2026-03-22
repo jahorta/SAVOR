@@ -60,7 +60,7 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName("statusBarWidget");
-    setMinimumHeight(34);
+    setMinimumHeight(40);
 
     toastExpiryTimer_ = new QTimer(this);
     toastExpiryTimer_->setSingleShot(true);
