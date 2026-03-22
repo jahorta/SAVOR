@@ -135,27 +135,15 @@ QWidget* CoordinatorPane::createControlsCard()
     rootLayout->setContentsMargins(16, 16, 16, 16);
     rootLayout->setSpacing(14);
 
-    QHBoxLayout* headerLayout = new QHBoxLayout();
-    headerLayout->setSpacing(12);
+    QHBoxLayout* topLayout = new QHBoxLayout();
+    topLayout->setSpacing(12);
+
+    QVBoxLayout* controlColumnLayout = new QVBoxLayout();
+    controlColumnLayout->setSpacing(12);
 
     QLabel* heading = new QLabel("Coordinator Control", card);
     heading->setObjectName("panelTitle");
-
-    QLabel* subheading = new QLabel("Match the original SoaSim flow: configure once, then manage start / pause / stop from a single command row.", card);
-    subheading->setObjectName("panelBody");
-    subheading->setWordWrap(true);
-
-    QVBoxLayout* headingLayout = new QVBoxLayout();
-    headingLayout->setSpacing(4);
-    headingLayout->addWidget(heading);
-    headingLayout->addWidget(subheading);
-
-    headerLayout->addLayout(headingLayout, 1);
-    headerLayout->addWidget(createMetricCard("Status", &statusValueLabel_, "coordinatorStateBadge"));
-    headerLayout->addWidget(createMetricCard("Active workers", &activeWorkersLabel_));
-    headerLayout->addWidget(createMetricCard("Snapshot", &snapshotCountLabel_));
-
-    rootLayout->addLayout(headerLayout);
+    controlColumnLayout->addWidget(heading);
 
     QHBoxLayout* controlsLayout = new QHBoxLayout();
     controlsLayout->setSpacing(10);
@@ -177,7 +165,17 @@ QWidget* CoordinatorPane::createControlsCard()
     controlsLayout->addWidget(targetWorkersSpin_);
     controlsLayout->addStretch();
 
-    rootLayout->addLayout(controlsLayout);
+    controlColumnLayout->addLayout(controlsLayout);
+    topLayout->addLayout(controlColumnLayout, 1);
+
+    QHBoxLayout* metricsLayout = new QHBoxLayout();
+    metricsLayout->setSpacing(12);
+    metricsLayout->addWidget(createMetricCard("Status", &statusValueLabel_, "coordinatorStateBadge"));
+    metricsLayout->addWidget(createMetricCard("Active workers", &activeWorkersLabel_));
+    metricsLayout->addWidget(createMetricCard("Snapshot", &snapshotCountLabel_));
+    topLayout->addLayout(metricsLayout);
+
+    rootLayout->addLayout(topLayout);
 
     validationLabel_ = new QLabel(card);
     validationLabel_->setObjectName("coordinatorValidation");
