@@ -104,10 +104,16 @@ namespace simcore {
 
             // The active database root (or default root if never overridden).
             std::filesystem::path database_root() const;
+            bool is_running() const;
+
+            // Switch the active DB root without copying data. The selected root must already
+            // contain a SoaSimDB.sqlite3 file.
+            bool switch_database_root(const std::filesystem::path& new_root, std::string& error);
 
             // Relocate the DB root by stopping the service, copying existing data,
-            // updating root, and restarting.
-            bool relocate_database_root(const std::filesystem::path& new_root, std::string& error);
+            // updating root, and restarting. If cleanup_source is true, the previous
+            // root is removed after a successful switch.
+            bool relocate_database_root(const std::filesystem::path& new_root, bool cleanup_source, std::string& error);
 
             // Stop the service, flush pending tasks and join threads.
             // After stop(), no more tasks can be submitted until start().
