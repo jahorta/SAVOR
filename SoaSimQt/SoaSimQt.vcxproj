@@ -167,7 +167,6 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
