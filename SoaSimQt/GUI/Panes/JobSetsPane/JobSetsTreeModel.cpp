@@ -10,10 +10,10 @@ namespace {
 
 bool jobSetLess(const JobSetsTreeModel::Item& a, const JobSetsTreeModel::Item& b)
 {
-    if (a.jobSet.created_at != b.jobSet.created_at) {
-        return a.jobSet.created_at > b.jobSet.created_at;
+    if (a.jobSet.job_set_id != b.jobSet.job_set_id) {
+        return a.jobSet.job_set_id > b.jobSet.job_set_id;
     }
-    return a.jobSet.job_set_id > b.jobSet.job_set_id;
+    return a.jobSet.created_at > b.jobSet.created_at;
 }
 
 }
@@ -181,10 +181,10 @@ void JobSetsTreeModel::syncRows(const std::vector<JobSetLite>& rows, const QHash
         ordered.push_back(&row);
     }
     std::sort(ordered.begin(), ordered.end(), [](const JobSetLite* a, const JobSetLite* b) {
-        if (a->created_at != b->created_at) {
-            return a->created_at > b->created_at;
+        if (a->job_set_id != b->job_set_id) {
+            return a->job_set_id > b->job_set_id;
         }
-        return a->job_set_id > b->job_set_id;
+        return a->created_at > b->created_at;
     });
 
     for (const JobSetLite* row : ordered) {
