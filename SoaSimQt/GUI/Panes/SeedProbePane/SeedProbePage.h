@@ -8,7 +8,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
-class QTableView;
+class QTreeView;
 class SeedProbeController;
 class SeedProbeGridWidget;
 class SeedProbeListModel;
@@ -48,7 +48,7 @@ private:
     QLabel* lastRefreshLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
 
-    QTableView* listTable_ = nullptr;
+    QTreeView* listTable_ = nullptr;
     QLabel* neutralSeedValue_ = nullptr;
     QLabel* probeIdValue_ = nullptr;
     QLabel* statusValue_ = nullptr;
@@ -58,5 +58,5 @@ private:
     SeedProbeGridWidget* cStickGrid_ = nullptr;
     SeedProbeGridWidget* triggerGrid_ = nullptr;
     QHBoxLayout* legendLayout_ = nullptr;
-    QTableView* uniqueTable_ = nullptr;
+    QTreeView* uniqueTable_ = nullptr;
 };

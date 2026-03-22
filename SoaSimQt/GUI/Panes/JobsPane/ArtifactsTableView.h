@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QtWidgets/QTableView>
+#include <QtWidgets/QTreeView>
 
 class ArtifactsTableModel;
 
-class ArtifactsTableView final : public QTableView
+class ArtifactsTableView final : public QTreeView
 {
 public:
     explicit ArtifactsTableView(QWidget* parent = nullptr);

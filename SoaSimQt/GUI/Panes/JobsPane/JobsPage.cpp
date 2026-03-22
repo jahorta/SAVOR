@@ -8,6 +8,7 @@
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
+#include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -30,6 +31,23 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+
+namespace {
+void selectFlatRow(QAbstractItemView* view, int row)
+{
+    if (!view || !view->model()) {
+        return;
+    }
+
+    const QModelIndex index = view->model()->index(row, 0);
+    if (!index.isValid() || !view->selectionModel()) {
+        return;
+    }
+
+    view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->scrollTo(index);
+}
+}
 
 JobsPage::JobsPage(QWidget* parent)
     : QWidget(parent)
@@ -233,7 +251,7 @@ void JobsPage::wireSignals()
 
     connect(jobsTable_, &JobsTableView::doubleClicked, this, [this](const QModelIndex& current) {
         if (current.isValid()) {
-            jobsTable_->selectRow(current.row());
+            selectFlatRow(jobsTable_, current.row());
             inspectorTabs_->setCurrentIndex(0);
         }
     });
@@ -290,7 +308,7 @@ void JobsPage::refreshModel()
     jobsModel_->setRows(rows);
     for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
         if (rows[row].jobId == state.selectedJobId) {
-            jobsTable_->selectRow(row);
+            selectFlatRow(jobsTable_, row);
             break;
         }
     }

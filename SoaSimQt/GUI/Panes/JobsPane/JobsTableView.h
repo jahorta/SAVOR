@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QtWidgets/QTableView>
+#include <QtWidgets/QTreeView>
 
 class JobsTableModel;
 
-class JobsTableView final : public QTableView
+class JobsTableView final : public QTreeView
 {
 public:
     explicit JobsTableView(QWidget* parent = nullptr);

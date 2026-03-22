@@ -6,7 +6,7 @@
 #include <QtWidgets/QHeaderView>
 
 ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
-    : QTableView(parent)
+    : QTreeView(parent)
 {
     setObjectName("jobsTable");
     verticalHeader()->setVisible(false);
@@ -16,6 +16,11 @@ ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
     setShowGrid(false);
     setAlternatingRowColors(true);
     setSortingEnabled(false);
+    setRootIsDecorated(false);
+    setItemsExpandable(false);
+    setAllColumnsShowFocus(true);
+    setUniformRowHeights(true);
+    setIndentation(0);
     horizontalHeader()->setStretchLastSection(false);
     horizontalHeader()->setHighlightSections(false);
 }

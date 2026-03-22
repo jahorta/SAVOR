@@ -17,8 +17,8 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
-#include <QtWidgets/QTableView>
 #include <QtCore/QItemSelectionModel>
+#include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
 
 namespace {
@@ -130,12 +130,17 @@ void SeedProbePage::createWidgets()
     QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(16, 16, 16, 16);
     leftLayout->addWidget(new QLabel(QStringLiteral("Seed Probes"), leftPanel));
-    listTable_ = new QTableView(leftPanel);
+    listTable_ = new QTreeView(leftPanel);
     listTable_->setModel(listModel_);
     listTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     listTable_->setSelectionMode(QAbstractItemView::SingleSelection);
     listTable_->setAlternatingRowColors(true);
     listTable_->setSortingEnabled(false);
+    listTable_->setRootIsDecorated(false);
+    listTable_->setItemsExpandable(false);
+    listTable_->setAllColumnsShowFocus(true);
+    listTable_->setUniformRowHeights(true);
+    listTable_->setIndentation(0);
     listTable_->horizontalHeader()->setStretchLastSection(true);
     listTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     listTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -199,13 +204,18 @@ void SeedProbePage::createWidgets()
     QVBoxLayout* uniqueLayout = new QVBoxLayout(uniquePanel);
     uniqueLayout->setContentsMargins(16, 16, 16, 16);
     uniqueLayout->addWidget(new QLabel(QStringLiteral("Unique Seeds"), uniquePanel));
-    uniqueTable_ = new QTableView(uniquePanel);
+    uniqueTable_ = new QTreeView(uniquePanel);
     uniqueTable_->setModel(uniqueModel_);
     uniqueTable_->horizontalHeader()->setStretchLastSection(true);
     uniqueTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     uniqueTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     uniqueTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     uniqueTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    uniqueTable_->setRootIsDecorated(false);
+    uniqueTable_->setItemsExpandable(false);
+    uniqueTable_->setAllColumnsShowFocus(true);
+    uniqueTable_->setUniformRowHeights(true);
+    uniqueTable_->setIndentation(0);
     uniqueLayout->addWidget(uniqueTable_);
     detailLayout->addWidget(uniquePanel, 1);
 
@@ -283,7 +293,11 @@ void SeedProbePage::refreshList()
 
     for (int row = 0; row < rows.size(); ++row) {
         if (rows[row].probeId == state.selectedProbeId) {
-            listTable_->selectRow(row);
+            const QModelIndex index = listModel_->index(row, 0);
+            if (index.isValid()) {
+                listTable_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                listTable_->scrollTo(index);
+            }
             break;
         }
     }
