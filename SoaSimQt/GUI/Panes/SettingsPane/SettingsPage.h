@@ -46,6 +46,7 @@ private slots:
     void browseForIsoPath();
     void browseForDolphinBaseDir();
     void handleMoveDatabaseClicked();
+    void handleResetDatabaseClicked();
     void handleUseExistingDatabaseClicked();
     void handleSaveSnapshotClicked();
     void handleLoadSnapshotClicked();
@@ -61,6 +62,7 @@ private:
     enum class StorageOperation {
         None,
         MoveDatabase,
+        ResetDatabase,
         UseExistingDatabase,
         SaveSnapshot,
         LoadSnapshot,
@@ -83,6 +85,7 @@ private:
     QLabel* activeRootValueLabel_ = nullptr;
     QLabel* statusLabel_ = nullptr;
     QPushButton* moveDatabaseButton_ = nullptr;
+    QPushButton* resetDatabaseButton_ = nullptr;
     QPushButton* useExistingButton_ = nullptr;
     QPushButton* saveSnapshotButton_ = nullptr;
     QPushButton* loadSnapshotButton_ = nullptr;
