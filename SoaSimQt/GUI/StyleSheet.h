@@ -281,7 +281,10 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         background-color: #232a36;
     }
     QPushButton[coordinatorPaused="true"] {
-        border: 1px solid #dc4040;
+        border: 2px solid #dc4040;
+    }
+    QPushButton[coordinatorPaused="true"]:hover:!disabled {
+        background-color: #2a1b1b;
     }
     QTableView,
     QTreeView {
