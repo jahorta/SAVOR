@@ -9,11 +9,9 @@ ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
     : QTreeView(parent)
 {
     setObjectName("jobsTable");
-    verticalHeader()->setVisible(false);
     setSelectionBehavior(QAbstractItemView::SelectRows);
     setSelectionMode(QAbstractItemView::SingleSelection);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
-    setShowGrid(false);
     setAlternatingRowColors(true);
     setSortingEnabled(false);
     setRootIsDecorated(false);
@@ -21,19 +19,19 @@ ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
     setAllColumnsShowFocus(true);
     setUniformRowHeights(true);
     setIndentation(0);
-    horizontalHeader()->setStretchLastSection(false);
-    horizontalHeader()->setHighlightSections(false);
+    header()->setStretchLastSection(false);
+    header()->setHighlightSections(false);
 }
 
 void ArtifactsBrowserTableView::attachModel(ArtifactsBrowserTableModel* model)
 {
     setModel(model);
-    horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
 }
 
 ArtifactsBrowserTableModel* ArtifactsBrowserTableView::artifactsModel()

@@ -9,24 +9,22 @@ ArtifactsTableView::ArtifactsTableView(QWidget* parent)
     : QTreeView(parent)
 {
     setObjectName("jobsArtifactsTable");
-    verticalHeader()->setVisible(false);
     setSelectionMode(QAbstractItemView::NoSelection);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
-    setShowGrid(false);
     setAlternatingRowColors(true);
     setRootIsDecorated(false);
     setItemsExpandable(false);
     setAllColumnsShowFocus(true);
     setUniformRowHeights(true);
     setIndentation(0);
-    horizontalHeader()->setStretchLastSection(true);
+    header()->setStretchLastSection(true);
 }
 
 void ArtifactsTableView::attachModel(ArtifactsTableModel* model)
 {
     setModel(model);
 
-    horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 }
 
 ArtifactsTableModel* ArtifactsTableView::artifactsModel()

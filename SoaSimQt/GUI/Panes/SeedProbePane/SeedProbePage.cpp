@@ -141,10 +141,10 @@ void SeedProbePage::createWidgets()
     listTable_->setAllColumnsShowFocus(true);
     listTable_->setUniformRowHeights(true);
     listTable_->setIndentation(0);
-    listTable_->horizontalHeader()->setStretchLastSection(true);
-    listTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    listTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    listTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    listTable_->header()->setStretchLastSection(true);
+    listTable_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    listTable_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    listTable_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     leftLayout->addWidget(listTable_, 1);
 
     QScrollArea* detailScroll = new QScrollArea(splitter);
@@ -206,9 +206,9 @@ void SeedProbePage::createWidgets()
     uniqueLayout->addWidget(new QLabel(QStringLiteral("Unique Seeds"), uniquePanel));
     uniqueTable_ = new QTreeView(uniquePanel);
     uniqueTable_->setModel(uniqueModel_);
-    uniqueTable_->horizontalHeader()->setStretchLastSection(true);
-    uniqueTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    uniqueTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    uniqueTable_->header()->setStretchLastSection(true);
+    uniqueTable_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    uniqueTable_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     uniqueTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     uniqueTable_->setSelectionMode(QAbstractItemView::NoSelection);
     uniqueTable_->setRootIsDecorated(false);

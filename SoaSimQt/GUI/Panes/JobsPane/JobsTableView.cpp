@@ -13,22 +13,20 @@ JobsTableView::JobsTableView(QWidget* parent)
     setSelectionMode(QAbstractItemView::SingleSelection);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setAlternatingRowColors(true);
-    setShowGrid(false);
     setRootIsDecorated(false);
     setItemsExpandable(false);
     setAllColumnsShowFocus(true);
     setUniformRowHeights(true);
     setIndentation(0);
-    verticalHeader()->setVisible(false);
-    horizontalHeader()->setStretchLastSection(true);
+    header()->setStretchLastSection(true);
 }
 
 void JobsTableView::attachModel(JobsTableModel* model)
 {
     setModel(model);
 
-    horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    horizontalHeader()->setSectionResizeMode(JobsTableModel::ProgressColumn, QHeaderView::Stretch);
+    header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(JobsTableModel::ProgressColumn, QHeaderView::Stretch);
 }
 
 const JobsTableModel* JobsTableView::jobsModel() const

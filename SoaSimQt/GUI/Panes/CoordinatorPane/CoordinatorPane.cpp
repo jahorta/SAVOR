@@ -117,17 +117,14 @@ void CoordinatorPane::configureTable()
     workerTableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     workerTableView_->setSelectionMode(QAbstractItemView::SingleSelection);
     workerTableView_->setAlternatingRowColors(true);
-    workerTableView_->setShowGrid(true);
     workerTableView_->setSortingEnabled(false);
     workerTableView_->setRootIsDecorated(false);
     workerTableView_->setItemsExpandable(false);
     workerTableView_->setAllColumnsShowFocus(true);
     workerTableView_->setUniformRowHeights(true);
     workerTableView_->setIndentation(0);
-    workerTableView_->verticalHeader()->setVisible(false);
-    workerTableView_->verticalHeader()->setDefaultSectionSize(28);
-    workerTableView_->horizontalHeader()->setStretchLastSection(true);
-    workerTableView_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    workerTableView_->header()->setStretchLastSection(true);
+    workerTableView_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     workerTableView_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 }
 

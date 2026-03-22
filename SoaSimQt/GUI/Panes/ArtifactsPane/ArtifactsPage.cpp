@@ -325,7 +325,6 @@ void ArtifactsPage::refreshModel()
         }
     }
 
-    artifactsTable_->resizeColumnsToContents();
 }
 
 void ArtifactsPage::updateInspector()

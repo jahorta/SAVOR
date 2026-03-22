@@ -342,7 +342,6 @@ void JobsPage::updateInspector()
     progressText_->setPlainText(state.detail.decodedProgressText);
     resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);
-    artifactsTable_->resizeColumnsToContents();
 
     const bool actionsEnabled = !state.actionsBusy;
     requeueButton_->setEnabled(actionsEnabled && selected->state != "QUEUED" && selected->state != "CLAIMED" && selected->state != "RUNNING" && selected->state != "FAILED");
