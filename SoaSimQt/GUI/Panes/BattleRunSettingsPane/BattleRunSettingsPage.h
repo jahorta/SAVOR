@@ -25,7 +25,6 @@ class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QPlainTextEdit;
-class QSpinBox;
 class ActionPresetDragTableModel;
 class QStandardItemModel;
 class QTreeView;
@@ -45,7 +44,6 @@ private:
     };
 
     struct UiConfigDraft {
-        int fakeAttackBudget = 0;
         QVector<QVector<UiActionInstance>> actions;
     };
 
@@ -70,7 +68,6 @@ private:
         bool available = false;
         QString message;
         quint64 basePlans = 0;
-        quint64 withFakePlans = 0;
     };
 
     using ActionListResult = simcore::db::DbResult<std::vector<simcore::db::TurnActionPresetLite>>;
@@ -180,7 +177,6 @@ private:
     QStandardItemModel* templateTableModel_ = nullptr;
 
     QLabel* inlineMessageLabel_ = nullptr;
-    QSpinBox* fakeAttackBudgetSpin_ = nullptr;
     QPushButton* addTurnButton_ = nullptr;
     QWidget* uiConfigContainer_ = nullptr;
     QVBoxLayout* uiConfigLayout_ = nullptr;
