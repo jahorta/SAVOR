@@ -1,6 +1,6 @@
 #include "WorkerTableModel.h"
 
-#include "../../Coordinator/CoordinatorUiCommon.h"
+#include "CoordinatorUiCommon.h"
 
 #include <QtCore/QString>
 #include <QtCore/QVariant>
