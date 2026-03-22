@@ -225,7 +225,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #f8fbff;
         font-weight: 700;
     }
-    QTableView#jobsTable, QTableView#jobsArtifactsTable, QTextEdit#jobsInspectorText, QTabWidget#jobsInspectorTabs::pane {
+    #jobsTable, #jobsArtifactsTable, QTextEdit#jobsInspectorText, QTabWidget#jobsInspectorTabs::pane {
         background-color: #12161d;
         border: 1px solid #313949;
         border-radius: 6px;
@@ -239,10 +239,10 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         padding: 8px;
         font-weight: 600;
     }
-    QTableView#jobsTable, QTableView#jobsArtifactsTable {
+    #jobsTable, #jobsArtifactsTable {
         padding: 6px;
     }
-    QTableView#jobsTable::item:selected {
+    #jobsTable::item:selected {
         background-color: #2d4d8f;
         color: #ffffff;
     }

@@ -13,7 +13,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
-#include <QtWidgets/QTableView>
+#include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
 
 namespace {
@@ -119,6 +119,11 @@ void CoordinatorPane::configureTable()
     workerTableView_->setAlternatingRowColors(true);
     workerTableView_->setShowGrid(true);
     workerTableView_->setSortingEnabled(false);
+    workerTableView_->setRootIsDecorated(false);
+    workerTableView_->setItemsExpandable(false);
+    workerTableView_->setAllColumnsShowFocus(true);
+    workerTableView_->setUniformRowHeights(true);
+    workerTableView_->setIndentation(0);
     workerTableView_->verticalHeader()->setVisible(false);
     workerTableView_->verticalHeader()->setDefaultSectionSize(28);
     workerTableView_->horizontalHeader()->setStretchLastSection(true);
@@ -217,7 +222,7 @@ QWidget* CoordinatorPane::createTableCard()
     stoppedLabel_ = new QLabel("Coordinator is stopped.", card);
     stoppedLabel_->setObjectName("panelBody");
 
-    workerTableView_ = new QTableView(card);
+    workerTableView_ = new QTreeView(card);
     workerTableView_->setObjectName("coordinatorTableView");
     configureTable();
 

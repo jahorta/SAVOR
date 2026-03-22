@@ -6,7 +6,7 @@
 #include <QtWidgets/QHeaderView>
 
 ArtifactsTableView::ArtifactsTableView(QWidget* parent)
-    : QTableView(parent)
+    : QTreeView(parent)
 {
     setObjectName("jobsArtifactsTable");
     verticalHeader()->setVisible(false);
@@ -14,6 +14,11 @@ ArtifactsTableView::ArtifactsTableView(QWidget* parent)
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setShowGrid(false);
     setAlternatingRowColors(true);
+    setRootIsDecorated(false);
+    setItemsExpandable(false);
+    setAllColumnsShowFocus(true);
+    setUniformRowHeights(true);
+    setIndentation(0);
     horizontalHeader()->setStretchLastSection(true);
 }
 

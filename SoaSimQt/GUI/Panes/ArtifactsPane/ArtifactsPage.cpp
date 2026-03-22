@@ -7,6 +7,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QItemSelectionModel>
 #include <QtCore/QSignalBlocker>
+#include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
@@ -20,6 +21,23 @@
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QVBoxLayout>
+
+namespace {
+void selectFlatRow(QAbstractItemView* view, int row)
+{
+    if (!view || !view->model()) {
+        return;
+    }
+
+    const QModelIndex index = view->model()->index(row, 0);
+    if (!index.isValid() || !view->selectionModel()) {
+        return;
+    }
+
+    view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->scrollTo(index);
+}
+}
 
 ArtifactsPage::ArtifactsPage(QWidget* parent)
     : QWidget(parent)
@@ -247,7 +265,7 @@ void ArtifactsPage::wireSignals()
         if (!current.isValid()) {
             return;
         }
-        artifactsTable_->selectRow(current.row());
+        selectFlatRow(artifactsTable_, current.row());
         handleExportRequested();
     });
 }
@@ -295,7 +313,7 @@ void ArtifactsPage::refreshModel()
         bool matchedSelection = false;
         for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
             if (rows[row].artifact.id == state.selectedArtifactId) {
-                artifactsTable_->selectRow(row);
+                selectFlatRow(artifactsTable_, row);
                 matchedSelection = true;
                 break;
             }

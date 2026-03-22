@@ -9,8 +9,8 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
-class QTableView;
 class QTimer;
+class QTreeView;
 class WorkerTableModel;
 
 class CoordinatorPane : public QWidget
@@ -56,5 +56,5 @@ private:
     QLabel* validationLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
-    QTableView* workerTableView_ = nullptr;
+    QTreeView* workerTableView_ = nullptr;
 };

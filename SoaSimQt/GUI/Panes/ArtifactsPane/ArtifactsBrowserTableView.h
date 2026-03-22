@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QtWidgets/QTableView>
+#include <QtWidgets/QTreeView>
 
 class ArtifactsBrowserTableModel;
 
-class ArtifactsBrowserTableView final : public QTableView
+class ArtifactsBrowserTableView final : public QTreeView
 {
 public:
     explicit ArtifactsBrowserTableView(QWidget* parent = nullptr);

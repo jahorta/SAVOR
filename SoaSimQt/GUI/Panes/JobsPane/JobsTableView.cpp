@@ -6,7 +6,7 @@
 #include <QtWidgets/QHeaderView>
 
 JobsTableView::JobsTableView(QWidget* parent)
-    : QTableView(parent)
+    : QTreeView(parent)
 {
     setObjectName("jobsTable");
     setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -14,6 +14,11 @@ JobsTableView::JobsTableView(QWidget* parent)
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setAlternatingRowColors(true);
     setShowGrid(false);
+    setRootIsDecorated(false);
+    setItemsExpandable(false);
+    setAllColumnsShowFocus(true);
+    setUniformRowHeights(true);
+    setIndentation(0);
     verticalHeader()->setVisible(false);
     horizontalHeader()->setStretchLastSection(true);
 }
