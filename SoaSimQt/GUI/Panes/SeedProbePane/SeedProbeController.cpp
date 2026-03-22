@@ -502,8 +502,8 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
             return DetailBundleResult::Err(uniqueResult.error);
         }
 
-        int minNeg = -2;
-        int maxPos = 32;
+        int minNeg = 0;
+        int maxPos = 0;
         for (const DeltaSeedRow& row : gridResult.value) {
             minNeg = std::min(minNeg, row.seed_delta);
             maxPos = std::max(maxPos, row.seed_delta);
