@@ -157,6 +157,7 @@
     <QtMoc Include="GUI\MainWindow.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />

@@ -190,6 +190,9 @@
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h">
       <Filter>GUI\Panes\Artifacts</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\MainWindow.h">
       <Filter>GUI</Filter>
     </QtMoc>
