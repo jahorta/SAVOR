@@ -69,14 +69,12 @@ void CoordinatorPane::refreshUi()
     if (!valid) {
         QStringList issueLinks;
         if (validationMessage.contains(QStringLiteral("ISO path is required."))) {
-            issueLinks.append(QStringLiteral("<a href=\"settings://iso\">ISO path is required.</a>"));
+            issueLinks.append(QStringLiteral("ISO path is required!"));
         }
         if (validationMessage.contains(QStringLiteral("Dolphin base directory is required."))) {
-            issueLinks.append(QStringLiteral("<a href=\"settings://dolphin\">Dolphin base directory is required.</a>"));
+            issueLinks.append(QStringLiteral("Dolphin base directory is required!"));
         }
-        if (issueLinks.isEmpty()) {
-            validationText = validationMessage.toHtmlEscaped();
-        } else {
+        if (!issueLinks.isEmpty()) {
             validationText = issueLinks.join(QStringLiteral(" "));
             validationText += QStringLiteral(" <a href=\"settings://coordinator\">Open coordinator settings.</a>");
         }
@@ -265,14 +263,6 @@ void CoordinatorPane::syncActionButtonStates(bool running, bool valid)
 
 void CoordinatorPane::handleValidationLinkActivated(const QString& link)
 {
-    if (link == QStringLiteral("settings://iso")) {
-        emit settingsNavigationRequested(SettingsFocusTarget::IsoPath);
-        return;
-    }
-    if (link == QStringLiteral("settings://dolphin")) {
-        emit settingsNavigationRequested(SettingsFocusTarget::DolphinBaseDir);
-        return;
-    }
     if (link == QStringLiteral("settings://coordinator")) {
         emit settingsNavigationRequested(SettingsFocusTarget::CoordinatorSection);
     }

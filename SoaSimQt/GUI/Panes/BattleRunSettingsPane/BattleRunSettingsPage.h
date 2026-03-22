@@ -10,6 +10,7 @@
 #include <QtWidgets/QWidget>
 
 #include "Core/Memory/Soa/Battle/BattleContext.h"
+#include "Phases/BattleExplorer.h"
 #include "DB/AuthoringTemplatesRepo.h"
 #include "DB/BattleContextRepo.h"
 #include "DB/PredicateSpecRepo.h"

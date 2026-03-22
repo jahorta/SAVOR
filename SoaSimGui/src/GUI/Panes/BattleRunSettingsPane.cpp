@@ -451,7 +451,7 @@ namespace soasim::ui {
 
         // Build present sets
         uint32_t present_enemy_slots_mask = 0;
-        for (int s = 4; s <= 11; ++s) if (bc_.slots[s].present == 1) present_enemy_slots_mask |= (1u << s);
+        for (int s = 4; s <= 11; ++s) if (bc_.slots_[s].present == 1) present_enemy_slots_mask |= (1u << s);
 
         std::unordered_set<uint16_t> present_items;
         for (int i = 0; i < 80; i++) 
@@ -487,7 +487,7 @@ namespace soasim::ui {
                     if (ini.get("target", "kind", "") == "ByEnemyKind") {
                         int want_id = (int)ini.get_i64("target", "enemy_kind_id", -1);
                         bool any = false;
-                        for (int s = 4; s <= 11; ++s) if (bc_.slots[s].present == 1 && (int)bc_.slots[s].id == want_id) { any = true; break; }
+                        for (int s = 4; s <= 11; ++s) if (bc_.slots_[s].present == 1 && (int)bc_.slots_[s].id == want_id) { any = true; break; }
                         if (!any) { put_bad("Enemy kind not present in this context"); continue; }
                     }
                     continue;
@@ -504,7 +504,7 @@ namespace soasim::ui {
                 }
                 else if (kind == simcore::battleexplorer::TargetBindingKind::SameAsOtherPC) {
                     int s = p.same_as_pc;
-                    if (s < 0 || s > 3 || bc_.slots[s].present != 1) put_bad("Selected PC not present");
+                    if (s < 0 || s > 3 || bc_.slots_[s].present != 1) put_bad("Selected PC not present");
                 }
             }
         }
@@ -590,7 +590,7 @@ namespace soasim::ui {
 
     void BattleRunSettingsPane::reconcile_party_size_() {
         party_size_ = 0;
-        for (auto s : bc_.slots) if (s.is_alive && s.is_player) party_size_++;
+        for (auto s : bc_.slots_) if (s.is_alive && s.is_player) party_size_++;
 
         if (party_size_ <= 0) return;
         for (auto& t : ui_config_.actions) {
@@ -948,7 +948,7 @@ namespace soasim::ui {
 
                         uint32_t domain_mask = 0;
                         for (int s = 4; s <= 11; ++s) {
-                            if (bc_.slots[s].present == 1 && (int)bc_.slots[s].id == want_id) {
+                            if (bc_.slots_[s].present == 1 && (int)bc_.slots_[s].id == want_id) {
                                 domain_mask |= (1u << s);
                             }
                         }

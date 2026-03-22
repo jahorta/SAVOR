@@ -28,6 +28,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTableWidget>
@@ -811,7 +812,7 @@ void BattleRunSettingsPage::addTurn()
 void BattleRunSettingsPage::reconcilePartySize()
 {
     int detected = 0;
-    for (const auto& slot : battleContext_.slots) {
+    for (const auto& slot : battleContext_.slots_) {
         if (slot.is_alive && slot.is_player) {
             ++detected;
         }
@@ -874,7 +875,7 @@ void BattleRunSettingsPage::validateGridAgainstContext()
 
     quint32 presentEnemySlotsMask = 0;
     for (int slot = 4; slot <= 11; ++slot) {
-        if (battleContext_.slots[slot].present == 1) {
+        if (battleContext_.slots_[slot].present == 1) {
             presentEnemySlotsMask |= (1u << slot);
         }
     }
@@ -921,7 +922,7 @@ void BattleRunSettingsPage::validateGridAgainstContext()
                     const int wantId = static_cast<int>(ini.get_i64("target", "enemy_kind_id", -1));
                     quint32 domainMask = 0;
                     for (int slot = 4; slot <= 11; ++slot) {
-                        if (battleContext_.slots[slot].present == 1 && static_cast<int>(battleContext_.slots[slot].id) == wantId) {
+                        if (battleContext_.slots_[slot].present == 1 && static_cast<int>(battleContext_.slots_[slot].id) == wantId) {
                             domainMask |= (1u << slot);
                         }
                     }
@@ -943,7 +944,7 @@ void BattleRunSettingsPage::validateGridAgainstContext()
                 }
             } else if (kind == TargetBindingKind::SameAsOtherPC) {
                 const int slot = preset.same_as_pc;
-                if (slot < 0 || slot > 3 || battleContext_.slots[slot].present != 1) {
+                if (slot < 0 || slot > 3 || battleContext_.slots_[slot].present != 1) {
                     putBad(QStringLiteral("Selected PC slot is not present."));
                 }
             }
@@ -1303,7 +1304,7 @@ bool BattleRunSettingsPage::buildUiConfigFromDraft(simcore::battleexplorer::UI_C
                     const std::string quantifier = ini.get("target", "quantifier", "Any");
                     quint32 domainMask = 0;
                     for (int slot = 4; slot <= 11; ++slot) {
-                        if (battleContext_.slots[slot].present == 1 && static_cast<int>(battleContext_.slots[slot].id) == enemyKindId) {
+                        if (battleContext_.slots_[slot].present == 1 && static_cast<int>(battleContext_.slots_[slot].id) == enemyKindId) {
                             domainMask |= (1u << slot);
                         }
                     }
@@ -1520,8 +1521,8 @@ QString BattleRunSettingsPage::describeContext() const
         lines << QStringLiteral("No decoded BattleContext available.");
         return lines.join('\n');
     }
-    for (int slot = 0; slot < static_cast<int>(battleContext_.slots.size()); ++slot) {
-        const auto& entry = battleContext_.slots[slot];
+    for (int slot = 0; slot < soa::battle::ctx::SLOT_COUNT; ++slot) {
+        const auto& entry = battleContext_.slots_[slot];
         if (entry.present != 1) {
             continue;
         }

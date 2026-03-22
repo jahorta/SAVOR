@@ -261,7 +261,7 @@ namespace soasim::ui {
 
                     if (target_mode == TargetMode::Single) {
                         for (int s = 4; s <= 11; ++s) {
-                            bool present = !bc_ || bc_->slots[s].present == 1;
+                            bool present = !bc_ || bc_->slots_[s].present == 1;
                             ImGui::BeginDisabled(!present);
                             char buf[16]; snprintf(buf, sizeof(buf), "%d", s);
                             if (ImGui::RadioButton(buf, single_slot == s)) single_slot = s;
@@ -273,7 +273,7 @@ namespace soasim::ui {
                     else if (target_mode == TargetMode::Multiple) {
                         uint32_t new_mask = mask_bits;
                         for (int s = 4; s <= 11; ++s) {
-                            bool present = !bc_ || bc_->slots[s].present == 1;
+                            bool present = !bc_ || bc_->slots_[s].present == 1;
                             ImGui::BeginDisabled(!present);
                             bool on = (new_mask & (1u << s)) != 0;
                             char buf[16]; snprintf(buf, sizeof(buf), "%d", s);
@@ -291,7 +291,7 @@ namespace soasim::ui {
                         int cur = same_pc_slot;
                         if (ImGui::BeginCombo("PC", labs[(cur >= 0 && cur < 4) ? cur : 0])) {
                             for (int s = 0; s <= 3; ++s) {
-                                bool present = !bc_ || bc_->slots[s].present == 1;
+                                bool present = !bc_ || bc_->slots_[s].present == 1;
                                 ImGui::BeginDisabled(!present);
                                 bool sel = (s == cur);
                                 if (ImGui::Selectable(labs[s], sel)) cur = s;
@@ -342,24 +342,24 @@ namespace soasim::ui {
                 bool need_target_ok = true;
                 if (needs_target) {
                     if (target_mode == TargetMode::Single) {
-                        need_target_ok = (!ctx_mode) || (bc_->slots[single_slot].present == 1);
+                        need_target_ok = (!ctx_mode) || (bc_->slots_[single_slot].present == 1);
                     }
                     else if (target_mode == TargetMode::Multiple) {
                         uint32_t m = mask_bits;
                         if (ctx_mode) {
                             uint32_t any = 0;
-                            for (int s = 4; s <= 11; ++s) if ((m & (1u << s)) && bc_->slots[s].present == 1) { any = 1; break; }
+                            for (int s = 4; s <= 11; ++s) if ((m & (1u << s)) && bc_->slots_[s].present == 1) { any = 1; break; }
                             need_target_ok = (any != 0);
                         }
                     }
                     else if (target_mode == TargetMode::SameAsPC) {
-                        need_target_ok = (!ctx_mode) || (bc_->slots[same_pc_slot].present == 1);
+                        need_target_ok = (!ctx_mode) || (bc_->slots_[same_pc_slot].present == 1);
                     }
                     else if (target_mode == TargetMode::ByKind) {
                         if (!ctx_mode || show_all_kinds_) need_target_ok = true;
                         else {
                             bool any = false;
-                            for (int s = 4; s <= 11; ++s) if (bc_->slots[s].present == 1 && (int)bc_->slots[s].id == enemy_kind_id) { any = true; break; }
+                            for (int s = 4; s <= 11; ++s) if (bc_->slots_[s].present == 1 && (int)bc_->slots_[s].id == enemy_kind_id) { any = true; break; }
                             need_target_ok = any;
                         }
                     }
@@ -431,8 +431,8 @@ namespace soasim::ui {
 
             bool seen[65536] = { false };
             for (int s = 4; s <= 11; ++s) {
-                if (bc_->slots[s].present == 1) {
-                    int id = (int)bc_->slots[s].id;
+                if (bc_->slots_[s].present == 1) {
+                    int id = (int)bc_->slots_[s].id;
                     if (id >= 0 && id < 65536 && !seen[id]) { present_enemy_kind_ids_.push_back(id); seen[id] = true; }
                 }
             }

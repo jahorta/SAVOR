@@ -10,6 +10,8 @@ namespace soa::battle::ctx {
         Fled = 1 << 13,
     };
 
+    static constexpr const int SLOT_COUNT = 12;
+
     struct BattleSlot
     {
         uint8_t  present{ 0 };       // slot has a live instance
@@ -29,7 +31,7 @@ namespace soa::battle::ctx {
 
     struct BattleContext
     {
-        BattleSlot slots[12];
+        BattleSlot slots_[SLOT_COUNT];
         soa::BattleState state{};
         soa::battle::TurnType turn_type;
         uint32_t turn_count;

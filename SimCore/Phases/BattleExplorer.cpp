@@ -144,7 +144,7 @@ namespace simcore::battleexplorer {
         DomainAnyEnemy(const soa::battle::ctx::BattleContext& bc) {
         std::vector<uint8_t> out;
         for (uint8_t i = 4; i < 12; ++i) {
-            if (bc.slots[i].present == 1) out.push_back(i);
+            if (bc.slots_[i].present == 1) out.push_back(i);
         }
         return out;
     }

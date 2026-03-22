@@ -11,29 +11,29 @@ namespace soa::battle::ctx::codec {
         if (!view.valid()) return false;
 
         for (int i = 0; i < 12; ++i) {
-            out.slots[i] = {};
-            out.slots[i].is_player = (i < 4) ? 1 : 0;
+            out.slots_[i] = {};
+            out.slots_[i].is_player = (i < 4) ? 1 : 0;
         }
 
         for (int i = 0; i < 12; ++i) {
             uint32_t p = 0;
             if (!view.read_u32(addr::Registry::spec(addr::battle::CombatantInstancesTable).base + i * 4, p)) return false;
             if (p && view.in_mem1(p)) {
-                out.slots[i].instance_addr = p;
-                (void)soa::readers::read(view, p, out.slots[i].instance);
-                out.slots[i].present = !(out.slots[i].instance.status_flags & StatusFlags::Fled);
-                out.slots[i].is_alive = !(out.slots[i].instance.status_flags & StatusFlags::Dead);
+                out.slots_[i].instance_addr = p;
+                (void)soa::readers::read(view, p, out.slots_[i].instance);
+                out.slots_[i].present = !(out.slots_[i].instance.status_flags & StatusFlags::Fled);
+                out.slots_[i].is_alive = !(out.slots_[i].instance.status_flags & StatusFlags::Dead);
             }
         }
 
         for (int i = 0; i < 12; ++i) {
             uint16_t id = 0;
             if (!view.read_u16(addr::Registry::spec(addr::battle::CombatantIdTable).base + i * 2, id)) return false;
-            out.slots[i].id = id;
+            out.slots_[i].id = id;
         }
 
         for (int i = 4; i < 12; ++i) {
-            auto& s = out.slots[i];
+            auto& s = out.slots_[i];
             if (!s.present) continue;
 
             uint32_t ed_va = s.instance.Enemy_Definition;
@@ -97,7 +97,7 @@ namespace soa::battle::ctx::codec {
         out.reserve(12 * (2 + 2 + 1 + 4 + sizeof(soa::CombatantInstance) + 4 + sizeof(soa::EnemyDefinition)));
 
         for (int i = 0; i < 12; ++i) {
-            const auto& s = in.slots[i];
+            const auto& s = in.slots_[i];
             out.push_back(char(s.present));
             out.push_back(char(s.is_alive));
             out.push_back(char(s.is_player));
@@ -129,7 +129,7 @@ namespace soa::battle::ctx::codec {
         const char* const end = in.data() + in.size();
 
         for (int i = 0; i < 12; ++i) {
-            auto& s = out.slots[i];
+            auto& s = out.slots_[i];
             s = {};
 
             if (p + 1 > end) return false; s.present = static_cast<uint8_t>(*p++);

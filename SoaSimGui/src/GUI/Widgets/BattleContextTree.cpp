@@ -11,9 +11,9 @@ Node decode_context(soa::battle::ctx::BattleContext bc) {
     // 1) Structured BattleContext (placeholder one-liners)
     Node pm = { .name = "Party Members" };
     for (int i = 0; i < 4; i++) {
-        if (!bc.slots[i].present) continue;
-        auto element = soa::text::get_element_name(bc.slots[i].instance.current_weapon_element);
-        auto name = soa::text::PCNames[bc.slots[i].id];
+        if (!bc.slots_[i].present) continue;
+        auto element = soa::text::get_element_name(bc.slots_[i].instance.current_weapon_element);
+        auto name = soa::text::PCNames[bc.slots_[i].id];
         Node m{ std::format("[{}] {} (element={})", i, name, element) };
         pm.children.push_back(m);
     }
@@ -21,8 +21,8 @@ Node decode_context(soa::battle::ctx::BattleContext bc) {
 
     Node em = { "Enemies" };
     for (int i = 4; i < 12; i++) {
-        if (!bc.slots[i].present) continue;
-        auto name = soa::text::get_enemy_name(bc.slots[i].id);
+        if (!bc.slots_[i].present) continue;
+        auto name = soa::text::get_enemy_name(bc.slots_[i].id);
         Node m{ std::format("[{}] {}", i, name) };
         em.children.push_back(m);
     }
@@ -32,17 +32,17 @@ Node decode_context(soa::battle::ctx::BattleContext bc) {
     std::unordered_set<uint8_t> unique_enemy_types;
     std::unordered_set<uint8_t> unique_slot_by_enemy_types;
     for (int i = 4; i < 12; i++) {
-        if (!bc.slots[i].present) continue;
-        if (unique_enemy_types.contains((uint8_t)bc.slots[i].id)) continue;
-        unique_enemy_types.emplace(bc.slots[i].id);
+        if (!bc.slots_[i].present) continue;
+        if (unique_enemy_types.contains((uint8_t)bc.slots_[i].id)) continue;
+        unique_enemy_types.emplace(bc.slots_[i].id);
         unique_slot_by_enemy_types.emplace(i);
     }
 
     Node items{ "Item Drops" };
     for (auto i : unique_slot_by_enemy_types) {
-        auto name = soa::text::get_enemy_name(bc.slots[i].id);
+        auto name = soa::text::get_enemy_name(bc.slots_[i].id);
         Node e{ .name = name.data()};
-        for (auto item : bc.slots[i].enemy_def.items)
+        for (auto item : bc.slots_[i].enemy_def.items)
         {
             if (item.itemId < 0) continue;
             auto item_name = soa::text::get_item_name((size_t)item.itemId);

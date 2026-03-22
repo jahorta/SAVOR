@@ -31,7 +31,7 @@ namespace {
     }
 
     static std::string pc_label(const soa::battle::ctx::BattleContext& bc, int pc_slot) {
-        const auto pid = static_cast<std::size_t>(bc.slots[pc_slot].id);
+        const auto pid = static_cast<std::size_t>(bc.slots_[pc_slot].id);
         std::string_view name = (pid < soa::text::PCNames.size())
             ? soa::text::PCNames[pid] : std::string_view{ "PC" };
         std::string s;
@@ -98,12 +98,12 @@ namespace {
     using soa::battle::actions::ActionParameters;
 
     static bool is_enemy_slot(const soa::battle::ctx::BattleContext& bc, int slot) {
-        return slot >= 4 && slot < 12 && bc.slots[slot].present && !bc.slots[slot].is_player;
+        return slot >= 4 && slot < 12 && bc.slots_[slot].present && !bc.slots_[slot].is_player;
     }
 
     static std::vector<int> list_present_pcs(const soa::battle::ctx::BattleContext& bc) {
         std::vector<int> out;
-        for (int i = 0; i < 4; ++i) if (bc.slots[i].present && bc.slots[i].is_player) out.push_back(i);
+        for (int i = 0; i < 4; ++i) if (bc.slots_[i].present && bc.slots_[i].is_player) out.push_back(i);
         return out;
     }
 
@@ -116,22 +116,22 @@ namespace {
     static void print_enemy_listing(const soa::battle::ctx::BattleContext& bc) {
         auto es = list_present_enemies(bc);
         for (int s : es) {
-            const auto type_id = static_cast<std::size_t>(bc.slots[s].id);
+            const auto type_id = static_cast<std::size_t>(bc.slots_[s].id);
             std::string_view name = (type_id < soa::text::EnemyNames.size()) ? soa::text::EnemyNames[type_id] : std::string_view{ "<Unknown>" };
             std::cout << "  [" << s << "] " << name << " (type " << type_id << ")\n";
         }
     }
 
-    static uint32_t mask_from_enemy_slots(const soa::battle::ctx::BattleContext& bc, const std::vector<int>& slots) {
+    static uint32_t mask_from_enemy_slots(const soa::battle::ctx::BattleContext& bc, const std::vector<int>& slots_) {
         uint32_t m = 0;
-        for (int s : slots) if (is_enemy_slot(bc, s)) m |= (1u << s);
+        for (int s : slots_) if (is_enemy_slot(bc, s)) m |= (1u << s);
         return m;
     }
 
     static uint32_t mask_from_enemy_type(const soa::battle::ctx::BattleContext& bc, uint16_t enemy_type_id) {
         uint32_t m = 0;
         for (int s = 4; s < 12; ++s) {
-            if (is_enemy_slot(bc, s) && bc.slots[s].id == enemy_type_id) m |= (1u << s);
+            if (is_enemy_slot(bc, s) && bc.slots_[s].id == enemy_type_id) m |= (1u << s);
         }
         return m;
     }
@@ -210,7 +210,7 @@ namespace {
             print_enemy_listing(bc);
             int s = prompt_choice("Pick a slot to infer TYPE", 4, 11, enemies.front());
             while (!is_enemy_slot(bc, s)) s = prompt_choice("Pick a slot to infer TYPE", 4, 11, enemies.front());
-            uint16_t type_id = bc.slots[s].id;
+            uint16_t type_id = bc.slots_[s].id;
             tb.kind = TargetBindingKind::MultipleEnemies; // note: spelled as in header
             tb.mask = mask_from_enemy_type(bc, type_id);
             return tb;
@@ -257,7 +257,7 @@ namespace {
             }
             std::cout << "Bind to which PC slot? ";
             for (int p : pcs) {
-                const auto pid = static_cast<std::size_t>(bc.slots[p].id);
+                const auto pid = static_cast<std::size_t>(bc.slots_[p].id);
                 std::string_view nm = (pid < soa::text::PCNames.size()) ? soa::text::PCNames[pid] : std::string_view{ "PC" };
                 std::cout << "[" << p << ":" << nm << "] ";
             }
@@ -294,7 +294,7 @@ namespace {
     static bool build_ui_action_for_actor(const soa::battle::ctx::BattleContext& bc,
         uint8_t actor_slot,
         simcore::battleexplorer::UI_Action& out) {
-        const auto pid = static_cast<std::size_t>(bc.slots[actor_slot].id);
+        const auto pid = static_cast<std::size_t>(bc.slots_[actor_slot].id);
         std::string_view nm = (pid < soa::text::PCNames.size()) ? soa::text::PCNames[pid] : std::string_view{ "PC" };
         std::cout << "\n-- Actor [" << int(actor_slot) << "] " << nm << " --\n";
 
@@ -435,15 +435,15 @@ namespace sandbox {
         std::cout << "\n== Battle Context ==\n";
         std::cout << "Party Members: ";
         for (int i = 0; i < 4; i++) {
-            if (!bc.slots[i].present) continue;
-            auto element = soa::text::get_element_name(bc.slots[i].instance.current_weapon_element);
-            auto name = soa::text::PCNames[bc.slots[i].id];
+            if (!bc.slots_[i].present) continue;
+            auto element = soa::text::get_element_name(bc.slots_[i].instance.current_weapon_element);
+            auto name = soa::text::PCNames[bc.slots_[i].id];
             std::cout << "\n  [" << i << "] " << name << "  (element=" << element << ")";
         }
         std::cout << "\nEnemies: ";
         for (int i = 4; i < 12; i++) {
-            if (!bc.slots[i].present) continue;
-            auto name = soa::text::get_enemy_name(bc.slots[i].id);
+            if (!bc.slots_[i].present) continue;
+            auto name = soa::text::get_enemy_name(bc.slots_[i].id);
             std::cout << "\n  [" << i << "] " << name << "  ";
         }
         
@@ -451,16 +451,16 @@ namespace sandbox {
         std::unordered_set<uint8_t> unique_enemy_types;
         std::unordered_set<uint8_t> unique_slot_by_enemy_types;
         for (int i = 4; i < 12; i++) {
-            if (!bc.slots[i].present) continue;
-            if (unique_enemy_types.contains((uint8_t)bc.slots[i].id)) continue;
-            unique_enemy_types.emplace(bc.slots[i].id);
+            if (!bc.slots_[i].present) continue;
+            if (unique_enemy_types.contains((uint8_t)bc.slots_[i].id)) continue;
+            unique_enemy_types.emplace(bc.slots_[i].id);
             unique_slot_by_enemy_types.emplace(i);
         }
         
         for (auto i : unique_slot_by_enemy_types) {
-            auto name = soa::text::get_enemy_name(bc.slots[i].id);
+            auto name = soa::text::get_enemy_name(bc.slots_[i].id);
             std::cout << "\n  " << name;
-            for (auto item : bc.slots[i].enemy_def.items)
+            for (auto item : bc.slots_[i].enemy_def.items)
             {
                 if (item.itemId < 0) continue;
                 auto item_name = soa::text::get_item_name((size_t)item.itemId);
@@ -490,7 +490,7 @@ namespace sandbox {
         std::array<std::string, 4> labels{};
         std::vector<int> pcs;
         for (int pc = 0; pc < 4; ++pc) {
-            if (!bc.slots[pc].present || !bc.slots[pc].is_player) continue;
+            if (!bc.slots_[pc].present || !bc.slots_[pc].is_player) continue;
             pcs.push_back(pc);
             labels[pc] = pc_label(bc, pc);
             max_label = std::max<int>(max_label, int(labels[pc].size()));
