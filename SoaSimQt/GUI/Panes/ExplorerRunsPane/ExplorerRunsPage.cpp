@@ -5,6 +5,7 @@
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
 
+#include "Core/Input/SoaBattle/PlanWriter.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/Scheduling/JobsRepo.h"
