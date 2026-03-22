@@ -116,6 +116,10 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
@@ -149,6 +153,10 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
