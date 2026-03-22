@@ -1,6 +1,7 @@
 #include "BattleRunSettingsPage.h"
 
 #include "GUI/Widgets/LedgerPickerDialog.h"
+#include "DB/AddressProgramRepo.h"
 #include "DB/DBCore/ObjectStore.h"
 #include "DB/ProgramDB/BattleContextDBCodec.h"
 #include "DB/SavestateRepo.h"
@@ -1156,6 +1157,40 @@ void BattleRunSettingsPage::openAddPredicateDialog(std::optional<int> editIndex,
         setErrorMessage(errorText);
         refreshInlineMessage();
         return;
+    }
+
+    if (!dialog.lhsProgramBlob().isEmpty()) {
+        const QByteArray blob = dialog.lhsProgramBlob();
+        const auto lhsProgramResult = simcore::db::AddressProgramRepo::Ensure(
+            static_cast<int32_t>(addrprog::PROG_VERSION),
+            std::vector<uint8_t>(blob.begin(), blob.end()),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt,
+            dialog.lhsProgramDescription().isEmpty() ? std::string("lhs program") : dialog.lhsProgramDescription().toStdString());
+        if (!lhsProgramResult.ok) {
+            setErrorMessage(QStringLiteral("Failed to save LHS address program: %1").arg(QString::fromStdString(lhsProgramResult.error.message)));
+            refreshInlineMessage();
+            return;
+        }
+        row.lhs_prog_id = lhsProgramResult.value;
+    }
+
+    if (!dialog.rhsProgramBlob().isEmpty()) {
+        const QByteArray blob = dialog.rhsProgramBlob();
+        const auto rhsProgramResult = simcore::db::AddressProgramRepo::Ensure(
+            static_cast<int32_t>(addrprog::PROG_VERSION),
+            std::vector<uint8_t>(blob.begin(), blob.end()),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt,
+            dialog.rhsProgramDescription().isEmpty() ? std::string("rhs program") : dialog.rhsProgramDescription().toStdString());
+        if (!rhsProgramResult.ok) {
+            setErrorMessage(QStringLiteral("Failed to save RHS address program: %1").arg(QString::fromStdString(rhsProgramResult.error.message)));
+            refreshInlineMessage();
+            return;
+        }
+        row.rhs_prog_id = rhsProgramResult.value;
     }
 
     DbResult<qint64> persistResult;
