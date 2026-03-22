@@ -14,6 +14,7 @@
 #include "DB/Scheduling/JobsRepo.h"
 #include "DB/Scheduling/JobSetsRepo.h"
 #include "Core/Input/InputPlanFmt.h"
+#include "Core/Input/SoaBattle/PlanWriter.h"
 #include "Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "Runner/IPC/Wire.h"
 #include "Utils/IniDoc.h"
