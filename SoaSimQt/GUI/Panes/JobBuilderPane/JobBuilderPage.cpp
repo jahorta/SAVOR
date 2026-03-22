@@ -397,7 +397,7 @@ void JobBuilderPage::createWidgets()
     splitLayout_->addWidget(leftPanel);
     splitLayout_->addWidget(centerPanel);
     splitLayout_->addWidget(rightPanel);
-    splitLayout_->setStretchFactor(0, 2);
+    splitLayout_->setStretchFactor(0, 1);
     splitLayout_->setStretchFactor(1, 1);
     splitLayout_->setStretchFactor(2, 1);
     rootLayout->addWidget(splitLayout_, 1);
