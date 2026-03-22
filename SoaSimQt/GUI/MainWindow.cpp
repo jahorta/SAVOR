@@ -6,6 +6,7 @@
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
+#include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
 
 #include <QtCore/QStringList>
 
@@ -256,7 +257,7 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(new BattleRunSettingsPage(contentStack_));
     contentStack_->addWidget(new ArtifactsPage(contentPane));
     contentStack_->addWidget(new SeedProbePage(contentStack_));
-    contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));
+    contentStack_->addWidget(new ExplorerRunsPage(contentStack_));
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
     contentStack_->addWidget(settingsPage_);
 
