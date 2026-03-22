@@ -5,6 +5,7 @@
 #include <future>
 #include <sqlite3.h>
 #include <filesystem>
+#include <system_error>
 
 #include "MigrationRunner.h"
 #include "MigrationRunner_Embedded.h"
@@ -20,34 +21,105 @@
 
 namespace simcore {
     namespace db {
+        namespace fs = std::filesystem;
 
-        static std::vector<SeedAny> create_cfg_defaults(std::string path) {
-            using namespace simcore::db::cfg;
+        namespace {
+            static std::vector<SeedAny> create_cfg_defaults(std::string path) {
+                using namespace simcore::db::cfg;
 
-            std::filesystem::path root = path;
-            std::vector<SeedAny> defaults = {
-                make_seed(ObjectStoreDir,             (root / "objects").string()),
-                make_seed(TempDir,                    (root / "tmp").string()),
+                fs::path root = path;
+                std::vector<SeedAny> defaults = {
+                    make_seed(ObjectStoreDir,             (root / "objects").string()),
+                    make_seed(TempDir,                    (root / "tmp").string()),
 
-                make_seed(BusyTimeoutMs,              int64_t(2000)),
-                make_seed(ForeignKeys,                true),
-                make_seed(Synchronous,                std::string("NORMAL")),
-                make_seed(WalAutocheckpointPages,     int64_t(1000)),
+                    make_seed(BusyTimeoutMs,              int64_t(2000)),
+                    make_seed(ForeignKeys,                true),
+                    make_seed(Synchronous,                std::string("NORMAL")),
+                    make_seed(WalAutocheckpointPages,     int64_t(1000)),
 
-                // Worker / scheduling
-                // If you prefer a dynamic default for max_workers, omit it here and set it later explicitly.
-                make_seed(MaxWorkers,                 std::max<int64_t>(1, (int64_t)std::thread::hardware_concurrency() - 2)),
-                make_seed(ProcessReuse,               true),
+                    make_seed(MaxWorkers,                 std::max<int64_t>(1, (int64_t)std::thread::hardware_concurrency() - 2)),
+                    make_seed(ProcessReuse,               true),
 
-                // Retry / leases
-                make_seed(RetryInitialBackoffMs,      int64_t(50)),
-                make_seed(RetryBackoffMultiplierX100, int64_t(150)),
-                make_seed(RetryMaxBackoffMs,          int64_t(2000)),
-                make_seed(LeaseTimeoutMs,             int64_t(60000)),
-                make_seed(HeartbeatIntervalMs,        int64_t(5000)),
-            };
+                    make_seed(RetryInitialBackoffMs,      int64_t(50)),
+                    make_seed(RetryBackoffMultiplierX100, int64_t(150)),
+                    make_seed(RetryMaxBackoffMs,          int64_t(2000)),
+                    make_seed(LeaseTimeoutMs,             int64_t(60000)),
+                    make_seed(HeartbeatIntervalMs,        int64_t(5000)),
+                };
 
-            return defaults;
+                return defaults;
+            }
+
+            fs::path canonicalish(const fs::path& path) {
+                std::error_code ec;
+                fs::path canon = fs::weakly_canonical(path, ec);
+                return ec ? path.lexically_normal() : canon;
+            }
+
+            bool path_is_within(const fs::path& child, const fs::path& parent) {
+                const fs::path childNorm = canonicalish(child);
+                const fs::path parentNorm = canonicalish(parent);
+                auto pit = parentNorm.begin();
+                auto cit = childNorm.begin();
+                for (; pit != parentNorm.end(); ++pit, ++cit) {
+                    if (cit == childNorm.end() || *cit != *pit) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            bool validate_existing_root(const fs::path& root, std::string& error) {
+                std::error_code ec;
+                if (root.empty()) {
+                    error = "Target path cannot be empty";
+                    return false;
+                }
+                if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+                    error = "Target database root does not exist or is not a directory";
+                    return false;
+                }
+                if (!fs::exists(root / "SoaSimDB.sqlite3", ec) || !fs::is_regular_file(root / "SoaSimDB.sqlite3", ec)) {
+                    error = "Target database root must contain SoaSimDB.sqlite3";
+                    return false;
+                }
+                return true;
+            }
+
+            bool remove_path_if_exists(const fs::path& target, std::string& error) {
+                std::error_code ec;
+                if (!fs::exists(target, ec)) {
+                    return true;
+                }
+                fs::remove_all(target, ec);
+                if (ec) {
+                    error = "Failed to remove existing path: " + target.string();
+                    return false;
+                }
+                return true;
+            }
+
+            bool copy_directory_contents(const fs::path& source, const fs::path& target, std::string& error) {
+                std::error_code ec;
+                fs::create_directories(target, ec);
+                if (ec) {
+                    error = "Failed to create target directory";
+                    return false;
+                }
+                for (const auto& entry : fs::directory_iterator(source, ec)) {
+                    if (ec) {
+                        error = "Failed to enumerate source directory";
+                        return false;
+                    }
+                    fs::copy(entry.path(), target / entry.path().filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+                    if (ec) {
+                        error = "Failed to copy existing database files";
+                        return false;
+                    }
+                }
+                return true;
+            }
+
         }
 
         DBService::DBService()
@@ -55,14 +127,13 @@ namespace simcore {
         DBService::~DBService() { stop(); }
         DBService& DBService::instance() { static DBService inst; return inst; }
 
-        // Always starts a DB at (exe dir)/DB/SoaSimDB.sqlite3
         void DBService::start() {
             bool expected = false;
             if (!m_running.compare_exchange_strong(expected, true)) return;
 
-            std::filesystem::path db_root = m_db_root.empty() ? (utils::getExecutablePath() / ".db") : m_db_root;
+            fs::path db_root = m_db_root.empty() ? (utils::getExecutablePath() / ".db") : m_db_root;
             std::error_code ec;
-            std::filesystem::create_directories(db_root, ec);
+            fs::create_directories(db_root, ec);
             std::string db_path = (db_root / "SoaSimDB.sqlite3").string();
             m_env = DbEnv::open(db_path);
 
@@ -91,6 +162,8 @@ namespace simcore {
             (void)RegisterProgramKinds();
 
             (void)ConfigRepo::EnsureDefaults(create_cfg_defaults(db_root.string()));
+            (void)ConfigRepo::Set(cfg::ObjectStoreDir, (db_root / "objects").string());
+            (void)ConfigRepo::Set(cfg::TempDir, (db_root / "tmp").string());
 
             auto objdir_res = ConfigRepo::Get(cfg::ObjectStoreDir);
             auto tmpdir_res = ConfigRepo::Get(cfg::TempDir);
@@ -98,15 +171,13 @@ namespace simcore {
                 ObjectStore::SetRoots(objdir_res.value, tmpdir_res.value);
             }
             else {
-                 ObjectStore::SetRoots((db_root / "objects").string(), (db_root / "tmp").string());
+                ObjectStore::SetRoots((db_root / "objects").string(), (db_root / "tmp").string());
             }
 
             (void)DbEventsRepo::InsertBootEvent("coordinator_booted", "");
         }
 
-
-
-        void DBService::set_database_root(std::filesystem::path root) {
+        void DBService::set_database_root(fs::path root) {
             if (m_running) return;
             if (root.empty()) {
                 m_db_root = utils::getExecutablePath() / ".db";
@@ -115,14 +186,36 @@ namespace simcore {
             m_db_root = std::move(root);
         }
 
-        std::filesystem::path DBService::database_root() const {
+        fs::path DBService::database_root() const {
             return m_db_root.empty() ? (utils::getExecutablePath() / ".db") : m_db_root;
         }
 
+        bool DBService::is_running() const {
+            return m_running.load();
+        }
 
+        bool DBService::switch_database_root(const fs::path& new_root, std::string& error) {
+            error.clear();
+            fs::path target = new_root;
+            if (!validate_existing_root(target, error)) {
+                return false;
+            }
 
-        bool DBService::relocate_database_root(const std::filesystem::path& new_root, std::string& error) {
-            namespace fs = std::filesystem;
+            const fs::path sourceCanon = canonicalish(database_root());
+            const fs::path targetCanon = canonicalish(target);
+            if (sourceCanon == targetCanon) {
+                return true;
+            }
+
+            const bool was_running = m_running.load();
+            if (was_running) stop();
+
+            set_database_root(targetCanon);
+            if (was_running) start();
+            return true;
+        }
+
+        bool DBService::relocate_database_root(const fs::path& new_root, bool cleanup_source, std::string& error) {
             error.clear();
 
             fs::path target = new_root;
@@ -131,53 +224,44 @@ namespace simcore {
                 return false;
             }
 
-            std::error_code ec;
-            fs::path source = database_root();
-
-            fs::path source_canon = fs::weakly_canonical(source, ec);
-            if (ec) {
-                ec.clear();
-                source_canon = source;
-            }
-
-            fs::path target_canon = fs::weakly_canonical(target, ec);
-            if (ec) {
-                ec.clear();
-                fs::create_directories(target, ec);
-                if (ec) {
-                    error = "Failed to create target directory";
-                    return false;
-                }
-                target_canon = fs::weakly_canonical(target, ec);
-                if (ec) {
-                    ec.clear();
-                    target_canon = target;
-                }
-            }
+            const fs::path source = database_root();
+            const fs::path source_canon = canonicalish(source);
+            fs::path target_canon = canonicalish(target);
 
             if (source_canon == target_canon) return true;
+            if (path_is_within(target_canon, source_canon)) {
+                error = "Target directory cannot be inside the active database root when moving data";
+                return false;
+            }
 
             const bool was_running = m_running.load();
             if (was_running) stop();
 
-            fs::create_directories(target, ec);
+            std::error_code ec;
+            fs::create_directories(target_canon, ec);
             if (ec) {
                 error = "Failed to create target directory";
                 if (was_running) start();
                 return false;
             }
 
-            if (fs::exists(source) && !fs::is_empty(source)) {
-                fs::copy(source, target, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-                if (ec) {
-                    error = "Failed to copy existing database files";
+            if (fs::exists(source, ec) && !fs::is_empty(source, ec)) {
+                if (!copy_directory_contents(source, target_canon, error)) {
                     if (was_running) start();
                     return false;
                 }
             }
 
-            set_database_root(target);
+            set_database_root(target_canon);
             if (was_running) start();
+
+            if (cleanup_source && fs::exists(source_canon) && source_canon != target_canon) {
+                std::string cleanupError;
+                if (!remove_path_if_exists(source_canon, cleanupError)) {
+                    error = cleanupError;
+                    return false;
+                }
+            }
             return true;
         }
 
@@ -209,7 +293,6 @@ namespace simcore {
             else {
                 if (m_stats.queued_normal) --m_stats.queued_normal;
             }
-            // EMA for wait
             const double alpha = 0.1;
             m_stats.avg_wait_us = (1.0 - alpha) * m_stats.avg_wait_us + alpha * static_cast<double>(wait_us);
         }
@@ -258,8 +341,6 @@ namespace simcore {
                 try {
                     if (!m_env) throw std::runtime_error("DBService not initialized");
 
-                    // For OpType::Write, callers often already start Tx inside their lambda.
-                    // We keep your previous behavior: if type==Write, we create a Tx guard.
                     if (qt.task->type == OpType::Write) {
                         DbEnv::Tx tx(*m_env);
                         qt.task->execute(*m_env);
@@ -278,10 +359,6 @@ namespace simcore {
                 record_result(ok, false, static_cast<uint64_t>(exec_us));
             }
         }
-
-
-
-
 
     } // namespace db
 } // namespace simcore

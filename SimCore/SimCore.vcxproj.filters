@@ -327,6 +327,9 @@
     <ClInclude Include="DB\DBCore\DbRetryPolicy.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
+    <ClInclude Include="DB\DBCore\DbSnapshotService.h">
+      <Filter>DB\Core</Filter>
+    </ClInclude>
     <ClInclude Include="DB\DBCore\DbService.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
@@ -651,6 +654,9 @@
       <Filter>Phases\BattleContext</Filter>
     </ClCompile>
     <ClCompile Include="DB\DBCore\DbEnv.cpp">
+      <Filter>DB\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
     <ClCompile Include="DB\DBCore\DbService.cpp">

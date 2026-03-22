@@ -1,8 +1,10 @@
 #include "SettingsPage.h"
 
+#include "DB/DBCore/DbSnapshotService.h"
 #include "DB/DBCore/DbService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -15,18 +17,31 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
+#include <exception>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 namespace {
 constexpr auto kSettingsGroup = "Settings";
 constexpr auto kDbRootKey = "db_root";
+
+using StorageResult = std::pair<bool, QString>;
+
+template <typename AsyncCall>
+auto runAsync(AsyncCall&& asyncCall)
+{
+    return QtConcurrent::run([call = std::forward<AsyncCall>(asyncCall)]() mutable {
+        return call();
+    });
+}
 
 QString statusKindToString(SettingsPage::StatusKind kind)
 {
@@ -51,10 +66,12 @@ SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget
     : QWidget(parent)
     , coordinatorController_(coordinatorController)
 {
+    connect(&storageWatcher_, &QFutureWatcher<StorageResult>::finished, this, &SettingsPage::handleStorageOperationFinished);
+
     createWidgets();
     loadState();
-    refreshValidation();
     refreshCoordinatorUi();
+    refreshStorageUi();
 
     if (coordinatorController_) {
         connect(coordinatorController_, &CoordinatorController::stateChanged, this, &SettingsPage::refreshCoordinatorUi);
@@ -94,7 +111,7 @@ void SettingsPage::createWidgets()
     const CollapsibleSection storageSection = createCollapsibleSection(
         "SETTINGS SECTION",
         "Database Storage",
-        "Move the SoaSim database root using the same backend relocation flow as SoaSimGui. This stops DB services, copies existing DB/object storage data, and restarts using the new root.");
+        "Manage the active SoaSim database root, switch to an existing database, and save or load portable database snapshots with artifacts.");
 
     QVBoxLayout* storageLayout = new QVBoxLayout(storageSection.content);
     storageLayout->setContentsMargins(0, 0, 0, 0);
@@ -104,51 +121,63 @@ void SettingsPage::createWidgets()
     formLayout->setHorizontalSpacing(12);
     formLayout->setVerticalSpacing(10);
 
-    QLabel* activeRootLabel = new QLabel("Active database root", storageSection.content);
+    QLabel* activeRootLabel = new QLabel("Current database root", storageSection.content);
     activeRootLabel->setObjectName("settingsFieldLabel");
     activeRootValueLabel_ = new QLabel(storageSection.content);
     activeRootValueLabel_->setObjectName("settingsValueLabel");
     activeRootValueLabel_->setWordWrap(true);
 
-    QLabel* targetRootLabel = new QLabel("New database root", storageSection.content);
-    targetRootLabel->setObjectName("settingsFieldLabel");
-    dbRootEdit_ = new QLineEdit(storageSection.content);
-    dbRootEdit_->setObjectName("settingsPathEdit");
-    dbRootEdit_->setPlaceholderText("Example: D:/SOASimData");
-    connect(dbRootEdit_, &QLineEdit::textChanged, this, &SettingsPage::handleInputChanged);
-
-    browseButton_ = new QPushButton("Browse…", storageSection.content);
-    browseButton_->setObjectName("jobsSecondaryButton");
-    connect(browseButton_, &QPushButton::clicked, this, &SettingsPage::handleBrowseClicked);
+    moveDatabaseButton_ = new QPushButton("Move Database…", storageSection.content);
+    moveDatabaseButton_->setObjectName("jobsPrimaryButton");
+    connect(moveDatabaseButton_, &QPushButton::clicked, this, &SettingsPage::handleMoveDatabaseClicked);
 
     formLayout->addWidget(activeRootLabel, 0, 0);
-    formLayout->addWidget(activeRootValueLabel_, 0, 1, 1, 2);
-    formLayout->addWidget(targetRootLabel, 1, 0);
-    formLayout->addWidget(dbRootEdit_, 1, 1);
-    formLayout->addWidget(browseButton_, 1, 2);
+    formLayout->addWidget(activeRootValueLabel_, 0, 1);
+    formLayout->addWidget(moveDatabaseButton_, 0, 2);
     formLayout->setColumnStretch(1, 1);
     storageLayout->addLayout(formLayout);
 
-    validationLabel_ = new QLabel(storageSection.content);
-    validationLabel_->setObjectName("settingsValidation");
-    validationLabel_->setWordWrap(true);
-    storageLayout->addWidget(validationLabel_);
+    QLabel* switchDescription = new QLabel(
+        "Point SoaSimQt at another existing database root without copying data. The selected directory must contain SoaSimDB.sqlite3.",
+        storageSection.content);
+    switchDescription->setObjectName("settingsSectionDescription");
+    switchDescription->setWordWrap(true);
+    storageLayout->addWidget(switchDescription);
+
+    QHBoxLayout* switchLayout = new QHBoxLayout();
+    switchLayout->setSpacing(10);
+    switchLayout->addStretch();
+    useExistingButton_ = new QPushButton("Use Existing Database…", storageSection.content);
+    useExistingButton_->setObjectName("jobsSecondaryButton");
+    connect(useExistingButton_, &QPushButton::clicked, this, &SettingsPage::handleUseExistingDatabaseClicked);
+    switchLayout->addWidget(useExistingButton_);
+    storageLayout->addLayout(switchLayout);
+
+    QLabel* snapshotDescription = new QLabel(
+        "Save a compressed snapshot of the database plus object-store artifacts, or load a snapshot into a target root. Snapshots do not include temporary cache files.",
+        storageSection.content);
+    snapshotDescription->setObjectName("settingsSectionDescription");
+    snapshotDescription->setWordWrap(true);
+    storageLayout->addWidget(snapshotDescription);
+
+    QHBoxLayout* snapshotLayout = new QHBoxLayout();
+    snapshotLayout->setSpacing(10);
+    snapshotLayout->addStretch();
+    saveSnapshotButton_ = new QPushButton("Save Snapshot…", storageSection.content);
+    saveSnapshotButton_->setObjectName("jobsSecondaryButton");
+    connect(saveSnapshotButton_, &QPushButton::clicked, this, &SettingsPage::handleSaveSnapshotClicked);
+    loadSnapshotButton_ = new QPushButton("Load Snapshot…", storageSection.content);
+    loadSnapshotButton_->setObjectName("jobsSecondaryButton");
+    connect(loadSnapshotButton_, &QPushButton::clicked, this, &SettingsPage::handleLoadSnapshotClicked);
+    snapshotLayout->addWidget(saveSnapshotButton_);
+    snapshotLayout->addWidget(loadSnapshotButton_);
+    storageLayout->addLayout(snapshotLayout);
 
     statusLabel_ = new QLabel(storageSection.content);
     statusLabel_->setObjectName("settingsStatus");
     statusLabel_->setWordWrap(true);
     storageLayout->addWidget(statusLabel_);
 
-    QHBoxLayout* actionLayout = new QHBoxLayout();
-    actionLayout->setSpacing(10);
-    actionLayout->addStretch();
-
-    applyButton_ = new QPushButton("Apply and Move Data", storageSection.content);
-    applyButton_->setObjectName("jobsPrimaryButton");
-    connect(applyButton_, &QPushButton::clicked, this, &SettingsPage::handleApplyClicked);
-    actionLayout->addWidget(applyButton_);
-
-    storageLayout->addLayout(actionLayout);
     rootLayout->addWidget(storageSection.card);
 
     const CollapsibleSection coordinatorSection = createCollapsibleSection(
@@ -305,9 +334,6 @@ void SettingsPage::loadState()
     persistedRoot_ = normalizePath(settings.value(kDbRootKey).toString().trimmed());
     settings.endGroup();
 
-    const QString initialRoot = persistedRoot_.isEmpty() ? activeRoot_ : persistedRoot_;
-    dbRootEdit_->setText(initialRoot);
-
     if (persistedRoot_.isEmpty()) {
         setStatus(StatusKind::Info, "Using the active database root because no Qt-specific saved storage path exists yet.");
     } else {
@@ -321,53 +347,254 @@ void SettingsPage::refreshActiveRoot()
     activeRootValueLabel_->setText(activeRoot_.isEmpty() ? "(unknown)" : activeRoot_);
 }
 
-void SettingsPage::handleBrowseClicked()
+void SettingsPage::refreshStorageUi()
 {
-    const QString startDir = normalizedInput_.isEmpty() ? activeRoot_ : normalizedInput_;
-    const QString selectedDir = QFileDialog::getExistingDirectory(this, "Select database root", startDir);
-    if (!selectedDir.isEmpty()) {
-        dbRootEdit_->setText(QDir::toNativeSeparators(selectedDir));
-    }
+    refreshActiveRoot();
+    const bool enabled = !storageBusy_;
+    if (moveDatabaseButton_) moveDatabaseButton_->setEnabled(enabled);
+    if (useExistingButton_) useExistingButton_->setEnabled(enabled);
+    if (saveSnapshotButton_) saveSnapshotButton_->setEnabled(enabled);
+    if (loadSnapshotButton_) loadSnapshotButton_->setEnabled(enabled);
 }
 
-void SettingsPage::handleApplyClicked()
+void SettingsPage::handleMoveDatabaseClicked()
 {
-    refreshValidation();
-    if (!canApply_) {
+    const QString startDir = activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_;
+    const QString selectedDir = QFileDialog::getExistingDirectory(this, "Select new database root", startDir);
+    if (selectedDir.isEmpty()) {
         return;
     }
 
-    const QString targetRoot = normalizedInput_;
-    setStatus(StatusKind::Working, "Relocating database storage. Please wait…");
+    const QString targetRoot = normalizePath(selectedDir);
+    if (targetRoot.isEmpty()) {
+        setStatus(StatusKind::Warning, "Select a valid database root directory.");
+        return;
+    }
+    if (targetRoot == activeRoot_) {
+        setStatus(StatusKind::Info, "Selected directory is already the active database root.");
+        return;
+    }
+
+    QFileInfo targetInfo(targetRoot);
+    const QFileInfo parentInfo(targetInfo.dir().absolutePath());
+    if ((targetInfo.exists() && !targetInfo.isDir()) || !parentInfo.exists() || !parentInfo.isDir()) {
+        setStatus(StatusKind::Warning, "The selected destination directory is not reachable.");
+        return;
+    }
+
+    const auto answer = QMessageBox::question(
+        this,
+        "Move Database",
+        QStringLiteral("Move the active database to a new root?\n\nCurrent root:\n%1\n\nNew root:\n%2\n\nSoaSimQt will stop database services, copy the database and artifacts, switch to the new root, and then delete the previous root contents.")
+            .arg(activeRoot_, targetRoot),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    startStorageOperation(
+        StorageOperation::MoveDatabase,
+        QStringLiteral("Moving database storage to %1…").arg(targetRoot),
+        [target = targetRoot.toStdString()]() {
+            std::string error;
+            const bool ok = simcore::db::DBService::instance().relocate_database_root(target, true, error);
+            return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
+        });
+}
+
+void SettingsPage::handleUseExistingDatabaseClicked()
+{
+    const QString startDir = activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_;
+    const QString selectedDir = QFileDialog::getExistingDirectory(this, "Select existing database root", startDir);
+    if (selectedDir.isEmpty()) {
+        return;
+    }
+
+    const QString targetRoot = normalizePath(selectedDir);
+    if (targetRoot.isEmpty()) {
+        setStatus(StatusKind::Warning, "Select a valid database root directory.");
+        return;
+    }
+    if (targetRoot == activeRoot_) {
+        setStatus(StatusKind::Info, "Selected directory is already the active database root.");
+        return;
+    }
+
+    const QFileInfo dbFile(QDir(targetRoot).filePath(QStringLiteral("SoaSimDB.sqlite3")));
+    if (!dbFile.exists() || !dbFile.isFile()) {
+        setStatus(StatusKind::Warning, "The selected directory does not contain SoaSimDB.sqlite3.");
+        return;
+    }
+
+    const auto answer = QMessageBox::question(
+        this,
+        "Use Existing Database",
+        QStringLiteral("Switch SoaSimQt to another existing database root?\n\nCurrent root:\n%1\n\nExisting root:\n%2\n\nNo data will be copied.")
+            .arg(activeRoot_, targetRoot),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    startStorageOperation(
+        StorageOperation::UseExistingDatabase,
+        QStringLiteral("Switching active database root to %1…").arg(targetRoot),
+        [target = targetRoot.toStdString()]() {
+            std::string error;
+            const bool ok = simcore::db::DBService::instance().switch_database_root(target, error);
+            return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
+        });
+}
+
+void SettingsPage::handleSaveSnapshotClicked()
+{
+    const QString defaultPath = QDir(activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_)
+        .filePath(QStringLiteral("SoaSimSnapshot.soasnap"));
+    const QString snapshotPath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Save Database Snapshot"),
+        defaultPath,
+        QStringLiteral("SoaSim Snapshot (*.soasnap);;All Files (*)"));
+    if (snapshotPath.isEmpty()) {
+        return;
+    }
+
+    const QString normalizedSnapshotPath = normalizePath(snapshotPath);
+    if (normalizedSnapshotPath.isEmpty()) {
+        setStatus(StatusKind::Warning, "Select a valid snapshot file path.");
+        return;
+    }
+
+    startStorageOperation(
+        StorageOperation::SaveSnapshot,
+        QStringLiteral("Saving database snapshot to %1…").arg(normalizedSnapshotPath),
+        [path = normalizedSnapshotPath.toStdString()]() {
+            const auto result = simcore::db::DbSnapshotService::SaveSnapshot(path);
+            return StorageResult{ result.ok, result.ok ? QString() : QString::fromStdString(result.error) };
+        });
+}
+
+void SettingsPage::handleLoadSnapshotClicked()
+{
+    const QString snapshotPath = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Load Database Snapshot"),
+        activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_,
+        QStringLiteral("SoaSim Snapshot (*.soasnap);;All Files (*)"));
+    if (snapshotPath.isEmpty()) {
+        return;
+    }
+
+    const QString targetRoot = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("Select target database root"),
+        activeRoot_.isEmpty() ? QDir::homePath() : activeRoot_);
+    if (targetRoot.isEmpty()) {
+        return;
+    }
+
+    const QString normalizedTargetRoot = normalizePath(targetRoot);
+    const QString normalizedSnapshotPath = normalizePath(snapshotPath);
+    if (normalizedTargetRoot.isEmpty() || normalizedSnapshotPath.isEmpty()) {
+        setStatus(StatusKind::Warning, "Select a valid snapshot file and target root.");
+        return;
+    }
+
+    const bool overwritingCurrentRoot = normalizedTargetRoot == activeRoot_;
+    const QString prompt = overwritingCurrentRoot
+        ? QStringLiteral("Load this snapshot into the current active database root?\n\nSnapshot:\n%1\n\nTarget root:\n%2\n\nThe current database and artifact files in that root will be overwritten.")
+        : QStringLiteral("Load this snapshot into the selected target root and switch SoaSimQt to it?\n\nSnapshot:\n%1\n\nTarget root:\n%2\n\nAny existing database or artifact files in that root may be overwritten.");
+
+    const auto answer = QMessageBox::question(
+        this,
+        QStringLiteral("Load Snapshot"),
+        prompt.arg(normalizedSnapshotPath, normalizedTargetRoot),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    startStorageOperation(
+        StorageOperation::LoadSnapshot,
+        QStringLiteral("Loading database snapshot into %1…").arg(normalizedTargetRoot),
+        [snapshot = normalizedSnapshotPath.toStdString(), target = normalizedTargetRoot.toStdString()]() {
+            const auto result = simcore::db::DbSnapshotService::LoadSnapshot(snapshot, target, true);
+            return StorageResult{ result.ok, result.ok ? QString() : QString::fromStdString(result.error) };
+        });
+}
+
+void SettingsPage::startStorageOperation(StorageOperation op, const QString& workingMessage, StorageTask task)
+{
+    if (storageBusy_) {
+        return;
+    }
+
+    storageBusy_ = true;
+    currentStorageOperation_ = op;
+    refreshStorageUi();
+    setStatus(StatusKind::Working, workingMessage);
     QCoreApplication::processEvents();
+    storageWatcher_.setFuture(runAsync(std::move(task)));
+}
 
-    std::string error;
-    const bool ok = simcore::db::DBService::instance().relocate_database_root(targetRoot.toStdString(), error);
-    if (!ok) {
-        setStatus(StatusKind::Failure,
-            error.empty()
-                ? "The shared database relocation backend reported a failure."
-                : QString::fromStdString(error));
-        refreshActiveRoot();
-        refreshValidation();
-        return;
+void SettingsPage::handleStorageOperationFinished()
+{
+    storageBusy_ = false;
+    const StorageOperation completedOp = currentStorageOperation_;
+    currentStorageOperation_ = StorageOperation::None;
+
+    StorageResult result{ false, QStringLiteral("Unknown storage operation failure.") };
+    try {
+        result = storageWatcher_.result();
+    } catch (const std::exception& ex) {
+        result = StorageResult{ false, QString::fromUtf8(ex.what()) };
+    } catch (...) {
+        result = StorageResult{ false, QStringLiteral("Unknown exception during storage operation.") };
     }
 
-    QSettings settings;
-    settings.beginGroup(kSettingsGroup);
-    settings.setValue(kDbRootKey, targetRoot);
-    settings.endGroup();
-    persistedRoot_ = targetRoot;
+    refreshStorageUi();
+    if (!result.first) {
+        setStatus(StatusKind::Failure, result.second.isEmpty() ? QStringLiteral("The storage operation failed.") : result.second);
+        return;
+    }
 
     refreshActiveRoot();
-    dbRootEdit_->setText(activeRoot_);
-    setStatus(StatusKind::Success, "Database storage moved successfully and the new root was saved for future SoaSimQt launches.");
-    refreshValidation();
-}
 
-void SettingsPage::handleInputChanged()
-{
-    refreshValidation();
+    switch (completedOp) {
+    case StorageOperation::MoveDatabase:
+    case StorageOperation::UseExistingDatabase:
+    case StorageOperation::LoadSnapshot: {
+        QSettings settings;
+        settings.beginGroup(kSettingsGroup);
+        settings.setValue(kDbRootKey, activeRoot_);
+        settings.endGroup();
+        persistedRoot_ = activeRoot_;
+        break;
+    }
+    case StorageOperation::SaveSnapshot:
+    case StorageOperation::None:
+        break;
+    }
+
+    switch (completedOp) {
+    case StorageOperation::MoveDatabase:
+        setStatus(StatusKind::Success, QStringLiteral("Database storage moved successfully. Active root: %1").arg(activeRoot_));
+        break;
+    case StorageOperation::UseExistingDatabase:
+        setStatus(StatusKind::Success, QStringLiteral("Switched to the selected existing database root: %1").arg(activeRoot_));
+        break;
+    case StorageOperation::SaveSnapshot:
+        setStatus(StatusKind::Success, QStringLiteral("Database snapshot saved successfully."));
+        break;
+    case StorageOperation::LoadSnapshot:
+        setStatus(StatusKind::Success, QStringLiteral("Database snapshot loaded successfully. Active root: %1").arg(activeRoot_));
+        break;
+    case StorageOperation::None:
+        break;
+    }
 }
 
 void SettingsPage::refreshCoordinatorUi()
@@ -436,40 +663,6 @@ void SettingsPage::browseForDolphinBaseDir()
     if (!selectedDir.isEmpty()) {
         dolphinBaseDirEdit_->setText(selectedDir);
     }
-}
-
-void SettingsPage::refreshValidation()
-{
-    refreshActiveRoot();
-    normalizedInput_ = normalizePath(dbRootEdit_->text());
-
-    QString validationMessage;
-    QString validationState = "invalid";
-    canApply_ = false;
-
-    if (normalizedInput_.isEmpty()) {
-        validationMessage = "Enter a target directory for the database root.";
-    } else if (normalizedInput_ == activeRoot_) {
-        validationMessage = "Choose a different directory than the current active database root.";
-    } else {
-        QFileInfo inputInfo(normalizedInput_);
-        const QFileInfo parentInfo(inputInfo.dir().absolutePath());
-        if (inputInfo.exists() && !inputInfo.isDir()) {
-            validationMessage = "The selected path exists but is not a directory.";
-        } else if (!parentInfo.exists() || !parentInfo.isDir()) {
-            validationMessage = "The parent directory does not exist or is not reachable.";
-        } else {
-            validationMessage = "Ready to relocate the database root using the shared backend flow.";
-            validationState = "valid";
-            canApply_ = true;
-        }
-    }
-
-    validationLabel_->setProperty("validationState", validationState);
-    validationLabel_->style()->unpolish(validationLabel_);
-    validationLabel_->style()->polish(validationLabel_);
-    validationLabel_->setText(validationMessage);
-    applyButton_->setEnabled(canApply_);
 }
 
 void SettingsPage::setStatus(StatusKind kind, const QString& message)

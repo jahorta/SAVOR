@@ -339,7 +339,7 @@ bool GuiApp::ApplyDatabaseRootChange(const std::string& new_root, std::string& e
     if (had_coordinator) StopCoordinator();
 
     hb_.stop();
-    const bool ok = simcore::db::DBService::instance().relocate_database_root(new_root, error);
+    const bool ok = simcore::db::DBService::instance().relocate_database_root(new_root, true, error);
     hb_.start(&status_);
     return ok;
 }

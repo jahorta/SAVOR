@@ -1,7 +1,11 @@
 #pragma once
 
+#include <QtCore/QFutureWatcher>
 #include <QtCore/QString>
 #include <QtWidgets/QWidget>
+
+#include <functional>
+#include <utility>
 
 class CoordinatorController;
 class QLabel;
@@ -12,6 +16,8 @@ class QFrame;
 class QSpinBox;
 class QToolButton;
 class QWidget;
+
+typedef std::pair<bool, QString> SettingsStorageResult;
 
 class SettingsPage : public QWidget
 {
@@ -36,12 +42,14 @@ public:
     };
 
 private slots:
-    void handleBrowseClicked();
-    void handleApplyClicked();
-    void handleInputChanged();
     void refreshCoordinatorUi();
     void browseForIsoPath();
     void browseForDolphinBaseDir();
+    void handleMoveDatabaseClicked();
+    void handleUseExistingDatabaseClicked();
+    void handleSaveSnapshotClicked();
+    void handleLoadSnapshotClicked();
+    void handleStorageOperationFinished();
 
 private:
     struct CollapsibleSection {
@@ -50,23 +58,34 @@ private:
         QWidget* content = nullptr;
     };
 
+    enum class StorageOperation {
+        None,
+        MoveDatabase,
+        UseExistingDatabase,
+        SaveSnapshot,
+        LoadSnapshot,
+    };
+
+    using StorageTask = std::function<SettingsStorageResult()>;
+
     void createWidgets();
     CollapsibleSection createCollapsibleSection(const QString& eyebrow, const QString& title, const QString& description, bool expandedByDefault = true);
     void loadState();
     void refreshActiveRoot();
-    void refreshValidation();
+    void refreshStorageUi();
     void setStatus(StatusKind kind, const QString& message);
+    void startStorageOperation(StorageOperation op, const QString& workingMessage, StorageTask task);
     static QString normalizePath(const QString& path);
 
     CoordinatorController* coordinatorController_ = nullptr;
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
     QLabel* activeRootValueLabel_ = nullptr;
-    QLineEdit* dbRootEdit_ = nullptr;
-    QLabel* validationLabel_ = nullptr;
     QLabel* statusLabel_ = nullptr;
-    QPushButton* browseButton_ = nullptr;
-    QPushButton* applyButton_ = nullptr;
+    QPushButton* moveDatabaseButton_ = nullptr;
+    QPushButton* useExistingButton_ = nullptr;
+    QPushButton* saveSnapshotButton_ = nullptr;
+    QPushButton* loadSnapshotButton_ = nullptr;
 
     QLineEdit* isoPathEdit_ = nullptr;
     QPushButton* isoBrowseButton_ = nullptr;
@@ -79,6 +98,7 @@ private:
 
     QString activeRoot_;
     QString persistedRoot_;
-    QString normalizedInput_;
-    bool canApply_ = false;
+    bool storageBusy_ = false;
+    StorageOperation currentStorageOperation_ = StorageOperation::None;
+    QFutureWatcher<SettingsStorageResult> storageWatcher_;
 };
