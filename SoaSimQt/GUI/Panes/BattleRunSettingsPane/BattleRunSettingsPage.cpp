@@ -20,6 +20,8 @@
 #include "GUI/Widgets/BattleContextTreeWidget.h"
 
 #include <QtCore/QStringList>
+#include <QtGui/QStandardItem>
+#include <QtGui/QStandardItemModel>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QFrame>
@@ -34,8 +36,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
-#include <QtWidgets/QTableWidget>
-#include <QtWidgets/QTableWidgetItem>
+#include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
@@ -103,6 +104,21 @@ QString itemName(const int itemId)
     return QString::fromUtf8(soa::text::ItemNames.at(static_cast<std::size_t>(itemId)).data());
 }
 
+void configureFlatTreeView(QTreeView* view, const QString& objectName)
+{
+    view->setObjectName(objectName);
+    view->setSelectionBehavior(QAbstractItemView::SelectRows);
+    view->setSelectionMode(QAbstractItemView::SingleSelection);
+    view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    view->setAlternatingRowColors(true);
+    view->setRootIsDecorated(false);
+    view->setItemsExpandable(false);
+    view->setAllColumnsShowFocus(true);
+    view->setUniformRowHeights(true);
+    view->setIndentation(0);
+    view->header()->setStretchLastSection(true);
+}
+
 QFrame* createCard(const QString& title, QWidget* parent, QVBoxLayout** bodyLayout = nullptr)
 {
     QFrame* frame = new QFrame(parent);
@@ -167,13 +183,12 @@ void BattleRunSettingsPage::createWidgets()
         toolbar->addWidget(actionRefreshButton_);
         toolbar->addWidget(actionNewButton_);
         cardLayout->addLayout(toolbar);
-        actionTable_ = new QTableWidget(card);
-        actionTable_->setColumnCount(3);
-        actionTable_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Action") });
-        actionTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-        actionTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        actionTable_->setSelectionMode(QAbstractItemView::SingleSelection);
-        actionTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        actionTable_ = new QTreeView(card);
+        configureFlatTreeView(actionTable_, QStringLiteral("battleRunSettingsActionTree"));
+        actionTableModel_ = new QStandardItemModel(this);
+        actionTableModel_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Action") });
+        actionTable_->setModel(actionTableModel_);
+        actionTable_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
         cardLayout->addWidget(actionTable_);
         leftLayout->addWidget(card);
     }
@@ -192,13 +207,12 @@ void BattleRunSettingsPage::createWidgets()
         toolbar->addWidget(predicateRefreshButton_);
         toolbar->addWidget(predicateNewButton_);
         cardLayout->addLayout(toolbar);
-        predicateTable_ = new QTableWidget(card);
-        predicateTable_->setColumnCount(4);
-        predicateTable_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Abort"), QStringLiteral("BP") });
-        predicateTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-        predicateTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        predicateTable_->setSelectionMode(QAbstractItemView::SingleSelection);
-        predicateTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        predicateTable_ = new QTreeView(card);
+        configureFlatTreeView(predicateTable_, QStringLiteral("battleRunSettingsPredicateTree"));
+        predicateTableModel_ = new QStandardItemModel(this);
+        predicateTableModel_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Abort"), QStringLiteral("BP") });
+        predicateTable_->setModel(predicateTableModel_);
+        predicateTable_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
         cardLayout->addWidget(predicateTable_);
         leftLayout->addWidget(card);
     }
@@ -214,13 +228,12 @@ void BattleRunSettingsPage::createWidgets()
         toolbar->addWidget(templateSearchEdit_, 1);
         toolbar->addWidget(templateRefreshButton_);
         cardLayout->addLayout(toolbar);
-        templateTable_ = new QTableWidget(card);
-        templateTable_->setColumnCount(2);
-        templateTable_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name") });
-        templateTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-        templateTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        templateTable_->setSelectionMode(QAbstractItemView::SingleSelection);
-        templateTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        templateTable_ = new QTreeView(card);
+        configureFlatTreeView(templateTable_, QStringLiteral("battleRunSettingsTemplateTree"));
+        templateTableModel_ = new QStandardItemModel(this);
+        templateTableModel_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name") });
+        templateTable_->setModel(templateTableModel_);
+        templateTable_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
         cardLayout->addWidget(templateTable_);
         leftLayout->addWidget(card);
     }
@@ -357,19 +370,22 @@ void BattleRunSettingsPage::wireSignals()
         refreshEstimatePanel();
     });
 
-    connect(actionTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+    connect(actionTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int row = index.row();
         if (row >= 0 && row < uiActionResults_.size()) {
             openAddPresetDialog(std::nullopt, uiActionResults_.at(row).id);
         }
     });
-    connect(predicateTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+    connect(predicateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int row = index.row();
         if (row >= 0 && row < predicateResults_.size()) {
             const PredicateSpecLite& lite = predicateResults_.at(row);
             predicates_.push_back({ lite.id, QString::fromStdString(lite.name), QString::fromStdString(lite.description) });
             refreshPredicateDraftView();
         }
     });
-    connect(templateTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+    connect(templateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int row = index.row();
         if (row >= 0 && row < templateResults_.size()) {
             loadAuthoringTemplate(templateResults_.at(row).id);
         }
@@ -631,35 +647,39 @@ void BattleRunSettingsPage::refreshAllViews()
 
 void BattleRunSettingsPage::refreshUiActionLibraryView()
 {
-    actionTable_->setRowCount(uiActionResults_.size());
-    for (int row = 0; row < uiActionResults_.size(); ++row) {
-        const TurnActionPresetLite& item = uiActionResults_.at(row);
-        actionTable_->setItem(row, 0, new QTableWidgetItem(QString::number(item.id)));
-        actionTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(item.name)));
-        actionTable_->setItem(row, 2, new QTableWidgetItem(actionName(item.macro)));
+    actionTableModel_->removeRows(0, actionTableModel_->rowCount());
+    for (const TurnActionPresetLite& item : uiActionResults_) {
+        QList<QStandardItem*> rowItems;
+        rowItems << new QStandardItem(QString::number(item.id))
+                 << new QStandardItem(QString::fromStdString(item.name))
+                 << new QStandardItem(actionName(item.macro));
+        actionTableModel_->appendRow(rowItems);
     }
 }
 
 void BattleRunSettingsPage::refreshPredicateLibraryView()
 {
-    predicateTable_->setRowCount(predicateResults_.size());
-    for (int row = 0; row < predicateResults_.size(); ++row) {
-        const PredicateSpecLite& item = predicateResults_.at(row);
-        predicateTable_->setItem(row, 0, new QTableWidgetItem(QString::number(item.id)));
-        predicateTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(item.name)));
-        predicateTable_->setItem(row, 2, new QTableWidgetItem(item.abort_on_fail ? QStringLiteral("Yes") : QStringLiteral("No")));
-        predicateTable_->setItem(row, 3, new QTableWidgetItem(QStringLiteral("0x%1").arg(item.required_bp.pc, 8, 16, QLatin1Char('0'))));
-        predicateTable_->item(row, 1)->setToolTip(QString::fromStdString(item.description));
+    predicateTableModel_->removeRows(0, predicateTableModel_->rowCount());
+    for (const PredicateSpecLite& item : predicateResults_) {
+        QList<QStandardItem*> rowItems;
+        auto* idItem = new QStandardItem(QString::number(item.id));
+        auto* nameItem = new QStandardItem(QString::fromStdString(item.name));
+        auto* abortItem = new QStandardItem(item.abort_on_fail ? QStringLiteral("Yes") : QStringLiteral("No"));
+        auto* bpItem = new QStandardItem(QStringLiteral("0x%1").arg(item.required_bp.pc, 8, 16, QLatin1Char('0')));
+        nameItem->setToolTip(QString::fromStdString(item.description));
+        rowItems << idItem << nameItem << abortItem << bpItem;
+        predicateTableModel_->appendRow(rowItems);
     }
 }
 
 void BattleRunSettingsPage::refreshTemplateLibraryView()
 {
-    templateTable_->setRowCount(templateResults_.size());
-    for (int row = 0; row < templateResults_.size(); ++row) {
-        const AuthoringTemplateLite& item = templateResults_.at(row);
-        templateTable_->setItem(row, 0, new QTableWidgetItem(QString::number(item.id)));
-        templateTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(item.name)));
+    templateTableModel_->removeRows(0, templateTableModel_->rowCount());
+    for (const AuthoringTemplateLite& item : templateResults_) {
+        QList<QStandardItem*> rowItems;
+        rowItems << new QStandardItem(QString::number(item.id))
+                 << new QStandardItem(QString::fromStdString(item.name));
+        templateTableModel_->appendRow(rowItems);
     }
 }
 
