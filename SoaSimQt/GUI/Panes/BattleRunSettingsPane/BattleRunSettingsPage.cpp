@@ -15,6 +15,9 @@
 #include "Core/Memory/Soa/SoaConstants.h"
 #include "Core/Memory/Soa/SoaAddrProgram.h"
 #include "PresetEditorDialog.h"
+#include "ActionPresetDragTableModel.h"
+#include "BattleRunSettingsDragDrop.h"
+#include "UiActionSlotDropWidget.h"
 #include "PredicateEditorDialog.h"
 #include "TemplateSaveDialog.h"
 #include "GUI/Widgets/BattleContextTreeWidget.h"
@@ -185,7 +188,10 @@ void BattleRunSettingsPage::createWidgets()
         cardLayout->addLayout(toolbar);
         actionTable_ = new QTreeView(card);
         configureFlatTreeView(actionTable_, QStringLiteral("battleRunSettingsActionTree"));
-        actionTableModel_ = new QStandardItemModel(this);
+        actionTable_->setDragEnabled(true);
+        actionTable_->setDragDropMode(QAbstractItemView::DragOnly);
+        actionTable_->setDefaultDropAction(Qt::CopyAction);
+        actionTableModel_ = new ActionPresetDragTableModel(this);
         actionTableModel_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Action") });
         actionTable_->setModel(actionTableModel_);
         actionTable_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -650,9 +656,13 @@ void BattleRunSettingsPage::refreshUiActionLibraryView()
     actionTableModel_->removeRows(0, actionTableModel_->rowCount());
     for (const TurnActionPresetLite& item : uiActionResults_) {
         QList<QStandardItem*> rowItems;
-        rowItems << new QStandardItem(QString::number(item.id))
-                 << new QStandardItem(QString::fromStdString(item.name))
-                 << new QStandardItem(actionName(item.macro));
+        auto* idItem = new QStandardItem(QString::number(item.id));
+        auto* nameItem = new QStandardItem(QString::fromStdString(item.name));
+        auto* actionItem = new QStandardItem(actionName(item.macro));
+        idItem->setData(item.id, battlerunsettings::kPresetIdRole);
+        rowItems << idItem
+                 << nameItem
+                 << actionItem;
         actionTableModel_->appendRow(rowItems);
     }
 }
@@ -716,8 +726,10 @@ void BattleRunSettingsPage::refreshUiConfigEditor()
 
         for (const UiActionInstance& instance : uiConfig_.actions.at(turnIndex)) {
             const int actorSlot = static_cast<int>(instance.actorSlot);
-            QFrame* rowFrame = new QFrame(group);
+            UiActionSlotDropWidget* rowFrame = new UiActionSlotDropWidget(turnIndex, actorSlot, group);
             rowFrame->setFrameShape(QFrame::StyledPanel);
+            rowFrame->setStyleSheet(QStringLiteral("QFrame[dropActive=\"true\"] { border: 2px solid #4f9dff; background-color: rgba(79, 157, 255, 0.12); }"));
+            rowFrame->setToolTip(QStringLiteral("Drag a UI action preset here to assign it to this slot."));
             QHBoxLayout* rowLayout = new QHBoxLayout(rowFrame);
             QLabel* label = new QLabel(QStringLiteral("Slot %1").arg(actorSlot), rowFrame);
             QLabel* summary = new QLabel(presetSummary(instance.presetId), rowFrame);
@@ -737,6 +749,9 @@ void BattleRunSettingsPage::refreshUiConfigEditor()
             rowLayout->addWidget(assignButton);
             rowLayout->addWidget(editButton);
             rowLayout->addWidget(clearButton);
+            connect(rowFrame, &UiActionSlotDropWidget::presetDropped, this, [this](const int droppedTurnIndex, const int droppedActorSlot, const qint64 presetId) {
+                assignPresetToCell(droppedTurnIndex, droppedActorSlot, presetId);
+            });
             connect(assignButton, &QPushButton::clicked, this, [this, turnIndex, actorSlot]() {
                 openAddPresetDialog(std::make_pair(turnIndex, actorSlot));
             });

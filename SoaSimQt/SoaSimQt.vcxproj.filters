@@ -104,7 +104,13 @@
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp">
@@ -234,7 +240,19 @@
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h">
