@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
@@ -10,13 +11,13 @@ namespace addrprog {
 	class Builder {
 	public:
 		uint32_t begin() { return 0; }
-		void op_base_key(addr::AddrKey k) { emit((uint8_t)Op::BASE_KEY); emit_u16(static_cast<uint16_t>(k)); }
-		void op_add_i32(int32_t imm) { emit((uint8_t)Op::ADD_I32);  emit_i32(imm); }
-		void op_index(uint16_t count, uint16_t stride) { emit((uint8_t)Op::INDEX); emit_u16(count); emit_u16(stride); }
-		void op_field(uint32_t off) { emit((uint8_t)Op::FIELD_OFF); emit_u32(off); }
-		void op_end() { emit((uint8_t)Op::END); }
+		void op_base_key(addr::AddrKey k) { emit_byte((uint8_t)Op::BASE_KEY); emit_u16(static_cast<uint16_t>(k)); }
+		void op_add_i32(int32_t imm) { emit_byte((uint8_t)Op::ADD_I32);  emit_i32(imm); }
+		void op_index(uint16_t count, uint16_t stride) { emit_byte((uint8_t)Op::INDEX); emit_u16(count); emit_u16(stride); }
+		void op_field(uint32_t off) { emit_byte((uint8_t)Op::FIELD_OFF); emit_u32(off); }
+		void op_end() { emit_byte((uint8_t)Op::END); }
 
-		void op_load_ptr32() { emit((uint8_t)Op::LOAD_PTR32); }
+		void op_load_ptr32() { emit_byte((uint8_t)Op::LOAD_PTR32); }
 
 		// NEW: field offset from member pointer (nice IntelliSense)
 		template<class T, class M>
@@ -39,13 +40,13 @@ namespace addrprog {
 		uint32_t size() const { return static_cast<uint32_t>(blob_.size()); }
 
 		// Intern: append a new program and return its starting offset.
-		uint32_t finalize_program() { emit((uint8_t)Op::END); return last_prog_offset_; }
+		uint32_t finalize_program() { emit_byte((uint8_t)Op::END); return last_prog_offset_; }
 
 		// Manual control: capture current write offset to annotate into PredicateRecord
 		uint32_t current_offset() const { return static_cast<uint32_t>(blob_.size()); }
 
 	private:
-		void emit(uint8_t b) { if (blob_.empty()) last_prog_offset_ = 0; blob_.push_back(b); }
+		void emit_byte(uint8_t b) { if (blob_.empty()) last_prog_offset_ = 0; blob_.push_back(b); }
 		void emit_u16(uint16_t v) { blob_.push_back(uint8_t(v)); blob_.push_back(uint8_t(v >> 8)); }
 		void emit_i32(int32_t v) { emit_u32(static_cast<uint32_t>(v)); }
 		void emit_u32(uint32_t v) { blob_.push_back(uint8_t(v)); blob_.push_back(uint8_t(v >> 8)); blob_.push_back(uint8_t(v >> 16)); blob_.push_back(uint8_t(v >> 24)); }
