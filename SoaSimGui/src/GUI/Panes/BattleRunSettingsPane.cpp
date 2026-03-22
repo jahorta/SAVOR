@@ -305,64 +305,65 @@ namespace soasim::ui {
 
         ImGui::BeginChild("turns", ImVec2(0, 260), true);
 
+        if (ui_config_.actions.empty()) {
+            ImGui::TextDisabled("Add a turn, then drag UI Actions onto each slot.");
+        }
+
         for (int t = 0; t < ui_config_.actions.size(); t++) {
             ImGui::PushID(t);
             ImGui::Separator();
-            ImGui::Text("Turn %d", t+1);
+            ImGui::Text("Turn %d", t + 1);
             ImGui::SameLine();
             if (ImGui::Button("Delete##t")) {
                 ui_config_.actions.erase(ui_config_.actions.begin() + t);
                 ImGui::PopID();
                 continue;
             }
-            auto turn = ui_config_.actions[t];
+            auto& turn = ui_config_.actions[t];
 
-            // Slots row
-
-            int turn_height = 25 * party_size_;
+            const int turn_height = 28 * party_size_;
             ImGui::BeginChild("row", ImVec2(0, turn_height), false);
             for (int s = 0; s < turn.size(); ++s) {
-
                 ImGui::PushID(s);
                 ImGui::BeginGroup();
 
-                auto inst = turn[s];
+                auto& inst = turn[s];
 
-                if (inst.preset_id > 0) 
-                {
-                    if (ImGui::SmallButton("X"))
-                    {
-                        ui_config_.actions[t][inst.actor_slot].preset_id = 0;
+                if (inst.preset_id > 0) {
+                    if (ImGui::SmallButton("X")) {
+                        inst.preset_id = 0;
                     }
                     ImGui::SameLine();
                 }
 
-                uint32_t k = ((uint32_t)t << 8) | (uint32_t)s;
-                bool is_bad = (invalid_cells_.find(k) != invalid_cells_.end());
+                const uint32_t k = ((uint32_t)t << 8) | (uint32_t)s;
+                const bool is_bad = (invalid_cells_.find(k) != invalid_cells_.end());
                 if (is_bad) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 70, 70, 255));
 
                 std::string label;
-                std::string name = preset_cache_[inst.preset_id].name;
                 if (inst.preset_id > 0) {
-                    label = "Slot " + std::to_string(s) + " : [" + std::to_string(inst.preset_id) + "] " + name;
+                    const auto cache_it = preset_cache_.find(inst.preset_id);
+                    const std::string name = cache_it != preset_cache_.end() ? cache_it->second.name : "[loading]";
+                    label = std::format("Slot {} : [{}] {}", s, inst.preset_id, name);
                 }
                 else {
-                    label = "Slot " + std::to_string(s) + " : [empty]";
+                    label = std::format("Slot {} : drop UI Action here", s);
                 }
 
-                if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 20))) {
-                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                        // Determine context + which cell we’re acting on
-                        const int turn_idx = t;                          // current turn index in your loop
-                        const int actor_slot = inst.actor_slot;             // or use `s` if that’s your slot variable
-
-                        // If this cell already has a preset, open Edit; otherwise open New
-                        show_ui_preset_popup_ = true;
-                        if (inst.preset_id > 0) {
-                            ui_preset_edit_loc_ = { t, s };
-                            preset_edit_id_ = inst.preset_id;
-                        }
+                const bool clicked = ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 22));
+                if (clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    show_ui_preset_popup_ = true;
+                    if (inst.preset_id > 0) {
+                        ui_preset_edit_loc_ = { t, s };
+                        preset_edit_id_ = inst.preset_id;
                     }
+                }
+
+                if (inst.preset_id > 0 && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    ImGui::SetDragDropPayload(BRB_PAYLOAD_UI_ACTION_PRESET, &inst.preset_id, sizeof(int64_t));
+                    ImGui::Text("Slot %d", s);
+                    ImGui::TextUnformatted(label.c_str());
+                    ImGui::EndDragDropSource();
                 }
 
                 if (is_bad) {
@@ -370,12 +371,17 @@ namespace soasim::ui {
                     auto it = invalid_reasons_.find(k);
                     if (it != invalid_reasons_.end()) ImGui::SetItemTooltip("%s", it->second.c_str());
                 }
+                else if (inst.preset_id <= 0) {
+                    ImGui::SetItemTooltip("Drag a UI Action preset onto this slot.");
+                }
 
                 if (ImGui::BeginDragDropTarget()) {
                     if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(BRB_PAYLOAD_UI_ACTION_PRESET)) {
                         int64_t preset_id = *(const int64_t*)p->Data;
-                        ui_config_.actions[t][inst.actor_slot].preset_id = preset_id;
-                        ensure_preset_cached_async_(preset_id);
+                        if (preset_id > 0) {
+                            inst.preset_id = preset_id;
+                            ensure_preset_cached_async_(preset_id);
+                        }
                     }
                     ImGui::EndDragDropTarget();
                 }
@@ -390,23 +396,37 @@ namespace soasim::ui {
         ImGui::EndChild();
     }
 
+
     PredicateSpecLite BattleRunSettingsPane::get_pred_row(int64_t id) {
-        for (auto p : predicate_results_) {
+        for (const auto& p : predicate_results_) {
             if (p.id == id) return p;
         }
+        auto cache_it = predicate_cache_.find(id);
+        if (cache_it != predicate_cache_.end()) {
+            return cache_it->second;
+        }
+        return {};
     }
 
     void BattleRunSettingsPane::draw_predicates_editor_() {
+        ImGui::BeginChild("pred_list", ImVec2(0, 180), true);
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(BRB_PAYLOAD_PREDICATE_SPEC)) {
-                int64_t id = *(const int64_t*)p->Data;
-                auto row = get_pred_row(id);
-                predicates_.emplace_back(row.id, row.name, row.description);
+                const int64_t id = *(const int64_t*)p->Data;
+                const auto row = get_pred_row(id);
+                if (row.id > 0) {
+                    predicates_.push_back(PredicateDraft{ row.id, row.name, row.description });
+                    predicate_cache_[row.id] = row;
+                }
             }
             ImGui::EndDragDropTarget();
         }
 
-        ImGui::BeginChild("pred_list", ImVec2(0, 180), true);
+        if (predicates_.empty()) {
+            ImGui::TextDisabled("Drag predicates here to build the selected predicate list.");
+            ImGui::Separator();
+        }
+
         for (int i = 0; i < (int)predicates_.size(); ++i) {
             ImGui::PushID(i);
 
@@ -427,7 +447,6 @@ namespace soasim::ui {
                 }
             }
             ImGui::SetItemTooltip("--%s--\n%s", predicates_[i].name.c_str(), predicates_[i].description.c_str());
-
 
             ImGui::PopID();
         }
