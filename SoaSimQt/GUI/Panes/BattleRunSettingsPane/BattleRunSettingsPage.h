@@ -26,6 +26,7 @@ class QListWidget;
 class QPushButton;
 class QPlainTextEdit;
 class QSpinBox;
+class ActionPresetDragTableModel;
 class QStandardItemModel;
 class QTreeView;
 class QVBoxLayout;
@@ -165,7 +166,7 @@ private:
     QPushButton* actionRefreshButton_ = nullptr;
     QPushButton* actionNewButton_ = nullptr;
     QTreeView* actionTable_ = nullptr;
-    QStandardItemModel* actionTableModel_ = nullptr;
+    ActionPresetDragTableModel* actionTableModel_ = nullptr;
 
     QLineEdit* predicateSearchEdit_ = nullptr;
     QPushButton* predicateRefreshButton_ = nullptr;
