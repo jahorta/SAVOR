@@ -117,6 +117,8 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp" />
@@ -164,9 +166,12 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
