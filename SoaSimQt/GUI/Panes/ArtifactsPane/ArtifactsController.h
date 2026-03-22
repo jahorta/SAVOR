@@ -44,7 +44,7 @@ public:
     void requestNextPage();
     void requestPreviousPage();
     void selectArtifact(qint64 artifactId);
-    void importArtifact(const QString& sourcePath, const QString& filename);
+    void importArtifact(const QString& sourcePath, const QString& filename, simcore::db::Compression compression = simcore::db::Compression::None);
     void materializeSelectedArtifact(const QString& outputPath);
 
 signals:

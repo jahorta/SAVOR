@@ -28,6 +28,7 @@ class QPlainTextEdit;
 class QSpinBox;
 class QTableWidget;
 class QVBoxLayout;
+class BattleContextTreeWidget;
 
 class BattleRunSettingsPage final : public QWidget
 {
@@ -186,7 +187,7 @@ private:
     QPushButton* editPredicateButton_ = nullptr;
 
     QLabel* contextSummaryLabel_ = nullptr;
-    QPlainTextEdit* contextDetailsText_ = nullptr;
+    BattleContextTreeWidget* contextTree_ = nullptr;
     QPushButton* pickSavestateButton_ = nullptr;
     QPushButton* pickSeedProbeButton_ = nullptr;
     QPushButton* clearContextButton_ = nullptr;

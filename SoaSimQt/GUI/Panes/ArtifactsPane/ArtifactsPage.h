@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
 
 class ArtifactsController;
@@ -10,7 +11,6 @@ class QLineEdit;
 class QPushButton;
 class QSpinBox;
 class QTextEdit;
-
 class ArtifactsPage final : public QWidget
 {
     Q_OBJECT
@@ -20,9 +20,16 @@ public:
 
 private slots:
     void handleImportRequested();
+    void handleDroppedPaths(const QStringList& paths);
     void handleExportRequested();
 
 private:
+    struct ImportRequest {
+        QString sourcePath;
+        QString defaultName;
+    };
+
+    void openImportDialog(const ImportRequest& request);
     void createWidgets();
     void wireSignals();
     void syncControlsFromController();

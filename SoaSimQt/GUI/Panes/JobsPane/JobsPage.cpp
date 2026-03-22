@@ -269,7 +269,7 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* refreshDetailAction = menu.addAction(QStringLiteral("Refresh detail"));
     menu.addSeparator();
     QAction* requeueAction = menu.addAction(QStringLiteral("Requeue"));
-    QAction* restartAction = menu.addAction(QStringLiteral("Restart"));
+    QAction* restartAction = menu.addAction(QStringLiteral("Edit INI + Restart"));
     QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
 
     refreshDetailAction->setEnabled(actionsEnabled);

@@ -167,6 +167,12 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp">
       <Filter>GUI\Panes\SeedProbe</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
@@ -287,6 +293,12 @@
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h">
       <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
+      <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
       <Filter>GUI\Panes\JobSets</Filter>

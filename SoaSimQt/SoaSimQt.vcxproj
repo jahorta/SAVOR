@@ -147,6 +147,8 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
+    <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp" />
+    <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
@@ -191,6 +193,8 @@
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
+    <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
+    <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <ClCompile Include="GUI\MainWindow.cpp" />
   </ItemGroup>

@@ -8,6 +8,9 @@
 #include <QtCore/QItemSelectionModel>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
@@ -15,6 +18,7 @@
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -55,8 +59,23 @@ void ArtifactsPage::handleImportRequested()
         return;
     }
 
-    const QString defaultName = QFileInfo(sourcePath).fileName();
-    controller_->importArtifact(sourcePath, defaultName);
+    openImportDialog({ sourcePath, QFileInfo(sourcePath).fileName() });
+}
+
+void ArtifactsPage::handleDroppedPaths(const QStringList& paths)
+{
+    if (paths.size() != 1) {
+        QMessageBox::information(this, QStringLiteral("Import Artifact"), QStringLiteral("Drop exactly one local file."));
+        return;
+    }
+
+    const QFileInfo info(paths.front());
+    if (!info.exists() || !info.isFile()) {
+        QMessageBox::warning(this, QStringLiteral("Import Artifact"), QStringLiteral("The dropped item is not a readable local file."));
+        return;
+    }
+
+    openImportDialog({ info.absoluteFilePath(), info.fileName() });
 }
 
 void ArtifactsPage::handleExportRequested()
@@ -76,6 +95,64 @@ void ArtifactsPage::handleExportRequested()
     }
 
     controller_->materializeSelectedArtifact(destinationPath);
+}
+
+void ArtifactsPage::openImportDialog(const ImportRequest& request)
+{
+    if (request.sourcePath.isEmpty()) {
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Import Artifact"));
+
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(12);
+
+    QLabel* sourceLabel = new QLabel(QStringLiteral("Source"), &dialog);
+    QLineEdit* sourceEdit = new QLineEdit(request.sourcePath, &dialog);
+    sourceEdit->setReadOnly(true);
+    QLabel* filenameLabel = new QLabel(QStringLiteral("Filename"), &dialog);
+    QLineEdit* filenameEdit = new QLineEdit(request.defaultName, &dialog);
+    QLabel* compressionLabel = new QLabel(QStringLiteral("Compression"), &dialog);
+    QComboBox* compressionCombo = new QComboBox(&dialog);
+    compressionCombo->addItem(QStringLiteral("None"), static_cast<int>(simcore::db::Compression::None));
+
+    QLabel* hint = new QLabel(
+        QStringLiteral("Review the source and destination filename before importing. Compression support is currently limited to object-store formats available in Qt."),
+        &dialog);
+    hint->setWordWrap(true);
+
+    layout->addWidget(sourceLabel);
+    layout->addWidget(sourceEdit);
+    layout->addWidget(filenameLabel);
+    layout->addWidget(filenameEdit);
+    layout->addWidget(compressionLabel);
+    layout->addWidget(compressionCombo);
+    layout->addWidget(hint);
+
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Import"));
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, filenameEdit]() {
+        if (filenameEdit->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral("Import Artifact"), QStringLiteral("Filename cannot be empty."));
+            return;
+        }
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    controller_->importArtifact(
+        request.sourcePath,
+        filenameEdit->text().trimmed(),
+        static_cast<simcore::db::Compression>(compressionCombo->currentData().toInt()));
 }
 
 void ArtifactsPage::createWidgets()
@@ -250,6 +327,7 @@ void ArtifactsPage::wireSignals()
     connect(prevButton_, &QPushButton::clicked, controller_, &ArtifactsController::requestPreviousPage);
     connect(nextButton_, &QPushButton::clicked, controller_, &ArtifactsController::requestNextPage);
     connect(exportButton_, &QPushButton::clicked, this, &ArtifactsPage::handleExportRequested);
+    connect(artifactsTable_, &ArtifactsBrowserTableView::fileDropRequested, this, &ArtifactsPage::handleDroppedPaths);
 
     connect(artifactsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, [this](const QModelIndex& current, const QModelIndex&) {
         if (!current.isValid()) {
