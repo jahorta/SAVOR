@@ -100,15 +100,6 @@ void JobBuilderPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(12);
 
-    titleLabel_ = new QLabel(QStringLiteral("Job Builder"), this);
-    titleLabel_->setObjectName("pageTitle");
-    rootLayout->addWidget(titleLabel_);
-
-    descriptionLabel_ = new QLabel(QStringLiteral("Qt-native builder for SeedProbe, TasMovie, and Explorer/BattleTurnRunner job sets with validation, preview, picker dialogs, and blueprint inspection."), this);
-    descriptionLabel_->setObjectName("pageDescription");
-    descriptionLabel_->setWordWrap(true);
-    rootLayout->addWidget(descriptionLabel_);
-
     inlineMessageLabel_ = new QLabel(this);
     inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
     inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
