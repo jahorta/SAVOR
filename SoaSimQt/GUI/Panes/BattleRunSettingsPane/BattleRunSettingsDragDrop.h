@@ -16,7 +16,13 @@ inline QString presetMimeType()
     return QStringLiteral("application/x-soasim-turn-action-preset");
 }
 
+inline QString predicateMimeType()
+{
+    return QStringLiteral("application/x-soasim-predicate-spec");
+}
+
 constexpr int kPresetIdRole = Qt::UserRole + 1;
+constexpr int kPredicateIdRole = Qt::UserRole + 2;
 
 inline QByteArray encodePresetId(const qint64 presetId)
 {
@@ -41,6 +47,32 @@ inline bool decodePresetId(const QMimeData* mimeData, qint64* presetId)
     }
 
     *presetId = decodedPresetId;
+    return true;
+}
+
+inline QByteArray encodePredicateId(const qint64 predicateId)
+{
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << predicateId;
+    return payload;
+}
+
+inline bool decodePredicateId(const QMimeData* mimeData, qint64* predicateId)
+{
+    if (!mimeData || !predicateId || !mimeData->hasFormat(predicateMimeType())) {
+        return false;
+    }
+
+    QByteArray payload = mimeData->data(predicateMimeType());
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    qint64 decodedPredicateId = 0;
+    stream >> decodedPredicateId;
+    if (stream.status() != QDataStream::Ok || decodedPredicateId <= 0) {
+        return false;
+    }
+
+    *predicateId = decodedPredicateId;
     return true;
 }
 

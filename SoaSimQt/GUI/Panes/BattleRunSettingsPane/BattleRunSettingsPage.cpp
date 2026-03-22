@@ -18,6 +18,8 @@
 #include "ActionPresetDragTableModel.h"
 #include "BattleRunSettingsDragDrop.h"
 #include "UiActionSlotDropWidget.h"
+#include "PredicateDragTableModel.h"
+#include "SelectedPredicateDropListWidget.h"
 #include "PredicateEditorDialog.h"
 #include "TemplateSaveDialog.h"
 #include "GUI/Widgets/BattleContextTreeWidget.h"
@@ -215,7 +217,10 @@ void BattleRunSettingsPage::createWidgets()
         cardLayout->addLayout(toolbar);
         predicateTable_ = new QTreeView(card);
         configureFlatTreeView(predicateTable_, QStringLiteral("battleRunSettingsPredicateTree"));
-        predicateTableModel_ = new QStandardItemModel(this);
+        predicateTable_->setDragEnabled(true);
+        predicateTable_->setDragDropMode(QAbstractItemView::DragOnly);
+        predicateTable_->setDefaultDropAction(Qt::CopyAction);
+        predicateTableModel_ = new PredicateDragTableModel(this);
         predicateTableModel_->setHorizontalHeaderLabels(QStringList{ QStringLiteral("ID"), QStringLiteral("Name"), QStringLiteral("Abort"), QStringLiteral("BP") });
         predicateTable_->setModel(predicateTableModel_);
         predicateTable_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -278,7 +283,9 @@ void BattleRunSettingsPage::createWidgets()
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("Selected Predicates"), middle, &cardLayout);
-        predicateDraftList_ = new QListWidget(card);
+        predicateDraftList_ = new SelectedPredicateDropListWidget(card);
+        predicateDraftList_->setStyleSheet(QStringLiteral("QListWidget[dropActive=\"true\"] { border: 2px solid #4f9dff; background-color: rgba(79, 157, 255, 0.12); }"));
+        predicateDraftList_->setToolTip(QStringLiteral("Drag a predicate here to add it."));
         cardLayout->addWidget(predicateDraftList_);
         QHBoxLayout* actions = new QHBoxLayout();
         addPredicateButton_ = new QPushButton(QStringLiteral("Add Predicate…"), card);
@@ -383,11 +390,14 @@ void BattleRunSettingsPage::wireSignals()
         }
     });
     connect(predicateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
-        const int row = index.row();
-        if (row >= 0 && row < predicateResults_.size()) {
-            const PredicateSpecLite& lite = predicateResults_.at(row);
-            predicates_.push_back({ lite.id, QString::fromStdString(lite.name), QString::fromStdString(lite.description) });
-            refreshPredicateDraftView();
+        const QModelIndex sourceIndex = index.siblingAtColumn(0);
+        if (!sourceIndex.isValid()) {
+            return;
+        }
+
+        const qint64 predicateId = predicateTableModel_->data(sourceIndex, battlerunsettings::kPredicateIdRole).toLongLong();
+        if (predicateId > 0) {
+            addPredicateToDraft(predicateId);
         }
     });
     connect(templateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -395,6 +405,10 @@ void BattleRunSettingsPage::wireSignals()
         if (row >= 0 && row < templateResults_.size()) {
             loadAuthoringTemplate(templateResults_.at(row).id);
         }
+    });
+
+    connect(predicateDraftList_, &SelectedPredicateDropListWidget::predicateDropped, this, [this](const qint64 predicateId, const int insertRow) {
+        addPredicateToDraft(predicateId, insertRow >= 0 ? std::optional<int>(insertRow) : std::nullopt);
     });
 
     connect(addPredicateButton_, &QPushButton::clicked, this, [this]() { openAddPredicateDialog(); });
@@ -409,6 +423,9 @@ void BattleRunSettingsPage::wireSignals()
         if (row >= 0 && row < predicates_.size()) {
             predicates_.removeAt(row);
             refreshPredicateDraftView();
+            computeEstimate();
+            refreshEstimatePanel();
+            refreshSavePanel();
         }
     });
     connect(movePredicateUpButton_, &QPushButton::clicked, this, [this]() {
@@ -417,6 +434,9 @@ void BattleRunSettingsPage::wireSignals()
             predicates_.swapItemsAt(row, row - 1);
             refreshPredicateDraftView();
             predicateDraftList_->setCurrentRow(row - 1);
+            computeEstimate();
+            refreshEstimatePanel();
+            refreshSavePanel();
         }
     });
     connect(movePredicateDownButton_, &QPushButton::clicked, this, [this]() {
@@ -425,6 +445,9 @@ void BattleRunSettingsPage::wireSignals()
             predicates_.swapItemsAt(row, row + 1);
             refreshPredicateDraftView();
             predicateDraftList_->setCurrentRow(row + 1);
+            computeEstimate();
+            refreshEstimatePanel();
+            refreshSavePanel();
         }
     });
 
@@ -676,6 +699,7 @@ void BattleRunSettingsPage::refreshPredicateLibraryView()
         auto* nameItem = new QStandardItem(QString::fromStdString(item.name));
         auto* abortItem = new QStandardItem(item.abort_on_fail ? QStringLiteral("Yes") : QStringLiteral("No"));
         auto* bpItem = new QStandardItem(QStringLiteral("0x%1").arg(item.required_bp.pc, 8, 16, QLatin1Char('0')));
+        idItem->setData(item.id, battlerunsettings::kPredicateIdRole);
         nameItem->setToolTip(QString::fromStdString(item.description));
         rowItems << idItem << nameItem << abortItem << bpItem;
         predicateTableModel_->appendRow(rowItems);
@@ -776,6 +800,51 @@ void BattleRunSettingsPage::refreshPredicateDraftView()
         QListWidgetItem* item = new QListWidgetItem(QStringLiteral("Predicate #%1 · %2").arg(draft.predicateId).arg(draft.name), predicateDraftList_);
         item->setToolTip(draft.description);
     }
+}
+
+std::optional<BattleRunSettingsPage::PredicateDraft> BattleRunSettingsPage::makePredicateDraft(const qint64 predicateId)
+{
+    if (predicateId <= 0) {
+        return std::nullopt;
+    }
+
+    if (predicateRowCache_.contains(predicateId)) {
+        const PredicateSpecRow& row = predicateRowCache_.value(predicateId);
+        return PredicateDraft{ predicateId, QString::fromStdString(row.name), QString::fromStdString(row.description) };
+    }
+
+    if (predicateLiteCache_.contains(predicateId)) {
+        const PredicateSpecLite& lite = predicateLiteCache_.value(predicateId);
+        return PredicateDraft{ predicateId, QString::fromStdString(lite.name), QString::fromStdString(lite.description) };
+    }
+
+    const auto result = PredicateSpecRepo::Get(predicateId);
+    if (!result.ok) {
+        setErrorMessage(QStringLiteral("Failed to load predicate %1: %2").arg(predicateId).arg(QString::fromStdString(result.error.message)));
+        refreshInlineMessage();
+        return std::nullopt;
+    }
+
+    predicateRowCache_.insert(predicateId, result.value);
+    predicateLiteCache_.insert(predicateId, PredicateSpecLite{ result.value.id, result.value.name, result.value.description, result.value.required_bp, result.value.abort_on_fail });
+    return PredicateDraft{ predicateId, QString::fromStdString(result.value.name), QString::fromStdString(result.value.description) };
+}
+
+bool BattleRunSettingsPage::addPredicateToDraft(const qint64 predicateId, const std::optional<int> insertRow)
+{
+    const std::optional<PredicateDraft> draft = makePredicateDraft(predicateId);
+    if (!draft.has_value()) {
+        return false;
+    }
+
+    const int targetRow = insertRow.has_value() ? std::clamp(insertRow.value(), 0, predicates_.size()) : predicates_.size();
+    predicates_.insert(targetRow, draft.value());
+    refreshPredicateDraftView();
+    predicateDraftList_->setCurrentRow(targetRow);
+    computeEstimate();
+    refreshEstimatePanel();
+    refreshSavePanel();
+    return true;
 }
 
 void BattleRunSettingsPage::refreshContextPanel()
@@ -1244,16 +1313,18 @@ void BattleRunSettingsPage::openAddPredicateDialog(std::optional<int> editIndex,
     }
 
     const qint64 predicateId = persistResult.value;
-    const auto fullRow = PredicateSpecRepo::Get(predicateId);
-    if (fullRow.ok) {
-        predicateRowCache_.insert(predicateId, fullRow.value);
-        PredicateDraft draft{ predicateId, QString::fromStdString(fullRow.value.name), QString::fromStdString(fullRow.value.description) };
+    const std::optional<PredicateDraft> draft = makePredicateDraft(predicateId);
+    if (draft.has_value()) {
         if (editIndex.has_value() && editIndex.value() >= 0 && editIndex.value() < predicates_.size()) {
-            predicates_[editIndex.value()] = draft;
+            predicates_[editIndex.value()] = draft.value();
+            refreshPredicateDraftView();
+            predicateDraftList_->setCurrentRow(editIndex.value());
+            computeEstimate();
+            refreshEstimatePanel();
+            refreshSavePanel();
         } else {
-            predicates_.push_back(draft);
+            addPredicateToDraft(predicateId);
         }
-        refreshPredicateDraftView();
     }
     refreshPredicateLibrary();
 }

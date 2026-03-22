@@ -27,6 +27,8 @@ class QPushButton;
 class QPlainTextEdit;
 class QSpinBox;
 class ActionPresetDragTableModel;
+class PredicateDragTableModel;
+class SelectedPredicateDropListWidget;
 class QStandardItemModel;
 class QTreeView;
 class QVBoxLayout;
@@ -103,6 +105,8 @@ private:
     void assignPresetToCell(int turnIndex, int actorSlot, qint64 presetId);
     void clearPresetAtCell(int turnIndex, int actorSlot);
     void validateGridAgainstContext();
+    std::optional<PredicateDraft> makePredicateDraft(qint64 predicateId);
+    bool addPredicateToDraft(qint64 predicateId, std::optional<int> insertRow = std::nullopt);
     bool allSlotsFilled() const;
     void openSavestatePicker();
     void openSeedProbePicker();
@@ -172,7 +176,7 @@ private:
     QPushButton* predicateRefreshButton_ = nullptr;
     QPushButton* predicateNewButton_ = nullptr;
     QTreeView* predicateTable_ = nullptr;
-    QStandardItemModel* predicateTableModel_ = nullptr;
+    PredicateDragTableModel* predicateTableModel_ = nullptr;
 
     QLineEdit* templateSearchEdit_ = nullptr;
     QPushButton* templateRefreshButton_ = nullptr;
@@ -184,7 +188,7 @@ private:
     QPushButton* addTurnButton_ = nullptr;
     QWidget* uiConfigContainer_ = nullptr;
     QVBoxLayout* uiConfigLayout_ = nullptr;
-    QListWidget* predicateDraftList_ = nullptr;
+    SelectedPredicateDropListWidget* predicateDraftList_ = nullptr;
     QPushButton* addPredicateButton_ = nullptr;
     QPushButton* movePredicateUpButton_ = nullptr;
     QPushButton* movePredicateDownButton_ = nullptr;
