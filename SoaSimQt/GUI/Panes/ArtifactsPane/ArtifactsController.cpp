@@ -1,6 +1,7 @@
 #include "ArtifactsController.h"
 
 #include "DB/DBCore/ObjectStore.h"
+#include "Utils/Hash.h"
 
 #include <QtCore/QFileInfo>
 
@@ -83,7 +84,11 @@ ArtifactsController::ArtifactsController(QObject* parent)
         try {
             const auto result = importWatcher_.result();
             if (result.ok) {
-                state_.infoMessage = QStringLiteral("Imported artifact %1.").arg(result.value.id);
+                const bool deduped = result.value.filename.size() >= 10
+                    && result.value.filename.rfind(" [deduped]") == (result.value.filename.size() - 10);
+                state_.infoMessage = deduped
+                    ? QStringLiteral("Imported artifact %1 (deduped).").arg(result.value.id)
+                    : QStringLiteral("Imported artifact %1.").arg(result.value.id);
                 state_.errorMessage.clear();
                 before_.reset();
                 after_.reset();
@@ -193,7 +198,7 @@ void ArtifactsController::selectArtifact(qint64 artifactId)
     emitStateChanged();
 }
 
-void ArtifactsController::importArtifact(const QString& sourcePath, const QString& filename)
+void ArtifactsController::importArtifact(const QString& sourcePath, const QString& filename, Compression compression)
 {
     if (state_.importBusy || sourcePath.isEmpty() || filename.trimmed().isEmpty()) {
         return;
@@ -210,8 +215,19 @@ void ArtifactsController::importArtifact(const QString& sourcePath, const QStrin
     state_.selectedFilePath = sourcePath;
     state_.errorMessage.clear();
     state_.infoMessage = QStringLiteral("Importing artifact…");
-    importWatcher_.setFuture(runAsync([source = sourcePath.toStdString(), outputName = filename.trimmed().toStdString()]() {
-        return ObjectStore::FinalizeFromFileAsync(source, Compression::None, outputName).get();
+    importWatcher_.setFuture(runAsync([source = sourcePath.toStdString(), outputName = filename.trimmed().toStdString(), compression]() {
+        const std::string sha = hash::sha256_of_file(source);
+        bool existed = false;
+        if (!sha.empty()) {
+            const auto existing = ObjectStore::GetByShaAsync(sha).get();
+            existed = existing.ok;
+        }
+
+        auto result = ObjectStore::FinalizeFromFileAsync(source, compression, outputName).get();
+        if (result.ok && existed) {
+            result.value.filename += " [deduped]";
+        }
+        return result;
     }));
     emitStateChanged();
 }
