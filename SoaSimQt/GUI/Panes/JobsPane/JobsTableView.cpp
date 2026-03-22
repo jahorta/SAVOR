@@ -12,6 +12,7 @@ JobsTableView::JobsTableView(QWidget* parent)
     setSelectionBehavior(QAbstractItemView::SelectRows);
     setSelectionMode(QAbstractItemView::SingleSelection);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
+    setContextMenuPolicy(Qt::CustomContextMenu);
     setAlternatingRowColors(true);
     setRootIsDecorated(false);
     setItemsExpandable(false);

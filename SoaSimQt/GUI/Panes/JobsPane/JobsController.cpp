@@ -151,9 +151,6 @@ JobsController::JobsController(QObject* parent)
     connect(&cancelWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(cancelWatcher_, cancelInFlight_, QStringLiteral("Canceled job %1.").arg(actionJobId_), "Cancel failed");
     });
-    connect(&bumpWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(bumpWatcher_, bumpInFlight_, QStringLiteral("Updated priority for job %1.").arg(actionJobId_), "Priority bump failed");
-    });
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(restartWatcher_, restartInFlight_, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
@@ -249,16 +246,6 @@ void JobsController::cancelSelectedJob()
     cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::CancelJobAsync(jobId).get(); }));
 }
 
-void JobsController::bumpSelectedJobPriority(int delta)
-{
-    const JobLite* job = selectedJob();
-    if (!job || bumpInFlight_ || state_.actionsBusy) return;
-    actionJobId_ = job->job_id;
-    bumpInFlight_ = true;
-    setBusy(Operation::Bump, true);
-    bumpWatcher_.setFuture(runDataServiceCall([jobId = job->job_id, delta]() { return DataService::BumpPriorityAsync(jobId, delta).get(); }));
-}
-
 void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
 {
     const JobLite* job = selectedJob();
@@ -348,7 +335,7 @@ void JobsController::kickDetailFetch(qint64 jobId, bool force)
 
 void JobsController::setBusy(Operation, bool)
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || bumpInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
     emitStateChanged();
 }
 
@@ -359,7 +346,7 @@ bool JobsController::canAutoRefresh() const
 
 bool JobsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || requeueInFlight_ || cancelInFlight_ || bumpInFlight_ || restartInFlight_;
+    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || requeueInFlight_ || cancelInFlight_ || restartInFlight_;
 }
 
 const JobLite* JobsController::selectedJob() const
@@ -372,7 +359,7 @@ QString JobsController::programKindLabel(int id) const { return state_.programNa
 
 void JobsController::emitStateChanged()
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || bumpInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
     state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }

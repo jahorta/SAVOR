@@ -19,6 +19,7 @@
 #include <QtWidgets/QHeaderView>
 #include <QtCore/QItemSelectionModel>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
@@ -161,17 +162,10 @@ void JobsPage::createWidgets()
     inspectorLayout->addWidget(new QLabel(QStringLiteral("Job Inspector"), inspectorPanel));
     inspectorLayout->addWidget(inspectorSummary_);
 
-    QHBoxLayout* actionLayout = new QHBoxLayout();
-    requeueButton_ = new QPushButton(QStringLiteral("Requeue"), inspectorPanel);
-    restartButton_ = new QPushButton(QStringLiteral("Restart"), inspectorPanel);
-    cancelButton_ = new QPushButton(QStringLiteral("Cancel"), inspectorPanel);
-    bumpDeltaSpin_ = new QSpinBox(inspectorPanel);
-    applyBumpButton_ = new QPushButton(QStringLiteral("Apply bump"), inspectorPanel);
-    inspectorRefreshButton_ = new QPushButton(QStringLiteral("Refresh detail"), inspectorPanel);
-    bumpDeltaSpin_->setRange(-9, 9); bumpDeltaSpin_->setValue(1);
-    requeueButton_->setObjectName("jobsSecondaryButton"); restartButton_->setObjectName("jobsSecondaryButton"); cancelButton_->setObjectName("jobsSecondaryButton"); applyBumpButton_->setObjectName("jobsPrimaryButton"); inspectorRefreshButton_->setObjectName("jobsSecondaryButton");
-    actionLayout->addWidget(requeueButton_); actionLayout->addWidget(restartButton_); actionLayout->addWidget(cancelButton_); actionLayout->addWidget(new QLabel(QStringLiteral("Delta"), inspectorPanel)); actionLayout->addWidget(bumpDeltaSpin_); actionLayout->addWidget(applyBumpButton_); actionLayout->addStretch(); actionLayout->addWidget(inspectorRefreshButton_);
-    inspectorLayout->addLayout(actionLayout);
+    QLabel* inspectorActionsHint = new QLabel(QStringLiteral("Right-click a job in the table to refresh details or run job actions."), inspectorPanel);
+    inspectorActionsHint->setObjectName("jobsMetaText");
+    inspectorActionsHint->setWordWrap(true);
+    inspectorLayout->addWidget(inspectorActionsHint);
 
     inspectorTabs_ = new QTabWidget(inspectorPanel);
     QWidget* overviewTab = new QWidget(inspectorTabs_);
@@ -238,11 +232,7 @@ void JobsPage::wireSignals()
     connect(nextButton_, &QPushButton::clicked, controller_, &JobsController::requestNextPage);
     connect(autoRefreshCheck_, &QCheckBox::toggled, controller_, &JobsController::setAutoRefreshEnabled);
     connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &JobsController::setRefreshSeconds);
-    connect(requeueButton_, &QPushButton::clicked, controller_, &JobsController::requeueSelectedJob);
-    connect(cancelButton_, &QPushButton::clicked, controller_, &JobsController::cancelSelectedJob);
-    connect(applyBumpButton_, &QPushButton::clicked, this, [this]() { controller_->bumpSelectedJobPriority(bumpDeltaSpin_->value()); });
-    connect(inspectorRefreshButton_, &QPushButton::clicked, controller_, &JobsController::refreshSelectedJobDetail);
-    connect(restartButton_, &QPushButton::clicked, this, &JobsPage::handleRestartRequested);
+    connect(jobsTable_, &QWidget::customContextMenuRequested, this, &JobsPage::showJobsContextMenu);
 
     connect(jobsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, [this](const QModelIndex& current, const QModelIndex&) {
         if (!current.isValid()) return;
@@ -255,6 +245,48 @@ void JobsPage::wireSignals()
             inspectorTabs_->setCurrentIndex(0);
         }
     });
+}
+
+void JobsPage::showJobsContextMenu(const QPoint& position)
+{
+    const QModelIndex index = jobsTable_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+
+    selectFlatRow(jobsTable_, index.row());
+    const JobsTableModel::Row* row = jobsModel_->rowAt(index.row());
+    if (!row) {
+        return;
+    }
+
+    const bool actionsEnabled = !controller_->viewState().actionsBusy;
+    const bool canRequeue = actionsEnabled && row->state != QStringLiteral("QUEUED") && row->state != QStringLiteral("CLAIMED") && row->state != QStringLiteral("RUNNING") && row->state != QStringLiteral("FAILED");
+    const bool canRestart = actionsEnabled && row->state == QStringLiteral("FAILED");
+    const bool canCancel = actionsEnabled && row->state != QStringLiteral("SUCCEEDED") && row->state != QStringLiteral("CANCELED") && row->state != QStringLiteral("SUCCEEDED_WINNER") && row->state != QStringLiteral("SUCCEEDED_DUPLICATE");
+
+    QMenu menu(jobsTable_);
+    QAction* refreshDetailAction = menu.addAction(QStringLiteral("Refresh detail"));
+    menu.addSeparator();
+    QAction* requeueAction = menu.addAction(QStringLiteral("Requeue"));
+    QAction* restartAction = menu.addAction(QStringLiteral("Restart"));
+    QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
+
+    refreshDetailAction->setEnabled(actionsEnabled);
+    requeueAction->setEnabled(canRequeue);
+    restartAction->setEnabled(canRestart);
+    cancelAction->setEnabled(canCancel);
+
+    QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
+    if (chosen == refreshDetailAction) {
+        controller_->refreshSelectedJobDetail();
+    } else if (chosen == requeueAction) {
+        controller_->requeueSelectedJob();
+    } else if (chosen == restartAction) {
+        handleRestartRequested();
+    } else if (chosen == cancelAction) {
+        controller_->cancelSelectedJob();
+    }
 }
 
 void JobsPage::syncControlsFromController()
@@ -323,7 +355,6 @@ void JobsPage::updateInspector()
         inspectorSummary_->setText(QStringLiteral("Select a job to inspect details."));
         overviewPriorityValue_->setText(QStringLiteral("--")); overviewQueuedValue_->setText(QStringLiteral("--")); overviewSelectionHint_->setText(QStringLiteral("No jobs match the current filters."));
         eventsText_->clear(); payloadText_->clear(); progressText_->clear(); resultsText_->clear(); artifactsModel_->setArtifacts({});
-        requeueButton_->setEnabled(false); restartButton_->setEnabled(false); cancelButton_->setEnabled(false); applyBumpButton_->setEnabled(false); inspectorRefreshButton_->setEnabled(false);
         return;
     }
 
@@ -343,12 +374,6 @@ void JobsPage::updateInspector()
     resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);
 
-    const bool actionsEnabled = !state.actionsBusy;
-    requeueButton_->setEnabled(actionsEnabled && selected->state != "QUEUED" && selected->state != "CLAIMED" && selected->state != "RUNNING" && selected->state != "FAILED");
-    restartButton_->setEnabled(actionsEnabled && selected->state == "FAILED");
-    cancelButton_->setEnabled(actionsEnabled && selected->state != "SUCCEEDED" && selected->state != "CANCELED" && selected->state != "SUCCEEDED_WINNER" && selected->state != "SUCCEEDED_DUPLICATE");
-    applyBumpButton_->setEnabled(actionsEnabled);
-    inspectorRefreshButton_->setEnabled(actionsEnabled && state.selectedJobId > 0);
 }
 
 void JobsPage::updateStatusWidgets()

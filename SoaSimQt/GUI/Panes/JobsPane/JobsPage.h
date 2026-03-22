@@ -4,6 +4,8 @@
 
 #include <optional>
 
+class QPoint;
+
 class ArtifactsTableModel;
 class ArtifactsTableView;
 class JobsController;
@@ -35,6 +37,7 @@ private:
     std::optional<QString> selectedState() const;
     std::optional<qint64> selectedJobSetId() const;
     void handleRestartRequested();
+    void showJobsContextMenu(const QPoint& position);
 
     JobsController* controller_ = nullptr;
     JobsTableModel* jobsModel_ = nullptr;
@@ -59,12 +62,6 @@ private:
 
     JobsTableView* jobsTable_ = nullptr;
     QLabel* inspectorSummary_ = nullptr;
-    QPushButton* requeueButton_ = nullptr;
-    QPushButton* restartButton_ = nullptr;
-    QPushButton* cancelButton_ = nullptr;
-    QSpinBox* bumpDeltaSpin_ = nullptr;
-    QPushButton* applyBumpButton_ = nullptr;
-    QPushButton* inspectorRefreshButton_ = nullptr;
     QTabWidget* inspectorTabs_ = nullptr;
     QLabel* overviewPriorityValue_ = nullptr;
     QLabel* overviewQueuedValue_ = nullptr;
