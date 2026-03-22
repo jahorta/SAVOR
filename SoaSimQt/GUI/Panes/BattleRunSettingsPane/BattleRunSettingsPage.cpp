@@ -40,7 +40,6 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
-#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
 
@@ -258,12 +257,8 @@ void BattleRunSettingsPage::createWidgets()
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("UI Config"), middle, &cardLayout);
         QHBoxLayout* toolbar = new QHBoxLayout();
-        fakeAttackBudgetSpin_ = new QSpinBox(card);
-        fakeAttackBudgetSpin_->setRange(0, 1000000);
         addTurnButton_ = new QPushButton(QStringLiteral("Add Turn"), card);
         addTurnButton_->setObjectName("jobsSecondaryButton");
-        toolbar->addWidget(new QLabel(QStringLiteral("Fake attack budget"), card));
-        toolbar->addWidget(fakeAttackBudgetSpin_);
         toolbar->addStretch();
         toolbar->addWidget(addTurnButton_);
         cardLayout->addLayout(toolbar);
@@ -377,11 +372,6 @@ void BattleRunSettingsPage::wireSignals()
     connect(actionNewButton_, &QPushButton::clicked, this, [this]() { openAddPresetDialog(); });
     connect(predicateNewButton_, &QPushButton::clicked, this, [this]() { openAddPredicateDialog(); });
     connect(addTurnButton_, &QPushButton::clicked, this, [this]() { addTurn(); });
-    connect(fakeAttackBudgetSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](const int value) {
-        uiConfig_.fakeAttackBudget = value;
-        computeEstimate();
-        refreshEstimatePanel();
-    });
 
     connect(actionTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
         const int row = index.row();
@@ -621,7 +611,6 @@ void BattleRunSettingsPage::wireSignals()
 
 void BattleRunSettingsPage::loadInitialData()
 {
-    uiConfig_.fakeAttackBudget = 0;
     addTurn();
     refreshUiActionLibrary();
     refreshPredicateLibrary();
@@ -875,9 +864,8 @@ void BattleRunSettingsPage::refreshEstimatePanel()
         estimateLabel_->setText(estimateState_.message.isEmpty() ? QStringLiteral("Estimate unavailable.") : estimateState_.message);
         return;
     }
-    estimateLabel_->setText(QStringLiteral("Base plans: %1\nWith fake budget: %2")
-        .arg(estimateState_.basePlans)
-        .arg(estimateState_.withFakePlans));
+    estimateLabel_->setText(QStringLiteral("Base plans: %1")
+        .arg(estimateState_.basePlans));
 }
 
 void BattleRunSettingsPage::refreshSavePanel()
@@ -1366,8 +1354,6 @@ void BattleRunSettingsPage::loadAuthoringTemplate(qint64 templateId)
     }
 
     uiConfig_.actions.clear();
-    uiConfig_.fakeAttackBudget = static_cast<int>(uiIni.get_i64(kUiConfigSectionName, "budget", 0));
-    fakeAttackBudgetSpin_->setValue(uiConfig_.fakeAttackBudget);
 
     const auto uiRowsResult = DataService::GetUiConfigRowsByIdsAsync(uiIds).get();
     if (uiRowsResult.ok) {
@@ -1495,7 +1481,6 @@ bool BattleRunSettingsPage::buildUiConfigFromDraft(simcore::battleexplorer::UI_C
         cfg.turns.push_back(turn);
     }
 
-    cfg.fakeattack_budget = uiConfig_.fakeAttackBudget;
     cfg.initial_frames.push_back(GCInputFrame());
     return true;
 }
@@ -1515,7 +1500,6 @@ void BattleRunSettingsPage::computeEstimate()
     }
     BattleExplorer explorer{ "" };
     estimateState_.basePlans = explorer.estimate_paths_no_fake(cfg, battleContext_);
-    estimateState_.withFakePlans = explorer.estimate_paths_with_fake(cfg, estimateState_.basePlans);
     estimateState_.available = true;
 }
 
@@ -1545,13 +1529,11 @@ void BattleRunSettingsPage::saveExplorerSettings()
     const QString settingsName = settingsNameEdit_->text().trimmed();
     const QString settingsDescription = settingsDescriptionEdit_->toPlainText().trimmed();
     const soa::battle::ctx::BattleContext context = battleContext_;
-    const int fakeBudget = uiConfig_.fakeAttackBudget;
 
-    saveSettingsWatcher_.setFuture(QtConcurrent::run([savestateId, cfg, predicateRows, context, fakeBudget, settingsName, settingsDescription]() mutable {
+    saveSettingsWatcher_.setFuture(QtConcurrent::run([savestateId, cfg, predicateRows, context, settingsName, settingsDescription]() mutable {
         simcore::phases::AuthoringPayload payload{};
         payload.ui = cfg;
         payload.predicates = predicateRows;
-        payload.fake_attack_budget = fakeBudget;
         payload.settings_name = settingsName.toStdString();
         payload.settings_description = settingsDescription.toStdString();
         return simcore::phases::BRSettingsWriter::EnsureSettingsWithPredicatesAndPlans(savestateId, context, payload);
@@ -1590,7 +1572,6 @@ void BattleRunSettingsPage::saveAuthoringTemplate(const QString& name, const QSt
             uiIds.push_back(std::to_string(rowId));
         }
         uiIni.set_list(kUiConfigSectionName, "ids", uiIds);
-        uiIni.set(kUiConfigSectionName, "budget", std::to_string(draft.fakeAttackBudget));
 
         IniDoc predicateIni;
         predicateIni.ensure_section(kPredicateSectionName);

@@ -19,7 +19,6 @@ namespace simcore::phases {
         // Authoring model already parsed from INI. Resolution of ByEnemyKind must be done before calling.
         battleexplorer::UI_Config ui;
         std::vector<PredicateSpecRow>      predicates;            // Caller provides a repo-ready row with fingerprints generated (INI-deterministic).
-        int32_t                            fake_attack_budget{};
         std::string                        settings_name;
         std::string                        settings_description;
     };
