@@ -5,6 +5,7 @@
 #include "GUI/Panes/SeedProbePane/SeedProbePage.h"
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
+#include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 
 #include <QtCore/QStringList>
 
@@ -31,7 +32,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Job Builder", "Qt-native phase builder for SeedProbe, TasMovie, and Explorer/BattleTurnRunner job set creation." },
-    { "Battle Run Settings", "Mockup page for tuning battle run configuration." },
+    { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
     { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
     { "Explorer Runs", "Mockup page for explorer run history and controls." },
@@ -252,7 +253,7 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(coordinatorPane_);
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     contentStack_->addWidget(new JobBuilderPage(contentStack_));
-    contentStack_->addWidget(createPlaceholderPage("Battle Run Settings", "Mockup page for tuning battle run configuration."));
+    contentStack_->addWidget(new BattleRunSettingsPage(contentStack_));
     contentStack_->addWidget(new ArtifactsPage(contentPane));
     contentStack_->addWidget(new SeedProbePage(contentStack_));
     contentStack_->addWidget(createPlaceholderPage("Explorer Runs", "Mockup page for explorer run history and controls."));

@@ -40,6 +40,9 @@
     <Filter Include="GUI\Panes\JobBuilder">
       <UniqueIdentifier>{17d08e24-b230-4462-aad2-f682ce9200ba}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\BattleRunSettings">
+      <UniqueIdentifier>{4f52d3dc-7345-4dbb-a9de-df4dedde2911}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Widgets">
       <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
     </Filter>
@@ -79,6 +82,18 @@
     </ClCompile>
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
@@ -188,6 +203,18 @@
     </ClInclude>
     <ClInclude Include="GUI\StyleSheet.h">
       <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h">
       <Filter>GUI\Panes\Coordinator</Filter>
