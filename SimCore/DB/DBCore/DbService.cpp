@@ -265,6 +265,56 @@ namespace simcore {
             return true;
         }
 
+        bool DBService::reset_database_root(std::string& error) {
+            error.clear();
+
+            const fs::path root = canonicalish(database_root());
+            if (root.empty()) {
+                error = "Active database root cannot be empty";
+                return false;
+            }
+
+            const bool was_running = m_running.load();
+            if (was_running) stop();
+
+            std::error_code ec;
+            const fs::path parent = root.parent_path();
+            if (parent.empty()) {
+                error = "Active database root must have a parent directory";
+                if (was_running) start();
+                return false;
+            }
+
+            fs::create_directories(parent, ec);
+            if (ec) {
+                error = "Failed to create parent directory for database root";
+                if (was_running) start();
+                return false;
+            }
+
+            if (fs::exists(root, ec)) {
+                ec.clear();
+                fs::remove_all(root, ec);
+                if (ec) {
+                    error = "Failed to delete active database root";
+                    if (was_running) start();
+                    return false;
+                }
+            }
+
+            ec.clear();
+            fs::create_directories(root, ec);
+            if (ec) {
+                error = "Failed to recreate active database root";
+                if (was_running) start();
+                return false;
+            }
+
+            set_database_root(root);
+            start();
+            return true;
+        }
+
         void DBService::stop() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);

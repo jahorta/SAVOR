@@ -115,6 +115,10 @@ namespace simcore {
             // root is removed after a successful switch.
             bool relocate_database_root(const std::filesystem::path& new_root, bool cleanup_source, std::string& error);
 
+            // Delete and recreate the active DB root, then restart the service so a
+            // fresh database and supporting directories are bootstrapped again.
+            bool reset_database_root(std::string& error);
+
             // Stop the service, flush pending tasks and join threads.
             // After stop(), no more tasks can be submitted until start().
             void stop();
