@@ -16,6 +16,7 @@
 #include "PresetEditorDialog.h"
 #include "PredicateEditorDialog.h"
 #include "TemplateSaveDialog.h"
+#include "GUI/Widgets/BattleContextTreeWidget.h"
 
 #include <QtCore/QStringList>
 #include <QtWidgets/QAbstractItemView>
@@ -285,10 +286,9 @@ void BattleRunSettingsPage::createWidgets()
         contextSummaryLabel_ = new QLabel(card);
         contextSummaryLabel_->setWordWrap(true);
         cardLayout->addWidget(contextSummaryLabel_);
-        contextDetailsText_ = new QPlainTextEdit(card);
-        contextDetailsText_->setReadOnly(true);
-        contextDetailsText_->setMaximumHeight(220);
-        cardLayout->addWidget(contextDetailsText_);
+        contextTree_ = new BattleContextTreeWidget(card);
+        contextTree_->setMinimumHeight(220);
+        cardLayout->addWidget(contextTree_);
         QGridLayout* grid = new QGridLayout();
         pickSavestateButton_ = new QPushButton(QStringLiteral("Pick Savestate…"), card);
         pickSeedProbeButton_ = new QPushButton(QStringLiteral("Pick Seed Probe…"), card);
@@ -745,7 +745,7 @@ void BattleRunSettingsPage::refreshPredicateDraftView()
 void BattleRunSettingsPage::refreshContextPanel()
 {
     contextSummaryLabel_->setText(contextStateText());
-    contextDetailsText_->setPlainText(describeContext());
+    contextTree_->setBattleContext(seedProbeId_, savestateId_, partySize_, hasContext_, battleContext_);
     getContextButton_->setEnabled(savestateId_ > 0 && (!freshContextJobWatcher_.isRunning()) && (!contextPollTimer_.isActive()));
 }
 

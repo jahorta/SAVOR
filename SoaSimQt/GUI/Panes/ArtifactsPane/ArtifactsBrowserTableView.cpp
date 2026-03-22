@@ -2,7 +2,11 @@
 
 #include "ArtifactsBrowserTableModel.h"
 
+#include <QtCore/QMimeData>
+#include <QtCore/QUrl>
 #include <QtWidgets/QAbstractItemView>
+#include <QtGui/QDragEnterEvent>
+#include <QtGui/QDropEvent>
 #include <QtWidgets/QHeaderView>
 
 ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
@@ -21,6 +25,8 @@ ArtifactsBrowserTableView::ArtifactsBrowserTableView(QWidget* parent)
     setIndentation(0);
     header()->setStretchLastSection(false);
     header()->setHighlightSections(false);
+    setAcceptDrops(true);
+    viewport()->setAcceptDrops(true);
 }
 
 void ArtifactsBrowserTableView::attachModel(ArtifactsBrowserTableModel* model)
@@ -42,4 +48,46 @@ ArtifactsBrowserTableModel* ArtifactsBrowserTableView::artifactsModel()
 const ArtifactsBrowserTableModel* ArtifactsBrowserTableView::artifactsModel() const
 {
     return static_cast<const ArtifactsBrowserTableModel*>(model());
+}
+
+void ArtifactsBrowserTableView::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+        return;
+    }
+    QTreeView::dragEnterEvent(event);
+}
+
+void ArtifactsBrowserTableView::dragMoveEvent(QDragMoveEvent* event)
+{
+    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+        return;
+    }
+    QTreeView::dragMoveEvent(event);
+}
+
+void ArtifactsBrowserTableView::dropEvent(QDropEvent* event)
+{
+    if (!event || !event->mimeData() || !event->mimeData()->hasUrls()) {
+        QTreeView::dropEvent(event);
+        return;
+    }
+
+    QStringList paths;
+    const QList<QUrl> urls = event->mimeData()->urls();
+    for (const QUrl& url : urls) {
+        if (url.isLocalFile()) {
+            paths.append(url.toLocalFile());
+        }
+    }
+
+    if (!paths.isEmpty()) {
+        emit fileDropRequested(paths);
+        event->acceptProposedAction();
+        return;
+    }
+
+    QTreeView::dropEvent(event);
 }
