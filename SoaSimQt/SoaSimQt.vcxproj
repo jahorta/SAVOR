@@ -124,6 +124,11 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.cpp" />
@@ -159,6 +164,11 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
