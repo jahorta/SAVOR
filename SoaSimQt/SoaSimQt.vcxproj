@@ -161,7 +161,6 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
-    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
