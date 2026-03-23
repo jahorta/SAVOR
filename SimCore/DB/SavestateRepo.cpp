@@ -132,25 +132,26 @@ namespace simcore {
         }
         static inline DbResult<Page<SavestateLite>> Impl_ListSavestate(DbEnv& env, const PagedQuery<>& q, const std::string& search) {
             sqlite3* db = env.handle();
-            std::string sql = "SELECT id,savestate_type,COALESCE(note,''),object_ref_id,complete FROM savestate ";
+            std::string sql = "SELECT s.id,s.savestate_type,COALESCE(s.note,''),s.object_ref_id,COALESCE(o.filename,''),s.complete "
+                "FROM savestate s LEFT JOIN object_ref o ON o.id = s.object_ref_id ";
             std::string where;
             bool has_num = false; int num = 0;
             try { num = std::stoi(search); has_num = true; }
             catch (...) {}
             if (!search.empty()) {
-                where += "WHERE (note LIKE ? OR savestate_type " + std::string(has_num ? "= ?" : ">= -1") + ")";
+                where += "WHERE (s.note LIKE ? OR o.filename LIKE ? OR s.savestate_type " + std::string(has_num ? "= ?" : ">= -1") + ")";
             }
             std::string keyset; KeysetCursor cur{}; bool has_cursor = false;
-            if (q.before) { has_cursor = true; cur = *q.before; keyset = " AND id < ? "; }
-            if (q.after) { has_cursor = true; cur = *q.after;  keyset = " AND id > ? "; }
-            if (has_cursor) where += (where.empty() ? "WHERE id" : keyset);
-            std::string order = q.after ? " ORDER BY id ASC " : " ORDER BY id DESC ";
+            if (q.before) { has_cursor = true; cur = *q.before; keyset = " AND s.id < ? "; }
+            if (q.after) { has_cursor = true; cur = *q.after;  keyset = " AND s.id > ? "; }
+            if (has_cursor) where += (where.empty() ? (q.after ? "WHERE s.id > ? " : "WHERE s.id < ? ") : keyset);
+            std::string order = q.after ? " ORDER BY s.id ASC " : " ORDER BY s.id DESC ";
             sql += where + order + " LIMIT ?;";
             sqlite3_stmt* st{};
             if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
                 return DbResult<Page<SavestateLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
             int b = 1;
-            if (!search.empty()) { bind_like(st, b++, search); if (has_num) sqlite3_bind_int(st, b++, num); }
+            if (!search.empty()) { bind_like(st, b++, search); bind_like(st, b++, search); if (has_num) sqlite3_bind_int(st, b++, num); }
             if (has_cursor) sqlite3_bind_int64(st, b++, q.after ? cur.secondary : cur.secondary ? cur.secondary : cur.primary); // id
             sqlite3_bind_int(st, b++, q.limit);
             Page<SavestateLite> page{};
@@ -160,7 +161,8 @@ namespace simcore {
                 r.savestate_type = sqlite3_column_int(st, 1);
                 r.note = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
                 if (sqlite3_column_type(st, 3) != SQLITE_NULL) r.object_ref_id = sqlite3_column_int64(st, 3);
-                r.complete = sqlite3_column_int(st, 4);
+                r.filename = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+                r.complete = sqlite3_column_int(st, 5);
                 page.items.push_back(std::move(r));
             }
             sqlite3_finalize(st);

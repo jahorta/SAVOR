@@ -933,13 +933,18 @@ void JobBuilderPage::openSavestatePicker()
         QStringLiteral("Pick Savestate"),
         { { QStringLiteral("ID"), [](const simcore::db::SavestateLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Type"), [](const simcore::db::SavestateLite& row) { return QString::number(row.savestate_type); } },
+          { QStringLiteral("Filename"), [](const simcore::db::SavestateLite& row) { return QString::fromStdString(row.filename); } },
           { QStringLiteral("Note"), [](const simcore::db::SavestateLite& row) { return QString::fromStdString(row.note); } } },
         [](const PagedQuery<>& query, const QString& search) {
             return DataService::FetchSavestatesPage(query, search.toStdString()).get();
         },
         [](const simcore::db::SavestateLite& row) { return static_cast<qint64>(row.id); },
         [](const simcore::db::SavestateLite& row) {
-            return QStringLiteral("Savestate %1 · type %2 · %3").arg(row.id).arg(row.savestate_type).arg(QString::fromStdString(row.note));
+            return QStringLiteral("Savestate %1 · type %2 · %3%4")
+                .arg(row.id)
+                .arg(row.savestate_type)
+                .arg(QString::fromStdString(row.note))
+                .arg(row.filename.empty() ? QString{} : QStringLiteral(" · file %1").arg(QString::fromStdString(row.filename)));
         },
         this);
     if (dialog.exec() == QDialog::Accepted && dialog.selectedRow().has_value()) {
@@ -977,13 +982,18 @@ void JobBuilderPage::openSeedProbePicker()
         QStringLiteral("Pick SeedProbe"),
         { { QStringLiteral("ID"), [](const simcore::db::SeedProbeLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Savestate"), [](const simcore::db::SeedProbeLite& row) { return QString::number(row.savestate_id); } },
-          { QStringLiteral("Status"), [](const simcore::db::SeedProbeLite& row) { return QString::fromStdString(row.status); } } },
+          { QStringLiteral("Status"), [](const simcore::db::SeedProbeLite& row) { return QString::fromStdString(row.status); } },
+          { QStringLiteral("Purpose"), [](const simcore::db::SeedProbeLite& row) { return QString::fromStdString(row.purpose); }, 2 } },
         [](const PagedQuery<>& query, const QString& search) {
             return DataService::FetchSeedProbesPage(query, search.toStdString(), true).get();
         },
         [](const simcore::db::SeedProbeLite& row) { return static_cast<qint64>(row.id); },
         [](const simcore::db::SeedProbeLite& row) {
-            return QStringLiteral("SeedProbe %1 · savestate %2 · %3").arg(row.id).arg(row.savestate_id).arg(QString::fromStdString(row.status));
+            return QStringLiteral("SeedProbe %1 · savestate %2 · %3%4")
+                .arg(row.id)
+                .arg(row.savestate_id)
+                .arg(QString::fromStdString(row.status))
+                .arg(row.purpose.empty() ? QString{} : QStringLiteral(" · %1").arg(QString::fromStdString(row.purpose)));
         },
         this);
     if (dialog.exec() == QDialog::Accepted && dialog.selectedRow().has_value()) {
@@ -1005,13 +1015,17 @@ void JobBuilderPage::openExplorerSettingsPicker()
         QStringLiteral("Pick ExplorerSettings"),
         { { QStringLiteral("ID"), [](const simcore::db::ExplorerSettingsLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Name"), [](const simcore::db::ExplorerSettingsLite& row) { return QString::fromStdString(row.name); } },
+          { QStringLiteral("Purpose"), [](const simcore::db::ExplorerSettingsLite& row) { return QString::fromStdString(row.purpose); } },
           { QStringLiteral("Description"), [](const simcore::db::ExplorerSettingsLite& row) { return QString::fromStdString(row.description); } } },
         [](const PagedQuery<>& query, const QString& search) {
             return DataService::FetchExplorerSettingsPage(query, search.toStdString()).get();
         },
         [](const simcore::db::ExplorerSettingsLite& row) { return static_cast<qint64>(row.id); },
         [](const simcore::db::ExplorerSettingsLite& row) {
-            return QStringLiteral("ExplorerSettings %1 · %2").arg(row.id).arg(QString::fromStdString(row.name));
+            return QStringLiteral("ExplorerSettings %1 · %2%3")
+                .arg(row.id)
+                .arg(QString::fromStdString(row.name))
+                .arg(row.purpose.empty() ? QString{} : QStringLiteral(" · %1").arg(QString::fromStdString(row.purpose)));
         },
         this);
     if (dialog.exec() == QDialog::Accepted && dialog.selectedRow().has_value()) {
