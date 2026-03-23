@@ -90,16 +90,48 @@ namespace simcore {
         }
         static inline DbResult<Page<ExplorerSettingsLite>> Impl_ListES(DbEnv& env, const PagedQuery<>& q, const std::string& search) {
             sqlite3* db = env.handle();
-            std::string sql = "SELECT id,COALESCE(name,''),COALESCE(description,'') FROM explorer_settings ";
+            std::string sql =
+                "SELECT es.id,COALESCE(es.name,''),COALESCE(es.description,''),"
+                "COALESCE(("
+                "  WITH RECURSIVE chain(job_set_id,parent_job_set_id,purpose) AS ("
+                "    SELECT js.job_set_id, js.parent_job_set_id, COALESCE(js.purpose,'') "
+                "    FROM job_sets js "
+                "    JOIN ("
+                "      SELECT j.job_set_id "
+                "      FROM jobs j "
+                "      JOIN explorer_run er ON er.id = j.program_ref_id "
+                "      WHERE j.program_kind=3 AND er.settings_id=es.id "
+                "      ORDER BY j.queued_at DESC, j.job_id DESC "
+                "      LIMIT 1"
+                "    ) latest ON latest.job_set_id = js.job_set_id "
+                "    UNION ALL "
+                "    SELECT parent.job_set_id, parent.parent_job_set_id, COALESCE(parent.purpose,'') "
+                "    FROM job_sets parent JOIN chain c ON c.parent_job_set_id = parent.job_set_id"
+                "  ) "
+                "  SELECT c.purpose FROM chain c "
+                "  WHERE c.parent_job_set_id IS NULL "
+                "     OR NOT EXISTS (SELECT 1 FROM job_sets parent WHERE parent.job_set_id = c.parent_job_set_id) "
+                "  LIMIT 1"
+                "),'') "
+                "FROM explorer_settings es ";
 
             std::string where;
-            if (!search.empty()) { where += "WHERE (name LIKE ? OR description LIKE ?)"; }
+            if (!search.empty()) { where += "WHERE (es.name LIKE ? OR es.description LIKE ? OR COALESCE(("
+                "  WITH RECURSIVE chain(job_set_id,parent_job_set_id,purpose) AS ("
+                "    SELECT js.job_set_id, js.parent_job_set_id, COALESCE(js.purpose,'') "
+                "    FROM job_sets js JOIN ("
+                "      SELECT j.job_set_id FROM jobs j JOIN explorer_run er ON er.id = j.program_ref_id WHERE j.program_kind=3 AND er.settings_id=es.id ORDER BY j.queued_at DESC, j.job_id DESC LIMIT 1"
+                "    ) latest ON latest.job_set_id = js.job_set_id "
+                "    UNION ALL "
+                "    SELECT parent.job_set_id, parent.parent_job_set_id, COALESCE(parent.purpose,'') FROM job_sets parent JOIN chain c ON c.parent_job_set_id = parent.job_set_id"
+                "  ) SELECT c.purpose FROM chain c WHERE c.parent_job_set_id IS NULL OR NOT EXISTS (SELECT 1 FROM job_sets parent WHERE parent.job_set_id = c.parent_job_set_id) LIMIT 1"
+                "),'') LIKE ?)"; }
 
-            std::string keyset; KeysetCursor cur{}; bool has = false;
-            if (q.before) { has = true; cur = *q.before; where += (where.empty() ? "WHERE " : " AND "); where += "(id < ?)"; }
-            if (q.after) { has = true; cur = *q.after;  where += (where.empty() ? "WHERE " : " AND "); where += "(id > ?)"; }
+            KeysetCursor cur{};
+            if (q.before) { cur = *q.before; where += (where.empty() ? "WHERE " : " AND "); where += "(es.id < ?)"; }
+            if (q.after) { cur = *q.after;  where += (where.empty() ? "WHERE " : " AND "); where += "(es.id > ?)"; }
 
-            std::string order = q.after ? " ORDER BY id ASC " : " ORDER BY id DESC ";
+            std::string order = q.after ? " ORDER BY es.id ASC " : " ORDER BY es.id DESC ";
 
             sqlite3_stmt* st{};
             std::string final = sql + where + order + " LIMIT ?;";
@@ -107,7 +139,7 @@ namespace simcore {
                 return DbResult<Page<ExplorerSettingsLite>>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
 
             int b = 1;
-            if (!search.empty()) { bind_like(st, b++, search); bind_like(st, b++, search); }
+            if (!search.empty()) { bind_like(st, b++, search); bind_like(st, b++, search); bind_like(st, b++, search); }
             if (q.before) { sqlite3_bind_int64(st, b++, cur.primary); }
             if (q.after) { sqlite3_bind_int64(st, b++, cur.primary); }
             sqlite3_bind_int(st, b++, q.limit);
@@ -118,6 +150,7 @@ namespace simcore {
                 r.id = sqlite3_column_int64(st, 0);
                 r.name = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
                 r.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                r.purpose = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 page.items.push_back(std::move(r));
             }
             sqlite3_finalize(st);

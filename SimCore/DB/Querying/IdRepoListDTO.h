@@ -11,6 +11,7 @@ namespace simcore::db {
         int savestate_type{};
         std::string note;
         std::optional<int64_t> object_ref_id;
+        std::string filename;
         int complete{};
     };
 
@@ -19,6 +20,7 @@ namespace simcore::db {
         int64_t savestate_id{};
         std::optional<int64_t> neutral_seed;
         std::string status;
+        std::string purpose;
         int complete{};
     };
 
@@ -36,6 +38,7 @@ namespace simcore::db {
         int64_t id{};
         std::string name;
         std::string description;
+        std::string purpose;
     };
 
     struct ObjectRefLite {
