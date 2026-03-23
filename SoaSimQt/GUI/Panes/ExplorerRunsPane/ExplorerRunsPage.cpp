@@ -4,6 +4,7 @@
 #include "ExplorerRunsGroupTableView.h"
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include "Core/Input/SoaBattle/PlanWriter.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
@@ -418,6 +419,7 @@ void ExplorerRunsPage::refreshView()
 
 void ExplorerRunsPage::refreshGroupModel()
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(groupsView_);
     std::vector<ExplorerRunsGroupRow> rows;
     rows.reserve(coordinator_->groups().size());
     for (const ExplorerRunsCoordinator::GroupRow& row : coordinator_->groups()) {
@@ -425,6 +427,7 @@ void ExplorerRunsPage::refreshGroupModel()
     }
     groupsModel_->setRows(std::move(rows));
     restoreSelectedGroupRow();
+    restoreItemViewScrollSnapshot(groupsView_, scrollSnapshot);
 
     summaryLabel_->setText(QStringLiteral("%1 groups · %2 selected waves")
         .arg(coordinator_->groups().size())
@@ -433,6 +436,7 @@ void ExplorerRunsPage::refreshGroupModel()
 
 void ExplorerRunsPage::refreshWaveTree()
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(wavesView_);
     wavesModel_->clear();
     wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
 
@@ -504,10 +508,13 @@ void ExplorerRunsPage::refreshWaveTree()
             }
         }
     }
+
+    restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
 }
 
 void ExplorerRunsPage::refreshJobModel()
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(jobsView_);
     const std::vector<ExplorerRunsCoordinator::JobViewRow> visible = buildVisibleSortedJobs();
 
     std::vector<ExplorerRunsJobRow> rows;
@@ -534,6 +541,7 @@ void ExplorerRunsPage::refreshJobModel()
 
     jobsModel_->setRows(std::move(rows));
     restoreSelectedJobRow();
+    restoreItemViewScrollSnapshot(jobsView_, scrollSnapshot);
     jobsSummaryLabel_->setText(QStringLiteral("Visible jobs: %1 / %2").arg(visible.size()).arg(coordinator_->jobs().size()));
 }
 

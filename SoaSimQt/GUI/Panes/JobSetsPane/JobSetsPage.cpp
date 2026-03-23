@@ -4,6 +4,7 @@
 #include "JobSetsProgressDelegate.h"
 #include "JobSetsTreeModel.h"
 #include "JobSetsTreeView.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
@@ -18,7 +19,6 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
-#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QVBoxLayout>
 
@@ -237,9 +237,7 @@ void JobSetsPage::refreshModel()
     const auto& state = controller_->viewState();
     QSet<qint64> currentExpanded = treeView_->expandedJobSetIds();
 
-    QScrollBar* verticalScrollBar = treeView_->verticalScrollBar();
-    const int previousValue = verticalScrollBar ? verticalScrollBar->value() : 0;
-    const bool wasAtBottom = verticalScrollBar && previousValue >= verticalScrollBar->maximum();
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(treeView_);
 
     programNames_ = state.programNames;
     treeModel_->syncRows(state.familyItems, state.programNames);
@@ -251,22 +249,7 @@ void JobSetsPage::refreshModel()
         }
     }
     treeView_->restoreExpandedJobSetIds(pruned);
-    restoreScrollPosition(previousValue, wasAtBottom);
-}
-
-void JobSetsPage::restoreScrollPosition(int previousValue, bool wasAtBottom)
-{
-    QScrollBar* verticalScrollBar = treeView_->verticalScrollBar();
-    if (!verticalScrollBar) {
-        return;
-    }
-
-    if (wasAtBottom) {
-        verticalScrollBar->setValue(verticalScrollBar->maximum());
-        return;
-    }
-
-    verticalScrollBar->setValue(std::clamp(previousValue, verticalScrollBar->minimum(), verticalScrollBar->maximum()));
+    restoreItemViewScrollSnapshot(treeView_, scrollSnapshot);
 }
 
 void JobSetsPage::updateStatusWidgets()

@@ -58,8 +58,6 @@ private:
     QLabel* lastRefreshLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
 
-    void restoreScrollPosition(int previousValue, bool wasAtBottom);
-
     QHash<int, QString> programNames_;
     std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
     QTimer* loadingStateTimer_ = nullptr;

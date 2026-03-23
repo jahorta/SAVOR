@@ -3,6 +3,7 @@
 #include "SeedProbeController.h"
 #include "SeedProbeGridWidget.h"
 #include "SeedProbeTableModels.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
@@ -284,6 +285,7 @@ void SeedProbePage::syncControlsFromController()
 void SeedProbePage::refreshList()
 {
     const auto& state = controller_->viewState();
+    const ItemViewScrollSnapshot listScrollSnapshot = captureItemViewScrollSnapshot(listTable_);
     QVector<SeedProbeListModel::Row> rows;
     rows.reserve(state.probeRows.size());
     for (const auto& item : state.probeRows) {
@@ -296,11 +298,12 @@ void SeedProbePage::refreshList()
             const QModelIndex index = listModel_->index(row, 0);
             if (index.isValid()) {
                 listTable_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-                listTable_->scrollTo(index);
             }
             break;
         }
     }
+
+    restoreItemViewScrollSnapshot(listTable_, listScrollSnapshot);
 
     pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(rows.size()).arg(state.pageLimit));
     lastRefreshLabel_->setText(state.lastRefresh.isValid()
@@ -311,6 +314,7 @@ void SeedProbePage::refreshList()
 void SeedProbePage::refreshDetails()
 {
     const auto& state = controller_->viewState();
+    const ItemViewScrollSnapshot uniqueScrollSnapshot = captureItemViewScrollSnapshot(uniqueTable_);
     neutralSeedValue_->setText(state.neutralSeedText.isEmpty() ? QStringLiteral("--") : state.neutralSeedText);
     probeIdValue_->setText(state.probeIdText.isEmpty() ? QStringLiteral("--") : state.probeIdText);
     statusValue_->setText(state.statusText.isEmpty() ? QStringLiteral("--") : state.statusText);
@@ -352,6 +356,7 @@ void SeedProbePage::refreshDetails()
         uniqueRows.push_back({ row.input, row.seedHex });
     }
     uniqueModel_->setRows(uniqueRows);
+    restoreItemViewScrollSnapshot(uniqueTable_, uniqueScrollSnapshot);
 }
 
 void SeedProbePage::updateStatusWidgets()

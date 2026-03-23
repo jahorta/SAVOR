@@ -2,6 +2,7 @@
 
 #include "ArtifactsTableModel.h"
 #include "ArtifactsTableView.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "JobsController.h"
 #include "JobsTableModel.h"
 #include "JobsTableView.h"
@@ -23,7 +24,6 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QScrollBar>
 #include <QtCore/QDateTime>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -52,24 +52,6 @@ void selectFlatRow(QAbstractItemView* view, int row, bool ensureVisible = true)
     }
 }
 
-void restoreScrollPosition(QAbstractItemView* view, int previousValue, bool wasAtBottom)
-{
-    if (!view) {
-        return;
-    }
-
-    QScrollBar* verticalScrollBar = view->verticalScrollBar();
-    if (!verticalScrollBar) {
-        return;
-    }
-
-    if (wasAtBottom) {
-        verticalScrollBar->setValue(verticalScrollBar->maximum());
-        return;
-    }
-
-    verticalScrollBar->setValue(std::clamp(previousValue, verticalScrollBar->minimum(), verticalScrollBar->maximum()));
-}
 }
 
 JobsPage::JobsPage(QWidget* parent)
@@ -345,9 +327,7 @@ void JobsPage::syncControlsFromController()
 void JobsPage::refreshModel()
 {
     const auto& state = controller_->viewState();
-    QScrollBar* verticalScrollBar = jobsTable_->verticalScrollBar();
-    const int previousScrollValue = verticalScrollBar ? verticalScrollBar->value() : 0;
-    const bool wasAtBottom = verticalScrollBar && previousScrollValue >= verticalScrollBar->maximum();
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(jobsTable_);
 
     std::vector<JobsTableModel::Row> rows;
     rows.reserve(state.page.items.size());
@@ -370,7 +350,7 @@ void JobsPage::refreshModel()
             break;
         }
     }
-    restoreScrollPosition(jobsTable_, previousScrollValue, wasAtBottom);
+    restoreItemViewScrollSnapshot(jobsTable_, scrollSnapshot);
 }
 
 void JobsPage::updateInspector()
@@ -391,6 +371,8 @@ void JobsPage::updateInspector()
     overviewQueuedValue_->setText(QDateTime::fromSecsSinceEpoch(selected->queued_at).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
     overviewSelectionHint_->setText(QStringLiteral("Attempts: %1\nProgress: %2").arg(selected->attempts).arg(state.progressSummary.value(selected->job_id, QStringLiteral("..."))));
 
+    const ItemViewScrollSnapshot artifactsScrollSnapshot = captureItemViewScrollSnapshot(artifactsTable_);
+
     QStringList eventLines;
     for (const JobEventLite& event : state.detail.events) {
         eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.ts).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(event.payload_preview.has_value() ? QStringLiteral("  %1").arg(QString::fromStdString(*event.payload_preview)) : QString());
@@ -400,6 +382,7 @@ void JobsPage::updateInspector()
     progressText_->setPlainText(state.detail.decodedProgressText);
     resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);
+    restoreItemViewScrollSnapshot(artifactsTable_, artifactsScrollSnapshot);
 
 }
 
