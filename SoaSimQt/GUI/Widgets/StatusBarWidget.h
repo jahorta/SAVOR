@@ -1,32 +1,16 @@
 #pragma once
 
-#include <QtCore/QDateTime>
 #include <QtCore/QList>
 #include <QtCore/QString>
 #include <QtWidgets/QWidget>
+
+#include "GUI/Common/StatusToast.h"
 
 class CoordinatorController;
 
 class QHBoxLayout;
 class QLabel;
 class QTimer;
-
-struct StatusToast
-{
-    enum class Severity {
-        Info,
-        Success,
-        Warn,
-        Error
-    };
-
-    Severity severity = Severity::Info;
-    QString message;
-    QString details;
-    int count = 1;
-    QDateTime createdAt;
-    int ttlMs = 4000;
-};
 
 struct StatusBarSnapshot
 {
@@ -47,11 +31,11 @@ public:
 
     static StatusBarSnapshot buildSnapshot(const CoordinatorController* controller, const QDateTime& lastRefresh);
     void setSnapshot(const StatusBarSnapshot& snapshot);
-    void postToast(StatusToast toast);
-    void postToast(StatusToast::Severity severity, const QString& message, const QString& details = QString(), int ttlMs = 4000);
     void clearToasts();
 
 public slots:
+    void postToast(StatusToast toast);
+    void postToast(StatusToast::Severity severity, const QString& message, const QString& details = QString(), int ttlMs = 4000);
     void setCoordinatorState(bool running, bool paused, int targetWorkers, int activeWorkers, const QString& validationMessage);
 
 private:

@@ -100,13 +100,6 @@ void JobBuilderPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(10);
 
-    inlineMessageLabel_ = new QLabel(this);
-    inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
-    inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
-    inlineMessageLabel_->setWordWrap(true);
-    inlineMessageLabel_->hide();
-    rootLayout->addWidget(inlineMessageLabel_);
-
     QFrame* toolbar = new QFrame(this);
     toolbar->setObjectName("jobsToolbarPanel");
     QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
@@ -431,10 +424,10 @@ void JobBuilderPage::wireSignals()
                 }
                 handleKindSelectionChanged();
             } else {
-                setInlineMessage(QStringLiteral("Failed to load program kinds: %1").arg(QString::fromStdString(result.error.message)), QStringLiteral("error"));
+                postStatusMessage(QStringLiteral("Failed to load program kinds: %1").arg(QString::fromStdString(result.error.message)), StatusToast::Severity::Error);
             }
         } catch (...) {
-            setInlineMessage(describeException("Failed to load program kinds"), QStringLiteral("error"));
+            postStatusMessage(describeException("Failed to load program kinds"), StatusToast::Severity::Error);
         }
     });
 
@@ -906,25 +899,34 @@ void JobBuilderPage::refreshDeltaTree()
 void JobBuilderPage::updateStatusMessage()
 {
     if (!submitErrorMessage_.isEmpty()) {
-        setInlineMessage(submitErrorMessage_, QStringLiteral("error"));
+        postStatusMessage(submitErrorMessage_, StatusToast::Severity::Error);
     } else if (!previewErrorMessage_.isEmpty()) {
-        setInlineMessage(previewErrorMessage_, QStringLiteral("error"));
+        postStatusMessage(previewErrorMessage_, StatusToast::Severity::Error);
     } else if (!submitInfoMessage_.isEmpty()) {
-        setInlineMessage(submitInfoMessage_, QStringLiteral("info"));
+        postStatusMessage(submitInfoMessage_, StatusToast::Severity::Info);
     } else if (!validationEntries_.isEmpty()) {
-        setInlineMessage(QStringLiteral("Validation has %1 issue(s). Preview and submit stay available only when validation is clean.").arg(validationEntries_.size()), QStringLiteral("info"));
+        postStatusMessage(QStringLiteral("Validation has %1 issue(s). Preview and submit stay available only when validation is clean.").arg(validationEntries_.size()), StatusToast::Severity::Info);
     } else {
-        inlineMessageLabel_->hide();
+        lastToastMessage_.clear();
+        lastToastSeverity_.reset();
     }
 }
 
-void JobBuilderPage::setInlineMessage(const QString& text, const QString& severity)
+void JobBuilderPage::postStatusMessage(const QString& text, const StatusToast::Severity severity, const QString& details)
 {
-    inlineMessageLabel_->setText(text);
-    inlineMessageLabel_->setProperty("severity", severity);
-    inlineMessageLabel_->style()->unpolish(inlineMessageLabel_);
-    inlineMessageLabel_->style()->polish(inlineMessageLabel_);
-    inlineMessageLabel_->show();
+    if (text.isEmpty()) {
+        lastToastMessage_.clear();
+        lastToastSeverity_.reset();
+        return;
+    }
+
+    if (lastToastMessage_ == text && lastToastSeverity_ == severity) {
+        return;
+    }
+
+    lastToastMessage_ = text;
+    lastToastSeverity_ = severity;
+    emit statusToastRequested(StatusToast{ severity, text, details, 1, QDateTime{}, 4000 });
 }
 
 void JobBuilderPage::openSavestatePicker()
@@ -1190,10 +1192,10 @@ void JobBuilderPage::enqueueDeltaLoad(qint64 probeId)
             if (result.ok) {
                 deltaRowsByProbe_.insert(probeId, QVector<simcore::db::DeltaSeedRow>(result.value.begin(), result.value.end()));
             } else {
-                setInlineMessage(QStringLiteral("Failed to load unique deltas for SeedProbe %1: %2").arg(probeId).arg(QString::fromStdString(result.error.message)), QStringLiteral("error"));
+                postStatusMessage(QStringLiteral("Failed to load unique deltas for SeedProbe %1: %2").arg(probeId).arg(QString::fromStdString(result.error.message)), StatusToast::Severity::Error);
             }
         } catch (...) {
-            setInlineMessage(describeException("Failed to load unique deltas"), QStringLiteral("error"));
+            postStatusMessage(describeException("Failed to load unique deltas"), StatusToast::Severity::Error);
         }
         refreshDeltaTree();
         watcher->deleteLater();

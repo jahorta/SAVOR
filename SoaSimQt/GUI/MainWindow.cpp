@@ -153,8 +153,8 @@ void MainWindow::createWidgets()
 
     QWidget* topBar = createTopBar();
     QWidget* navigationPane = createNavigationPane();
-    QWidget* contentPane = createContentPane();
     statusBarWidget_ = createStatusBarWidget();
+    QWidget* contentPane = createContentPane();
 
     QWidget* body = new QWidget(root);
     body->setObjectName("bodyRegion");
@@ -253,8 +253,12 @@ QWidget* MainWindow::createContentPane()
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
-    contentStack_->addWidget(new JobBuilderPage(contentStack_));
-    contentStack_->addWidget(new BattleRunSettingsPage(contentStack_));
+    auto* jobBuilderPage = new JobBuilderPage(contentStack_);
+    connect(jobBuilderPage, &JobBuilderPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobBuilderPage);
+    auto* battleRunSettingsPage = new BattleRunSettingsPage(contentStack_);
+    connect(battleRunSettingsPage, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(battleRunSettingsPage);
     contentStack_->addWidget(new ArtifactsPage(contentPane));
     contentStack_->addWidget(new SeedProbePage(contentStack_));
     contentStack_->addWidget(new ExplorerRunsPage(contentStack_));
