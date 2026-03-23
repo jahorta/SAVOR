@@ -814,11 +814,9 @@ std::optional<BattleRunSettingsPage::PredicateDraft> BattleRunSettingsPage::make
         return std::nullopt;
     }
 
-    auto req_bp = bp::BPRegistry::match((uint32_t)result.value.required_bp);
-
     predicateRowCache_.insert(predicateId, result.value);
     predicateLiteCache_.insert(predicateId, PredicateSpecLite{ result.value.id, result.value.name, result.value.description, 
-        req_bp.value(), ((uint32_t)result.value.flags & (uint32_t)simcore::pred::PredFlag::AbortOnFail)});
+        (BPKey)result.value.required_bp, ((uint32_t)result.value.flags & (uint32_t)simcore::pred::PredFlag::AbortOnFail)});
     return PredicateDraft{ predicateId, QString::fromStdString(result.value.name), QString::fromStdString(result.value.description) };
 }
 
