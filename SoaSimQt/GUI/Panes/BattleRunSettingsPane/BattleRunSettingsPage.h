@@ -9,6 +9,7 @@
 #include <QtCore/QVector>
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
 #include "Core/Memory/Soa/Battle/BattleContext.h"
 #include "Phases/BattleExplorer.h"
 #include "DB/AuthoringTemplatesRepo.h"
@@ -35,9 +36,14 @@ class BattleContextTreeWidget;
 
 class BattleRunSettingsPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit BattleRunSettingsPage(QWidget* parent = nullptr);
     ~BattleRunSettingsPage() override;
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private:
     struct UiActionInstance {
@@ -127,6 +133,7 @@ private:
     QString invalidReason(int turnIndex, int actorSlot) const;
     void setInfoMessage(const QString& text);
     void setErrorMessage(const QString& text);
+    void postStatusToast(const QString& text, bool error, const QString& details = QString());
 
     QFutureWatcher<ActionListResult> actionListWatcher_;
     QFutureWatcher<PredicateListResult> predicateListWatcher_;
@@ -180,7 +187,8 @@ private:
     QTreeView* templateTable_ = nullptr;
     QStandardItemModel* templateTableModel_ = nullptr;
 
-    QLabel* inlineMessageLabel_ = nullptr;
+    QString lastToastMessage_;
+    std::optional<StatusToast::Severity> lastToastSeverity_;
     QPushButton* addTurnButton_ = nullptr;
     QWidget* uiConfigContainer_ = nullptr;
     QVBoxLayout* uiConfigLayout_ = nullptr;

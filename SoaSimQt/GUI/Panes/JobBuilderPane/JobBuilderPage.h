@@ -8,6 +8,7 @@
 #include <QtCore/QVector>
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
 #include "DB/DeltaSeedRepo.h"
 #include "DB/Querying/DataService.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderPreview.h"
@@ -33,8 +34,13 @@ class QTreeWidget;
 
 class JobBuilderPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit JobBuilderPage(QWidget* parent = nullptr);
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private:
     struct ValidationEntry {
@@ -63,7 +69,7 @@ private:
     void refreshSelectionLists();
     void refreshDeltaTree();
     void updateStatusMessage();
-    void setInlineMessage(const QString& text, const QString& severity = QStringLiteral("info"));
+    void postStatusMessage(const QString& text, StatusToast::Severity severity = StatusToast::Severity::Info, const QString& details = QString());
 
     void openSavestatePicker();
     void openArtifactPicker();
@@ -105,7 +111,8 @@ private:
 
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
-    QLabel* inlineMessageLabel_ = nullptr;
+    QString lastToastMessage_;
+    std::optional<StatusToast::Severity> lastToastSeverity_;
     QComboBox* kindCombo_ = nullptr;
     QPushButton* resetDefaultsButton_ = nullptr;
     QPushButton* validateButton_ = nullptr;

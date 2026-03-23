@@ -158,12 +158,6 @@ void BattleRunSettingsPage::createWidgets()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(10);
 
-    inlineMessageLabel_ = new QLabel(this);
-    inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
-    inlineMessageLabel_->setWordWrap(true);
-    inlineMessageLabel_->hide();
-    root->addWidget(inlineMessageLabel_);
-
     QHBoxLayout* columns = new QHBoxLayout();
     columns->setSpacing(10);
     root->addLayout(columns, 1);
@@ -878,18 +872,18 @@ void BattleRunSettingsPage::refreshSavePanel()
 
 void BattleRunSettingsPage::refreshInlineMessage()
 {
-    QString text;
     if (!errorMessage_.isEmpty()) {
-        text = errorMessage_;
-        inlineMessageLabel_->setProperty("severity", QStringLiteral("error"));
-    } else if (!infoMessage_.isEmpty()) {
-        text = infoMessage_;
-        inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
+        postStatusToast(errorMessage_, true);
+        return;
     }
-    inlineMessageLabel_->setText(text);
-    inlineMessageLabel_->setVisible(!text.isEmpty());
-    style()->unpolish(inlineMessageLabel_);
-    style()->polish(inlineMessageLabel_);
+
+    if (!infoMessage_.isEmpty()) {
+        postStatusToast(infoMessage_, false);
+        return;
+    }
+
+    lastToastMessage_.clear();
+    lastToastSeverity_.reset();
 }
 
 void BattleRunSettingsPage::addTurn()
@@ -1686,4 +1680,22 @@ void BattleRunSettingsPage::setErrorMessage(const QString& text)
     errorMessage_ = text;
     infoMessage_.clear();
     refreshInlineMessage();
+}
+
+void BattleRunSettingsPage::postStatusToast(const QString& text, bool error, const QString& details)
+{
+    if (text.isEmpty()) {
+        lastToastMessage_.clear();
+        lastToastSeverity_.reset();
+        return;
+    }
+
+    const StatusToast::Severity severity = error ? StatusToast::Severity::Error : StatusToast::Severity::Info;
+    if (lastToastMessage_ == text && lastToastSeverity_ == severity) {
+        return;
+    }
+
+    lastToastMessage_ = text;
+    lastToastSeverity_ = severity;
+    emit statusToastRequested(StatusToast{ severity, text, details, 1, QDateTime{}, 4000 });
 }
