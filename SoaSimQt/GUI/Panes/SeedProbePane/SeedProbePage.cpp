@@ -54,13 +54,13 @@ void SeedProbePage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobsToolbarPanel");
     QGridLayout* toolbarLayout = new QGridLayout(toolbarPanel);
-    toolbarLayout->setContentsMargins(16, 14, 16, 14);
-    toolbarLayout->setHorizontalSpacing(12);
+    toolbarLayout->setContentsMargins(12, 10, 12, 10);
+    toolbarLayout->setHorizontalSpacing(10);
     toolbarLayout->setVerticalSpacing(10);
 
     searchEdit_ = new QLineEdit(toolbarPanel);
@@ -97,12 +97,12 @@ void SeedProbePage::createWidgets()
     contentPanel->setObjectName("jobsContentPanel");
     QVBoxLayout* contentLayout = new QVBoxLayout(contentPanel);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(12);
+    contentLayout->setSpacing(10);
 
     QFrame* pagingPanel = new QFrame(contentPanel);
     pagingPanel->setObjectName("jobsPagingPanel");
     QHBoxLayout* pagingLayout = new QHBoxLayout(pagingPanel);
-    pagingLayout->setContentsMargins(16, 12, 16, 12);
+    pagingLayout->setContentsMargins(12, 10, 12, 10);
     prevButton_ = new QPushButton(QStringLiteral("Prev"), pagingPanel);
     prevButton_->setObjectName("jobsSecondaryButton");
     nextButton_ = new QPushButton(QStringLiteral("Next"), pagingPanel);
@@ -128,7 +128,7 @@ void SeedProbePage::createWidgets()
     QFrame* leftPanel = new QFrame(splitter);
     leftPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(16, 16, 16, 16);
+    leftLayout->setContentsMargins(12, 12, 12, 12);
     leftLayout->addWidget(new QLabel(QStringLiteral("Seed Probes"), leftPanel));
     listTable_ = new QTreeView(leftPanel);
     listTable_->setModel(listModel_);
@@ -153,12 +153,12 @@ void SeedProbePage::createWidgets()
     QWidget* detailWidget = new QWidget(detailScroll);
     QVBoxLayout* detailLayout = new QVBoxLayout(detailWidget);
     detailLayout->setContentsMargins(0, 0, 0, 0);
-    detailLayout->setSpacing(12);
+    detailLayout->setSpacing(10);
 
     QFrame* summaryPanel = new QFrame(detailWidget);
     summaryPanel->setObjectName("jobsSurfacePanel");
     QGridLayout* summaryLayout = new QGridLayout(summaryPanel);
-    summaryLayout->setContentsMargins(16, 16, 16, 16);
+    summaryLayout->setContentsMargins(12, 12, 12, 12);
     summaryLayout->addWidget(new QLabel(QStringLiteral("Neutral RNG"), summaryPanel), 0, 0);
     neutralSeedValue_ = new QLabel(QStringLiteral("--"), summaryPanel);
     summaryLayout->addWidget(neutralSeedValue_, 0, 1);
@@ -202,7 +202,7 @@ void SeedProbePage::createWidgets()
     QFrame* uniquePanel = new QFrame(detailWidget);
     uniquePanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* uniqueLayout = new QVBoxLayout(uniquePanel);
-    uniqueLayout->setContentsMargins(16, 16, 16, 16);
+    uniqueLayout->setContentsMargins(12, 12, 12, 12);
     uniqueLayout->addWidget(new QLabel(QStringLiteral("Unique Seeds"), uniquePanel));
     uniqueTable_ = new QTreeView(uniquePanel);
     uniqueTable_->setModel(uniqueModel_);

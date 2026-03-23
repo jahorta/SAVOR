@@ -47,7 +47,7 @@ QFrame* createPanelFrame(const QString& title, const QString& body)
     panel->setFrameShape(QFrame::StyledPanel);
 
     QVBoxLayout* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
 
     QLabel* titleLabel = new QLabel(title, panel);
@@ -228,12 +228,12 @@ QWidget* MainWindow::createContentPane()
     contentPane->setObjectName("contentPane");
 
     QVBoxLayout* layout = new QVBoxLayout(contentPane);
-    layout->setContentsMargins(20, 9, 20, 9);
-    layout->setSpacing(12);
+    layout->setContentsMargins(16, 8, 16, 8);
+    layout->setSpacing(10);
 
     QHBoxLayout* topLayout = new QHBoxLayout(contentPane);
     topLayout->setContentsMargins(0, 0, 0, 0);
-    topLayout->setSpacing(12);
+    topLayout->setSpacing(10);
 
     contentTitleLabel_ = new QLabel(contentPane);
     contentTitleLabel_->setObjectName("pageTitle");
@@ -298,19 +298,19 @@ QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& 
 
     QVBoxLayout* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(12);
+    layout->setSpacing(10);
 
     QLabel* descriptionLabel = new QLabel(description, page);
     descriptionLabel->setObjectName("pageDescription");
     descriptionLabel->setWordWrap(true);
 
     QHBoxLayout* topRow = new QHBoxLayout();
-    topRow->setSpacing(12);
+    topRow->setSpacing(10);
     topRow->addWidget(createPanelFrame("Primary Workspace", "Large placeholder region for the main page-specific content."), 2);
     topRow->addWidget(createPanelFrame("Inspector", "Secondary placeholder panel for details, forms, or actions."), 1);
 
     QHBoxLayout* bottomRow = new QHBoxLayout();
-    bottomRow->setSpacing(12);
+    bottomRow->setSpacing(10);
     bottomRow->addWidget(createPanelFrame("Lower Panel A", "Reserved for tables, logs, or summary widgets."), 1);
     bottomRow->addWidget(createPanelFrame("Lower Panel B", "Reserved for charts, previews, or secondary controls."), 1);
 

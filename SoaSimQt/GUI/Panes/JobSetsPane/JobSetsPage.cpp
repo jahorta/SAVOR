@@ -41,13 +41,13 @@ void JobSetsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobSetsToolbarPanel");
     QGridLayout* toolbarLayout = new QGridLayout(toolbarPanel);
     toolbarLayout->setContentsMargins(8, 7, 8, 7);
-    toolbarLayout->setHorizontalSpacing(12);
+    toolbarLayout->setHorizontalSpacing(10);
     toolbarLayout->setVerticalSpacing(10);
 
     kindFilter_ = new QComboBox(toolbarPanel);
@@ -95,7 +95,7 @@ void JobSetsPage::createWidgets()
     contentPanel->setObjectName("jobSetsContentPanel");
     QVBoxLayout* contentLayout = new QVBoxLayout(contentPanel);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(12);
+    contentLayout->setSpacing(10);
 
     QFrame* pagingPanel = new QFrame(contentPanel);
     pagingPanel->setObjectName("jobSetsPagingPanel");
@@ -124,7 +124,7 @@ void JobSetsPage::createWidgets()
     pagingLayout->addWidget(pageSummaryLabel_);
     pagingLayout->addStretch();
     pagingLayout->addWidget(pageStatusLabel_);
-    pagingLayout->addSpacing(12);
+    pagingLayout->addSpacing(10);
     pagingLayout->addWidget(lastRefreshLabel_);
 
     contentLayout->addWidget(pagingPanel);

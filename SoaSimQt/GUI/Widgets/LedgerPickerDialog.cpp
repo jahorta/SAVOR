@@ -132,8 +132,8 @@ LedgerPickerDialogBase::LedgerPickerDialogBase(const QString& title,
     setModal(true);
 
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(16, 16, 16, 16);
-    rootLayout->setSpacing(12);
+    rootLayout->setContentsMargins(12, 12, 12, 12);
+    rootLayout->setSpacing(10);
 
     QHBoxLayout* searchLayout = new QHBoxLayout();
     searchEdit_ = new QLineEdit(this);
@@ -172,7 +172,7 @@ LedgerPickerDialogBase::LedgerPickerDialogBase(const QString& title,
     pageSummaryLabel_ = new QLabel(this);
     pagingLayout->addWidget(newerButton_);
     pagingLayout->addWidget(olderButton_);
-    pagingLayout->addSpacing(12);
+    pagingLayout->addSpacing(10);
     pagingLayout->addWidget(pageSummaryLabel_);
     pagingLayout->addStretch();
     rootLayout->addLayout(pagingLayout);

@@ -69,8 +69,8 @@ QFrame* createCard(const QString& title, QWidget* parent, QVBoxLayout** bodyLayo
     QFrame* frame = new QFrame(parent);
     frame->setObjectName("jobsSurfacePanel");
     QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(16, 16, 16, 16);
-    layout->setSpacing(12);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
     QLabel* titleLabel = new QLabel(title, frame);
     titleLabel->setObjectName("panelTitle");
     layout->addWidget(titleLabel);
@@ -98,7 +98,7 @@ void JobBuilderPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     inlineMessageLabel_ = new QLabel(this);
     inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
@@ -110,7 +110,7 @@ void JobBuilderPage::createWidgets()
     QFrame* toolbar = new QFrame(this);
     toolbar->setObjectName("jobsToolbarPanel");
     QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(16, 14, 16, 14);
+    toolbarLayout->setContentsMargins(12, 10, 12, 10);
     toolbarLayout->setSpacing(10);
 
     kindCombo_ = new QComboBox(toolbar);
@@ -137,7 +137,7 @@ void JobBuilderPage::createWidgets()
     QWidget* leftPanel = new QWidget(splitLayout_);
     QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(12);
+    leftLayout->setSpacing(10);
 
     formStack_ = new QStackedWidget(leftPanel);
     leftLayout->addWidget(formStack_, 1);
@@ -146,7 +146,7 @@ void JobBuilderPage::createWidgets()
     seedProbeForm_ = new QWidget(formStack_);
     QVBoxLayout* seedLayout = new QVBoxLayout(seedProbeForm_);
     seedLayout->setContentsMargins(0, 0, 0, 0);
-    seedLayout->setSpacing(12);
+    seedLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
@@ -212,7 +212,7 @@ void JobBuilderPage::createWidgets()
     tasMovieForm_ = new QWidget(formStack_);
     QVBoxLayout* tasLayout = new QVBoxLayout(tasMovieForm_);
     tasLayout->setContentsMargins(0, 0, 0, 0);
-    tasLayout->setSpacing(12);
+    tasLayout->setSpacing(10);
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("TasMovie"), tasMovieForm_, &cardLayout);
@@ -253,12 +253,12 @@ void JobBuilderPage::createWidgets()
     explorerForm_ = new QWidget(formStack_);
     QVBoxLayout* explorerLayout = new QVBoxLayout(explorerForm_);
     explorerLayout->setContentsMargins(0, 0, 0, 0);
-    explorerLayout->setSpacing(12);
+    explorerLayout->setSpacing(10);
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("ExplorerRun · Selected Settings and SeedProbes"), explorerForm_, &cardLayout);
         QGridLayout* grid = new QGridLayout();
-        grid->setHorizontalSpacing(12);
+        grid->setHorizontalSpacing(10);
         grid->setVerticalSpacing(10);
         explorerSettingsList_ = new QListWidget(card);
         explorerSeedProbesList_ = new QListWidget(card);
@@ -340,7 +340,7 @@ void JobBuilderPage::createWidgets()
     QWidget* centerPanel = new QWidget(splitLayout_);
     QVBoxLayout* centerLayout = new QVBoxLayout(centerPanel);
     centerLayout->setContentsMargins(0, 0, 0, 0);
-    centerLayout->setSpacing(12);
+    centerLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
@@ -364,7 +364,7 @@ void JobBuilderPage::createWidgets()
     QWidget* rightPanel = new QWidget(splitLayout_);
     QVBoxLayout* rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(12);
+    rightLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
