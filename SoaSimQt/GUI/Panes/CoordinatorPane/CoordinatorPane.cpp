@@ -2,6 +2,7 @@
 
 #include "CoordinatorController.h"
 #include "WorkerTableModel.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
@@ -93,7 +94,9 @@ void CoordinatorPane::refreshUi()
     stoppedLabel_->setVisible(!running);
     workerTableView_->setVisible(running);
 
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(workerTableView_);
     workerTableModel_->setSnapshots(snapshot);
+    restoreItemViewScrollSnapshot(workerTableView_, scrollSnapshot);
 }
 
 void CoordinatorPane::createWidgets()
