@@ -107,8 +107,8 @@ void ArtifactsPage::openImportDialog(const ImportRequest& request)
     dialog.setWindowTitle(QStringLiteral("Import Artifact"));
 
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(16, 16, 16, 16);
-    layout->setSpacing(12);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
 
     QLabel* sourceLabel = new QLabel(QStringLiteral("Source"), &dialog);
     QLineEdit* sourceEdit = new QLineEdit(request.sourcePath, &dialog);
@@ -159,7 +159,7 @@ void ArtifactsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     rootsBannerLabel_ = new QLabel(this);
     rootsBannerLabel_->setObjectName("jobSetsInlineMessage");
@@ -171,8 +171,8 @@ void ArtifactsPage::createWidgets()
     QFrame* filterPanel = new QFrame(this);
     filterPanel->setObjectName("jobsToolbarPanel");
     QGridLayout* filterLayout = new QGridLayout(filterPanel);
-    filterLayout->setContentsMargins(16, 14, 16, 14);
-    filterLayout->setHorizontalSpacing(12);
+    filterLayout->setContentsMargins(12, 10, 12, 10);
+    filterLayout->setHorizontalSpacing(10);
     filterLayout->setVerticalSpacing(10);
 
     searchEdit_ = new QLineEdit(filterPanel);
@@ -210,12 +210,12 @@ void ArtifactsPage::createWidgets()
     contentPanel->setObjectName("jobsContentPanel");
     QVBoxLayout* contentLayout = new QVBoxLayout(contentPanel);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(12);
+    contentLayout->setSpacing(10);
 
     QFrame* pageControls = new QFrame(contentPanel);
     pageControls->setObjectName("jobsPagingPanel");
     QHBoxLayout* pageLayout = new QHBoxLayout(pageControls);
-    pageLayout->setContentsMargins(16, 12, 16, 12);
+    pageLayout->setContentsMargins(12, 10, 12, 10);
     prevButton_ = new QPushButton(QStringLiteral("Newer"), pageControls);
     nextButton_ = new QPushButton(QStringLiteral("Older"), pageControls);
     refreshButton_ = new QPushButton(QStringLiteral("Refresh now"), pageControls);
@@ -241,7 +241,7 @@ void ArtifactsPage::createWidgets()
     QFrame* tablePanel = new QFrame(splitter);
     tablePanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* tableLayout = new QVBoxLayout(tablePanel);
-    tableLayout->setContentsMargins(16, 16, 16, 16);
+    tableLayout->setContentsMargins(12, 12, 12, 12);
     tableLayout->addWidget(new QLabel(QStringLiteral("Artifact Table"), tablePanel));
     artifactsTable_ = new ArtifactsBrowserTableView(tablePanel);
     tableModel_ = new ArtifactsBrowserTableModel(artifactsTable_);
@@ -251,7 +251,7 @@ void ArtifactsPage::createWidgets()
     QFrame* inspectorPanel = new QFrame(splitter);
     inspectorPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspectorPanel);
-    inspectorLayout->setContentsMargins(16, 16, 16, 16);
+    inspectorLayout->setContentsMargins(12, 12, 12, 12);
 
     inspectorLayout->addWidget(new QLabel(QStringLiteral("Artifact Inspector"), inspectorPanel));
     inspectorSummary_ = new QLabel(QStringLiteral("Select an artifact to inspect metadata and export it."), inspectorPanel);
@@ -260,7 +260,7 @@ void ArtifactsPage::createWidgets()
     inspectorLayout->addWidget(inspectorSummary_);
 
     QGridLayout* inspectorGrid = new QGridLayout();
-    inspectorGrid->setHorizontalSpacing(12);
+    inspectorGrid->setHorizontalSpacing(10);
     inspectorGrid->setVerticalSpacing(10);
     inspectorIdValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
     inspectorFilenameValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);

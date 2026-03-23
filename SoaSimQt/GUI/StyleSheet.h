@@ -14,7 +14,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #dce3ed;
         font-size: 13px;
         font-weight: 600;
-        padding-left: 12px;
+        padding-left: 10px;
     }
     QFrame#navigationPane {
         background-color: #181c22;
@@ -25,18 +25,18 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 0.08em;
-        padding: 12px 12px 4px 12px;
+        padding: 10px 10px 4px 10px;
     }
     QListWidget#navigationList {
         background-color: transparent;
         border: none;
         outline: none;
-        padding: 4px 8px 12px 8px;
+        padding: 4px 8px 10px 8px;
     }
     QListWidget#navigationList::item {
         border-radius: 6px;
         margin: 2px 0;
-        padding: 10px 12px;
+        padding: 8px 10px;
         color: #d7dde7;
     }
     QListWidget#navigationList::item:selected {
@@ -194,7 +194,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     QPushButton#jobsPrimaryButton, QPushButton#jobsSecondaryButton {
         min-height: 34px;
         border-radius: 6px;
-        padding: 0 12px;
+        padding: 0 10px;
         font-weight: 600;
     }
     QPushButton#jobsPrimaryButton {
@@ -250,7 +250,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         background-color: #202632;
         color: #bac4d3;
         border: 1px solid #313949;
-        padding: 8px 12px;
+        padding: 6px 10px;
         margin-right: 4px;
         border-top-left-radius: 6px;
         border-top-right-radius: 6px;
@@ -426,7 +426,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     QPushButton#jobSetsPrimaryButton,
     QPushButton#jobSetsSecondaryButton {
         border-radius: 6px;
-        padding: 8px 14px;
+        padding: 6px 12px;
         min-height: 18px;
         border: 1px solid #3a4352;
     }
@@ -475,7 +475,7 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     }
     QLabel#jobSetsInlineMessage {
         border-radius: 6px;
-        padding: 10px 12px;
+        padding: 8px 10px;
         background-color: #202633;
         color: #dce3ed;
     }

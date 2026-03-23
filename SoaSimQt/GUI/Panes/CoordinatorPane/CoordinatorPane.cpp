@@ -100,7 +100,7 @@ void CoordinatorPane::createWidgets()
 {
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(12);
+    layout->setSpacing(10);
 
     workerTableModel_ = new WorkerTableModel(this);
 
@@ -132,14 +132,14 @@ QWidget* CoordinatorPane::createControlsCard()
     card->setObjectName("coordinatorCard");
 
     QVBoxLayout* rootLayout = new QVBoxLayout(card);
-    rootLayout->setContentsMargins(16, 16, 16, 16);
-    rootLayout->setSpacing(14);
+    rootLayout->setContentsMargins(12, 12, 12, 12);
+    rootLayout->setSpacing(10);
 
     QHBoxLayout* topLayout = new QHBoxLayout();
-    topLayout->setSpacing(12);
+    topLayout->setSpacing(10);
 
     QVBoxLayout* controlColumnLayout = new QVBoxLayout();
-    controlColumnLayout->setSpacing(12);
+    controlColumnLayout->setSpacing(10);
 
     QLabel* heading = new QLabel("Coordinator Control", card);
     heading->setObjectName("panelTitle");
@@ -169,7 +169,7 @@ QWidget* CoordinatorPane::createControlsCard()
     topLayout->addLayout(controlColumnLayout, 1);
 
     QHBoxLayout* metricsLayout = new QHBoxLayout();
-    metricsLayout->setSpacing(12);
+    metricsLayout->setSpacing(10);
     metricsLayout->addWidget(createMetricCard("Status", &statusValueLabel_, "coordinatorStateBadge"));
     metricsLayout->addWidget(createMetricCard("Active workers", &activeWorkersLabel_));
     metricsLayout->addWidget(createMetricCard("Snapshot", &snapshotCountLabel_));
@@ -200,7 +200,7 @@ QWidget* CoordinatorPane::createTableCard()
     card->setObjectName("coordinatorCard");
 
     QVBoxLayout* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(10);
 
     QHBoxLayout* headerLayout = new QHBoxLayout();

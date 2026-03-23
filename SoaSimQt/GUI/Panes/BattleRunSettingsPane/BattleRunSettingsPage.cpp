@@ -128,8 +128,8 @@ QFrame* createCard(const QString& title, QWidget* parent, QVBoxLayout** bodyLayo
     QFrame* frame = new QFrame(parent);
     frame->setObjectName("jobsSurfacePanel");
     QVBoxLayout* layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(16, 16, 16, 16);
-    layout->setSpacing(12);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
     QLabel* titleLabel = new QLabel(title, frame);
     titleLabel->setObjectName("panelTitle");
     layout->addWidget(titleLabel);
@@ -156,7 +156,7 @@ void BattleRunSettingsPage::createWidgets()
 {
     QVBoxLayout* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
-    root->setSpacing(12);
+    root->setSpacing(10);
 
     inlineMessageLabel_ = new QLabel(this);
     inlineMessageLabel_->setObjectName("jobSetsInlineMessage");
@@ -165,13 +165,13 @@ void BattleRunSettingsPage::createWidgets()
     root->addWidget(inlineMessageLabel_);
 
     QHBoxLayout* columns = new QHBoxLayout();
-    columns->setSpacing(12);
+    columns->setSpacing(10);
     root->addLayout(columns, 1);
 
     QWidget* left = new QWidget(this);
     QVBoxLayout* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(12);
+    leftLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
@@ -251,7 +251,7 @@ void BattleRunSettingsPage::createWidgets()
     QWidget* middle = new QWidget(this);
     QVBoxLayout* middleLayout = new QVBoxLayout(middle);
     middleLayout->setContentsMargins(0, 0, 0, 0);
-    middleLayout->setSpacing(12);
+    middleLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
@@ -268,7 +268,7 @@ void BattleRunSettingsPage::createWidgets()
         uiConfigContainer_ = new QWidget(scrollArea);
         uiConfigLayout_ = new QVBoxLayout(uiConfigContainer_);
         uiConfigLayout_->setContentsMargins(0, 0, 0, 0);
-        uiConfigLayout_->setSpacing(12);
+        uiConfigLayout_->setSpacing(10);
         uiConfigLayout_->addStretch();
         scrollArea->setWidget(uiConfigContainer_);
         cardLayout->addWidget(scrollArea, 1);
@@ -300,7 +300,7 @@ void BattleRunSettingsPage::createWidgets()
     QWidget* right = new QWidget(this);
     QVBoxLayout* rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(12);
+    rightLayout->setSpacing(10);
 
     {
         QVBoxLayout* cardLayout = nullptr;
