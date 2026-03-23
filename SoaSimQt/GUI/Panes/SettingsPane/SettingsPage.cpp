@@ -107,7 +107,7 @@ void SettingsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     const CollapsibleSection storageSection = createCollapsibleSection(
         "SETTINGS SECTION",
@@ -116,10 +116,10 @@ void SettingsPage::createWidgets()
 
     QVBoxLayout* storageLayout = new QVBoxLayout(storageSection.content);
     storageLayout->setContentsMargins(0, 0, 0, 0);
-    storageLayout->setSpacing(14);
+    storageLayout->setSpacing(10);
 
     QGridLayout* formLayout = new QGridLayout();
-    formLayout->setHorizontalSpacing(12);
+    formLayout->setHorizontalSpacing(10);
     formLayout->setVerticalSpacing(10);
 
     QLabel* activeRootLabel = new QLabel("Current database root", storageSection.content);
@@ -208,10 +208,10 @@ void SettingsPage::createWidgets()
 
     QVBoxLayout* coordinatorLayout = new QVBoxLayout(coordinatorSection.content);
     coordinatorLayout->setContentsMargins(0, 0, 0, 0);
-    coordinatorLayout->setSpacing(14);
+    coordinatorLayout->setSpacing(10);
 
     QGridLayout* coordinatorFormLayout = new QGridLayout();
-    coordinatorFormLayout->setHorizontalSpacing(12);
+    coordinatorFormLayout->setHorizontalSpacing(10);
     coordinatorFormLayout->setVerticalSpacing(10);
 
     isoPathEdit_ = new QLineEdit(coordinatorSection.content);
@@ -312,8 +312,8 @@ SettingsPage::CollapsibleSection SettingsPage::createCollapsibleSection(
     section.card->setObjectName("settingsCard");
 
     QVBoxLayout* cardLayout = new QVBoxLayout(section.card);
-    cardLayout->setContentsMargins(18, 18, 18, 18);
-    cardLayout->setSpacing(12);
+    cardLayout->setContentsMargins(14, 14, 14, 14);
+    cardLayout->setSpacing(10);
 
     QLabel* sectionEyebrow = new QLabel(eyebrow, section.card);
     sectionEyebrow->setObjectName("settingsSectionEyebrow");

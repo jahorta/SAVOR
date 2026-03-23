@@ -85,13 +85,13 @@ void JobsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     QFrame* filterPanel = new QFrame(this);
     filterPanel->setObjectName("jobsToolbarPanel");
     QGridLayout* filterLayout = new QGridLayout(filterPanel);
-    filterLayout->setContentsMargins(16, 14, 16, 14);
-    filterLayout->setHorizontalSpacing(12);
+    filterLayout->setContentsMargins(12, 10, 12, 10);
+    filterLayout->setHorizontalSpacing(10);
     filterLayout->setVerticalSpacing(10);
 
     kindFilter_ = new QComboBox(filterPanel);
@@ -142,12 +142,12 @@ void JobsPage::createWidgets()
     contentPanel->setObjectName("jobsContentPanel");
     QVBoxLayout* contentLayout = new QVBoxLayout(contentPanel);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(12);
+    contentLayout->setSpacing(10);
 
     QFrame* pageControls = new QFrame(contentPanel);
     pageControls->setObjectName("jobsPagingPanel");
     QHBoxLayout* pageLayout = new QHBoxLayout(pageControls);
-    pageLayout->setContentsMargins(16, 12, 16, 12);
+    pageLayout->setContentsMargins(12, 10, 12, 10);
     prevButton_ = new QPushButton(QStringLiteral("Prev"), pageControls);
     nextButton_ = new QPushButton(QStringLiteral("Next"), pageControls);
     refreshButton_ = new QPushButton(QStringLiteral("Refresh now"), pageControls);
@@ -167,7 +167,7 @@ void JobsPage::createWidgets()
     QFrame* tablePanel = new QFrame(splitter);
     tablePanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* tableLayout = new QVBoxLayout(tablePanel);
-    tableLayout->setContentsMargins(16, 16, 16, 16);
+    tableLayout->setContentsMargins(12, 12, 12, 12);
     tableLayout->addWidget(new QLabel(QStringLiteral("Jobs Table"), tablePanel));
     jobsTable_ = new JobsTableView(tablePanel);
     jobsModel_ = new JobsTableModel(jobsTable_);
@@ -177,7 +177,7 @@ void JobsPage::createWidgets()
     QFrame* inspectorPanel = new QFrame(splitter);
     inspectorPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* inspectorLayout = new QVBoxLayout(inspectorPanel);
-    inspectorLayout->setContentsMargins(16, 16, 16, 16);
+    inspectorLayout->setContentsMargins(12, 12, 12, 12);
     inspectorSummary_ = new QLabel(QStringLiteral("Select a job to inspect details."), inspectorPanel);
     inspectorSummary_->setObjectName("jobsInspectorSummary");
     inspectorSummary_->setWordWrap(true);

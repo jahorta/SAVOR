@@ -90,13 +90,13 @@ void ExplorerRunsPage::createWidgets()
 {
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(12);
+    rootLayout->setSpacing(10);
 
     QFrame* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobsToolbarPanel");
     QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbarPanel);
-    toolbarLayout->setContentsMargins(16, 12, 16, 12);
-    toolbarLayout->setSpacing(12);
+    toolbarLayout->setContentsMargins(12, 10, 12, 10);
+    toolbarLayout->setSpacing(10);
 
     refreshButton_ = new QPushButton(QStringLiteral("Refresh now"), toolbarPanel);
     refreshButton_->setObjectName("jobsSecondaryButton");
@@ -128,7 +128,7 @@ void ExplorerRunsPage::createWidgets()
     QFrame* groupsPanel = new QFrame(topSplitter);
     groupsPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* groupsLayout = new QVBoxLayout(groupsPanel);
-    groupsLayout->setContentsMargins(16, 16, 16, 16);
+    groupsLayout->setContentsMargins(12, 12, 12, 12);
     groupsLayout->addWidget(new QLabel(QStringLiteral("Run Groups"), groupsPanel));
     groupsView_ = new ExplorerRunsGroupTableView(groupsPanel);
     groupsView_->attachModel(groupsModel_);
@@ -137,7 +137,7 @@ void ExplorerRunsPage::createWidgets()
     QFrame* wavesPanel = new QFrame(topSplitter);
     wavesPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* wavesLayout = new QVBoxLayout(wavesPanel);
-    wavesLayout->setContentsMargins(16, 16, 16, 16);
+    wavesLayout->setContentsMargins(12, 12, 12, 12);
     wavesLayout->addWidget(new QLabel(QStringLiteral("Wave Tree"), wavesPanel));
     wavesView_ = new QTreeView(wavesPanel);
     configureFlatTreeView(wavesView_, QStringLiteral("explorerRunsWavesTree"));
@@ -153,7 +153,7 @@ void ExplorerRunsPage::createWidgets()
     QFrame* jobsPanel = new QFrame(bottomSplitter);
     jobsPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* jobsLayout = new QVBoxLayout(jobsPanel);
-    jobsLayout->setContentsMargins(16, 16, 16, 16);
+    jobsLayout->setContentsMargins(12, 12, 12, 12);
 
     QHBoxLayout* jobsHeaderLayout = new QHBoxLayout();
     jobsHeaderLayout->addWidget(new QLabel(QStringLiteral("Wave Jobs"), jobsPanel));
@@ -192,7 +192,7 @@ void ExplorerRunsPage::createWidgets()
     QFrame* detailsPanel = new QFrame(bottomSplitter);
     detailsPanel->setObjectName("jobsSurfacePanel");
     QVBoxLayout* detailsLayout = new QVBoxLayout(detailsPanel);
-    detailsLayout->setContentsMargins(16, 16, 16, 16);
+    detailsLayout->setContentsMargins(12, 12, 12, 12);
     detailsLayout->addWidget(new QLabel(QStringLiteral("Details"), detailsPanel));
 
     QHBoxLayout* triggerLayout = new QHBoxLayout();
