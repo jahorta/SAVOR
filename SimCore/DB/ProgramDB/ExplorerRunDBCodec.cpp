@@ -26,6 +26,8 @@
 
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
+#include "../../Core/Input/InputPlanFmt.h"
+#include "../../Core/Input/AppliedTurnTapeBlob.h"
 #include "../../Runner/Script/PSContext.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../../Utils/Hash.h"
@@ -34,6 +36,7 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <optional>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -100,6 +103,7 @@ namespace {
         }
         return out;
     }
+
 }
 
 DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, const std::string& controls_ini)
@@ -296,6 +300,10 @@ DbResult<void> ExplorerRunDBCodec::encode_progress_into_db(int64_t job_id, const
 
 DbResult<void> ExplorerRunDBCodec::encode_results_into_db(int64_t job_id, const std::string& results_ini, bool success)
 {
+    IniDoc ini = IniDoc::parse(results_ini);
+    ResultsIni results = ResultsIni::from_section(ini);
+    std::string persisted_results_ini = results_ini;
+
     auto st = JobsRepo::SetState(job_id, success ? "SUCCEEDED" : "FAILED");
     if (!st.ok) return DbResult<void>::Err(st.error);
 
@@ -303,11 +311,23 @@ DbResult<void> ExplorerRunDBCodec::encode_results_into_db(int64_t job_id, const 
     if (!ev.ok) return DbResult<void>::Err(ev.error);
 
     if (success) {
+        if (!results.applied_input_tape_text.empty()) {
+            auto art = simcore::db::ObjectStore::PutText(results.applied_input_tape_text);
+            if (art.ok) {
+                results.applied_input_artifact_id = art.value.id;
+                results.applied_input_tape_text.clear();
+                results.set_section(ini);
+                persisted_results_ini = ini.to_string_sorted();
+                auto ev2 = JobEventsRepo::Append(job_id, "RESULTS", persisted_results_ini);
+                if (!ev2.ok) return DbResult<void>::Err(ev2.error);
+            }
+        }
+
         auto jr = JobsRepo::Get(job_id);
         if (!jr.ok) return DbResult<void>::Err(jr.error);
         const int64_t run_id = jr.value.program_ref_id;
 
-        auto s1 = simcore::db::ExplorerRunRepo::SetResultsIni(run_id, results_ini);
+        auto s1 = simcore::db::ExplorerRunRepo::SetResultsIni(run_id, persisted_results_ini);
         if (!s1.ok) return DbResult<void>::Err(s1.error);
 
         auto lines = JobEventsRepo::ListByJobAndKind(job_id, "PROGRESS");
@@ -442,6 +462,26 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
     if (success) {
         r.ps.ctx.get(simcore::keys::core::VI_FIRST, results.vi_start);
         r.ps.ctx.get(simcore::keys::core::VI_LAST, results.vi_end);
+
+        std::string turn_blob;
+        r.ps.ctx.get(simcore::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+        if (!turn_blob.empty()) {
+            std::vector<simcore::inputtape::TurnChunk> chunks;
+            if (simcore::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
+                results.input_apply_vi_start = chunks.front().vi_start;
+                results.input_apply_vi_end = chunks.back().vi_end;
+                results.applied_turn_blob_sha256 = hash::sha256(turn_blob.data(), turn_blob.size());
+                results.applied_turn_windows_csv = simcore::inputtape::turn_windows_csv(chunks);
+                results.applied_input_vi_durations_csv = simcore::inputtape::durations_csv(chunks);
+                auto flat = simcore::inputtape::flatten_plan(chunks);
+                results.applied_frame_count = static_cast<uint32_t>(flat.size());
+                if (!flat.empty()) {
+                    results.applied_input_sha256 = hash::sha256(reinterpret_cast<const char*>(flat.data()), flat.size() * sizeof(simcore::GCInputFrame));
+                }
+                results.applied_input_tape_text = simcore::inputtape::render_text(chunks);
+                results.applied_input_summary = simcore::DescribeChosenInputs(flat, "\n");
+            }
+        }
     }
 
     IniDoc ini;
@@ -500,6 +540,17 @@ DbResult<std::string> ExplorerRunDBCodec::build_artifact_ini_from_db(int64_t job
         "No Savestate found..." });
 
     artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+
+    auto rr = simcore::db::JobEventsRepo::GetLatestPayload(job_id, "RESULTS");
+    if (rr.ok && rr.value.has_value()) {
+        IniDoc rdoc = IniDoc::parse(*rr.value);
+        if (rdoc.has_section(ResultsIni::SECTION_NAME)) {
+            ResultsIni res = ResultsIni::from_section(rdoc);
+            if (res.applied_input_artifact_id > 0) {
+                artifacts.add_artifact("Applied Input Tape", res.applied_input_artifact_id);
+            }
+        }
+    }
     
     return DbResult<std::string>::Ok(artifacts.to_string());
 }

@@ -10,6 +10,7 @@
 #include "../../Core/Input/SoaBattle/PlanWriter.h"
 #include "../../Core/Input/SoaBattle/ActionLibrary.h"
 #include "../../Core/Input/InputPlanFmt.h"
+#include "../../Core/Input/AppliedTurnTapeBlob.h"
 #include "../../Core/Memory/IKeyReader.h"
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
@@ -339,20 +340,54 @@ namespace simcore {
                     break;
                 }
 
+                // Capture exact tape + timing window so callers can reconstruct TAS inputs.
+                const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+                uint32_t existing_apply_start = 0;
+                if (!ctx.get(keys::core::INPUT_APPLY_VI_START, existing_apply_start) || existing_apply_start == 0) {
+                    ctx[keys::core::INPUT_APPLY_VI_START] = apply_vi_start;
+                }
+
                 host_.setEnableAllBreakpoints(false);
                 
                 uint32_t idx;
                 const uint32_t count = *(const uint32_t*)(counts);
+                simcore::InputPlan applied_plan{};
+                applied_plan.reserve(count);
+                std::vector<uint32_t> vi_durations{};
+                vi_durations.reserve(count);
                 for (idx = 0; idx < count; idx++) {
 
                     GCInputFrame f{};
                     std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame));
+                    applied_plan.push_back(f);
 
+                    const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
                     SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
                     host_.setInput(f);
                     host_.stepOneFrameBlocking();
+                    const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+                    vi_durations.push_back((vi_after >= vi_before) ? (vi_after - vi_before) : 0u);
                 }
                 host_.setEnableAllBreakpoints(true);
+                const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+                ctx[keys::core::INPUT_APPLY_VI_END] = apply_vi_end;
+
+                uint32_t turn_number = 0;
+                if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) {
+                    (void)ctx.get(keys::battle::ACTIVE_TURN, turn_number);
+                }
+
+                std::string turn_blob;
+                (void)ctx.get(keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+                simcore::inputtape::TurnChunk chunk{};
+                chunk.turn_number = turn_number;
+                chunk.vi_start = apply_vi_start;
+                chunk.vi_end = apply_vi_end;
+                chunk.frames = applied_plan;
+                chunk.vi_durations = vi_durations;
+                (void)simcore::inputtape::append_turn_chunk(turn_blob, chunk);
+                ctx[keys::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
+
                 if (idx >= count) ctx[keys::core::PLAN_DONE] = uint32_t(1);
 
                 uint32_t cur_turn_plans = 0;
