@@ -224,6 +224,44 @@ namespace simcore {
 		bool save_snapshot();
 		bool load_snapshot();
 
+
+		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
+		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+
+		bool op_arm_phase_bps_once();
+		bool op_load_snapshot(PSContext& ctx);
+		bool op_capture_snapshot();
+		bool op_reboot_core(PSResult& result, PSContext& ctx);
+		void op_label() const;
+		void op_goto(const PSOp& op, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+		void op_goto_if(const PSOp& op, PSContext& ctx, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+		void op_goto_if_keys(const PSOp& op, PSContext& ctx, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+		void op_set_u32(const PSOp& op, PSContext& ctx) const;
+		void op_add_u32(const PSOp& op, PSContext& ctx) const;
+		void op_build_turn_inputplan_from_battle_path(PSContext& ctx) const;
+		void op_apply_battle_inputplan_frames(PSContext& ctx);
+		void op_step_frames(const PSOp& op);
+		void op_start_deterministic_run() const;
+		void op_end_deterministic_run() const;
+		void op_run_until_bp(PSContext& ctx);
+		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_read_u32(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_read_f32(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_read_f64(const PSOp& op, PSResult& result, PSContext& ctx);
+		void op_get_battle_context(PSResult& result, PSContext& ctx) const;
+		void op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
+		bool op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const;
+		bool op_apply_input_from(const PSOp& op, PSResult& result, PSContext& ctx);
+		void op_set_timeout(const PSOp& op, PSContext& ctx) const;
+		void op_set_timeout_from(const PSOp& op, PSContext& ctx) const;
+		bool op_movie_play_from(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx);
+		bool op_require_disc_gameid_from(const PSOp& op, PSResult& result, PSContext& ctx);
+		void op_arm_bps_from_pred_table(PSContext& ctx);
+		void op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router);
+		void op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router);
+
 		// typed reads
 		bool read_u8(uint32_t a, uint8_t& v)  const { return host_.readU8(a, v); }
 		bool read_u16(uint32_t a, uint16_t& v) const { return host_.readU16(a, v); }
