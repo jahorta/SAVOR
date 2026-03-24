@@ -3,6 +3,7 @@
 #include "ArtifactsController.h"
 #include "ArtifactsBrowserTableModel.h"
 #include "ArtifactsBrowserTableView.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QItemSelectionModel>
@@ -378,7 +379,11 @@ void ArtifactsPage::syncControlsFromController()
 
 void ArtifactsPage::refreshModel()
 {
+    
     const auto& state = controller_->viewState();
+
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(artifactsTable_);
+
     std::vector<ArtifactsBrowserTableModel::Row> rows;
     rows.reserve(state.page.items.size());
     for (const auto& artifact : state.page.items) {
@@ -402,6 +407,8 @@ void ArtifactsPage::refreshModel()
             selectionModel->setCurrentIndex(QModelIndex(), QItemSelectionModel::NoUpdate);
         }
     }
+
+    restoreItemViewScrollSnapshot(artifactsTable_, scrollSnapshot);
 
 }
 

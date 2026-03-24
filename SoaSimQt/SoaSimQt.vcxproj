@@ -156,6 +156,7 @@
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\MainWindow.h" />

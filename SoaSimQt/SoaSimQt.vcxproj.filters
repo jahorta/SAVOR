@@ -345,5 +345,8 @@
     <ClInclude Include="GUI\Common\StatusToast.h">
       <Filter>GUI\Common</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -23,6 +23,7 @@
 #include "PredicateEditorDialog.h"
 #include "TemplateSaveDialog.h"
 #include "GUI/Widgets/BattleContextTreeWidget.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QStringList>
 #include <QtGui/QStandardItem>
@@ -659,6 +660,8 @@ void BattleRunSettingsPage::refreshAllViews()
 
 void BattleRunSettingsPage::refreshUiActionLibraryView()
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(actionTable_);
+
     actionTableModel_->removeRows(0, actionTableModel_->rowCount());
     for (const TurnActionPresetLite& item : uiActionResults_) {
         QList<QStandardItem*> rowItems;
@@ -671,10 +674,15 @@ void BattleRunSettingsPage::refreshUiActionLibraryView()
                  << actionItem;
         actionTableModel_->appendRow(rowItems);
     }
+
+    restoreItemViewScrollSnapshot(actionTable_, scrollSnapshot);
 }
 
 void BattleRunSettingsPage::refreshPredicateLibraryView()
 {
+
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(predicateTable_);
+
     predicateTableModel_->removeRows(0, predicateTableModel_->rowCount());
     for (const PredicateSpecLite& item : predicateResults_) {
         QList<QStandardItem*> rowItems;
@@ -687,10 +695,14 @@ void BattleRunSettingsPage::refreshPredicateLibraryView()
         rowItems << idItem << nameItem << abortItem << bpItem;
         predicateTableModel_->appendRow(rowItems);
     }
+
+    restoreItemViewScrollSnapshot(predicateTable_, scrollSnapshot);
 }
 
 void BattleRunSettingsPage::refreshTemplateLibraryView()
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(templateTable_);
+
     templateTableModel_->removeRows(0, templateTableModel_->rowCount());
     for (const AuthoringTemplateLite& item : templateResults_) {
         QList<QStandardItem*> rowItems;
@@ -698,6 +710,8 @@ void BattleRunSettingsPage::refreshTemplateLibraryView()
                  << new QStandardItem(QString::fromStdString(item.name));
         templateTableModel_->appendRow(rowItems);
     }
+
+    restoreItemViewScrollSnapshot(predicateTable_, scrollSnapshot);
 }
 
 void BattleRunSettingsPage::refreshDraftViews()
