@@ -164,11 +164,12 @@
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
+    <ClInclude Include="GUI\Common\StatusToast.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
@@ -182,7 +183,7 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
-    <ClInclude Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
+    <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
