@@ -61,6 +61,16 @@ namespace simcore::db::codec::battle::singleturn {
         uint32_t pred_passed{0};
         uint32_t pred_total{0};
         uint32_t pred_abort_run{0};
+        uint32_t input_apply_vi_start{0};
+        uint32_t input_apply_vi_end{0};
+        uint32_t applied_frame_count{0};
+        std::string applied_input_sha256;
+        std::string applied_input_summary;
+        std::string applied_turn_windows_csv;
+        std::string applied_turn_blob_sha256;
+        std::string applied_input_vi_durations_csv;
+        std::string applied_input_tape_text;
+        int64_t applied_input_artifact_id{-1};
         std::string savestate_path;
         int64_t output_savestate_id{-1};
 
@@ -79,6 +89,16 @@ namespace simcore::db::codec::battle::singleturn {
             r.pred_passed = section.get_u32("pred_passed", 0);
             r.pred_total = section.get_u32("pred_total", 0);
             r.pred_abort_run = section.get_u32("pred_abort_run", 0);
+            r.input_apply_vi_start = section.get_u32("input_apply_vi_start", 0);
+            r.input_apply_vi_end = section.get_u32("input_apply_vi_end", 0);
+            r.applied_frame_count = section.get_u32("applied_frame_count", 0);
+            r.applied_input_sha256 = section.get("applied_input_sha256", "");
+            r.applied_input_summary = section.get("applied_input_summary", "");
+            r.applied_turn_windows_csv = section.get("applied_turn_windows_csv", "");
+            r.applied_turn_blob_sha256 = section.get("applied_turn_blob_sha256", "");
+            r.applied_input_vi_durations_csv = section.get("applied_input_vi_durations_csv", "");
+            r.applied_input_tape_text = section.get("applied_input_tape_text", "");
+            r.applied_input_artifact_id = section.get_i64("applied_input_artifact_id", -1);
             r.savestate_path = section.get("savestate_path", "");
             r.output_savestate_id = section.get_i64("output_savestate_id", -1);
             return r;
@@ -96,6 +116,16 @@ namespace simcore::db::codec::battle::singleturn {
             doc.set(SECTION_NAME, "pred_passed", std::to_string(pred_passed));
             doc.set(SECTION_NAME, "pred_total", std::to_string(pred_total));
             doc.set(SECTION_NAME, "pred_abort_run", std::to_string(pred_abort_run));
+            doc.set(SECTION_NAME, "input_apply_vi_start", std::to_string(input_apply_vi_start));
+            doc.set(SECTION_NAME, "input_apply_vi_end", std::to_string(input_apply_vi_end));
+            doc.set(SECTION_NAME, "applied_frame_count", std::to_string(applied_frame_count));
+            doc.set(SECTION_NAME, "applied_input_sha256", applied_input_sha256);
+            doc.set(SECTION_NAME, "applied_input_summary", applied_input_summary);
+            doc.set(SECTION_NAME, "applied_turn_windows_csv", applied_turn_windows_csv);
+            doc.set(SECTION_NAME, "applied_turn_blob_sha256", applied_turn_blob_sha256);
+            doc.set(SECTION_NAME, "applied_input_vi_durations_csv", applied_input_vi_durations_csv);
+            doc.set(SECTION_NAME, "applied_input_tape_text", applied_input_tape_text);
+            doc.set(SECTION_NAME, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
             doc.set(SECTION_NAME, "savestate_path", savestate_path);
             doc.set(SECTION_NAME, "output_savestate_id", std::to_string(output_savestate_id));
         }

@@ -25,6 +25,8 @@ namespace simcore::keys::core {
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \
+  X(INPUT_APPLY_VI_START,    0x0062, "core.metrics.input_apply_vi_start") \
+  X(INPUT_APPLY_VI_END,      0x0063, "core.metrics.input_apply_vi_end") \
 \
   X(PRED_COUNT,              0x0080, "core.pred.count")        \
   X(PRED_TABLE,              0x0081, "core.pred.table")        \
