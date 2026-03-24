@@ -129,7 +129,8 @@ namespace simcore {
     PSResult PhaseScriptVM::run(const PSJob& job)
     {
         PSResult R{};
-        PSContext ctx = job.ctx;
+        auto ctx_heap = std::make_unique<PSContext>(job.ctx);
+        PSContext& ctx = *ctx_heap;
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
         // Always start by restoring the pre-captured snapshot for each job
