@@ -16,6 +16,7 @@ namespace simcore {
             int64_t id{};
             int32_t spec_version{};
             int32_t required_bp{};
+            std::optional<std::string> required_bp_multi;
             int32_t kind{};
             int32_t width{};
             int32_t cmp_op{};

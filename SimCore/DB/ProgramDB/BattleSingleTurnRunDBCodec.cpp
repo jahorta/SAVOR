@@ -43,6 +43,22 @@ static constexpr int kPK = simcore::PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
+    static std::vector<uint16_t> parse_csv_u16(const std::optional<std::string>& csv) {
+        std::vector<uint16_t> out;
+        if (!csv.has_value() || csv->empty()) return out;
+        std::stringstream ss(*csv);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            if (tok.empty()) continue;
+            try {
+                auto v = std::stoul(tok);
+                if (v > 0 && v <= 0xFFFFu) out.push_back((uint16_t)v);
+            }
+            catch (...) {}
+        }
+        return out;
+    }
+
     struct WaveMetaIni {
         static constexpr const char* SECTION_NAME = "BattleSingleTurn.WaveMeta";
         int64_t root_group_id{-1};
@@ -295,6 +311,7 @@ DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t 
         simcore::pred::Spec spec{
             .id = (uint16_t)r.ordinal,
             .required_bp = (uint16_t)p.value.required_bp,
+            .required_bps = parse_csv_u16(p.value.required_bp_multi),
             .kind = (simcore::pred::PredKind)p.value.kind,
             .width = (uint8_t)p.value.width,
             .cmp = (simcore::pred::CmpOp)p.value.cmp_op,
