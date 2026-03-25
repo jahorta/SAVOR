@@ -413,7 +413,22 @@ namespace simcore {
                     continue;
                 }
 
-                auto claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor, s.current_savestate_id);
+                simcore::db::DbResult<std::optional<simcore::db::JobRow>> claimr;
+                try {
+                    claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor, s.current_savestate_id);
+                }
+                catch (const std::exception& ex) {
+                    if (stop_.load()) break;
+                    RecordError((int64_t)s.id, std::string("ClaimNextReady exception: ") + ex.what());
+                    Sleep(cfg_.controller_sleep_ms);
+                    continue;
+                }
+                catch (...) {
+                    if (stop_.load()) break;
+                    RecordError((int64_t)s.id, "ClaimNextReady unknown exception");
+                    Sleep(cfg_.controller_sleep_ms);
+                    continue;
+                }
                 if (!claimr.ok) { Sleep(cfg_.controller_sleep_ms); continue; }
                 if (!claimr.value.has_value()) { Sleep(cfg_.controller_sleep_ms); continue; }
 
