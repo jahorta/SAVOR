@@ -1101,5 +1101,17 @@
     <None Include="DB\migration\0030.sql">
       <Filter>DB\Migration</Filter>
     </None>
+    <None Include="DB\migration\0031.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0032.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0033.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0034.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
   </ItemGroup>
 </Project>
