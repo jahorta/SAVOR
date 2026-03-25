@@ -97,6 +97,8 @@ namespace simcore {
             ps.dolphin_base_dir = boot.boot.dolphin_qt_base.string();
             ps.user_dir = (boot.boot.user_dir / ("worker-" + std::to_string(w->id)) / "User").string();
             ps.vm_control = true;
+            ps.visual = boot.visual;
+            ps.render_widget_handle = boot.render_widget_handle;
 
             if (!w->proc->start(ps, out_.get())) {
                 SCLOGE("[Runner %zu] failed to launch SimCoreWorker process", w->id);

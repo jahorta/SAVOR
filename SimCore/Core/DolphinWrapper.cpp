@@ -51,6 +51,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdarg>
+#include <mutex>
 
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
@@ -83,6 +84,22 @@ namespace simcore {
         wsi.type = WindowSystemType::Headless;
         return wsi;
     }
+
+    static WindowSystemInfo MakeWindowsViewportWSI(void* hwnd)
+    {
+        WindowSystemInfo wsi{};
+        wsi.type = WindowSystemType::Windows;
+        wsi.render_window = hwnd;
+        wsi.render_surface = hwnd;
+        return wsi;
+    }
+
+#ifdef _WIN32
+    static LRESULT CALLBACK SimCoreViewportWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+    {
+        return DefWindowProc(hwnd, msg, wparam, lparam);
+    }
+#endif
 
     // --- load settings helpers --------------------------------------------------
 
@@ -156,6 +173,7 @@ namespace simcore {
     void DolphinWrapper::shutdownAll() {
         if (Core::IsRunning(*m_system))
             shutdownCore();
+        destroyRenderSurfaceWindow();
         logger::Logger::get().close_file();
     }
 
@@ -197,7 +215,19 @@ namespace simcore {
             shutdownCore();
         }
 
-        const WindowSystemInfo wsi = MakeHeadlessWSI();
+        const void* render_handle = nullptr;
+        if (m_visual_mode) {
+            if (m_external_render_widget_handle != nullptr) {
+                m_render_window_handle = m_external_render_widget_handle;
+            } else if (!createRenderSurfaceWindow()) {
+                SCLOGE("Failed to create render surface window for visual mode");
+                return false;
+            }
+            render_handle = m_render_window_handle;
+        }
+        const WindowSystemInfo wsi = m_visual_mode
+            ? MakeWindowsViewportWSI(const_cast<void*>(render_handle))
+            : MakeHeadlessWSI();
 
         m_wsi = wsi;
 
@@ -822,6 +852,57 @@ namespace simcore {
             return false;
         }
         return true;
+    }
+
+    bool DolphinWrapper::createRenderSurfaceWindow()
+    {
+        if (m_render_window_handle != nullptr) {
+            return true;
+        }
+#ifdef _WIN32
+        static const wchar_t* kClassName = L"SimCoreVisualViewportWindow";
+        static std::once_flag class_once;
+        std::call_once(class_once, []() {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = SimCoreViewportWndProc;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = kClassName;
+            wc.style = CS_OWNDC;
+            RegisterClassW(&wc);
+            });
+
+        HWND hwnd = CreateWindowExW(
+            0,
+            kClassName,
+            L"SimCore Visual Viewport",
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT, CW_USEDEFAULT,
+            1280, 720,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!hwnd) {
+            return false;
+        }
+        ShowWindow(hwnd, SW_SHOW);
+        m_render_window_handle = hwnd;
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    void DolphinWrapper::destroyRenderSurfaceWindow()
+    {
+#ifdef _WIN32
+        if (m_render_window_handle != nullptr && m_render_window_handle != m_external_render_widget_handle) {
+            DestroyWindow(static_cast<HWND>(m_render_window_handle));
+            m_render_window_handle = nullptr;
+        }
+        if (m_render_window_handle == m_external_render_widget_handle) {
+            m_render_window_handle = nullptr;
+        }
+#else
+        m_render_window_handle = nullptr;
+#endif
     }
 
     bool simcore::DolphinWrapper::readU8(uint32_t addr, uint8_t& out) const
@@ -1480,4 +1561,3 @@ namespace simcore {
     }
 
 } // namespace simcore
-

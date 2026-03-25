@@ -156,6 +156,7 @@
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualWorkerDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
@@ -189,6 +190,7 @@
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
+    <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h" />
@@ -207,6 +209,7 @@
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
+    <QtMoc Include="GUI\Widgets\VisualWorkerDialog.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <ClCompile Include="GUI\MainWindow.cpp" />
   </ItemGroup>

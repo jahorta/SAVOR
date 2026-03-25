@@ -3,6 +3,7 @@
 #include "CoordinatorController.h"
 #include "WorkerTableModel.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
+#include "GUI/Widgets/VisualWorkerDialog.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
@@ -195,6 +196,18 @@ QWidget* CoordinatorPane::createControlsCard()
     connect(targetWorkersSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &CoordinatorController::setTargetWorkers);
 
     return card;
+}
+
+void CoordinatorPane::requestVisualReplay(qint64 jobId)
+{
+    if (!visualWorkerDialog_) {
+        visualWorkerDialog_ = new VisualWorkerDialog(this);
+    }
+    visualWorkerDialog_->show();
+    visualWorkerDialog_->raise();
+    visualWorkerDialog_->activateWindow();
+    controller_->setVisualRenderWidgetHandle(visualWorkerDialog_->renderWidgetHandle());
+    controller_->requestVisualReplay(jobId);
 }
 
 QWidget* CoordinatorPane::createTableCard()

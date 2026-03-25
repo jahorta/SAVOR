@@ -408,6 +408,12 @@
     <ClInclude Include="DB\Scheduling\JobsRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
+    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\Hash.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -735,6 +741,12 @@
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
     <ClCompile Include="DB\Scheduling\JobsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp">
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
     <ClCompile Include="DB\BattlePlanRepo.cpp">

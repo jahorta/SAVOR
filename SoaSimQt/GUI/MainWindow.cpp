@@ -249,10 +249,12 @@ QWidget* MainWindow::createContentPane()
 
     contentStack_ = new QStackedWidget(contentPane);
     contentStack_->addWidget(new JobSetsPage(contentPane));
-    contentStack_->addWidget(new JobsPage(contentPane));
+    auto* jobsPage = new JobsPage(contentPane);
+    contentStack_->addWidget(jobsPage);
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
+    connect(jobsPage, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     auto* jobBuilderPage = new JobBuilderPage(contentStack_);
     connect(jobBuilderPage, &JobBuilderPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(jobBuilderPage);
@@ -261,7 +263,9 @@ QWidget* MainWindow::createContentPane()
     contentStack_->addWidget(battleRunSettingsPage);
     contentStack_->addWidget(new ArtifactsPage(contentPane));
     contentStack_->addWidget(new SeedProbePage(contentStack_));
-    contentStack_->addWidget(new ExplorerRunsPage(contentStack_));
+    auto* explorerRunsPage = new ExplorerRunsPage(contentStack_);
+    connect(explorerRunsPage, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
+    contentStack_->addWidget(explorerRunsPage);
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
     contentStack_->addWidget(settingsPage_);
 

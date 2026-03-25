@@ -36,6 +36,9 @@ static uint32_t parse_hex_u32(const char* s) {
 static uint32_t parse_u32(const char* s) {
     return s ? static_cast<uint32_t>(std::strtoul(s, nullptr, 10)) : 0u;
 }
+static uint64_t parse_u64(const char* s) {
+    return s ? static_cast<uint64_t>(std::strtoull(s, nullptr, 10)) : 0ull;
+}
 static const char* argv_next(int& i, int argc, char** argv) { return (i + 1 < argc) ? argv[++i] : ""; }
 
 enum WorkerExitCode : uint8_t {
@@ -94,6 +97,8 @@ int main(int argc, char** argv)
     size_t worker_id = 0;
     std::string iso, sav, qtbase, userdir, logfile; 
     uint32_t timeout_ms = 10000;
+    bool visual = false;
+    uint64_t render_hwnd = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -101,6 +106,8 @@ int main(int argc, char** argv)
         else if (k == "--iso") iso = argv_next(i, argc, argv);
         else if (k == "--qtbase") qtbase = argv_next(i, argc, argv);
         else if (k == "--userdir") userdir = argv_next(i, argc, argv);
+        else if (k == "--visual") visual = true;
+        else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -118,8 +125,9 @@ int main(int argc, char** argv)
 
     SCLOGI("[Worker %zu] Initializing", worker_id);
 
-    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s userdir=%s timeout=%u",
-        worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), userdir.c_str(), timeout_ms);
+    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s userdir=%s timeout=%u visual=%d render_hwnd=%llu",
+        worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), userdir.c_str(), timeout_ms, visual ? 1 : 0,
+        static_cast<unsigned long long>(render_hwnd));
 
     // Use inherited anonymous pipes as binary channels
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -145,6 +153,8 @@ int main(int argc, char** argv)
     boot.boot.user_dir = userdir;
     boot.boot.dolphin_qt_base = qtbase;
     boot.boot.force_resync_from_base = true;
+    boot.boot.visual = visual;
+    boot.boot.render_widget_handle = reinterpret_cast<void*>(render_hwnd);
     boot.boot.save_config_on_success = false;
     boot.iso_path = iso;
 
