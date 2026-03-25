@@ -8,6 +8,7 @@
 #include "DB/ExplorerSettingsPredicateRepo.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -540,6 +541,7 @@ void JobBuilderPage::wireSignals()
         } else {
             selectedDeltaIdsByProbe_.insert(probeId, selected);
         }
+        const QScopedValueRollback<bool> guard(suppressDeltaTreeRefresh_, true);
         syncIniFromWidgets();
     });
 
@@ -750,7 +752,9 @@ void JobBuilderPage::syncIniFromWidgets()
     }
 
     refreshSelectionLists();
-    refreshDeltaTree();
+    if (!suppressDeltaTreeRefresh_) {
+        refreshDeltaTree();
+    }
     refreshValidation();
     refreshSubmitPanel();
     refreshIniPanel();
