@@ -108,6 +108,7 @@ private:
     QVector<qint64> selectedSeedProbeIds_;
     QHash<qint64, QVector<simcore::db::DeltaSeedRow>> deltaRowsByProbe_;
     QHash<qint64, QSet<qint64>> selectedDeltaIdsByProbe_;
+    bool suppressDeltaTreeRefresh_ = false;
 
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
