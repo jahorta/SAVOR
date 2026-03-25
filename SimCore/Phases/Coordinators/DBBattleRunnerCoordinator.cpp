@@ -11,6 +11,7 @@
 #include "../../Utils/IniDoc.h"
 #include "../../Runner/IPC/Wire.h"
 #include "../../Core/Memory/Soa/SoaAddrProgram.h"
+#include <sstream>
 
 
 using simcore::db::DbResult;
@@ -39,10 +40,24 @@ namespace simcore {
         }
 
         // Build DB rows for a raw pred::Spec (program IDs left null; catalogs are for dedupe only)
+        static inline std::optional<std::string> to_bp_multi_csv(const std::vector<uint16_t>& bps) {
+            if (bps.empty()) return std::nullopt;
+            std::ostringstream os;
+            bool first = true;
+            for (auto bp : bps) {
+                if (!first) os << ",";
+                first = false;
+                os << bp;
+            }
+            return os.str();
+        }
+
         static inline PredicateSpecRow to_row(const simcore::pred::Spec& s) {
             PredicateSpecRow r{};
             r.spec_version = pred::SPEC_VERSION;
             r.required_bp = s.required_bp;
+            if (r.required_bp == 0 && !s.required_bps.empty()) r.required_bp = s.required_bps.front();
+            r.required_bp_multi = to_bp_multi_csv(s.required_bps);
             r.kind = (int32_t)s.kind;
             r.width = s.width ? s.width : 4;
             r.cmp_op = (int32_t)s.cmp;
