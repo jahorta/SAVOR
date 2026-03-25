@@ -737,6 +737,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <None Include="DB\migration\0032.sql" />
     <None Include="DB\migration\0033.sql" />
     <None Include="DB\migration\0034.sql" />
+    <None Include="DB\migration\0035.sql" />
     <None Include="DB\update_generated_migrations_command.txt" />
     <None Include="Interesting SOA Addresses.md">
       <SubType>
