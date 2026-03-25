@@ -359,7 +359,7 @@ namespace simcore {
     }
     void PhaseScriptVM::op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router) {
         uint32_t total = 0; ctx.get(keys::core::PRED_TOTAL, total);
-        uint32_t pass = 0;
+        uint32_t pass = 0; ctx.get(keys::core::PRED_PASSED, pass);
         auto itN = ctx.find(keys::core::PRED_COUNT);
         auto itT = ctx.find(keys::core::PRED_TABLE);
         auto itB = ctx.find(keys::core::PRED_BASELINES);
