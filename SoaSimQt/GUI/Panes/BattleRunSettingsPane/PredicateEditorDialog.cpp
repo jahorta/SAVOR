@@ -23,6 +23,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <sstream>
 
 using simcore::db::PredicateSpecRow;
 
@@ -59,6 +60,30 @@ QString describeProgramDraft(const PredicateEditorDialog::ProgramDraft& draft)
         .arg(programKindLabel(draft.kind))
         .arg(draft.blob.size())
         .arg(draft.description.isEmpty() ? QString() : QStringLiteral(" · %1").arg(draft.description));
+}
+
+QVector<int> parseBpMultiCsv(const std::optional<std::string>& csvOpt)
+{
+    QVector<int> out;
+    if (!csvOpt.has_value() || csvOpt->empty()) return out;
+    const QStringList tokens = QString::fromStdString(*csvOpt).split(',', Qt::SkipEmptyParts);
+    for (const QString& token : tokens) {
+        bool ok = false;
+        const int value = token.trimmed().toInt(&ok);
+        if (ok && value > 0) out.push_back(value);
+    }
+    return out;
+}
+
+std::optional<std::string> toBpMultiCsv(const QVector<int>& bps)
+{
+    if (bps.size() <= 1) return std::nullopt;
+    std::ostringstream oss;
+    for (int index = 0; index < bps.size(); ++index) {
+        if (index > 0) oss << ',';
+        oss << bps.at(index);
+    }
+    return oss.str();
 }
 }
 
@@ -107,12 +132,18 @@ PredicateEditorDialog::PredicateEditorDialog(QWidget* parent)
 
     QGroupBox* executionBox = new QGroupBox(QStringLiteral("Execution"), this);
     QFormLayout* executionLayout = new QFormLayout(executionBox);
-    breakpointCombo_ = new QComboBox(this);
-    populateBreakpointCombo();
+    requiredBpRowsWidget_ = new QWidget(this);
+    requiredBpRowsLayout_ = new QVBoxLayout(requiredBpRowsWidget_);
+    requiredBpRowsLayout_->setContentsMargins(0, 0, 0, 0);
+    requiredBpRowsLayout_->setSpacing(6);
+    addRequiredBreakpointField();
+    addRequiredBpButton_ = new QPushButton(QStringLiteral("Add required breakpoint"), this);
     turnMaskEdit_ = new QLineEdit(this);
     turnMaskEdit_->setPlaceholderText(QStringLiteral("0xFFFFFFFF"));
-    executionLayout->addRow(QStringLiteral("Required breakpoint"), breakpointCombo_);
+    executionLayout->addRow(QStringLiteral("Required breakpoints"), requiredBpRowsWidget_);
+    executionLayout->addRow(QString(), addRequiredBpButton_);
     executionLayout->addRow(QStringLiteral("Turn mask"), turnMaskEdit_);
+    connect(addRequiredBpButton_, &QPushButton::clicked, this, [this]() { addRequiredBreakpointField(); });
     root->addWidget(executionBox);
 
     QGroupBox* flagsBox = new QGroupBox(QStringLiteral("Flags"), this);
@@ -214,16 +245,76 @@ void PredicateEditorDialog::populateAddrKeys()
     }
 }
 
-void PredicateEditorDialog::populateBreakpointCombo()
+void PredicateEditorDialog::populateBreakpointCombo(QComboBox* combo) const
 {
-    breakpointCombo_->clear();
-    breakpointCombo_->addItem(QStringLiteral("(none)"), 0);
+    if (!combo) return;
+    combo->clear();
+    combo->addItem(QStringLiteral("(none)"), 0);
     for (const BPAddr& bp : bp::BPRegistry::all()) {
-        breakpointCombo_->addItem(QStringLiteral("%1 @ 0x%2")
+        combo->addItem(QStringLiteral("%1 @ 0x%2")
             .arg(QString::fromUtf8(bp.name))
             .arg(bp.pc, 8, 16, QLatin1Char('0')),
             static_cast<int>(bp.key));
     }
+}
+
+void PredicateEditorDialog::addRequiredBreakpointField(const int selectedBp)
+{
+    QHBoxLayout* rowLayout = new QHBoxLayout();
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+
+    QComboBox* combo = new QComboBox(requiredBpRowsWidget_);
+    populateBreakpointCombo(combo);
+    combo->setCurrentIndex(std::max(0, combo->findData(selectedBp)));
+    rowLayout->addWidget(combo, 1);
+
+    QPushButton* removeButton = new QPushButton(QStringLiteral("Delete"), requiredBpRowsWidget_);
+    rowLayout->addWidget(removeButton);
+
+    breakpointCombos_.push_back(combo);
+    removeBreakpointButtons_.push_back(removeButton);
+    breakpointRowLayouts_.push_back(rowLayout);
+    requiredBpRowsLayout_->addLayout(rowLayout);
+
+    connect(removeButton, &QPushButton::clicked, this, [this, removeButton]() {
+        const int index = removeBreakpointButtons_.indexOf(removeButton);
+        if (index >= 0) removeRequiredBreakpointField(index);
+    });
+
+    rebuildRequiredBreakpointRows();
+}
+
+void PredicateEditorDialog::removeRequiredBreakpointField(const int index)
+{
+    if (index < 0 || index >= breakpointCombos_.size() || breakpointCombos_.size() <= 1) return;
+    QComboBox* combo = breakpointCombos_.takeAt(index);
+    QPushButton* button = removeBreakpointButtons_.takeAt(index);
+    QHBoxLayout* rowLayout = breakpointRowLayouts_.takeAt(index);
+    requiredBpRowsLayout_->removeItem(rowLayout);
+    delete combo;
+    delete button;
+    delete rowLayout;
+    rebuildRequiredBreakpointRows();
+}
+
+void PredicateEditorDialog::rebuildRequiredBreakpointRows()
+{
+    const bool showDelete = breakpointCombos_.size() > 1;
+    for (QPushButton* button : removeBreakpointButtons_) {
+        button->setVisible(showDelete);
+    }
+}
+
+QVector<int> PredicateEditorDialog::selectedRequiredBreakpoints() const
+{
+    QVector<int> out;
+    out.reserve(breakpointCombos_.size());
+    for (QComboBox* combo : breakpointCombos_) {
+        const int value = combo ? combo->currentData().toInt() : 0;
+        if (value > 0) out.push_back(value);
+    }
+    return out;
 }
 
 void PredicateEditorDialog::applyProgramDraftToWidgets(const ProgramDraft& draft, const bool lhs)
@@ -291,7 +382,19 @@ void PredicateEditorDialog::loadRow(const PredicateSpecRow& row)
     row_ = row;
     nameEdit_->setText(QString::fromStdString(row.name));
     descriptionEdit_->setPlainText(QString::fromStdString(row.description));
-    breakpointCombo_->setCurrentIndex(std::max(0, breakpointCombo_->findData(row.required_bp)));
+    QVector<int> requiredBps = parseBpMultiCsv(row.required_bp_multi);
+    if (requiredBps.isEmpty() && row.required_bp > 0) requiredBps.push_back(row.required_bp);
+    if (requiredBps.isEmpty()) requiredBps.push_back(0);
+
+    while (breakpointCombos_.size() > requiredBps.size()) {
+        removeRequiredBreakpointField(breakpointCombos_.size() - 1);
+    }
+    while (breakpointCombos_.size() < requiredBps.size()) {
+        addRequiredBreakpointField();
+    }
+    for (int i = 0; i < breakpointCombos_.size(); ++i) {
+        breakpointCombos_[i]->setCurrentIndex(std::max(0, breakpointCombos_[i]->findData(requiredBps.at(i))));
+    }
     kindCombo_->setCurrentIndex(std::max(0, kindCombo_->findData(row.kind)));
     widthCombo_->setCurrentIndex(std::max(0, widthCombo_->findData(row.width)));
     cmpCombo_->setCurrentIndex(std::max(0, cmpCombo_->findData(row.cmp_op)));
@@ -345,7 +448,8 @@ QStringList PredicateEditorDialog::validateDraft() const
     if (nameEdit_->text().trimmed().isEmpty()) {
         errors << QStringLiteral("Predicate name is required.");
     }
-    if (breakpointCombo_->currentData().toInt() == 0) {
+    const QVector<int> requiredBps = selectedRequiredBreakpoints();
+    if (requiredBps.isEmpty()) {
         errors << QStringLiteral("Required breakpoint is not set.");
     }
 
@@ -401,7 +505,9 @@ PredicateSpecRow PredicateEditorDialog::buildRow(bool* ok, QString* errorText) c
     row.spec_version = static_cast<int32_t>(simcore::pred::SPEC_VERSION);
     row.name = nameEdit_->text().trimmed().left(simcore::pred::PredNameLength).toStdString();
     row.description = descriptionEdit_->toPlainText().trimmed().toStdString();
-    row.required_bp = breakpointCombo_->currentData().toInt();
+    const QVector<int> requiredBps = selectedRequiredBreakpoints();
+    row.required_bp = requiredBps.isEmpty() ? 0 : requiredBps.front();
+    row.required_bp_multi = toBpMultiCsv(requiredBps);
     row.kind = kindCombo_->currentData().toInt();
     row.width = widthCombo_->currentData().toInt();
     row.cmp_op = cmpCombo_->currentData().toInt();
@@ -430,6 +536,8 @@ PredicateSpecRow PredicateEditorDialog::buildRow(bool* ok, QString* errorText) c
 
     simcore::pred::Spec spec{};
     spec.required_bp = static_cast<uint16_t>(row.required_bp);
+    spec.required_bps.reserve(requiredBps.size());
+    for (const int bp : requiredBps) spec.required_bps.push_back(static_cast<uint16_t>(bp));
     spec.kind = static_cast<simcore::pred::PredKind>(row.kind);
     spec.width = static_cast<uint8_t>(row.width);
     spec.cmp = static_cast<simcore::pred::CmpOp>(row.cmp_op);
