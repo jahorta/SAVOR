@@ -242,8 +242,6 @@ namespace simcore {
         const uint8_t* frames = (const uint8_t*)table_s->data();
         if (counts == 0) { ctx[keys::core::PLAN_DONE] = uint32_t(1); return; }
         const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-        uint32_t existing_apply_start = 0;
-        if (!ctx.get(keys::core::INPUT_APPLY_VI_START, existing_apply_start) || existing_apply_start == 0) ctx[keys::core::INPUT_APPLY_VI_START] = apply_vi_start;
         host_.setEnableAllBreakpoints(false);
         uint32_t idx;
         const uint32_t count = *(const uint32_t*)(counts);
@@ -259,7 +257,6 @@ namespace simcore {
         }
         host_.setEnableAllBreakpoints(true);
         const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-        ctx[keys::core::INPUT_APPLY_VI_END] = apply_vi_end;
         uint32_t turn_number = 0;
         if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(keys::battle::ACTIVE_TURN, turn_number);
         std::string turn_blob; (void)ctx.get(keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
