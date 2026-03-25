@@ -12,10 +12,12 @@ class QComboBox;
 class QDialogButtonBox;
 class QLabel;
 class QLineEdit;
+class QHBoxLayout;
 class QPlainTextEdit;
 class QPushButton;
 class QStackedWidget;
 class QTextEdit;
+class QVBoxLayout;
 
 class PredicateEditorDialog final : public QDialog
 {
@@ -55,7 +57,11 @@ public:
 private:
     void accept() override;
     void populateAddrKeys();
-    void populateBreakpointCombo();
+    void populateBreakpointCombo(QComboBox* combo) const;
+    void addRequiredBreakpointField(int selectedBp = 0);
+    void removeRequiredBreakpointField(int index);
+    void rebuildRequiredBreakpointRows();
+    QVector<int> selectedRequiredBreakpoints() const;
     void applyProgramDraftToWidgets(const ProgramDraft& draft, bool lhs);
     ProgramDraft programDraftFromWidgets(bool lhs) const;
     void buildProgram(bool lhs);
@@ -66,7 +72,12 @@ private:
     simcore::db::PredicateSpecRow row_{};
     QLineEdit* nameEdit_ = nullptr;
     QPlainTextEdit* descriptionEdit_ = nullptr;
-    QComboBox* breakpointCombo_ = nullptr;
+    QWidget* requiredBpRowsWidget_ = nullptr;
+    QVBoxLayout* requiredBpRowsLayout_ = nullptr;
+    QPushButton* addRequiredBpButton_ = nullptr;
+    QVector<QComboBox*> breakpointCombos_;
+    QVector<QPushButton*> removeBreakpointButtons_;
+    QVector<QHBoxLayout*> breakpointRowLayouts_;
     QComboBox* kindCombo_ = nullptr;
     QComboBox* widthCombo_ = nullptr;
     QComboBox* cmpCombo_ = nullptr;
