@@ -209,6 +209,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Core\Branching\Branching.h" />
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
+    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
     <ClInclude Include="Core\Input\GCPadOverride.h" />
     <ClInclude Include="Core\Input\InputPlan.h" />
     <ClInclude Include="Core\Input\InputPlanFmt.h" />

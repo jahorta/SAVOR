@@ -534,6 +534,9 @@
     <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
+    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
+      <Filter>Core\Input</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SimCore.cpp">
