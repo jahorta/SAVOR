@@ -1,6 +1,7 @@
 #include "CoordinatorController.h"
 
 #include <QtCore/QSettings>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 
 #include <algorithm>
@@ -24,6 +25,7 @@ CoordinatorController::CoordinatorController(QObject* parent)
 
 CoordinatorController::~CoordinatorController()
 {
+    const QSignalBlocker blocker(this);
     stopCoordinator();
 }
 
