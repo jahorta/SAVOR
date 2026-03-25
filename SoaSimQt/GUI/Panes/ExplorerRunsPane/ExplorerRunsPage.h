@@ -20,6 +20,8 @@ class QStandardItemModel;
 class QTreeView;
 class QComboBox;
 class QModelIndex;
+class QPoint;
+struct ExplorerRunsJobRow;
 
 class ExplorerRunsPage final : public QWidget
 {
@@ -78,6 +80,8 @@ private:
     bool isDuplicateState(const QString& state) const;
     bool selectedJobCanTrigger() const;
     void triggerNextWave();
+    void showJobsContextMenu(const QPoint& pos);
+    void openTurnInputsDialogForJob(const ExplorerRunsJobRow& row);
     void restoreSelectedGroupRow();
     void restoreSelectedJobRow();
     void selectFirstWaveIfNeeded();

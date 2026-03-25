@@ -104,6 +104,9 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
@@ -298,6 +301,9 @@
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">

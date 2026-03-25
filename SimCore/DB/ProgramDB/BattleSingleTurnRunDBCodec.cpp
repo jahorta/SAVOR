@@ -688,7 +688,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
             nj.fake_attacks_this_turn = fake;
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
             const std::string fp = hash::sha256(vm.data(), vm.size());
-            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id);
+            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id, source_job_id);
             if (!cj.ok) continue;
             (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
             ++enqueued;
