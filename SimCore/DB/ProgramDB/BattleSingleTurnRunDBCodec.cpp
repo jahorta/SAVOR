@@ -559,7 +559,8 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         if (!rdoc.has_section(STRes::SECTION_NAME)) continue;
         STRes r = STRes::from_section(rdoc);
         if (r.output_savestate_id <= 0) continue;
-        if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) continue;
+        if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn 
+            && r.battle_outcome != (uint32_t)simcore::battle::Outcome::Victory) continue;
 
         auto jr = simcore::db::JobsRepo::Get(job_id);
         if (!jr.ok || !jr.value.vm_kv.has_value()) continue;
