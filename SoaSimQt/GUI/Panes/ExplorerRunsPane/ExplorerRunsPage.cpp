@@ -4,6 +4,7 @@
 #include "ExplorerRunsGroupTableView.h"
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
+#include "ExplorerRunsTurnInputsDialog.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include "Core/Input/SoaBattle/PlanWriter.h"
@@ -26,6 +27,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
@@ -42,6 +44,13 @@ using namespace simcore::db::codec::battle::singleturn;
 
 namespace {
 constexpr int kWaveJobSetIdUserRole = Qt::UserRole + 1;
+
+bool isTurnInputEligibleState(const QString& state)
+{
+    return state == QStringLiteral("SUCCEEDED")
+        || state == QStringLiteral("SUCCEEDED_WINNER")
+        || state == QStringLiteral("SUCCEEDED_DUPLICATE");
+}
 
 void configureFlatTreeView(QTreeView* view, const QString& objectName)
 {
@@ -71,6 +80,7 @@ void selectFlatRow(QTreeView* view, int row)
     view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     view->scrollTo(index);
 }
+
 }
 
 ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
@@ -188,6 +198,7 @@ void ExplorerRunsPage::createWidgets()
 
     jobsView_ = new ExplorerRunsJobsTableView(jobsPanel);
     jobsView_->attachModel(jobsModel_);
+    jobsView_->setContextMenuPolicy(Qt::CustomContextMenu);
     jobsLayout->addWidget(jobsView_, 1);
 
     QFrame* detailsPanel = new QFrame(bottomSplitter);
@@ -349,6 +360,7 @@ void ExplorerRunsPage::wireSignals()
         state_.selectedJob = row->jobId;
         coordinator_->requestDetailsRefresh(row->jobId);
     });
+    connect(jobsView_, &ExplorerRunsJobsTableView::customContextMenuRequested, this, &ExplorerRunsPage::showJobsContextMenu);
 
     connect(overrideFakeAttacksCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         state_.overrideMaxFakeAttacks = checked;
@@ -730,6 +742,38 @@ void ExplorerRunsPage::triggerNextWave()
     } else {
         setStatusMessage(QStringLiteral("Unable to queue next wave: %1").arg(QString::fromStdString(result.error.message)), true);
     }
+}
+
+void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
+{
+    if (!jobsView_) {
+        return;
+    }
+
+    const QModelIndex index = jobsView_->indexAt(pos);
+    if (!index.isValid()) {
+        return;
+    }
+
+    const ExplorerRunsJobRow* row = jobsModel_->rowAt(index.row());
+    if (!row) {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction* viewTurnInputsAction = menu.addAction(QStringLiteral("View Turn Inputs"));
+    viewTurnInputsAction->setEnabled(isTurnInputEligibleState(row->state));
+    QAction* selectedAction = menu.exec(jobsView_->viewport()->mapToGlobal(pos));
+    if (selectedAction == viewTurnInputsAction && viewTurnInputsAction->isEnabled()) {
+        openTurnInputsDialogForJob(*row);
+    }
+}
+
+void ExplorerRunsPage::openTurnInputsDialogForJob(const ExplorerRunsJobRow& row)
+{
+    ExplorerRunsTurnInputsDialog dialog(this);
+    dialog.loadForJob(row);
+    dialog.exec();
 }
 
 void ExplorerRunsPage::restoreSelectedGroupRow()
