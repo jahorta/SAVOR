@@ -381,6 +381,7 @@ namespace {
         eb.id = 1;
         eb.kind = PredKind::ABS;
         eb.required_bp = bp::battle::EndTurn;
+        eb.required_bps = { (uint16_t)bp::battle::EndTurn, (uint16_t)bp::battle::Victory };
         eb.set_flag(PredFlag::Active);
         eb.width = 1;
         eb.set_every_turn();

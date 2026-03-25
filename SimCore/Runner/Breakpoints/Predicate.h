@@ -68,10 +68,11 @@ namespace simcore::pred {
         return "(?)";
     }
 
-    static constexpr size_t SPEC_VERSION = 1;
+    static constexpr size_t SPEC_VERSION = 2;
     struct Spec {
         uint16_t id{ 0 };
         uint16_t required_bp{ 0 };
+        std::vector<uint16_t> required_bps{};
         PredKind kind{ PredKind::ABS };
         uint8_t  width{ 4 };
         CmpOp    cmp{ CmpOp::EQ };
