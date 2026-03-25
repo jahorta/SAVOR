@@ -468,18 +468,7 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
         if (!turn_blob.empty()) {
             std::vector<simcore::inputtape::TurnChunk> chunks;
             if (simcore::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
-                results.input_apply_vi_start = chunks.front().vi_start;
-                results.input_apply_vi_end = chunks.back().vi_end;
-                results.applied_turn_blob_sha256 = hash::sha256(turn_blob.data(), turn_blob.size());
-                results.applied_turn_windows_csv = simcore::inputtape::turn_windows_csv(chunks);
-                results.applied_input_vi_durations_csv = simcore::inputtape::durations_csv(chunks);
-                auto flat = simcore::inputtape::flatten_plan(chunks);
-                results.applied_frame_count = static_cast<uint32_t>(flat.size());
-                if (!flat.empty()) {
-                    results.applied_input_sha256 = hash::sha256(reinterpret_cast<const char*>(flat.data()), flat.size() * sizeof(simcore::GCInputFrame));
-                }
                 results.applied_input_tape_text = simcore::inputtape::render_text(chunks);
-                results.applied_input_summary = simcore::DescribeChosenInputs(flat, "\n");
             }
         }
     }

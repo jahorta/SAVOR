@@ -342,10 +342,6 @@ namespace simcore {
 
                 // Capture exact tape + timing window so callers can reconstruct TAS inputs.
                 const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-                uint32_t existing_apply_start = 0;
-                if (!ctx.get(keys::core::INPUT_APPLY_VI_START, existing_apply_start) || existing_apply_start == 0) {
-                    ctx[keys::core::INPUT_APPLY_VI_START] = apply_vi_start;
-                }
 
                 host_.setEnableAllBreakpoints(false);
                 
@@ -370,7 +366,6 @@ namespace simcore {
                 }
                 host_.setEnableAllBreakpoints(true);
                 const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-                ctx[keys::core::INPUT_APPLY_VI_END] = apply_vi_end;
 
                 uint32_t turn_number = 0;
                 if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) {

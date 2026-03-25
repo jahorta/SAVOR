@@ -24,7 +24,6 @@ namespace simcore::keys::battle {
   X(OUTPUT_SAVESTATE_PATH,    0x033A, "battle.turn.output_savestate_path") \
   X(APPLIED_INPUTPLAN_COUNT,  0x033B, "battle.inputplan.applied_frame_count") \
   X(APPLIED_INPUTPLAN,        0x033C, "battle.inputplan.applied_frames") \
-  X(APPLIED_INPUTPLAN_SUMMARY,0x033D, "battle.inputplan.applied_summary") \
   X(APPLIED_INPUTPLAN_VI_DURATIONS,0x033E, "battle.inputplan.applied_vi_durations") \
   X(APPLIED_INPUTPLAN_TURN_BLOB,0x033F, "battle.inputplan.applied_turn_blob")
 

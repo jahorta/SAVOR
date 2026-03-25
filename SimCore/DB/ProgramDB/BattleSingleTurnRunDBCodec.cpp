@@ -473,18 +473,7 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresul
     if (!turn_blob.empty()) {
         std::vector<simcore::inputtape::TurnChunk> chunks;
         if (simcore::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
-            out.input_apply_vi_start = chunks.front().vi_start;
-            out.input_apply_vi_end = chunks.back().vi_end;
-            out.applied_turn_blob_sha256 = hash::sha256(turn_blob.data(), turn_blob.size());
-            out.applied_turn_windows_csv = simcore::inputtape::turn_windows_csv(chunks);
-            out.applied_input_vi_durations_csv = simcore::inputtape::durations_csv(chunks);
-            auto flat = simcore::inputtape::flatten_plan(chunks);
-            out.applied_frame_count = static_cast<uint32_t>(flat.size());
-            if (!flat.empty()) {
-                out.applied_input_sha256 = hash::sha256(reinterpret_cast<const char*>(flat.data()), flat.size() * sizeof(simcore::GCInputFrame));
-            }
-            out.applied_input_tape_text = simcore::inputtape::render_text(chunks);
-            out.applied_input_summary = simcore::DescribeChosenInputs(flat, "\n");
+            out.applied_input_tape_text = turn_blob;
         }
     }
     r.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);

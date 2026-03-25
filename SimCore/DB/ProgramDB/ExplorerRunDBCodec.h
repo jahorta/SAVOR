@@ -126,14 +126,6 @@ namespace simcore::db::codec::battle::run {
 
         uint32_t     vi_start{ 0 };
         uint32_t     vi_end{ 0 };
-        uint32_t     input_apply_vi_start{ 0 };
-        uint32_t     input_apply_vi_end{ 0 };
-        uint32_t     applied_frame_count{ 0 };
-        std::string  applied_input_sha256{};
-        std::string  applied_input_summary{};
-        std::string  applied_turn_windows_csv{};
-        std::string  applied_turn_blob_sha256{};
-        std::string  applied_input_vi_durations_csv{};
         std::string  applied_input_tape_text{};
         int64_t      applied_input_artifact_id{ -1 };
 
@@ -145,14 +137,6 @@ namespace simcore::db::codec::battle::run {
             results.dw_err = section.get_u32("dw_err", (uint32_t)simcore::RunToBpOutcome::Unknown);
             results.vi_start = section.get_u32("vi_start", -1);
             results.vi_end = section.get_u32("vi_end", -1);
-            results.input_apply_vi_start = section.get_u32("input_apply_vi_start", 0);
-            results.input_apply_vi_end = section.get_u32("input_apply_vi_end", 0);
-            results.applied_frame_count = section.get_u32("applied_frame_count", 0);
-            results.applied_input_sha256 = section.get("applied_input_sha256", "");
-            results.applied_input_summary = section.get("applied_input_summary", "");
-            results.applied_turn_windows_csv = section.get("applied_turn_windows_csv", "");
-            results.applied_turn_blob_sha256 = section.get("applied_turn_blob_sha256", "");
-            results.applied_input_vi_durations_csv = section.get("applied_input_vi_durations_csv", "");
             results.applied_input_tape_text = section.get("applied_input_tape_text", "");
             results.applied_input_artifact_id = section.get_i64("applied_input_artifact_id", -1);
             return results;
@@ -163,14 +147,6 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "dw_err", std::to_string(dw_err));
             doc.set(SECTION_NAME, "vi_start", std::to_string(vi_start));
             doc.set(SECTION_NAME, "vi_end", std::to_string(vi_end));
-            doc.set(SECTION_NAME, "input_apply_vi_start", std::to_string(input_apply_vi_start));
-            doc.set(SECTION_NAME, "input_apply_vi_end", std::to_string(input_apply_vi_end));
-            doc.set(SECTION_NAME, "applied_frame_count", std::to_string(applied_frame_count));
-            doc.set(SECTION_NAME, "applied_input_sha256", applied_input_sha256);
-            doc.set(SECTION_NAME, "applied_input_summary", applied_input_summary);
-            doc.set(SECTION_NAME, "applied_turn_windows_csv", applied_turn_windows_csv);
-            doc.set(SECTION_NAME, "applied_turn_blob_sha256", applied_turn_blob_sha256);
-            doc.set(SECTION_NAME, "applied_input_vi_durations_csv", applied_input_vi_durations_csv);
             doc.set(SECTION_NAME, "applied_input_tape_text", applied_input_tape_text);
             doc.set(SECTION_NAME, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         }
