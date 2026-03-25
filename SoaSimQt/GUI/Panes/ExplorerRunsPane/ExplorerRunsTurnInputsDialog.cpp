@@ -250,15 +250,10 @@ void ExplorerRunsTurnInputsDialog::loadForJob(const ExplorerRunsJobRow& row)
     QTreeWidgetItem* parentTurnItem = nullptr;
     for (const TurnInputNode& turn : turns) {
         QTreeWidgetItem* turnItem = new QTreeWidgetItem(QStringList{ makeTurnNodeLabel(turn) });
-        if (parentTurnItem) {
-            parentTurnItem->addChild(turnItem);
-        } else {
-            tree_->addTopLevelItem(turnItem);
-        }
+        tree_->addTopLevelItem(turnItem);
         for (const QString& input : turn.inputLines) {
             turnItem->addChild(new QTreeWidgetItem(QStringList{ input }));
         }
-        parentTurnItem = turnItem;
     }
 
     tree_->expandAll();
