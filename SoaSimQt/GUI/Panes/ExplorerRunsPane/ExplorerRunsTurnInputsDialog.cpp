@@ -161,12 +161,12 @@ std::optional<qint64> resolveParentJobId(qint64 childJobId)
         return std::nullopt;
     }
 
-    auto jobSet = JobSetsRepo::Get(childJobRow.value.job_set_id);
-    if (!jobSet.ok || !jobSet.value.parent_job_set_id.has_value()) {
+    auto jobSet = JobSetsRepo::GetParent(childJobRow.value.job_set_id);
+    if (!jobSet.ok) {
         return std::nullopt;
     }
 
-    auto candidates = JobsRepo::GetByJobSet(*jobSet.value.parent_job_set_id);
+    auto candidates = JobsRepo::GetByJobSet(*jobSet.value);
     if (!candidates.ok || candidates.value.empty()) {
         return std::nullopt;
     }
