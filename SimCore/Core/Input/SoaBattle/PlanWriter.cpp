@@ -25,7 +25,7 @@ namespace soa::battle::actions {
     }
 
     int PlanWriter::firstAliveEnemyIndex() const {
-        for (int i = 4; i < 12; ++i) if (bc_.slots_[i].present && !bc_.slots_[i].is_player) return i - 4;
+        for (int i = 4; i < 12; ++i) if (bc_.slots_[i].present && !bc_.slots_[i].is_player) return i;
         return -1;
     }
 
