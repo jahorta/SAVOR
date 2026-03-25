@@ -131,7 +131,6 @@ namespace simcore {
         uint8_t  init_kind;   // PK_*
         uint8_t  main_kind;   // PK_*
         uint8_t  buff_kind;   // DK_* 
-        uint8_t _pad0;
         uint32_t timeout_ms;
         char     savestate_path[260]; // empty => start from boot
     };

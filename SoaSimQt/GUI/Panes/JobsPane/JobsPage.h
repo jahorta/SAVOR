@@ -22,8 +22,13 @@ class QTextEdit;
 
 class JobsPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit JobsPage(QWidget* parent = nullptr);
+
+signals:
+    void visualReplayRequested(qint64 jobId);
 
 private:
     void createWidgets();

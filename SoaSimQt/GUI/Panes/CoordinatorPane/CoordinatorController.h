@@ -42,6 +42,8 @@ public slots:
     void setStartPaused(bool startPaused);
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
+    void setVisualRenderWidgetHandle(quintptr hwnd);
+    void requestVisualReplay(qint64 jobId);
     void refreshSnapshot();
 
 signals:
@@ -66,6 +68,7 @@ private:
     int eventBufferCapacity_ = 64;
     bool paused_ = false;
     bool startPaused_ = true;
+    quintptr visualRenderWidgetHandle_ = 0;
     QString isoPath_;
     QString dolphinBaseDir_;
     QString validationMessage_;

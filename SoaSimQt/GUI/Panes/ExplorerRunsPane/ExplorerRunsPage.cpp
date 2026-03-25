@@ -760,12 +760,23 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
         return;
     }
 
+    const bool isFinished = row->state == QStringLiteral("SUCCEEDED")
+        || row->state == QStringLiteral("FAILED")
+        || row->state == QStringLiteral("CANCELED")
+        || row->state == QStringLiteral("SUPERSEDED")
+        || row->state == QStringLiteral("SUCCEEDED_WINNER")
+        || row->state == QStringLiteral("SUCCEEDED_DUPLICATE");
+
     QMenu menu(this);
     QAction* viewTurnInputsAction = menu.addAction(QStringLiteral("View Turn Inputs"));
+    QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     viewTurnInputsAction->setEnabled(isTurnInputEligibleState(row->state));
+    replayVisualAction->setEnabled(isFinished);
     QAction* selectedAction = menu.exec(jobsView_->viewport()->mapToGlobal(pos));
     if (selectedAction == viewTurnInputsAction && viewTurnInputsAction->isEnabled()) {
         openTurnInputsDialogForJob(*row);
+    } else if (selectedAction == replayVisualAction && replayVisualAction->isEnabled()) {
+        emit visualReplayRequested(row->jobId);
     }
 }
 

@@ -265,6 +265,13 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     }
 
     const bool actionsEnabled = !controller_->viewState().actionsBusy;
+    const bool isFinished = row->state == QStringLiteral("SUCCEEDED")
+        || row->state == QStringLiteral("FAILED")
+        || row->state == QStringLiteral("CANCELED")
+        || row->state == QStringLiteral("SUPERSEDED")
+        || row->state == QStringLiteral("SUCCEEDED_WINNER")
+        || row->state == QStringLiteral("SUCCEEDED_DUPLICATE");
+    const bool canReplayVisual = actionsEnabled && isFinished;
     const bool canRequeue = actionsEnabled && row->state != QStringLiteral("QUEUED") && row->state != QStringLiteral("CLAIMED") && row->state != QStringLiteral("RUNNING") && row->state != QStringLiteral("FAILED");
     const bool canRestart = actionsEnabled && row->state == QStringLiteral("FAILED");
     const bool canCancel = actionsEnabled && row->state != QStringLiteral("SUCCEEDED") && row->state != QStringLiteral("CANCELED") && row->state != QStringLiteral("SUCCEEDED_WINNER") && row->state != QStringLiteral("SUCCEEDED_DUPLICATE");
@@ -272,11 +279,14 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QMenu menu(jobsTable_);
     QAction* refreshDetailAction = menu.addAction(QStringLiteral("Refresh detail"));
     menu.addSeparator();
+    QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
+    menu.addSeparator();
     QAction* requeueAction = menu.addAction(QStringLiteral("Requeue"));
     QAction* restartAction = menu.addAction(QStringLiteral("Edit INI + Restart"));
     QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
 
     refreshDetailAction->setEnabled(actionsEnabled);
+    replayVisualAction->setEnabled(canReplayVisual);
     requeueAction->setEnabled(canRequeue);
     restartAction->setEnabled(canRestart);
     cancelAction->setEnabled(canCancel);
@@ -284,6 +294,8 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
     if (chosen == refreshDetailAction) {
         controller_->refreshSelectedJobDetail();
+    } else if (chosen == replayVisualAction) {
+        emit visualReplayRequested(row->jobId);
     } else if (chosen == requeueAction) {
         controller_->requeueSelectedJob();
     } else if (chosen == restartAction) {

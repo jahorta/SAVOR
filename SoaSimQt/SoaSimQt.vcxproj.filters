@@ -354,5 +354,17 @@
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualWorkerDialog.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClCompile Include="GUI\Widgets\VisualWorkerDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualWorkerDialog.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
   </ItemGroup>
 </Project>

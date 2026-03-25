@@ -25,9 +25,14 @@ struct ExplorerRunsJobRow;
 
 class ExplorerRunsPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit ExplorerRunsPage(QWidget* parent = nullptr);
     ~ExplorerRunsPage() override;
+
+signals:
+    void visualReplayRequested(qint64 jobId);
 
 private:
     enum class SortMetric {

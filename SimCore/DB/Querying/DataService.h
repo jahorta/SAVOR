@@ -145,6 +145,7 @@ namespace simcore::db {
         static std::future<DbResult<std::vector<ArtifactRefLite>>> FetchJobArtifactRefsAsync(int64_t job_id, RetryPolicy rp = {});
 
         static std::future<DbResult<void>> RequeueJobAsync(int64_t job_id, RetryPolicy rp = {});
+        static std::future<DbResult<void>> ReplayJobVisuallyAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> RestartFailedJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> CancelJobAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> BumpPriorityAsync(int64_t job_id, int delta, RetryPolicy rp = {});

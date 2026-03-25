@@ -123,11 +123,11 @@ JobsController::JobsController(QObject* parent)
         emitStateChanged();
     });
 
-    auto finishAction = [this](QFutureWatcher<VoidResult>& watcher, bool& flag, const QString& successMessage, const char* failurePrefix) {
+    auto finishAction = [this](QFutureWatcher<VoidResult>& watcher, bool& flag, Operation operation, const QString& successMessage, const char* failurePrefix) {
         try {
             const auto result = watcher.result();
             flag = false;
-            setBusy(Operation::Requeue, false);
+            setBusy(operation, false);
             if (result.ok) {
                 state_.infoMessage = successMessage;
                 before_.reset();
@@ -139,20 +139,23 @@ JobsController::JobsController(QObject* parent)
             }
         } catch (...) {
             flag = false;
-            setBusy(Operation::Requeue, false);
+            setBusy(operation, false);
             state_.errorMessage = describeException(failurePrefix);
             emitStateChanged();
         }
     };
 
     connect(&requeueWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(requeueWatcher_, requeueInFlight_, QStringLiteral("Requeued job %1.").arg(actionJobId_), "Requeue failed");
+        finishAction(requeueWatcher_, requeueInFlight_, Operation::Requeue, QStringLiteral("Requeued job %1.").arg(actionJobId_), "Requeue failed");
+    });
+    connect(&replayVisualWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
+        finishAction(replayVisualWatcher_, replayVisualInFlight_, Operation::ReplayVisual, QStringLiteral("Replay visual queued for job %1.").arg(actionJobId_), "Replay visual failed");
     });
     connect(&cancelWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(cancelWatcher_, cancelInFlight_, QStringLiteral("Canceled job %1.").arg(actionJobId_), "Cancel failed");
+        finishAction(cancelWatcher_, cancelInFlight_, Operation::Cancel, QStringLiteral("Canceled job %1.").arg(actionJobId_), "Cancel failed");
     });
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(restartWatcher_, restartInFlight_, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
+        finishAction(restartWatcher_, restartInFlight_, Operation::Restart, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
 
     refreshTimer_ = new QTimer(this);
@@ -246,6 +249,16 @@ void JobsController::cancelSelectedJob()
     cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::CancelJobAsync(jobId).get(); }));
 }
 
+void JobsController::replaySelectedJobVisually()
+{
+    const JobLite* job = selectedJob();
+    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
+    actionJobId_ = job->job_id;
+    replayVisualInFlight_ = true;
+    setBusy(Operation::ReplayVisual, true);
+    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
+}
+
 void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
 {
     const JobLite* job = selectedJob();
@@ -335,7 +348,7 @@ void JobsController::kickDetailFetch(qint64 jobId, bool force)
 
 void JobsController::setBusy(Operation, bool)
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
     emitStateChanged();
 }
 
@@ -346,7 +359,7 @@ bool JobsController::canAutoRefresh() const
 
 bool JobsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
 }
 
 const JobLite* JobsController::selectedJob() const
@@ -359,7 +372,7 @@ QString JobsController::programKindLabel(int id) const { return state_.programNa
 
 void JobsController::emitStateChanged()
 {
-    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
     state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }

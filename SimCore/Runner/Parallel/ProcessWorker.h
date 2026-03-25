@@ -15,14 +15,16 @@
 
 namespace simcore {
 
-	struct ProcStartParams {
-		size_t worker_id{ 0 };
-		std::string exe_path;     // path to SimCoreSandbox.exe
-		std::string iso_path;
-		std::string dolphin_base_dir;
-		std::string user_dir;     // unique per worker
-		bool vm_control{ false };
-	};
+		struct ProcStartParams {
+			size_t worker_id{ 0 };
+			std::string exe_path;     // path to SimCoreSandbox.exe
+			std::string iso_path;
+			std::string dolphin_base_dir;
+			std::string user_dir;     // unique per worker
+			bool vm_control{ false };
+			bool visual{ false };
+			uint64_t render_widget_handle{ 0 };
+		};
 
 	struct AckWait
 	{
@@ -76,7 +78,7 @@ namespace simcore {
 		bool send_job(uint64_t job_id, uint64_t epoch, const PSJob& job);
 		void stop();
 
-		bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
+			bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
 		bool ctl_run_init_once();
 		bool ctl_activate_main();
 

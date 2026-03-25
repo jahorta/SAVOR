@@ -12,6 +12,7 @@ class QSpinBox;
 class QTimer;
 class QTreeView;
 class WorkerTableModel;
+class VisualWorkerDialog;
 
 class CoordinatorPane : public QWidget
 {
@@ -32,6 +33,8 @@ signals:
 private slots:
     void refreshUi();
     void handleValidationLinkActivated(const QString& link);
+public slots:
+    void requestVisualReplay(qint64 jobId);
 
 private:
     void createWidgets();
@@ -57,4 +60,5 @@ private:
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;
+    VisualWorkerDialog* visualWorkerDialog_ = nullptr;
 };

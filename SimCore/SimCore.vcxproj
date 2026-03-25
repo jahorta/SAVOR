@@ -281,6 +281,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\Scheduling\JobEventsRepo.h" />
     <ClInclude Include="DB\Scheduling\JobSetsRepo.h" />
     <ClInclude Include="DB\Scheduling\JobsRepo.h" />
+    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h" />
+    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h" />
     <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h" />
     <ClInclude Include="DB\Scheduling\TriggersRepo.h" />
     <ClInclude Include="DB\SeedProbeRepo.h" />
@@ -405,6 +407,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobsRepo.cpp" />
+    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp" />
+    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp" />
     <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp" />
     <ClCompile Include="DB\Scheduling\TriggersRepo.cpp" />
     <ClCompile Include="DB\SeedProbeRepo.cpp" />
