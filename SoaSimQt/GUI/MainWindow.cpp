@@ -83,7 +83,12 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 MainWindow::~MainWindow()
-{}
+{
+    statusBarRefreshTimer_.stop();
+    if (coordinatorController_) {
+        disconnect(coordinatorController_, nullptr, this, nullptr);
+    }
+}
 
 void MainWindow::handleNavigationChanged(int currentRow)
 {
