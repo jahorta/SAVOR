@@ -12,6 +12,7 @@
 #include "../../Core/Input/InputPlan.h" // GCInputFrame
 #include "../../Core/Input/SoaBattle/Actiontypes.h"
 #include "../../Core/Memory/DerivedBase.h"
+#include "../../Core/Memory/KeyHostRouter.h"
 #include "Core/Common/Buffer.h"
 #include "KeyRegistry.h"
 #include "PSContext.h"
