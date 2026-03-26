@@ -13,7 +13,7 @@ DbResult<VisualReplayRow> impl_get(DbEnv& env, int64_t visual_replay_id)
         "SELECT visual_replay_id, job_id, requested_at, state, worker_id, started_at, ended_at, error_text "
         "FROM visual_replay_entries WHERE visual_replay_id=?1;",
         -1, &st, nullptr);
-    if (rc != SQLITE_OK) return DbResult<VisualReplayRow>::Err({ DbErrorKind::Internal, rc, "prepare get visual replay" });
+    if (rc != SQLITE_OK) return DbResult<VisualReplayRow>::Err({ DbErrorKind::Unknown, rc, "prepare get visual replay" });
     sqlite3_bind_int64(st, 1, visual_replay_id);
     rc = sqlite3_step(st);
     if (rc != SQLITE_ROW) {
@@ -44,11 +44,11 @@ std::future<DbResult<int64_t>> VisualReplayRepo::EnqueueAsync(int64_t job_id, Re
             int rc = sqlite3_prepare_v2(db,
                 "INSERT INTO visual_replay_entries(job_id, requested_at, state) VALUES (?1, strftime('%s','now'), 'QUEUED');",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ DbErrorKind::Internal, rc, "prepare enqueue visual replay" });
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ DbErrorKind::Unknown, rc, "prepare enqueue visual replay" });
             sqlite3_bind_int64(st, 1, job_id);
             rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ DbErrorKind::Internal, rc, "exec enqueue visual replay" });
+            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ DbErrorKind::Unknown, rc, "exec enqueue visual replay" });
             return DbResult<int64_t>::Ok(static_cast<int64_t>(sqlite3_last_insert_rowid(db)));
         });
 }
@@ -59,7 +59,7 @@ std::future<DbResult<std::optional<VisualReplayRow>>> VisualReplayRepo::ClaimNex
         [=](DbEnv& env) -> DbResult<std::optional<VisualReplayRow>> {
             sqlite3* db = env.handle();
             int rc = sqlite3_exec(db, "SAVEPOINT claim_visual_replay;", nullptr, nullptr, nullptr);
-            if (rc != SQLITE_OK) return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Internal, rc, "begin claim visual replay" });
+            if (rc != SQLITE_OK) return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Unknown, rc, "begin claim visual replay" });
 
             sqlite3_stmt* st = nullptr;
             rc = sqlite3_prepare_v2(db,
@@ -68,7 +68,7 @@ std::future<DbResult<std::optional<VisualReplayRow>>> VisualReplayRepo::ClaimNex
             if (rc != SQLITE_OK) {
                 sqlite3_exec(db, "ROLLBACK TO claim_visual_replay;", nullptr, nullptr, nullptr);
                 sqlite3_exec(db, "RELEASE claim_visual_replay;", nullptr, nullptr, nullptr);
-                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Internal, rc, "prepare claim visual replay select" });
+                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Unknown, rc, "prepare claim visual replay select" });
             }
 
             int64_t visual_replay_id = 0;
@@ -86,7 +86,7 @@ std::future<DbResult<std::optional<VisualReplayRow>>> VisualReplayRepo::ClaimNex
             if (rc != SQLITE_OK) {
                 sqlite3_exec(db, "ROLLBACK TO claim_visual_replay;", nullptr, nullptr, nullptr);
                 sqlite3_exec(db, "RELEASE claim_visual_replay;", nullptr, nullptr, nullptr);
-                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Internal, rc, "prepare claim visual replay update" });
+                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Unknown, rc, "prepare claim visual replay update" });
             }
             sqlite3_bind_int64(st, 1, visual_replay_id);
             sqlite3_bind_int64(st, 2, worker_id);
@@ -95,7 +95,7 @@ std::future<DbResult<std::optional<VisualReplayRow>>> VisualReplayRepo::ClaimNex
             if (rc != SQLITE_DONE) {
                 sqlite3_exec(db, "ROLLBACK TO claim_visual_replay;", nullptr, nullptr, nullptr);
                 sqlite3_exec(db, "RELEASE claim_visual_replay;", nullptr, nullptr, nullptr);
-                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Internal, rc, "exec claim visual replay update" });
+                return DbResult<std::optional<VisualReplayRow>>::Err({ DbErrorKind::Unknown, rc, "exec claim visual replay update" });
             }
 
             auto row = impl_get(env, visual_replay_id);
@@ -125,12 +125,12 @@ std::future<DbResult<void>> VisualReplayRepo::MarkRunningAsync(int64_t visual_re
             int rc = sqlite3_prepare_v2(db,
                 "UPDATE visual_replay_entries SET state='RUNNING', worker_id=?2, started_at=strftime('%s','now'), error_text=NULL WHERE visual_replay_id=?1;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "prepare mark running visual replay" });
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "prepare mark running visual replay" });
             sqlite3_bind_int64(st, 1, visual_replay_id);
             sqlite3_bind_int64(st, 2, worker_id);
             rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "exec mark running visual replay" });
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "exec mark running visual replay" });
             return DbResult<void>::Ok();
         });
 }
@@ -144,11 +144,11 @@ std::future<DbResult<void>> VisualReplayRepo::MarkSucceededAsync(int64_t visual_
             int rc = sqlite3_prepare_v2(db,
                 "UPDATE visual_replay_entries SET state='SUCCEEDED', ended_at=strftime('%s','now') WHERE visual_replay_id=?1;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "prepare mark succeeded visual replay" });
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "prepare mark succeeded visual replay" });
             sqlite3_bind_int64(st, 1, visual_replay_id);
             rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "exec mark succeeded visual replay" });
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "exec mark succeeded visual replay" });
             return DbResult<void>::Ok();
         });
 }
@@ -162,12 +162,12 @@ std::future<DbResult<void>> VisualReplayRepo::MarkFailedAsync(int64_t visual_rep
             int rc = sqlite3_prepare_v2(db,
                 "UPDATE visual_replay_entries SET state='FAILED', ended_at=strftime('%s','now'), error_text=?2 WHERE visual_replay_id=?1;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "prepare mark failed visual replay" });
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "prepare mark failed visual replay" });
             sqlite3_bind_int64(st, 1, visual_replay_id);
             sqlite3_bind_text(st, 2, error_text.c_str(), -1, SQLITE_TRANSIENT);
             rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Internal, rc, "exec mark failed visual replay" });
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ DbErrorKind::Unknown, rc, "exec mark failed visual replay" });
             return DbResult<void>::Ok();
         });
 }

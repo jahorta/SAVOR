@@ -13,14 +13,14 @@ std::future<DbResult<int64_t>> VisualReplayEventsRepo::AppendAsync(int64_t visua
             int rc = sqlite3_prepare_v2(db,
                 "INSERT INTO visual_replay_events(visual_replay_id, event_kind, payload, created_at) VALUES (?1, ?2, ?3, strftime('%s','now'));",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ DbErrorKind::Internal, rc, "prepare append visual replay event" });
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ DbErrorKind::Unknown, rc, "prepare append visual replay event" });
             sqlite3_bind_int64(st, 1, visual_replay_id);
             sqlite3_bind_text(st, 2, event_kind.c_str(), -1, SQLITE_TRANSIENT);
             if (payload.has_value()) sqlite3_bind_text(st, 3, payload->c_str(), -1, SQLITE_TRANSIENT);
             else sqlite3_bind_null(st, 3);
             rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ DbErrorKind::Internal, rc, "exec append visual replay event" });
+            if (rc != SQLITE_DONE) return DbResult<int64_t>::Err({ DbErrorKind::Unknown, rc, "exec append visual replay event" });
             return DbResult<int64_t>::Ok(static_cast<int64_t>(sqlite3_last_insert_rowid(db)));
         });
 }
@@ -35,7 +35,7 @@ std::future<DbResult<std::vector<VisualReplayEventRow>>> VisualReplayEventsRepo:
                 "SELECT visual_event_id, visual_replay_id, event_kind, payload, created_at "
                 "FROM visual_replay_events WHERE visual_replay_id=?1 ORDER BY visual_event_id ASC;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<std::vector<VisualReplayEventRow>>::Err({ DbErrorKind::Internal, rc, "prepare list visual replay events" });
+            if (rc != SQLITE_OK) return DbResult<std::vector<VisualReplayEventRow>>::Err({ DbErrorKind::Unknown, rc, "prepare list visual replay events" });
             sqlite3_bind_int64(st, 1, visual_replay_id);
 
             std::vector<VisualReplayEventRow> rows;
@@ -44,7 +44,7 @@ std::future<DbResult<std::vector<VisualReplayEventRow>>> VisualReplayEventsRepo:
                 if (rc == SQLITE_DONE) break;
                 if (rc != SQLITE_ROW) {
                     sqlite3_finalize(st);
-                    return DbResult<std::vector<VisualReplayEventRow>>::Err({ DbErrorKind::Internal, rc, "step list visual replay events" });
+                    return DbResult<std::vector<VisualReplayEventRow>>::Err({ DbErrorKind::Unknown, rc, "step list visual replay events" });
                 }
 
                 VisualReplayEventRow row{};

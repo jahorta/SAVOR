@@ -247,6 +247,9 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
@@ -300,9 +303,6 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
@@ -310,9 +310,6 @@
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h">
-      <Filter>GUI\Panes\Jobs</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h">
@@ -352,9 +349,6 @@
       <Filter>GUI\Common</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
-      <Filter>GUI\Widgets</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualWorkerDialog.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClCompile Include="GUI\Widgets\VisualWorkerDialog.cpp">
