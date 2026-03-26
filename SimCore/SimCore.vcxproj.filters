@@ -429,18 +429,6 @@
     <ClInclude Include="DB\ProgramDB\BattleContextDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBBattleContextCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBBattleRunnerCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBSeedProbeCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBTasMovieCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
     <ClInclude Include="DB\DBCore\ConfigRepo.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
@@ -748,18 +736,6 @@
     </ClCompile>
     <ClCompile Include="DB\ProgramDB\BattleContextDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBBattleContextCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBBattleRunnerCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
     </ClCompile>
     <ClCompile Include="DB\DBCore\ConfigRepo.cpp">
       <Filter>DB\Core</Filter>
