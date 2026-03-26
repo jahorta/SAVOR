@@ -4,7 +4,6 @@
 #include "../../Utils/ThreadName.h"
 #include "../Script/KeyRegistry.h"
 #include "../Script/PSContextCodec.h"
-#include "DB/DBWorkerCoordinator.h"
 
 namespace simcore {
 
@@ -351,62 +350,4 @@ namespace simcore {
         ack_.cancel_all();
     }
 
-    void ProcessWorker::NotifySpawned(const std::string& host, int pid, const std::string& boot_uuid) {
-        if (observer_) observer_->RegisterWorker(/*assumed*/ (int64_t)pid, host, pid, boot_uuid);
-        if (observer_) observer_->RecordEvent(/*assumed*/ (int64_t)pid, WorkerEventKind::Spawned);
-        if (observer_) observer_->UpdateState(/*assumed*/ (int64_t)pid, WorkerStateKind::Spawning);
-    }
-
-    void ProcessWorker::NotifyDraining() {
-        if (!observer_) return;
-        observer_->UpdateState((int64_t)id_, WorkerStateKind::Draining);
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Draining);
-    }
-
-    void ProcessWorker::NotifyExiting() {
-        if (!observer_) return;
-        observer_->UpdateState((int64_t)id_, WorkerStateKind::Exiting);
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Exiting);
-    }
-
-    void ProcessWorker::NotifyJobClaimed(int64_t job_id, int program_kind) {
-        if (!observer_) return;
-        observer_->SetCurrentJob((int64_t)id_, job_id, program_kind);
-        observer_->UpdateState((int64_t)id_, WorkerStateKind::Leasing);
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Claimed, job_id);
-    }
-
-    void ProcessWorker::NotifyMarkRunning(int64_t job_id) {
-        if (!observer_) return;
-        observer_->UpdateState((int64_t)id_, WorkerStateKind::Running);
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::MarkRunning, job_id);
-    }
-
-    void ProcessWorker::NotifyLeaseRenewed(int64_t job_id, int64_t lease_expires_at, int attempts, int max_attempts) {
-        if (!observer_) return;
-        observer_->SetLeaseInfo((int64_t)id_, lease_expires_at, attempts, max_attempts);
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::RenewLease, job_id);
-        observer_->RecordHeartbeat((int64_t)id_);
-        observer_->RecordDbSuccess((int64_t)id_);
-    }
-
-    void ProcessWorker::NotifyJobFinished(int64_t job_id) {
-        if (!observer_) return;
-        observer_->RecordEvent((int64_t)id_, WorkerEventKind::Finished, job_id);
-        observer_->SetCurrentJob((int64_t)id_, std::nullopt, std::nullopt);
-        observer_->UpdateState((int64_t)id_, WorkerStateKind::Idle);
-    }
-
-    void ProcessWorker::NotifyHeartbeat() {
-        if (observer_) observer_->RecordHeartbeat((int64_t)id_);
-    }
-
-    void ProcessWorker::NotifyDbSuccess() {
-        if (observer_) observer_->RecordDbSuccess((int64_t)id_);
-    }
-
-    void ProcessWorker::NotifyError(const std::string& err) {
-        if (!observer_) return;
-        observer_->RecordError((int64_t)id_, err);
-    }
 } // namespace simcore

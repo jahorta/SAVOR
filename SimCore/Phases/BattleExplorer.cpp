@@ -1,18 +1,11 @@
 #include "BattleExplorer.h"
 #include "../Runner/Parallel/ParallelPhaseScriptRunnerApi.h"
 #include <algorithm>
-#include <numeric>
-#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
 #include <functional>
 #include <optional>
-#include "../Core/Input/SoaBattle/ActionPlanSerializer.h"
-#include "../Runner/IPC/Wire.h"
-#include "../Core/Memory/Soa/Battle/BattleContextCodec.h"
-#include "../Phases/Programs/BattleContext/BattleContextPayload.h"
-#include "../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
 
 namespace simcore::battleexplorer {
 
@@ -22,17 +15,6 @@ namespace simcore::battleexplorer {
     using soa::battle::actions::BattlePath;
 
     // --- Combinatorics helpers ---
-
-    static uint64_t binom(uint64_t n, uint64_t k) {
-        if (k > n) return 0;
-        if (k == 0 || k == n) return 1;
-        if (k > n - k) k = n - k;
-        uint64_t res = 1;
-        for (uint64_t i = 1; i <= k; ++i) {
-            res = (res * (n - k + i)) / i;
-        }
-        return static_cast<uint64_t>(res);
-    }
 
     std::vector<std::vector<uint32_t>>
         BattleExplorer::enumerate_fakeattack_vectors(std::size_t N, uint32_t B) {
@@ -63,65 +45,6 @@ namespace simcore::battleexplorer {
     BattleExplorer::BattleExplorer(std::string savestate_path)
     {
         m_savestate_path = savestate_path;
-    }
-
-    soa::battle::ctx::BattleContext BattleExplorer::gather_context(ParallelPhaseScriptRunner& runner) {
-        // 1) Broadcast program: BattleContext probe (no "main" loop needed but we can set both)
-        PSInit init{};
-        init.savestate_path = m_savestate_path;
-        init.default_timeout_ms = 10000; // or your default
-        
-        SCLOGI("[runner] setting and activating context program.");
-        // Worker program kinds: PK_BattleContextProbe
-        if (!runner.set_program(PK_BattleContextProbe, PK_BattleContextProbe, init)) {
-            throw std::runtime_error("BattleExplorer.gather_context: set_program failed");
-        }
-        if (!runner.activate_main()) {
-            throw std::runtime_error("BattleExplorer.gather_context: activate_main failed");
-        }
-        
-        SCLOGI("[runner] submitting context job.");
-        // 2) Submit an empty job; the probe script reads memory and emits the result in PSContext.
-        PSJob job{};
-        std::vector<uint8_t> payload;
-        phase::battle::ctx::encode_payload({ 100000, 2000 }, payload);
-        job.payload = std::move(payload);
-        const uint64_t jid = runner.submit(job);
-
-        // 3) Drain results until our job arrives (runner is multi-worker)
-        PRResult rr{};
-        soa::battle::ctx::BattleContext bc{};
-        for (;;) {
-            if (!runner.try_get_result(rr)) {
-                // busy-spin very lightly; in a real UI loop you might pump events / sleep(1)
-                continue;
-            }
-            if (rr.job_id != jid) {
-                // Some other job in the queue - ignore it here; caller may have a global collector
-                continue;
-            }
-            if (!rr.accepted || !rr.ps.ok) {
-                throw std::runtime_error("BattleExplorer.gather_context: worker reported failure");
-            }
-
-            // 4) Decode from PSContext.
-            //
-            //    Below, we handle a blob in std::string under keys::battle::CTX_BLOB (replace with your real key).
-            //    If your script uses per-field keys instead, replace this block with those reads.
-            {
-                std::string blob;
-                constexpr auto CTX_BLOB_KEY = simcore::keys::battle::CTX_BLOB;
-                if (!rr.ps.ctx.get(CTX_BLOB_KEY, blob)) {
-                    throw std::runtime_error("BattleExplorer.gather_context: context blob not present");
-                }
-                if (!soa::battle::ctx::codec::decode(blob, bc)) {
-                    throw std::runtime_error("BattleExplorer.gather_context: decode_from_blob failed");
-                }
-            }
-            break;
-        }
-
-        return bc;
     }
 
     // Convert set bits in a mask to concrete slot indices (0..31).
@@ -443,169 +366,6 @@ namespace simcore::battleexplorer {
         return out;
     }
 
-    RunResultSummary BattleExplorer::run_paths(const UI_Config& ui,
-            const std::vector<soa::battle::actions::BattlePath>& paths,
-            ParallelPhaseScriptRunner& runner)
-    {
-        RunResultSummary sum{};
-        uint64_t total_jobs = paths.size() * ui.initial_frames.size();
-        sum.jobs_total = total_jobs;
-
-        // 1) Broadcast BattleRunner program to all workers
-        PSInit init{};
-        init.savestate_path = m_savestate_path;
-        init.default_timeout_ms = 10000; // or your default; can be overridden per job via ctx if needed
-        init.derived_buffer_type = DK_Battle;
-
-        SCLOGI("[explorer] Setting up workers");
-
-        if (!runner.set_program(PK_BattleTurnRunner, PK_BattleTurnRunner, init)) {
-            throw std::runtime_error("BattleExplorer.run_paths: set_program failed");
-        }
-        if (!runner.run_init_once()) {
-            throw std::runtime_error("BattleExplorer.run_paths: run_init_once failed");
-        }
-        if (!runner.activate_main()) {
-            throw std::runtime_error("BattleExplorer.run_paths: activate_main failed");
-        }
-
-        SCLOGI("[explorer] Creating Jobs");
-        // 2) Submit one job per terminal BattlePath
-        struct Pending {
-            uint64_t path_id;
-            int retry_count = -1;
-            phase::battle::runner::EncodeSpec spec;
-        };
-        std::unordered_map<uint64_t, Pending> pendings;
-        pendings.reserve(total_jobs);
-
-        uint64_t path_id = 0;
-        SCLOGI("[explorer] Submitting Jobs");
-        for (const auto& initial : ui.initial_frames)
-        {
-            for (const auto& path : paths) {
-                phase::battle::runner::EncodeSpec spec{};
-                spec.run_ms = 60000;
-                spec.vi_stall_ms = 2000;
-                spec.initial = initial;
-                spec.predicates = ui.predicates;
-                spec.path = path;
-
-                std::vector<uint8_t> buf;
-                phase::battle::runner::encode_payload(spec, buf);
-
-                PSJob job{};
-                job.payload = std::move(buf);
-
-                const uint64_t jid = runner.submit(job);
-                Pending p{ path_id++, ui.max_retry_count, spec };
-                pendings.emplace(jid, p);
-            }
-        }
-
-        // 3) Collect results for all submitted jobs
-        size_t remaining = pendings.size();
-        while (remaining > 0) {
-            PRResult rr{};
-            if (!runner.try_get_result(rr)) {
-                // In a real UI loop, you could also poll progress here via runner.try_get_progress(...)
-                continue;
-            }
-
-            // Only count results that correspond to our epoch; runner handles epochs internally.
-            // Validate transport OK + VM OK
-            if (!rr.accepted) {
-                // Transport or VM failure; treat as non-success and continue
-                SCLOGW("[explorer] Job was not accepted (probably wrong epoch): worker=%d jobid=%d", rr.worker_id, rr.job_id);
-                --remaining;
-                continue;
-            }
-
-            if (!rr.ps.ok) {
-                auto p = pendings.find(rr.job_id)->second;
-                pendings.erase(rr.job_id);
-                uint32_t outcome; rr.ps.ctx.get(keys::core::DW_RUN_OUTCOME_CODE, outcome);
-                uint32_t timeout_ms; rr.ps.ctx.get(keys::core::RUN_MS, timeout_ms);
-                if (outcome != (uint32_t)RunToBpOutcome::Hit)
-                {
-                    bool do_retry = false;
-                    if (p.retry_count < 0) do_retry = true;
-                    else if (p.retry_count > 0) {
-                        p.retry_count--;
-                        do_retry = true;
-                    }
-                    SCLOGW("[explorer] Job VM run not ok (%d) %sattempting to resubmit (%s retries): worker=%d jobid=%d, outcome=%d%s%s", 
-                        p.path_id, 
-                        do_retry ? "" : "not ", 
-                        p.retry_count < 0 ? "inf" : std::to_string(p.retry_count).c_str(), 
-                        rr.worker_id, 
-                        rr.job_id, 
-                        outcome,
-                        outcome == (uint32_t)RunToBpOutcome::Timeout ? " timeout_ms=" : "",
-                        outcome == (uint32_t)RunToBpOutcome::Timeout ? std::to_string(timeout_ms).c_str() : ""
-                    );
-
-                    if (do_retry) 
-                    {
-                        std::vector<uint8_t> buf;
-                        phase::battle::runner::encode_payload(p.spec, buf);
-
-                        PSJob job{};
-                        job.payload = std::move(buf);
-                        uint64_t jid = runner.submit(job);
-                        pendings.emplace(jid, p);
-                        
-                    }
-                    else {
-                        --remaining;
-                    }
-
-                }
-                else {
-                    SCLOGW("[explorer] Job VM failed (%d) due to unknown reason, not resubmiting: worker=%d jobid=%d, outcome=%d", p.path_id, rr.worker_id, rr.job_id, outcome);
-                    --remaining;
-                }
-                continue;
-            }
-
-            bool is_success = false;
-            //Example A: outcome code
-            uint32_t oc = 0;
-            if (rr.ps.ctx.get<uint32_t>(keys::battle::BATTLE_OUTCOME, oc)) {
-                is_success = (oc == static_cast<uint32_t>(battle::Outcome::Victory));
-            }
-            --remaining;
-
-            SCLOGI("[explorer] Received results (%d/%d): workerid=%d jobid=%d success=%s%s", total_jobs - remaining, total_jobs, rr.worker_id, rr.job_id, is_success ? "true" : "false ", oc == 0 ? "" : battle::get_outcome_string((battle::Outcome)oc).c_str());
-
-            auto p = pendings.find(rr.job_id)->second;
-
-            if (is_success) 
-            {
-                sum.successes.emplace_back((battle::Outcome)oc, p.path_id, p.spec, rr);
-                ++sum.jobs_success;
-            }
-            else {
-                sum.fails.emplace_back((battle::Outcome)oc, p.path_id, p.spec, rr);
-            }
-        }
-
-        return sum;
-    }
-
-    // --- Validation & estimates ---
-
-    bool BattleExplorer::validate_action_against_context(const soa::battle::ctx::BattleContext& bc,
-        const ActionPlan& ap) const {
-        // Minimal legality gate:
-        // - target exists/targetable (if Attack)
-        // - resources non-negative (lightweight check)
-        // Keep conservative; actual impossibilities will be caught by the VM if needed.
-        (void)bc;
-        (void)ap;
-        return true;
-    }
-
     uint64_t BattleExplorer::estimate_paths_no_fake(const UI_Config& ui, const soa::battle::ctx::BattleContext& ctx) const {
         // Build a conservative, exact count using the same per-turn compiler
         // but only counting, not building full BattlePaths.
@@ -621,14 +381,6 @@ namespace simcore::battleexplorer {
             total *= static_cast<uint64_t>(choices.size());
         }
         return total * ui.initial_frames.size();
-    }
-
-    uint64_t BattleExplorer::estimate_paths_with_fake(const UI_Config& ui, const uint64_t paths_wo_fake) const {
-        if (paths_wo_fake == 0) return 0;
-        const uint64_t N = ui.turns.size();
-        const uint64_t B = static_cast<uint64_t>(std::max(0, ui.fakeattack_budget));
-        // Stars-and-bars: sum_{s=0..B} C(s+N-1, N-1) = C(B+N, N)
-        return paths_wo_fake * binom(B + N, N);
     }
 
 } // namespace simcore::battleexplorer

@@ -34,44 +34,18 @@ namespace simcore::battleexplorer {
         int                        max_retry_count = 0;
     };
 
-    struct JobResult {
-        battle::Outcome outcome;
-        uint64_t job_id;
-        phase::battle::runner::EncodeSpec spec;
-        PRResult pr;
-    };
-
-    struct RunResultSummary {
-        uint64_t jobs_total = 0;
-        uint64_t jobs_success = 0;
-        std::vector<JobResult> fails;
-        std::vector<JobResult> successes;
-    };
-
     class BattleExplorer {
     public:
         BattleExplorer(std::string savestate_path);
 
-        // 1) Run the BattleContext VM once and decode the context.
-        soa::battle::ctx::BattleContext gather_context(ParallelPhaseScriptRunner& runner);
-
-        // 2) Build terminal, non-branching BattlePaths from UI_Config (+ FakeAttack expansion).
+        // Build terminal, non-branching BattlePaths from UI_Config (+ FakeAttack expansion).
         std::vector<soa::battle::actions::BattlePath> enumerate_paths(const soa::battle::ctx::BattleContext& bc,
             const UI_Config& ui) const;
 
-        // 3) Encode and dispatch each BattlePath as a separate job; collate successes.
-        RunResultSummary run_paths(const UI_Config& ui,
-            const std::vector<soa::battle::actions::BattlePath>& paths,
-            ParallelPhaseScriptRunner& runner);
-
-        // Estimators for the CLI footer
+        // Estimator used by Qt/DB authoring.
         uint64_t estimate_paths_no_fake(const UI_Config& ui, const soa::battle::ctx::BattleContext& ctx) const;
-        uint64_t estimate_paths_with_fake(const UI_Config& ui, const uint64_t paths_wo_fake) const; // X * C(B+N, N)
 
     private:
-        bool validate_action_against_context(const soa::battle::ctx::BattleContext& bc,
-            const soa::battle::actions::ActionPlan& ap) const;
-
         static std::vector<std::vector<uint32_t>> enumerate_fakeattack_vectors(std::size_t N, uint32_t B);
 
         std::string m_savestate_path{""};
