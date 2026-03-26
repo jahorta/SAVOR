@@ -83,6 +83,26 @@ MainWindow::MainWindow(QWidget *parent)
     syncStatusBar();
 
     setWindowTitle("Skies of Arcadia Simulator");
+
+    constexpr int kDefaultWindowWidth = 1440;
+    constexpr int kDefaultWindowHeight = 900;
+
+    QScreen* targetScreen = screen();
+    if (!targetScreen) {
+        targetScreen = QGuiApplication::screenAt(QCursor::pos());
+    }
+    if (!targetScreen) {
+        targetScreen = QGuiApplication::primaryScreen();
+    }
+
+    QSize defaultWindowSize(kDefaultWindowWidth, kDefaultWindowHeight);
+    if (targetScreen) {
+        const QSize availableSize = targetScreen->availableGeometry().size();
+        defaultWindowSize = defaultWindowSize.boundedTo(availableSize);
+        setMaximumSize(availableSize);
+    }
+
+    resize(defaultWindowSize);
 }
 
 MainWindow::~MainWindow()
@@ -148,27 +168,6 @@ void MainWindow::syncStatusBar()
 
 void MainWindow::createWidgets()
 {
-    constexpr int kDefaultWindowWidth = 1440;
-    constexpr int kDefaultWindowHeight = 900;
-
-    setWindowTitle("SoaSimQt");
-
-    QScreen* targetScreen = screen();
-    if (!targetScreen) {
-        targetScreen = QGuiApplication::screenAt(QCursor::pos());
-    }
-    if (!targetScreen) {
-        targetScreen = QGuiApplication::primaryScreen();
-    }
-
-    QSize defaultWindowSize(kDefaultWindowWidth, kDefaultWindowHeight);
-    if (targetScreen) {
-        const QSize availableSize = targetScreen->availableGeometry().size();
-        defaultWindowSize = defaultWindowSize.boundedTo(availableSize);
-        setMaximumSize(availableSize);
-    }
-
-    resize(defaultWindowSize);
 
     QWidget* root = new QWidget(this);
     root->setObjectName("mainRoot");
