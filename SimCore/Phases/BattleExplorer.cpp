@@ -1,4 +1,5 @@
 #include "BattleExplorer.h"
+#include "../Runner/Parallel/ParallelPhaseScriptRunnerApi.h"
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>

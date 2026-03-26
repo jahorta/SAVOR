@@ -16,7 +16,7 @@
 #include "Runner/Script/PSContextCodec.h"
 #include "Runner/Script/KeyRegistry.h"
 #include "Phases/Programs/ProgramRegistry.h"
-#include "Runner/Parallel/ParallelPhaseScriptRunner.h"
+#include "Runner/Parallel/WorkerBootPlan.h"
 #include "Runner/IPC/Wire.h"
 
 #include <windows.h>

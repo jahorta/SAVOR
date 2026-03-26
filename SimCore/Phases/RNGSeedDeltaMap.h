@@ -3,9 +3,10 @@
 #include <string>
 #include <vector>
 
-#include "../Boot/Boot.h"
+#include "../Runner/Parallel/WorkerBootPlan.h"
 #include "../Core/Input/InputPlan.h"
-#include "../Runner/Parallel/ParallelPhaseScriptRunner.h"
+
+namespace simcore { class ParallelPhaseScriptRunner; }
 
 namespace simcore {
 

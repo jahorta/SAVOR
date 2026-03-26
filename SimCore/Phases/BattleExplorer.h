@@ -4,6 +4,8 @@
 #include <cstdint>
 #include "../Core/Input/SoaBattle/ActionTypes.h"
 #include "../Core/Memory/Soa/Battle/BattleContext.h"
+#include "Programs/BattleRunner/BattleOutcome.h"
+#include "Programs/BattleRunner/BattleRunnerPayload.h"
 
 namespace simcore::battleexplorer {
 

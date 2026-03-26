@@ -123,10 +123,13 @@
     <ClInclude Include="Core\Shims\StateBufferShim.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunner.h">
+    <ClInclude Include="Runner\Parallel\ProcessWorker.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ProcessWorker.h">
+    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\WorkerBootPlan.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
     <ClInclude Include="Utils\ThreadName.h">
@@ -562,9 +565,6 @@
     </ClCompile>
     <ClCompile Include="Core\Shims\StateBufferShim.cpp">
       <Filter>Core</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\ParallelPhaseScriptRunner.cpp">
-      <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp">
       <Filter>Runner\Parallel</Filter>
