@@ -542,9 +542,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SimCore.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Core\Config\SimConfig.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
