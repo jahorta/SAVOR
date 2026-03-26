@@ -219,7 +219,7 @@
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\ContextKeys\KeyRegistry.h">
+    <ClInclude Include="Runner\Script\KeyRegistry.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Runner\IPC\Wire.h">
