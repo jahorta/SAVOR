@@ -38,8 +38,8 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Job Builder", "Qt-native phase builder for SeedProbe, TasMovie, and Explorer/BattleTurnRunner job set creation." },
     { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
     { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
-    { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
-    { "Explorer Runs", "Mockup page for explorer run history and controls." },
+    { "Seed Probe", "Seed probe grid and unique probing results." },
+    { "Explorer Runs", "Explorer run history and controls." },
     { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
 };
 } // namespace
