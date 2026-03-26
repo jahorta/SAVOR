@@ -300,9 +300,9 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
+    </QtMoc>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
