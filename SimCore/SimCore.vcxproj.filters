@@ -88,9 +88,6 @@
     <Filter Include="DB\Scheduling">
       <UniqueIdentifier>{72a966a8-4d7c-4dd8-a4af-05d9c1f627a1}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Phases\DBCoordinators">
-      <UniqueIdentifier>{e34a113b-44a9-4ccf-b4c5-33b97bdd407c}</UniqueIdentifier>
-    </Filter>
     <Filter Include="DB\Querying">
       <UniqueIdentifier>{3f74286f-bc0e-497f-9b87-4bbacf2387f4}</UniqueIdentifier>
     </Filter>
