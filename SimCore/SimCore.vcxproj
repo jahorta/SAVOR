@@ -299,7 +299,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h" />
-    <ClInclude Include="Phases\FirstBattleGenerator.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
@@ -423,7 +422,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp" />
-    <ClCompile Include="Phases\FirstBattleGenerator.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />

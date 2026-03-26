@@ -39,7 +39,7 @@ namespace simcore::tasmovie {
     // Utility (exposed for tests): compute a conservative run time from VI/input counts.
     uint32_t compute_run_ms_from_counts(uint64_t vi_count, uint64_t input_count, double headroom = 1.15);
 
-    // Utility (exposed for conductor/tests): join save_dir + stem(dtm) + ".sav".
+    // Utility (exposed for tests and coordinators): join save_dir + stem(dtm) + ".sav".
     std::string derive_save_path(const std::string& dtm_path, const std::string& save_dir);
 
 } // namespace simcore::tasmovie

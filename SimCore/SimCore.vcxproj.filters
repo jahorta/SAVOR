@@ -153,9 +153,6 @@
     <ClInclude Include="Tas\DtmFile.h">
       <Filter>Tas</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\FirstBattleGenerator.h">
-      <Filter>Phases</Filter>
-    </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptVM.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
@@ -592,9 +589,6 @@
     </ClCompile>
     <ClCompile Include="Tas\DtmFile.cpp">
       <Filter>Tas</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\FirstBattleGenerator.cpp">
-      <Filter>Phases</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp">
       <Filter>Runner\VM</Filter>
