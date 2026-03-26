@@ -203,7 +203,6 @@
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
-    <ClInclude Include="GUI\Panes\JobsPane\JobsPage.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
