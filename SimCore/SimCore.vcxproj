@@ -324,7 +324,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\WorkerTelemetry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
-    <ClInclude Include="Runner\Script\ContextKeys\KeyRegistry.h" />
+    <ClInclude Include="Runner\Script\KeyRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h" />
