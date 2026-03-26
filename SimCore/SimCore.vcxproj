@@ -438,7 +438,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
-    <ClCompile Include="SimCore.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />
     <ClCompile Include="Utils\Log.cpp" />
