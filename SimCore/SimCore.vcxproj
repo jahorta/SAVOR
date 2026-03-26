@@ -206,7 +206,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Boot\Boot.h" />
-    <ClInclude Include="Core\Branching\Branching.h" />
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
@@ -358,7 +357,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Boot\Boot.cpp" />
-    <ClCompile Include="Core\Branching\Branching.cpp" />
     <ClCompile Include="Core\Config\SimConfig.cpp" />
     <ClCompile Include="Core\DolphinWrapper.cpp" />
     <ClCompile Include="Core\HostStubs.cpp" />
