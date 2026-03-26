@@ -38,7 +38,6 @@ private:
     QWidget* createNavigationPane();
     QWidget* createContentPane();
     StatusBarWidget* createStatusBarWidget();
-    QWidget* createPlaceholderPage(const QString& title, const QString& description);
     void emitCoordinatorStateChanged();
 
     QListWidget* navigationList_ = nullptr;
