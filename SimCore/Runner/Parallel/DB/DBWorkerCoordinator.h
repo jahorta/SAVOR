@@ -8,11 +8,14 @@
 #include <chrono>
 #include <thread>
 #include <deque>
+#include <mutex>
+#include <condition_variable>
 #include "../PRTypes.h"
 #include "../ProcessWorker.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
 #include "../../../DB/Scheduling/JobsRepo.h"
 #include "../../../DB/Scheduling/JobEventsRepo.h"
+#include "../../../DB/Scheduling/VisualReplayRepo.h"
 #include "DBWorkerCoordinatorConfig.h"
 #include "../WorkerStatusRegistry.h"
 
@@ -46,6 +49,7 @@ namespace simcore {
         // dynamic controls
         void set_target_workers(size_t n);
         void set_paused(bool p);
+        void SetVisualRenderWidgetHandle(uint64_t hwnd);
         bool is_paused() const { return paused_.load(); }
 
     private:
@@ -73,6 +77,7 @@ namespace simcore {
             std::optional<int> current_program_kind;
             std::optional<int64_t> current_savestate_id;
             std::optional<int64_t> assigned_job_id;
+            std::optional<int64_t> assigned_visual_replay_id;
 
             std::chrono::steady_clock::time_point idle_deadline{};
             std::chrono::steady_clock::time_point lease_renew_deadline{};
@@ -86,6 +91,7 @@ namespace simcore {
         };
 
         void controller_loop();
+        void visual_listener_loop();
         void drain_progress_loop();
         void drain_results_loop();
         void advance_startup_once();
@@ -98,16 +104,18 @@ namespace simcore {
 
         bool ensure_ready(Slot& s);
         bool ensure_program(Slot& s, int program_kind, std::optional<int64_t> required_savestate_id, IProgramDBCodec& codec, int64_t job_id, uint32_t default_timeout_ms = 10000);
-        DispatchResult dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec);
+        DispatchResult dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec, bool update_job_state = true);
 
         void renew_lease_if_due(int64_t job_id, Slot& s);
         void sweep_expired_leases();
 
         WorkerCoordinatorConfig cfg_;
         std::vector<std::unique_ptr<Slot>> slots_;
+        std::unique_ptr<Slot> visual_slot_;
 
         std::atomic<bool> stop_{ false };
         std::thread controller_;
+        std::thread visual_listener_;
         std::thread progress_drainer_;
         std::thread results_drainer_;
 
@@ -124,6 +132,9 @@ namespace simcore {
 
         std::deque<size_t> startup_queue_;
         std::optional<size_t> startup_in_flight_slot_;
+        mutable std::mutex visual_slot_mtx_;
+        std::condition_variable visual_slot_cv_;
+        std::atomic<uint64_t> visual_render_widget_handle_{ 0 };
     };
 
 } // namespace simcore

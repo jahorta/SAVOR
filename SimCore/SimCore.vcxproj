@@ -209,6 +209,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Core\Branching\Branching.h" />
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
+    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
     <ClInclude Include="Core\Input\GCPadOverride.h" />
     <ClInclude Include="Core\Input\InputPlan.h" />
     <ClInclude Include="Core\Input\InputPlanFmt.h" />
@@ -249,6 +250,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\DBCore\DbHealth.h" />
     <ClInclude Include="DB\DBCore\DbResult.h" />
     <ClInclude Include="DB\DBCore\DbRetryPolicy.h" />
+    <ClInclude Include="DB\DBCore\DbSnapshotService.h" />
     <ClInclude Include="DB\DBCore\DbService.h" />
     <ClInclude Include="DB\DBCore\MigrationRunner.h" />
     <ClInclude Include="DB\DBCore\MigrationRunner_Embedded.h" />
@@ -279,6 +281,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\Scheduling\JobEventsRepo.h" />
     <ClInclude Include="DB\Scheduling\JobSetsRepo.h" />
     <ClInclude Include="DB\Scheduling\JobsRepo.h" />
+    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h" />
+    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h" />
     <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h" />
     <ClInclude Include="DB\Scheduling\TriggersRepo.h" />
     <ClInclude Include="DB\SeedProbeRepo.h" />
@@ -380,6 +384,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\DBCore\DbEnv.cpp" />
     <ClCompile Include="DB\DBCore\DbEventsRepo.cpp" />
     <ClCompile Include="DB\DBCore\DbHealth.cpp" />
+    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp" />
     <ClCompile Include="DB\DBCore\DbService.cpp" />
     <ClCompile Include="DB\DBCore\MigrationRunner.cpp" />
     <ClCompile Include="DB\DBCore\ObjectStore.cpp" />
@@ -402,6 +407,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp" />
     <ClCompile Include="DB\Scheduling\JobsRepo.cpp" />
+    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp" />
+    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp" />
     <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp" />
     <ClCompile Include="DB\Scheduling\TriggersRepo.cpp" />
     <ClCompile Include="DB\SeedProbeRepo.cpp" />
@@ -730,6 +737,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <None Include="DB\migration\0028.sql" />
     <None Include="DB\migration\0029.sql" />
     <None Include="DB\migration\0030.sql" />
+    <None Include="DB\migration\0031.sql" />
+    <None Include="DB\migration\0032.sql" />
+    <None Include="DB\migration\0033.sql" />
+    <None Include="DB\migration\0034.sql" />
+    <None Include="DB\migration\0035.sql" />
     <None Include="DB\update_generated_migrations_command.txt" />
     <None Include="Interesting SOA Addresses.md">
       <SubType>

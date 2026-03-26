@@ -10,6 +10,7 @@
 #include "../../Core/Input/SoaBattle/PlanWriter.h"
 #include "../../Core/Input/SoaBattle/ActionLibrary.h"
 #include "../../Core/Input/InputPlanFmt.h"
+#include "../../Core/Input/AppliedTurnTapeBlob.h"
 #include "../../Core/Memory/IKeyReader.h"
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
@@ -125,10 +126,285 @@ namespace simcore {
         return snapshot_ok;
     }
 
+    bool PhaseScriptVM::compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const {
+        switch (cmp) {
+        case PSCmp::EQ: return lhs == rhs;
+        case PSCmp::NE: return lhs != rhs;
+        case PSCmp::LT: return lhs < rhs;
+        case PSCmp::LE: return lhs <= rhs;
+        case PSCmp::GT: return lhs > rhs;
+        case PSCmp::GE: return lhs >= rhs;
+        default: return false;
+        }
+    }
+
+    void PhaseScriptVM::jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const {
+        auto it = label_vm_pc_map.find(label);
+        if (it != label_vm_pc_map.end()) {
+            section = label;
+            vm_pc = it->second;
+        }
+    }
+
+    bool PhaseScriptVM::op_arm_phase_bps_once() { arm_bps_once(); return true; }
+    bool PhaseScriptVM::op_load_snapshot(PSContext& ctx) { if (!load_snapshot()) return false; ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); return true; }
+    bool PhaseScriptVM::op_capture_snapshot() { return save_snapshot(); }
+    bool PhaseScriptVM::op_reboot_core(PSResult& result, PSContext& ctx) {
+        std::string iso_path{};
+        if (!ctx.get(keys::core::GAME_ISO_PATH, iso_path)) {
+            ctx[keys::core::WORKER_ERROR] = (uint32_t)32;
+            result.ctx = ctx;
+            return false;
+        }
+        host_.clearAllPcBreakpoints();
+        host_.loadGame(iso_path);
+        host_.ConfigurePortsStandardPadP1();
+        armed_ = false;
+        armed_pcs_.clear();
+        arm_bps_once();
+        return true;
+    }
+    void PhaseScriptVM::op_label() const {}
+    void PhaseScriptVM::op_goto(const PSOp& op, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const { jump_to_label_if_exists(op.jmp.name, label_vm_pc_map, vm_pc, section); }
+    void PhaseScriptVM::op_goto_if(const PSOp& op, PSContext& ctx, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const {
+        uint32_t lv = 0; ctx.get(op.jcc.key, lv);
+        if (compare_u32(lv, op.jcc.cmp, op.jcc.imm)) jump_to_label_if_exists(op.jcc.name, label_vm_pc_map, vm_pc, section);
+    }
+    void PhaseScriptVM::op_goto_if_keys(const PSOp& op, PSContext& ctx, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const {
+        uint32_t lv = 0, rv = 0; ctx.get(op.jcc2.left, lv); ctx.get(op.jcc2.right, rv);
+        if (compare_u32(lv, op.jcc2.cmp, rv)) jump_to_label_if_exists(op.jcc2.name, label_vm_pc_map, vm_pc, section);
+    }
+    void PhaseScriptVM::op_set_u32(const PSOp& op, PSContext& ctx) const { ctx[op.keyimm.key] = op.keyimm.imm; }
+    void PhaseScriptVM::op_add_u32(const PSOp& op, PSContext& ctx) const { uint32_t v = 0; ctx.get<uint32_t>(op.keyimm.key, v); ctx[op.keyimm.key] = v + op.keyimm.imm; }
+    void PhaseScriptVM::op_step_frames(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking(); if (op.imm.v == 1) host_.setEnableAllBreakpoints(true); SCLOGD("[VM] phase=run_inputs end"); }
+    void PhaseScriptVM::op_start_deterministic_run() const { if (!host_.startMovieRecording()) SCLOGE("[VM] Unable to start recording for deterministic run"); }
+    void PhaseScriptVM::op_end_deterministic_run() const { host_.endMovieRecording(); }
+    bool PhaseScriptVM::op_read_u8(const PSOp& op, PSResult&, PSContext& ctx) { uint8_t v{}; if (!read_u8(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_read_u16(const PSOp& op, PSResult&, PSContext& ctx) { uint16_t v{}; if (!read_u16(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_read_u32(const PSOp& op, PSResult&, PSContext& ctx) { uint32_t v{}; if (!read_u32(op.rd.addr, v)) { SCLOGD("[VM] READ_U32 FAIL @%08X key=%s", op.rd.addr, keys::name_for_id(op.rd.dst).data()); return false; } SCLOGD("[VM] READ_U32 @%08X -> %08X key=%s", op.rd.addr, v, keys::name_for_id(op.rd.dst).data()); ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_read_f32(const PSOp& op, PSResult&, PSContext& ctx) { float v{}; if (!read_f32(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_read_f64(const PSOp& op, PSResult&, PSContext& ctx) { double v{}; if (!read_f64(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
+    void PhaseScriptVM::op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const { SCLOGD("[VM] EMIT_RESULT %s=%08X", keys::name_for_id(op.key.id).data(), ctx[op.key.id]); result.ctx[op.key.id] = ctx[op.key.id]; }
+    bool PhaseScriptVM::op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const { ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); result.ctx = ctx; result.ctx[op.keyimm.key] = op.keyimm.imm; uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome); result.ok = dw_outcome == 0; return true; }
+    bool PhaseScriptVM::op_apply_input_from(const PSOp& op, PSResult&, PSContext& ctx) { auto it = ctx.find(op.key.id); if (it == ctx.end()) return false; if (auto p = std::get_if<GCInputFrame>(&it->second)) { host_.setInput(*p); return true; } return false; }
+    void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[keys::core::RUN_MS] = op.imm.v; }
+    void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[keys::core::RUN_MS] = timeout_ms; }
+    bool PhaseScriptVM::op_movie_play_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string path; ctx.get<std::string>(op.key.id, path); host_.clearAllPcBreakpoints(); if (!host_.startMoviePlayback(path)) return false; armed_ = false; armed_pcs_.clear(); arm_bps_once(); return true; }
+    bool PhaseScriptVM::op_save_savestate_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string path; ctx.get<std::string>(op.key.id, path); if (path.empty()) return true; if (!host_.saveSavestateBlocking(path)) return false; ctx[keys::core::LAST_SAVESTATE_PATH] = path; return true; }
+    bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
+    void PhaseScriptVM::op_build_turn_inputplan_from_battle_path(PSContext& ctx) const {
+        uint32_t turn = 0;
+        ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, turn);
+        if (turn == 0) {
+            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::InvalidTurnIdxZero;
+            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+        }
+        soa::battle::actions::BattlePath bp;
+        if (!ctx.get<soa::battle::actions::BattlePath>(keys::battle::TURN_PLANS, bp)) {
+            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::BadBlob;
+            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            return;
+        }
+        if (turn > bp.size()) {
+            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::OutOfTurns;
+            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            return;
+        }
+        soa::battle::ctx::BattleContext bc{};
+        std::string blob;
+        if (ctx.get<std::string>(keys::battle::CTX_BLOB, blob)) soa::battle::ctx::codec::decode(blob, bc);
+        const auto& turn_plan = bp[turn - 1];
+        simcore::InputPlan plan;
+        auto err = soa::battle::actions::MaterializeErr::OK;
+        if (!soa::battle::actions::ActionLibrary::generateTurnPlan(bc, turn_plan, plan, err)) {
+            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)err;
+            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            return;
+        }
+        const uint32_t n = static_cast<uint32_t>(plan.size());
+        std::string counts; counts.resize(sizeof(uint32_t)); std::memcpy(counts.data(), &n, sizeof(uint32_t));
+        std::string frames; frames.resize(n * sizeof(simcore::GCInputFrame)); if (n) std::memcpy(frames.data(), plan.data(), frames.size());
+        ctx[simcore::keys::battle::NUM_TURN_PLANS] = uint32_t(1);
+        ctx[simcore::keys::battle::INPUTPLAN_FRAME_COUNT] = counts;
+        ctx[simcore::keys::battle::INPUTPLAN] = frames;
+        ctx[keys::battle::PLAN_MATERIALIZE_ERR] = uint32_t((uint32_t)soa::battle::actions::MaterializeErr::OK);
+        ctx[keys::core::PLAN_DONE] = uint32_t(0);
+    }
+
+    void PhaseScriptVM::op_apply_battle_inputplan_frames(PSContext& ctx) {
+        auto itC = ctx.find(keys::battle::INPUTPLAN_FRAME_COUNT);
+        auto itT = ctx.find(keys::battle::INPUTPLAN);
+        if (itC == ctx.end() || itT == ctx.end()) return;
+        const auto* counts_s = std::get_if<std::string>(&itC->second);
+        const auto* table_s = std::get_if<std::string>(&itT->second);
+        if (!counts_s || !table_s) return;
+        const uint8_t* counts = (const uint8_t*)counts_s->data();
+        const uint8_t* frames = (const uint8_t*)table_s->data();
+        if (counts == 0) { ctx[keys::core::PLAN_DONE] = uint32_t(1); return; }
+        const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        host_.setEnableAllBreakpoints(false);
+        uint32_t idx;
+        const uint32_t count = *(const uint32_t*)(counts);
+        simcore::InputPlan applied_plan{}; applied_plan.reserve(count);
+        std::vector<uint32_t> vi_durations{}; vi_durations.reserve(count);
+        for (idx = 0; idx < count; idx++) {
+            GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
+            const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+            SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
+            host_.setInput(f);
+            host_.stepOneFrameBlocking();
+            const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+            vi_durations.push_back((vi_after >= vi_before) ? (vi_after - vi_before) : 0u);
+        }
+        host_.setEnableAllBreakpoints(true);
+        const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        uint32_t turn_number = 0;
+        if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(keys::battle::ACTIVE_TURN, turn_number);
+        std::string turn_blob; (void)ctx.get(keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+        simcore::inputtape::TurnChunk chunk{}; chunk.turn_number = turn_number; chunk.vi_start = apply_vi_start; chunk.vi_end = apply_vi_end; chunk.frames = applied_plan; chunk.vi_durations = vi_durations;
+        (void)simcore::inputtape::append_turn_chunk(turn_blob, chunk);
+        ctx[keys::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
+        if (idx >= count) ctx[keys::core::PLAN_DONE] = uint32_t(1);
+        uint32_t cur_turn_plans = 0;
+        ctx.get(keys::battle::NUM_TURN_PLANS, cur_turn_plans);
+        ctx[keys::battle::NUM_TURN_PLANS] = cur_turn_plans > 0 ? cur_turn_plans - 1 : 0;
+    }
+    void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
+        using simcore::RunToBpOutcome;
+        uint32_t timeout_ms = init_.default_timeout_ms; ctx.get<uint32_t>(keys::core::RUN_MS, timeout_ms);
+        uint32_t vi_stall_ms = 0; ctx.get<uint32_t>(keys::core::VI_STALL_MS, vi_stall_ms);
+        const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
+        const bool watch_movie = true;
+        uint32_t progress_flags = 0; ctx.get<uint32_t>(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
+        auto t0 = std::chrono::steady_clock::now();
+        host_.disableThrottle();
+        auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
+        host_.enableThrottle();
+        auto t1 = std::chrono::steady_clock::now();
+        const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        RunToBpOutcome outcome = RunToBpOutcome::Unknown;
+        if (rr.hit) outcome = RunToBpOutcome::Hit;
+        else if (rr.reason) {
+            if (std::strcmp(rr.reason, "timeout") == 0) outcome = RunToBpOutcome::Timeout;
+            else if (std::strcmp(rr.reason, "vi_stalled") == 0) outcome = RunToBpOutcome::ViStalled;
+            else if (std::strcmp(rr.reason, "movie_ended") == 0) outcome = RunToBpOutcome::MovieEnded;
+        }
+        ctx[keys::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
+        ctx[keys::core::ELAPSED_MS] = elapsed_ms;
+        ctx[keys::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
+        ctx[keys::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
+        ctx[keys::core::POLL_MS] = poll_ms;
+        ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        uint32_t hit_bp_key = 0;
+        if (rr.hit) {
+            for (auto k : canonical_bp_keys_) if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
+            for (auto k : predicate_bp_keys_) if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
+        }
+        ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
+        if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
+    }
+    void PhaseScriptVM::op_get_battle_context(PSResult& result, PSContext& ctx) const {
+        std::string mem1;
+        if (!host_.getMem1(mem1)) { result.ok = false; return; }
+        simcore::MemView view(reinterpret_cast<const uint8_t*>(mem1.data()), mem1.size());
+        soa::battle::ctx::BattleContext bc{};
+        if (!soa::battle::ctx::codec::extract_from_mem1(view, bc)) { result.ok = false; return; }
+        std::string blob; soa::battle::ctx::codec::encode(bc, blob);
+        ctx[simcore::keys::battle::CTX_BLOB] = blob;
+    }
+    void PhaseScriptVM::op_arm_bps_from_pred_table(PSContext& ctx) {
+        auto itN = ctx.find(keys::core::PRED_COUNT);
+        auto itT = ctx.find(keys::core::PRED_TABLE);
+        if (itN == ctx.end() || itT == ctx.end()) return;
+        const uint32_t n = std::get<uint32_t>(itN->second);
+        const auto* tbl = std::get_if<std::string>(&itT->second);
+        if (!n || !tbl) return;
+        const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
+        std::vector<uint32_t> pcs; pcs.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const BPAddr* e = bpmap_.find(static_cast<BPKey>(rec[i].required_bp));
+            if (!e || !e->pc) continue;
+            pcs.push_back(e->pc); predicate_bp_keys_.push_back(e->key);
+        }
+        if (!pcs.empty()) host_.armPcBreakpoints(pcs);
+    }
+    void PhaseScriptVM::op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router) {
+        auto itN = ctx.find(keys::core::PRED_COUNT);
+        auto itT = ctx.find(keys::core::PRED_TABLE);
+        auto itB = ctx.find(keys::core::PRED_BASELINES);
+        if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end()) return;
+        const uint32_t n = std::get<uint32_t>(itN->second);
+        const auto* tbl = std::get_if<std::string>(&itT->second);
+        auto* bas = std::get_if<std::string>(&itB->second);
+        if (!n || !tbl || !bas) return;
+        using simcore::pred::PredFlag;
+        const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
+        for (uint32_t i = 0; i < n; ++i) {
+            const auto& r = rec[i];
+            if (!r.has_flag(PredFlag::CaptureBaseline) || !r.has_flag(PredFlag::Active)) continue;
+            uint64_t vbits = 0;
+            if (r.lhs_addrprog_offset && read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, vbits)) {}
+            else if (r.lhs_addr_key) { if (!router.read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, vbits)) continue; }
+            else {
+                switch (r.width) {
+                case 1: { uint8_t v = 0; if (!host_.readU8(r.lhs_addr, v)) continue; vbits = v; break; }
+                case 2: { uint16_t v = 0; if (!host_.readU16(r.lhs_addr, v)) continue; vbits = v; break; }
+                case 4: { uint32_t v = 0; if (!host_.readU32(r.lhs_addr, v)) continue; vbits = v; break; }
+                case 8: { uint64_t v = 0; if (!host_.readU64(r.lhs_addr, v)) continue; vbits = v; break; }
+                default: continue;
+                }
+            }
+            std::memcpy(bas->data() + i * sizeof(uint64_t), &vbits, sizeof(uint64_t));
+        }
+    }
+    void PhaseScriptVM::op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router) {
+        uint32_t total = 0; ctx.get(keys::core::PRED_TOTAL, total);
+        uint32_t pass = 0; ctx.get(keys::core::PRED_PASSED, pass);
+        auto itN = ctx.find(keys::core::PRED_COUNT);
+        auto itT = ctx.find(keys::core::PRED_TABLE);
+        auto itB = ctx.find(keys::core::PRED_BASELINES);
+        auto itHit = ctx.find(keys::core::RUN_HIT_BP_KEY);
+        if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end() || itHit == ctx.end()) return;
+        const uint32_t n = std::get<uint32_t>(itN->second);
+        const auto* tbl = std::get_if<std::string>(&itT->second);
+        const auto* bas = std::get_if<std::string>(&itB->second);
+        const uint32_t hit = std::get<uint32_t>(itHit->second);
+        if (!n || !tbl || !bas || !hit) return;
+        using simcore::pred::PredFlag;
+        const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
+        const uint8_t* bas_ptr = reinterpret_cast<const uint8_t*>(bas->data());
+        for (uint32_t i = 0; i < n; ++i) {
+            const auto& r = rec[i];
+            if (!r.has_flag(PredFlag::Active) || (r.required_bp && r.required_bp != hit)) continue;
+            uint64_t lhs = 0, rhs = 0;
+            if (r.has_flag(PredFlag::LhsIsProg) && read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, lhs)) {}
+            else if (r.has_flag(PredFlag::LhsIsKey)) { if (!router.read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, lhs)) continue; }
+            else { switch (r.width) { case 1: { uint8_t v = 0; if (!host_.readU8(r.lhs_addr, v)) continue; lhs = v; break; } case 2: { uint16_t v = 0; if (!host_.readU16(r.lhs_addr, v)) continue; lhs = v; break; } case 4: { uint32_t v = 0; if (!host_.readU32(r.lhs_addr, v)) continue; lhs = v; break; } case 8: { uint64_t v = 0; if (!host_.readU64(r.lhs_addr, v)) continue; lhs = v; break; } default: continue; } }
+            if (r.has_flag(PredFlag::RhsIsProg) && read_via_addrprog(host_, derived_.get(), *tbl, r.rhs_addrprog_offset, r.width, rhs)) {}
+            else if (r.has_flag(PredFlag::RhsIsKey)) { if (!router.read(static_cast<addr::AddrKey>(r.rhs_addr_key), r.width, rhs)) continue; }
+            else rhs = r.rhs_imm;
+            if (r.kind == 1) { uint64_t cap = 0; std::memcpy(&cap, bas_ptr + i * sizeof(uint64_t), sizeof(uint64_t)); rhs = cap; }
+            bool ok = false;
+            switch (r.cmp) { case 0: ok = (lhs == rhs); break; case 1: ok = (lhs != rhs); break; case 2: ok = (lhs < rhs); break; case 3: ok = (lhs <= rhs); break; case 4: ok = (lhs > rhs); break; case 5: ok = (lhs >= rhs); break; default: ok = false; break; }
+            std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
+            uint32_t progress;
+            if (ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink()) {
+                std::string msg = std::format("{} - {}", r.name, cmp_string);
+                msg = std::string("Pred") + (ok ? "(Passed): " : "(Failed): ") + msg;
+                host_.getProgressSink()(msg.c_str(), true);
+            }
+            ++total; if (ok) ++pass;
+            if (!ok && r.has_flag(pred::PredFlag::AbortOnFail)) { ctx[keys::core::PRED_ABORT_RUN] = (uint32_t)1; break; }
+        }
+        ctx[keys::core::PRED_PASSED] = pass;
+        ctx[keys::core::PRED_TOTAL] = total;
+    }
+
     PSResult PhaseScriptVM::run(const PSJob& job)
     {
         PSResult R{};
-        PSContext ctx = job.ctx;
+        auto ctx_heap = std::make_unique<PSContext>(job.ctx);
+        PSContext& ctx = *ctx_heap;
         predicate_bp_keys_.clear();
         std::string _section = "Entry Point";
         // Always start by restoring the pre-captured snapshot for each job
@@ -152,577 +428,41 @@ namespace simcore {
             SCLOGT("[VM] running op: %s", get_psop_name(op.code).c_str());
 
             switch (op.code) {
-            case PSOpCode::ARM_PHASE_BPS_ONCE: 
-            { arm_bps_once(); break; }
-
-            case PSOpCode::LOAD_SNAPSHOT: 
-            { 
-                if (!load_snapshot()) return R;
-                ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-                break; 
+            case PSOpCode::ARM_PHASE_BPS_ONCE: if (!op_arm_phase_bps_once()) return R; break;
+            case PSOpCode::LOAD_SNAPSHOT: if (!op_load_snapshot(ctx)) return R; break;
+            case PSOpCode::CAPTURE_SNAPSHOT: if (!op_capture_snapshot()) return R; break;
+            case PSOpCode::REBOOT_CORE: if (!op_reboot_core(R, ctx)) return R; break;
+            case PSOpCode::LABEL: op_label(); break;
+            case PSOpCode::GOTO: op_goto(op, label_vm_pc_map, vm_pc, _section); break;
+            case PSOpCode::GOTO_IF: op_goto_if(op, ctx, label_vm_pc_map, vm_pc, _section); break;
+            case PSOpCode::GOTO_IF_KEYS: op_goto_if_keys(op, ctx, label_vm_pc_map, vm_pc, _section); break;
+            case PSOpCode::SET_U32: op_set_u32(op, ctx); break;
+            case PSOpCode::ADD_U32: op_add_u32(op, ctx); break;
+            case PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH: op_build_turn_inputplan_from_battle_path(ctx); break;
+            case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES: op_apply_battle_inputplan_frames(ctx); break;
+            case PSOpCode::STEP_FRAMES: op_step_frames(op); break;
+            case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
+            case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
+            case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
+            case PSOpCode::READ_U16: if (!op_read_u16(op, R, ctx)) return R; break;
+            case PSOpCode::READ_U32: if (!op_read_u32(op, R, ctx)) return R; break;
+            case PSOpCode::READ_F32: if (!op_read_f32(op, R, ctx)) return R; break;
+            case PSOpCode::READ_F64: if (!op_read_f64(op, R, ctx)) return R; break;
+            case PSOpCode::GET_BATTLE_CONTEXT: op_get_battle_context(R, ctx); break;
+            case PSOpCode::EMIT_RESULT: op_emit_result(op, R, ctx); break;
+            case PSOpCode::RETURN_RESULT: if (op_return_result(op, R, ctx)) return R; break;
+            case PSOpCode::APPLY_INPUT_FROM: if (!op_apply_input_from(op, R, ctx)) return R; break;
+            case PSOpCode::SET_TIMEOUT: op_set_timeout(op, ctx); break;
+            case PSOpCode::SET_TIMEOUT_FROM: op_set_timeout_from(op, ctx); break;
+            case PSOpCode::MOVIE_PLAY_FROM: if (!op_movie_play_from(op, R, ctx)) return R; break;
+            case PSOpCode::SAVE_SAVESTATE_FROM: if (!op_save_savestate_from(op, R, ctx)) return R; break;
+            case PSOpCode::REQUIRE_DISC_GAMEID_FROM: if (!op_require_disc_gameid_from(op, R, ctx)) return R; break;
+            case PSOpCode::ARM_BPS_FROM_PRED_TABLE: op_arm_bps_from_pred_table(ctx); break;
+            case PSOpCode::CAPTURE_PRED_BASELINES: op_capture_pred_baselines(ctx, *router); break;
+            case PSOpCode::EVAL_PREDICATES_AT_HIT_BP: op_eval_predicates_at_hit_bp(ctx, *router); break;
+            default: break;
             }
-
-            case PSOpCode::CAPTURE_SNAPSHOT: 
-            { if (!save_snapshot()) return R; break; }
-
-            case PSOpCode::REBOOT_CORE:
-            {
-                std::string iso_path{};
-                if (ctx.get(keys::core::GAME_ISO_PATH, iso_path)) {
-                    host_.clearAllPcBreakpoints();
-                    host_.loadGame(iso_path);
-                    host_.ConfigurePortsStandardPadP1();
-                    armed_ = false;
-                    armed_pcs_.clear();
-                    arm_bps_once();
-                }
-                else {
-                    ctx[keys::core::WORKER_ERROR] = (uint32_t)32; // Worker error that iso path was not loaded into the context
-                    R.ctx = ctx;
-                    return R;
-                }
-                break;
-            }
-
-            case PSOpCode::LABEL: 
-            { break; }
-
-            case PSOpCode::GOTO: {
-                auto it = label_vm_pc_map.find(op.jmp.name);
-                if (it != label_vm_pc_map.end()) 
-                {
-                    _section = op.jmp.name;
-                    vm_pc = it->second;
-                }
-                break;
-            }
-
-            case PSOpCode::GOTO_IF: {
-                uint32_t lv = 0;
-                ctx.get(op.jcc.key, lv);
-                auto rv = op.jcc.imm;
-                auto cmp = op.jcc.cmp;
-                std::string name = op.jcc.name;
-                bool take = false;
-                switch (cmp) {
-                case PSCmp::EQ: take = (lv == rv); break;
-                case PSCmp::NE: take = (lv != rv); break;
-                case PSCmp::LT: take = (lv < rv); break;
-                case PSCmp::LE: take = (lv <= rv); break;
-                case PSCmp::GT: take = (lv > rv); break;
-                case PSCmp::GE: take = (lv >= rv); break;
-                }
-                if (take) {
-                    auto it = label_vm_pc_map.find(name);
-                    if (it != label_vm_pc_map.end()) 
-                    {
-                        _section = name;
-                        vm_pc = it->second;
-                    }
-                }
-                break;
-            }
-
-            case PSOpCode::GOTO_IF_KEYS: {
-                uint32_t lv = 0, rv = 0;
-                ctx.get(op.jcc2.left, lv);
-                ctx.get(op.jcc2.right, rv);
-                auto cmp = op.jcc2.cmp;
-                std::string name = op.jcc2.name;
-                bool take = false;
-                switch (cmp) {
-                case PSCmp::EQ: take = (lv == rv); break;
-                case PSCmp::NE: take = (lv != rv); break;
-                case PSCmp::LT: take = (lv < rv); break;
-                case PSCmp::LE: take = (lv <= rv); break;
-                case PSCmp::GT: take = (lv > rv); break;
-                case PSCmp::GE: take = (lv >= rv); break;
-                }
-                if (take) {
-                    auto it = label_vm_pc_map.find(name);
-                    if (it != label_vm_pc_map.end()) 
-                    {
-                        _section = name;
-                        vm_pc = it->second;
-                    }
-                }
-                break;
-            }
-
-            case PSOpCode::SET_U32: {
-                ctx[op.keyimm.key] = op.keyimm.imm;
-                break;
-            }
-
-            case PSOpCode::ADD_U32: {
-                uint32_t v = 0; ctx.get<uint32_t>(op.keyimm.key, v);
-                v += op.keyimm.imm;
-                ctx[op.keyimm.key] = v;
-                break;
-            }
-
-            case PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH:
-            {
-                uint32_t turn = 0;
-                ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, turn);
-                
-                if (turn == 0) {
-                    ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::InvalidTurnIdxZero;
-                    ctx[keys::core::PLAN_DONE] = (uint32_t)1;
-                }
-
-                // Pull typed BattlePath (vector<TurnPlanSpec>)
-                soa::battle::actions::BattlePath bp;
-                if (!ctx.get<soa::battle::actions::BattlePath>(keys::battle::TURN_PLANS, bp)) {
-                    ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::BadBlob;
-                    ctx[keys::core::PLAN_DONE] = (uint32_t)1;
-                    break;
-                }
-
-                if (turn > bp.size()) {
-                    ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::OutOfTurns;
-                    ctx[keys::core::PLAN_DONE] = (uint32_t)1;
-                    break;
-                }
-
-                // Get fresh BattleContext (already provided just before this op in your program)
-                soa::battle::ctx::BattleContext bc{};
-                {
-                    std::string blob;
-                    if (ctx.get<std::string>(keys::battle::CTX_BLOB, blob)) {
-                        soa::battle::ctx::codec::decode(blob, bc);
-                    }
-                }
-
-                const auto& turn_plan = bp[turn-1];
-
-                simcore::InputPlan plan;
-                auto err = soa::battle::actions::MaterializeErr::OK;
-                const bool ok = soa::battle::actions::ActionLibrary::generateTurnPlan(bc, turn_plan, plan, err);
-                if (!ok) {
-                    ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)err;
-                    ctx[keys::core::PLAN_DONE] = (uint32_t)1;
-                    break;
-                }
-
-                const uint32_t n = static_cast<uint32_t>(plan.size());
-                std::string counts; counts.resize(sizeof(uint32_t));
-                std::memcpy(counts.data(), &n, sizeof(uint32_t));
-
-                std::string frames; frames.resize(n * sizeof(simcore::GCInputFrame));
-                if (n) std::memcpy(frames.data(), plan.data(), frames.size());
-
-                ctx[simcore::keys::battle::NUM_TURN_PLANS] = uint32_t(1);
-                ctx[simcore::keys::battle::INPUTPLAN_FRAME_COUNT] = counts;
-                ctx[simcore::keys::battle::INPUTPLAN] = frames;
-
-                ctx[keys::battle::PLAN_MATERIALIZE_ERR] = uint32_t((uint32_t)soa::battle::actions::MaterializeErr::OK);
-                ctx[keys::core::PLAN_DONE] = uint32_t(0);
-                break;
-            }
-
-            case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES: {
-                // tables
-                auto itC = ctx.find(keys::battle::INPUTPLAN_FRAME_COUNT);
-                auto itT = ctx.find(keys::battle::INPUTPLAN);
-                if (itC == ctx.end() || itT == ctx.end()) { break; }
-
-                const auto* counts_s = std::get_if<std::string>(&itC->second);
-                const auto* table_s = std::get_if<std::string>(&itT->second);
-                if (!counts_s || !table_s) { break; }
-
-                const uint8_t* counts = (const uint8_t*)counts_s->data();
-                const uint8_t* frames = (const uint8_t*)table_s->data();
-
-                if (counts == 0) {
-                    ctx[keys::core::PLAN_DONE] = uint32_t(1);
-                    break;
-                }
-
-                host_.setEnableAllBreakpoints(false);
-                
-                uint32_t idx;
-                const uint32_t count = *(const uint32_t*)(counts);
-                for (idx = 0; idx < count; idx++) {
-
-                    GCInputFrame f{};
-                    std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame));
-
-                    SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
-                    host_.setInput(f);
-                    host_.stepOneFrameBlocking();
-                }
-                host_.setEnableAllBreakpoints(true);
-                if (idx >= count) ctx[keys::core::PLAN_DONE] = uint32_t(1);
-
-                uint32_t cur_turn_plans = 0;
-                auto itTP = ctx.get(keys::battle::NUM_TURN_PLANS, cur_turn_plans);
-                ctx[keys::battle::NUM_TURN_PLANS] = cur_turn_plans > 0 ? cur_turn_plans - 1 : 0;
-                break;
-            }
-
-            case PSOpCode::STEP_FRAMES: {
-                SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n);
-                if (op.imm.v == 1) host_.setEnableAllBreakpoints(false);
-                for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking();
-                if (op.imm.v == 1) host_.setEnableAllBreakpoints(true);
-                SCLOGD("[VM] phase=run_inputs end");
-                break;
-            }
-
-            case PSOpCode::START_DETERMINISIC_RUN: {
-                if (!host_.startMovieRecording()) SCLOGE("[VM] Unable to start recording for deterministic run");
-                break;
-            }
-            case PSOpCode::END_DETERMINISTIC_RUN: {
-                host_.endMovieRecording();
-                break;
-            }
-
-            case PSOpCode::RUN_UNTIL_BP: {
-                using simcore::RunToBpOutcome;
-
-                uint32_t timeout_ms = init_.default_timeout_ms;
-                ctx.get<uint32_t>(keys::core::RUN_MS, timeout_ms);
-
-                uint32_t vi_stall_ms = 0;
-                ctx.get<uint32_t>(keys::core::VI_STALL_MS, vi_stall_ms);
-
-                const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
-                const bool watch_movie = true;
-
-                uint32_t progress_flags = 0;
-                ctx.get<uint32_t>(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
-
-                // progress sink handled inside wrapper; host has per-job sink already
-
-                auto t0 = std::chrono::steady_clock::now();
-                host_.disableThrottle();
-                auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
-                host_.enableThrottle();
-                auto t1 = std::chrono::steady_clock::now();
-                const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-
-                RunToBpOutcome outcome = RunToBpOutcome::Unknown;
-                if (rr.hit) outcome = RunToBpOutcome::Hit;
-                else if (rr.reason) {
-                    if (std::strcmp(rr.reason, "timeout") == 0)     outcome = RunToBpOutcome::Timeout;
-                    else if (std::strcmp(rr.reason, "vi_stalled") == 0)  outcome = RunToBpOutcome::ViStalled;
-                    else if (std::strcmp(rr.reason, "movie_ended") == 0) outcome = RunToBpOutcome::MovieEnded;
-                    else outcome = RunToBpOutcome::Unknown;
-                }
-
-                // mirror -> ctx
-                ctx[keys::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
-                ctx[keys::core::ELAPSED_MS] = elapsed_ms;
-                ctx[keys::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
-                ctx[keys::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
-                ctx[keys::core::POLL_MS] = poll_ms;
-                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-
-                // derive hit BP id by matching PC
-                uint32_t hit_bp_key = 0;
-                if (rr.hit) {
-                    for (auto k : canonical_bp_keys_) {
-                        if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
-                    }
-                    for (auto k : predicate_bp_keys_) {
-                        if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
-                    }
-                }
-                ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
-                // keep derived buffer in sync for this frame
-                if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
-
-                break;
-            }
-
-            case PSOpCode::READ_U8: 
-            { uint8_t  v{}; if (!read_u8(op.rd.addr, v)) return R; ctx[op.rd.dst] = v; break; }
-
-            case PSOpCode::READ_U16: 
-            { uint16_t v{}; if (!read_u16(op.rd.addr, v)) return R; ctx[op.rd.dst] = v; break; }
-
-            case PSOpCode::READ_U32:
-            {
-                uint32_t v{};
-                if (!read_u32(op.rd.addr, v))
-                {
-                    SCLOGD("[VM] READ_U32 FAIL @%08X key=%s", op.rd.addr, keys::name_for_id(op.rd.dst).data());
-                    return R;
-                }
-                SCLOGD("[VM] READ_U32 @%08X -> %08X key=%s", op.rd.addr, v, keys::name_for_id(op.rd.dst).data());
-                ctx[op.rd.dst] = v;
-                break;
-            }
-            case PSOpCode::READ_F32: 
-            { float    v{}; if (!read_f32(op.rd.addr, v)) return R; ctx[op.rd.dst] = v; break; }
-
-            case PSOpCode::READ_F64: 
-            { double   v{}; if (!read_f64(op.rd.addr, v)) return R; ctx[op.rd.dst] = v; break; }
-
-            case PSOpCode::GET_BATTLE_CONTEXT:
-            {
-                std::string mem1;
-                if (!host_.getMem1(mem1)) { R.ok = false; break; }
-                simcore::MemView view(reinterpret_cast<const uint8_t*>(mem1.data()), mem1.size());
-                soa::battle::ctx::BattleContext bc{};
-                if (!soa::battle::ctx::codec::extract_from_mem1(view, bc)) { R.ok = false; break; }
-                std::string blob;
-                soa::battle::ctx::codec::encode(bc, blob);
-                ctx[simcore::keys::battle::CTX_BLOB] = blob;
-                break;
-            }
-
-            case PSOpCode::EMIT_RESULT:
-            {
-                SCLOGD("[VM] EMIT_RESULT %s=%08X", keys::name_for_id(op.key.id).data(), ctx[op.key.id]);
-                R.ctx[op.key.id] = ctx[op.key.id]; // copy selected value to result
-                break;
-            }
-
-            case PSOpCode::RETURN_RESULT: {
-                ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-                R.ctx = ctx;
-
-                R.ctx[op.keyimm.key] = op.keyimm.imm;
-                uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome);
-                R.ok = dw_outcome == 0;
-                return R;
-            }
-
-            case PSOpCode::APPLY_INPUT_FROM: {
-                auto it = ctx.find(op.key.id);
-                if (it == ctx.end()) return R;
-                if (auto p = std::get_if<GCInputFrame>(&it->second)) {
-                    host_.setInput(*p);
-                }
-                else {
-                    return R;
-                }
-                break;
-            }
-
-            case PSOpCode::SET_TIMEOUT: 
-            { ctx[keys::core::RUN_MS] = op.imm.v; break; }
-
-            case PSOpCode::SET_TIMEOUT_FROM: {
-                uint32_t timeout_ms;
-                ctx.get<uint32_t>(op.key.id, timeout_ms);
-                ctx[keys::core::RUN_MS] = timeout_ms;
-                break;
-            }
-
-            case PSOpCode::MOVIE_PLAY_FROM: {
-                std::string path;
-                ctx.get<std::string>(op.key.id, path);
-                host_.clearAllPcBreakpoints();
-                if (!host_.startMoviePlayback(path)) return R;
-                armed_ = false;
-                armed_pcs_.clear();
-                arm_bps_once();
-                break;
-            }
-
-            case PSOpCode::SAVE_SAVESTATE_FROM: {
-                std::string path;
-                ctx.get<std::string>(op.key.id, path);
-                if (path.empty()) break;
-                if (!host_.saveSavestateBlocking(path)) return R;
-                ctx[keys::core::LAST_SAVESTATE_PATH] = path;    
-                break;
-            }
-
-            case PSOpCode::REQUIRE_DISC_GAMEID_FROM: {
-
-                const char* id6 = nullptr;
-                std::string tmp;
-                ctx.get<std::string>(op.key.id, tmp);
-                if (tmp.size() < 6) return R;
-                id6 = tmp.c_str();
-
-                auto di = host_.getDiscInfo();
-                const bool ok = (di.has_value() && di->game_id.size() >= 6 &&
-                    std::memcmp(di->game_id.data(), id6, 6) == 0);
-                if (!ok) return R;
-                break;
-            }
-
-            case PSOpCode::ARM_BPS_FROM_PRED_TABLE: {
-                auto itN = ctx.find(keys::core::PRED_COUNT);
-                auto itT = ctx.find(keys::core::PRED_TABLE);
-                if (itN == ctx.end() || itT == ctx.end()) break;
-
-                const uint32_t n = std::get<uint32_t>(itN->second);
-                const auto* tbl = std::get_if<std::string>(&itT->second);
-                if (!n || !tbl) break;
-                
-                const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
-                std::vector<uint32_t> pcs; pcs.reserve(n);
-                for (uint32_t i = 0; i < n; ++i) {
-                    const BPAddr* e = bpmap_.find(static_cast<BPKey>(rec[i].required_bp));
-                    if (!e || !e->pc) continue;
-                    
-                    pcs.push_back(e->pc);
-                    predicate_bp_keys_.push_back(e->key);
-                }
-                
-                if (!pcs.empty()) host_.armPcBreakpoints(pcs);
-                break;
-            }
-
-            case PSOpCode::CAPTURE_PRED_BASELINES: {
-                auto itN = ctx.find(keys::core::PRED_COUNT);
-                auto itT = ctx.find(keys::core::PRED_TABLE);
-                auto itB = ctx.find(keys::core::PRED_BASELINES);
-                if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end()) break;
-
-                const uint32_t n = std::get<uint32_t>(itN->second);
-                const auto* tbl = std::get_if<std::string>(&itT->second);
-                auto* bas = std::get_if<std::string>(&itB->second);
-                if (!n || !tbl || !bas) break;
-
-                using simcore::pred::PredFlag;
-                const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
-
-                for (uint32_t i = 0; i < n; ++i) {
-                    const auto& r = rec[i];
-                    if (!r.has_flag(PredFlag::CaptureBaseline)) continue;
-                    if (!r.has_flag(PredFlag::Active)) continue;
-
-                    uint64_t vbits = 0;
-
-                    // LHS precedence: addrprog -> key -> absolute
-                    if (r.lhs_addrprog_offset &&
-                        read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, vbits)) {
-                        // ok
-                    }
-                    else if (r.lhs_addr_key) {
-                        if (!router->read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, vbits)) continue;
-                    }
-                    else {
-                        switch (r.width) {
-                        case 1: { uint8_t  v = 0; if (!host_.readU8(r.lhs_addr, v)) continue; vbits = v; break; }
-                        case 2: { uint16_t v = 0; if (!host_.readU16(r.lhs_addr, v)) continue; vbits = v; break; }
-                        case 4: { uint32_t v = 0; if (!host_.readU32(r.lhs_addr, v)) continue; vbits = v; break; }
-                        case 8: { uint64_t v = 0; if (!host_.readU64(r.lhs_addr, v)) continue; vbits = v; break; }
-                        default: continue;
-                        }
-                    }
-
-                    std::memcpy(bas->data() + i * sizeof(uint64_t), &vbits, sizeof(uint64_t));
-                }
-                break;
-            }
-
-            case PSOpCode::EVAL_PREDICATES_AT_HIT_BP: {
-                uint32_t hit_bp = 0; ctx.get<uint32_t>(keys::core::RUN_HIT_PC, hit_bp);
-                uint32_t cur_turn = 0; ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, cur_turn);
-
-                uint32_t total = 0; ctx.get(keys::core::PRED_TOTAL, total);
-                uint32_t pass = 0;
-
-                auto itN = ctx.find(keys::core::PRED_COUNT);
-                auto itT = ctx.find(keys::core::PRED_TABLE);
-                auto itB = ctx.find(keys::core::PRED_BASELINES);
-                auto itHit = ctx.find(keys::core::RUN_HIT_BP_KEY);
-                if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end() || itHit == ctx.end()) break;
-
-                const uint32_t n = std::get<uint32_t>(itN->second);
-                const auto* tbl = std::get_if<std::string>(&itT->second);
-                const auto* bas = std::get_if<std::string>(&itB->second);
-                const uint32_t hit = std::get<uint32_t>(itHit->second);
-                if (!n || !tbl || !bas || !hit) break;
-
-                using simcore::pred::PredFlag;
-
-                const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
-                const uint8_t* bas_ptr = reinterpret_cast<const uint8_t*>(bas->data());
-
-                for (uint32_t i = 0; i < n; ++i) {
-                    const auto& r = rec[i];
-                    if (!r.has_flag(PredFlag::Active)) continue;
-                    if (r.required_bp && r.required_bp != hit) continue;
-
-                    uint64_t lhs = 0, rhs = 0;
-
-                    // LHS precedence: addrprog -> key -> absolute
-                    if (r.has_flag(PredFlag::LhsIsProg) &&
-                        read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, lhs)) {
-                        // ok
-                    }
-                    else if (r.has_flag(PredFlag::LhsIsKey)) {
-                        if (!router->read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, lhs)) continue;
-                    }
-                    else {
-                        switch (r.width) {
-                        case 1: { uint8_t  v = 0; if (!host_.readU8(r.lhs_addr, v)) continue; lhs = v; break; }
-                        case 2: { uint16_t v = 0; if (!host_.readU16(r.lhs_addr, v)) continue; lhs = v; break; }
-                        case 4: { uint32_t v = 0; if (!host_.readU32(r.lhs_addr, v)) continue; lhs = v; break; }
-                        case 8: { uint64_t v = 0; if (!host_.readU64(r.lhs_addr, v)) continue; lhs = v; break; }
-                        default: continue;
-                        }
-                    }
-
-                    
-
-                    // RHS precedence: key (RhsIsKey) -> addrprog -> immediate
-                    if (r.has_flag(PredFlag::RhsIsProg) &&
-                        read_via_addrprog(host_, derived_.get(), *tbl, r.rhs_addrprog_offset, r.width, rhs)) {
-                        // ok
-                    } else if (r.has_flag(PredFlag::RhsIsKey)) {
-                        if (!router->read(static_cast<addr::AddrKey>(r.rhs_addr_key), r.width, rhs)) continue;
-                    }
-                    else {
-                        rhs = r.rhs_imm;
-                    }
-
-                    // DELTA: swap RHS to captured baseline
-                    if (r.kind == 1 /* DELTA */) {
-                        uint64_t cap = 0;
-                        std::memcpy(&cap, bas_ptr + i * sizeof(uint64_t), sizeof(uint64_t));
-                        rhs = cap;
-                    }
-
-                    bool ok = false;
-                    switch (r.cmp) {
-                    case 0: ok = (lhs == rhs); break; // EQ
-                    case 1: ok = (lhs != rhs); break; // NE
-                    case 2: ok = (lhs < rhs); break; // LT
-                    case 3: ok = (lhs <= rhs); break; // LE
-                    case 4: ok = (lhs > rhs); break; // GT
-                    case 5: ok = (lhs >= rhs); break; // GE
-                    default: ok = false; break;
-                    }
-
-                    std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
-
-                    uint32_t progress;
-                    if (ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink())
-                    {
-                        std::string msg = std::format("{} - {}", r.name, cmp_string);
-                        msg = std::string("Pred") + (ok ? "(Passed): " : "(Failed): ") + msg;
-                        host_.getProgressSink()(msg.c_str(), true);
-                    }
-
-                    ++total;
-                    if (ok) 
-                    {
-                        ++pass;
-                    }
-
-                    if (!ok && r.has_flag(pred::PredFlag::AbortOnFail))
-                    {
-                        ctx[keys::core::PRED_ABORT_RUN] = (uint32_t)1;
-                        break;
-                    }
-                }
-                ctx[keys::core::PRED_PASSED] = pass;
-                ctx[keys::core::PRED_TOTAL] = total;
-                break;
-            }
-            }
-
         }
         ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         R.ctx = ctx;

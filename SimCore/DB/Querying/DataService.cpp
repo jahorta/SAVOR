@@ -5,10 +5,24 @@
 #include "../ExplorerSettingsRepo.h"
 #include "../DBCore/ObjectStore.h"
 #include "../ProgramKindsRepo.h"
+#include "../Scheduling/VisualReplayRepo.h"
 #include "../../Runner/IPC/Wire.h"
 #include <thread>
 
 namespace simcore::db {
+    namespace {
+        bool is_terminal_state_for_visual_replay(const std::string& state)
+        {
+            return state == "SUCCEEDED"
+                || state == "FAILED"
+                || state == "CANCELED"
+                || state == "SUPERSEDED"
+                || state == "SUCCEEDED_WINNER"
+                || state == "SUCCEEDED_DUPLICATE";
+        }
+
+    }
+
 
     static inline DbResult<void> invalid_arg(const char* msg) {
         return DbResult<void>::Err(DbError{ DbErrorKind::InvalidArgument, 0, msg });
@@ -413,6 +427,31 @@ namespace simcore::db {
             if (!r.ok) { p.set_value(DbResult<void>::Err(r.error)); return; }
             // Best-effort event; ignore errors (same behavior as before).
             (void)JobEventsRepo::AppendAsync(job_id, "REQUEUE", std::nullopt, rp).get();
+            p.set_value(DbResult<void>::Ok());
+            }).detach();
+        return fut;
+    }
+
+    std::future<DbResult<void>> DataService::ReplayJobVisuallyAsync(int64_t job_id, RetryPolicy rp) {
+        std::promise<DbResult<void>> pr;
+        auto fut = pr.get_future();
+        std::thread([job_id, rp, p = std::move(pr)]() mutable {
+            auto jr = JobsRepo::GetAsync(job_id, rp).get();
+            if (!jr.ok) {
+                p.set_value(DbResult<void>::Err(jr.error));
+                return;
+            }
+            if (!is_terminal_state_for_visual_replay(jr.value.state)) {
+                p.set_value(DbResult<void>::Err({ DbErrorKind::InvalidState, 0, "visual replay requires a completed job" }));
+                return;
+            }
+
+            auto replay = VisualReplayRepo::EnqueueAsync(job_id, rp).get();
+            if (!replay.ok) {
+                p.set_value(DbResult<void>::Err(replay.error));
+                return;
+            }
+            (void)JobEventsRepo::AppendAsync(job_id, "VISUAL_REPLAY_REQUESTED", std::to_string(replay.value), rp).get();
             p.set_value(DbResult<void>::Ok());
             }).detach();
         return fut;

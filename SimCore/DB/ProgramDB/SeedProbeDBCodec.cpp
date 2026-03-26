@@ -262,6 +262,8 @@ simcore::db::DbResult<int64_t> SeedProbeDBCodec::encode_job_into_db(int64_t job_
 
     BlueprintIni bp = BlueprintIni::from_section(ini);
 
+    bp.root_jobset_id = job_set_id;
+
     if (bp.savestate_id <= 0)
         return DbResult<int64_t>::Err({ DbErrorKind::InvalidArgument, 0, 
             "Require a value for SeedProbe.BlueprintIni.savestate_id"});
@@ -617,7 +619,8 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
     if (bp.cur_phase == SeedProbePhase::Neutral)
     {
-        auto js = JobSetsRepo::Create("seed probe", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Grid", 1);
+
+        auto js = JobSetsRepo::CreateChild(bp.root_jobset_id, "Grid Probe", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Grid", 1);
         if (!js.ok) return DbResult<void>::Err(js.error);
 
         bp.cur_phase = SeedProbePhase::Grid;
@@ -629,7 +632,8 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
         return DbResult<void>::Ok();
     }
     else if (bp.cur_phase == SeedProbePhase::Grid) {
-        auto js = JobSetsRepo::Create("seed probe", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Unique", 1);
+
+        auto js = JobSetsRepo::CreateChild(bp.root_jobset_id, "Unique Probes", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Unique", 1);
         if (!js.ok) return DbResult<void>::Err(js.error);
 
         bp.cur_phase = SeedProbePhase::Unique;

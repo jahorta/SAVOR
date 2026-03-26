@@ -34,4 +34,6 @@
 /SoaSimGui/imgui.ini
 /SoaSimGui/SoaGui.ini
 /SoaSimGui/x64/Release
+/SoaSimQt/x64/Debug
+/SoaSimQt/x64/Release
 /SimCore/_Dolphin_src/Core

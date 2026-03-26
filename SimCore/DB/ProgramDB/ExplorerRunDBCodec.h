@@ -126,6 +126,8 @@ namespace simcore::db::codec::battle::run {
 
         uint32_t     vi_start{ 0 };
         uint32_t     vi_end{ 0 };
+        std::string  applied_input_tape_text{};
+        int64_t      applied_input_artifact_id{ -1 };
 
         static inline ResultsIni from_section(const IniDoc& doc) {
             ResultsIni results{};
@@ -135,6 +137,8 @@ namespace simcore::db::codec::battle::run {
             results.dw_err = section.get_u32("dw_err", (uint32_t)simcore::RunToBpOutcome::Unknown);
             results.vi_start = section.get_u32("vi_start", -1);
             results.vi_end = section.get_u32("vi_end", -1);
+            results.applied_input_tape_text = section.get("applied_input_tape_text", "");
+            results.applied_input_artifact_id = section.get_i64("applied_input_artifact_id", -1);
             return results;
         }
         inline void set_section(IniDoc& doc) const {
@@ -143,6 +147,8 @@ namespace simcore::db::codec::battle::run {
             doc.set(SECTION_NAME, "dw_err", std::to_string(dw_err));
             doc.set(SECTION_NAME, "vi_start", std::to_string(vi_start));
             doc.set(SECTION_NAME, "vi_end", std::to_string(vi_end));
+            doc.set(SECTION_NAME, "applied_input_tape_text", applied_input_tape_text);
+            doc.set(SECTION_NAME, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         }
         IniDoc append_section(const IniDoc& doc) const {
             IniDoc newDoc{ doc };

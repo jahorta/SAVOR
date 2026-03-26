@@ -33,6 +33,8 @@ namespace simboot {
         }
 
         // 1) Build wrapper and point it at our isolated User dir
+        dw.SetVisualMode(opts.visual);
+        dw.SetRenderWidgetHandle(opts.render_widget_handle);
         if (!dw.SetUserDirectory(opts.user_dir)) {
             if (error_out) *error_out = "SetUserDirectory() failed for: " + opts.user_dir.string();
             return false;

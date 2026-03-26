@@ -11,13 +11,14 @@
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
 #include "../../../DB/Scheduling/JobsRepo.h"
 #include "../../../DB/Scheduling/JobEventsRepo.h"
+#include "../../../DB/Scheduling/VisualReplayRepo.h"
+#include "../../../DB/Scheduling/VisualReplayEventsRepo.h"
 #include "../../../DB/DBCore/ObjectStore.h"
 #include "../../IPC/Wire.h"
 #include "DBTriggerEngine.h"
 #include "../../../Utils/ModulePath.h"
 
 namespace simcore {
-
     static inline std::string make_claim_token() {
         std::ostringstream os;
         os << "WKC-" << GetCurrentProcessId() << "-" << GetCurrentThreadId();
@@ -49,21 +50,22 @@ namespace simcore {
     void WorkerCoordinator::start() {
         if (!slots_.empty()) return;
         interrupt_in_flight_jobs_with_event();
-        const size_t n = cfg_.max_concurrent_processes;
         desired_workers_.store(cfg_.desired_workers);
-        auto s = std::make_unique<Slot>();
-        s->id = 0;
-        s->proc = std::make_unique<ProcessWorker>();
-        s->proc->set_progress_queue(&progress_q_);
-        s->running.store(false);
-        s->phase = Slot::Phase::Uninitialized;
-        slots_.push_back(std::move(s));
+
+        auto normal = std::make_unique<Slot>();
+        normal->id = 1;
+        normal->proc = std::make_unique<ProcessWorker>();
+        normal->proc->set_progress_queue(&progress_q_);
+        normal->running.store(false);
+        normal->phase = Slot::Phase::Uninitialized;
+        slots_.push_back(std::move(normal));
         slots_[0]->running.store(true);
         slots_[0]->phase = Slot::Phase::PendingStart;
         enqueue_startup_slot(0);
         paused_.store(cfg_.start_to_paused);
         stop_.store(false);
         controller_ = std::thread([this] { set_this_thread_name_utf8("WKC-Controller"); controller_loop(); });
+        visual_listener_ = std::thread([this] { set_this_thread_name_utf8("WKC-Visual"); visual_listener_loop(); });
         progress_drainer_ = std::thread([this] { set_this_thread_name_utf8("WKC-Progress"); drain_progress_loop(); });
         results_drainer_ = std::thread([this] { set_this_thread_name_utf8("WKC-Results");  drain_results_loop(); });
     }
@@ -73,10 +75,19 @@ namespace simcore {
         interrupt_in_flight_jobs_with_event();
         startup_in_flight_slot_.reset();
         startup_queue_.clear();
+        visual_slot_cv_.notify_all();
+        {
+            std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+            if (visual_slot_) {
+                shutdown_slot(*visual_slot_);
+                visual_slot_.reset();
+            }
+        }
         for (auto& s : slots_) { shutdown_slot(*s); }
         progress_q_.close();
         results_q_.close();
         if (controller_.joinable()) controller_.join();
+        if (visual_listener_.joinable()) visual_listener_.join();
         if (progress_drainer_.joinable()) progress_drainer_.join();
         if (results_drainer_.joinable())  results_drainer_.join();
         slots_.clear();
@@ -117,6 +128,8 @@ namespace simcore {
             ps.user_dir = ud.str();
         }
         ps.vm_control = true;
+        ps.visual = (s.id == 0);
+        ps.render_widget_handle = (s.id == 0) ? visual_render_widget_handle_.load(std::memory_order_relaxed) : 0;
         if (!s.proc->start(ps, &results_q_)) {
             s.dead.store(true);
             s.phase = Slot::Phase::Dead;
@@ -130,6 +143,7 @@ namespace simcore {
         s.ready.store(false);
         s.current_program_kind.reset();
         s.current_savestate_id.reset();
+        s.assigned_visual_replay_id.reset();
         s.phase = Slot::Phase::WaitingReady;
         s.idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
         return true;
@@ -143,6 +157,7 @@ namespace simcore {
         s.ready.store(false);
         s.dead.store(true);
         s.phase = Slot::Phase::Dead;
+        s.assigned_visual_replay_id.reset();
         UpdateState((int64_t)s.id, WorkerStateKind::Dead);
         UnregisterWorker((int64_t)s.id);
     }
@@ -163,6 +178,7 @@ namespace simcore {
         s.startup_attempts += 1;
         s.dead.store(true);
         s.phase = Slot::Phase::Dead;
+        s.assigned_visual_replay_id.reset();
         UpdateState((int64_t)s.id, WorkerStateKind::Dead);
         RecordError((int64_t)s.id, err);
         if (s.running.load() && active_slot_count() <= desired_workers_.load()) {
@@ -277,7 +293,7 @@ namespace simcore {
         auto psi = psinit_res.value;
         if (psi.default_timeout_ms == 0) psi.default_timeout_ms = default_timeout_ms;
 
-        if (!s.proc->ctl_set_program(static_cast<uint8_t>(program_kind), static_cast<uint8_t>(program_kind), psi)) 
+        if (!s.proc->ctl_set_program(static_cast<uint8_t>(program_kind), static_cast<uint8_t>(program_kind), psi))
         {
             RecordError((int64_t)s.id, "Failed to set program");
             return false;
@@ -298,7 +314,7 @@ namespace simcore {
         return true;
     }
 
-    WorkerCoordinator::DispatchResult WorkerCoordinator::dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec) {
+    WorkerCoordinator::DispatchResult WorkerCoordinator::dispatch_one(Slot& s, const simcore::db::JobRow& job, IProgramDBCodec& codec, bool update_job_state) {
         if (!s.proc->try_acquire_slot()) return DispatchResult::NotAvailable;
 
         auto jobr = codec.decode_job_from_db(job.job_id);
@@ -317,8 +333,10 @@ namespace simcore {
         SetLeaseInfo((int64_t)s.id, lease_exp, /*attempts*/0, /*max_attempts*/0);
         RecordHeartbeat((int64_t)s.id);
 
-        simcore::db::JobsRepo::MarkRunning(job.job_id);
-        simcore::db::JobEventsRepo::Append(job.job_id, "DISPATCHED", std::nullopt);
+        if (update_job_state) {
+            simcore::db::JobsRepo::MarkRunning(job.job_id);
+            simcore::db::JobEventsRepo::Append(job.job_id, "DISPATCHED", std::nullopt);
+        }
 
         s.assigned_job_id = job.job_id;
         s.lease_renew_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.heartbeat_interval_ms);
@@ -352,7 +370,7 @@ namespace simcore {
             if (active_slot_count() < desired_workers_.load()) {
                 for (int i = slots_.size(); i < desired_workers_; i++) {
                     auto s = std::make_unique<Slot>();
-                    s->id = i;
+                    s->id = i + 1;
                     s->proc = std::make_unique<ProcessWorker>();
                     s->proc->set_progress_queue(&progress_q_);
                     s->running.store(false);
@@ -366,6 +384,7 @@ namespace simcore {
                     s.dead.store(false);
                     s.ready.store(false);
                     s.assigned_job_id.reset();
+                    s.assigned_visual_replay_id.reset();
                     s.current_program_kind.reset();
                     s.current_savestate_id.reset();
                     s.startup_attempts = 0;
@@ -413,7 +432,22 @@ namespace simcore {
                     continue;
                 }
 
-                auto claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor, s.current_savestate_id);
+                simcore::db::DbResult<std::optional<simcore::db::JobRow>> claimr;
+                try {
+                    claimr = simcore::db::JobsRepo::ClaimNextReady(claim_token_, cfg_.lease_seconds, cfg_.aging_factor, s.current_savestate_id);
+                }
+                catch (const std::exception& ex) {
+                    if (stop_.load()) break;
+                    RecordError((int64_t)s.id, std::string("ClaimNextReady exception: ") + ex.what());
+                    Sleep(cfg_.controller_sleep_ms);
+                    continue;
+                }
+                catch (...) {
+                    if (stop_.load()) break;
+                    RecordError((int64_t)s.id, "ClaimNextReady unknown exception");
+                    Sleep(cfg_.controller_sleep_ms);
+                    continue;
+                }
                 if (!claimr.ok) { Sleep(cfg_.controller_sleep_ms); continue; }
                 if (!claimr.value.has_value()) { Sleep(cfg_.controller_sleep_ms); continue; }
 
@@ -454,9 +488,163 @@ namespace simcore {
         }
     }
 
+    void WorkerCoordinator::visual_listener_loop() {
+        for (;;) {
+            if (stop_.load()) break;
+            if (paused_.load()) {
+                Sleep(cfg_.controller_sleep_ms);
+                continue;
+            }
+
+            auto claimr = simcore::db::VisualReplayRepo::ClaimNextQueued(/*worker_id*/0);
+            if (!claimr.ok) {
+                Sleep(cfg_.controller_sleep_ms);
+                continue;
+            }
+            if (!claimr.value.has_value()) {
+                Sleep(cfg_.controller_sleep_ms);
+                continue;
+            }
+
+            const auto replay = *claimr.value;
+            (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "CLAIMED", std::to_string(replay.job_id));
+            if (visual_render_widget_handle_.load(std::memory_order_relaxed) == 0) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual replay requested without a render widget handle");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "render widget handle is not set");
+                continue;
+            }
+            auto job_get = simcore::db::JobsRepo::Get(replay.job_id);
+            if (!job_get.ok) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual replay job not found");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "job not found");
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                visual_slot_ = std::make_unique<Slot>();
+                visual_slot_->id = 0;
+                visual_slot_->proc = std::make_unique<ProcessWorker>();
+                visual_slot_->proc->set_progress_queue(&progress_q_);
+                visual_slot_->running.store(true);
+                visual_slot_->phase = Slot::Phase::PendingStart;
+                if (!spawn_slot(*visual_slot_)) {
+                    visual_slot_.reset();
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (!visual_slot_) {
+                    (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to spawn visual worker");
+                    (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to spawn visual worker");
+                    continue;
+                }
+            }
+
+            bool ready = false;
+            {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) ready = ensure_ready(*visual_slot_);
+            }
+            if (!ready) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual worker failed to become ready");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "visual worker failed to become ready");
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    shutdown_slot(*visual_slot_);
+                    visual_slot_.reset();
+                }
+                continue;
+            }
+
+            auto& codec = ProgramDBCodecRegistry::for_kind(job_get.value.program_kind);
+            auto psi_res = codec.build_psinit_for_job(job_get.value.job_id);
+            if (!psi_res.ok) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to build visual replay program config");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to build visual replay program config");
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    shutdown_slot(*visual_slot_);
+                    visual_slot_.reset();
+                }
+                continue;
+            }
+
+            auto psi = psi_res.value;
+            if (psi.default_timeout_ms == 0) psi.default_timeout_ms = 10000;
+            bool configured = false;
+            {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_ && visual_slot_->proc) {
+                    configured = visual_slot_->proc->ctl_set_program(
+                        static_cast<uint8_t>(job_get.value.program_kind),
+                        static_cast<uint8_t>(job_get.value.program_kind),
+                        psi)
+                        && visual_slot_->proc->ctl_activate_main();
+                    if (configured) {
+                        visual_slot_->assigned_visual_replay_id = replay.visual_replay_id;
+                    }
+                }
+            }
+            if (!configured) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to configure visual worker program");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to configure visual worker program");
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    shutdown_slot(*visual_slot_);
+                    visual_slot_.reset();
+                }
+                continue;
+            }
+
+            DispatchResult dispatch = DispatchResult::BadSend;
+            {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    dispatch = dispatch_one(*visual_slot_, job_get.value, codec, false);
+                }
+            }
+            if (dispatch != DispatchResult::Success) {
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to dispatch visual replay job");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to dispatch visual replay job");
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    shutdown_slot(*visual_slot_);
+                    visual_slot_.reset();
+                }
+                continue;
+            }
+
+            std::unique_lock<std::mutex> lk(visual_slot_mtx_);
+            visual_slot_cv_.wait(lk, [this]() {
+                return stop_.load() || !visual_slot_ || !visual_slot_->assigned_job_id.has_value();
+                });
+            if (visual_slot_) {
+                shutdown_slot(*visual_slot_);
+                visual_slot_.reset();
+            }
+            lk.unlock();
+            (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "COMPLETE", std::nullopt);
+            visual_slot_cv_.notify_all();
+        }
+    }
+
     void WorkerCoordinator::drain_progress_loop() {
         PRProgress p;
         while (progress_q_.pop_wait(p)) {
+            if (p.worker_id == 0) {
+                std::optional<int64_t> replay_id;
+                {
+                    std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                    if (visual_slot_ && visual_slot_->assigned_visual_replay_id.has_value()) replay_id = visual_slot_->assigned_visual_replay_id;
+                }
+                if (replay_id.has_value()) {
+                    (void)simcore::db::VisualReplayEventsRepo::Append(*replay_id, "PROGRESS", p.text);
+                }
+                if (stop_.load()) break;
+                continue;
+            }
             auto jr = simcore::db::JobsRepo::Get((int64_t)p.job_id);
             if (!jr.ok) continue;
             auto& job = jr.value;
@@ -478,8 +666,28 @@ namespace simcore {
     void WorkerCoordinator::drain_results_loop() {
         PRResult r;
         while (results_q_.pop_wait(r)) {
+            if (r.worker_id == 0) {
+                std::optional<int64_t> replay_id;
+                {
+                    std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                    if (visual_slot_ && visual_slot_->assigned_visual_replay_id.has_value()) replay_id = visual_slot_->assigned_visual_replay_id;
+                }
+                if (replay_id.has_value()) {
+                    auto jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+                    if (jr.ok) {
+                        auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
+                        auto ini = codec.build_results_ini_from_prresult((int64_t)r.job_id, r);
+                        if (ini.ok) (void)simcore::db::VisualReplayEventsRepo::Append(*replay_id, "RESULTS", ini.value);
+                    }
+                    (void)simcore::db::VisualReplayEventsRepo::Append(*replay_id, "RESULT_STATUS", r.ps.ok ? "ok" : "error");
+                }
+            }
+
             auto jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
             if (jr.ok) {
+                if (r.worker_id == 0) {
+                    // Visual replay result stream is stored on visual_replay_events instead of mutating normal job outputs.
+                } else {
                 if (r.worker_id < slots_.size()) {
                     RecordDbSuccess((int64_t)r.worker_id);
                 }
@@ -493,9 +701,27 @@ namespace simcore {
                     auto tr = simcore::TriggerEngine::after_terminal(r.job_id);
                     (void)tr; // ignore errors for now; they will be visible in DB events/logs if you add them later
                 }
+                }
             }
 
-            if (r.worker_id < slots_.size()) {
+            if (r.worker_id == 0) {
+                std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+                if (visual_slot_) {
+                    if (visual_slot_->assigned_visual_replay_id.has_value()) {
+                        if (r.ps.ok) (void)simcore::db::VisualReplayRepo::MarkSucceeded(*visual_slot_->assigned_visual_replay_id);
+                        else (void)simcore::db::VisualReplayRepo::MarkFailed(*visual_slot_->assigned_visual_replay_id, "visual replay worker reported failure");
+                    }
+                    visual_slot_->proc->release_slot();
+                    visual_slot_->assigned_job_id.reset();
+                    visual_slot_->assigned_visual_replay_id.reset();
+                    visual_slot_->idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
+                    SetCurrentJob((int64_t)visual_slot_->id, std::nullopt, std::nullopt);
+                    UpdateState((int64_t)visual_slot_->id, WorkerStateKind::Idle);
+                    visual_slot_->phase = Slot::Phase::Ready;
+                    RecordHeartbeat((int64_t)visual_slot_->id);
+                    visual_slot_cv_.notify_all();
+                }
+            } else if (r.worker_id < slots_.size()) {
                 auto& s = *slots_[(size_t)r.worker_id];
                 s.proc->release_slot();
                 s.assigned_job_id.reset();
@@ -519,6 +745,9 @@ namespace simcore {
             if (s.assigned_job_id.has_value()) continue; // don't override busy workers
             UpdateState((int64_t)s.id, p ? WorkerStateKind::Paused : WorkerStateKind::Idle);
         }
+    }
+    void WorkerCoordinator::SetVisualRenderWidgetHandle(uint64_t hwnd) {
+        visual_render_widget_handle_.store(hwnd, std::memory_order_relaxed);
     }
 
     // Worker Status Fxns

@@ -89,6 +89,9 @@ namespace simcore {
             std::string* error_out = nullptr);
         const std::filesystem::path& GetUserDirectory() const { return m_user_dir; }
         const std::filesystem::path& GetDolphinQtBaseDir() const { return m_qt_base_dir; }
+        void SetVisualMode(bool visual) { m_visual_mode = visual; }
+        void SetRenderWidgetHandle(void* handle) { m_external_render_widget_handle = handle; }
+        bool IsVisualMode() const { return m_visual_mode; }
         bool SyncFromDolphinQtBase(bool force = false, std::string* error_out = nullptr);
         bool EnsureReadyForSavestate(std::string* error_out = nullptr) {
             return SyncFromDolphinQtBase(/*force=*/false, error_out);
@@ -188,7 +191,12 @@ namespace simcore {
         std::filesystem::path m_user_dir;
         std::filesystem::path m_qt_base_dir;
         bool m_imported_from_qt = false;
+        bool m_visual_mode = false;
+        void* m_external_render_widget_handle = nullptr;
         void sterilizeConfigs();
+        void* m_render_window_handle = nullptr;
+        bool createRenderSurfaceWindow();
+        void destroyRenderSurfaceWindow();
 
         ProgressSink m_progress_sink{};
     };

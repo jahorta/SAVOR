@@ -29,6 +29,7 @@ namespace simcore::db {
         std::optional<int64_t> lease_expires_at{};
         int64_t queued_at{};
         std::optional<std::string> vm_kv{};
+        std::optional<int64_t> parent_job_id{};
     };
 
     struct JobPriorityBoostResult {
@@ -48,7 +49,9 @@ namespace simcore::db {
             int64_t job_set_id, int program_kind, int program_version,
             int64_t program_ref_id, std::string fingerprint, int priority,
             std::optional<std::string> vm_kv = std::nullopt, 
-            std::optional<int64_t> savestate_id = std::nullopt, RetryPolicy rp = {});
+            std::optional<int64_t> savestate_id = std::nullopt,
+            std::optional<int64_t> parent_job_id = std::nullopt,
+            RetryPolicy rp = {});
         static std::future<DbResult<JobRow>> GetAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetStateAsync(int64_t job_id, std::string new_state, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp = {});
@@ -85,8 +88,9 @@ namespace simcore::db {
             int64_t job_set_id, int program_kind, int program_version,
             int64_t program_ref_id, std::string fingerprint, int priority,
             std::optional<std::string> vm_kv = std::nullopt,
-            std::optional<int64_t> savestate_id = std::nullopt) {
-            return CreateOrGetByFingerprintAsync(job_set_id, program_kind, program_version, program_ref_id, std::move(fingerprint), priority, std::move(vm_kv), std::move(savestate_id)).get();
+            std::optional<int64_t> savestate_id = std::nullopt,
+            std::optional<int64_t> parent_job_id = std::nullopt) {
+            return CreateOrGetByFingerprintAsync(job_set_id, program_kind, program_version, program_ref_id, std::move(fingerprint), priority, std::move(vm_kv), std::move(savestate_id), std::move(parent_job_id)).get();
         }
         static inline DbResult<JobRow> Get(int64_t job_id) { return GetAsync(job_id).get(); }
         static inline DbResult<void> SetState(int64_t job_id, std::string new_state) { return SetStateAsync(job_id, std::move(new_state)).get(); }

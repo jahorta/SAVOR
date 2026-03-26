@@ -327,6 +327,9 @@
     <ClInclude Include="DB\DBCore\DbRetryPolicy.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
+    <ClInclude Include="DB\DBCore\DbSnapshotService.h">
+      <Filter>DB\Core</Filter>
+    </ClInclude>
     <ClInclude Include="DB\DBCore\DbService.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
@@ -403,6 +406,12 @@
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
     <ClInclude Include="DB\Scheduling\JobsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h">
+      <Filter>DB\Scheduling</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
     <ClInclude Include="Utils\Hash.h">
@@ -531,6 +540,9 @@
     <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
+    <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
+      <Filter>Core\Input</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SimCore.cpp">
@@ -653,6 +665,9 @@
     <ClCompile Include="DB\DBCore\DbEnv.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
+    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
+      <Filter>DB\Core</Filter>
+    </ClCompile>
     <ClCompile Include="DB\DBCore\DbService.cpp">
       <Filter>DB\Core</Filter>
     </ClCompile>
@@ -726,6 +741,12 @@
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
     <ClCompile Include="DB\Scheduling\JobsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp">
+      <Filter>DB\Scheduling</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp">
       <Filter>DB\Scheduling</Filter>
     </ClCompile>
     <ClCompile Include="DB\BattlePlanRepo.cpp">
@@ -1093,6 +1114,21 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0030.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0031.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0032.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0033.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0034.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0035.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>

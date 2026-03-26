@@ -6,6 +6,8 @@
 #include "../../Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "../../Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "../../Core/Input/SoaBattle/PlanWriter.h"
+#include "../../Core/Input/InputPlanFmt.h"
+#include "../../Core/Input/AppliedTurnTapeBlob.h"
 
 #include "../Scheduling/JobsRepo.h"
 #include "../Scheduling/JobSetsRepo.h"
@@ -25,7 +27,9 @@
 #include "../DBCore/ObjectStore.h"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include "../Querying/DataService.h"
@@ -39,6 +43,22 @@ static constexpr int kPK = simcore::PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
+    static std::vector<uint16_t> parse_csv_u16(const std::optional<std::string>& csv) {
+        std::vector<uint16_t> out;
+        if (!csv.has_value() || csv->empty()) return out;
+        std::stringstream ss(*csv);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            if (tok.empty()) continue;
+            try {
+                auto v = std::stoul(tok);
+                if (v > 0 && v <= 0xFFFFu) out.push_back((uint16_t)v);
+            }
+            catch (...) {}
+        }
+        return out;
+    }
+
     struct WaveMetaIni {
         static constexpr const char* SECTION_NAME = "BattleSingleTurn.WaveMeta";
         int64_t root_group_id{-1};
@@ -132,6 +152,7 @@ namespace {
         }
         return DbResult<int64_t>::Ok(cur);
     }
+
 }
 
 // Only used for the first wave
@@ -290,6 +311,7 @@ DbResult<simcore::PSJob> BattleSingleTurnRunDBCodec::decode_job_from_db(int64_t 
         simcore::pred::Spec spec{
             .id = (uint16_t)r.ordinal,
             .required_bp = (uint16_t)p.value.required_bp,
+            .required_bps = parse_csv_u16(p.value.required_bp_multi),
             .kind = (simcore::pred::PredKind)p.value.kind,
             .width = (uint8_t)p.value.width,
             .cmp = (simcore::pred::CmpOp)p.value.cmp_op,
@@ -382,6 +404,16 @@ DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id
         std::filesystem::remove(r.savestate_path);
         if (!save.ok) return save;
 
+        if (!r.applied_input_tape_text.empty()) {
+            auto art = simcore::db::ObjectStore::PutText(r.applied_input_tape_text);
+            if (art.ok) {
+                r.applied_input_artifact_id = art.value.id;
+                // Keep results payload compact; canonical full tape lives in artifact.
+                r.applied_input_tape_text.clear();
+                r.set_section(ini);
+            }
+        }
+
         auto ev2 = simcore::db::JobEventsRepo::Append(job_id, "RESULTS", ini.to_string_sorted());
         if (!ev2.ok) return DbResult<void>::Err(ev2.error);
 
@@ -452,6 +484,15 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_results_ini_from_prresul
     r.ps.ctx.get(simcore::keys::core::PRED_PASSED, out.pred_passed);
     r.ps.ctx.get(simcore::keys::core::PRED_TOTAL, out.pred_total);
     r.ps.ctx.get(simcore::keys::core::PRED_ABORT_RUN, out.pred_abort_run);
+
+    std::string turn_blob;
+    r.ps.ctx.get(simcore::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+    if (!turn_blob.empty()) {
+        std::vector<simcore::inputtape::TurnChunk> chunks;
+        if (simcore::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
+            out.applied_input_tape_text = turn_blob;
+        }
+    }
     r.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
 
     IniDoc ini;
@@ -476,6 +517,17 @@ DbResult<std::string> BattleSingleTurnRunDBCodec::build_artifact_ini_from_db(int
         "No Savestate found/saved..." });
 
     artifacts.add_artifact("Savestate", ss.value.value().object_ref_id);
+
+    auto rr = simcore::db::JobEventsRepo::GetLatestPayload(job_id, "RESULTS");
+    if (rr.ok && rr.value.has_value()) {
+        IniDoc rdoc = IniDoc::parse(*rr.value);
+        if (rdoc.has_section(STRes::SECTION_NAME)) {
+            STRes res = STRes::from_section(rdoc);
+            if (res.applied_input_artifact_id > 0) {
+                artifacts.add_artifact("Applied Input Tape", res.applied_input_artifact_id);
+            }
+        }
+    }
 
     return DbResult<std::string>::Ok(artifacts.to_string());
 }
@@ -507,7 +559,8 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         if (!rdoc.has_section(STRes::SECTION_NAME)) continue;
         STRes r = STRes::from_section(rdoc);
         if (r.output_savestate_id <= 0) continue;
-        if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn) continue;
+        if (r.battle_outcome != (uint32_t)simcore::battle::Outcome::ReachedNextTurn 
+            && r.battle_outcome != (uint32_t)simcore::battle::Outcome::Victory) continue;
 
         auto jr = simcore::db::JobsRepo::Get(job_id);
         if (!jr.ok || !jr.value.vm_kv.has_value()) continue;
@@ -636,7 +689,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
             nj.fake_attacks_this_turn = fake;
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
             const std::string fp = hash::sha256(vm.data(), vm.size());
-            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id);
+            auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id, source_job_id);
             if (!cj.ok) continue;
             (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");
             ++enqueued;

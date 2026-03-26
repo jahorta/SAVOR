@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <span>
 #include <cstring>
+#include <algorithm>
 
 #include "../../Utils/Hash.h"
 
@@ -37,6 +38,14 @@ namespace {
 }
 
 namespace simcore::pred {
+    static inline std::vector<uint16_t> normalize_required_bps(const Spec& s) {
+        std::vector<uint16_t> out = s.required_bps;
+        if (out.empty() && s.required_bp != 0) out.push_back(s.required_bp);
+        out.erase(std::remove(out.begin(), out.end(), uint16_t(0)), out.end());
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
 
     static inline void push_u8(std::vector<uint8_t>& b, uint8_t  v) { b.push_back(v); }
     static inline void push_u16(std::vector<uint8_t>& b, uint16_t v) { b.push_back(uint8_t(v & 0xFF)); b.push_back(uint8_t((v >> 8) & 0xFF)); }
@@ -52,7 +61,10 @@ namespace simcore::pred {
         const uint32_t tmask = s.turn_mask ? s.turn_mask : 0xFFFFFFFFu;
 
         // Required core fields
+        auto required_bps = normalize_required_bps(s);
         push_u16(buf, s.required_bp);
+        push_u32(buf, (uint32_t)required_bps.size());
+        for (auto bp : required_bps) push_u16(buf, bp);
         push_u8(buf, (uint8_t)s.kind);
         push_u8(buf, width);
         push_u8(buf, (uint8_t)s.cmp);
@@ -94,40 +106,49 @@ namespace simcore::pred {
     {
         out_records.clear();
         out_blob.clear();
-        out_records.reserve(in.size());
-
-        // First pass: write records w/ zero offsets
+        size_t total_records = 0;
         for (const auto& s : in) {
-            PredicateRecord r{};
-            r.id = s.id; r.required_bp = s.required_bp;
-            r.kind = static_cast<uint8_t>(s.kind);
-            r.cmp = static_cast<uint8_t>(s.cmp);
+            auto bps = normalize_required_bps(s);
+            total_records += std::max<size_t>(1, bps.size());
+        }
+        out_records.reserve(total_records);
 
-            const uint8_t width = s.width ? s.width : 4; // explicit-at-read-time rule
-            r.width = width;
+        // First pass: write records w/ zero offsets (one row per required breakpoint)
+        for (const auto& s : in) {
+            auto required_bps = normalize_required_bps(s);
+            if (required_bps.empty()) required_bps.push_back(s.required_bp);
+            for (auto bp : required_bps) {
+                PredicateRecord r{};
+                r.id = s.id; r.required_bp = bp;
+                r.kind = static_cast<uint8_t>(s.kind);
+                r.cmp = static_cast<uint8_t>(s.cmp);
 
-            r.flags = s.flags;
-            r.turn_mask = s.turn_mask ? s.turn_mask : 0xFFFFFFFFu;
+                const uint8_t width = s.width ? s.width : 4; // explicit-at-read-time rule
+                r.width = width;
 
-            // LHS
-            r.lhs_addr = s.lhs_addr;
-            r.lhs_addr_key = s.lhs_key.has_value() ? static_cast<uint16_t>(*s.lhs_key) : 0;
-            r.lhs_addrprog_offset = 0; // fill after packing
+                r.flags = s.flags;
+                r.turn_mask = s.turn_mask ? s.turn_mask : 0xFFFFFFFFu;
 
-            // RHS
-            const bool rhs_is_key = s.rhs_key.has_value();
-            if (rhs_is_key) r.flags |= uint8_t(PredFlag::RhsIsKey);
+                // LHS
+                r.lhs_addr = s.lhs_addr;
+                r.lhs_addr_key = s.lhs_key.has_value() ? static_cast<uint16_t>(*s.lhs_key) : 0;
+                r.lhs_addrprog_offset = 0; // fill after packing
 
-            r.rhs_addr_key = rhs_is_key ? static_cast<uint16_t>(*s.rhs_key) : 0;
-            r.rhs_imm = rhs_is_key ? 0ull : s.rhs_value;
-            r.rhs_addrprog_offset = 0; // fill after packing
+                // RHS
+                const bool rhs_is_key = s.rhs_key.has_value();
+                if (rhs_is_key) r.flags |= uint8_t(PredFlag::RhsIsKey);
 
-            std::string name = s.name;
-            while (name.size() > (sizeof(r.name) - 1))
-                name.pop_back();
-            snprintf(r.name, sizeof(r.name)-1, "%s", s.name.c_str());
+                r.rhs_addr_key = rhs_is_key ? static_cast<uint16_t>(*s.rhs_key) : 0;
+                r.rhs_imm = rhs_is_key ? 0ull : s.rhs_value;
+                r.rhs_addrprog_offset = 0; // fill after packing
 
-            out_records.push_back(r);
+                std::string name = s.name;
+                while (name.size() > (sizeof(r.name) - 1))
+                    name.pop_back();
+                snprintf(r.name, sizeof(r.name)-1, "%s", s.name.c_str());
+
+                out_records.push_back(r);
+            }
         }
 
         if (out_records.empty()) return true;
@@ -135,17 +156,21 @@ namespace simcore::pred {
         // Second pass: dedupe and lay out programs into a single blob
         BlobDeduper dedupe;
         const uint32_t base = (uint32_t)(out_records.size() * sizeof(PredicateRecord));
+        size_t rec_i = 0;
         for (size_t i = 0; i < in.size(); ++i) {
-            auto& r = out_records[i];
             const auto& s = in[i];
-
-            if (!s.lhs_prog.empty() && s.has_flag(PredFlag::LhsIsProg)) {
-                const uint32_t off = dedupe.intern(std::span<const uint8_t>(s.lhs_prog.data(), s.lhs_prog.size()));
-                r.lhs_addrprog_offset =base + off;
-            }
-            if (!s.rhs_prog.empty() && s.has_flag(PredFlag::RhsIsProg)) {
-                const uint32_t off = dedupe.intern(std::span<const uint8_t>(s.rhs_prog.data(), s.rhs_prog.size()));
-                r.rhs_addrprog_offset = base + off;
+            auto required_bps = normalize_required_bps(s);
+            if (required_bps.empty()) required_bps.push_back(s.required_bp);
+            for (size_t k = 0; k < required_bps.size(); ++k, ++rec_i) {
+                auto& r = out_records[rec_i];
+                if (!s.lhs_prog.empty() && s.has_flag(PredFlag::LhsIsProg)) {
+                    const uint32_t off = dedupe.intern(std::span<const uint8_t>(s.lhs_prog.data(), s.lhs_prog.size()));
+                    r.lhs_addrprog_offset = base + off;
+                }
+                if (!s.rhs_prog.empty() && s.has_flag(PredFlag::RhsIsProg)) {
+                    const uint32_t off = dedupe.intern(std::span<const uint8_t>(s.rhs_prog.data(), s.rhs_prog.size()));
+                    r.rhs_addrprog_offset = base + off;
+                }
             }
         }
 

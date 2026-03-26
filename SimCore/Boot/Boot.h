@@ -13,6 +13,8 @@ namespace simboot {
         std::filesystem::path user_dir;          // isolated User/ for this simulator
         std::filesystem::path dolphin_qt_base;   // MUST be portable (contains portable.txt)
         bool force_resync_from_base = false;     // recopy Sys+User even if already synced
+        bool visual = false;                     // request boot with a render-surface connection
+        void* render_widget_handle = nullptr;    // Qt render widget native handle (HWND on Windows)
         bool save_config_on_success = true;      // write simulator.ini so next run auto-loads
         std::filesystem::path config_path = simcore::SimConfigIO::DefaultConfigPath(); // where to save
     };

@@ -38,6 +38,12 @@ namespace simcore {
             << " --qtbase \"" << p.dolphin_base_dir << "\""
             << " --userdir \"" << p.user_dir << "\""
             << " --vmctrl";
+        if (p.visual) {
+            cmd << " --visual";
+        }
+        if (p.render_widget_handle != 0) {
+            cmd << " --render-hwnd " << p.render_widget_handle;
+        }
 
         PROCESS_INFORMATION pi{};
         std::string cmdline = cmd.str();

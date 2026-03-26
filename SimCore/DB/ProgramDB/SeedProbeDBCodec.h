@@ -73,6 +73,7 @@ namespace simcore::db::codec::seedprobe {
     struct BlueprintIni {
         static constexpr const char* SECTION_NAME = "SeedProbe.Blueprint";
 
+        int64_t root_jobset_id{ -1 };
         int64_t savestate_id{ -1 };
         int64_t probe_id{ -1 };
         uint32_t run_ms;
@@ -86,6 +87,7 @@ namespace simcore::db::codec::seedprobe {
             BlueprintIni bp{};
             if (!doc.has_section(SECTION_NAME)) return bp;
             IniKV section = doc.section_kv(SECTION_NAME);
+            bp.root_jobset_id = section.get_i64("root_jobset_id", -1);
             bp.savestate_id = section.get_i64("savestate_id", -1);
             bp.probe_id = section.get_i64("probe_id", -1);
             bp.run_ms = section.get_u32("run_ms", 0);
@@ -98,6 +100,7 @@ namespace simcore::db::codec::seedprobe {
         }
         inline void set_section(IniDoc& doc) const {
             doc.ensure_section(SECTION_NAME);
+            doc.set(SECTION_NAME, "root_jobset_id", std::to_string(root_jobset_id));
             doc.set(SECTION_NAME, "savestate_id", std::to_string(savestate_id));
             doc.set(SECTION_NAME, "probe_id", std::to_string(probe_id));
             doc.set(SECTION_NAME, "run_ms", std::to_string(run_ms));
