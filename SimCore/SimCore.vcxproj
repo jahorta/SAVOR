@@ -291,10 +291,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\VersionStampRepo.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Phases\BattleExplorer.h" />
-    <ClInclude Include="Phases\Coordinators\DBBattleContextCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBBattleRunnerCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBSeedProbeCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBTasMovieCoordinator.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h" />
@@ -415,10 +411,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\UiConfigRowRepo.cpp" />
     <ClCompile Include="DB\VersionStampRepo.cpp" />
     <ClCompile Include="Phases\BattleExplorer.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBBattleContextCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBBattleRunnerCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
