@@ -6,8 +6,6 @@
 #include "../Core/Memory/Soa/Battle/BattleContext.h"
 #include "Programs/BattleRunner/BattleOutcome.h"
 #include "Programs/BattleRunner/BattleRunnerPayload.h"
-// Forward-declare your runner and predicate types to avoid heavy includes.
-namespace simcore { class ParallelPhaseScriptRunner; }
 
 namespace simcore::battleexplorer {
 
