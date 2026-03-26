@@ -801,9 +801,6 @@ void JobBuilderPage::refreshPreviewPanel()
             if (t.artifact_size.has_value()) {
                 lines.append(QStringLiteral("Artifact size: %1 bytes").arg(*t.artifact_size));
             }
-            for (const std::string& warning : t.warnings) {
-                lines.append(QStringLiteral("• %1").arg(QString::fromStdString(warning)));
-            }
         }
         if (preview.seedprobe.has_value()) {
             const auto& s = *preview.seedprobe;
@@ -814,9 +811,6 @@ void JobBuilderPage::refreshPreviewPanel()
             } else if (s.unique_deferred) {
                 lines.append(QStringLiteral("Unique jobs are deferred until grid deltas exist."));
             }
-            for (const std::string& warning : s.warnings) {
-                lines.append(QStringLiteral("• %1").arg(QString::fromStdString(warning)));
-            }
         }
         if (preview.explorer.has_value()) {
             const auto& e = *preview.explorer;
@@ -826,9 +820,6 @@ void JobBuilderPage::refreshPreviewPanel()
             }
             lines.append(QStringLiteral("Explorer jobs: %1").arg(estimatedJobs));
             lines.append(QStringLiteral("Predicates: %1").arg(e.predicate_count));
-            for (const std::string& warning : e.warnings) {
-                lines.append(QStringLiteral("• %1").arg(QString::fromStdString(warning)));
-            }
         }
     } else {
         lines.append(QStringLiteral("No preview generated yet."));

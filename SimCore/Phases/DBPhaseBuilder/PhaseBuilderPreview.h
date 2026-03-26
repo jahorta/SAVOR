@@ -1,6 +1,5 @@
 #pragma once
 #include <string>
-#include <vector>
 #include <optional>
 #include <cstdint>
 
@@ -12,8 +11,6 @@ namespace simcore::db::phasebuilder {
         int64_t rtc_high{ 0 };
         bool artifact_exists{ false };
         std::optional<uint64_t> artifact_size;
-        size_t payload_estimate_bytes{ 0 };
-        std::vector<std::string> warnings;
     };
 
     struct SeedProbePreview {
@@ -21,15 +18,11 @@ namespace simcore::db::phasebuilder {
         int64_t grid_jobs{ 0 };
         std::optional<int64_t> unique_jobs;     // missing => deferred (no grid yet)
         bool unique_deferred{ false };
-        size_t payload_estimate_bytes{ 0 };
-        std::vector<std::string> warnings;
     };
 
     struct ExplorerRunPreview {
         int64_t jobs{ 1 };
         int32_t predicate_count{ 0 };
-        size_t payload_estimate_bytes{ 0 };
-        std::vector<std::string> warnings;
     };
 
     struct PhasePreview {
