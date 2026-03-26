@@ -321,7 +321,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\DB\DBTriggerEngine.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinator.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h" />
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunner.h" />
+    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
+    <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
     <ClInclude Include="Runner\Parallel\TSQueue.h" />
@@ -436,7 +437,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
-    <ClCompile Include="Runner\Parallel\ParallelPhaseScriptRunner.cpp" />
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />

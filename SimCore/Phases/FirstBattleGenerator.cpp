@@ -11,7 +11,7 @@
 #include "../Tas/DtmFile.h"
 #include "../Runner/IPC/Wire.h"
 #include "../Utils/MultiProgress.h"
-#include "../Runner/Parallel/ParallelPhaseScriptRunner.h"
+#include "../Runner/Parallel/ParallelPhaseScriptRunnerApi.h"
 
 namespace fs = std::filesystem;
 

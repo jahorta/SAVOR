@@ -1,4 +1,5 @@
 #include "RngSeedDeltaMap.h"
+#include "../Runner/Parallel/ParallelPhaseScriptRunnerApi.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <set>

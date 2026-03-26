@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <utility>
 
-#include "../Runner/Parallel/ParallelPhaseScriptRunner.h"
+#include "../Runner/Parallel/WorkerBootPlan.h"
+#include "../Runner/Script/PSContext.h"
+
+namespace simcore { class ParallelPhaseScriptRunner; }
 
 namespace simcore::tas_movie {
 
