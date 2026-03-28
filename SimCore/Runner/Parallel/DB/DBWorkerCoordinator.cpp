@@ -31,10 +31,16 @@ namespace simcore {
     }
 
     static inline void interrupt_in_flight_jobs_with_event() {
-        auto ir = simcore::db::JobsRepo::InterruptInFlight();
-        if (!ir.ok) return;
-        for (const auto job_id : ir.value) {
-            (void)simcore::db::JobEventsRepo::Append(job_id, "INTERRUPTED", std::nullopt);
+        try {
+            auto ir = simcore::db::JobsRepo::InterruptInFlight();
+            if (!ir.ok) return;
+            for (const auto job_id : ir.value) {
+                (void)simcore::db::JobEventsRepo::Append(job_id, "INTERRUPTED", std::nullopt);
+            }
+        }
+        catch (...) {
+            // During application shutdown, DBService teardown can race with
+            // best-effort cleanup. Avoid propagating exceptions from here.
         }
     }
 
