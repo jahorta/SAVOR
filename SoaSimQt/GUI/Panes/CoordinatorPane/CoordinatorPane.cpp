@@ -46,6 +46,7 @@ void CoordinatorPane::refreshUi()
     const QString validationMessage = controller_->validationMessage();
     const bool valid = validationMessage.isEmpty();
     const auto& snapshot = controller_->snapshot();
+    const auto& visualSnapshot = controller_->visualSnapshot();
 
     {
         const QSignalBlocker blocker(targetWorkersSpin_);
@@ -60,7 +61,9 @@ void CoordinatorPane::refreshUi()
     statusValueLabel_->style()->unpolish(statusValueLabel_);
     statusValueLabel_->style()->polish(statusValueLabel_);
 
-    snapshotCountLabel_->setText(QStringLiteral("%1 rows").arg(snapshot.size()));
+    snapshotCountLabel_->setText(QStringLiteral("%1 live + %2 visual")
+        .arg(snapshot.size())
+        .arg(visualSnapshot.size()));
 
     pauseButton_->setText(paused ? QStringLiteral("Resume") : QStringLiteral("Pause"));
     pauseButton_->setProperty("coordinatorPaused", paused);
@@ -89,6 +92,9 @@ void CoordinatorPane::refreshUi()
     tableSummaryLabel_->setText(running
         ? QStringLiteral("Live worker telemetry refreshes every %1 ms.").arg(kRefreshIntervalMs)
         : QStringLiteral("Start the coordinator to populate the live worker table."));
+    visualTableSummaryLabel_->setText(running
+        ? QStringLiteral("Visual replay worker status refreshes every %1 ms.").arg(kRefreshIntervalMs)
+        : QStringLiteral("Visual replay worker status will appear here when requested."));
 
     syncActionButtonStates(running, valid);
     setControlsEnabledForRunningState(running);
@@ -98,6 +104,10 @@ void CoordinatorPane::refreshUi()
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(workerTableView_);
     workerTableModel_->setSnapshots(snapshot);
     restoreItemViewScrollSnapshot(workerTableView_, scrollSnapshot);
+
+    const ItemViewScrollSnapshot visualScrollSnapshot = captureItemViewScrollSnapshot(visualWorkerTableView_);
+    visualWorkerTableModel_->setSnapshots(visualSnapshot);
+    restoreItemViewScrollSnapshot(visualWorkerTableView_, visualScrollSnapshot);
 }
 
 void CoordinatorPane::createWidgets()
@@ -107,27 +117,27 @@ void CoordinatorPane::createWidgets()
     layout->setSpacing(10);
 
     workerTableModel_ = new WorkerTableModel(this);
+    visualWorkerTableModel_ = new WorkerTableModel(this);
 
     layout->addWidget(createControlsCard());
     layout->addWidget(createTableCard(), 1);
 }
 
-void CoordinatorPane::configureTable()
+void CoordinatorPane::configureTable(QTreeView* tableView)
 {
-    workerTableView_->setModel(workerTableModel_);
-    workerTableView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    workerTableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    workerTableView_->setSelectionMode(QAbstractItemView::SingleSelection);
-    workerTableView_->setAlternatingRowColors(true);
-    workerTableView_->setSortingEnabled(false);
-    workerTableView_->setRootIsDecorated(false);
-    workerTableView_->setItemsExpandable(false);
-    workerTableView_->setAllColumnsShowFocus(true);
-    workerTableView_->setUniformRowHeights(true);
-    workerTableView_->setIndentation(0);
-    workerTableView_->header()->setStretchLastSection(true);
-    workerTableView_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    workerTableView_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    tableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tableView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableView->setSelectionMode(QAbstractItemView::SingleSelection);
+    tableView->setAlternatingRowColors(true);
+    tableView->setSortingEnabled(false);
+    tableView->setRootIsDecorated(false);
+    tableView->setItemsExpandable(false);
+    tableView->setAllColumnsShowFocus(true);
+    tableView->setUniformRowHeights(true);
+    tableView->setIndentation(0);
+    tableView->header()->setStretchLastSection(true);
+    tableView->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 }
 
 QWidget* CoordinatorPane::createControlsCard()
@@ -233,11 +243,28 @@ QWidget* CoordinatorPane::createTableCard()
 
     workerTableView_ = new QTreeView(card);
     workerTableView_->setObjectName("coordinatorTableView");
-    configureTable();
+    workerTableView_->setModel(workerTableModel_);
+    configureTable(workerTableView_);
+
+    QHBoxLayout* visualHeaderLayout = new QHBoxLayout();
+    QLabel* visualHeading = new QLabel("Visual Replay Worker", card);
+    visualHeading->setObjectName("panelTitle");
+    visualTableSummaryLabel_ = new QLabel(card);
+    visualTableSummaryLabel_->setObjectName("panelBody");
+    visualHeaderLayout->addWidget(visualHeading);
+    visualHeaderLayout->addStretch();
+    visualHeaderLayout->addWidget(visualTableSummaryLabel_);
+
+    visualWorkerTableView_ = new QTreeView(card);
+    visualWorkerTableView_->setObjectName("coordinatorTableView");
+    visualWorkerTableView_->setModel(visualWorkerTableModel_);
+    configureTable(visualWorkerTableView_);
 
     layout->addLayout(headerLayout);
-    layout->addWidget(stoppedLabel_, 1);
+    layout->addWidget(stoppedLabel_);
     layout->addWidget(workerTableView_, 1);
+    layout->addLayout(visualHeaderLayout);
+    layout->addWidget(visualWorkerTableView_, 1);
 
     return card;
 }

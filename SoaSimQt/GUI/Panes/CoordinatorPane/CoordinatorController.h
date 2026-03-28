@@ -31,6 +31,7 @@ public:
     QString validationMessage() const;
 
     const std::vector<WorkerSnapshot>& snapshot() const;
+    const std::vector<WorkerSnapshot>& visualSnapshot() const;
 
 public slots:
     void startCoordinator();
@@ -63,6 +64,7 @@ private:
 
     std::unique_ptr<simcore::WorkerCoordinator> coordinator_;
     std::vector<WorkerSnapshot> snapshotCache_;
+    std::vector<WorkerSnapshot> visualSnapshotCache_;
 
     int targetWorkers_ = kMinTargetWorkers;
     int eventBufferCapacity_ = 64;

@@ -44,6 +44,7 @@ namespace simcore {
         void RecordError(int64_t worker_id, const std::string& err);
 
         std::vector<WorkerSnapshot> GetClusterSnapshot() const;
+        std::optional<WorkerSnapshot> GetVisualWorkerSnapshot() const;
         void SetEventBufferCapacity(size_t n);
 
         // dynamic controls

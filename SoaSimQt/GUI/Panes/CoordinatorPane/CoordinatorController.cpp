@@ -84,6 +84,11 @@ const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const
     return snapshotCache_;
 }
 
+const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const
+{
+    return visualSnapshotCache_;
+}
+
 void CoordinatorController::startCoordinator()
 {
     if (isRunning()) {
@@ -118,6 +123,7 @@ void CoordinatorController::stopCoordinator()
     coordinator_.reset();
     paused_ = false;
     snapshotCache_.clear();
+    visualSnapshotCache_.clear();
 
     emit stateChanged();
     emit snapshotChanged();
@@ -288,10 +294,15 @@ void CoordinatorController::updateSnapshotCache()
 {
     if (!coordinator_) {
         snapshotCache_.clear();
+        visualSnapshotCache_.clear();
         return;
     }
 
     snapshotCache_ = coordinator_->GetClusterSnapshot();
+    visualSnapshotCache_.clear();
+    if (const auto visual = coordinator_->GetVisualWorkerSnapshot(); visual.has_value()) {
+        visualSnapshotCache_.push_back(*visual);
+    }
 }
 
 WorkerCoordinatorConfig CoordinatorController::buildConfig() const
