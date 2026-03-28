@@ -89,6 +89,20 @@ const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const
     return visualSnapshotCache_;
 }
 
+QStringList CoordinatorController::pullVisualLiveLogLines()
+{
+    visualLiveLogLinesCache_.clear();
+    if (!coordinator_) {
+        return visualLiveLogLinesCache_;
+    }
+
+    const auto lines = coordinator_->GetVisualLogTail();
+    for (const auto& line : lines) {
+        visualLiveLogLinesCache_.append(QString::fromStdString(line));
+    }
+    return visualLiveLogLinesCache_;
+}
+
 void CoordinatorController::startCoordinator()
 {
     if (isRunning()) {
@@ -124,6 +138,7 @@ void CoordinatorController::stopCoordinator()
     paused_ = false;
     snapshotCache_.clear();
     visualSnapshotCache_.clear();
+    visualLiveLogLinesCache_.clear();
 
     emit stateChanged();
     emit snapshotChanged();
@@ -264,6 +279,11 @@ void CoordinatorController::refreshSnapshot()
     emit snapshotChanged();
 }
 
+void CoordinatorController::pollVisualLiveLogLines()
+{
+    emit visualLiveLogLinesReady(pullVisualLiveLogLines());
+}
+
 void CoordinatorController::loadSettings()
 {
     QSettings settings;
@@ -313,6 +333,7 @@ void CoordinatorController::updateSnapshotCache()
     if (!coordinator_) {
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
+        visualLiveLogLinesCache_.clear();
         return;
     }
 
@@ -321,6 +342,7 @@ void CoordinatorController::updateSnapshotCache()
     if (const auto visual = coordinator_->GetVisualWorkerSnapshot(); visual.has_value()) {
         visualSnapshotCache_.push_back(*visual);
     }
+
 }
 
 WorkerCoordinatorConfig CoordinatorController::buildConfig() const

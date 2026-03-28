@@ -45,6 +45,7 @@ namespace simcore {
 
         std::vector<WorkerSnapshot> GetClusterSnapshot() const;
         std::optional<WorkerSnapshot> GetVisualWorkerSnapshot() const;
+        std::vector<std::string> GetVisualLogTail() const;
         void SetEventBufferCapacity(size_t n);
 
         // dynamic controls
@@ -112,6 +113,9 @@ namespace simcore {
 
         void renew_lease_if_due(int64_t job_id, Slot& s);
         void sweep_expired_leases();
+        void start_visual_log_tail(const std::string& log_path);
+        void stop_visual_log_tail();
+        void push_visual_log_line(std::string line);
 
         WorkerCoordinatorConfig cfg_;
         std::vector<std::unique_ptr<Slot>> slots_;
@@ -139,6 +143,10 @@ namespace simcore {
         mutable std::mutex visual_slot_mtx_;
         std::condition_variable visual_slot_cv_;
         std::atomic<uint64_t> visual_render_widget_handle_{ 0 };
+        mutable std::mutex visual_log_mtx_;
+        std::deque<std::string> visual_log_tail_;
+        std::thread visual_log_thread_;
+        std::atomic<bool> visual_log_stop_{ false };
     };
 
 } // namespace simcore
