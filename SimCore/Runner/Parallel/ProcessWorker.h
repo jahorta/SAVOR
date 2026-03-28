@@ -67,8 +67,6 @@ namespace simcore {
 		}
 	};
 
-	class WorkerCoordinator;
-
 	class ProcessWorker {
 	public:
 		ProcessWorker() = default;
@@ -106,21 +104,6 @@ namespace simcore {
 			return true;
 		}
 
-		void AttachObserver(WorkerCoordinator* coord) { observer_ = coord; }
-
-		void NotifySpawned(const std::string& host, int pid, const std::string& boot_uuid);
-		void NotifyDraining();
-		void NotifyExiting();
-
-		void NotifyJobClaimed(int64_t job_id, int program_kind);
-		void NotifyMarkRunning(int64_t job_id);
-		void NotifyLeaseRenewed(int64_t job_id, int64_t lease_expires_at, int attempts, int max_attempts);
-		void NotifyJobFinished(int64_t job_id);
-
-		void NotifyHeartbeat();
-		void NotifyDbSuccess();
-		void NotifyError(const std::string& err);
-
 		int64_t GetPid() const {
 			return (int64_t)dwProcessId;
 		}
@@ -153,7 +136,6 @@ namespace simcore {
 		bool have_progress_{ false };
 		TSQueue<PRProgress>* progress_out_{ nullptr };
 
-		WorkerCoordinator* observer_{ nullptr };
 	};
 
 } // namespace simcore

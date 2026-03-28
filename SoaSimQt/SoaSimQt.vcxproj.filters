@@ -158,9 +158,6 @@
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClCompile>
@@ -325,9 +322,6 @@
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressWidget.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h">

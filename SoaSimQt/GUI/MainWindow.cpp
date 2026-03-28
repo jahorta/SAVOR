@@ -38,34 +38,10 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Job Builder", "Qt-native phase builder for SeedProbe, TasMovie, and Explorer/BattleTurnRunner job set creation." },
     { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
     { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
-    { "Seed Probe", "Mockup page for seed probing tools and diagnostics." },
-    { "Explorer Runs", "Mockup page for explorer run history and controls." },
+    { "Seed Probe", "Seed probe grid and unique probing results." },
+    { "Explorer Runs", "Explorer run history and controls." },
     { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
 };
-
-QFrame* createPanelFrame(const QString& title, const QString& body)
-{
-    QFrame* panel = new QFrame();
-    panel->setObjectName("placeholderPanel");
-    panel->setFrameShape(QFrame::StyledPanel);
-
-    QVBoxLayout* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-
-    QLabel* titleLabel = new QLabel(title, panel);
-    titleLabel->setObjectName("panelTitle");
-
-    QLabel* bodyLabel = new QLabel(body, panel);
-    bodyLabel->setObjectName("panelBody");
-    bodyLabel->setWordWrap(true);
-
-    layout->addWidget(titleLabel);
-    layout->addWidget(bodyLabel);
-    layout->addStretch();
-
-    return panel;
-}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -324,34 +300,4 @@ void MainWindow::emitCoordinatorStateChanged()
         coordinatorController_->targetWorkers(),
         coordinatorController_->activeWorkers(),
         coordinatorController_->validationMessage());
-}
-
-QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& description)
-{
-    QWidget* page = new QWidget(this);
-
-    QVBoxLayout* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(10);
-
-    QLabel* descriptionLabel = new QLabel(description, page);
-    descriptionLabel->setObjectName("pageDescription");
-    descriptionLabel->setWordWrap(true);
-
-    QHBoxLayout* topRow = new QHBoxLayout();
-    topRow->setSpacing(10);
-    topRow->addWidget(createPanelFrame("Primary Workspace", "Large placeholder region for the main page-specific content."), 2);
-    topRow->addWidget(createPanelFrame("Inspector", "Secondary placeholder panel for details, forms, or actions."), 1);
-
-    QHBoxLayout* bottomRow = new QHBoxLayout();
-    bottomRow->setSpacing(10);
-    bottomRow->addWidget(createPanelFrame("Lower Panel A", "Reserved for tables, logs, or summary widgets."), 1);
-    bottomRow->addWidget(createPanelFrame("Lower Panel B", "Reserved for charts, previews, or secondary controls."), 1);
-
-    layout->addWidget(descriptionLabel);
-    layout->addLayout(topRow, 2);
-    layout->addLayout(bottomRow, 1);
-
-    Q_UNUSED(title);
-    return page;
 }

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -88,9 +88,6 @@
     <Filter Include="DB\Scheduling">
       <UniqueIdentifier>{72a966a8-4d7c-4dd8-a4af-05d9c1f627a1}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Phases\DBCoordinators">
-      <UniqueIdentifier>{e34a113b-44a9-4ccf-b4c5-33b97bdd407c}</UniqueIdentifier>
-    </Filter>
     <Filter Include="DB\Querying">
       <UniqueIdentifier>{3f74286f-bc0e-497f-9b87-4bbacf2387f4}</UniqueIdentifier>
     </Filter>
@@ -111,9 +108,6 @@
     <ClInclude Include="Boot\Boot.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Core\Branching\Branching.h">
-      <Filter>Core</Filter>
-    </ClInclude>
     <ClInclude Include="Core\DolphinWrapper.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -126,10 +120,13 @@
     <ClInclude Include="Core\Shims\StateBufferShim.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunner.h">
+    <ClInclude Include="Runner\Parallel\ProcessWorker.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ProcessWorker.h">
+    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\WorkerBootPlan.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
     <ClInclude Include="Utils\ThreadName.h">
@@ -152,9 +149,6 @@
     </ClInclude>
     <ClInclude Include="Tas\DtmFile.h">
       <Filter>Tas</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\FirstBattleGenerator.h">
-      <Filter>Phases</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\PhaseScriptVM.h">
       <Filter>Runner\VM</Filter>
@@ -225,7 +219,7 @@
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\ContextKeys\KeyRegistry.h">
+    <ClInclude Include="Runner\Script\KeyRegistry.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Runner\IPC\Wire.h">
@@ -432,18 +426,6 @@
     <ClInclude Include="DB\ProgramDB\BattleContextDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBBattleContextCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBBattleRunnerCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBSeedProbeCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Coordinators\DBTasMovieCoordinator.h">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClInclude>
     <ClInclude Include="DB\DBCore\ConfigRepo.h">
       <Filter>DB\Core</Filter>
     </ClInclude>
@@ -545,16 +527,10 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SimCore.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Core\Config\SimConfig.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Boot\Boot.cpp">
-      <Filter>Core</Filter>
-    </ClCompile>
-    <ClCompile Include="Core\Branching\Branching.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="Core\DolphinWrapper.cpp">
@@ -571,9 +547,6 @@
     </ClCompile>
     <ClCompile Include="Core\Shims\StateBufferShim.cpp">
       <Filter>Core</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\ParallelPhaseScriptRunner.cpp">
-      <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp">
       <Filter>Runner\Parallel</Filter>
@@ -592,9 +565,6 @@
     </ClCompile>
     <ClCompile Include="Tas\DtmFile.cpp">
       <Filter>Tas</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\FirstBattleGenerator.cpp">
-      <Filter>Phases</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp">
       <Filter>Runner\VM</Filter>
@@ -763,18 +733,6 @@
     </ClCompile>
     <ClCompile Include="DB\ProgramDB\BattleContextDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBBattleContextCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBBattleRunnerCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp">
-      <Filter>Phases\DBCoordinators</Filter>
     </ClCompile>
     <ClCompile Include="DB\DBCore\ConfigRepo.cpp">
       <Filter>DB\Core</Filter>

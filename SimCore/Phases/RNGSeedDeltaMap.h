@@ -3,9 +3,9 @@
 #include <string>
 #include <vector>
 
-#include "../Boot/Boot.h"
 #include "../Core/Input/InputPlan.h"
-#include "../Runner/Parallel/ParallelPhaseScriptRunner.h"
+
+namespace simcore { class ParallelPhaseScriptRunner; }
 
 namespace simcore {
 
@@ -25,31 +25,6 @@ namespace simcore {
     struct RandSeedProbeResult {
         uint32_t base_seed = 0;
         std::vector<RandSeedProbeEntry> entries;
-    };
-
-    struct RandSeedComboEntry {
-        GCInputFrame input;
-        uint32_t seed = 0;
-        long long delta = 0;
-        bool ok = false;
-        std::string label;
-    };
-
-    struct RandSeedComboResult {
-        uint32_t base_seed = 0;
-        std::vector<RandSeedComboEntry> entries;
-    };
-
-    struct RngSeedDeltaArgs {
-        BootPlan boot;
-        std::string savestate_path;
-        int samples_per_axis = 5;
-        int min_value = 0;
-        int max_value = 255;
-        bool cap_trigger_top = true;
-        uint32_t run_timeout_ms = 10000;
-        uint32_t combos_attempts_per_target = 256;  // max dispatches per target
-        uint32_t combos_sampler_tries = 8;   // attempts to construct a triple that sums to target
     };
 
     std::vector<simcore::GCInputFrame> build_grid_main(int n, int minv, int maxv);
@@ -76,8 +51,5 @@ namespace simcore {
         const RandSeedProbeResult& grid,
         uint32_t attempts_per_target,
         uint32_t sampler_tries);
-
-    RandSeedProbeResult RunRngSeedDeltaMap(ParallelPhaseScriptRunner& runner, const RngSeedDeltaArgs& args);
-    RandSeedComboResult RunFindSeedDeltaCombos(ParallelPhaseScriptRunner& runner, const RngSeedDeltaArgs& args, const RandSeedProbeResult& grid);
 
 } // namespace simcore

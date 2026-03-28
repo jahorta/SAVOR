@@ -206,7 +206,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Boot\Boot.h" />
-    <ClInclude Include="Core\Branching\Branching.h" />
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
@@ -292,14 +291,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\VersionStampRepo.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Phases\BattleExplorer.h" />
-    <ClInclude Include="Phases\Coordinators\DBBattleContextCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBBattleRunnerCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBSeedProbeCoordinator.h" />
-    <ClInclude Include="Phases\Coordinators\DBTasMovieCoordinator.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h" />
     <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h" />
-    <ClInclude Include="Phases\FirstBattleGenerator.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
@@ -321,7 +315,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\DB\DBTriggerEngine.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinator.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h" />
-    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunner.h" />
+    <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
+    <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
     <ClInclude Include="Runner\Parallel\TSQueue.h" />
@@ -329,7 +324,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\WorkerTelemetry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
-    <ClInclude Include="Runner\Script\ContextKeys\KeyRegistry.h" />
+    <ClInclude Include="Runner\Script\KeyRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h" />
@@ -358,7 +353,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Boot\Boot.cpp" />
-    <ClCompile Include="Core\Branching\Branching.cpp" />
     <ClCompile Include="Core\Config\SimConfig.cpp" />
     <ClCompile Include="Core\DolphinWrapper.cpp" />
     <ClCompile Include="Core\HostStubs.cpp" />
@@ -417,13 +411,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\UiConfigRowRepo.cpp" />
     <ClCompile Include="DB\VersionStampRepo.cpp" />
     <ClCompile Include="Phases\BattleExplorer.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBBattleContextCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBBattleRunnerCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBSeedProbeCoordinator.cpp" />
-    <ClCompile Include="Phases\Coordinators\DBTasMovieCoordinator.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp" />
     <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp" />
-    <ClCompile Include="Phases\FirstBattleGenerator.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
@@ -436,13 +425,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
-    <ClCompile Include="Runner\Parallel\ParallelPhaseScriptRunner.cpp" />
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
-    <ClCompile Include="SimCore.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />
     <ClCompile Include="Utils\Log.cpp" />

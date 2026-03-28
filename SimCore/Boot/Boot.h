@@ -8,6 +8,10 @@
 
 namespace simboot {
 
+    // SimCore library bootstrap entry points live in this module (Boot/Boot.h + Boot/Boot.cpp).
+    // Projects should call these helpers rather than relying on SimCore.cpp, which is only a
+    // Visual Studio static-library template placeholder.
+
     // What to boot with.
     struct BootOptions {
         std::filesystem::path user_dir;          // isolated User/ for this simulator

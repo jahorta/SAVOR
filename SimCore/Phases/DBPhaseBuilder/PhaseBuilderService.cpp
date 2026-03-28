@@ -168,44 +168,4 @@ namespace simcore::db::phasebuilder {
         return DbResult<ExplorerRunPreview>::Ok(std::move(p));
     }
 
-    DbResult<SubmitResult> PhaseBuilderService::Submit(
-        const std::string& purpose,
-        int program_kind,
-        const IniDoc& ini,
-        std::optional<std::string> meta_text,
-        std::optional<int64_t> expected_total_override)
-    {
-        std::optional<int64_t> expected_total{};
-
-        if (expected_total_override.has_value()) {
-            expected_total = expected_total_override;
-        }
-        else {
-            if (program_kind == PK_TasMovie) {
-                auto tp = PreviewTas(ini); if (tp.ok) expected_total = tp.value.jobs;
-            }
-            else if (program_kind == PK_BattleTurnRunner || program_kind == PK_BattleSingleTurnRunner) {
-                expected_total.reset();
-            }
-            else {
-                expected_total.reset(); // SeedProbe left for codec to update later
-            }
-        }
-
-        auto jsr = JobSetsRepo::Create(
-            purpose, program_kind,
-            std::nullopt, std::nullopt, std::nullopt,
-            meta_text, expected_total);
-        if (!jsr.ok) return DbResult<SubmitResult>::Err(jsr.error);
-
-        const int64_t job_set_id = jsr.value;
-
-        auto& codec = ProgramDBCodecRegistry::for_kind(program_kind);
-        auto enc = codec.encode_job_into_db(job_set_id, ini.to_string_sorted());
-        if (!enc.ok) return DbResult<SubmitResult>::Err(enc.error);
-
-        SubmitResult out{ job_set_id, program_kind };
-        return DbResult<SubmitResult>::Ok(out);
-    }
-
 } // namespace simcore::db::phasebuilder
