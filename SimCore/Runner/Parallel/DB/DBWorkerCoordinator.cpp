@@ -782,7 +782,24 @@ namespace simcore {
     }
 
     std::vector<WorkerSnapshot> WorkerCoordinator::GetClusterSnapshot() const {
-        return worker_status_.GetClusterSnapshot();
+        auto snapshot = worker_status_.GetClusterSnapshot();
+        snapshot.erase(
+            std::remove_if(snapshot.begin(), snapshot.end(), [](const WorkerSnapshot& row) {
+                return row.worker_id == 0;
+            }),
+            snapshot.end());
+        return snapshot;
+    }
+
+    std::optional<WorkerSnapshot> WorkerCoordinator::GetVisualWorkerSnapshot() const {
+        auto snapshot = worker_status_.GetClusterSnapshot();
+        const auto found = std::find_if(snapshot.begin(), snapshot.end(), [](const WorkerSnapshot& row) {
+            return row.worker_id == 0;
+        });
+        if (found == snapshot.end()) {
+            return std::nullopt;
+        }
+        return *found;
     }
     void WorkerCoordinator::SetEventBufferCapacity(size_t n) {
         worker_status_.SetEventBufferCapacity(n);

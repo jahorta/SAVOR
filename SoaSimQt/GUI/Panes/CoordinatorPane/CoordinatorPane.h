@@ -38,7 +38,7 @@ public slots:
 
 private:
     void createWidgets();
-    void configureTable();
+    void configureTable(QTreeView* tableView);
     QWidget* createControlsCard();
     QWidget* createTableCard();
     QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
@@ -48,6 +48,7 @@ private:
     CoordinatorController* controller_ = nullptr;
     QTimer* refreshTimer_ = nullptr;
     WorkerTableModel* workerTableModel_ = nullptr;
+    WorkerTableModel* visualWorkerTableModel_ = nullptr;
 
     QPushButton* startButton_ = nullptr;
     QPushButton* pauseButton_ = nullptr;
@@ -59,6 +60,8 @@ private:
     QLabel* validationLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
+    QLabel* visualTableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;
+    QTreeView* visualWorkerTableView_ = nullptr;
     VisualWorkerDialog* visualWorkerDialog_ = nullptr;
 };
