@@ -1,6 +1,8 @@
 #include "ProcessWorker.h"
 #include "../IPC/Wire.h"
 #include <sstream>
+#include <fstream>
+#include <filesystem>
 #include "../../Utils/ThreadName.h"
 #include "../Script/KeyRegistry.h"
 #include "../Script/PSContextCodec.h"
@@ -42,6 +44,10 @@ namespace simcore {
         }
         if (p.render_widget_handle != 0) {
             cmd << " --render-hwnd " << p.render_widget_handle;
+        }
+        if (p.visual) {
+            const auto control_file = (std::filesystem::path(p.user_dir) / "visual_control.cmd").string();
+            cmd << " --visual-control-file \"" << control_file << "\"";
         }
 
         PROCESS_INFORMATION pi{};
@@ -89,6 +95,7 @@ namespace simcore {
     {
         out_ = outq;
         id_ = p.worker_id;
+        visual_control_path_ = p.visual ? (std::filesystem::path(p.user_dir) / "visual_control.cmd").string() : std::string();
         if (!CreateChild(p, hChildStd_IN_Wr, hChildStd_OUT_Rd, hProcess, hThread, dwProcessId, hJob))
             return false;
 
@@ -191,6 +198,33 @@ namespace simcore {
             return false;
         }
         return ack_.wait_for(10000);
+    }
+
+    bool ProcessWorker::visual_pause_emulation()
+    {
+        if (visual_control_path_.empty()) return false;
+        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
+        if (!ofs) return false;
+        ofs << "PAUSE\n";
+        return true;
+    }
+
+    bool ProcessWorker::visual_resume_emulation()
+    {
+        if (visual_control_path_.empty()) return false;
+        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
+        if (!ofs) return false;
+        ofs << "RESUME\n";
+        return true;
+    }
+
+    bool ProcessWorker::visual_step_vm()
+    {
+        if (visual_control_path_.empty()) return false;
+        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
+        if (!ofs) return false;
+        ofs << "VM_STEP\n";
+        return true;
     }
 
     bool ProcessWorker::ctl_activate_main() {

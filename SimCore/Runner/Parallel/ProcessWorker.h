@@ -76,9 +76,12 @@ namespace simcore {
 		bool send_job(uint64_t job_id, uint64_t epoch, const PSJob& job);
 		void stop();
 
-			bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
+		bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
 		bool ctl_run_init_once();
 		bool ctl_activate_main();
+		bool visual_pause_emulation();
+		bool visual_resume_emulation();
+		bool visual_step_vm();
 
 		bool is_ready()  const { return ready_received_.load() && ready_ok_.load(); }
 		bool is_failed() const { return ready_received_.load() && !ready_ok_.load(); }
@@ -135,6 +138,7 @@ namespace simcore {
 		PRProgress last_progress_{};
 		bool have_progress_{ false };
 		TSQueue<PRProgress>* progress_out_{ nullptr };
+		std::string visual_control_path_{};
 
 	};
 

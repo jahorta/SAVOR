@@ -681,6 +681,27 @@ namespace simcore {
         return ok;
     }
 
+    bool DolphinWrapper::pauseEmulationBlocking(uint32_t timeout_ms)
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+        Core::SetState(*m_system, Core::State::Paused);
+        return waitForPausedCoreState(timeout_ms ? timeout_ms : 1000);
+    }
+
+    bool DolphinWrapper::resumeEmulation()
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+        Core::SetState(*m_system, Core::State::Running);
+        return Core::GetState(*m_system) == Core::State::Running;
+    }
+
+    bool DolphinWrapper::isEmulationPaused() const
+    {
+        return m_system && Core::GetState(*m_system) == Core::State::Paused;
+    }
+
     static uint64_t g_vi_ticks_baseline = 0;
 
     void DolphinWrapper::resetViCounterBaseline()

@@ -239,6 +239,24 @@ void CoordinatorController::requestVisualReplay(qint64 jobId)
     });
 }
 
+void CoordinatorController::pauseVisualReplayEmulation()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->PauseVisualReplayEmulation();
+}
+
+void CoordinatorController::stepVisualReplayVm()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->StepVisualReplayVm();
+}
+
+void CoordinatorController::resumeVisualReplayEmulation()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->ResumeVisualReplayEmulation();
+}
+
 void CoordinatorController::refreshSnapshot()
 {
     updateSnapshotCache();

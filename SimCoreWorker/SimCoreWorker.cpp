@@ -7,6 +7,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <atomic>
+#include <thread>
+#include <fstream>
+#include <filesystem>
 
 #include "Utils/Log.h"
 #include "Boot/Boot.h"
@@ -99,6 +103,7 @@ int main(int argc, char** argv)
     uint32_t timeout_ms = 10000;
     bool visual = false;
     uint64_t render_hwnd = 0;
+    std::string visual_control_file;
 
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -108,6 +113,7 @@ int main(int argc, char** argv)
         else if (k == "--userdir") userdir = argv_next(i, argc, argv);
         else if (k == "--visual") visual = true;
         else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
+        else if (k == "--visual-control-file") visual_control_file = argv_next(i, argc, argv);
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -159,6 +165,8 @@ int main(int argc, char** argv)
     boot.iso_path = iso;
 
     DolphinWrapper host;
+    std::thread visual_control_thread;
+    std::atomic<bool> visual_control_stop{ false };
 
     SCLOGD("[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
         worker_id, boot.boot.user_dir.c_str(), boot.boot.dolphin_qt_base.c_str());
@@ -185,6 +193,49 @@ int main(int argc, char** argv)
     // ----- New control-mode only -----
     BreakpointMap bpmap = bp::BPRegistry::as_map();
     PhaseScriptVM vm(host, bpmap);
+
+    if (visual) {
+        vm.SetVisualDebugMode(true);
+        vm.SetVisualDebugPaused(true);
+
+        if (!visual_control_file.empty()) {
+            std::error_code fsec;
+            std::filesystem::create_directories(std::filesystem::path(visual_control_file).parent_path(), fsec);
+        }
+
+        visual_control_thread = std::thread([&host, &vm, &visual_control_stop, visual_control_file]() {
+            std::string last_cmd;
+            while (!visual_control_stop.load()) {
+                if (!visual_control_file.empty()) {
+                    std::ifstream ifs(visual_control_file, std::ios::binary);
+                    std::string cmd;
+                    if (ifs.good()) {
+                        std::getline(ifs, cmd);
+                    }
+                    if (!cmd.empty() && cmd != last_cmd) {
+                        if (cmd == "PAUSE") {
+                            vm.SetVisualDebugPaused(true);
+                            (void)host.pauseEmulationBlocking(1500);
+                        }
+                        else if (cmd == "RESUME") {
+                            vm.SetVisualDebugPaused(false);
+                            (void)host.resumeEmulation();
+                        }
+                        else if (cmd == "VM_STEP") {
+                            if (vm.IsRunUntilBpActive()) {
+                                (void)host.stepOneFrameBlocking(1500);
+                            }
+                            else {
+                                vm.StepVisualDebugVmOnce();
+                            }
+                        }
+                        last_cmd = cmd;
+                    }
+                }
+                Sleep(50);
+            }
+            });
+    }
 
     // Advertise "NoProgram" at startup
     {
@@ -248,6 +299,10 @@ int main(int argc, char** argv)
                 continue;
             }
             main_active = true;
+            if (visual) {
+                (void)host.pauseEmulationBlocking(1500);
+                vm.SetVisualDebugPaused(true);
+            }
             WireAck ack{}; ack.tag = MSG_ACK; ack.ok = 1; ack.code = 'A';
             (void)write_all(hOut, &ack, sizeof(ack));
             SCLOGD("[Worker %zu] ACTIVATE_MAIN ok", worker_id);
@@ -335,5 +390,10 @@ int main(int argc, char** argv)
         }
     }
 
+    visual_control_stop.store(true);
+    vm.SetVisualDebugMode(false);
+    if (visual_control_thread.joinable()) {
+        visual_control_thread.join();
+    }
     return WERR_None;
 }

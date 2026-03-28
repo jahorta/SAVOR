@@ -5,6 +5,7 @@
 #include <variant>
 #include <optional>
 #include <cstdint>
+#include <atomic>
 
 #include "../Breakpoints/BPRegistry.h"    // BreakpointMap, BPKey
 #include "../Breakpoints/Predicate.h"
@@ -207,6 +208,11 @@ namespace simcore {
 
 		// Run the program once for a given job
 		PSResult run(const PSJob& job);
+		void SetVisualDebugMode(bool enabled);
+		void SetVisualDebugPaused(bool paused);
+		void StepVisualDebugVmOnce();
+		bool IsVisualDebugVmPaused() const;
+		bool IsRunUntilBpActive() const;
 
 	private:
 		simcore::DolphinWrapper& host_;
@@ -216,6 +222,10 @@ namespace simcore {
 		PhaseScript prog_;
 		PSInit init_;
 		std::vector<uint32_t> armed_pcs_;
+		bool visual_debug_mode_{ false };
+		std::atomic<bool> visual_debug_paused_{ false };
+		std::atomic<uint32_t> visual_debug_vm_step_budget_{ 0 };
+		std::atomic<bool> run_until_bp_active_{ false };
 
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
@@ -228,6 +238,7 @@ namespace simcore {
 
 		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
 		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+		void wait_for_visual_debug_gate();
 
 		bool op_arm_phase_bps_once();
 		bool op_load_snapshot(PSContext& ctx);

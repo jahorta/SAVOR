@@ -2,6 +2,7 @@
 
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
@@ -28,6 +29,12 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     layout->addWidget(replayDoneLabel_, 1);
 
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    QPushButton* pauseButton = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
+    QPushButton* stepVmButton = buttons->addButton(QStringLiteral("Step VM"), QDialogButtonBox::ActionRole);
+    QPushButton* resumeButton = buttons->addButton(QStringLiteral("Resume Emulation"), QDialogButtonBox::ActionRole);
+    connect(pauseButton, &QPushButton::clicked, this, &VisualWorkerDialog::pauseRequested);
+    connect(stepVmButton, &QPushButton::clicked, this, &VisualWorkerDialog::vmStepRequested);
+    connect(resumeButton, &QPushButton::clicked, this, &VisualWorkerDialog::resumeRequested);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 }

@@ -17,6 +17,11 @@ public:
     void showRenderSurface();
     void showReplayDoneLabel();
 
+signals:
+    void pauseRequested();
+    void resumeRequested();
+    void vmStepRequested();
+
 private:
     QWidget* renderWidget_ = nullptr;
     QLabel* replayDoneLabel_ = nullptr;
