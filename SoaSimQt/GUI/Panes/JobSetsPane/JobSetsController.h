@@ -77,14 +77,20 @@ private:
     bool canAutoRefresh() const;
     bool anyWorkInFlight() const;
     void emitStateChanged();
+    void loadSettings();
+    void persistSettings() const;
+    void syncFetchStateFromView();
 
     ViewState state_;
+    JobSetsListScope fetchScope_{};
+    int fetchPageLimit_ = 100;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
     qint64 pendingActionJobSetId_ = 0;
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;
+    bool pendingPageFetch_ = false;
     bool boostInFlight_ = false;
     bool cancelInFlight_ = false;
     bool deleteInFlight_ = false;

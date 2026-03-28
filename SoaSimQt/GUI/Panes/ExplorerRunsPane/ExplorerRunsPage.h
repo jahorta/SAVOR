@@ -91,6 +91,8 @@ private:
     void restoreSelectedJobRow();
     void selectFirstWaveIfNeeded();
     std::vector<qint64> selectedWaveIdsFromTree() const;
+    void loadFilterSettings();
+    void persistFilterSettings() const;
 
     ViewState state_;
     ExplorerRunsCoordinator* coordinator_ = nullptr;

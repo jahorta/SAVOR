@@ -4,8 +4,10 @@
 #include "Utils/Hash.h"
 
 #include <QtCore/QFileInfo>
+#include <QtCore/QSettings>
 
 #include <exception>
+#include <algorithm>
 #include <utility>
 
 using simcore::db::Compression;
@@ -13,6 +15,11 @@ using simcore::db::DataService;
 using simcore::db::ObjectStore;
 
 namespace {
+constexpr auto kSettingsGroup = "ArtifactsPane";
+constexpr auto kSearchKey = "search";
+constexpr auto kExtensionKey = "extension";
+constexpr auto kPageLimitKey = "page_limit";
+
 QString describeException(const char* prefix)
 {
     try {
@@ -36,7 +43,12 @@ auto runAsync(AsyncCall&& asyncCall)
 ArtifactsController::ArtifactsController(QObject* parent)
     : QObject(parent)
 {
+    loadSettings();
+    syncFetchStateFromView();
+
     connect(&pageWatcher_, &QFutureWatcher<ObjectPageResult>::finished, this, [this]() {
+        const bool shouldRefetch = pendingPageFetch_;
+        pendingPageFetch_ = false;
         state_.loading = false;
         try {
             refreshRootsState();
@@ -77,6 +89,9 @@ ArtifactsController::ArtifactsController(QObject* parent)
             state_.errorMessage = describeException("Artifacts failed");
         }
         emitStateChanged();
+        if (shouldRefetch) {
+            kickPageFetch();
+        }
     });
 
     connect(&importWatcher_, &QFutureWatcher<ObjectRowResult>::finished, this, [this]() {
@@ -146,6 +161,8 @@ void ArtifactsController::applyFilters(const QString& search, const QString& ext
     after_.reset();
     state_.errorMessage.clear();
     state_.infoMessage.clear();
+    syncFetchStateFromView();
+    persistSettings();
     kickPageFetch();
 }
 
@@ -158,6 +175,8 @@ void ArtifactsController::resetFilters()
     after_.reset();
     state_.errorMessage.clear();
     state_.infoMessage.clear();
+    syncFetchStateFromView();
+    persistSettings();
     kickPageFetch();
     emitStateChanged();
 }
@@ -268,6 +287,9 @@ void ArtifactsController::kickPageFetch()
 {
     refreshRootsState();
     if (!state_.rootsReady || state_.loading) {
+        if (state_.loading) {
+            pendingPageFetch_ = true;
+        }
         if (!state_.rootsReady) {
             state_.page = {};
             state_.selectedArtifactId = 0;
@@ -275,15 +297,16 @@ void ArtifactsController::kickPageFetch()
         return;
     }
 
+    pendingPageFetch_ = false;
     state_.loading = true;
     state_.errorMessage.clear();
     PagedQuery<> query;
     query.before = before_;
     query.after = after_;
-    query.limit = state_.pageLimit;
+    query.limit = fetchPageLimit_;
 
-    const QString search = state_.search;
-    const QString extension = state_.extension;
+    const QString search = fetchSearch_;
+    const QString extension = fetchExtension_;
     pageWatcher_.setFuture(runAsync([query, search, extension]() {
         return DataService::FetchObjectRefsPage(query, search.toStdString(), extension.toStdString()).get();
     }));
@@ -293,6 +316,35 @@ void ArtifactsController::kickPageFetch()
 void ArtifactsController::emitStateChanged()
 {
     emit stateChanged();
+}
+
+void ArtifactsController::loadSettings()
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    state_.search = settings.value(kSearchKey, QString()).toString().trimmed();
+    state_.extension = normalizedExtension(settings.value(kExtensionKey, QString()).toString());
+    state_.pageLimit = (std::max)(1, settings.value(kPageLimitKey, state_.pageLimit).toInt());
+
+    settings.endGroup();
+}
+
+void ArtifactsController::persistSettings() const
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kSearchKey, state_.search);
+    settings.setValue(kExtensionKey, state_.extension);
+    settings.setValue(kPageLimitKey, state_.pageLimit);
+    settings.endGroup();
+}
+
+void ArtifactsController::syncFetchStateFromView()
+{
+    fetchSearch_ = state_.search;
+    fetchExtension_ = state_.extension;
+    fetchPageLimit_ = state_.pageLimit;
 }
 
 QString ArtifactsController::normalizedExtension(const QString& extension) const
