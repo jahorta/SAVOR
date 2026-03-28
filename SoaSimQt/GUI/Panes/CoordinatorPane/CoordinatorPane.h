@@ -64,4 +64,7 @@ private:
     QTreeView* workerTableView_ = nullptr;
     QTreeView* visualWorkerTableView_ = nullptr;
     VisualWorkerDialog* visualWorkerDialog_ = nullptr;
+    bool visualReplayRequested_ = false;
+    bool visualWorkerObservedRunning_ = false;
+    bool visualReplayDoneShown_ = false;
 };

@@ -48,6 +48,24 @@ void CoordinatorPane::refreshUi()
     const auto& snapshot = controller_->snapshot();
     const auto& visualSnapshot = controller_->visualSnapshot();
 
+    if (visualReplayRequested_) {
+        if (!visualSnapshot.empty()) {
+            visualWorkerObservedRunning_ = true;
+        }
+
+        if (visualWorkerDialog_) {
+            if (visualWorkerObservedRunning_ && visualSnapshot.empty()) {
+                if (!visualReplayDoneShown_) {
+                    visualWorkerDialog_->showReplayDoneLabel();
+                    visualReplayDoneShown_ = true;
+                }
+            } else {
+                visualWorkerDialog_->showRenderSurface();
+                visualReplayDoneShown_ = false;
+            }
+        }
+    }
+
     {
         const QSignalBlocker blocker(targetWorkersSpin_);
         targetWorkersSpin_->setValue(controller_->targetWorkers());
@@ -213,6 +231,10 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
     if (!visualWorkerDialog_) {
         visualWorkerDialog_ = new VisualWorkerDialog(this);
     }
+    visualReplayRequested_ = true;
+    visualWorkerObservedRunning_ = false;
+    visualReplayDoneShown_ = false;
+    visualWorkerDialog_->showRenderSurface();
     visualWorkerDialog_->show();
     visualWorkerDialog_->raise();
     visualWorkerDialog_->activateWindow();

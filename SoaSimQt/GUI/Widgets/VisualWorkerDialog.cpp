@@ -22,6 +22,11 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     renderWidget_->setAutoFillBackground(true);
     layout->addWidget(renderWidget_, 1);
 
+    replayDoneLabel_ = new QLabel(QStringLiteral("visual replay done"), this);
+    replayDoneLabel_->setAlignment(Qt::AlignCenter);
+    replayDoneLabel_->setVisible(false);
+    layout->addWidget(replayDoneLabel_, 1);
+
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
@@ -32,4 +37,24 @@ VisualWorkerDialog::~VisualWorkerDialog() = default;
 quintptr VisualWorkerDialog::renderWidgetHandle() const
 {
     return renderWidget_ ? renderWidget_->winId() : 0;
+}
+
+void VisualWorkerDialog::showRenderSurface()
+{
+    if (renderWidget_) {
+        renderWidget_->setVisible(true);
+    }
+    if (replayDoneLabel_) {
+        replayDoneLabel_->setVisible(false);
+    }
+}
+
+void VisualWorkerDialog::showReplayDoneLabel()
+{
+    if (renderWidget_) {
+        renderWidget_->setVisible(false);
+    }
+    if (replayDoneLabel_) {
+        replayDoneLabel_->setVisible(true);
+    }
 }
