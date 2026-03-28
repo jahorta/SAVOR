@@ -3,6 +3,7 @@
 #include <QtWidgets/QDialog>
 
 class QWidget;
+class QLabel;
 
 class VisualWorkerDialog final : public QDialog
 {
@@ -13,7 +14,10 @@ public:
     ~VisualWorkerDialog() override;
 
     quintptr renderWidgetHandle() const;
+    void showRenderSurface();
+    void showReplayDoneLabel();
 
 private:
     QWidget* renderWidget_ = nullptr;
+    QLabel* replayDoneLabel_ = nullptr;
 };
