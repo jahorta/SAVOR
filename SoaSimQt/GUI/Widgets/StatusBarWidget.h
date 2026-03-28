@@ -10,6 +10,7 @@ class CoordinatorController;
 
 class QHBoxLayout;
 class QLabel;
+class QResizeEvent;
 class QTimer;
 
 struct StatusBarSnapshot
@@ -48,14 +49,23 @@ private:
     QLabel* createBadge(const QString& text, const QString& variant);
     QLabel* createSeparator();
     void rebuildToasts();
+    void reconcileVisibleToastsWithWidth();
+    bool canFitToast(const StatusToast& toast) const;
+    int toastWidth(const StatusToast& toast) const;
+    int availableToastWidth() const;
     void updateConnectionBadge();
     void updateRefreshLabel();
     void updateCoordinatorBadge();
     void pruneExpiredToasts();
     void scheduleToastExpiry();
+    bool hasDuplicateMessage(const QString& message) const;
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
 
     StatusBarSnapshot snapshot_;
-    QList<StatusToast> activeToasts_;
+    QList<StatusToast> visibleToasts_;
+    QList<StatusToast> queuedToasts_;
     QString lastValidationMessage_;
     CoordinatorToastState lastCoordinatorToastState_ = CoordinatorToastState::Stopped;
 
