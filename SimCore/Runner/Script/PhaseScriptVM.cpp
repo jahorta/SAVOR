@@ -17,6 +17,7 @@
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "../Breakpoints/BPRegistry.h"
 #include "ScriptProgress.h"
+#include <thread>
 
 namespace {
     inline bool read_via_addrprog(simcore::DolphinWrapper& host,
@@ -64,6 +65,56 @@ namespace simcore {
 
     PhaseScriptVM::PhaseScriptVM(simcore::DolphinWrapper& host, const BreakpointMap& bpmap)
         : host_(host), bpmap_(bpmap) {
+    }
+
+    void PhaseScriptVM::SetVisualDebugMode(bool enabled)
+    {
+        visual_debug_mode_ = enabled;
+        if (!enabled) {
+            visual_debug_paused_.store(false, std::memory_order_release);
+            visual_debug_vm_step_budget_.store(0, std::memory_order_release);
+        }
+    }
+
+    void PhaseScriptVM::SetVisualDebugPaused(bool paused)
+    {
+        visual_debug_paused_.store(paused, std::memory_order_release);
+        if (!paused) {
+            visual_debug_vm_step_budget_.store(0, std::memory_order_release);
+        }
+    }
+
+    void PhaseScriptVM::StepVisualDebugVmOnce()
+    {
+        visual_debug_paused_.store(true, std::memory_order_release);
+        visual_debug_vm_step_budget_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    bool PhaseScriptVM::IsVisualDebugVmPaused() const
+    {
+        return visual_debug_paused_.load(std::memory_order_acquire);
+    }
+
+    bool PhaseScriptVM::IsRunUntilBpActive() const
+    {
+        return run_until_bp_active_.load(std::memory_order_acquire);
+    }
+
+    void PhaseScriptVM::wait_for_visual_debug_gate()
+    {
+        if (!visual_debug_mode_) return;
+        for (;;) {
+            if (!visual_debug_paused_.load(std::memory_order_acquire)) {
+                return;
+            }
+            uint32_t budget = visual_debug_vm_step_budget_.load(std::memory_order_acquire);
+            if (budget > 0) {
+                if (visual_debug_vm_step_budget_.compare_exchange_strong(budget, budget - 1, std::memory_order_acq_rel)) {
+                    return;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     bool PhaseScriptVM::save_snapshot() {
@@ -248,6 +299,7 @@ namespace simcore {
         simcore::InputPlan applied_plan{}; applied_plan.reserve(count);
         std::vector<uint32_t> vi_durations{}; vi_durations.reserve(count);
         for (idx = 0; idx < count; idx++) {
+            wait_for_visual_debug_gate();
             GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
             const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
             SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
@@ -271,6 +323,7 @@ namespace simcore {
     }
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         using simcore::RunToBpOutcome;
+        run_until_bp_active_.store(true, std::memory_order_release);
         uint32_t timeout_ms = init_.default_timeout_ms; ctx.get<uint32_t>(keys::core::RUN_MS, timeout_ms);
         uint32_t vi_stall_ms = 0; ctx.get<uint32_t>(keys::core::VI_STALL_MS, vi_stall_ms);
         const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
@@ -279,6 +332,7 @@ namespace simcore {
         auto t0 = std::chrono::steady_clock::now();
         host_.disableThrottle();
         auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
+        run_until_bp_active_.store(false, std::memory_order_release);
         host_.enableThrottle();
         auto t1 = std::chrono::steady_clock::now();
         const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -424,6 +478,7 @@ namespace simcore {
         }
 
         for (size_t vm_pc = 0; vm_pc < prog_.ops.size(); ++vm_pc) {
+            wait_for_visual_debug_gate();
             const auto& op = prog_.ops[vm_pc];
             SCLOGT("[VM] running op: %s", get_psop_name(op.code).c_str());
 

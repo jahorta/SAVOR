@@ -230,6 +230,9 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
 {
     if (!visualWorkerDialog_) {
         visualWorkerDialog_ = new VisualWorkerDialog(this);
+        connect(visualWorkerDialog_, &VisualWorkerDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
+        connect(visualWorkerDialog_, &VisualWorkerDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
+        connect(visualWorkerDialog_, &VisualWorkerDialog::resumeRequested, controller_, &CoordinatorController::resumeVisualReplayEmulation);
     }
     visualReplayRequested_ = true;
     visualWorkerObservedRunning_ = false;

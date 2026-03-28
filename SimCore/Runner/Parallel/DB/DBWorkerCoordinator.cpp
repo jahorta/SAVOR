@@ -756,6 +756,24 @@ namespace simcore {
         visual_render_widget_handle_.store(hwnd, std::memory_order_relaxed);
     }
 
+    bool WorkerCoordinator::PauseVisualReplayEmulation() {
+        std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+        if (!visual_slot_ || !visual_slot_->proc) return false;
+        return visual_slot_->proc->visual_pause_emulation();
+    }
+
+    bool WorkerCoordinator::ResumeVisualReplayEmulation() {
+        std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+        if (!visual_slot_ || !visual_slot_->proc) return false;
+        return visual_slot_->proc->visual_resume_emulation();
+    }
+
+    bool WorkerCoordinator::StepVisualReplayVm() {
+        std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+        if (!visual_slot_ || !visual_slot_->proc) return false;
+        return visual_slot_->proc->visual_step_vm();
+    }
+
     // Worker Status Fxns
     void WorkerCoordinator::RegisterWorker(int64_t worker_id, const std::string& host, int pid, const std::string& boot_uuid) {
         worker_status_.RegisterWorker(worker_id, host, pid, boot_uuid);

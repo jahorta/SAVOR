@@ -51,6 +51,9 @@ namespace simcore {
         void set_target_workers(size_t n);
         void set_paused(bool p);
         void SetVisualRenderWidgetHandle(uint64_t hwnd);
+        bool PauseVisualReplayEmulation();
+        bool ResumeVisualReplayEmulation();
+        bool StepVisualReplayVm();
         bool is_paused() const { return paused_.load(); }
 
     private:

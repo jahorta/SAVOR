@@ -45,6 +45,9 @@ public slots:
     void setDolphinBaseDir(const QString& dolphinBaseDir);
     void setVisualRenderWidgetHandle(quintptr hwnd);
     void requestVisualReplay(qint64 jobId);
+    void pauseVisualReplayEmulation();
+    void stepVisualReplayVm();
+    void resumeVisualReplayEmulation();
     void refreshSnapshot();
 
 signals:
