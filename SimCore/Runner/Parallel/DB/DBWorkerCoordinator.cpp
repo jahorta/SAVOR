@@ -6,6 +6,8 @@
 #include <mutex>  // for std::once_flag / std::call_once
 #include <chrono>
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 #include "../../../Utils/ThreadName.h"
 #include "../../../DB/ProgramDB/IProgramDBCodec.h"
@@ -28,6 +30,13 @@ namespace simcore {
     static inline int64_t now_sec() {
         using namespace std::chrono;
         return (int64_t)duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+    }
+
+    static inline std::string trim_trailing_newline_chars(std::string s) {
+        while (!s.empty() && (s.back() == '\r' || s.back() == '\n')) {
+            s.pop_back();
+        }
+        return s;
     }
 
     static inline void interrupt_in_flight_jobs_with_event() {
@@ -78,6 +87,7 @@ namespace simcore {
 
     void WorkerCoordinator::stop() {
         if (stop_.exchange(true)) return;
+        stop_visual_log_tail();
         interrupt_in_flight_jobs_with_event();
         startup_in_flight_slot_.reset();
         startup_queue_.clear();
@@ -136,12 +146,16 @@ namespace simcore {
         ps.vm_control = true;
         ps.visual = (s.id == 0);
         ps.render_widget_handle = (s.id == 0) ? visual_render_widget_handle_.load(std::memory_order_relaxed) : 0;
+        const std::string visual_log_path = ps.user_dir + "\\worker-" + std::to_string(s.id) + ".log";
         if (!s.proc->start(ps, &results_q_)) {
             s.dead.store(true);
             s.phase = Slot::Phase::Dead;
             RecordError((int64_t)s.id, "ProcessWorker.start failed");
             UpdateState((int64_t)s.id, WorkerStateKind::Dead);
             return false;
+        }
+        if (s.id == 0) {
+            start_visual_log_tail(visual_log_path);
         }
         RegisterWorker((int64_t)s.id, "localhost", /*pid*/ s.proc->GetPid(), /*boot_uuid*/ "");
         UpdateState((int64_t)s.id, WorkerStateKind::Spawning);
@@ -156,6 +170,9 @@ namespace simcore {
     }
 
     void WorkerCoordinator::shutdown_slot(Slot& s) {
+        if (s.id == 0) {
+            stop_visual_log_tail();
+        }
         UpdateState((int64_t)s.id, WorkerStateKind::Stopping);
         SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
         s.running.store(false);
@@ -825,8 +842,86 @@ namespace simcore {
         }
         return *found;
     }
+    std::vector<std::string> WorkerCoordinator::GetVisualLogTail() const {
+        std::lock_guard<std::mutex> lock(visual_log_mtx_);
+        return std::vector<std::string>(visual_log_tail_.begin(), visual_log_tail_.end());
+    }
+
     void WorkerCoordinator::SetEventBufferCapacity(size_t n) {
         worker_status_.SetEventBufferCapacity(n);
+    }
+
+    void WorkerCoordinator::start_visual_log_tail(const std::string& log_path) {
+        stop_visual_log_tail();
+        {
+            std::lock_guard<std::mutex> lock(visual_log_mtx_);
+            visual_log_tail_.clear();
+        }
+        visual_log_stop_.store(false);
+        visual_log_thread_ = std::thread([this, log_path]() {
+            uintmax_t offset = 0;
+            bool offset_initialized = false;
+            std::string partial_line;
+            for (;;) {
+                if (visual_log_stop_.load() || stop_.load()) {
+                    break;
+                }
+                std::error_code ec;
+                const bool exists = std::filesystem::exists(log_path, ec) && !ec;
+                if (exists) {
+                    const auto current_size = std::filesystem::file_size(log_path, ec);
+                    if (!ec) {
+                        if (!offset_initialized) {
+                            offset = current_size;
+                            offset_initialized = true;
+                        }
+                        else if (current_size < offset) {
+                            offset = current_size;
+                            partial_line.clear();
+                        }
+
+                        if (current_size > offset) {
+                            std::ifstream in(log_path, std::ios::binary);
+                            if (in.good()) {
+                                in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+                                const auto bytes_to_read = static_cast<size_t>(current_size - offset);
+                                std::string chunk(bytes_to_read, '\0');
+                                in.read(chunk.data(), static_cast<std::streamsize>(bytes_to_read));
+                                const auto got = static_cast<size_t>(in.gcount());
+                                chunk.resize(got);
+                                offset += got;
+                                partial_line.append(chunk);
+
+                                size_t nl = partial_line.find('\n');
+                                while (nl != std::string::npos) {
+                                    std::string line = partial_line.substr(0, nl);
+                                    line = trim_trailing_newline_chars(std::move(line));
+                                    push_visual_log_line(std::move(line));
+                                    partial_line.erase(0, nl + 1);
+                                    nl = partial_line.find('\n');
+                                }
+                            }
+                        }
+                    }
+                }
+                Sleep(250);
+            }
+            });
+    }
+
+    void WorkerCoordinator::stop_visual_log_tail() {
+        visual_log_stop_.store(true);
+        if (visual_log_thread_.joinable()) {
+            visual_log_thread_.join();
+        }
+    }
+
+    void WorkerCoordinator::push_visual_log_line(std::string line) {
+        std::lock_guard<std::mutex> lock(visual_log_mtx_);
+        visual_log_tail_.push_back(std::move(line));
+        while (visual_log_tail_.size() > 30) {
+            visual_log_tail_.pop_front();
+        }
     }
 
 } // namespace simcore

@@ -2,6 +2,7 @@
 
 #include <QtCore/QObject>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include <memory>
 #include <vector>
@@ -32,6 +33,7 @@ public:
 
     const std::vector<WorkerSnapshot>& snapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
+    QStringList pullVisualLiveLogLines();
 
 public slots:
     void startCoordinator();
@@ -49,10 +51,12 @@ public slots:
     void stepVisualReplayVm();
     void resumeVisualReplayEmulation();
     void refreshSnapshot();
+    void pollVisualLiveLogLines();
 
 signals:
     void stateChanged();
     void snapshotChanged();
+    void visualLiveLogLinesReady(const QStringList& lines);
 
 private:
     static constexpr int kMinTargetWorkers = 1;
@@ -68,6 +72,7 @@ private:
     std::unique_ptr<simcore::WorkerCoordinator> coordinator_;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
+    QStringList visualLiveLogLinesCache_;
 
     int targetWorkers_ = kMinTargetWorkers;
     int eventBufferCapacity_ = 64;

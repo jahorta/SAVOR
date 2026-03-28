@@ -233,11 +233,14 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
         connect(visualWorkerDialog_, &VisualWorkerDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
         connect(visualWorkerDialog_, &VisualWorkerDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
         connect(visualWorkerDialog_, &VisualWorkerDialog::resumeRequested, controller_, &CoordinatorController::resumeVisualReplayEmulation);
+        connect(visualWorkerDialog_, &VisualWorkerDialog::logPollRequested, controller_, &CoordinatorController::pollVisualLiveLogLines);
+        connect(controller_, &CoordinatorController::visualLiveLogLinesReady, visualWorkerDialog_, &VisualWorkerDialog::updateLiveLogLines);
     }
     visualReplayRequested_ = true;
     visualWorkerObservedRunning_ = false;
     visualReplayDoneShown_ = false;
     visualWorkerDialog_->showRenderSurface();
+    visualWorkerDialog_->startLogPolling();
     visualWorkerDialog_->show();
     visualWorkerDialog_->raise();
     visualWorkerDialog_->activateWindow();
