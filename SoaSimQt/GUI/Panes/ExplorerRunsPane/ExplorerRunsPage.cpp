@@ -15,6 +15,7 @@
 #include "Utils/IniDoc.h"
 
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtGui/QStandardItem>
@@ -44,6 +45,14 @@ using namespace simcore::db::codec::battle::singleturn;
 
 namespace {
 constexpr int kWaveJobSetIdUserRole = Qt::UserRole + 1;
+constexpr auto kSettingsGroup = "ExplorerRunsPage";
+constexpr auto kWinnersOnlyKey = "winners_only";
+constexpr auto kShowDuplicatesKey = "show_duplicates";
+constexpr auto kSuccessOnlyKey = "success_only";
+constexpr auto kSortMetricPrefix = "sort_metric_";
+constexpr auto kSortAscendingPrefix = "sort_ascending_";
+constexpr auto kOverrideFakeAttacksKey = "override_fake_attacks";
+constexpr auto kMaxFakeAttacksKey = "max_fake_attacks";
 
 bool isTurnInputEligibleState(const QString& state)
 {
@@ -91,7 +100,10 @@ ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
     , wavesModel_(new QStandardItemModel(this))
 {
     createWidgets();
+    loadFilterSettings();
     wireSignals();
+    syncControls();
+    refreshView();
     coordinator_->requestGroupsRefresh();
 }
 
@@ -326,25 +338,30 @@ void ExplorerRunsPage::wireSignals()
         if (!checked) {
             state_.showDuplicates = false;
         }
+        persistFilterSettings();
         syncControls();
         refreshJobs();
     });
     connect(showDuplicatesCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
         state_.showDuplicates = checked;
+        persistFilterSettings();
         refreshJobs();
     });
     connect(successOnlyCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
         state_.successOnly = checked;
+        persistFilterSettings();
         refreshJobs();
     });
 
     for (int i = 0; i < 3; ++i) {
         connect(sortMetricBoxes_[i], qOverload<int>(&QComboBox::currentIndexChanged), this, [this, i, refreshJobs](int) {
             state_.sortKeys[static_cast<size_t>(i)].metric = static_cast<SortMetric>(sortMetricBoxes_[i]->currentData().toInt());
+            persistFilterSettings();
             refreshJobs();
         });
         connect(sortAscendingChecks_[i], &QCheckBox::toggled, this, [this, i, refreshJobs](bool checked) {
             state_.sortKeys[static_cast<size_t>(i)].ascending = checked;
+            persistFilterSettings();
             refreshJobs();
         });
     }
@@ -364,10 +381,12 @@ void ExplorerRunsPage::wireSignals()
 
     connect(overrideFakeAttacksCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         state_.overrideMaxFakeAttacks = checked;
+        persistFilterSettings();
         syncControls();
     });
     connect(fakeAttacksSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         state_.maxFakeAttacksOverride = value;
+        persistFilterSettings();
     });
     connect(triggerButton_, &QPushButton::clicked, this, &ExplorerRunsPage::triggerNextWave);
 }
@@ -843,4 +862,53 @@ std::vector<qint64> ExplorerRunsPage::selectedWaveIdsFromTree() const
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
+}
+
+void ExplorerRunsPage::loadFilterSettings()
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    state_.winnersOnly = settings.value(kWinnersOnlyKey, state_.winnersOnly).toBool();
+    state_.showDuplicates = settings.value(kShowDuplicatesKey, state_.showDuplicates).toBool();
+    state_.successOnly = settings.value(kSuccessOnlyKey, state_.successOnly).toBool();
+    if (!state_.winnersOnly) {
+        state_.showDuplicates = false;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        const SortMetric fallbackMetric = state_.sortKeys[static_cast<size_t>(i)].metric;
+        const int metricValue = settings.value(QStringLiteral("%1%2").arg(kSortMetricPrefix).arg(i), static_cast<int>(fallbackMetric)).toInt();
+        const bool metricInRange = metricValue >= static_cast<int>(SortMetric::PredicatesPassed)
+            && metricValue <= static_cast<int>(SortMetric::RngSeed);
+        state_.sortKeys[static_cast<size_t>(i)].metric = metricInRange
+            ? static_cast<SortMetric>(metricValue)
+            : fallbackMetric;
+        state_.sortKeys[static_cast<size_t>(i)].ascending = settings.value(
+            QStringLiteral("%1%2").arg(kSortAscendingPrefix).arg(i),
+            state_.sortKeys[static_cast<size_t>(i)].ascending).toBool();
+    }
+
+    state_.overrideMaxFakeAttacks = settings.value(kOverrideFakeAttacksKey, state_.overrideMaxFakeAttacks).toBool();
+    state_.maxFakeAttacksOverride = settings.value(kMaxFakeAttacksKey, state_.maxFakeAttacksOverride).toInt();
+
+    settings.endGroup();
+}
+
+void ExplorerRunsPage::persistFilterSettings() const
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    settings.setValue(kWinnersOnlyKey, state_.winnersOnly);
+    settings.setValue(kShowDuplicatesKey, state_.showDuplicates);
+    settings.setValue(kSuccessOnlyKey, state_.successOnly);
+    for (int i = 0; i < 3; ++i) {
+        settings.setValue(QStringLiteral("%1%2").arg(kSortMetricPrefix).arg(i), static_cast<int>(state_.sortKeys[static_cast<size_t>(i)].metric));
+        settings.setValue(QStringLiteral("%1%2").arg(kSortAscendingPrefix).arg(i), state_.sortKeys[static_cast<size_t>(i)].ascending);
+    }
+    settings.setValue(kOverrideFakeAttacksKey, state_.overrideMaxFakeAttacks);
+    settings.setValue(kMaxFakeAttacksKey, state_.maxFakeAttacksOverride);
+
+    settings.endGroup();
 }

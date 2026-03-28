@@ -58,13 +58,20 @@ private:
     void refreshRootsState();
     void kickPageFetch();
     void emitStateChanged();
+    void loadSettings();
+    void persistSettings() const;
+    void syncFetchStateFromView();
     QString normalizedExtension(const QString& extension) const;
     const simcore::db::ObjectRefLite* selectedArtifact() const;
 
     ViewState state_;
+    QString fetchSearch_;
+    QString fetchExtension_;
+    int fetchPageLimit_ = 100;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
     bool initialLoadStarted_ = false;
+    bool pendingPageFetch_ = false;
     QFutureWatcher<ObjectPageResult> pageWatcher_;
     QFutureWatcher<ObjectRowResult> importWatcher_;
     QFutureWatcher<VoidResult> materializeWatcher_;
