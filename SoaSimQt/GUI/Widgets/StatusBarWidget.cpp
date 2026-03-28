@@ -3,6 +3,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 
 #include <QtCore/QTimer>
+#include <QtGui/QResizeEvent>
 #include <QtWidgets/QHBoxLayout>
 #include <utility>
 #include <QtWidgets/QLabel>
@@ -11,8 +12,6 @@
 namespace {
 constexpr int kDefaultToastTtlMs = 4000;
 constexpr int kValidationToastTtlMs = 5000;
-constexpr int kDuplicateWindowMs = 1500;
-constexpr int kMaxStoredToasts = 6;
 
 QString toastVariant(StatusToast::Severity severity)
 {
@@ -66,6 +65,7 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     toastExpiryTimer_->setSingleShot(true);
     connect(toastExpiryTimer_, &QTimer::timeout, this, [this]() {
         pruneExpiredToasts();
+        reconcileVisibleToastsWithWidth();
         rebuildToasts();
     });
 
@@ -109,6 +109,7 @@ void StatusBarWidget::setSnapshot(const StatusBarSnapshot& snapshot)
     updateRefreshLabel();
     updateCoordinatorBadge();
     pruneExpiredToasts();
+    reconcileVisibleToastsWithWidth();
     rebuildToasts();
 }
 
@@ -130,30 +131,14 @@ void StatusBarWidget::postToast(StatusToast toast)
     }
 
     pruneExpiredToasts();
-
-    for (StatusToast& activeToast : activeToasts_) {
-        if (activeToast.severity != toast.severity || activeToast.message != toast.message) {
-            continue;
-        }
-
-        const qint64 ageMs = activeToast.createdAt.msecsTo(now);
-        if (ageMs <= kDuplicateWindowMs) {
-            activeToast.count += toast.count;
-            activeToast.createdAt = now;
-            activeToast.ttlMs = qMax(activeToast.ttlMs, toast.ttlMs);
-            if (!toast.details.isEmpty()) {
-                activeToast.details = toast.details;
-            }
-            rebuildToasts();
-            return;
-        }
+    if (hasDuplicateMessage(toast.message)) {
+        reconcileVisibleToastsWithWidth();
+        rebuildToasts();
+        return;
     }
 
-    activeToasts_.append(std::move(toast));
-    while (activeToasts_.size() > kMaxStoredToasts) {
-        activeToasts_.removeFirst();
-    }
-
+    queuedToasts_.append(std::move(toast));
+    reconcileVisibleToastsWithWidth();
     rebuildToasts();
 }
 
@@ -169,11 +154,12 @@ void StatusBarWidget::postToast(StatusToast::Severity severity, const QString& m
 
 void StatusBarWidget::clearToasts()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         return;
     }
 
-    activeToasts_.clear();
+    visibleToasts_.clear();
+    queuedToasts_.clear();
     rebuildToasts();
 }
 
@@ -253,7 +239,7 @@ void StatusBarWidget::rebuildToasts()
         delete item;
     }
 
-    for (const StatusToast& toast : activeToasts_) {
+    for (const StatusToast& toast : visibleToasts_) {
         QLabel* badge = createBadge(buildToastText(toast), toastVariant(toast.severity));
         if (!toast.details.isEmpty()) {
             badge->setToolTip(toast.details);
@@ -261,7 +247,7 @@ void StatusBarWidget::rebuildToasts()
         toastLayout_->addWidget(badge);
     }
 
-    toastHost_->setVisible(!activeToasts_.isEmpty());
+    toastHost_->setVisible(!visibleToasts_.isEmpty());
     scheduleToastExpiry();
 }
 
@@ -302,15 +288,24 @@ void StatusBarWidget::updateCoordinatorBadge()
 
 void StatusBarWidget::pruneExpiredToasts()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         return;
     }
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    for (auto it = activeToasts_.begin(); it != activeToasts_.end();) {
+    for (auto it = visibleToasts_.begin(); it != visibleToasts_.end();) {
         const qint64 ageMs = it->createdAt.msecsTo(now);
         if (ageMs > it->ttlMs) {
-            it = activeToasts_.erase(it);
+            it = visibleToasts_.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
+    for (auto it = queuedToasts_.begin(); it != queuedToasts_.end();) {
+        const qint64 ageMs = it->createdAt.msecsTo(now);
+        if (ageMs > it->ttlMs) {
+            it = queuedToasts_.erase(it);
             continue;
         }
         ++it;
@@ -319,7 +314,7 @@ void StatusBarWidget::pruneExpiredToasts()
 
 void StatusBarWidget::scheduleToastExpiry()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         toastExpiryTimer_->stop();
         return;
     }
@@ -327,7 +322,15 @@ void StatusBarWidget::scheduleToastExpiry()
     const QDateTime now = QDateTime::currentDateTimeUtc();
     int nextExpiryMs = 0;
     bool foundExpiry = false;
-    for (const StatusToast& toast : activeToasts_) {
+    for (const StatusToast& toast : visibleToasts_) {
+        const qint64 ageMs = toast.createdAt.msecsTo(now);
+        const int remainingMs = qMax(0, toast.ttlMs - static_cast<int>(ageMs));
+        if (!foundExpiry || remainingMs < nextExpiryMs) {
+            nextExpiryMs = remainingMs;
+            foundExpiry = true;
+        }
+    }
+    for (const StatusToast& toast : queuedToasts_) {
         const qint64 ageMs = toast.createdAt.msecsTo(now);
         const int remainingMs = qMax(0, toast.ttlMs - static_cast<int>(ageMs));
         if (!foundExpiry || remainingMs < nextExpiryMs) {
@@ -337,4 +340,89 @@ void StatusBarWidget::scheduleToastExpiry()
     }
 
     toastExpiryTimer_->start(qMax(1, nextExpiryMs));
+}
+
+void StatusBarWidget::reconcileVisibleToastsWithWidth()
+{
+    const int availableWidth = availableToastWidth();
+    while (!queuedToasts_.isEmpty() && canFitToast(queuedToasts_.front())) {
+        visibleToasts_.append(queuedToasts_.takeFirst());
+    }
+
+    while (!visibleToasts_.isEmpty()) {
+        int totalWidth = 0;
+        for (int i = 0; i < visibleToasts_.size(); ++i) {
+            totalWidth += toastWidth(visibleToasts_.at(i));
+            if (i > 0) {
+                totalWidth += toastLayout_->spacing();
+            }
+        }
+
+        if (totalWidth <= availableWidth) {
+            break;
+        }
+
+        queuedToasts_.prepend(visibleToasts_.takeLast());
+    }
+}
+
+bool StatusBarWidget::canFitToast(const StatusToast& toast) const
+{
+    const int availableWidth = availableToastWidth();
+    int requiredWidth = toastWidth(toast);
+    if (!visibleToasts_.isEmpty()) {
+        requiredWidth += toastLayout_->spacing();
+    }
+
+    for (const StatusToast& visibleToast : visibleToasts_) {
+        requiredWidth += toastWidth(visibleToast);
+    }
+
+    return requiredWidth <= availableWidth;
+}
+
+int StatusBarWidget::toastWidth(const StatusToast& toast) const
+{
+    QLabel probe(buildToastText(toast));
+    probe.setObjectName("statusBadge");
+    probe.setProperty("variant", toastVariant(toast.severity));
+    probe.setAlignment(Qt::AlignCenter);
+    probe.setMargin(6);
+    probe.ensurePolished();
+    return probe.sizeHint().width();
+}
+
+int StatusBarWidget::availableToastWidth() const
+{
+    const int hostWidth = toastHost_->contentsRect().width();
+    if (hostWidth > 0) {
+        return hostWidth;
+    }
+
+    return qMax(0, contentsRect().width() / 2);
+}
+
+bool StatusBarWidget::hasDuplicateMessage(const QString& message) const
+{
+    for (const StatusToast& toast : visibleToasts_) {
+        if (toast.message == message) {
+            return true;
+        }
+    }
+
+    for (const StatusToast& toast : queuedToasts_) {
+        if (toast.message == message) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void StatusBarWidget::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    pruneExpiredToasts();
+    reconcileVisibleToastsWithWidth();
+    rebuildToasts();
 }
