@@ -2,9 +2,9 @@
 
 #include "CoordinatorController.h"
 #include "WorkerTableModel.h"
-#include "VisualReplayCoordinator.h"
+#include "GUI/Widgets/VisualReplay/VisualReplayCoordinator.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
-#include "GUI/Widgets/VisualWorkerDialog.h"
+#include "GUI/Widgets/VisualReplay/VisualReplayDialog.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
@@ -54,16 +54,16 @@ void CoordinatorPane::refreshUi()
             visualWorkerObservedRunning_ = true;
         }
 
-        if (visualWorkerDialog_) {
-            visualWorkerDialog_->setReplayRuntimeStateText(controller_->visualReplayRuntimeStateText());
-            visualWorkerDialog_->setReplayControlsEnabled(controller_->visualReplayControlsEnabled());
+        if (visualReplayDialog_) {
+            visualReplayDialog_->setReplayRuntimeStateText(controller_->visualReplayRuntimeStateText());
+            visualReplayDialog_->setReplayControlsEnabled(controller_->visualReplayControlsEnabled());
             if (visualWorkerObservedRunning_ && visualSnapshot.empty()) {
                 if (!visualReplayDoneShown_) {
-                    visualWorkerDialog_->showReplayDoneLabel();
+                    visualReplayDialog_->showReplayDoneLabel();
                     visualReplayDoneShown_ = true;
                 }
             } else {
-                visualWorkerDialog_->showRenderSurface();
+                visualReplayDialog_->showRenderSurface();
                 visualReplayDoneShown_ = false;
             }
         }
@@ -231,35 +231,43 @@ QWidget* CoordinatorPane::createControlsCard()
 
 void CoordinatorPane::requestVisualReplay(qint64 jobId)
 {
-    if (!visualWorkerDialog_) {
-        visualWorkerDialog_ = new VisualWorkerDialog(this);
-        connect(visualWorkerDialog_, &VisualWorkerDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
-        connect(visualWorkerDialog_, &VisualWorkerDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
-        connect(visualWorkerDialog_, &VisualWorkerDialog::resumeRequested, controller_, &CoordinatorController::resumeVisualReplayEmulation);
-        connect(visualWorkerDialog_, &VisualWorkerDialog::logPollRequested, controller_, &CoordinatorController::pollVisualLiveLogLines);
-        connect(controller_, &CoordinatorController::visualLiveLogLinesReady, visualWorkerDialog_, &VisualWorkerDialog::updateLiveLogLines);
+    if (!visualReplayDialog_) {
+        visualReplayDialog_ = new VisualReplayDialog(this);
+        connect(visualReplayDialog_, &QDialog::finished, this, [this](int) {
+            if (visualReplayCoordinator_) {
+                visualReplayCoordinator_->stopLiveLogStreaming();
+                visualReplayCoordinator_->stopHostEventsListener();
+            }
+        });
+        connect(visualReplayDialog_, &VisualReplayDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
+        connect(visualReplayDialog_, &VisualReplayDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
+        connect(visualReplayDialog_, &VisualReplayDialog::resumeRequested, controller_, &CoordinatorController::resumeVisualReplayEmulation);
     }
     if (!visualReplayCoordinator_) {
-        visualReplayCoordinator_ = std::make_unique<VisualReplayCoordinator>(this);
+        visualReplayCoordinator_ = std::make_unique<VisualReplayCoordinator>(controller_, this);
+        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::liveLogLinesReady, this, [this](const QStringList& lines) {
+            if (visualReplayDialog_) visualReplayDialog_->appendLiveLogLines(lines);
+            });
         connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::hostEventReceived, this, [this](const QString& eventName, const QString& argsJson) {
-            if (visualWorkerDialog_) visualWorkerDialog_->appendHostEventLine(eventName, argsJson);
+            if (visualReplayDialog_) visualReplayDialog_->appendHostEventLine(eventName, argsJson);
             });
         connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::renderSurfaceResizeRequested, this, [this](int width, int height) {
-            if (visualWorkerDialog_) visualWorkerDialog_->setRenderSurfaceSize(width, height);
+            if (visualReplayDialog_) visualReplayDialog_->setRenderSurfaceSize(width, height);
             });
     }
     visualReplayRequested_ = true;
     visualWorkerObservedRunning_ = false;
     visualReplayDoneShown_ = false;
-    visualWorkerDialog_->showRenderSurface();
-    visualWorkerDialog_->setReplayRuntimeStateText(QStringLiteral("Queued startup"));
-    visualWorkerDialog_->setReplayControlsEnabled(false);
-    visualWorkerDialog_->startLogPolling();
+    visualReplayDialog_->showRenderSurface();
+    visualReplayDialog_->setReplayRuntimeStateText(QStringLiteral("Queued startup"));
+    visualReplayDialog_->setReplayControlsEnabled(false);
+    visualReplayDialog_->resetLiveLog();
+    visualReplayCoordinator_->startLiveLogStreaming();
     visualReplayCoordinator_->startHostEventsListener();
-    visualWorkerDialog_->show();
-    visualWorkerDialog_->raise();
-    visualWorkerDialog_->activateWindow();
-    controller_->setVisualRenderWidgetHandle(visualWorkerDialog_->renderWidgetHandle());
+    visualReplayDialog_->show();
+    visualReplayDialog_->raise();
+    visualReplayDialog_->activateWindow();
+    controller_->setVisualRenderWidgetHandle(visualReplayDialog_->renderWidgetHandle());
     controller_->setVisualHostEventsPipeName(visualReplayCoordinator_->hostEventsPipeName());
     controller_->requestVisualReplay(jobId);
 }

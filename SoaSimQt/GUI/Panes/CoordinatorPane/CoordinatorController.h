@@ -54,12 +54,10 @@ public slots:
     void stepVisualReplayVm();
     void resumeVisualReplayEmulation();
     void refreshSnapshot();
-    void pollVisualLiveLogLines();
 
 signals:
     void stateChanged();
     void snapshotChanged();
-    void visualLiveLogLinesReady(const QStringList& lines);
 
 private:
     static constexpr int kMinTargetWorkers = 1;
@@ -77,6 +75,7 @@ private:
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
     QStringList visualLiveLogLinesCache_;
+    size_t visualLiveLogLinesConsumed_ = 0;
 
     int targetWorkers_ = kMinTargetWorkers;
     int eventBufferCapacity_ = 64;
