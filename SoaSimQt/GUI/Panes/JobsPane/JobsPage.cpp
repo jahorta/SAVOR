@@ -384,6 +384,10 @@ void JobsPage::updateInspector()
     overviewSelectionHint_->setText(QStringLiteral("Attempts: %1\nProgress: %2").arg(selected->attempts).arg(state.progressSummary.value(selected->job_id, QStringLiteral("..."))));
 
     const ItemViewScrollSnapshot artifactsScrollSnapshot = captureItemViewScrollSnapshot(artifactsTable_);
+    const ScrollAreaScrollSnapshot eventsScrollSnapshot = captureScrollAreaScrollSnapshot(eventsText_);
+    const ScrollAreaScrollSnapshot payloadScrollSnapshot = captureScrollAreaScrollSnapshot(payloadText_);
+    const ScrollAreaScrollSnapshot progressScrollSnapshot = captureScrollAreaScrollSnapshot(progressText_);
+    const ScrollAreaScrollSnapshot resultsScrollSnapshot = captureScrollAreaScrollSnapshot(resultsText_);
 
     QStringList eventLines;
     for (const JobEventLite& event : state.detail.events) {
@@ -394,6 +398,10 @@ void JobsPage::updateInspector()
     progressText_->setPlainText(state.detail.decodedProgressText);
     resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);
+    restoreScrollAreaScrollSnapshot(eventsText_, eventsScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(payloadText_, payloadScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(progressText_, progressScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(resultsText_, resultsScrollSnapshot);
     restoreItemViewScrollSnapshot(artifactsTable_, artifactsScrollSnapshot);
 
 }

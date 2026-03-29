@@ -585,9 +585,15 @@ void ExplorerRunsPage::refreshDetailPanel()
         : QStringLiteral("Select a successful next-turn winner job with an output savestate to enable triggering."));
 
     const ExplorerRunsCoordinator::DetailBundle& details = coordinator_->details();
+    const ScrollAreaScrollSnapshot blueprintScrollSnapshot = captureScrollAreaScrollSnapshot(blueprintText_);
+    const ScrollAreaScrollSnapshot progressScrollSnapshot = captureScrollAreaScrollSnapshot(progressText_);
+    const ScrollAreaScrollSnapshot resultsScrollSnapshot = captureScrollAreaScrollSnapshot(resultsText_);
     blueprintText_->setPlainText(details.blueprintInfo.isEmpty() ? QStringLiteral("(select a job to view blueprint info)") : details.blueprintInfo);
     progressText_->setPlainText(details.progressLog.isEmpty() ? QStringLiteral("(no progress)") : details.progressLog);
     resultsText_->setPlainText(details.resultsLog.isEmpty() ? QStringLiteral("(no results)") : details.resultsLog);
+    restoreScrollAreaScrollSnapshot(blueprintText_, blueprintScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(progressText_, progressScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(resultsText_, resultsScrollSnapshot);
 }
 
 void ExplorerRunsPage::setStatusMessage(const QString& text, bool error)
