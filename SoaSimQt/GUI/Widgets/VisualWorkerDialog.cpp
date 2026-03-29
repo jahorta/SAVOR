@@ -37,17 +37,20 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     replayDoneLabel_->setAlignment(Qt::AlignCenter);
     replayDoneLabel_->setVisible(false);
     layout->addWidget(replayDoneLabel_, 1);
-
-    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log (last 30 lines)"), this);
-    layout->addWidget(logLabel);
     overallLayout->addLayout(layout);
+
+    QVBoxLayout* loglayout = new QVBoxLayout(this);
+    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log (last 30 lines)"), this);
+    loglayout->addWidget(logLabel);
 
     liveLogView_ = new QTextEdit(this);
     liveLogView_->setObjectName(QStringLiteral("visualWorkerLiveLogView"));
     liveLogView_->setReadOnly(true);
     liveLogView_->setLineWrapMode(QTextEdit::NoWrap);
     liveLogView_->setMinimumHeight(180);
-    overallLayout->addWidget(liveLogView_, 1);
+    liveLogView_->setMinimumWidth(600);
+    loglayout->addWidget(liveLogView_, 1);
+    overallLayout->addLayout(loglayout);
 
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     QPushButton* pauseButton = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
