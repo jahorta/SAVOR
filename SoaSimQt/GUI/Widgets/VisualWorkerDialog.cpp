@@ -29,6 +29,7 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     renderWidget_->setObjectName(QStringLiteral("visualWorkerRenderWidget"));
     renderWidget_->setMinimumSize(640, 360);
     renderWidget_->setAttribute(Qt::WA_NativeWindow, true);
+    renderWidget_->setAttribute(Qt::WA_PaintOnScreen, true);
     renderWidget_->setAutoFillBackground(true);
     layout->addWidget(renderWidget_, 1);
 
