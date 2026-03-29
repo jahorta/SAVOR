@@ -380,7 +380,19 @@ namespace simcore {
     }
 
     void WorkerCoordinator::sweep_expired_leases() {
-        simcore::db::JobsRepo::RequeueExpiredLeases();
+        try {
+            (void)simcore::db::JobsRepo::RequeueExpiredLeases();
+        }
+        catch (const std::exception& ex) {
+            if (!stop_.load()) {
+                RecordError((int64_t)kVisualWorkerId, std::string("RequeueExpiredLeases exception: ") + ex.what());
+            }
+        }
+        catch (...) {
+            if (!stop_.load()) {
+                RecordError((int64_t)kVisualWorkerId, "RequeueExpiredLeases unknown exception");
+            }
+        }
     }
 
     void WorkerCoordinator::controller_loop() {
