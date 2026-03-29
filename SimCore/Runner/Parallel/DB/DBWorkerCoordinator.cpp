@@ -675,11 +675,11 @@ namespace simcore {
             }
 
             std::unique_lock<std::mutex> lk(visual_slot_mtx_);
-            set_visual_runtime_state(VisualReplayRuntimeState::Stopping, "waiting for replay completion");
             visual_slot_cv_.wait(lk, [this]() {
                 return stop_.load() || !visual_slot_ || !visual_slot_->assigned_job_id.has_value();
                 });
             if (visual_slot_) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Stopping, "tearing down visual worker");
                 shutdown_slot(*visual_slot_);
                 visual_slot_.reset();
             }
@@ -995,9 +995,6 @@ namespace simcore {
     void WorkerCoordinator::push_visual_log_line(std::string line) {
         std::lock_guard<std::mutex> lock(visual_log_mtx_);
         visual_log_tail_.push_back(std::move(line));
-        while (visual_log_tail_.size() > 30) {
-            visual_log_tail_.pop_front();
-        }
     }
 
 } // namespace simcore

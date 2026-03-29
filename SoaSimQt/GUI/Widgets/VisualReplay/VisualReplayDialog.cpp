@@ -1,6 +1,7 @@
-#include "VisualWorkerDialog.h"
+#include "VisualReplayDialog.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
-#include <QtCore/QTimer>
+#include <QtGui/QTextCursor>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
@@ -8,13 +9,8 @@
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
-#include <QtGui/QTextCursor>
 
-namespace {
-constexpr int kVisualLogPollIntervalMs = 250;
-}
-
-VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
+VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle(QStringLiteral("Visual Worker"));
@@ -44,7 +40,7 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     overallLayout->addLayout(layout);
     
     QVBoxLayout* loglayout = new QVBoxLayout(this);
-    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log (last 30 lines)"), this);
+    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log"), this);
     loglayout->addWidget(logLabel);
 
     liveLogView_ = new QTextEdit(this);
@@ -60,32 +56,23 @@ VisualWorkerDialog::VisualWorkerDialog(QWidget* parent)
     pauseButton_ = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
     stepVmButton_ = buttons->addButton(QStringLiteral("Step VM"), QDialogButtonBox::ActionRole);
     resumeButton_ = buttons->addButton(QStringLiteral("Resume Emulation"), QDialogButtonBox::ActionRole);
-    connect(pauseButton_, &QPushButton::clicked, this, &VisualWorkerDialog::pauseRequested);
-    connect(stepVmButton_, &QPushButton::clicked, this, &VisualWorkerDialog::vmStepRequested);
-    connect(resumeButton_, &QPushButton::clicked, this, &VisualWorkerDialog::resumeRequested);
+    connect(pauseButton_, &QPushButton::clicked, this, &VisualReplayDialog::pauseRequested);
+    connect(stepVmButton_, &QPushButton::clicked, this, &VisualReplayDialog::vmStepRequested);
+    connect(resumeButton_, &QPushButton::clicked, this, &VisualReplayDialog::resumeRequested);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
-    logPollTimer_ = new QTimer(this);
-    logPollTimer_->setInterval(kVisualLogPollIntervalMs);
-    connect(logPollTimer_, &QTimer::timeout, this, &VisualWorkerDialog::logPollRequested);
-    connect(this, &QDialog::finished, this, [this](int) {
-        stopLogPolling();
-    });
     setReplayControlsEnabled(false);
 }
 
-VisualWorkerDialog::~VisualWorkerDialog()
-{
-    stopLogPolling();
-}
+VisualReplayDialog::~VisualReplayDialog() = default;
 
-quintptr VisualWorkerDialog::renderWidgetHandle() const
+quintptr VisualReplayDialog::renderWidgetHandle() const
 {
     return renderWidget_ ? renderWidget_->winId() : 0;
 }
 
-void VisualWorkerDialog::showRenderSurface()
+void VisualReplayDialog::showRenderSurface()
 {
     if (renderWidget_) {
         renderWidget_->setVisible(true);
@@ -95,7 +82,7 @@ void VisualWorkerDialog::showRenderSurface()
     }
 }
 
-void VisualWorkerDialog::showReplayDoneLabel()
+void VisualReplayDialog::showReplayDoneLabel()
 {
     if (renderWidget_) {
         renderWidget_->setVisible(false);
@@ -105,31 +92,40 @@ void VisualWorkerDialog::showReplayDoneLabel()
     }
 }
 
-void VisualWorkerDialog::startLogPolling()
+void VisualReplayDialog::resetLiveLog()
 {
     updateLiveLogLines(QStringList{});
-    if (logPollTimer_) {
-        logPollTimer_->start();
-    }
 }
 
-void VisualWorkerDialog::stopLogPolling()
-{
-    if (logPollTimer_) {
-        logPollTimer_->stop();
-    }
-}
 
-void VisualWorkerDialog::updateLiveLogLines(const QStringList& lines)
+void VisualReplayDialog::updateLiveLogLines(const QStringList& lines)
 {
     if (!liveLogView_) {
         return;
     }
+    const ScrollAreaScrollSnapshot scrollSnapshot = captureScrollAreaScrollSnapshot(liveLogView_);
     liveLogView_->setPlainText(lines.join(QLatin1Char('\n')));
-    liveLogView_->moveCursor(QTextCursor::End);
+    restoreScrollAreaScrollSnapshot(liveLogView_, scrollSnapshot);
 }
 
-void VisualWorkerDialog::appendHostEventLine(const QString& eventName, const QString& argsJson)
+
+void VisualReplayDialog::appendLiveLogLines(const QStringList& lines)
+{
+    if (!liveLogView_ || lines.isEmpty()) {
+        return;
+    }
+    const ScrollAreaScrollSnapshot scrollSnapshot = captureScrollAreaScrollSnapshot(liveLogView_);
+    QTextCursor cursor = liveLogView_->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    if (!liveLogView_->toPlainText().isEmpty()) {
+        cursor.insertText(QStringLiteral("\n"));
+    }
+    cursor.insertText(lines.join(QLatin1Char('\n')));
+    liveLogView_->setTextCursor(cursor);
+    restoreScrollAreaScrollSnapshot(liveLogView_, scrollSnapshot);
+}
+
+void VisualReplayDialog::appendHostEventLine(const QString& eventName, const QString& argsJson)
 {
     if (!liveLogView_) {
         return;
@@ -140,7 +136,7 @@ void VisualWorkerDialog::appendHostEventLine(const QString& eventName, const QSt
     liveLogView_->append(eventLine);
 }
 
-void VisualWorkerDialog::setReplayRuntimeStateText(const QString& text)
+void VisualReplayDialog::setReplayRuntimeStateText(const QString& text)
 {
     if (!replayStateLabel_) {
         return;
@@ -148,14 +144,14 @@ void VisualWorkerDialog::setReplayRuntimeStateText(const QString& text)
     replayStateLabel_->setText(QStringLiteral("Replay state: %1").arg(text.isEmpty() ? QStringLiteral("idle") : text));
 }
 
-void VisualWorkerDialog::setReplayControlsEnabled(bool enabled)
+void VisualReplayDialog::setReplayControlsEnabled(bool enabled)
 {
     if (pauseButton_) pauseButton_->setEnabled(enabled);
     if (stepVmButton_) stepVmButton_->setEnabled(enabled);
     if (resumeButton_) resumeButton_->setEnabled(enabled);
 }
 
-void VisualWorkerDialog::setRenderSurfaceSize(int widthPx, int heightPx)
+void VisualReplayDialog::setRenderSurfaceSize(int widthPx, int heightPx)
 {
     if (!renderWidget_) {
         return;

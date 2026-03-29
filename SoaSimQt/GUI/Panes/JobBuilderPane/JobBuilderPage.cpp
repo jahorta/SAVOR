@@ -1,5 +1,6 @@
 #include "JobBuilderPage.h"
 
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "GUI/Widgets/LedgerPickerDialog.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderSchemas.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderService.h"
@@ -763,9 +764,11 @@ void JobBuilderPage::syncIniFromWidgets()
 
 void JobBuilderPage::refreshValidation()
 {
+    const ScrollAreaScrollSnapshot validationScrollSnapshot = captureScrollAreaScrollSnapshot(validationText_);
     validationEntries_.clear();
     if (!hasIni_) {
         validationText_->setPlainText(QStringLiteral("No blueprint loaded yet."));
+        restoreScrollAreaScrollSnapshot(validationText_, validationScrollSnapshot);
         return;
     }
 
@@ -782,10 +785,12 @@ void JobBuilderPage::refreshValidation()
         }
     }
     validationText_->setPlainText(joinLines(lines));
+    restoreScrollAreaScrollSnapshot(validationText_, validationScrollSnapshot);
 }
 
 void JobBuilderPage::refreshPreviewPanel()
 {
+    const ScrollAreaScrollSnapshot previewScrollSnapshot = captureScrollAreaScrollSnapshot(previewText_);
     QVector<QString> lines;
     if (previewBusy_) {
         lines.append(QStringLiteral("Previewing…"));
@@ -825,6 +830,7 @@ void JobBuilderPage::refreshPreviewPanel()
         lines.append(QStringLiteral("No preview generated yet."));
     }
     previewText_->setPlainText(joinLines(lines));
+    restoreScrollAreaScrollSnapshot(previewText_, previewScrollSnapshot);
 }
 
 void JobBuilderPage::refreshSubmitPanel()
@@ -847,11 +853,14 @@ void JobBuilderPage::refreshSubmitPanel()
 
 void JobBuilderPage::refreshIniPanel()
 {
+    const ScrollAreaScrollSnapshot iniScrollSnapshot = captureScrollAreaScrollSnapshot(iniText_);
     if (!hasIni_) {
         iniText_->setPlainText(QStringLiteral("No blueprint loaded yet."));
+        restoreScrollAreaScrollSnapshot(iniText_, iniScrollSnapshot);
         return;
     }
     iniText_->setPlainText(QString::fromStdString(ini_.to_string_preserve_order()));
+    restoreScrollAreaScrollSnapshot(iniText_, iniScrollSnapshot);
 }
 
 void JobBuilderPage::refreshSelectionLists()

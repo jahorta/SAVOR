@@ -415,6 +415,7 @@ void ArtifactsPage::refreshModel()
 void ArtifactsPage::updateInspector()
 {
     const auto& state = controller_->viewState();
+    const ScrollAreaScrollSnapshot inspectorShaScrollSnapshot = captureScrollAreaScrollSnapshot(inspectorShaText_);
     const simcore::db::ObjectRefLite* selected = nullptr;
     for (const auto& artifact : state.page.items) {
         if (artifact.id == state.selectedArtifactId) {
@@ -431,6 +432,7 @@ void ArtifactsPage::updateInspector()
         inspectorCompressionValue_->setText(QStringLiteral("--"));
         inspectorCreatedValue_->setText(QStringLiteral("--"));
         inspectorShaText_->clear();
+        restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
         exportButton_->setEnabled(false);
         return;
     }
@@ -442,6 +444,7 @@ void ArtifactsPage::updateInspector()
     inspectorCompressionValue_->setText(ArtifactsBrowserTableModel::compressionLabel(selected->compression));
     inspectorCreatedValue_->setText(ArtifactsBrowserTableModel::formatCreatedAt(selected->created_at));
     inspectorShaText_->setPlainText(QString::fromStdString(selected->sha256));
+    restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
     exportButton_->setEnabled(state.rootsReady && !state.exportBusy && !state.importBusy);
 }
 
