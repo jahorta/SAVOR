@@ -68,6 +68,7 @@ namespace simcore {
         if (!slots_.empty()) return;
         interrupt_in_flight_jobs_with_event();
         desired_workers_.store(cfg_.desired_workers);
+        set_visual_runtime_state(VisualReplayRuntimeState::Idle);
 
         auto normal = std::make_unique<Slot>();
         normal->id = 0;
@@ -89,6 +90,7 @@ namespace simcore {
 
     void WorkerCoordinator::stop() {
         if (stop_.exchange(true)) return;
+        set_visual_runtime_state(VisualReplayRuntimeState::Stopping, "coordinator stopping");
         stop_visual_log_tail();
         interrupt_in_flight_jobs_with_event();
         startup_in_flight_slot_.reset();
@@ -109,6 +111,7 @@ namespace simcore {
         if (progress_drainer_.joinable()) progress_drainer_.join();
         if (results_drainer_.joinable())  results_drainer_.join();
         slots_.clear();
+        set_visual_runtime_state(VisualReplayRuntimeState::Idle);
     }
 
     PRStatus WorkerCoordinator::snapshot_status() const {
@@ -148,6 +151,10 @@ namespace simcore {
         ps.vm_control = true;
         ps.visual = (s.id == static_cast<size_t>(kVisualWorkerId));
         ps.render_widget_handle = (s.id == static_cast<size_t>(kVisualWorkerId)) ? visual_render_widget_handle_.load(std::memory_order_relaxed) : 0;
+        if (ps.visual) {
+            std::lock_guard<std::mutex> lock(visual_host_events_pipe_mtx_);
+            ps.visual_host_events_pipe_name = visual_host_events_pipe_name_;
+        }
         const std::string visual_log_path = ps.user_dir + "\\worker-" + std::to_string(s.id) + ".log";
         if (!s.proc->start(ps, &results_q_)) {
             s.dead.store(true);
@@ -544,14 +551,17 @@ namespace simcore {
             }
 
             const auto replay = *claimr.value;
+            set_visual_runtime_state(VisualReplayRuntimeState::QueuedStartup, std::string("replay_id=") + std::to_string(replay.visual_replay_id));
             (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "CLAIMED", std::to_string(replay.job_id));
             if (visual_render_widget_handle_.load(std::memory_order_relaxed) == 0) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "render widget handle is not set");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual replay requested without a render widget handle");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "render widget handle is not set");
                 continue;
             }
             auto job_get = simcore::db::JobsRepo::Get(replay.job_id);
             if (!job_get.ok) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "job not found");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual replay job not found");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "job not found");
                 continue;
@@ -565,6 +575,8 @@ namespace simcore {
                 visual_slot_->proc->set_progress_queue(&progress_q_);
                 visual_slot_->running.store(true);
                 visual_slot_->phase = Slot::Phase::PendingStart;
+                set_visual_runtime_state(VisualReplayRuntimeState::LaunchingWorker, "spawning visual worker");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "LAUNCHING_WORKER", std::nullopt);
                 if (!spawn_slot(*visual_slot_)) {
                     visual_slot_.reset();
                 }
@@ -573,6 +585,7 @@ namespace simcore {
             {
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
                 if (!visual_slot_) {
+                    set_visual_runtime_state(VisualReplayRuntimeState::Failed, "failed to spawn visual worker");
                     (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to spawn visual worker");
                     (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to spawn visual worker");
                     continue;
@@ -585,6 +598,7 @@ namespace simcore {
                 if (visual_slot_) ready = ensure_ready(*visual_slot_);
             }
             if (!ready) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "visual worker failed to become ready");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual worker failed to become ready");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "visual worker failed to become ready");
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -598,6 +612,7 @@ namespace simcore {
             auto& codec = ProgramDBCodecRegistry::for_kind(job_get.value.program_kind);
             auto psi_res = codec.build_psinit_for_job(job_get.value.job_id);
             if (!psi_res.ok) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "failed to build program config");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to build visual replay program config");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to build visual replay program config");
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -620,11 +635,14 @@ namespace simcore {
                         psi)
                         && visual_slot_->proc->ctl_activate_main();
                     if (configured) {
+                        set_visual_runtime_state(VisualReplayRuntimeState::AttachReady, "worker attached");
+                        (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ATTACH_READY", std::nullopt);
                         visual_slot_->assigned_visual_replay_id = replay.visual_replay_id;
                     }
                 }
             }
             if (!configured) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "failed to configure visual worker program");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to configure visual worker program");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to configure visual worker program");
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -639,10 +657,13 @@ namespace simcore {
             {
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
                 if (visual_slot_) {
+                    set_visual_runtime_state(VisualReplayRuntimeState::Active, "replay running");
+                    (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ACTIVE", std::nullopt);
                     dispatch = dispatch_one(*visual_slot_, job_get.value, codec, false);
                 }
             }
             if (dispatch != DispatchResult::Success) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "failed to dispatch visual replay job");
                 (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "failed to dispatch visual replay job");
                 (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "ERROR", "failed to dispatch visual replay job");
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -654,6 +675,7 @@ namespace simcore {
             }
 
             std::unique_lock<std::mutex> lk(visual_slot_mtx_);
+            set_visual_runtime_state(VisualReplayRuntimeState::Stopping, "waiting for replay completion");
             visual_slot_cv_.wait(lk, [this]() {
                 return stop_.load() || !visual_slot_ || !visual_slot_->assigned_job_id.has_value();
                 });
@@ -663,6 +685,10 @@ namespace simcore {
             }
             lk.unlock();
             (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "COMPLETE", std::nullopt);
+            const auto state_after = visual_runtime_state_.load(std::memory_order_acquire);
+            if (state_after != VisualReplayRuntimeState::Failed) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Idle);
+            }
             visual_slot_cv_.notify_all();
         }
     }
@@ -752,8 +778,12 @@ namespace simcore {
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
                 if (visual_slot_) {
                     if (visual_slot_->assigned_visual_replay_id.has_value()) {
-                        if (r.ps.ok) (void)simcore::db::VisualReplayRepo::MarkSucceeded(*visual_slot_->assigned_visual_replay_id);
-                        else (void)simcore::db::VisualReplayRepo::MarkFailed(*visual_slot_->assigned_visual_replay_id, "visual replay worker reported failure");
+                        if (r.ps.ok) {
+                            (void)simcore::db::VisualReplayRepo::MarkSucceeded(*visual_slot_->assigned_visual_replay_id);
+                        } else {
+                            set_visual_runtime_state(VisualReplayRuntimeState::Failed, "visual replay worker reported failure");
+                            (void)simcore::db::VisualReplayRepo::MarkFailed(*visual_slot_->assigned_visual_replay_id, "visual replay worker reported failure");
+                        }
                     }
                     visual_slot_->proc->release_slot();
                     visual_slot_->assigned_job_id.reset();
@@ -793,6 +823,11 @@ namespace simcore {
     }
     void WorkerCoordinator::SetVisualRenderWidgetHandle(uint64_t hwnd) {
         visual_render_widget_handle_.store(hwnd, std::memory_order_relaxed);
+    }
+
+    void WorkerCoordinator::SetVisualHostEventsPipeName(std::string pipe_name) {
+        std::lock_guard<std::mutex> lock(visual_host_events_pipe_mtx_);
+        visual_host_events_pipe_name_ = std::move(pipe_name);
     }
 
     bool WorkerCoordinator::PauseVisualReplayEmulation() {
@@ -873,8 +908,23 @@ namespace simcore {
         return std::vector<std::string>(visual_log_tail_.begin(), visual_log_tail_.end());
     }
 
+    WorkerCoordinator::VisualReplayRuntimeState WorkerCoordinator::GetVisualReplayRuntimeState() const {
+        return visual_runtime_state_.load(std::memory_order_acquire);
+    }
+
+    std::string WorkerCoordinator::GetVisualReplayRuntimeDetail() const {
+        std::lock_guard<std::mutex> lock(visual_runtime_detail_mtx_);
+        return visual_runtime_detail_;
+    }
+
     void WorkerCoordinator::SetEventBufferCapacity(size_t n) {
         worker_status_.SetEventBufferCapacity(n);
+    }
+
+    void WorkerCoordinator::set_visual_runtime_state(VisualReplayRuntimeState state, std::string detail) {
+        visual_runtime_state_.store(state, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(visual_runtime_detail_mtx_);
+        visual_runtime_detail_ = std::move(detail);
     }
 
     void WorkerCoordinator::start_visual_log_tail(const std::string& log_path) {

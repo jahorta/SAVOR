@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtWidgets/QWidget>
+#include <memory>
 
 class CoordinatorController;
 class QCheckBox;
@@ -13,6 +14,7 @@ class QTimer;
 class QTreeView;
 class WorkerTableModel;
 class VisualWorkerDialog;
+class VisualReplayCoordinator;
 
 class CoordinatorPane : public QWidget
 {
@@ -64,6 +66,7 @@ private:
     QTreeView* workerTableView_ = nullptr;
     QTreeView* visualWorkerTableView_ = nullptr;
     VisualWorkerDialog* visualWorkerDialog_ = nullptr;
+    std::unique_ptr<VisualReplayCoordinator> visualReplayCoordinator_;
     bool visualReplayRequested_ = false;
     bool visualWorkerObservedRunning_ = false;
     bool visualReplayDoneShown_ = false;

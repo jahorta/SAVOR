@@ -2,6 +2,7 @@
 
 #include "CoordinatorController.h"
 #include "WorkerTableModel.h"
+#include "VisualReplayCoordinator.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "GUI/Widgets/VisualWorkerDialog.h"
 
@@ -54,6 +55,8 @@ void CoordinatorPane::refreshUi()
         }
 
         if (visualWorkerDialog_) {
+            visualWorkerDialog_->setReplayRuntimeStateText(controller_->visualReplayRuntimeStateText());
+            visualWorkerDialog_->setReplayControlsEnabled(controller_->visualReplayControlsEnabled());
             if (visualWorkerObservedRunning_ && visualSnapshot.empty()) {
                 if (!visualReplayDoneShown_) {
                     visualWorkerDialog_->showReplayDoneLabel();
@@ -236,15 +239,28 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
         connect(visualWorkerDialog_, &VisualWorkerDialog::logPollRequested, controller_, &CoordinatorController::pollVisualLiveLogLines);
         connect(controller_, &CoordinatorController::visualLiveLogLinesReady, visualWorkerDialog_, &VisualWorkerDialog::updateLiveLogLines);
     }
+    if (!visualReplayCoordinator_) {
+        visualReplayCoordinator_ = std::make_unique<VisualReplayCoordinator>(this);
+        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::hostEventReceived, this, [this](const QString& eventName, const QString& argsJson) {
+            if (visualWorkerDialog_) visualWorkerDialog_->appendHostEventLine(eventName, argsJson);
+            });
+        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::renderSurfaceResizeRequested, this, [this](int width, int height) {
+            if (visualWorkerDialog_) visualWorkerDialog_->setRenderSurfaceSize(width, height);
+            });
+    }
     visualReplayRequested_ = true;
     visualWorkerObservedRunning_ = false;
     visualReplayDoneShown_ = false;
     visualWorkerDialog_->showRenderSurface();
+    visualWorkerDialog_->setReplayRuntimeStateText(QStringLiteral("Queued startup"));
+    visualWorkerDialog_->setReplayControlsEnabled(false);
     visualWorkerDialog_->startLogPolling();
+    visualReplayCoordinator_->startHostEventsListener();
     visualWorkerDialog_->show();
     visualWorkerDialog_->raise();
     visualWorkerDialog_->activateWindow();
     controller_->setVisualRenderWidgetHandle(visualWorkerDialog_->renderWidgetHandle());
+    controller_->setVisualHostEventsPipeName(visualReplayCoordinator_->hostEventsPipeName());
     controller_->requestVisualReplay(jobId);
 }
 

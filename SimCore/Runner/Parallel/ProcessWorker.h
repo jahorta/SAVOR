@@ -24,6 +24,8 @@ namespace simcore {
 			bool vm_control{ false };
 			bool visual{ false };
 			uint64_t render_widget_handle{ 0 };
+			std::string visual_control_pipe_name;
+			std::string visual_host_events_pipe_name;
 		};
 
 	struct AckWait
@@ -112,6 +114,13 @@ namespace simcore {
 		}
 
 	private:
+		enum class VisualControlCommand : uint8_t {
+			Pause,
+			Resume,
+			VmStep
+		};
+
+		bool send_visual_control_command(VisualControlCommand command);
 		void reader_thread();
 
 		HANDLE hChildStd_IN_Wr{ NULL };  // parent writes jobs here
@@ -138,7 +147,10 @@ namespace simcore {
 		PRProgress last_progress_{};
 		bool have_progress_{ false };
 		TSQueue<PRProgress>* progress_out_{ nullptr };
-		std::string visual_control_path_{};
+		std::string visual_control_pipe_name_{};
+		std::string visual_host_events_pipe_name_{};
+		mutable std::mutex visual_pipe_m_;
+		HANDLE hVisualControlPipe_{ INVALID_HANDLE_VALUE };
 
 	};
 

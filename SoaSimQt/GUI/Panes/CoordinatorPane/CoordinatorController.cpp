@@ -1,4 +1,5 @@
 #include "CoordinatorController.h"
+#include "CoordinatorUiCommon.h"
 
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
@@ -17,7 +18,6 @@ constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
 constexpr auto kEventRingKey = "event_ring";
 constexpr auto kStartPausedKey = "start_paused";
-constexpr auto kVisualRenderHandleKey = "visual_render_widget_handle";
 }
 
 CoordinatorController::CoordinatorController(QObject* parent)
@@ -101,6 +101,21 @@ QStringList CoordinatorController::pullVisualLiveLogLines()
         visualLiveLogLinesCache_.append(QString::fromStdString(line));
     }
     return visualLiveLogLinesCache_;
+}
+
+QString CoordinatorController::visualReplayRuntimeStateText() const
+{
+    return soasimqt::ui::VisualReplayRuntimeStateText(coordinator_.get());
+}
+
+bool CoordinatorController::visualReplayControlsEnabled() const
+{
+    if (!coordinator_) {
+        return false;
+    }
+    using VisualState = simcore::WorkerCoordinator::VisualReplayRuntimeState;
+    const auto state = coordinator_->GetVisualReplayRuntimeState();
+    return state == VisualState::AttachReady || state == VisualState::Active;
 }
 
 void CoordinatorController::startCoordinator()
@@ -238,10 +253,14 @@ void CoordinatorController::setVisualRenderWidgetHandle(quintptr hwnd)
     if (coordinator_) {
         coordinator_->SetVisualRenderWidgetHandle(static_cast<uint64_t>(visualRenderWidgetHandle_));
     }
-    QSettings settings;
-    settings.beginGroup(kSettingsGroup);
-    settings.setValue(kVisualRenderHandleKey, QVariant::fromValue(static_cast<qulonglong>(visualRenderWidgetHandle_)));
-    settings.endGroup();
+}
+
+void CoordinatorController::setVisualHostEventsPipeName(const QString& pipeName)
+{
+    if (!coordinator_) {
+        return;
+    }
+    coordinator_->SetVisualHostEventsPipeName(pipeName.toStdString());
 }
 
 void CoordinatorController::requestVisualReplay(qint64 jobId)
@@ -294,7 +313,6 @@ void CoordinatorController::loadSettings()
     targetWorkers_ = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt()));
     eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
     startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
-    visualRenderWidgetHandle_ = static_cast<quintptr>(settings.value(kVisualRenderHandleKey, 0).toULongLong());
 
     settings.endGroup();
 }

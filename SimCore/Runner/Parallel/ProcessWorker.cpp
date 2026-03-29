@@ -1,13 +1,18 @@
 #include "ProcessWorker.h"
 #include "../IPC/Wire.h"
 #include <sstream>
-#include <fstream>
 #include <filesystem>
 #include "../../Utils/ThreadName.h"
 #include "../Script/KeyRegistry.h"
 #include "../Script/PSContextCodec.h"
 
 namespace simcore {
+    static std::string make_visual_control_pipe_name(size_t worker_id)
+    {
+        std::ostringstream oss;
+        oss << "\\\\.\\pipe\\soasim_visual_" << GetCurrentProcessId() << "_" << worker_id;
+        return oss.str();
+    }
 
     static bool CreateChild(const ProcStartParams& p,
         HANDLE& hInWrite, HANDLE& hOutRead,
@@ -46,8 +51,12 @@ namespace simcore {
             cmd << " --render-hwnd " << p.render_widget_handle;
         }
         if (p.visual) {
-            const auto control_file = (std::filesystem::path(p.user_dir) / "visual_control.cmd").string();
-            cmd << " --visual-control-file \"" << control_file << "\"";
+            if (!p.visual_control_pipe_name.empty()) {
+                cmd << " --visual-control-pipe \"" << p.visual_control_pipe_name << "\"";
+            }
+            if (!p.visual_host_events_pipe_name.empty()) {
+                cmd << " --visual-host-events-pipe \"" << p.visual_host_events_pipe_name << "\"";
+            }
         }
 
         PROCESS_INFORMATION pi{};
@@ -95,7 +104,19 @@ namespace simcore {
     {
         out_ = outq;
         id_ = p.worker_id;
-        visual_control_path_ = p.visual ? (std::filesystem::path(p.user_dir) / "visual_control.cmd").string() : std::string();
+        visual_control_pipe_name_ = p.visual_control_pipe_name.empty() && p.visual
+            ? make_visual_control_pipe_name(p.worker_id)
+            : p.visual_control_pipe_name;
+        visual_host_events_pipe_name_ = p.visual_host_events_pipe_name;
+        p.visual_control_pipe_name = visual_control_pipe_name_;
+        p.visual_host_events_pipe_name = visual_host_events_pipe_name_;
+        {
+            std::lock_guard<std::mutex> lock(visual_pipe_m_);
+            if (hVisualControlPipe_ != INVALID_HANDLE_VALUE) {
+                CloseHandle(hVisualControlPipe_);
+                hVisualControlPipe_ = INVALID_HANDLE_VALUE;
+            }
+        }
         if (!CreateChild(p, hChildStd_IN_Wr, hChildStd_OUT_Rd, hProcess, hThread, dwProcessId, hJob))
             return false;
 
@@ -200,31 +221,57 @@ namespace simcore {
         return ack_.wait_for(10000);
     }
 
+    bool ProcessWorker::send_visual_control_command(VisualControlCommand command)
+    {
+        std::string command_line;
+        switch (command) {
+        case VisualControlCommand::Pause: command_line = "PAUSE\n"; break;
+        case VisualControlCommand::Resume: command_line = "RESUME\n"; break;
+        case VisualControlCommand::VmStep: command_line = "VM_STEP\n"; break;
+        default: return false;
+        }
+
+        bool sent_over_pipe = false;
+        if (!visual_control_pipe_name_.empty()) {
+            std::lock_guard<std::mutex> lock(visual_pipe_m_);
+            if (hVisualControlPipe_ == INVALID_HANDLE_VALUE) {
+                hVisualControlPipe_ = CreateFileA(
+                    visual_control_pipe_name_.c_str(),
+                    GENERIC_WRITE,
+                    0,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr);
+            }
+            if (hVisualControlPipe_ != INVALID_HANDLE_VALUE) {
+                DWORD bytes_written = 0;
+                if (WriteFile(hVisualControlPipe_, command_line.data(), static_cast<DWORD>(command_line.size()), &bytes_written, nullptr) &&
+                    bytes_written == command_line.size()) {
+                    sent_over_pipe = true;
+                } else {
+                    CloseHandle(hVisualControlPipe_);
+                    hVisualControlPipe_ = INVALID_HANDLE_VALUE;
+                }
+            }
+        }
+
+        return sent_over_pipe;
+    }
+
     bool ProcessWorker::visual_pause_emulation()
     {
-        if (visual_control_path_.empty()) return false;
-        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
-        if (!ofs) return false;
-        ofs << "PAUSE\n";
-        return true;
+        return send_visual_control_command(VisualControlCommand::Pause);
     }
 
     bool ProcessWorker::visual_resume_emulation()
     {
-        if (visual_control_path_.empty()) return false;
-        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
-        if (!ofs) return false;
-        ofs << "RESUME\n";
-        return true;
+        return send_visual_control_command(VisualControlCommand::Resume);
     }
 
     bool ProcessWorker::visual_step_vm()
     {
-        if (visual_control_path_.empty()) return false;
-        std::ofstream ofs(visual_control_path_, std::ios::binary | std::ios::trunc);
-        if (!ofs) return false;
-        ofs << "VM_STEP\n";
-        return true;
+        return send_visual_control_command(VisualControlCommand::VmStep);
     }
 
     bool ProcessWorker::ctl_activate_main() {
@@ -380,6 +427,13 @@ namespace simcore {
         }
 
         if (hThread) { CloseHandle(hThread); hThread = NULL; }
+        {
+            std::lock_guard<std::mutex> lock(visual_pipe_m_);
+            if (hVisualControlPipe_ != INVALID_HANDLE_VALUE) {
+                CloseHandle(hVisualControlPipe_);
+                hVisualControlPipe_ = INVALID_HANDLE_VALUE;
+            }
+        }
 
         ack_.cancel_all();
     }
