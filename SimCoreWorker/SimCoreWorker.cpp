@@ -264,18 +264,21 @@ int main(int argc, char** argv)
                 std::string cmd_from_pipe;
                 {
                     std::lock_guard<std::mutex> lock(visual_cmd_mtx);
-                    cmd_from_pipe = visual_last_pipe_cmd;
+                    cmd = visual_last_pipe_cmd;
                 }
-                if (!cmd_from_pipe.empty() && cmd_from_pipe != last_cmd) {
-                    if (cmd_from_pipe == "PAUSE") {
-                        vm.SetVisualDebugPaused(true);
-                        (void)host.pauseEmulationBlocking(1500);
+                if (!cmd.empty()) {
+                    if (cmd != last_cmd) {
+                        if (cmd == "PAUSE") {
+                            vm.SetVisualDebugPaused(true);
+                            (void)host.pauseEmulationBlocking(1500);
+                        }
+                        else if (cmd == "RESUME") {
+                            vm.SetVisualDebugPaused(false);
+                            (void)host.resumeEmulation();
+                        }
+                        last_cmd = cmd;
                     }
-                    else if (cmd_from_pipe == "RESUME") {
-                        vm.SetVisualDebugPaused(false);
-                        (void)host.resumeEmulation();
-                    }
-                    else if (cmd_from_pipe == "VM_STEP") {
+                    if (cmd == "VM_STEP") {
                         if (vm.IsRunUntilBpActive()) {
                             (void)host.stepOneFrameBlocking(1500);
                         }
@@ -283,9 +286,9 @@ int main(int argc, char** argv)
                             vm.StepVisualDebugVmOnce();
                         }
                     }
-                    last_cmd = cmd_from_pipe;
+                    cmd.clear();
                 }
-
+              
                 Sleep(50);
             }
             if (hPipe != INVALID_HANDLE_VALUE) {
