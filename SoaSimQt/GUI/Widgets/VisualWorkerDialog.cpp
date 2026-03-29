@@ -1,4 +1,5 @@
 #include "VisualWorkerDialog.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QTimer>
 #include <QtWidgets/QDialogButtonBox>
@@ -8,7 +9,6 @@
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
-#include <QtGui/QTextCursor>
 
 namespace {
 constexpr int kVisualLogPollIntervalMs = 250;
@@ -125,8 +125,9 @@ void VisualWorkerDialog::updateLiveLogLines(const QStringList& lines)
     if (!liveLogView_) {
         return;
     }
+    const ScrollAreaScrollSnapshot scrollSnapshot = captureScrollAreaScrollSnapshot(liveLogView_);
     liveLogView_->setPlainText(lines.join(QLatin1Char('\n')));
-    liveLogView_->moveCursor(QTextCursor::End);
+    restoreScrollAreaScrollSnapshot(liveLogView_, scrollSnapshot);
 }
 
 void VisualWorkerDialog::appendHostEventLine(const QString& eventName, const QString& argsJson)
