@@ -55,6 +55,8 @@ namespace simcore {
 
     WorkerCoordinator::WorkerCoordinator(const WorkerCoordinatorConfig& cfg)
         : cfg_(cfg), claim_token_(make_claim_token()) {
+        cfg_.max_concurrent_processes = (std::min)(cfg_.max_concurrent_processes, kMaxNonVisualWorkers);
+        cfg_.desired_workers = (std::min)(cfg_.desired_workers, cfg_.max_concurrent_processes);
         auto base_path = utils::getExecutablePath();
         cfg_.worker_exe_path = (base_path / "SimCoreWorker.exe").string();
         cfg_.worker_dir_root = (base_path / ".workers").string();
@@ -68,7 +70,7 @@ namespace simcore {
         desired_workers_.store(cfg_.desired_workers);
 
         auto normal = std::make_unique<Slot>();
-        normal->id = 1;
+        normal->id = 0;
         normal->proc = std::make_unique<ProcessWorker>();
         normal->proc->set_progress_queue(&progress_q_);
         normal->running.store(false);
@@ -144,8 +146,8 @@ namespace simcore {
             ps.user_dir = ud.str();
         }
         ps.vm_control = true;
-        ps.visual = (s.id == 0);
-        ps.render_widget_handle = (s.id == 0) ? visual_render_widget_handle_.load(std::memory_order_relaxed) : 0;
+        ps.visual = (s.id == static_cast<size_t>(kVisualWorkerId));
+        ps.render_widget_handle = (s.id == static_cast<size_t>(kVisualWorkerId)) ? visual_render_widget_handle_.load(std::memory_order_relaxed) : 0;
         const std::string visual_log_path = ps.user_dir + "\\worker-" + std::to_string(s.id) + ".log";
         if (!s.proc->start(ps, &results_q_)) {
             s.dead.store(true);
@@ -154,7 +156,7 @@ namespace simcore {
             UpdateState((int64_t)s.id, WorkerStateKind::Dead);
             return false;
         }
-        if (s.id == 0) {
+        if (s.id == static_cast<size_t>(kVisualWorkerId)) {
             start_visual_log_tail(visual_log_path);
         }
         RegisterWorker((int64_t)s.id, "localhost", /*pid*/ s.proc->GetPid(), /*boot_uuid*/ "");
@@ -170,7 +172,7 @@ namespace simcore {
     }
 
     void WorkerCoordinator::shutdown_slot(Slot& s) {
-        if (s.id == 0) {
+        if (s.id == static_cast<size_t>(kVisualWorkerId)) {
             stop_visual_log_tail();
         }
         UpdateState((int64_t)s.id, WorkerStateKind::Stopping);
@@ -378,7 +380,19 @@ namespace simcore {
     }
 
     void WorkerCoordinator::sweep_expired_leases() {
-        simcore::db::JobsRepo::RequeueExpiredLeases();
+        try {
+            (void)simcore::db::JobsRepo::RequeueExpiredLeases();
+        }
+        catch (const std::exception& ex) {
+            if (!stop_.load()) {
+                RecordError((int64_t)kVisualWorkerId, std::string("RequeueExpiredLeases exception: ") + ex.what());
+            }
+        }
+        catch (...) {
+            if (!stop_.load()) {
+                RecordError((int64_t)kVisualWorkerId, "RequeueExpiredLeases unknown exception");
+            }
+        }
     }
 
     void WorkerCoordinator::controller_loop() {
@@ -391,17 +405,17 @@ namespace simcore {
 
             // scale up
             if (active_slot_count() < desired_workers_.load()) {
-                for (int i = slots_.size(); i < desired_workers_; i++) {
+                for (size_t i = slots_.size(); i < desired_workers_.load(); i++) {
                     auto s = std::make_unique<Slot>();
-                    s->id = i + 1;
+                    s->id = i;
                     s->proc = std::make_unique<ProcessWorker>();
                     s->proc->set_progress_queue(&progress_q_);
                     s->running.store(false);
                     s->phase = Slot::Phase::Uninitialized;
                     slots_.push_back(std::move(s));
                 }
-                for (auto& sp : slots_) {
-                    auto& s = *sp;
+                for (size_t i = 0; i < slots_.size(); ++i) {
+                    auto& s = *slots_[i];
                     if (s.running.load()) continue;
                     s.running.store(true);
                     s.dead.store(false);
@@ -412,7 +426,7 @@ namespace simcore {
                     s.current_savestate_id.reset();
                     s.startup_attempts = 0;
                     s.phase = Slot::Phase::PendingStart;
-                    enqueue_startup_slot(s.id);
+                    enqueue_startup_slot(i);
                     break;
                 }
             }
@@ -519,7 +533,7 @@ namespace simcore {
                 continue;
             }
 
-            auto claimr = simcore::db::VisualReplayRepo::ClaimNextQueued(/*worker_id*/0);
+            auto claimr = simcore::db::VisualReplayRepo::ClaimNextQueued(/*worker_id*/kVisualWorkerId);
             if (!claimr.ok) {
                 Sleep(cfg_.controller_sleep_ms);
                 continue;
@@ -546,7 +560,7 @@ namespace simcore {
             {
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
                 visual_slot_ = std::make_unique<Slot>();
-                visual_slot_->id = 0;
+                visual_slot_->id = static_cast<size_t>(kVisualWorkerId);
                 visual_slot_->proc = std::make_unique<ProcessWorker>();
                 visual_slot_->proc->set_progress_queue(&progress_q_);
                 visual_slot_->running.store(true);
@@ -656,7 +670,7 @@ namespace simcore {
     void WorkerCoordinator::drain_progress_loop() {
         PRProgress p;
         while (progress_q_.pop_wait(p)) {
-            if (p.worker_id == 0) {
+            if (p.worker_id == kVisualWorkerId) {
                 std::optional<int64_t> replay_id;
                 {
                     std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -689,7 +703,14 @@ namespace simcore {
     void WorkerCoordinator::drain_results_loop() {
         PRResult r;
         while (results_q_.pop_wait(r)) {
-            if (r.worker_id == 0) {
+            auto find_slot_by_worker_id = [this](size_t worker_id) -> Slot* {
+                auto it = std::find_if(slots_.begin(), slots_.end(), [worker_id](const std::unique_ptr<Slot>& slot) {
+                    return slot && slot->id == worker_id;
+                });
+                return it == slots_.end() ? nullptr : it->get();
+            };
+
+            if (r.worker_id == kVisualWorkerId) {
                 std::optional<int64_t> replay_id;
                 {
                     std::lock_guard<std::mutex> lock(visual_slot_mtx_);
@@ -708,26 +729,26 @@ namespace simcore {
 
             auto jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
             if (jr.ok) {
-                if (r.worker_id == 0) {
+                if (r.worker_id == kVisualWorkerId) {
                     // Visual replay result stream is stored on visual_replay_events instead of mutating normal job outputs.
                 } else {
-                if (r.worker_id < slots_.size()) {
-                    RecordDbSuccess((int64_t)r.worker_id);
-                }
+                    if (const Slot* completed_slot = find_slot_by_worker_id(r.worker_id); completed_slot != nullptr) {
+                        RecordDbSuccess((int64_t)completed_slot->id);
+                    }
 
-                auto& job = jr.value;
-                auto& codec = ProgramDBCodecRegistry::for_kind(job.program_kind);
+                    auto& job = jr.value;
+                    auto& codec = ProgramDBCodecRegistry::for_kind(job.program_kind);
 
-                auto ini = codec.build_results_ini_from_prresult((int64_t)r.job_id, r);
-                if (ini.ok) {
-                    (void)codec.encode_results_into_db((int64_t)r.job_id, ini.value, r.ps.ok);
-                    auto tr = simcore::TriggerEngine::after_terminal(r.job_id);
-                    (void)tr; // ignore errors for now; they will be visible in DB events/logs if you add them later
-                }
+                    auto ini = codec.build_results_ini_from_prresult((int64_t)r.job_id, r);
+                    if (ini.ok) {
+                        (void)codec.encode_results_into_db((int64_t)r.job_id, ini.value, r.ps.ok);
+                        auto tr = simcore::TriggerEngine::after_terminal(r.job_id);
+                        (void)tr; // ignore errors for now; they will be visible in DB events/logs if you add them later
+                    }
                 }
             }
 
-            if (r.worker_id == 0) {
+            if (r.worker_id == kVisualWorkerId) {
                 std::lock_guard<std::mutex> lock(visual_slot_mtx_);
                 if (visual_slot_) {
                     if (visual_slot_->assigned_visual_replay_id.has_value()) {
@@ -744,22 +765,23 @@ namespace simcore {
                     RecordHeartbeat((int64_t)visual_slot_->id);
                     visual_slot_cv_.notify_all();
                 }
-            } else if (r.worker_id < slots_.size()) {
-                auto& s = *slots_[(size_t)r.worker_id];
-                s.proc->release_slot();
-                s.assigned_job_id.reset();
-                s.idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
-                SetCurrentJob((int64_t)s.id, std::nullopt, std::nullopt);
-                UpdateState((int64_t)s.id, WorkerStateKind::Idle);
-                s.phase = Slot::Phase::Ready;
-                RecordHeartbeat((int64_t)s.id);
+            } else if (Slot* s = find_slot_by_worker_id(r.worker_id); s != nullptr) {
+                s->proc->release_slot();
+                s->assigned_job_id.reset();
+                s->idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
+                SetCurrentJob((int64_t)s->id, std::nullopt, std::nullopt);
+                UpdateState((int64_t)s->id, WorkerStateKind::Idle);
+                s->phase = Slot::Phase::Ready;
+                RecordHeartbeat((int64_t)s->id);
             }
 
             if (stop_.load()) break;
         }
     }
 
-    void WorkerCoordinator::set_target_workers(size_t n) { desired_workers_.store((std::min)(n, cfg_.max_concurrent_processes)); }
+    void WorkerCoordinator::set_target_workers(size_t n) {
+        desired_workers_.store((std::min)(n, (std::min)(cfg_.max_concurrent_processes, kMaxNonVisualWorkers)));
+    }
     void WorkerCoordinator::set_paused(bool p) { 
         paused_.store(p);
         for (auto& sp : slots_) {
@@ -822,20 +844,24 @@ namespace simcore {
         worker_status_.RecordError(worker_id, err);
     }
 
+    std::vector<WorkerSnapshot> WorkerCoordinator::GetAllWorkerSnapshots() const {
+        return worker_status_.GetClusterSnapshot();
+    }
+
     std::vector<WorkerSnapshot> WorkerCoordinator::GetClusterSnapshot() const {
-        auto snapshot = worker_status_.GetClusterSnapshot();
+        auto snapshot = GetAllWorkerSnapshots();
         snapshot.erase(
             std::remove_if(snapshot.begin(), snapshot.end(), [](const WorkerSnapshot& row) {
-                return row.worker_id == 0;
+                return row.worker_id == kVisualWorkerId;
             }),
             snapshot.end());
         return snapshot;
     }
 
     std::optional<WorkerSnapshot> WorkerCoordinator::GetVisualWorkerSnapshot() const {
-        auto snapshot = worker_status_.GetClusterSnapshot();
+        auto snapshot = GetAllWorkerSnapshots();
         const auto found = std::find_if(snapshot.begin(), snapshot.end(), [](const WorkerSnapshot& row) {
-            return row.worker_id == 0;
+            return row.worker_id == kVisualWorkerId;
         });
         if (found == snapshot.end()) {
             return std::nullopt;

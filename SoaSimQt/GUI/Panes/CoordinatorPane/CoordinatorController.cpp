@@ -162,7 +162,7 @@ void CoordinatorController::togglePaused()
 
 void CoordinatorController::setTargetWorkers(int targetWorkers)
 {
-    const int clampedValue = (std::max)(kMinTargetWorkers, targetWorkers);
+    const int clampedValue = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, targetWorkers));
     if (targetWorkers_ == clampedValue) {
         return;
     }
@@ -291,7 +291,7 @@ void CoordinatorController::loadSettings()
 
     isoPath_ = settings.value(kIsoPathKey).toString();
     dolphinBaseDir_ = settings.value(kDolphinBaseKey).toString();
-    targetWorkers_ = (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt());
+    targetWorkers_ = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt()));
     eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
     startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
     visualRenderWidgetHandle_ = static_cast<quintptr>(settings.value(kVisualRenderHandleKey, 0).toULongLong());
@@ -337,10 +337,15 @@ void CoordinatorController::updateSnapshotCache()
         return;
     }
 
-    snapshotCache_ = coordinator_->GetClusterSnapshot();
+    const auto snapshot = coordinator_->GetAllWorkerSnapshots();
+    snapshotCache_.clear();
     visualSnapshotCache_.clear();
-    if (const auto visual = coordinator_->GetVisualWorkerSnapshot(); visual.has_value()) {
-        visualSnapshotCache_.push_back(*visual);
+    for (const auto& row : snapshot) {
+        if (row.worker_id == simcore::WorkerCoordinator::kVisualWorkerId) {
+            visualSnapshotCache_.push_back(row);
+        } else {
+            snapshotCache_.push_back(row);
+        }
     }
 
 }
@@ -348,8 +353,8 @@ void CoordinatorController::updateSnapshotCache()
 WorkerCoordinatorConfig CoordinatorController::buildConfig() const
 {
     WorkerCoordinatorConfig cfg{};
-    cfg.max_concurrent_processes = static_cast<size_t>((std::max)(64, targetWorkers_));
-    cfg.desired_workers = static_cast<size_t>(targetWorkers_);
+    cfg.max_concurrent_processes = static_cast<size_t>((std::min)(kMaxTargetWorkers, (std::max)(64, targetWorkers_)));
+    cfg.desired_workers = static_cast<size_t>((std::min)(kMaxTargetWorkers, targetWorkers_));
     cfg.iso_path = isoPath_.toStdString();
     cfg.dolphin_base_dir = dolphinBaseDir_.toStdString();
     cfg.start_to_paused = startPaused_;
