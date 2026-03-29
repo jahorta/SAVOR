@@ -261,7 +261,7 @@ int main(int argc, char** argv)
                     }
                 }
 
-                std::string cmd_from_pipe;
+                std::string cmd;
                 {
                     std::lock_guard<std::mutex> lock(visual_cmd_mtx);
                     cmd = visual_last_pipe_cmd;
