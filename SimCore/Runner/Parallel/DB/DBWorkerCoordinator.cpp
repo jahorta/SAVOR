@@ -995,9 +995,6 @@ namespace simcore {
     void WorkerCoordinator::push_visual_log_line(std::string line) {
         std::lock_guard<std::mutex> lock(visual_log_mtx_);
         visual_log_tail_.push_back(std::move(line));
-        while (visual_log_tail_.size() > 30) {
-            visual_log_tail_.pop_front();
-        }
     }
 
 } // namespace simcore

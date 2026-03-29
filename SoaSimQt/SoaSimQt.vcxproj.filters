@@ -86,7 +86,7 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.cpp">
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp">
@@ -220,7 +220,7 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.h">
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h">
@@ -288,7 +288,7 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.h">
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
@@ -354,13 +354,13 @@
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
-    <ClCompile Include="GUI\Widgets\VisualWorkerDialog.cpp">
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Widgets\VisualWorkerDialog.h">
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
   </ItemGroup>

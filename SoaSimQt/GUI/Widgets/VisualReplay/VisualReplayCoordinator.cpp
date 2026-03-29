@@ -1,19 +1,30 @@
-#include "VisualReplayCoordinator.h"
+#include "GUI/Widgets/VisualReplay/VisualReplayCoordinator.h"
 
 #include <QtCore/QMetaObject>
+#include <QtCore/QTimer>
+
+#include "CoordinatorController.h"
+
+namespace {
+constexpr int kVisualLogPollIntervalMs = 250;
+}
 
 #include <windows.h>
 
 #include <cstdlib>
 
-VisualReplayCoordinator::VisualReplayCoordinator(QObject* parent)
-    : QObject(parent)
+VisualReplayCoordinator::VisualReplayCoordinator(CoordinatorController* controller, QObject* parent)
+    : QObject(parent), controller_(controller)
 {
+    logPollTimer_ = new QTimer(this);
+    logPollTimer_->setInterval(kVisualLogPollIntervalMs);
+    connect(logPollTimer_, &QTimer::timeout, this, &VisualReplayCoordinator::pollLiveLogLines);
 }
 
 VisualReplayCoordinator::~VisualReplayCoordinator()
 {
     stopHostEventsListener();
+    stopLiveLogStreaming();
 }
 
 void VisualReplayCoordinator::startHostEventsListener()
@@ -30,6 +41,22 @@ void VisualReplayCoordinator::stopHostEventsListener()
     stopHostEvents_.store(true);
     if (hostEventsThread_.joinable()) {
         hostEventsThread_.join();
+    }
+}
+
+
+void VisualReplayCoordinator::startLiveLogStreaming()
+{
+    pollLiveLogLines();
+    if (logPollTimer_) {
+        logPollTimer_->start();
+    }
+}
+
+void VisualReplayCoordinator::stopLiveLogStreaming()
+{
+    if (logPollTimer_) {
+        logPollTimer_->stop();
     }
 }
 
@@ -84,6 +111,17 @@ bool VisualReplayCoordinator::extractIntField(const std::string& json, const std
     if (end_ptr == json.c_str() + p) return false;
     out_value = static_cast<int>(value);
     return true;
+}
+
+void VisualReplayCoordinator::pollLiveLogLines()
+{
+    if (!controller_) {
+        return;
+    }
+    const QStringList lines = controller_->pullVisualLiveLogLines();
+    if (!lines.isEmpty()) {
+        emit liveLogLinesReady(lines);
+    }
 }
 
 void VisualReplayCoordinator::hostEventsLoop()

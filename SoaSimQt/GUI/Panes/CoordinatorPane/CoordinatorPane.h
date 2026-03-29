@@ -13,7 +13,7 @@ class QSpinBox;
 class QTimer;
 class QTreeView;
 class WorkerTableModel;
-class VisualWorkerDialog;
+class VisualReplayDialog;
 class VisualReplayCoordinator;
 
 class CoordinatorPane : public QWidget
@@ -65,7 +65,7 @@ private:
     QLabel* visualTableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;
     QTreeView* visualWorkerTableView_ = nullptr;
-    VisualWorkerDialog* visualWorkerDialog_ = nullptr;
+    VisualReplayDialog* visualReplayDialog_ = nullptr;
     std::unique_ptr<VisualReplayCoordinator> visualReplayCoordinator_;
     bool visualReplayRequested_ = false;
     bool visualWorkerObservedRunning_ = false;
