@@ -180,7 +180,6 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
-    <ClInclude Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />
