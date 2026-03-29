@@ -34,6 +34,8 @@ public:
     const std::vector<WorkerSnapshot>& snapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
     QStringList pullVisualLiveLogLines();
+    QString visualReplayRuntimeStateText() const;
+    bool visualReplayControlsEnabled() const;
 
 public slots:
     void startCoordinator();
@@ -46,6 +48,7 @@ public slots:
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
     void setVisualRenderWidgetHandle(quintptr hwnd);
+    void setVisualHostEventsPipeName(const QString& pipeName);
     void requestVisualReplay(qint64 jobId);
     void pauseVisualReplayEmulation();
     void stepVisualReplayVm();

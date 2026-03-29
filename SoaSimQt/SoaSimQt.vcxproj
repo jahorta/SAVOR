@@ -126,6 +126,7 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp" />
@@ -166,6 +167,7 @@
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
+    <QtMoc Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.h" />
     <ClInclude Include="GUI\Common\StatusToast.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h" />
@@ -178,6 +180,7 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane\VisualReplayCoordinator.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />

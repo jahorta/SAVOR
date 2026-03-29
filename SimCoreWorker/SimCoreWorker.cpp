@@ -9,12 +9,13 @@
 #include <cstdint>
 #include <atomic>
 #include <thread>
-#include <fstream>
 #include <filesystem>
+#include <mutex>
 
 #include "Utils/Log.h"
 #include "Boot/Boot.h"
 #include "Core/DolphinWrapper.h"
+#include "Core/HostStubs.h"
 #include "Runner/Breakpoints/BPRegistry.h"
 #include "Runner/Script/PhaseScriptVM.h"
 #include "Runner/Script/PSContextCodec.h"
@@ -103,7 +104,8 @@ int main(int argc, char** argv)
     uint32_t timeout_ms = 10000;
     bool visual = false;
     uint64_t render_hwnd = 0;
-    std::string visual_control_file;
+    std::string visual_control_pipe;
+    std::string visual_host_events_pipe;
 
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -113,7 +115,8 @@ int main(int argc, char** argv)
         else if (k == "--userdir") userdir = argv_next(i, argc, argv);
         else if (k == "--visual") visual = true;
         else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
-        else if (k == "--visual-control-file") visual_control_file = argv_next(i, argc, argv);
+        else if (k == "--visual-control-pipe") visual_control_pipe = argv_next(i, argc, argv);
+        else if (k == "--visual-host-events-pipe") visual_host_events_pipe = argv_next(i, argc, argv);
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -167,6 +170,8 @@ int main(int argc, char** argv)
     DolphinWrapper host;
     std::thread visual_control_thread;
     std::atomic<bool> visual_control_stop{ false };
+    std::mutex visual_cmd_mtx;
+    std::string visual_last_pipe_cmd;
 
     SCLOGD("[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
         worker_id, boot.boot.user_dir.c_str(), boot.boot.dolphin_qt_base.c_str());
@@ -195,44 +200,97 @@ int main(int argc, char** argv)
     PhaseScriptVM vm(host, bpmap);
 
     if (visual) {
+        simcore::hoststubs::SetHostEventSink([visual_host_events_pipe](const simcore::hoststubs::HostEvent& event) {
+            SCLOGD("[HOST_EVT] %s %s", event.name.c_str(), event.args_json.c_str());
+            if (visual_host_events_pipe.empty()) {
+                return;
+            }
+
+            const HANDLE hPipe = CreateFileA(
+                visual_host_events_pipe.c_str(),
+                GENERIC_WRITE,
+                0,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (hPipe == INVALID_HANDLE_VALUE) {
+                return;
+            }
+
+            std::string payload = "{\"event\":\"" + event.name + "\",\"args\":" + (event.args_json.empty() ? "{}" : event.args_json) + "}\n";
+            DWORD bytes_written = 0;
+            (void)WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &bytes_written, nullptr);
+            CloseHandle(hPipe);
+            });
         vm.SetVisualDebugMode(true);
         vm.SetVisualDebugPaused(true);
 
-        if (!visual_control_file.empty()) {
-            std::error_code fsec;
-            std::filesystem::create_directories(std::filesystem::path(visual_control_file).parent_path(), fsec);
-        }
-
-        visual_control_thread = std::thread([&host, &vm, &visual_control_stop, visual_control_file]() {
+        visual_control_thread = std::thread([&host, &vm, &visual_control_stop, &visual_cmd_mtx, &visual_last_pipe_cmd,
+            visual_control_pipe]() {
+            HANDLE hPipe = INVALID_HANDLE_VALUE;
+            if (!visual_control_pipe.empty()) {
+                hPipe = CreateNamedPipeA(
+                    visual_control_pipe.c_str(),
+                    PIPE_ACCESS_INBOUND,
+                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                    1,
+                    0,
+                    512,
+                    0,
+                    nullptr);
+                if (hPipe != INVALID_HANDLE_VALUE) {
+                    (void)ConnectNamedPipe(hPipe, nullptr);
+                }
+            }
             std::string last_cmd;
             while (!visual_control_stop.load()) {
-                if (!visual_control_file.empty()) {
-                    std::ifstream ifs(visual_control_file, std::ios::binary);
-                    std::string cmd;
-                    if (ifs.good()) {
-                        std::getline(ifs, cmd);
-                    }
-                    if (!cmd.empty() && cmd != last_cmd) {
-                        if (cmd == "PAUSE") {
-                            vm.SetVisualDebugPaused(true);
-                            (void)host.pauseEmulationBlocking(1500);
+                if (hPipe != INVALID_HANDLE_VALUE) {
+                    char buffer[256]{};
+                    DWORD bytes_read = 0;
+                    if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytes_read, nullptr) && bytes_read > 0) {
+                        std::string cmd(buffer, buffer + bytes_read);
+                        const auto newline = cmd.find_first_of("\r\n");
+                        if (newline != std::string::npos) {
+                            cmd.resize(newline);
                         }
-                        else if (cmd == "RESUME") {
-                            vm.SetVisualDebugPaused(false);
-                            (void)host.resumeEmulation();
+                        if (!cmd.empty()) {
+                            std::lock_guard<std::mutex> lock(visual_cmd_mtx);
+                            visual_last_pipe_cmd = cmd;
                         }
-                        else if (cmd == "VM_STEP") {
-                            if (vm.IsRunUntilBpActive()) {
-                                (void)host.stepOneFrameBlocking(1500);
-                            }
-                            else {
-                                vm.StepVisualDebugVmOnce();
-                            }
-                        }
-                        last_cmd = cmd;
                     }
                 }
+
+                std::string cmd_from_pipe;
+                {
+                    std::lock_guard<std::mutex> lock(visual_cmd_mtx);
+                    cmd_from_pipe = visual_last_pipe_cmd;
+                }
+                if (!cmd_from_pipe.empty() && cmd_from_pipe != last_cmd) {
+                    if (cmd_from_pipe == "PAUSE") {
+                        vm.SetVisualDebugPaused(true);
+                        (void)host.pauseEmulationBlocking(1500);
+                    }
+                    else if (cmd_from_pipe == "RESUME") {
+                        vm.SetVisualDebugPaused(false);
+                        (void)host.resumeEmulation();
+                    }
+                    else if (cmd_from_pipe == "VM_STEP") {
+                        if (vm.IsRunUntilBpActive()) {
+                            (void)host.stepOneFrameBlocking(1500);
+                        }
+                        else {
+                            vm.StepVisualDebugVmOnce();
+                        }
+                    }
+                    last_cmd = cmd_from_pipe;
+                }
+
                 Sleep(50);
+            }
+            if (hPipe != INVALID_HANDLE_VALUE) {
+                DisconnectNamedPipe(hPipe);
+                CloseHandle(hPipe);
             }
             });
     }
@@ -392,6 +450,9 @@ int main(int argc, char** argv)
 
     visual_control_stop.store(true);
     vm.SetVisualDebugMode(false);
+    if (!visual_host_events_pipe.empty()) {
+        simcore::hoststubs::ClearHostEventSink();
+    }
     if (visual_control_thread.joinable()) {
         visual_control_thread.join();
     }
