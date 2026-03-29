@@ -60,6 +60,7 @@ signals:
 
 private:
     static constexpr int kMinTargetWorkers = 1;
+    static constexpr int kMaxTargetWorkers = static_cast<int>(simcore::WorkerCoordinator::kMaxNonVisualWorkers);
     static constexpr int kMinEventBufferCapacity = 8;
 
     void loadSettings();

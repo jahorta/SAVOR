@@ -23,6 +23,9 @@ namespace simcore {
 
     class WorkerCoordinator {
     public:
+        static constexpr size_t kMaxNonVisualWorkers = 9998;
+        static constexpr int64_t kVisualWorkerId = 9999;
+
         explicit WorkerCoordinator(const WorkerCoordinatorConfig& cfg);
         ~WorkerCoordinator();
 
@@ -43,6 +46,7 @@ namespace simcore {
         void RecordDbSuccess(int64_t worker_id);
         void RecordError(int64_t worker_id, const std::string& err);
 
+        std::vector<WorkerSnapshot> GetAllWorkerSnapshots() const;
         std::vector<WorkerSnapshot> GetClusterSnapshot() const;
         std::optional<WorkerSnapshot> GetVisualWorkerSnapshot() const;
         std::vector<std::string> GetVisualLogTail() const;
