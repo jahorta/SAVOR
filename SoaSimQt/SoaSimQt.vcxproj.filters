@@ -55,6 +55,9 @@
     <Filter Include="GUI\Common">
       <UniqueIdentifier>{005bee8e-54dc-4167-8e35-e84d3cfe37c1}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Widgets\VisualReplay">
+      <UniqueIdentifier>{354d8c69-ffaf-4ea9-bc49-e4a7c83d8399}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <QtRcc Include="SoaSimQt.qrc">
@@ -84,15 +87,6 @@
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp">
@@ -206,6 +200,18 @@
     <ClCompile Include="main.cpp">
       <Filter>Main</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
@@ -224,9 +230,6 @@
       <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h">
@@ -258,6 +261,12 @@
     </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>
   </ItemGroup>
   <ItemGroup>
@@ -292,15 +301,6 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
@@ -366,14 +366,14 @@
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
-      <Filter>GUI\Widgets</Filter>
-    </ClCompile>
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
-      <Filter>GUI\Widgets</Filter>
-    </QtMoc>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
