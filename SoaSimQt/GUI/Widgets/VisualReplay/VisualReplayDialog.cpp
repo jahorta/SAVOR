@@ -76,7 +76,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     renderWidget_->setAttribute(Qt::WA_NativeWindow, true);
     renderWidget_->setAttribute(Qt::WA_PaintOnScreen, true);
     renderWidget_->setAutoFillBackground(true);
-    layout->addWidget(renderWidget_, 1);
+    layout->addWidget(renderWidget_);
 
     replayDoneLabel_ = new QLabel(QStringLiteral("visual replay done"), this);
     replayDoneLabel_->setAlignment(Qt::AlignCenter);
