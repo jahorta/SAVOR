@@ -540,7 +540,22 @@ namespace simcore {
                 continue;
             }
 
-            auto claimr = simcore::db::VisualReplayRepo::ClaimNextQueued(/*worker_id*/kVisualWorkerId);
+            simcore::db::DbResult<std::optional<simcore::db::VisualReplayRow>> claimr;
+            try {
+                claimr = simcore::db::VisualReplayRepo::ClaimNextQueued(/*worker_id*/kVisualWorkerId);
+            }
+            catch (const std::exception& ex) {
+                if (stop_.load()) break;
+                set_visual_runtime_state(VisualReplayRuntimeState::Idle, std::string("ClaimNextQueued exception: ") + ex.what());
+                Sleep(cfg_.controller_sleep_ms);
+                continue;
+            }
+            catch (...) {
+                if (stop_.load()) break;
+                set_visual_runtime_state(VisualReplayRuntimeState::Idle, "ClaimNextQueued unknown exception");
+                Sleep(cfg_.controller_sleep_ms);
+                continue;
+            }
             if (!claimr.ok) {
                 Sleep(cfg_.controller_sleep_ms);
                 continue;
