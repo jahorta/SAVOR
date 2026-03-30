@@ -95,6 +95,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setObjectName(QStringLiteral("visualWorkerLiveLogView"));
     liveLogView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     liveLogView_->setSelectionMode(QAbstractItemView::NoSelection);
+    liveLogView_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     liveLogView_->setUniformItemSizes(true);
     liveLogView_->setMinimumHeight(180);
     liveLogView_->setMinimumWidth(600);
