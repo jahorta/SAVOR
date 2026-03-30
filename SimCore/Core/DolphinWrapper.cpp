@@ -1416,7 +1416,7 @@ namespace simcore {
                     const auto left_ms_now2 = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - now2).count();
                     if (left_ms_now2 <= std::max<uint32_t>(2000u, timeout_ms / 10u))
                     {
-                        SCLOGD("[run] close to timeout! time remaining: %lld ms", left_ms_now2);
+                        SCLOGW("[run] close to timeout! time remaining: %lld ms", left_ms_now2);
                         flags |= PF_TIMEOUT_NEAR;
                     }
 
@@ -1429,7 +1429,7 @@ namespace simcore {
                             const auto since_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - last_vi_change).count();
                             if (since_ms >= (vi_stall_ms / 2u))
                             {
-                                SCLOGD("[run] close to VI stall!", left_ms_now2);
+                                SCLOGW("[run] close to VI stall!", left_ms_now2);
                                 if (progflags & (uint32_t)CoreProgressFlags::WarnViStall) msg_strs.push_back("VI stall imminent");
                             }
                         }
