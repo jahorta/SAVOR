@@ -1504,7 +1504,7 @@ namespace simcore {
             }
 
             if ((polls++ & 0x3F) == 0) {
-                SCLOGD("[DW/run] poll=%zu state=%d pc=%08X movie=%d vi=%llu",
+                SCLOGDX(SC_TAGS("run"), "poll=%zu state=%d pc=%08X movie=%d vi=%llu",
                     polls, (int)Core::GetState(*m_system), getPC(),
                     movie.IsPlayingInput() ? 1 : 0,
                     (unsigned long long)getViFieldCountApproxFromBaseline());
