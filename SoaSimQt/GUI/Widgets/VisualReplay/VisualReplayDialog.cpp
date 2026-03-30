@@ -99,6 +99,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setMinimumHeight(180);
     liveLogView_->setMinimumWidth(600);
     liveLogView_->setWordWrap(false);
+    liveLogView_->setSpacing(-8);
     const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     liveLogView_->setFont(mono);
     logLayout->addWidget(liveLogView_, 1);
