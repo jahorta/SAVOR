@@ -1437,9 +1437,23 @@ namespace simcore {
 
                     const uint32_t cur_frames = (uint32_t)getFrameCountApprox(false);
 
-                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) msg_strs.push_back(std::format("VIDelta={}", cur_frames));
-                    if (progflags & (uint32_t)CoreProgressFlags::Filename) msg_strs.push_back(getCurrentSctFileTag());
-                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) msg_strs.push_back(getCurrentSctSection());
+                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) 
+                    {
+                        SCLOGTX(SC_TAGS("progress"), std::format("VIDelta={}", cur_frames).c_str());
+                        msg_strs.push_back(std::format("VIDelta={}", cur_frames));
+                    }
+                    if (progflags & (uint32_t)CoreProgressFlags::Filename) 
+                    {
+                        std::string msg = getCurrentSctFileTag();
+                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                        msg_strs.push_back(msg);
+                    }
+                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) 
+                    {
+                        std::string msg = getCurrentSctSection();
+                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                        msg_strs.push_back(getCurrentSctSection());
+                    }
 
                     last_emit = now2;
                 }
@@ -1450,9 +1464,14 @@ namespace simcore {
                     if (simcore::progress::BattleProgressBPs().contains(cur_pc))
                     {
                         for (simcore::progress::BattleProgressEntry entry : simcore::progress::BattleProgress) {
-                            if (entry.key == cur_pc) msg_strs.push_back(entry.fxn(*this));
+                            if (entry.key == cur_pc) 
+                            {
+                                std::string msg = entry.fxn(*this);
+                                SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                                msg_strs.push_back(msg);
                         }
-                        SCLOGD("[DW/run] Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
+                        }
+                        SCLOGDX(SC_TAGS("run"), "Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
                         Common::Event sync_event;
                         auto& power_pc = m_system->GetPowerPC();
                         PowerPC::CoreMode old_mode = power_pc.GetMode();
