@@ -18,7 +18,7 @@ namespace phase::battle::turnrunner {
     static constexpr simcore::keys::KeyId Battle_Outcome = simcore::keys::battle::BATTLE_OUTCOME;
 
     static const std::string LabelAdvanceToTurnInput = "ADV_TO_TURN_INPUT";
-    static const std::string LabelAfterPrelude = "AFTER_PRELUDE";
+    static const std::string LabelTurnInputs = "AFTER_PRELUDE";
     static const std::string LabelApplyTurn = "APPLY_TURN";
     static const std::string LabelRunAppliedInputs = "RUN_APPLIED_INPUTS";
 
@@ -43,12 +43,13 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, 1u, LabelAfterPrelude));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, 1u, LabelTurnInputs));
 
         // Turn 1 path: apply initial input only if caller supplied it.
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::HAS_INITIAL_INPUT, simcore::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));
         ps.ops.push_back(simcore::OpApplyInputFrom(simcore::keys::battle::INITIAL_INPUT));
-
+        
+        // ============  Label Advance To Turn Input  ===================
         // Tolerate battle-load prelude on fresh runs until we hit TurnInputs.
         ps.ops.push_back(simcore::OpLabel(LabelAdvanceToTurnInput));
         ps.ops.push_back(simcore::OpRunUntilBp());
@@ -58,13 +59,13 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PRED_ABORT_RUN, simcore::PSCmp::EQ, 1u, LabelRetPredFail));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelAdvanceToTurnInput));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelTurnInputs));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelAdvanceToTurnInput));
 
+        // ============  Label Turn Inputs  ===================
         // current_turn > 1 path: run a single frame to avoid desync before materialization
-        ps.ops.push_back(simcore::OpLabel(LabelAfterPrelude));
+        ps.ops.push_back(simcore::OpLabel(LabelTurnInputs));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::LE, 1u, LabelApplyTurn));
-        ps.ops.push_back(simcore::OpStepFrames(1, true));
 
         // Build and apply exactly one turn
         ps.ops.push_back(simcore::OpGetBattleContext());
@@ -75,6 +76,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PLAN_DONE, simcore::PSCmp::EQ, 1u, LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpGoto(LabelApplyTurn));
 
+        // ============  Label Advance To Turn Input  ===================
         // Run one segment after applying this turn
         ps.ops.push_back(simcore::OpLabel(LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpRunUntilBp());
@@ -89,7 +91,8 @@ namespace phase::battle::turnrunner {
         // Keep running until one of the terminals above.
         ps.ops.push_back(simcore::OpGoto(LabelRunAppliedInputs));
 
-        // return labels read ending RNG before returning
+        // ============  Label Return Reached Next  ===================
+        // return labels read ending RNG before returning if there are more turns
         ps.ops.push_back(simcore::OpLabel(LabelRetReachedNext));
         ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::TURN_OUTPUT_INDEX, 1u));
         ps.ops.push_back(simcore::OpGotoIfKeys(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, simcore::keys::battle::LAST_TURN, LabelRetOutOfTurns));
@@ -97,27 +100,34 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
 
+        // ============  Label Return Out of Turns  ===================
+        // return out of turns of there are no more turns
         ps.ops.push_back(simcore::OpLabel(LabelRetOutOfTurns));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::HitTurnLimit));
 
+        // ============  Label Return Victory  ===================
         ps.ops.push_back(simcore::OpLabel(LabelRetVictory));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Victory));
 
+        // ============  Label Return Defeat  ===================
         ps.ops.push_back(simcore::OpLabel(LabelRetDefeat));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Defeat));
 
+        // ============  Label Return Predicate Failure  ===================
         ps.ops.push_back(simcore::OpLabel(LabelRetPredFail));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PredFailure));
 
+        // ============  Label Return Materialize Failure  ===================
         ps.ops.push_back(simcore::OpLabel(LabelRetMaterializeFail));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PlanMaterializeFailure));
 
+        // ============  Label Return Dolphin Worker Error  ===================
         ps.ops.push_back(simcore::OpLabel(LabelRetDWErr));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::DWRunErr));
