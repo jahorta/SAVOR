@@ -158,7 +158,7 @@ namespace simcore {
     {
         // Keep the same "neutral" convention used elsewhere
         if (frames_equal(f, neutral))
-            return "(no changes vs neutral)";
+            return "---";
 
         std::ostringstream out;
 
@@ -180,7 +180,7 @@ namespace simcore {
     {
         // Emit only fields that differ from neutral
         if (frames_equal(f, neutral))
-            return "(no changes vs neutral)";
+            return "---";
 
         std::vector<std::string> parts;
 
