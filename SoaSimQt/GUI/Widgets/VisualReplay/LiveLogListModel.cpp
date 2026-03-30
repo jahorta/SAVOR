@@ -11,7 +11,7 @@ constexpr const char* kHostSource = "[host]";
 
 struct ParsedLogLine {
     int level = kLevelUnknown;
-    QString source = QStringLiteral(kUnknownSource);
+    QString source = kUnknownSource;
     QString message;
 };
 
@@ -46,7 +46,7 @@ ParsedLogLine parseLogLine(const QString& line)
 
     if (line.startsWith(QStringLiteral("[host]"))) {
         parsed.level = 2;
-        parsed.source = QStringLiteral(kHostSource);
+        parsed.source = kHostSource;
         parsed.message = line;
         return parsed;
     }
@@ -57,7 +57,7 @@ ParsedLogLine parseLogLine(const QString& line)
     const QRegularExpressionMatch match = kPattern.match(line);
     if (!match.hasMatch()) {
         parsed.level = kLevelUnknown;
-        parsed.source = QStringLiteral(kUnknownSource);
+        parsed.source = kUnknownSource;
         parsed.message = line;
         return parsed;
     }
@@ -65,7 +65,7 @@ ParsedLogLine parseLogLine(const QString& line)
     parsed.level = parseLevel(match.captured(1).trimmed());
     parsed.source = match.captured(2).trimmed();
     if (parsed.source.isEmpty()) {
-        parsed.source = QStringLiteral(kUnknownSource);
+        parsed.source = kUnknownSource;
     }
     parsed.message = match.captured(3).trimmed();
     if (parsed.message.isEmpty()) {
