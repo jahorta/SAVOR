@@ -1,15 +1,36 @@
 #include "VisualReplayDialog.h"
+
 #include "GUI/Widgets/ScrollBarStabilizer.h"
+#include "GUI/Widgets/VisualReplay/LiveLogFilterController.h"
+#include "GUI/Widgets/VisualReplay/LiveLogListModel.h"
 #include "GUI/Widgets/VisualReplay/VisualReplayCoordinator.h"
 
-#include <QtGui/QTextCursor>
+#include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QListView>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QTextEdit>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
+#include <QtGui/QAction>
+#include <QtGui/QFontDatabase>
+
+namespace {
+constexpr int kLevelAll = -1;
+
+template <typename Fn>
+void runWithStabilizedScroll(QListView* view, Fn&& fn)
+{
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(view);
+    fn();
+    restoreItemViewScrollSnapshot(view, scrollSnapshot);
+}
+}
 
 VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     : QDialog(parent)
@@ -39,19 +60,49 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     replayStateLabel_ = new QLabel(QStringLiteral("Replay state: idle"), this);
     layout->addWidget(replayStateLabel_);
     overallLayout->addLayout(layout);
-    
-    QVBoxLayout* loglayout = new QVBoxLayout(this);
-    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log"), this);
-    loglayout->addWidget(logLabel);
 
-    liveLogView_ = new QTextEdit(this);
+    QVBoxLayout* logLayout = new QVBoxLayout(this);
+    QLabel* logLabel = new QLabel(QStringLiteral("Live worker log"), this);
+    logLayout->addWidget(logLabel);
+
+    QHBoxLayout* filterLayout = new QHBoxLayout();
+    levelFilterCombo_ = new QComboBox(this);
+    levelFilterCombo_->addItem(QStringLiteral("All"), kLevelAll);
+    levelFilterCombo_->addItem(QStringLiteral("Debug"), 0);
+    levelFilterCombo_->addItem(QStringLiteral("Trace"), 1);
+    levelFilterCombo_->addItem(QStringLiteral("Info"), 2);
+    levelFilterCombo_->addItem(QStringLiteral("Warn"), 3);
+    levelFilterCombo_->addItem(QStringLiteral("Error"), 4);
+    levelFilterCombo_->addItem(QStringLiteral("Fatal"), 5);
+    levelFilterCombo_->setCurrentIndex(0);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Level:"), this));
+    filterLayout->addWidget(levelFilterCombo_);
+
+    sourceFilterButton_ = new QToolButton(this);
+    sourceFilterButton_->setText(QStringLiteral("Sources"));
+    sourceFilterButton_->setPopupMode(QToolButton::InstantPopup);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Source:"), this));
+    filterLayout->addWidget(sourceFilterButton_);
+
+    showFileCheck_ = new QCheckBox(QStringLiteral("Show file/source"), this);
+    showFileCheck_->setChecked(true);
+    filterLayout->addWidget(showFileCheck_);
+    filterLayout->addStretch(1);
+
+    logLayout->addLayout(filterLayout);
+
+    liveLogView_ = new QListView(this);
     liveLogView_->setObjectName(QStringLiteral("visualWorkerLiveLogView"));
-    liveLogView_->setReadOnly(true);
-    liveLogView_->setLineWrapMode(QTextEdit::NoWrap);
+    liveLogView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    liveLogView_->setSelectionMode(QAbstractItemView::NoSelection);
+    liveLogView_->setUniformItemSizes(true);
     liveLogView_->setMinimumHeight(180);
     liveLogView_->setMinimumWidth(600);
-    loglayout->addWidget(liveLogView_, 1);
-    overallLayout->addLayout(loglayout);
+    liveLogView_->setWordWrap(false);
+    const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    liveLogView_->setFont(mono);
+    logLayout->addWidget(liveLogView_, 1);
+    overallLayout->addLayout(logLayout);
 
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     pauseButton_ = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
@@ -64,6 +115,29 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     layout->addWidget(buttons);
 
     setReplayControlsEnabled(false);
+
+    liveLogModel_ = new LiveLogListModel(this);
+    liveLogController_ = new LiveLogFilterController(liveLogModel_);
+    liveLogView_->setModel(liveLogModel_);
+    liveLogModel_->onSourcesChanged = [this]() { refreshSourceMenu(); };
+
+    connect(levelFilterCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        if (liveLogController_) {
+            runWithStabilizedScroll(liveLogView_, [this, idx]() {
+                liveLogController_->setMinLevel(levelFilterCombo_->itemData(idx).toInt());
+            });
+        }
+    });
+
+    connect(showFileCheck_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (liveLogController_) {
+            runWithStabilizedScroll(liveLogView_, [this, checked]() {
+                liveLogController_->setShowSource(checked);
+            });
+        }
+    });
+
+    refreshSourceMenu();
 
     visualReplayCoordinator_ = new VisualReplayCoordinator(this);
     connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesRequested, this, &VisualReplayDialog::visualLiveLogLinesRequested);
@@ -101,46 +175,44 @@ void VisualReplayDialog::showReplayDoneLabel()
 
 void VisualReplayDialog::resetLiveLog()
 {
-    updateLiveLogLines(QStringList{});
+    if (liveLogModel_) {
+        runWithStabilizedScroll(liveLogView_, [this]() {
+            liveLogModel_->clear();
+        });
+    }
+    if (levelFilterCombo_) {
+        levelFilterCombo_->setCurrentIndex(0);
+    }
+    refreshSourceMenu();
 }
-
 
 void VisualReplayDialog::updateLiveLogLines(const QStringList& lines)
 {
-    if (!liveLogView_) {
+    if (!liveLogModel_) {
         return;
     }
-    const ScrollAreaScrollSnapshot scrollSnapshot = captureScrollAreaScrollSnapshot(liveLogView_);
-    liveLogView_->setPlainText(lines.join(QLatin1Char('\n')));
-    restoreScrollAreaScrollSnapshot(liveLogView_, scrollSnapshot);
+    runWithStabilizedScroll(liveLogView_, [this, &lines]() {
+        liveLogModel_->clear();
+        liveLogModel_->appendRawLines(lines);
+    });
 }
-
 
 void VisualReplayDialog::appendLiveLogLines(const QStringList& lines)
 {
-    if (!liveLogView_ || lines.isEmpty()) {
+    if (!liveLogModel_ || lines.isEmpty()) {
         return;
     }
-    const ScrollAreaScrollSnapshot scrollSnapshot = captureScrollAreaScrollSnapshot(liveLogView_);
-    QTextCursor cursor = liveLogView_->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    if (!liveLogView_->toPlainText().isEmpty()) {
-        cursor.insertText(QStringLiteral("\n"));
-    }
-    cursor.insertText(lines.join(QLatin1Char('\n')));
-    liveLogView_->setTextCursor(cursor);
-    restoreScrollAreaScrollSnapshot(liveLogView_, scrollSnapshot);
+    runWithStabilizedScroll(liveLogView_, [this, &lines]() {
+        liveLogModel_->appendRawLines(lines);
+    });
 }
 
 void VisualReplayDialog::appendHostEventLine(const QString& eventName, const QString& argsJson)
 {
-    if (!liveLogView_) {
-        return;
-    }
     const QString eventLine = argsJson.isEmpty()
         ? QStringLiteral("[host] %1").arg(eventName)
         : QStringLiteral("[host] %1 %2").arg(eventName, argsJson);
-    liveLogView_->append(eventLine);
+    appendLiveLogLines(QStringList{ eventLine });
 }
 
 void VisualReplayDialog::setReplayRuntimeStateText(const QString& text)
@@ -205,4 +277,73 @@ QString VisualReplayDialog::hostEventsPipeName() const
 VisualReplayCoordinator* VisualReplayDialog::visualReplayCoordinator() const
 {
     return visualReplayCoordinator_;
+}
+
+void VisualReplayDialog::refreshSourceMenu()
+{
+    if (!sourceFilterButton_ || !liveLogModel_ || !liveLogController_) {
+        return;
+    }
+
+    if (QMenu* existingMenu = sourceFilterButton_->menu()) {
+        existingMenu->deleteLater();
+    }
+
+    QMenu* menu = new QMenu(sourceFilterButton_);
+
+    QAction* selectAllAction = menu->addAction(QStringLiteral("Select all"));
+    QAction* clearAllAction = menu->addAction(QStringLiteral("Clear all"));
+    menu->addSeparator();
+
+    const QStringList knownSources = liveLogModel_->knownSources();
+    const QSet<QString> selectedSources = liveLogModel_->selectedSources();
+
+    for (const QString& source : knownSources) {
+        QAction* action = menu->addAction(source);
+        action->setCheckable(true);
+        action->setChecked(selectedSources.contains(source));
+    }
+
+    connect(selectAllAction, &QAction::triggered, this, [this]() {
+        if (liveLogController_) {
+            runWithStabilizedScroll(liveLogView_, [this]() {
+                liveLogController_->setSelectAllSources(true);
+            });
+        }
+        refreshSourceMenu();
+    });
+
+    connect(clearAllAction, &QAction::triggered, this, [this]() {
+        if (liveLogController_) {
+            runWithStabilizedScroll(liveLogView_, [this]() {
+                liveLogController_->setSelectAllSources(false);
+            });
+        }
+        refreshSourceMenu();
+    });
+
+    const QList<QAction*> actions = menu->actions();
+    for (int i = 0; i < actions.size(); ++i) {
+        QAction* action = actions[i];
+        if (i < 3) {
+            continue;
+        }
+        connect(action, &QAction::toggled, this, [this, menu](bool) {
+            QSet<QString> selected;
+            const QList<QAction*> menuActions = menu->actions();
+            for (int idx = 3; idx < menuActions.size(); ++idx) {
+                QAction* menuAction = menuActions[idx];
+                if (menuAction->isChecked()) {
+                    selected.insert(menuAction->text());
+                }
+            }
+            if (liveLogController_) {
+                runWithStabilizedScroll(liveLogView_, [this, &selected]() {
+                    liveLogController_->setSelectedSources(selected);
+                });
+            }
+        });
+    }
+
+    sourceFilterButton_->setMenu(menu);
 }

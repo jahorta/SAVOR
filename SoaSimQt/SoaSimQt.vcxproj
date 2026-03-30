@@ -127,6 +127,8 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp" />
@@ -208,6 +210,8 @@
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
     <QtRcc Include="SoaSimQt.qrc" />
     <ClCompile Include="GUI\MainWindow.cpp" />

@@ -5,9 +5,14 @@
 
 class QWidget;
 class QLabel;
-class QTextEdit;
+class QListView;
+class QCheckBox;
+class QComboBox;
+class QToolButton;
 class QPushButton;
 class VisualReplayCoordinator;
+class LiveLogListModel;
+class LiveLogFilterController;
 
 class VisualReplayDialog final : public QDialog
 {
@@ -43,12 +48,19 @@ signals:
     void vmStepRequested();
 
 private:
+    void refreshSourceMenu();
+
     QWidget* renderWidget_ = nullptr;
     QLabel* replayDoneLabel_ = nullptr;
     QLabel* replayStateLabel_ = nullptr;
-    QTextEdit* liveLogView_ = nullptr;
+    QListView* liveLogView_ = nullptr;
+    QComboBox* levelFilterCombo_ = nullptr;
+    QToolButton* sourceFilterButton_ = nullptr;
+    QCheckBox* showFileCheck_ = nullptr;
     QPushButton* pauseButton_ = nullptr;
     QPushButton* stepVmButton_ = nullptr;
     QPushButton* resumeButton_ = nullptr;
     VisualReplayCoordinator* visualReplayCoordinator_ = nullptr;
+    LiveLogListModel* liveLogModel_ = nullptr;
+    LiveLogFilterController* liveLogController_ = nullptr;
 };
