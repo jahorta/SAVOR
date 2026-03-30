@@ -132,7 +132,7 @@ int main(int argc, char** argv)
     L.open_file(log_path.string().c_str(), /*append=*/false);
     L.set_levels(simcore::logger::Level::Off, simcore::logger::Level::Debug);
 
-    SCLOGI("[Worker %zu] Initializing", worker_id);
+    SCLOGIX(SC_TAGS("worker", "replay", "startup"), "[Worker %zu] Initializing", worker_id);
 
     SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s userdir=%s timeout=%u visual=%d render_hwnd=%llu",
         worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), userdir.c_str(), timeout_ms, visual ? 1 : 0,
@@ -173,16 +173,16 @@ int main(int argc, char** argv)
     std::mutex visual_cmd_mtx;
     std::string visual_last_pipe_cmd;
 
-    SCLOGD("[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
+    SCLOGDX(SC_TAGS("worker", "replay", "boot"), "[Worker %zu] BootDolphinWrapper begin (user_dir=%s qtbase=%s)",
         worker_id, boot.boot.user_dir.c_str(), boot.boot.dolphin_qt_base.c_str());
     std::string err;
     if (!simboot::BootDolphinWrapper(host, boot.boot, &err)) {
         WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_BootFail;
         (void)write_all(hOut, &wr, sizeof(wr));
-        SCLOGE("[Worker %zu] Boot failed: %s", worker_id, err.c_str());
+        SCLOGEX(SC_TAGS("worker", "replay", "boot", "error"), "[Worker %zu] Boot failed: %s", worker_id, err.c_str());
         return WERR_BootFail;
     }
-    SCLOGD("[Worker %zu] BootDolphinWrapper ok", worker_id);
+    SCLOGDX(SC_TAGS("worker", "replay", "boot"), "[Worker %zu] BootDolphinWrapper ok", worker_id);
 
     SCLOGD("[Worker %zu] loadGame(%s) begin", worker_id, boot.iso_path.c_str());
     if (!host.loadGame(boot.iso_path)) {
@@ -201,7 +201,7 @@ int main(int argc, char** argv)
 
     if (visual) {
         simcore::hoststubs::SetHostEventSink([visual_host_events_pipe](const simcore::hoststubs::HostEvent& event) {
-            SCLOGD("[HOST_EVT] %s %s", event.name.c_str(), event.args_json.c_str());
+            SCLOGDX(SC_TAGS("host", "event"), "[HOST_EVT] %s %s", event.name.c_str(), event.args_json.c_str());
             if (visual_host_events_pipe.empty()) {
                 return;
             }

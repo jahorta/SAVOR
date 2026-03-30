@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <atomic>
+#include <initializer_list>
 
 namespace simcore::logger {
 
@@ -23,6 +24,8 @@ namespace simcore::logger {
         // printf-style core
         void logf(Level lv, const char* file, int line, const char* func,
             const char* fmt, ...) noexcept;
+        void logf_tags(Level lv, const char* file, int line, const char* func,
+            const char* tags_csv, const char* fmt, ...) noexcept;
 
         // fast checks for macros
         bool enabled_stdout(Level lv) const noexcept { return lv >= stdout_level_.load(); }
@@ -35,6 +38,7 @@ namespace simcore::logger {
         Logger();
         ~Logger();
         void vlogf(Level, const char*, int, const char*, const char*, std::va_list) noexcept;
+        void vlogf_tags(Level, const char*, int, const char*, const char*, const char*, std::va_list) noexcept;
 
         std::atomic<Level> stdout_level_{ Level::Info };
         std::atomic<Level> file_level_{ Level::Off };
@@ -45,6 +49,8 @@ namespace simcore::logger {
         std::string anchor_ = "SOASimulator";
         const char* shorten_path_(const char* full) noexcept;
     };
+
+    std::string BuildTagCsv(std::initializer_list<const char*> tags);
 
     // Internal macros for SimCore sources
 #define SCLOGT(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
@@ -59,5 +65,19 @@ namespace simcore::logger {
  if (L.enabled_any(::simcore::logger::Level::Error)) L.logf(::simcore::logger::Level::Error, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
 #define SCLOGF(fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
  if (L.enabled_any(::simcore::logger::Level::Fatal)) L.logf(::simcore::logger::Level::Fatal, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); }while(0)
+
+#define SC_TAGS(...) std::initializer_list<const char*>{__VA_ARGS__}
+#define SCLOGTX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Trace)) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Trace, __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
+#define SCLOGDX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Debug)) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Debug, __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
+#define SCLOGIX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Info )) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Info , __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
+#define SCLOGWX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Warn )) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Warn , __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
+#define SCLOGEX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Error)) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Error, __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
+#define SCLOGFX(tags, fmt, ...) do{ auto& L=::simcore::logger::Logger::get(); \
+ if (L.enabled_any(::simcore::logger::Level::Fatal)) { const std::string _sc_tag_csv = ::simcore::logger::BuildTagCsv(tags); L.logf_tags(::simcore::logger::Level::Fatal, __FILE__, __LINE__, __func__, _sc_tag_csv.c_str(), fmt, ##__VA_ARGS__); } }while(0)
 
 } // namespace simcore::log

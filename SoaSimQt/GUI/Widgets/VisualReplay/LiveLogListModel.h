@@ -33,6 +33,7 @@ private:
     struct LiveLogRecord {
         int level;
         QString source;
+        QStringList tags;
         QString message;
     };
 

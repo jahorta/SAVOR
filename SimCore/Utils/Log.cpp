@@ -5,6 +5,7 @@
 #include <windows.h>
 #endif
 #include <ctime>
+#include <cctype>
 
 namespace simcore::logger{
 
@@ -72,8 +73,30 @@ namespace simcore::logger{
         }
     }
 
-    void Logger::vlogf(Level lv, const char* file, int line, const char* func,
-        const char* fmt, std::va_list ap) noexcept {
+    static bool is_valid_tag_char(char c) noexcept {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.';
+    }
+
+    std::string BuildTagCsv(std::initializer_list<const char*> tags) {
+        std::string out;
+        for (const char* raw : tags) {
+            if (!raw || !*raw) continue;
+            bool valid = true;
+            for (const char* p = raw; *p; ++p) {
+                if (!is_valid_tag_char(*p)) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (!valid) continue;
+            if (!out.empty()) out.push_back(',');
+            out.append(raw);
+        }
+        return out;
+    }
+
+    void Logger::vlogf_tags(Level lv, const char* file, int line, const char* func,
+        const char* tags_csv, const char* fmt, std::va_list ap) noexcept {
         // Build the message first (so we don't hold the mutex during heavy formatting)
         std::string msg = fmt_v(fmt, ap);
 
@@ -99,6 +122,7 @@ namespace simcore::logger{
         char head[256];
         std::snprintf(head, sizeof(head), "[%s] [%s] [T%zu] (%s:%d %s) ",
             ts, level_tag(lv), size_t(tid), rel, line, func);
+        const bool has_tags = tags_csv && *tags_csv;
 
         std::lock_guard<std::mutex> lk(m_);
         // stdout sink
@@ -114,6 +138,11 @@ namespace simcore::logger{
                 std::fputs(c, stdout);
             }
             std::fputs(head, stdout);
+            if (has_tags) {
+                std::fputs("[tag=", stdout);
+                std::fputs(tags_csv, stdout);
+                std::fputs("] ", stdout);
+            }
             std::fputs(msg.c_str(), stdout);
             std::fputc('\n', stdout);
             if (colors_) std::fputs("\x1b[0m", stdout);
@@ -122,10 +151,20 @@ namespace simcore::logger{
         // file sink
         if (file_ && lv >= file_level_.load()) {
             std::fputs(head, file_);
+            if (has_tags) {
+                std::fputs("[tag=", file_);
+                std::fputs(tags_csv, file_);
+                std::fputs("] ", file_);
+            }
             std::fputs(msg.c_str(), file_);
             std::fputc('\n', file_);
             std::fflush(file_);
         }
+    }
+
+    void Logger::vlogf(Level lv, const char* file, int line, const char* func,
+        const char* fmt, std::va_list ap) noexcept {
+        vlogf_tags(lv, file, line, func, nullptr, fmt, ap);
     }
 
     void Logger::logf(Level lv, const char* file, int line, const char* func,
@@ -133,6 +172,14 @@ namespace simcore::logger{
         if (!enabled_any(lv)) return;
         std::va_list ap; va_start(ap, fmt);
         vlogf(lv, file, line, func, fmt, ap);
+        va_end(ap);
+    }
+
+    void Logger::logf_tags(Level lv, const char* file, int line, const char* func,
+        const char* tags_csv, const char* fmt, ...) noexcept {
+        if (!enabled_any(lv)) return;
+        std::va_list ap; va_start(ap, fmt);
+        vlogf_tags(lv, file, line, func, tags_csv, fmt, ap);
         va_end(ap);
     }
 
