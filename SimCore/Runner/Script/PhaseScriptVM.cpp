@@ -150,7 +150,7 @@ namespace simcore {
         default: derived_.reset(); break;
         }
 
-        SCLOGD("[VM] init begin sav=%s timeout=%u", init.savestate_path.c_str(), init.default_timeout_ms);
+        SCLOGDX(SC_TAGS("vm", "init"), "[VM] init begin sav=%s timeout=%u", init.savestate_path.c_str(), init.default_timeout_ms);
 
         // Disarm any previously armed set (enables program swapping)
         if (armed_ && !armed_pcs_.empty()) {
@@ -168,12 +168,12 @@ namespace simcore {
         // Update canonical BP keys and arm once
         canonical_bp_keys_ = prog_.canonical_bp_keys;
 
-        SCLOGD("[VM] attach bp count=%zu", program.canonical_bp_keys.size());
+        SCLOGDX(SC_TAGS("vm", "breakpoint"), "[VM] attach bp count=%zu", program.canonical_bp_keys.size());
         arm_bps_once();
 
         // Capture a snapshot to use as the per-job baseline
         const bool snapshot_ok = save_snapshot();
-        if (snapshot_ok) SCLOGD("[VM] init ok");
+        if (snapshot_ok) SCLOGDX(SC_TAGS("vm", "init"), "[VM] init ok");
         return snapshot_ok;
     }
 

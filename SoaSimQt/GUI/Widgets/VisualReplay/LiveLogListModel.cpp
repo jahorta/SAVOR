@@ -12,6 +12,7 @@ constexpr const char* kHostSource = "[host]";
 struct ParsedLogLine {
     int level = kLevelUnknown;
     QString source = kUnknownSource;
+    QStringList tags;
     QString message;
 };
 
@@ -39,6 +40,59 @@ int parseLevel(const QString& token)
     return kLevelUnknown;
 }
 
+bool isValidTagToken(const QString& token)
+{
+    if (token.isEmpty()) {
+        return false;
+    }
+    for (const QChar c : token) {
+        if (c.isLetterOrNumber() || c == QChar('_') || c == QChar('-') || c == QChar('.')) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+void parseTagPrefix(ParsedLogLine& parsed)
+{
+    if (!parsed.message.startsWith(QStringLiteral("[tag="))) {
+        return;
+    }
+    const int close_idx = parsed.message.indexOf(QChar(']'));
+    if (close_idx <= 5) {
+        return;
+    }
+    const QString body = parsed.message.mid(5, close_idx - 5);
+    if (body.contains(QRegularExpression(QStringLiteral(R"(\s)")))) {
+        return;
+    }
+    const QStringList raw_tags = body.split(QChar(','), Qt::SkipEmptyParts);
+    if (raw_tags.isEmpty()) {
+        return;
+    }
+    QSet<QString> deduped;
+    QStringList tags;
+    tags.reserve(raw_tags.size());
+    for (const QString& raw : raw_tags) {
+        const QString tag = raw.trimmed();
+        if (!isValidTagToken(tag) || deduped.contains(tag)) {
+            continue;
+        }
+        deduped.insert(tag);
+        tags.push_back(tag);
+    }
+    if (tags.isEmpty()) {
+        return;
+    }
+    parsed.tags = std::move(tags);
+    QString rest = parsed.message.mid(close_idx + 1);
+    if (rest.startsWith(QChar(' '))) {
+        rest.remove(0, 1);
+    }
+    parsed.message = rest;
+}
+
 ParsedLogLine parseLogLine(const QString& line)
 {
     ParsedLogLine parsed{};
@@ -48,6 +102,7 @@ ParsedLogLine parseLogLine(const QString& line)
         parsed.level = 2;
         parsed.source = kHostSource;
         parsed.message = line;
+        parseTagPrefix(parsed);
         return parsed;
     }
 
@@ -71,6 +126,7 @@ ParsedLogLine parseLogLine(const QString& line)
     if (parsed.message.isEmpty()) {
         parsed.message = line;
     }
+    parseTagPrefix(parsed);
     return parsed;
 }
 }
@@ -127,7 +183,7 @@ void LiveLogListModel::appendRawLines(const QStringList& lines)
     bool sourcesChanged = false;
     for (const QString& line : lines) {
         const ParsedLogLine parsed = parseLogLine(line);
-        LiveLogRecord rec{ parsed.level, parsed.source, parsed.message };
+        LiveLogRecord rec{ parsed.level, parsed.source, parsed.tags, parsed.message };
         records_.push_back(std::move(rec));
 
         if (!knownSources_.contains(parsed.source)) {
