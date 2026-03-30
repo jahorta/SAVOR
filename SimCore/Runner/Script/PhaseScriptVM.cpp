@@ -302,7 +302,7 @@ namespace simcore {
             wait_for_visual_debug_gate();
             GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
             const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-            SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
+            SCLOGDX("[vm] setting input [%d]: %s", idx, DescribeFrameCompact(f).c_str());
             host_.setInput(f);
             host_.stepOneFrameBlocking();
             const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
