@@ -1563,7 +1563,7 @@ namespace simcore {
     bool DolphinWrapper::waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate_ms)
     {
         const auto start = std::chrono::steady_clock::now();
-        SCLOGD("[DW/run] waitForPaused start state=%d timeout=%u", (int)Core::GetState(*m_system), timeout_ms);
+        SCLOGDX(SC_TAGS("run"), "waitForPaused start state=%d timeout=%u", (int)Core::GetState(*m_system), timeout_ms);
 
         auto deadline = start + std::chrono::milliseconds(timeout_ms);
 
@@ -1575,7 +1575,7 @@ namespace simcore {
         
 
         bool result = Core::GetState(*m_system) == Core::State::Paused;        
-        SCLOGD("[DW/run] waitForPaused end ok=%d waited_ms=%lld state=%d",
+        SCLOGDX(SC_TAGS("run"), "waitForPaused end ok=%d waited_ms=%lld state=%d",
             result ? 1 : 0,
             (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start).count(),
