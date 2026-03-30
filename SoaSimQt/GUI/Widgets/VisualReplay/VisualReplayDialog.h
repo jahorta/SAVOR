@@ -7,6 +7,7 @@ class QWidget;
 class QLabel;
 class QTextEdit;
 class QPushButton;
+class VisualReplayCoordinator;
 
 class VisualReplayDialog final : public QDialog
 {
@@ -22,6 +23,12 @@ public:
     void resetLiveLog();
     void setReplayRuntimeStateText(const QString& text);
     void setReplayControlsEnabled(bool enabled);
+    void startLiveLogStreaming();
+    void stopLiveLogStreaming();
+    void startHostEventsListener();
+    void stopHostEventsListener();
+    QString hostEventsPipeName() const;
+    VisualReplayCoordinator* visualReplayCoordinator() const;
 
 public slots:
     void updateLiveLogLines(const QStringList& lines);
@@ -30,6 +37,7 @@ public slots:
     void setRenderSurfaceSize(int widthPx, int heightPx);
 
 signals:
+    void visualLiveLogLinesRequested();
     void pauseRequested();
     void resumeRequested();
     void vmStepRequested();
@@ -42,4 +50,5 @@ private:
     QPushButton* pauseButton_ = nullptr;
     QPushButton* stepVmButton_ = nullptr;
     QPushButton* resumeButton_ = nullptr;
+    VisualReplayCoordinator* visualReplayCoordinator_ = nullptr;
 };

@@ -234,26 +234,14 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
     if (!visualReplayDialog_) {
         visualReplayDialog_ = new VisualReplayDialog(this);
         connect(visualReplayDialog_, &QDialog::finished, this, [this](int) {
-            if (visualReplayCoordinator_) {
-                visualReplayCoordinator_->stopLiveLogStreaming();
-                visualReplayCoordinator_->stopHostEventsListener();
-            }
+            visualReplayDialog_->stopLiveLogStreaming();
+            visualReplayDialog_->stopHostEventsListener();
         });
         connect(visualReplayDialog_, &VisualReplayDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
         connect(visualReplayDialog_, &VisualReplayDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
         connect(visualReplayDialog_, &VisualReplayDialog::resumeRequested, controller_, &CoordinatorController::resumeVisualReplayEmulation);
-    }
-    if (!visualReplayCoordinator_) {
-        visualReplayCoordinator_ = std::make_unique<VisualReplayCoordinator>(controller_, this);
-        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::liveLogLinesReady, this, [this](const QStringList& lines) {
-            if (visualReplayDialog_) visualReplayDialog_->appendLiveLogLines(lines);
-            });
-        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::hostEventReceived, this, [this](const QString& eventName, const QString& argsJson) {
-            if (visualReplayDialog_) visualReplayDialog_->appendHostEventLine(eventName, argsJson);
-            });
-        connect(visualReplayCoordinator_.get(), &VisualReplayCoordinator::renderSurfaceResizeRequested, this, [this](int width, int height) {
-            if (visualReplayDialog_) visualReplayDialog_->setRenderSurfaceSize(width, height);
-            });
+        connect(visualReplayDialog_, &VisualReplayDialog::visualLiveLogLinesRequested, controller_, &CoordinatorController::handleVisualLiveLogLinesRequested);
+        connect(controller_, &CoordinatorController::visualLiveLogLinesReady, visualReplayDialog_->visualReplayCoordinator(), &VisualReplayCoordinator::setLiveLogLines);
     }
     visualReplayRequested_ = true;
     visualWorkerObservedRunning_ = false;
@@ -262,13 +250,13 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
     visualReplayDialog_->setReplayRuntimeStateText(QStringLiteral("Queued startup"));
     visualReplayDialog_->setReplayControlsEnabled(false);
     visualReplayDialog_->resetLiveLog();
-    visualReplayCoordinator_->startLiveLogStreaming();
-    visualReplayCoordinator_->startHostEventsListener();
+    visualReplayDialog_->startLiveLogStreaming();
+    visualReplayDialog_->startHostEventsListener();
     visualReplayDialog_->show();
     visualReplayDialog_->raise();
     visualReplayDialog_->activateWindow();
     controller_->setVisualRenderWidgetHandle(visualReplayDialog_->renderWidgetHandle());
-    controller_->setVisualHostEventsPipeName(visualReplayCoordinator_->hostEventsPipeName());
+    controller_->setVisualHostEventsPipeName(visualReplayDialog_->hostEventsPipeName());
     controller_->requestVisualReplay(jobId);
 }
 

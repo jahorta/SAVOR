@@ -4,8 +4,6 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
-class CoordinatorController;
-
 #include <atomic>
 #include <string>
 #include <thread>
@@ -15,7 +13,7 @@ class VisualReplayCoordinator final : public QObject
     Q_OBJECT
 
 public:
-    explicit VisualReplayCoordinator(CoordinatorController* controller, QObject* parent = nullptr);
+    explicit VisualReplayCoordinator(QObject* parent = nullptr);
     ~VisualReplayCoordinator() override;
 
     void startHostEventsListener();
@@ -25,9 +23,13 @@ public:
     QString hostEventsPipeName() const;
 
 signals:
+    void liveLogLinesRequested();
     void hostEventReceived(const QString& eventName, const QString& argsJson);
     void renderSurfaceResizeRequested(int widthPx, int heightPx);
     void liveLogLinesReady(const QStringList& lines);
+
+public slots:
+    void setLiveLogLines(const QStringList& lines);
 
 private:
     static std::string extractJsonStringField(const std::string& json, const std::string& key);
@@ -36,7 +38,6 @@ private:
     void hostEventsLoop();
     void pollLiveLogLines();
 
-    CoordinatorController* controller_ = nullptr;
     QString hostEventsPipeName_;
     std::thread hostEventsThread_;
     std::atomic<bool> stopHostEvents_{ false };
