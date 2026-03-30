@@ -1469,7 +1469,7 @@ namespace simcore {
                                 std::string msg = entry.fxn(*this);
                                 SCLOGTX(SC_TAGS("progress"), msg.c_str());
                                 msg_strs.push_back(msg);
-                        }
+                            }
                         }
                         SCLOGDX(SC_TAGS("run"), "Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
                         Common::Event sync_event;
