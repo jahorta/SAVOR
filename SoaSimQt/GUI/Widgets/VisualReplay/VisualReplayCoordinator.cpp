@@ -3,8 +3,6 @@
 #include <QtCore/QMetaObject>
 #include <QtCore/QTimer>
 
-#include "CoordinatorController.h"
-
 namespace {
 constexpr int kVisualLogPollIntervalMs = 250;
 }
@@ -13,8 +11,8 @@ constexpr int kVisualLogPollIntervalMs = 250;
 
 #include <cstdlib>
 
-VisualReplayCoordinator::VisualReplayCoordinator(CoordinatorController* controller, QObject* parent)
-    : QObject(parent), controller_(controller)
+VisualReplayCoordinator::VisualReplayCoordinator(QObject* parent)
+    : QObject(parent)
 {
     logPollTimer_ = new QTimer(this);
     logPollTimer_->setInterval(kVisualLogPollIntervalMs);
@@ -115,10 +113,11 @@ bool VisualReplayCoordinator::extractIntField(const std::string& json, const std
 
 void VisualReplayCoordinator::pollLiveLogLines()
 {
-    if (!controller_) {
-        return;
-    }
-    const QStringList lines = controller_->pullVisualLiveLogLines();
+    emit liveLogLinesRequested();
+}
+
+void VisualReplayCoordinator::setLiveLogLines(const QStringList& lines)
+{
     if (!lines.isEmpty()) {
         emit liveLogLinesReady(lines);
     }

@@ -33,7 +33,7 @@ public:
 
     const std::vector<WorkerSnapshot>& snapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
-    QStringList pullVisualLiveLogLines();
+    QStringList takeVisualLiveLogLineUpdates();
     QString visualReplayRuntimeStateText() const;
     bool visualReplayControlsEnabled() const;
 
@@ -53,11 +53,13 @@ public slots:
     void pauseVisualReplayEmulation();
     void stepVisualReplayVm();
     void resumeVisualReplayEmulation();
+    void handleVisualLiveLogLinesRequested();
     void refreshSnapshot();
 
 signals:
     void stateChanged();
     void snapshotChanged();
+    void visualLiveLogLinesReady(const QStringList& lines);
 
 private:
     static constexpr int kMinTargetWorkers = 1;
@@ -74,7 +76,6 @@ private:
     std::unique_ptr<simcore::WorkerCoordinator> coordinator_;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
-    QStringList visualLiveLogLinesCache_;
     size_t visualLiveLogLinesConsumed_ = 0;
 
     int targetWorkers_ = kMinTargetWorkers;

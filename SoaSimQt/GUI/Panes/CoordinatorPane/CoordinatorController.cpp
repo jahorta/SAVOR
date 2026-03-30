@@ -89,12 +89,13 @@ const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const
     return visualSnapshotCache_;
 }
 
-QStringList CoordinatorController::pullVisualLiveLogLines()
+QStringList CoordinatorController::takeVisualLiveLogLineUpdates()
 {
-    visualLiveLogLinesCache_.clear();
+    // Update model: return only lines that have not yet been consumed by the UI.
+    QStringList updates;
     if (!coordinator_) {
         visualLiveLogLinesConsumed_ = 0;
-        return visualLiveLogLinesCache_;
+        return updates;
     }
 
     const auto lines = coordinator_->GetVisualLogTail();
@@ -103,10 +104,10 @@ QStringList CoordinatorController::pullVisualLiveLogLines()
     }
 
     for (size_t i = visualLiveLogLinesConsumed_; i < lines.size(); ++i) {
-        visualLiveLogLinesCache_.append(QString::fromStdString(lines[i]));
+        updates.append(QString::fromStdString(lines[i]));
     }
     visualLiveLogLinesConsumed_ = lines.size();
-    return visualLiveLogLinesCache_;
+    return updates;
 }
 
 QString CoordinatorController::visualReplayRuntimeStateText() const
@@ -159,7 +160,6 @@ void CoordinatorController::stopCoordinator()
     paused_ = false;
     snapshotCache_.clear();
     visualSnapshotCache_.clear();
-    visualLiveLogLinesCache_.clear();
     visualLiveLogLinesConsumed_ = 0;
 
     emit stateChanged();
@@ -298,6 +298,14 @@ void CoordinatorController::resumeVisualReplayEmulation()
     (void)coordinator_->ResumeVisualReplayEmulation();
 }
 
+void CoordinatorController::handleVisualLiveLogLinesRequested()
+{
+    const QStringList lines = takeVisualLiveLogLineUpdates();
+    if (!lines.isEmpty()) {
+        emit visualLiveLogLinesReady(lines);
+    }
+}
+
 void CoordinatorController::refreshSnapshot()
 {
     updateSnapshotCache();
@@ -353,7 +361,6 @@ void CoordinatorController::updateSnapshotCache()
     if (!coordinator_) {
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
-        visualLiveLogLinesCache_.clear();
         visualLiveLogLinesConsumed_ = 0;
         return;
     }

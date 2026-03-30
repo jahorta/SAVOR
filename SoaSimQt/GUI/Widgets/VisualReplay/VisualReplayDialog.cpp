@@ -1,5 +1,6 @@
 #include "VisualReplayDialog.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
+#include "GUI/Widgets/VisualReplay/VisualReplayCoordinator.h"
 
 #include <QtGui/QTextCursor>
 #include <QtWidgets/QDialogButtonBox>
@@ -63,6 +64,12 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     layout->addWidget(buttons);
 
     setReplayControlsEnabled(false);
+
+    visualReplayCoordinator_ = new VisualReplayCoordinator(this);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesRequested, this, &VisualReplayDialog::visualLiveLogLinesRequested);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::liveLogLinesReady, this, &VisualReplayDialog::appendLiveLogLines);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::hostEventReceived, this, &VisualReplayDialog::appendHostEventLine);
+    connect(visualReplayCoordinator_, &VisualReplayCoordinator::renderSurfaceResizeRequested, this, &VisualReplayDialog::setRenderSurfaceSize);
 }
 
 VisualReplayDialog::~VisualReplayDialog() = default;
@@ -160,4 +167,42 @@ void VisualReplayDialog::setRenderSurfaceSize(int widthPx, int heightPx)
         renderWidget_->setMinimumSize(widthPx, heightPx);
         renderWidget_->resize(widthPx, heightPx);
     }
+}
+
+void VisualReplayDialog::startLiveLogStreaming()
+{
+    if (visualReplayCoordinator_) {
+        visualReplayCoordinator_->startLiveLogStreaming();
+    }
+}
+
+void VisualReplayDialog::stopLiveLogStreaming()
+{
+    if (visualReplayCoordinator_) {
+        visualReplayCoordinator_->stopLiveLogStreaming();
+    }
+}
+
+void VisualReplayDialog::startHostEventsListener()
+{
+    if (visualReplayCoordinator_) {
+        visualReplayCoordinator_->startHostEventsListener();
+    }
+}
+
+void VisualReplayDialog::stopHostEventsListener()
+{
+    if (visualReplayCoordinator_) {
+        visualReplayCoordinator_->stopHostEventsListener();
+    }
+}
+
+QString VisualReplayDialog::hostEventsPipeName() const
+{
+    return visualReplayCoordinator_ ? visualReplayCoordinator_->hostEventsPipeName() : QString{};
+}
+
+VisualReplayCoordinator* VisualReplayDialog::visualReplayCoordinator() const
+{
+    return visualReplayCoordinator_;
 }
