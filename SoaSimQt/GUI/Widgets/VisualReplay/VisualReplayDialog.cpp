@@ -126,7 +126,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setMinimumHeight(180);
     liveLogView_->setMinimumWidth(600);
     liveLogView_->setWordWrap(false);
-    liveLogView_->setSpacing(-8);
+    liveLogView_->setGridSize(QSize(5000, 12));
     liveLogView_->setStyleSheet(QStringLiteral("QListView#visualWorkerLiveLogView::item:hover { background: transparent; }"));
     liveLogView_->viewport()->installEventFilter(new LiveLogPointerMotionBlocker(liveLogView_->viewport()));
     const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
