@@ -19,9 +19,35 @@
 #include <QtWidgets/QWidget>
 #include <QtGui/QAction>
 #include <QtGui/QFontDatabase>
+#include <QtCore/QEvent>
 
 namespace {
 constexpr int kLevelAll = -1;
+
+class LiveLogPointerMotionBlocker final : public QObject
+{
+public:
+    explicit LiveLogPointerMotionBlocker(QObject* parent = nullptr)
+        : QObject(parent)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        switch (event ? event->type() : QEvent::None) {
+        case QEvent::Enter:
+        case QEvent::Leave:
+        case QEvent::HoverEnter:
+        case QEvent::HoverMove:
+        case QEvent::HoverLeave:
+        case QEvent::MouseMove:
+            return true;
+        default:
+            return QObject::eventFilter(watched, event);
+        }
+    }
+};
 
 template <typename Fn>
 void runWithStabilizedScroll(QListView* view, Fn&& fn)
@@ -102,6 +128,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setWordWrap(false);
     liveLogView_->setSpacing(-8);
     liveLogView_->setStyleSheet(QStringLiteral("QListView#visualWorkerLiveLogView::item:hover { background: transparent; }"));
+    liveLogView_->viewport()->installEventFilter(new LiveLogPointerMotionBlocker(liveLogView_->viewport()));
     const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     liveLogView_->setFont(mono);
     logLayout->addWidget(liveLogView_, 1);
