@@ -19,7 +19,10 @@
 #include <QtWidgets/QWidget>
 #include <QtGui/QAction>
 #include <QtGui/QFontDatabase>
+#include <QtGui/QFontMetrics>
 #include <QtCore/QEvent>
+
+#include <algorithm>
 
 namespace {
 constexpr int kLevelAll = -1;
@@ -126,7 +129,8 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setMinimumHeight(180);
     liveLogView_->setMinimumWidth(600);
     liveLogView_->setWordWrap(false);
-    liveLogView_->setGridSize(QSize(5000, 12));
+    liveLogView_->setTextElideMode(Qt::ElideNone);
+    liveLogView_->setGridSize(QSize(1, 12));
     liveLogView_->setStyleSheet(QStringLiteral("QListView#visualWorkerLiveLogView::item:hover { background: transparent; }"));
     liveLogView_->viewport()->installEventFilter(new LiveLogPointerMotionBlocker(liveLogView_->viewport()));
     const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -150,11 +154,13 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogController_ = new LiveLogFilterController(liveLogModel_);
     liveLogView_->setModel(liveLogModel_);
     liveLogModel_->onSourcesChanged = [this]() { refreshSourceMenu(); };
+    updateLiveLogGridSize();
 
     connect(levelFilterCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
         if (liveLogController_) {
             runWithStabilizedScroll(liveLogView_, [this, idx]() {
                 liveLogController_->setMinLevel(levelFilterCombo_->itemData(idx).toInt());
+                updateLiveLogGridSize();
             });
         }
     });
@@ -163,6 +169,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
         if (liveLogController_) {
             runWithStabilizedScroll(liveLogView_, [this, checked]() {
                 liveLogController_->setShowSource(checked);
+                updateLiveLogGridSize();
             });
         }
     });
@@ -208,6 +215,7 @@ void VisualReplayDialog::resetLiveLog()
     if (liveLogModel_) {
         runWithStabilizedScroll(liveLogView_, [this]() {
             liveLogModel_->clear();
+            updateLiveLogGridSize();
         });
     }
     if (levelFilterCombo_) {
@@ -224,6 +232,7 @@ void VisualReplayDialog::updateLiveLogLines(const QStringList& lines)
     runWithStabilizedScroll(liveLogView_, [this, &lines]() {
         liveLogModel_->clear();
         liveLogModel_->appendRawLines(lines);
+        updateLiveLogGridSize();
     });
 }
 
@@ -234,6 +243,7 @@ void VisualReplayDialog::appendLiveLogLines(const QStringList& lines)
     }
     runWithStabilizedScroll(liveLogView_, [this, &lines]() {
         liveLogModel_->appendRawLines(lines);
+        updateLiveLogGridSize();
     });
 }
 
@@ -338,6 +348,7 @@ void VisualReplayDialog::refreshSourceMenu()
         if (liveLogController_) {
             runWithStabilizedScroll(liveLogView_, [this]() {
                 liveLogController_->setSelectAllSources(true);
+                updateLiveLogGridSize();
             });
         }
         refreshSourceMenu();
@@ -347,6 +358,7 @@ void VisualReplayDialog::refreshSourceMenu()
         if (liveLogController_) {
             runWithStabilizedScroll(liveLogView_, [this]() {
                 liveLogController_->setSelectAllSources(false);
+                updateLiveLogGridSize();
             });
         }
         refreshSourceMenu();
@@ -370,10 +382,38 @@ void VisualReplayDialog::refreshSourceMenu()
             if (liveLogController_) {
                 runWithStabilizedScroll(liveLogView_, [this, &selected]() {
                     liveLogController_->setSelectedSources(selected);
+                    updateLiveLogGridSize();
                 });
             }
         });
     }
 
     sourceFilterButton_->setMenu(menu);
+}
+
+void VisualReplayDialog::updateLiveLogGridSize()
+{
+    if (!liveLogView_ || !liveLogModel_) {
+        return;
+    }
+
+    constexpr int kLiveLogRowHeightPx = 12;
+    constexpr int kLiveLogHorizontalPaddingPx = 12;
+    const QFontMetrics fontMetrics(liveLogView_->font());
+
+    int widestTextPx = 0;
+    const int rowCount = liveLogModel_->rowCount();
+    for (int row = 0; row < rowCount; ++row) {
+        const QModelIndex index = liveLogModel_->index(row, 0);
+        const QString text = liveLogModel_->data(index, Qt::DisplayRole).toString();
+        widestTextPx = std::max(widestTextPx, fontMetrics.horizontalAdvance(text));
+    }
+
+    const int targetWidth = std::max(1, widestTextPx + kLiveLogHorizontalPaddingPx);
+    if (targetWidth == liveLogGridWidthPx_) {
+        return;
+    }
+
+    liveLogGridWidthPx_ = targetWidth;
+    liveLogView_->setGridSize(QSize(liveLogGridWidthPx_, kLiveLogRowHeightPx));
 }
