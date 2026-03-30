@@ -49,6 +49,7 @@ signals:
 
 private:
     void refreshSourceMenu();
+    void updateLiveLogGridSize();
 
     QWidget* renderWidget_ = nullptr;
     QLabel* replayDoneLabel_ = nullptr;
@@ -63,4 +64,5 @@ private:
     VisualReplayCoordinator* visualReplayCoordinator_ = nullptr;
     LiveLogListModel* liveLogModel_ = nullptr;
     LiveLogFilterController* liveLogController_ = nullptr;
+    int liveLogGridWidthPx_ = 0;
 };
