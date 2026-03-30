@@ -59,7 +59,9 @@ namespace simcore {
 		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH // build plan from actions
 	};
 
+	struct PSOp;
 	static std::string get_psop_name(PSOpCode op);
+	static std::string get_psop_desc(const PSOp& op);
 
 	enum class PSCmp : uint8_t { EQ, NE, LT, LE, GT, GE };
 

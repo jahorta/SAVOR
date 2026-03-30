@@ -18,6 +18,7 @@
 #include "../Breakpoints/BPRegistry.h"
 #include "ScriptProgress.h"
 #include <thread>
+#include <sstream>
 
 namespace {
     inline bool read_via_addrprog(simcore::DolphinWrapper& host,
@@ -62,6 +63,25 @@ namespace {
 }
 
 namespace simcore {
+    namespace {
+        std::string ps_cmp_to_string(PSCmp cmp) {
+            switch (cmp) {
+            case PSCmp::EQ: return "EQ";
+            case PSCmp::NE: return "NE";
+            case PSCmp::LT: return "LT";
+            case PSCmp::LE: return "LE";
+            case PSCmp::GT: return "GT";
+            case PSCmp::GE: return "GE";
+            default: return "?";
+            }
+        }
+
+        std::string key_desc(simcore::keys::KeyId key) {
+            const std::string_view name = simcore::keys::name_for_id(key);
+            if (!name.empty()) return std::string(name);
+            return std::to_string(static_cast<uint32_t>(key));
+        }
+    }
 
     PhaseScriptVM::PhaseScriptVM(simcore::DolphinWrapper& host, const BreakpointMap& bpmap)
         : host_(host), bpmap_(bpmap) {
@@ -480,7 +500,7 @@ namespace simcore {
         for (size_t vm_pc = 0; vm_pc < prog_.ops.size(); ++vm_pc) {
             wait_for_visual_debug_gate();
             const auto& op = prog_.ops[vm_pc];
-            SCLOGT("[VM] running op: %s", get_psop_name(op.code).c_str());
+            SCLOGT("[VM] running op: %s", get_psop_desc(op).c_str());
 
             switch (op.code) {
             case PSOpCode::ARM_PHASE_BPS_ONCE: if (!op_arm_phase_bps_once()) return R; break;
@@ -562,6 +582,62 @@ namespace simcore {
         default:
             return { "Unknown Code" };
         }
+    }
+
+    std::string get_psop_desc(const PSOp& op)
+    {
+        std::ostringstream args;
+        switch (op.code) {
+        case PSOpCode::READ_U8:
+        case PSOpCode::READ_U16:
+        case PSOpCode::READ_U32:
+        case PSOpCode::READ_F32:
+        case PSOpCode::READ_F64:
+            args << "addr=" << op.rd.addr << ", dst=" << key_desc(op.rd.dst);
+            break;
+        case PSOpCode::APPLY_INPUT_FROM:
+        case PSOpCode::SET_TIMEOUT_FROM:
+        case PSOpCode::MOVIE_PLAY_FROM:
+        case PSOpCode::SAVE_SAVESTATE_FROM:
+        case PSOpCode::REQUIRE_DISC_GAMEID_FROM:
+        case PSOpCode::GC_SLOT_A_SET_FROM:
+        case PSOpCode::EMIT_RESULT:
+        case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES:
+            args << "key=" << key_desc(op.key.id);
+            break;
+        case PSOpCode::STEP_FRAMES:
+            args << "n=" << op.step.n << ", disable_breakpoints=" << op.imm.v;
+            break;
+        case PSOpCode::SET_TIMEOUT:
+            args << "ms=" << op.imm.v;
+            break;
+        case PSOpCode::LABEL:
+            args << "name=" << op.label.name;
+            break;
+        case PSOpCode::GOTO:
+            args << "name=" << op.jmp.name;
+            break;
+        case PSOpCode::GOTO_IF:
+            args << "key=" << key_desc(op.jcc.key)
+                 << ", cmp=" << ps_cmp_to_string(op.jcc.cmp)
+                 << ", imm=" << op.jcc.imm
+                 << ", name=" << op.jcc.name;
+            break;
+        case PSOpCode::GOTO_IF_KEYS:
+            args << "left=" << key_desc(op.jcc2.left)
+                 << ", cmp=" << ps_cmp_to_string(op.jcc2.cmp)
+                 << ", right=" << key_desc(op.jcc2.right)
+                 << ", name=" << op.jcc2.name;
+            break;
+        case PSOpCode::RETURN_RESULT:
+        case PSOpCode::SET_U32:
+        case PSOpCode::ADD_U32:
+            args << "key=" << key_desc(op.keyimm.key) << ", imm=" << op.keyimm.imm;
+            break;
+        default:
+            break;
+        }
+        return get_psop_name(op.code) + ": [" + args.str() + "]";
     }
 
 } // namespace simcore
