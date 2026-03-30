@@ -551,6 +551,7 @@ namespace simcore {
             }
 
             const auto replay = *claimr.value;
+            visual_replay_cancel_requested_.store(false, std::memory_order_release);
             set_visual_runtime_state(VisualReplayRuntimeState::QueuedStartup, std::string("replay_id=") + std::to_string(replay.visual_replay_id));
             (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "CLAIMED", std::to_string(replay.job_id));
             if (visual_render_widget_handle_.load(std::memory_order_relaxed) == 0) {
@@ -684,6 +685,15 @@ namespace simcore {
                 visual_slot_.reset();
             }
             lk.unlock();
+            const bool cancelled = visual_replay_cancel_requested_.exchange(false, std::memory_order_acq_rel);
+            if (cancelled) {
+                set_visual_runtime_state(VisualReplayRuntimeState::Failed, "visual replay window closed");
+                (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "CANCELLED", "visual replay window closed");
+                (void)simcore::db::VisualReplayRepo::MarkFailed(replay.visual_replay_id, "visual replay window closed");
+                set_visual_runtime_state(VisualReplayRuntimeState::Idle);
+                visual_slot_cv_.notify_all();
+                continue;
+            }
             (void)simcore::db::VisualReplayEventsRepo::Append(replay.visual_replay_id, "COMPLETE", std::nullopt);
             const auto state_after = visual_runtime_state_.load(std::memory_order_acquire);
             if (state_after != VisualReplayRuntimeState::Failed) {
@@ -846,6 +856,18 @@ namespace simcore {
         std::lock_guard<std::mutex> lock(visual_slot_mtx_);
         if (!visual_slot_ || !visual_slot_->proc) return false;
         return visual_slot_->proc->visual_step_vm();
+    }
+
+    bool WorkerCoordinator::StopVisualReplay() {
+        std::lock_guard<std::mutex> lock(visual_slot_mtx_);
+        if (!visual_slot_) return false;
+
+        visual_replay_cancel_requested_.store(true, std::memory_order_release);
+        set_visual_runtime_state(VisualReplayRuntimeState::Stopping, "visual replay window closed");
+        shutdown_slot(*visual_slot_);
+        visual_slot_.reset();
+        visual_slot_cv_.notify_all();
+        return true;
     }
 
     // Worker Status Fxns

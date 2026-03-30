@@ -53,6 +53,7 @@ public slots:
     void pauseVisualReplayEmulation();
     void stepVisualReplayVm();
     void resumeVisualReplayEmulation();
+    void stopVisualReplay();
     void handleVisualLiveLogLinesRequested();
     void refreshSnapshot();
 

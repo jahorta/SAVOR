@@ -71,6 +71,7 @@ namespace simcore {
         bool PauseVisualReplayEmulation();
         bool ResumeVisualReplayEmulation();
         bool StepVisualReplayVm();
+        bool StopVisualReplay();
         bool is_paused() const { return paused_.load(); }
 
     private:
@@ -166,6 +167,7 @@ namespace simcore {
         std::deque<std::string> visual_log_tail_;
         std::thread visual_log_thread_;
         std::atomic<bool> visual_log_stop_{ false };
+        std::atomic<bool> visual_replay_cancel_requested_{ false };
         std::atomic<VisualReplayRuntimeState> visual_runtime_state_{ VisualReplayRuntimeState::Idle };
         mutable std::mutex visual_runtime_detail_mtx_;
         std::string visual_runtime_detail_;

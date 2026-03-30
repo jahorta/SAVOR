@@ -236,6 +236,9 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
         connect(visualReplayDialog_, &QDialog::finished, this, [this](int) {
             visualReplayDialog_->stopLiveLogStreaming();
             visualReplayDialog_->stopHostEventsListener();
+            controller_->stopVisualReplay();
+            controller_->setVisualRenderWidgetHandle(0);
+            controller_->setVisualHostEventsPipeName(QString());
         });
         connect(visualReplayDialog_, &VisualReplayDialog::pauseRequested, controller_, &CoordinatorController::pauseVisualReplayEmulation);
         connect(visualReplayDialog_, &VisualReplayDialog::vmStepRequested, controller_, &CoordinatorController::stepVisualReplayVm);
