@@ -298,6 +298,12 @@ void CoordinatorController::resumeVisualReplayEmulation()
     (void)coordinator_->ResumeVisualReplayEmulation();
 }
 
+void CoordinatorController::stopVisualReplay()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->StopVisualReplay();
+}
+
 void CoordinatorController::handleVisualLiveLogLinesRequested()
 {
     const QStringList lines = takeVisualLiveLogLineUpdates();
