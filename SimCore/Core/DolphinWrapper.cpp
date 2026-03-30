@@ -1566,8 +1566,14 @@ namespace simcore {
 
     void DolphinWrapper::sterilizeConfigs()
     {
-        SCLOGT("Setting GFX Backend to Null.");
-        Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
+        if (m_visual_mode) {
+            SCLOGT("Setting GFX Backend to D3D11.");
+            Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("D3D"));
+        }
+        else {
+            SCLOGT("Setting GFX Backend to Null.");
+            Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
+        }
 
         SCLOGT("Turning off background input.");
         Config::SetCurrent(Config::MAIN_INPUT_BACKGROUND_INPUT, false);
