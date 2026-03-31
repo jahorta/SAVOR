@@ -37,7 +37,7 @@ signals:
 private:
     void createWidgets();
     void wireSignals();
-    void syncControlsFromController();
+    void syncControlsFromController(bool syncAll = false);
     void refreshModel();
     void updateInspector();
     void updateStatusWidgets();

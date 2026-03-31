@@ -62,6 +62,7 @@ JobsPage::JobsPage(QWidget* parent)
 {
     createWidgets();
     wireSignals();
+    syncControlsFromController(true);
     controller_->loadInitial();
 }
 
@@ -230,7 +231,7 @@ QTextEdit* JobsPage::createReadOnlyTextEdit()
 void JobsPage::wireSignals()
 {
     connect(controller_, &JobsController::stateChanged, this, [this]() {
-        syncControlsFromController();
+        syncControlsFromController(false);
         refreshModel();
         updateInspector();
         updateStatusWidgets();
@@ -238,7 +239,10 @@ void JobsPage::wireSignals()
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
         controller_->applyFilters(selectedProgramKind(), selectedState(), selectedJobSetId(), pageSizeSpin_->value());
     });
-    connect(resetButton_, &QPushButton::clicked, controller_, &JobsController::resetFilters);
+    connect(resetButton_, &QPushButton::clicked, this, [this]() {
+        controller_->resetFilters();
+        syncControlsFromController(true);
+    });
     connect(refreshButton_, &QPushButton::clicked, controller_, &JobsController::requestRefresh);
     connect(prevButton_, &QPushButton::clicked, controller_, &JobsController::requestPreviousPage);
     connect(nextButton_, &QPushButton::clicked, controller_, &JobsController::requestNextPage);
@@ -319,28 +323,39 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     }
 }
 
-void JobsPage::syncControlsFromController()
+void JobsPage::syncControlsFromController(bool syncAll)
 {
     const auto& state = controller_->viewState();
     {
         QSignalBlocker blocker(kindFilter_);
-        const QVariant currentData = state.scope.program_kind.has_value() ? QVariant(*state.scope.program_kind) : QVariant();
-        kindFilter_->clear(); kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
-        QList<int> ids = state.programNames.keys(); std::sort(ids.begin(), ids.end());
-        for (int id : ids) kindFilter_->addItem(state.programNames.value(id), id);
-        const int idx = currentData.isValid() ? kindFilter_->findData(currentData) : 0;
+        QVariant targetData = kindFilter_->currentData();
+        if (syncAll || !targetData.isValid()) {
+            targetData = state.scope.program_kind.has_value() ? QVariant(*state.scope.program_kind) : QVariant();
+        }
+
+        kindFilter_->clear();
+        kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
+        QList<int> ids = state.programNames.keys();
+        std::sort(ids.begin(), ids.end());
+        for (int id : ids) {
+            kindFilter_->addItem(state.programNames.value(id), id);
+        }
+        const int idx = targetData.isValid() ? kindFilter_->findData(targetData) : 0;
         kindFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
     }
-    {
-        QSignalBlocker blocker(stateFilter_);
-        const QVariant target = !state.scope.states.empty() ? QVariant(QString::fromStdString(state.scope.states.front())) : QVariant();
-        const int idx = target.isValid() ? stateFilter_->findData(target) : 0;
-        stateFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
+
+    if (syncAll) {
+        {
+            QSignalBlocker blocker(stateFilter_);
+            const QVariant target = !state.scope.states.empty() ? QVariant(QString::fromStdString(state.scope.states.front())) : QVariant();
+            const int idx = target.isValid() ? stateFilter_->findData(target) : 0;
+            stateFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
+        }
+        { QSignalBlocker blocker(jobSetFilter_); jobSetFilter_->setText(state.scope.job_set_id.has_value() ? QString::number(*state.scope.job_set_id) : QString()); }
+        { QSignalBlocker blocker(pageSizeSpin_); pageSizeSpin_->setValue(state.pageLimit); }
+        { QSignalBlocker blocker(autoRefreshCheck_); autoRefreshCheck_->setChecked(state.autoRefresh); }
+        { QSignalBlocker blocker(refreshSecondsSpin_); refreshSecondsSpin_->setValue(state.refreshSeconds); }
     }
-    { QSignalBlocker blocker(jobSetFilter_); jobSetFilter_->setText(state.scope.job_set_id.has_value() ? QString::number(*state.scope.job_set_id) : QString()); }
-    { QSignalBlocker blocker(pageSizeSpin_); pageSizeSpin_->setValue(state.pageLimit); }
-    { QSignalBlocker blocker(autoRefreshCheck_); autoRefreshCheck_->setChecked(state.autoRefresh); }
-    { QSignalBlocker blocker(refreshSecondsSpin_); refreshSecondsSpin_->setValue(state.refreshSeconds); }
 
     const bool enabled = !state.actionsBusy;
     prevButton_->setEnabled(state.page.prev.has_value() && enabled);
