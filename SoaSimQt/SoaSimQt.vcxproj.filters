@@ -197,6 +197,9 @@
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="main.cpp">
       <Filter>Main</Filter>
     </ClCompile>
@@ -340,6 +343,9 @@
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
