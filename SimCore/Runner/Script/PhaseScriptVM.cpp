@@ -318,6 +318,9 @@ namespace simcore {
         const uint32_t count = *(const uint32_t*)(counts);
         simcore::InputPlan applied_plan{}; applied_plan.reserve(count);
         std::vector<uint32_t> vi_durations{}; vi_durations.reserve(count);
+        uint32_t rand{ 0 };
+        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG before inputs %X", rand);
         for (idx = 0; idx < count; idx++) {
             wait_for_visual_debug_gate();
             GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
@@ -328,6 +331,8 @@ namespace simcore {
             const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
             vi_durations.push_back((vi_after >= vi_before) ? (vi_after - vi_before) : 0u);
         }
+        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG after inputs %X", rand);
         host_.setEnableAllBreakpoints(true);
         const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         uint32_t turn_number = 0;
