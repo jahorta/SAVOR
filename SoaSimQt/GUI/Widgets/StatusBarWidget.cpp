@@ -7,11 +7,14 @@
 #include <QtWidgets/QHBoxLayout>
 #include <utility>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QStyle>
 
 namespace {
 constexpr int kDefaultToastTtlMs = 4000;
 constexpr int kValidationToastTtlMs = 5000;
+constexpr int kMinValidToastHostWidthPx = 80;
+constexpr int kFallbackToastWidthFloorPx = 240;
 
 QString toastVariant(StatusToast::Severity severity)
 {
@@ -88,13 +91,13 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
 
     coordinatorBadge_ = createBadge(QString(), QStringLiteral("stopped"));
     layout->addWidget(coordinatorBadge_);
-    layout->addStretch();
 
     toastHost_ = new QWidget(this);
+    toastHost_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toastLayout_ = new QHBoxLayout(toastHost_);
     toastLayout_->setContentsMargins(0, 0, 0, 0);
     toastLayout_->setSpacing(8);
-    layout->addWidget(toastHost_);
+    layout->addWidget(toastHost_, 1);
 
     setSnapshot(StatusBarSnapshot{});
 }
@@ -349,6 +352,11 @@ void StatusBarWidget::reconcileVisibleToastsWithWidth()
         visibleToasts_.append(queuedToasts_.takeFirst());
     }
 
+    // Keep one toast visible on cramped layouts so newly queued messages still surface.
+    if (visibleToasts_.isEmpty() && !queuedToasts_.isEmpty() && availableWidth > 0) {
+        visibleToasts_.append(queuedToasts_.takeFirst());
+    }
+
     while (!visibleToasts_.isEmpty()) {
         int totalWidth = 0;
         for (int i = 0; i < visibleToasts_.size(); ++i) {
@@ -359,6 +367,10 @@ void StatusBarWidget::reconcileVisibleToastsWithWidth()
         }
 
         if (totalWidth <= availableWidth) {
+            break;
+        }
+
+        if (visibleToasts_.size() == 1) {
             break;
         }
 
@@ -395,11 +407,12 @@ int StatusBarWidget::toastWidth(const StatusToast& toast) const
 int StatusBarWidget::availableToastWidth() const
 {
     const int hostWidth = toastHost_->contentsRect().width();
-    if (hostWidth > 0) {
+    if (hostWidth >= kMinValidToastHostWidthPx) {
         return hostWidth;
     }
 
-    return qMax(0, contentsRect().width() / 2);
+    const int fallbackWidth = qMax(kFallbackToastWidthFloorPx, contentsRect().width() / 3);
+    return qMax(0, fallbackWidth);
 }
 
 bool StatusBarWidget::hasDuplicateMessage(const QString& message) const
