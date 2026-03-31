@@ -19,5 +19,7 @@ public:
     void setArtifacts(const std::vector<simcore::db::ArtifactRefLite>& artifacts);
 
 private:
+    static bool artifactAffectsDisplay(const simcore::db::ArtifactRefLite& lhs, const simcore::db::ArtifactRefLite& rhs);
+
     std::vector<simcore::db::ArtifactRefLite> artifacts_;
 };
