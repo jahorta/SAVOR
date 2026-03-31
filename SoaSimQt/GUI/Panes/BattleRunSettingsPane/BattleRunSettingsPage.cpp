@@ -4,7 +4,6 @@
 #include "DB/AddressProgramRepo.h"
 #include "DB/DBCore/ObjectStore.h"
 #include "DB/ProgramDB/BattleContextDBCodec.h"
-#include "DB/SavestateRepo.h"
 #include "Phases/BattleExplorer.h"
 #include "Phases/Programs/BattleRunner/BattleRunnerDBSettingsWriter.h"
 #include "Runner/Breakpoints/BPRegistry.h"
@@ -60,7 +59,6 @@ using simcore::db::ObjectStore;
 using simcore::db::PredicateSpecLite;
 using simcore::db::PredicateSpecRepo;
 using simcore::db::PredicateSpecRow;
-using simcore::db::SavestateLite;
 using simcore::db::SeedProbeLite;
 using simcore::db::TurnActionPresetLite;
 using simcore::db::TurnActionPresetRepo;
@@ -307,15 +305,13 @@ void BattleRunSettingsPage::createWidgets()
         contextTree_->setMinimumHeight(220);
         cardLayout->addWidget(contextTree_);
         QGridLayout* grid = new QGridLayout();
-        pickSavestateButton_ = new QPushButton(QStringLiteral("Pick Savestate…"), card);
         pickSeedProbeButton_ = new QPushButton(QStringLiteral("Pick Seed Probe…"), card);
         clearContextButton_ = new QPushButton(QStringLiteral("Clear Context"), card);
         getContextButton_ = new QPushButton(QStringLiteral("Get Context Update"), card);
-        for (QPushButton* button : { pickSavestateButton_, pickSeedProbeButton_, clearContextButton_, getContextButton_ }) {
+        for (QPushButton* button : { pickSeedProbeButton_, clearContextButton_, getContextButton_ }) {
             button->setObjectName("jobsSecondaryButton");
         }
-        grid->addWidget(pickSavestateButton_, 0, 0);
-        grid->addWidget(pickSeedProbeButton_, 0, 1);
+        grid->addWidget(pickSeedProbeButton_, 0, 0);
         grid->addWidget(getContextButton_, 1, 0);
         grid->addWidget(clearContextButton_, 1, 1);
         cardLayout->addLayout(grid);
@@ -436,7 +432,6 @@ void BattleRunSettingsPage::wireSignals()
         }
     });
 
-    connect(pickSavestateButton_, &QPushButton::clicked, this, [this]() { openSavestatePicker(); });
     connect(pickSeedProbeButton_, &QPushButton::clicked, this, [this]() { openSeedProbePicker(); });
     connect(clearContextButton_, &QPushButton::clicked, this, [this]() { clearBattleContext(); });
     connect(getContextButton_, &QPushButton::clicked, this, [this]() { requestFreshBattleContext(); });
@@ -1070,37 +1065,13 @@ bool BattleRunSettingsPage::allSlotsFilled() const
     return true;
 }
 
-void BattleRunSettingsPage::openSavestatePicker()
-{
-    LedgerPickerDialog<SavestateLite> dialog(
-        QStringLiteral("Pick Savestate"),
-        { { QStringLiteral("ID"), [](const SavestateLite& row) { return QString::number(row.id); } },
-          { QStringLiteral("Type"), [](const SavestateLite& row) { return QString::number(row.savestate_type); } },
-          { QStringLiteral("Filename"), [](const SavestateLite& row) { return QString::fromStdString(row.filename); } },
-          { QStringLiteral("Note"), [](const SavestateLite& row) { return QString::fromStdString(row.note); }, 2 } },
-        [](const PagedQuery<>& query, const QString& search) {
-            return DataService::FetchSavestatesPage(query, search.toStdString()).get();
-        },
-        [](const SavestateLite& row) { return static_cast<qint64>(row.id); },
-        [](const SavestateLite& row) {
-            return QStringLiteral("Savestate %1 · type %2 · %3%4")
-                .arg(row.id)
-                .arg(row.savestate_type)
-                .arg(QString::fromStdString(row.note))
-                .arg(row.filename.empty() ? QString{} : QStringLiteral(" · file %1").arg(QString::fromStdString(row.filename)));
-        },
-        this);
-    if (dialog.exec() == QDialog::Accepted && dialog.selectedId() > 0) {
-        requestBattleContextForSavestate(dialog.selectedId());
-    }
-}
-
 void BattleRunSettingsPage::openSeedProbePicker()
 {
     LedgerPickerDialog<SeedProbeLite> dialog(
         QStringLiteral("Pick SeedProbe"),
         { { QStringLiteral("ID"), [](const SeedProbeLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Savestate"), [](const SeedProbeLite& row) { return QString::number(row.savestate_id); } },
+          { QStringLiteral("BattleContext"), [](const SeedProbeLite& row) { return row.has_battle_context ? QStringLiteral("Yes") : QStringLiteral("No"); } },
           { QStringLiteral("Status"), [](const SeedProbeLite& row) { return QString::fromStdString(row.status); } },
           { QStringLiteral("Purpose"), [](const SeedProbeLite& row) { return QString::fromStdString(row.purpose); }, 2 } },
         [](const PagedQuery<>& query, const QString& search) {

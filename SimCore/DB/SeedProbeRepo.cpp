@@ -183,7 +183,8 @@ namespace simcore {
                 "     OR NOT EXISTS (SELECT 1 FROM job_sets parent WHERE parent.job_set_id = c.parent_job_set_id) "
                 "  LIMIT 1"
                 "),''),"
-                "p.complete "
+                "p.complete,"
+                "EXISTS(SELECT 1 FROM battle_contexts bc WHERE bc.savestate_id = p.savestate_id) "
                 "FROM seed_probe p ";
             std::string where;
             if (only_done) { where += (where.empty() ? "WHERE " : " AND "); where += "p.status='done'"; }
@@ -226,6 +227,7 @@ namespace simcore {
                 r.status = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
                 r.purpose = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
                 r.complete = sqlite3_column_int(st, 5);
+                r.has_battle_context = sqlite3_column_int(st, 6) != 0;
                 page.items.push_back(std::move(r));
             }
             sqlite3_finalize(st);
