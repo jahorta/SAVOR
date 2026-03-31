@@ -1071,9 +1071,10 @@ void BattleRunSettingsPage::openSeedProbePicker()
         QStringLiteral("Pick SeedProbe"),
         { { QStringLiteral("ID"), [](const SeedProbeLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Savestate"), [](const SeedProbeLite& row) { return QString::number(row.savestate_id); } },
-          { QStringLiteral("BattleContext"), [](const SeedProbeLite& row) { return row.has_battle_context ? QStringLiteral("Yes") : QStringLiteral("No"); } },
           { QStringLiteral("Status"), [](const SeedProbeLite& row) { return QString::fromStdString(row.status); } },
-          { QStringLiteral("Purpose"), [](const SeedProbeLite& row) { return QString::fromStdString(row.purpose); }, 2 } },
+          { QStringLiteral("Purpose"), [](const SeedProbeLite& row) { return QString::fromStdString(row.purpose); } },
+          { QStringLiteral("BattleContext"), [](const SeedProbeLite& row) { return row.has_battle_context ? QStringLiteral("Yes") : QStringLiteral("No"); }, 2 }
+        },
         [](const PagedQuery<>& query, const QString& search) {
             return DataService::FetchSeedProbesPage(query, search.toStdString(), true).get();
         },
