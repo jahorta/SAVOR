@@ -635,7 +635,11 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
 }
 
 
-DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable, std::optional<uint32_t> additional_fake_attacks) {
+DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
+    int64_t source_job_id,
+    bool auto_wave_trigger_enable,
+    std::optional<uint32_t> additional_fake_attacks,
+    bool force_create_jobs) {
     auto jr = simcore::db::JobsRepo::Get(source_job_id);
     if (!jr.ok) return DbResult<int64_t>::Err(jr.error);
     if (!jr.value.vm_kv.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
@@ -720,7 +724,11 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
         for (uint32_t fake = needed_to_reach_min; fake <= remaining; ++fake) {
             nj.fake_attacks_this_turn = fake;
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
-            const std::string fp = hash::sha256(vm.data(), vm.size());
+            std::string fp_input = vm;
+            if (force_create_jobs) {
+                fp_input.append(std::format(":force:{}:{}:{}:{}", source_job_id, js.value, pl.plan_id, fake));
+            }
+            const std::string fp = hash::sha256(fp_input.data(), fp_input.size());
             auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id, source_job_id);
             if (!cj.ok) continue;
             (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");

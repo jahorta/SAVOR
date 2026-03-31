@@ -778,7 +778,11 @@ void ExplorerRunsPage::triggerNextWave()
         overrideValue = static_cast<quint32>(state_.maxFakeAttacksOverride);
     }
 
-    const auto result = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(state_.selectedJob, false, overrideValue);
+    const auto result = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
+        state_.selectedJob,
+        false,
+        overrideValue,
+        true);
     if (result.ok) {
         setStatusMessage(QStringLiteral("Queued next wave job set %1.").arg(result.value));
         coordinator_->requestGroupsRefresh();
