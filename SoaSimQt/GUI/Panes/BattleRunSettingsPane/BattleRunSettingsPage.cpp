@@ -967,6 +967,7 @@ void BattleRunSettingsPage::validateGridAgainstContext()
 {
     invalidCells_.clear();
     invalidReasons_.clear();
+    QString presetLookupError;
     if (!hasContext_) {
         return;
     }
@@ -997,6 +998,11 @@ void BattleRunSettingsPage::validateGridAgainstContext()
             } else {
                 const auto result = TurnActionPresetRepo::Get(instance.presetId);
                 if (!result.ok) {
+                    if (presetLookupError.isEmpty()) {
+                        presetLookupError = QStringLiteral("Failed to validate preset %1: %2")
+                                                .arg(instance.presetId)
+                                                .arg(QString::fromStdString(result.error.message));
+                    }
                     continue;
                 }
                 preset = result.value;
@@ -1047,6 +1053,10 @@ void BattleRunSettingsPage::validateGridAgainstContext()
                 }
             }
         }
+    }
+
+    if (!presetLookupError.isEmpty()) {
+        setErrorMessage(presetLookupError);
     }
 }
 
@@ -1173,6 +1183,10 @@ void BattleRunSettingsPage::openAddPresetDialog(std::optional<std::pair<int, int
         const auto result = TurnActionPresetRepo::Get(initialPresetId.value());
         if (result.ok) {
             dialog.loadRow(result.value);
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load UI action preset %1: %2")
+                                .arg(initialPresetId.value())
+                                .arg(QString::fromStdString(result.error.message)));
         }
     }
     if (dialog.exec() != QDialog::Accepted) {
@@ -1212,6 +1226,10 @@ void BattleRunSettingsPage::openAddPresetDialog(std::optional<std::pair<int, int
     const auto reload = TurnActionPresetRepo::Get(presetId);
     if (reload.ok) {
         presetCache_.insert(presetId, reload.value);
+    } else {
+        setErrorMessage(QStringLiteral("Saved UI action preset %1, but failed to reload it: %2")
+                            .arg(presetId)
+                            .arg(QString::fromStdString(reload.error.message)));
     }
 
     if (targetCell.has_value()) {
@@ -1227,6 +1245,10 @@ void BattleRunSettingsPage::openAddPredicateDialog(std::optional<int> editIndex,
         const auto result = PredicateSpecRepo::Get(initialPredicateId.value());
         if (result.ok) {
             dialog.loadRow(result.value);
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load predicate %1: %2")
+                                .arg(initialPredicateId.value())
+                                .arg(QString::fromStdString(result.error.message)));
         }
     }
     if (dialog.exec() != QDialog::Accepted) {
@@ -1357,6 +1379,12 @@ void BattleRunSettingsPage::loadAuthoringTemplate(qint64 templateId)
             uiConfig_.actions[uiRow.turn_index][uiRow.actor_slot].actorSlot = static_cast<quint32>(uiRow.actor_slot);
             uiConfig_.actions[uiRow.turn_index][uiRow.actor_slot].presetId = uiRow.preset_id;
         }
+    } else {
+        setErrorMessage(QStringLiteral("Failed to load UI config rows for template %1: %2")
+                            .arg(templateId)
+                            .arg(QString::fromStdString(uiRowsResult.error.message)));
+        refreshInlineMessage();
+        return;
     }
 
     predicates_.clear();
@@ -1365,6 +1393,13 @@ void BattleRunSettingsPage::loadAuthoringTemplate(qint64 templateId)
         if (predResult.ok) {
             predicateRowCache_.insert(predicateId, predResult.value);
             predicates_.push_back({ predicateId, QString::fromStdString(predResult.value.name), QString::fromStdString(predResult.value.description) });
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load predicate %1 from template %2: %3")
+                                .arg(predicateId)
+                                .arg(templateId)
+                                .arg(QString::fromStdString(predResult.error.message)));
+            refreshInlineMessage();
+            return;
         }
     }
 
@@ -1395,7 +1430,9 @@ bool BattleRunSettingsPage::buildUiConfigFromDraft(simcore::battleexplorer::UI_C
                 const auto result = TurnActionPresetRepo::Get(instance.presetId);
                 if (!result.ok) {
                     if (errorMessage) {
-                        *errorMessage = QStringLiteral("Failed to resolve preset %1.").arg(instance.presetId);
+                        *errorMessage = QStringLiteral("Failed to resolve preset %1: %2")
+                                            .arg(instance.presetId)
+                                            .arg(QString::fromStdString(result.error.message));
                     }
                     return false;
                 }
@@ -1508,7 +1545,9 @@ void BattleRunSettingsPage::saveExplorerSettings()
     for (const PredicateDraft& predicate : predicates_) {
         auto result = PredicateSpecRepo::Get(predicate.predicateId);
         if (!result.ok) {
-            setErrorMessage(QStringLiteral("Failed to reload predicate %1.").arg(predicate.predicateId));
+            setErrorMessage(QStringLiteral("Failed to reload predicate %1: %2")
+                                .arg(predicate.predicateId)
+                                .arg(QString::fromStdString(result.error.message)));
             refreshInlineMessage();
             return;
         }
@@ -1676,7 +1715,8 @@ void BattleRunSettingsPage::postStatusToast(const QString& text, bool error, con
     }
 
     const StatusToast::Severity severity = error ? StatusToast::Severity::Error : StatusToast::Severity::Info;
-    if (lastToastMessage_ == text && lastToastSeverity_ == severity) {
+    const bool isDuplicate = (lastToastMessage_ == text && lastToastSeverity_ == severity);
+    if (!error && isDuplicate) {
         return;
     }
 
