@@ -726,7 +726,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
             std::string fp_input = vm;
             if (force_create_jobs) {
-                fp_input.append(std::format(":force:{}:{}:{}:{}", source_job_id, js.value, pl.plan_id, fake));
+                fp_input.append(std::format(":force:{}", js.value));
             }
             const std::string fp = hash::sha256(fp_input.data(), fp_input.size());
             auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id, source_job_id);
