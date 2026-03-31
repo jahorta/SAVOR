@@ -61,22 +61,22 @@ namespace simcore {
                 GCInputFrame f{};
                 { std::lock_guard<std::mutex> lk(m_mtx); f = m_cur; }
 
+                auto is = [&](uint16_t bit) { return (f.buttons & bit) ? 1.0 : 0.0; };
                 // Buttons group
                 if (group == "Buttons") {
-                    auto is = [&](uint16_t bit) { return (f.buttons & bit) ? 1.0 : 0.0; };
                     if (control == "A")            return is(PAD_BUTTON_A);
                     if (control == "B")            return is(PAD_BUTTON_B);
                     if (control == "X")            return is(PAD_BUTTON_X);
                     if (control == "Y")            return is(PAD_BUTTON_Y);
                     if (control == "Z")            return is(PAD_TRIGGER_Z);
                     if (control == "Start")        return is(PAD_BUTTON_START);
-                    if (control == "D-Pad Up")     return is(PAD_BUTTON_UP);
-                    if (control == "D-Pad Down")   return is(PAD_BUTTON_DOWN);
-                    if (control == "D-Pad Left")   return is(PAD_BUTTON_LEFT);
-                    if (control == "D-Pad Right")  return is(PAD_BUTTON_RIGHT);
-                    // Some configs expose L/R digitals under Buttons too:
-                    if (control == "L")            return is(PAD_TRIGGER_L);
-                    if (control == "R")            return is(PAD_TRIGGER_R);
+                }
+
+                if (group == "D-Pad") {
+                    if (control == "Up")     return is(PAD_BUTTON_UP);
+                    if (control == "Down")   return is(PAD_BUTTON_DOWN);
+                    if (control == "Left")   return is(PAD_BUTTON_LEFT);
+                    if (control == "Right")  return is(PAD_BUTTON_RIGHT);
                 }
 
                 // Main stick
