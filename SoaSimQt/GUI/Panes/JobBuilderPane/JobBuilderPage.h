@@ -7,6 +7,10 @@
 #include <QtCore/QString>
 #include <QtCore/QVector>
 #include <QtWidgets/QWidget>
+#include <QtWidgets/QFrame>
+#include <QtWidgets/QScrollArea>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QListWidget>
 
 #include "GUI/Common/StatusToast.h"
 #include "DB/DeltaSeedRepo.h"

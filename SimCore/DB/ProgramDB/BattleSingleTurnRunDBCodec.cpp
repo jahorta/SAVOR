@@ -539,7 +539,7 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
 
-    if (ctx.prev_program_kind == PK_SeedProbe) {
+    if (ctx.prev_program_kind == (uint32_t)simcore::PK_SeedProbe) {
         auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
         if (!plans.ok) return DbResult<void>::Err(plans.error);
         if (plans.value.empty()) {

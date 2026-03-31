@@ -271,6 +271,12 @@
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
@@ -348,9 +354,6 @@
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClInclude>
@@ -358,9 +361,6 @@
       <Filter>GUI\Panes\JobSets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h">
-      <Filter>GUI\Panes\SeedProbe</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h">

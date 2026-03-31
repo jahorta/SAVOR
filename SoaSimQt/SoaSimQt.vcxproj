@@ -195,14 +195,14 @@
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
     <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h" />
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h" />
-    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbePage.h" />
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h" />
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
