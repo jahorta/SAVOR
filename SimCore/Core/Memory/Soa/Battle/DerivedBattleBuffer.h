@@ -142,14 +142,17 @@ namespace simcore {
             uint64_t flags = 0; read_key(HeaderFlags, 4, flags);
             flags |= DBUF_FLAG_VALID; write_u32(HeaderFlags, (uint32_t)flags);
             
-            if (hit_bp == (uint32_t)bp::battle::TurnIsReady) {
+            if (hit_bp == (uint32_t)bp::battle::TurnIsReady) 
+            {
                 update_turn_order_indices(host);
                 rebuild_inventory_table(host);
 
                 uint64_t cur; read_key(CurrentTurn, 4, cur);
                 write_u16(HeaderLastUpdateTurn, (uint16_t)cur);
             }
-            if (hit_bp == (uint32_t)bp::battle::EndTurn) {
+            if (hit_bp == (uint32_t)bp::battle::EndTurn 
+                || hit_bp == (uint32_t)bp::battle::EndBattleVictory)
+            {
                 fold_enemy_drops_into_table(host);
                 uint64_t cur; read_key(CurrentTurn, 4, cur);
                 write_u16(HeaderLastUpdateTurn, (uint16_t)cur);
