@@ -16,9 +16,9 @@ namespace simcore {
             sqlite3_stmt* sel{};
             int rc = sqlite3_prepare_v2(db,
                 "SELECT id FROM address_program WHERE program_version=? AND prog_bytes=? AND "
-                "COALESCE(derived_buffer_version,0)=COALESCE(?1,0) AND "
-                "COALESCE(derived_buffer_schema_hash,'')=COALESCE(?2,'') AND "
-                "COALESCE(soa_structs_hash,'')=COALESCE(?3,'') "
+                "COALESCE(derived_buffer_version,0)=COALESCE(?3,0) AND "
+                "COALESCE(derived_buffer_schema_hash,'')=COALESCE(?4,'') AND "
+                "COALESCE(soa_structs_hash,'')=COALESCE(?5,'') "
                 "LIMIT 1;", -1, &sel, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare sel" });
 
