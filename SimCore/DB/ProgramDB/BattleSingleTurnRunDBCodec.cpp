@@ -23,6 +23,7 @@
 #include "../ExplorerSettingsRepo.h"
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
+#include "SeedProbeDBCodec.h"
 #include "../SavestateRepo.h"
 #include "../DBCore/ObjectStore.h"
 
@@ -35,6 +36,7 @@
 #include "../Querying/DataService.h"
 
 using BRBp = simcore::db::codec::battle::run::BlueprintIni;
+using SeedProbeBp = simcore::db::codec::seedprobe::BlueprintIni;
 using STJob = simcore::db::codec::battle::singleturn::JobIni;
 using STRes = simcore::db::codec::battle::singleturn::ResultsIni;
 using STWave = simcore::db::codec::battle::singleturn::WaveIni;
@@ -536,6 +538,36 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     IniDoc ini = IniDoc::parse(action_args_ini);
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
+
+    if (ctx.prev_program_kind == PK_SeedProbe) {
+        auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
+        if (!plans.ok) return DbResult<void>::Err(plans.error);
+        if (plans.value.empty()) {
+            return DbResult<void>::Err({ DbErrorKind::NotFound, 0,
+                "No plans found for setting_id=" + std::to_string(bp.settings_id) });
+        }
+
+        SeedProbeBp spbp = SeedProbeBp::from_section(ini);
+        auto unique_count = simcore::db::DeltaSeedRepo::ListUniqueForProbe(spbp.probe_id);
+        if (!unique_count.ok) return DbResult<void>::Err(unique_count.error);
+        if (unique_count.value.empty()) {
+            return DbResult<void>::Err({ DbErrorKind::NotFound, 0,
+                "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) });
+        }
+
+        auto crt = simcore::db::JobSetsRepo::Create("BattleRun", kPK, std::nullopt, std::nullopt, std::nullopt, "",
+            plans.value.size() * unique_count.value.size());
+        if (!crt.ok) return DbResult<void>::Err(crt.error);
+
+        bp.seed_probe_id = spbp.probe_id;
+        bp.set_section(ini);
+        wave.cur_turn = 1;
+        wave.set_section(ini);
+
+        auto enc = encode_job_into_db(crt.value, ini.to_string_sorted());
+        if (!enc.ok) return DbResult<void>::Err(enc.error);
+        return DbResult<void>::Ok();
+    }
 
     auto results = simcore::db::JobEventsRepo::ListByJobSetTreeAndKind(ctx.prev_job_set_id, "RESULTS");
     if (!results.ok) return DbResult<void>::Err(results.error);

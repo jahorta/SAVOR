@@ -27,9 +27,9 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
 class QSplitter;
-class QStackedWidget;
 class QTreeWidget;
 
 class JobBuilderPage final : public QWidget
@@ -59,6 +59,7 @@ private:
     void wireSignals();
     void loadProgramKinds();
     void handleKindSelectionChanged();
+    void updateFormVisibility();
     void loadDefaultsForSelectedKind();
     void syncWidgetsFromIni();
     void syncIniFromWidgets();
@@ -119,9 +120,11 @@ private:
     QPushButton* validateButton_ = nullptr;
     QPushButton* previewButton_ = nullptr;
     QSplitter* splitLayout_ = nullptr;
-    QStackedWidget* formStack_ = nullptr;
+    QScrollArea* formsScrollArea_ = nullptr;
 
+    QWidget* battleContextForm_ = nullptr;
     QWidget* seedProbeForm_ = nullptr;
+    QFrame* seedProbeGeneralCard_ = nullptr;
     QLabel* savestateSummaryLabel_ = nullptr;
     QPushButton* pickSavestateButton_ = nullptr;
     QSpinBox* seedProbePrioritySpin_ = nullptr;
@@ -135,6 +138,7 @@ private:
     QCheckBox* seedProbeIgnoreTriggerCheck_ = nullptr;
     QSpinBox* seedProbeComboAttemptsSpin_ = nullptr;
     QSpinBox* seedProbeComboSamplerTriesSpin_ = nullptr;
+    QCheckBox* seedProbeAutoBattleCheck_ = nullptr;
 
     QWidget* tasMovieForm_ = nullptr;
     QLabel* artifactSummaryLabel_ = nullptr;
@@ -158,6 +162,7 @@ private:
     QPushButton* useAllDeltasButton_ = nullptr;
     QPushButton* selectAllDeltasButton_ = nullptr;
     QTreeWidget* deltaTree_ = nullptr;
+    QFrame* explorerDeltaCard_ = nullptr;
     QSpinBox* explorerPrioritySpin_ = nullptr;
     QSpinBox* explorerRunMsSpin_ = nullptr;
     QSpinBox* explorerViMsSpin_ = nullptr;

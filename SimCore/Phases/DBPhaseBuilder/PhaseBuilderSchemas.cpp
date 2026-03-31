@@ -23,6 +23,21 @@ namespace simcore::db::phasebuilder {
         bp.progress_enable = true;
         bp.auto_queue_seeds = false;
         bp.set_section(doc);
+
+        SPBp sp = SPBp::from_section(DefaultSeedProbe());
+        sp.cur_phase = SeedProbePhase::None;
+        sp.probe_id = -1;
+        sp.savestate_id = -1;
+        sp.set_section(doc);
+
+        SPGrid grid = SPGrid::from_section(DefaultSeedProbe());
+        grid.set_section(doc);
+
+        SPUni uni = SPUni::from_section(DefaultSeedProbe());
+        uni.set_section(doc);
+
+        BRBp br = BRBp::from_section(DefaultExplorerRun());
+        br.set_section(doc);
         return doc;
     }
 

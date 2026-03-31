@@ -94,7 +94,7 @@ namespace simcore::db::codec::seedprobe {
             bp.vi_stall_ms = section.get_u32("vi_stall_ms", 0);
             bp.cur_phase = (SeedProbePhase)section.get_u32("cur_phase", 0);
             bp.clear_result_winners = section.get_bool("clear_result_winners", true);
-            bp.auto_schedule_battle_run = section.get_bool("auto_schedule_battle_run", true);
+            bp.auto_schedule_battle_run = section.get_bool("auto_schedule_battle_run", false);
             bp.priority = section.get_i64("priority", 0);
             return bp;
         }

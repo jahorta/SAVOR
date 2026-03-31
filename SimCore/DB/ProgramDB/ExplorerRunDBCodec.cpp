@@ -518,7 +518,8 @@ DbResult<void> ExplorerRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx,
         "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) + ". Make sure that the SeedProbe is done and that they were registered in the DeltaSeed repo." });
 
 
-    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
+    const int action_kind = bp.use_single_turn_runner ? PK_BattleSingleTurnRunner : PK_BattleTurnRunner;
+    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", action_kind, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
     if (!crt.ok) return DbResult<void>::Err(crt.error);
 
     bp.seed_probe_id = spbp.probe_id;
