@@ -158,6 +158,7 @@
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
     <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
@@ -210,6 +211,7 @@
     <ClInclude Include="GUI\StyleSheet.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
+    <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
     <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
