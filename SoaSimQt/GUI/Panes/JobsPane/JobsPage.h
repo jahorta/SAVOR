@@ -19,6 +19,7 @@ class QPushButton;
 class QSpinBox;
 class QTabWidget;
 class QTextEdit;
+class QTimer;
 
 class JobsPage final : public QWidget
 {
@@ -37,6 +38,7 @@ private:
     void refreshModel();
     void updateInspector();
     void updateStatusWidgets();
+    void updateLoadingIndicatorState();
     QTextEdit* createReadOnlyTextEdit();
     std::optional<int> selectedProgramKind() const;
     std::optional<QString> selectedState() const;
@@ -63,7 +65,10 @@ private:
     QPushButton* refreshButton_ = nullptr;
     QLabel* pageSummaryLabel_ = nullptr;
     QLabel* lastRefreshLabel_ = nullptr;
+    QLabel* pageStatusLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
+    QTimer* loadingStateTimer_ = nullptr;
+    bool delayedLoadingVisible_ = false;
 
     JobsTableView* jobsTable_ = nullptr;
     QLabel* inspectorSummary_ = nullptr;
