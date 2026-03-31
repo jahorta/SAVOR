@@ -9,6 +9,7 @@
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
+#include <QtCore/QTimer>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -135,12 +136,15 @@ void JobsPage::createWidgets()
     refreshButton_ = new QPushButton(QStringLiteral("Refresh now"), pageControls);
     pageSummaryLabel_ = new QLabel(pageControls);
     lastRefreshLabel_ = new QLabel(pageControls);
+    pageStatusLabel_ = new QLabel(pageControls);
     prevButton_->setObjectName("jobsSecondaryButton");
     nextButton_->setObjectName("jobsSecondaryButton");
     refreshButton_->setObjectName("jobsSecondaryButton");
     pageSummaryLabel_->setObjectName("jobsMetaText");
     lastRefreshLabel_->setObjectName("jobsMetaText");
-    pageLayout->addWidget(prevButton_); pageLayout->addWidget(nextButton_); pageLayout->addWidget(refreshButton_); pageLayout->addSpacing(8); pageLayout->addWidget(pageSummaryLabel_); pageLayout->addStretch(); pageLayout->addWidget(lastRefreshLabel_);
+    pageStatusLabel_->setObjectName("jobsMetaText");
+    pageStatusLabel_->hide();
+    pageLayout->addWidget(prevButton_); pageLayout->addWidget(nextButton_); pageLayout->addWidget(refreshButton_); pageLayout->addSpacing(8); pageLayout->addWidget(pageSummaryLabel_); pageLayout->addStretch(); pageLayout->addWidget(pageStatusLabel_); pageLayout->addSpacing(10); pageLayout->addWidget(lastRefreshLabel_);
     contentLayout->addWidget(pageControls);
 
     QSplitter* splitter = new QSplitter(Qt::Horizontal, contentPanel);
@@ -208,6 +212,9 @@ void JobsPage::createWidgets()
     inlineMessageLabel_->setWordWrap(true);
     contentLayout->addWidget(inlineMessageLabel_);
 
+    loadingStateTimer_ = new QTimer(this);
+    loadingStateTimer_->setSingleShot(true);
+
     rootLayout->addWidget(contentPanel, 1);
 }
 
@@ -247,6 +254,12 @@ void JobsPage::wireSignals()
         if (current.isValid()) {
             selectFlatRow(jobsTable_, current.row());
             inspectorTabs_->setCurrentIndex(0);
+        }
+    });
+    connect(loadingStateTimer_, &QTimer::timeout, this, [this]() {
+        if (controller_->viewState().loading && !controller_->viewState().page.items.empty()) {
+            delayedLoadingVisible_ = true;
+            updateStatusWidgets();
         }
     });
 }
@@ -409,13 +422,22 @@ void JobsPage::updateInspector()
 void JobsPage::updateStatusWidgets()
 {
     const auto& state = controller_->viewState();
+    updateLoadingIndicatorState();
+
     pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(state.page.items.size()).arg(state.pageLimit));
     lastRefreshLabel_->setText(state.lastRefresh.isValid() ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP"))) : QStringLiteral("Last refresh: --"));
+    if (state.loading && (state.page.items.empty() || delayedLoadingVisible_)) {
+        pageStatusLabel_->setText(QStringLiteral("Loading jobs…"));
+        pageStatusLabel_->show();
+    } else {
+        pageStatusLabel_->hide();
+    }
+
     if (!state.errorMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("error")); inlineMessageLabel_->setText(state.errorMessage); inlineMessageLabel_->show();
     } else if (!state.infoMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(state.infoMessage); inlineMessageLabel_->show();
-    } else if (state.loading) {
+    } else if (state.loading && state.page.items.empty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(QStringLiteral("Loading jobs…")); inlineMessageLabel_->show();
     } else if (state.page.items.empty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(QStringLiteral("No jobs matched the current filters.")); inlineMessageLabel_->show();
@@ -423,6 +445,28 @@ void JobsPage::updateStatusWidgets()
         inlineMessageLabel_->hide();
     }
     style()->unpolish(inlineMessageLabel_); style()->polish(inlineMessageLabel_);
+}
+
+void JobsPage::updateLoadingIndicatorState()
+{
+    const auto& state = controller_->viewState();
+    if (!state.loading) {
+        delayedLoadingVisible_ = false;
+        loadingStateTimer_->stop();
+        return;
+    }
+
+    if (state.page.items.empty()) {
+        delayedLoadingVisible_ = true;
+        loadingStateTimer_->stop();
+        return;
+    }
+
+    if (delayedLoadingVisible_ || loadingStateTimer_->isActive()) {
+        return;
+    }
+
+    loadingStateTimer_->start(1000);
 }
 
 std::optional<int> JobsPage::selectedProgramKind() const { const QVariant data = kindFilter_->currentData(); return data.isValid() ? std::optional<int>(data.toInt()) : std::nullopt; }
