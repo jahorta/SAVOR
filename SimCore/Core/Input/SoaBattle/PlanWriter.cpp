@@ -5,8 +5,11 @@ using simcore::InputPlan;
 
 namespace soa::battle::actions {
 
-    static inline void push_btn(InputPlan& p, uint16_t btn) {
-        GCInputFrame f{}; f.buttons = btn; p.push_back(f);
+    static inline void push_btn(InputPlan& p, uint16_t btn, int duration = 1) {
+        GCInputFrame f{}; f.buttons = btn; 
+        for (int i = 0; i < duration; i++) {
+            p.push_back(f);
+        }
         p.push_back(GCInputFrame{}); // enforce neutral between identical presses
     }
 
