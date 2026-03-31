@@ -64,15 +64,16 @@ DbResult<int64_t> TasMovieDBCodec::encode_job_into_db(int64_t job_set_id, const 
         auto ev = simcore::db::JobEventsRepo::Append(jid.value, "ENQUEUED", vm_kv_text);
         if (!ev.ok) return DbResult<int64_t>::Err(ev.error);
 
-        ++enqueued;
-    }
+        if (bp.auto_queue_seeds) {
+            IniKV cond;
+            cond.add("type", "EACH_JOB_TERMINAL");
+            cond.add("success_only", std::to_string(1));
+            auto tr = simcore::db::TriggersRepo::AddForJob(jid.value, simcore::PK_SeedProbe,
+                cond.to_string_sorted(), blueprint_ini);
+            if (!tr.ok) return DbResult<int64_t>::Err(tr.error);
+        }
 
-    if (bp.auto_queue_seeds) {
-        IniKV cond;
-        cond.add("type", "EACH_JOB_TERMINAL");
-        cond.add("success_only", std::to_string(1));
-        auto tr = simcore::db::TriggersRepo::AddForJobSet(job_set_id, simcore::PK_SeedProbe,
-            cond.to_string_sorted(), blueprint_ini);
+        ++enqueued;
     }
 
     return DbResult<int64_t>::Ok(enqueued);

@@ -23,11 +23,21 @@ namespace simcore::db::phasebuilder {
         switch (program_kind) {
         case PK_TasMovie: {
             auto bp = TasBp::from_section(ini);
+            auto sp = SPBp::from_section(ini);
+            auto br = BRBp::from_section(ini);
             if (bp.base_dtm_artifact_id <= 0) errs.push_back({ "TasMovie.Blueprint.base_dtm_artifact_id","required" });
             if (bp.rtc_high < bp.rtc_low) errs.push_back({ "TasMovie.Blueprint.rtc_high","rtc_high must be >= rtc_low" });
             if (bp.base_dtm_artifact_id > 0) {
                 auto orow = ObjectStore::Get(bp.base_dtm_artifact_id);
                 if (!orow.ok) errs.push_back({ "TasMovie.Blueprint.base_dtm_artifact_id","artifact not found" });
+            }
+            if (bp.auto_queue_seeds && sp.auto_schedule_battle_run) {
+                if (br.settings_id <= 0) {
+                    errs.push_back({ "BattleRun.Blueprint.settings_id","required when TasMovie auto queue seeds + battle run is enabled" });
+                } else {
+                    auto s = ExplorerSettingsRepo::Get(br.settings_id);
+                    if (!s.ok) errs.push_back({ "BattleRun.Blueprint.settings_id","settings not found" });
+                }
             }
             break;
         }
@@ -35,6 +45,7 @@ namespace simcore::db::phasebuilder {
             auto bp = SPBp::from_section(ini);
             auto grid = SPGrid::from_section(ini);
             auto uni = SPUni::from_section(ini);
+            auto br = BRBp::from_section(ini);
             if (bp.savestate_id <= 0) errs.push_back({ "SeedProbe.Blueprint.savestate_id","required" });
             if (grid.samples_per_axis <= 0) errs.push_back({ "SeedProbe.Grid.samples_per_axis","must be > 0" });
             if (grid.min_value > grid.max_value) errs.push_back({ "SeedProbe.Grid.min_value","min_value must be <= max_value" });
@@ -43,6 +54,14 @@ namespace simcore::db::phasebuilder {
             if (bp.savestate_id > 0) {
                 auto pr = SavestateRepo::Get(bp.savestate_id);
                 if (!pr.ok) errs.push_back({ "SeedProbe.Blueprint.savestate_id","savestate not found" });
+            }
+            if (bp.auto_schedule_battle_run) {
+                if (br.settings_id <= 0) {
+                    errs.push_back({ "BattleRun.Blueprint.settings_id","required when auto_schedule_battle_run is enabled" });
+                } else {
+                    auto s = ExplorerSettingsRepo::Get(br.settings_id);
+                    if (!s.ok) errs.push_back({ "BattleRun.Blueprint.settings_id","settings not found" });
+                }
             }
             break;
         }
