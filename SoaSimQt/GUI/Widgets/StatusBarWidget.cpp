@@ -76,21 +76,29 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     layout->setContentsMargins(12, 6, 12, 6);
     layout->setSpacing(10);
 
+    auto* leftHost = new QWidget(this);
+    leftHost->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    auto* leftLayout = new QHBoxLayout(leftHost);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(10);
+
     connectionBadge_ = createBadge(QString(), QStringLiteral("connected"));
-    layout->addWidget(connectionBadge_);
-    layout->addWidget(createSeparator());
+    leftLayout->addWidget(connectionBadge_);
+    leftLayout->addWidget(createSeparator());
 
     envLabel_ = new QLabel(this);
     envLabel_->setObjectName("statusText");
-    layout->addWidget(envLabel_);
-    layout->addWidget(createSeparator());
+    leftLayout->addWidget(envLabel_);
+    leftLayout->addWidget(createSeparator());
 
     refreshLabel_ = new QLabel(this);
     refreshLabel_->setObjectName("statusText");
-    layout->addWidget(refreshLabel_);
+    leftLayout->addWidget(refreshLabel_);
 
     coordinatorBadge_ = createBadge(QString(), QStringLiteral("stopped"));
-    layout->addWidget(coordinatorBadge_);
+    leftLayout->addWidget(coordinatorBadge_);
+
+    layout->addWidget(leftHost, 0);
 
     toastHost_ = new QWidget(this);
     toastHost_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -244,13 +252,15 @@ void StatusBarWidget::rebuildToasts()
 
     for (const StatusToast& toast : visibleToasts_) {
         QLabel* badge = createBadge(buildToastText(toast), toastVariant(toast.severity));
+        badge->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
         if (!toast.details.isEmpty()) {
             badge->setToolTip(toast.details);
         }
         toastLayout_->addWidget(badge);
     }
 
-    toastHost_->setVisible(!visibleToasts_.isEmpty());
+    toastLayout_->addStretch(1);
+    toastHost_->setVisible(true);
     scheduleToastExpiry();
 }
 
