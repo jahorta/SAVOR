@@ -4,6 +4,8 @@
 
 #include <optional>
 
+#include "GUI/Common/StatusToast.h"
+
 class QPoint;
 
 class ArtifactsTableModel;
@@ -30,6 +32,7 @@ public:
 
 signals:
     void visualReplayRequested(qint64 jobId);
+    void statusToastRequested(StatusToast toast);
 
 private:
     void createWidgets();
@@ -69,6 +72,7 @@ private:
     QLabel* inlineMessageLabel_ = nullptr;
     QTimer* loadingStateTimer_ = nullptr;
     bool delayedLoadingVisible_ = false;
+    QString lastToastSignature_;
 
     JobsTableView* jobsTable_ = nullptr;
     QLabel* inspectorSummary_ = nullptr;

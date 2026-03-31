@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "GUI/Common/StatusToast.h"
 #include "DB/Querying/JobSetListDTO.h"
 #include "JobSetsProgressDelegate.h"
 
@@ -23,8 +24,13 @@ class QTimer;
 
 class JobSetsPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit JobSetsPage(QWidget* parent = nullptr);
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private:
     void createWidgets();
@@ -62,4 +68,5 @@ private:
     std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
     QTimer* loadingStateTimer_ = nullptr;
     bool delayedLoadingVisible_ = false;
+    QString lastToastSignature_;
 };

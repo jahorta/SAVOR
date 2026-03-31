@@ -6,6 +6,7 @@
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "GUI/Widgets/VisualReplay/VisualReplayDialog.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
 #include <QtWidgets/QAbstractItemView>
@@ -109,6 +110,21 @@ void CoordinatorPane::refreshUi()
     validationLabel_->setProperty("validationState", valid ? QStringLiteral("ok") : QStringLiteral("warn"));
     validationLabel_->style()->unpolish(validationLabel_);
     validationLabel_->style()->polish(validationLabel_);
+
+    if (!validationMessage.isEmpty()) {
+        const QString signature = QStringLiteral("validation|%1").arg(validationMessage);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{
+                StatusToast::Severity::Warn,
+                QStringLiteral("Coordinator configuration needs attention."),
+                validationMessage,
+                1,
+                QDateTime{},
+                5000
+            });
+        }
+    }
 
     tableSummaryLabel_->setText(running
         ? QStringLiteral("Live worker telemetry refreshes every %1 ms.").arg(kRefreshIntervalMs)
@@ -261,6 +277,14 @@ void CoordinatorPane::requestVisualReplay(qint64 jobId)
     controller_->setVisualRenderWidgetHandle(visualReplayDialog_->renderWidgetHandle());
     controller_->setVisualHostEventsPipeName(visualReplayDialog_->hostEventsPipeName());
     controller_->requestVisualReplay(jobId);
+    emit statusToastRequested(StatusToast{
+        StatusToast::Severity::Info,
+        QStringLiteral("Starting visual replay for job %1.").arg(jobId),
+        QString(),
+        1,
+        QDateTime{},
+        4000
+    });
 }
 
 QWidget* CoordinatorPane::createTableCard()

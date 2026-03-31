@@ -2,6 +2,7 @@
 
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
 #include "ExplorerRunsCoordinator.h"
 
 #include <array>
@@ -33,6 +34,7 @@ public:
 
 signals:
     void visualReplayRequested(qint64 jobId);
+    void statusToastRequested(StatusToast toast);
 
 private:
     enum class SortMetric {
@@ -93,6 +95,7 @@ private:
     std::vector<qint64> selectedWaveIdsFromTree() const;
     void loadFilterSettings();
     void persistFilterSettings() const;
+    void maybeEmitStatusToast(const QString& text, bool error);
 
     ViewState state_;
     ExplorerRunsCoordinator* coordinator_ = nullptr;
@@ -124,4 +127,5 @@ private:
     QPlainTextEdit* blueprintText_ = nullptr;
     QPlainTextEdit* progressText_ = nullptr;
     QPlainTextEdit* resultsText_ = nullptr;
+    QString lastToastSignature_;
 };

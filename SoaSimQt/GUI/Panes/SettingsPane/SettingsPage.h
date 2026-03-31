@@ -4,6 +4,8 @@
 #include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
+
 #include <functional>
 #include <utility>
 
@@ -40,6 +42,9 @@ public:
         Failure,
         Working
     };
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private slots:
     void refreshCoordinatorUi();
@@ -104,4 +109,5 @@ private:
     bool storageBusy_ = false;
     StorageOperation currentStorageOperation_ = StorageOperation::None;
     QFutureWatcher<SettingsStorageResult> storageWatcher_;
+    QString lastToastSignature_;
 };
