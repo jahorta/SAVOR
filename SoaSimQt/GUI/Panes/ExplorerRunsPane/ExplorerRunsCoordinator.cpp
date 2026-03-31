@@ -528,7 +528,8 @@ QString ExplorerRunsCoordinator::summarizeStates(const std::vector<JobRow>& jobs
 
 bool ExplorerRunsCoordinator::isSuccessOutcome(quint32 battleOutcome) const
 {
-    return battleOutcome == static_cast<quint32>(simcore::battle::Outcome::ReachedNextTurn);
+    return battleOutcome == static_cast<quint32>(simcore::battle::Outcome::ReachedNextTurn)
+        || battleOutcome == static_cast<quint32>(simcore::battle::Outcome::Victory);
 }
 
 bool ExplorerRunsCoordinator::isWinnerState(const QString& state) const
