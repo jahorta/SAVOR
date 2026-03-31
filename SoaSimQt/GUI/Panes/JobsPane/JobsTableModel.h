@@ -42,5 +42,7 @@ public:
     const Row* rowAt(int row) const;
 
 private:
+    static bool rowsAffectDisplay(const Row& lhs, const Row& rhs);
+
     std::vector<Row> rows_;
 };
