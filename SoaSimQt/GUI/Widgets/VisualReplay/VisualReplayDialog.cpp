@@ -75,7 +75,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
 
     renderWidget_ = new QWidget(this);
     renderWidget_->setObjectName(QStringLiteral("visualWorkerRenderWidget"));
-    renderWidget_->setMinimumSize(640, 360);
+    renderWidget_->setFixedSize(640, 360);
     renderWidget_->setAttribute(Qt::WA_NativeWindow, true);
     renderWidget_->setAttribute(Qt::WA_PaintOnScreen, true);
     renderWidget_->setAutoFillBackground(true);
@@ -137,6 +137,7 @@ VisualReplayDialog::VisualReplayDialog(QWidget* parent)
     liveLogView_->setFont(mono);
     logLayout->addWidget(liveLogView_, 1);
     overallLayout->addLayout(logLayout);
+    overallLayout->setStretch(1, 1);
 
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     pauseButton_ = buttons->addButton(QStringLiteral("Pause Emulation"), QDialogButtonBox::ActionRole);
@@ -276,7 +277,7 @@ void VisualReplayDialog::setRenderSurfaceSize(int widthPx, int heightPx)
         return;
     }
     if (widthPx > 0 && heightPx > 0) {
-        renderWidget_->setMinimumSize(widthPx, heightPx);
+        renderWidget_->setFixedSize(widthPx, heightPx);
         renderWidget_->resize(widthPx, heightPx);
     }
 }
