@@ -378,7 +378,7 @@ void BattleRunSettingsPage::wireSignals()
 
         const qint64 predicateId = predicateTableModel_->data(sourceIndex, battlerunsettings::kPredicateIdRole).toLongLong();
         if (predicateId > 0) {
-            addPredicateToDraft(predicateId);
+            openAddPredicateDialog(std::nullopt, predicateId);
         }
     });
     connect(templateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
