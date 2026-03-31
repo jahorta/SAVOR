@@ -90,12 +90,15 @@ namespace soa::battle::actions {
 
     bool PlanWriter::stop_zoom(InputPlan& p) {
         neutral(p, 1);
-        tapA(p); 
+        tapA(p);
+        neutral(p, 1);
         return true;
     }
 
     bool PlanWriter::stop_rotate(InputPlan& p) {
+        neutral(p, 1);
         tapA(p);
+        neutral(p, 1);
         return true;
     }
 
