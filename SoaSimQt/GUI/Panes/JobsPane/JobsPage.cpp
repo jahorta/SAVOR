@@ -7,6 +7,7 @@
 #include "JobsTableModel.h"
 #include "JobsTableView.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
@@ -423,6 +424,8 @@ void JobsPage::updateStatusWidgets()
 {
     const auto& state = controller_->viewState();
     updateLoadingIndicatorState();
+    StatusToast::Severity toastSeverity = StatusToast::Severity::Info;
+    QString toastMessage;
 
     pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(state.page.items.size()).arg(state.pageLimit));
     lastRefreshLabel_->setText(state.lastRefresh.isValid() ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP"))) : QStringLiteral("Last refresh: --"));
@@ -435,8 +438,11 @@ void JobsPage::updateStatusWidgets()
 
     if (!state.errorMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("error")); inlineMessageLabel_->setText(state.errorMessage); inlineMessageLabel_->show();
+        toastSeverity = StatusToast::Severity::Error;
+        toastMessage = state.errorMessage;
     } else if (!state.infoMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(state.infoMessage); inlineMessageLabel_->show();
+        toastMessage = state.infoMessage;
     } else if (state.loading && state.page.items.empty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info")); inlineMessageLabel_->setText(QStringLiteral("Loading jobs…")); inlineMessageLabel_->show();
     } else if (state.page.items.empty()) {
@@ -445,6 +451,14 @@ void JobsPage::updateStatusWidgets()
         inlineMessageLabel_->hide();
     }
     style()->unpolish(inlineMessageLabel_); style()->polish(inlineMessageLabel_);
+
+    if (!toastMessage.isEmpty()) {
+        const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(toastSeverity)).arg(toastMessage);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{ toastSeverity, toastMessage, QString(), 1, QDateTime{}, 4000 });
+        }
+    }
 }
 
 void JobsPage::updateLoadingIndicatorState()

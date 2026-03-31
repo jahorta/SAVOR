@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QtCore/QString>
 #include <QtWidgets/QWidget>
+
+#include "GUI/Common/StatusToast.h"
 class CoordinatorController;
 class QCheckBox;
 class QFrame;
@@ -28,6 +31,7 @@ public:
 
 signals:
     void settingsNavigationRequested(SettingsFocusTarget target);
+    void statusToastRequested(StatusToast toast);
 
 private slots:
     void refreshUi();
@@ -66,4 +70,5 @@ private:
     bool visualReplayRequested_ = false;
     bool visualWorkerObservedRunning_ = false;
     bool visualReplayDoneShown_ = false;
+    QString lastToastSignature_;
 };

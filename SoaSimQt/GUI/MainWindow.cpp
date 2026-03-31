@@ -250,11 +250,15 @@ QWidget* MainWindow::createContentPane()
     layout->addLayout(topLayout);
 
     contentStack_ = new QStackedWidget(contentPane);
-    contentStack_->addWidget(new JobSetsPage(contentPane));
+    auto* jobSetsPage = new JobSetsPage(contentPane);
+    connect(jobSetsPage, &JobSetsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobSetsPage);
     auto* jobsPage = new JobsPage(contentPane);
+    connect(jobsPage, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(jobsPage);
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
+    connect(coordinatorPane_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     connect(jobsPage, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     auto* jobBuilderPage = new JobBuilderPage(contentStack_);
@@ -263,12 +267,18 @@ QWidget* MainWindow::createContentPane()
     auto* battleRunSettingsPage = new BattleRunSettingsPage(contentStack_);
     connect(battleRunSettingsPage, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(battleRunSettingsPage);
-    contentStack_->addWidget(new ArtifactsPage(contentPane));
-    contentStack_->addWidget(new SeedProbePage(contentStack_));
+    auto* artifactsPage = new ArtifactsPage(contentPane);
+    connect(artifactsPage, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(artifactsPage);
+    auto* seedProbePage = new SeedProbePage(contentStack_);
+    connect(seedProbePage, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(seedProbePage);
     auto* explorerRunsPage = new ExplorerRunsPage(contentStack_);
+    connect(explorerRunsPage, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(explorerRunsPage, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     contentStack_->addWidget(explorerRunsPage);
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
+    connect(settingsPage_, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(settingsPage_);
 
     layout->addWidget(contentStack_, 1);

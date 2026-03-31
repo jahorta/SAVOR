@@ -14,6 +14,7 @@
 #include "Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "Utils/IniDoc.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QItemSelectionModel>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
@@ -602,6 +603,23 @@ void ExplorerRunsPage::setStatusMessage(const QString& text, bool error)
     inlineMessageLabel_->setProperty("error", error);
     inlineMessageLabel_->style()->unpolish(inlineMessageLabel_);
     inlineMessageLabel_->style()->polish(inlineMessageLabel_);
+    maybeEmitStatusToast(text, error);
+}
+
+void ExplorerRunsPage::maybeEmitStatusToast(const QString& text, bool error)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+
+    const StatusToast::Severity severity = error ? StatusToast::Severity::Error : StatusToast::Severity::Info;
+    const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(severity)).arg(text);
+    if (signature == lastToastSignature_) {
+        return;
+    }
+
+    lastToastSignature_ = signature;
+    emit statusToastRequested(StatusToast{ severity, text, QString(), 1, QDateTime{}, 4000 });
 }
 
 void ExplorerRunsPage::handleCoordinatorStateChanged()

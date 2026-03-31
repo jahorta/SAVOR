@@ -6,6 +6,7 @@
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
@@ -740,6 +741,31 @@ void SettingsPage::setStatus(StatusKind kind, const QString& message)
     statusLabel_->style()->unpolish(statusLabel_);
     statusLabel_->style()->polish(statusLabel_);
     statusLabel_->setText(message);
+
+    StatusToast::Severity severity = StatusToast::Severity::Info;
+    switch (kind) {
+    case StatusKind::Warning:
+        severity = StatusToast::Severity::Warn;
+        break;
+    case StatusKind::Success:
+        severity = StatusToast::Severity::Success;
+        break;
+    case StatusKind::Failure:
+        severity = StatusToast::Severity::Error;
+        break;
+    case StatusKind::Working:
+    case StatusKind::Info:
+        severity = StatusToast::Severity::Info;
+        break;
+    }
+
+    if (!message.isEmpty()) {
+        const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(severity)).arg(message);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{ severity, message, QString(), 1, QDateTime{}, 4000 });
+        }
+    }
 }
 
 QString SettingsPage::normalizePath(const QString& path)

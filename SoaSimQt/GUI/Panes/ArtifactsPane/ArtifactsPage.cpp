@@ -5,6 +5,7 @@
 #include "ArtifactsBrowserTableView.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QFileInfo>
 #include <QtCore/QItemSelectionModel>
 #include <QtCore/QSignalBlocker>
@@ -451,6 +452,8 @@ void ArtifactsPage::updateInspector()
 void ArtifactsPage::updateStatusWidgets()
 {
     const auto& state = controller_->viewState();
+    StatusToast::Severity toastSeverity = StatusToast::Severity::Info;
+    QString toastMessage;
     pageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2").arg(state.page.items.size()).arg(state.pageLimit));
     lastRefreshLabel_->setText(state.lastRefresh.isValid() ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP"))) : QStringLiteral("Last refresh: --"));
 
@@ -465,6 +468,8 @@ void ArtifactsPage::updateStatusWidgets()
         inlineMessageLabel_->setProperty("severity", QStringLiteral("error"));
         inlineMessageLabel_->setText(state.errorMessage);
         inlineMessageLabel_->show();
+        toastSeverity = StatusToast::Severity::Error;
+        toastMessage = state.errorMessage;
     } else if (state.loading) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(QStringLiteral("Loading artifacts…"));
@@ -481,6 +486,7 @@ void ArtifactsPage::updateStatusWidgets()
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(state.infoMessage);
         inlineMessageLabel_->show();
+        toastMessage = state.infoMessage;
     } else if (state.rootsReady && state.page.items.empty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(QStringLiteral("No artifacts matched the current filters."));
@@ -493,4 +499,12 @@ void ArtifactsPage::updateStatusWidgets()
     inlineMessageLabel_->style()->polish(inlineMessageLabel_);
     rootsBannerLabel_->style()->unpolish(rootsBannerLabel_);
     rootsBannerLabel_->style()->polish(rootsBannerLabel_);
+
+    if (!toastMessage.isEmpty()) {
+        const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(toastSeverity)).arg(toastMessage);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{ toastSeverity, toastMessage, QString(), 1, QDateTime{}, 4000 });
+        }
+    }
 }
