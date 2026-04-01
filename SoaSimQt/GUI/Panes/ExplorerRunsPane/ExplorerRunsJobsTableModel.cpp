@@ -2,6 +2,8 @@
 
 #include <QtCore/QVariant>
 
+#include <algorithm>
+
 ExplorerRunsJobsTableModel::ExplorerRunsJobsTableModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
@@ -60,9 +62,35 @@ QVariant ExplorerRunsJobsTableModel::headerData(int section, Qt::Orientation ori
 
 void ExplorerRunsJobsTableModel::setRows(std::vector<ExplorerRunsJobRow> rows)
 {
-    beginResetModel();
-    rows_ = std::move(rows);
-    endResetModel();
+    int common = 0;
+    while (common < static_cast<int>(rows_.size())
+        && common < static_cast<int>(rows.size())
+        && rows_[static_cast<size_t>(common)].jobId == rows[static_cast<size_t>(common)].jobId) {
+        ++common;
+    }
+
+    if (common < static_cast<int>(rows_.size())) {
+        beginRemoveRows(QModelIndex(), common, static_cast<int>(rows_.size()) - 1);
+        rows_.erase(rows_.begin() + common, rows_.end());
+        endRemoveRows();
+    }
+
+    if (common < static_cast<int>(rows.size())) {
+        beginInsertRows(QModelIndex(), common, static_cast<int>(rows.size()) - 1);
+        rows_.insert(rows_.end(), rows.begin() + common, rows.end());
+        endInsertRows();
+    }
+
+    const int compareCount = std::min(static_cast<int>(rows_.size()), common);
+    for (int row = 0; row < compareCount; ++row) {
+        const ExplorerRunsJobRow& incoming = rows[static_cast<size_t>(row)];
+        if (!(rows_[static_cast<size_t>(row)] == incoming)) {
+            rows_[static_cast<size_t>(row)] = incoming;
+            const QModelIndex left = index(row, 0);
+            const QModelIndex right = index(row, Count - 1);
+            emit dataChanged(left, right);
+        }
+    }
 }
 
 const ExplorerRunsJobRow* ExplorerRunsJobsTableModel::rowAt(int row) const

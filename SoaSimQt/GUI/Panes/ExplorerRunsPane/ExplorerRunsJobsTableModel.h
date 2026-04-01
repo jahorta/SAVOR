@@ -13,6 +13,17 @@ struct ExplorerRunsJobRow
     quint32 deltaVi = 0;
     quint32 fakeAttacks = 0;
     QString rngSeed;
+
+    bool operator==(const ExplorerRunsJobRow& other) const
+    {
+        return jobId == other.jobId
+            && state == other.state
+            && outcome == other.outcome
+            && predicates == other.predicates
+            && deltaVi == other.deltaVi
+            && fakeAttacks == other.fakeAttacks
+            && rngSeed == other.rngSeed;
+    }
 };
 
 class ExplorerRunsJobsTableModel final : public QAbstractTableModel

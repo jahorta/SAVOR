@@ -17,7 +17,7 @@ class QCheckBox;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
-class QStandardItemModel;
+class ExplorerRunsWaveTreeModel;
 class QTreeView;
 class QComboBox;
 class QModelIndex;
@@ -109,7 +109,7 @@ private:
 
     ExplorerRunsGroupTableModel* groupsModel_ = nullptr;
     ExplorerRunsGroupTableView* groupsView_ = nullptr;
-    QStandardItemModel* wavesModel_ = nullptr;
+    ExplorerRunsWaveTreeModel* wavesModel_ = nullptr;
     QTreeView* wavesView_ = nullptr;
 
     QCheckBox* winnersOnlyCheck_ = nullptr;
