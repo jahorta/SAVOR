@@ -733,7 +733,14 @@ namespace simcore {
                 if (stop_.load()) break;
                 continue;
             }
-            auto jr = simcore::db::JobsRepo::Get((int64_t)p.job_id);
+            simcore::db::DbResult<simcore::db::JobRow> jr;
+            try {
+                jr = simcore::db::JobsRepo::Get((int64_t)p.job_id);
+            }
+            catch (...) {
+                if (stop_.load()) break;
+                continue;
+            }
             if (!jr.ok) continue;
             auto& job = jr.value;
             auto& codec = ProgramDBCodecRegistry::for_kind(job.program_kind);
@@ -768,7 +775,14 @@ namespace simcore {
                     if (visual_slot_ && visual_slot_->assigned_visual_replay_id.has_value()) replay_id = visual_slot_->assigned_visual_replay_id;
                 }
                 if (replay_id.has_value()) {
-                    auto jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+                    simcore::db::DbResult<simcore::db::JobRow> jr;
+                    try {
+                        jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+                    }
+                    catch (...) {
+                        if (stop_.load()) break;
+                        continue;
+                    }
                     if (jr.ok) {
                         auto& codec = ProgramDBCodecRegistry::for_kind(jr.value.program_kind);
                         auto ini = codec.build_results_ini_from_prresult((int64_t)r.job_id, r);
@@ -778,7 +792,14 @@ namespace simcore {
                 }
             }
 
-            auto jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+            simcore::db::DbResult<simcore::db::JobRow> jr;
+            try {
+                jr = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+            }
+            catch (...) {
+                if (stop_.load()) break;
+                continue;
+            }
             if (jr.ok) {
                 if (r.worker_id == kVisualWorkerId) {
                     // Visual replay result stream is stored on visual_replay_events instead of mutating normal job outputs.
