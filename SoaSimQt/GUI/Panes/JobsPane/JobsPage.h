@@ -85,4 +85,8 @@ private:
     QTextEdit* payloadText_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     ArtifactsTableView* artifactsTable_ = nullptr;
+
+    bool refreshingModel_ = false;
+    std::optional<qint64> pendingSelectedJobId_;
+
 };
