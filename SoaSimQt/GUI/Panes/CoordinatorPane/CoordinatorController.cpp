@@ -18,6 +18,7 @@ constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
 constexpr auto kEventRingKey = "event_ring";
 constexpr auto kStartPausedKey = "start_paused";
+constexpr auto kAutoRestartFailedJobsKey = "auto_restart_failed_jobs";
 }
 
 CoordinatorController::CoordinatorController(QObject* parent)
@@ -62,6 +63,11 @@ int CoordinatorController::eventBufferCapacity() const
 bool CoordinatorController::startPaused() const
 {
     return startPaused_;
+}
+
+bool CoordinatorController::restartFailedJobsAutomatically() const
+{
+    return restartFailedJobsAutomatically_;
 }
 
 QString CoordinatorController::isoPath() const
@@ -227,6 +233,16 @@ void CoordinatorController::setStartPaused(bool startPaused)
     emit stateChanged();
 }
 
+void CoordinatorController::setRestartFailedJobsAutomatically(bool enabled)
+{
+    if (restartFailedJobsAutomatically_ == enabled) {
+        return;
+    }
+    restartFailedJobsAutomatically_ = enabled;
+    persistInt(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0);
+    emit stateChanged();
+}
+
 void CoordinatorController::setIsoPath(const QString& isoPath)
 {
     if (isoPath_ == isoPath) {
@@ -329,6 +345,7 @@ void CoordinatorController::loadSettings()
     targetWorkers_ = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt()));
     eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
     startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
+    restartFailedJobsAutomatically_ = settings.value(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0).toInt() != 0;
 
     settings.endGroup();
 }
@@ -392,5 +409,6 @@ WorkerCoordinatorConfig CoordinatorController::buildConfig() const
     cfg.iso_path = isoPath_.toStdString();
     cfg.dolphin_base_dir = dolphinBaseDir_.toStdString();
     cfg.start_to_paused = startPaused_;
+    cfg.restart_failed_jobs_automatically = restartFailedJobsAutomatically_;
     return cfg;
 }
