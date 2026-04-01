@@ -38,6 +38,9 @@ namespace simcore::db {
         static std::future<DbResult<std::vector<TagRecord>>> ListTagsAsync(
             std::optional<std::string> namespace_filter = std::nullopt,
             RetryPolicy rp = {});
+        static std::future<DbResult<std::vector<TagRecord>>> ListTagsForEntityKindAsync(
+            const std::string& entity_kind,
+            RetryPolicy rp = {});
 
         static std::future<DbResult<void>> AttachTagToEntityAsync(
             const std::string& entity_kind,
@@ -68,6 +71,9 @@ namespace simcore::db {
         }
         static inline DbResult<std::vector<TagRecord>> ListTags(std::optional<std::string> namespace_filter = std::nullopt) {
             return ListTagsAsync(std::move(namespace_filter)).get();
+        }
+        static inline DbResult<std::vector<TagRecord>> ListTagsForEntityKind(const std::string& entity_kind) {
+            return ListTagsForEntityKindAsync(entity_kind).get();
         }
         static inline DbResult<void> AttachTagToEntity(const std::string& entity_kind, int64_t entity_id, const std::string& tag_key, std::optional<std::string> created_by = std::nullopt) {
             return AttachTagToEntityAsync(entity_kind, entity_id, tag_key, std::move(created_by)).get();

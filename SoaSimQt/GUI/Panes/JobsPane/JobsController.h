@@ -55,7 +55,7 @@ public:
 
     void loadInitial();
     void setPageActive(bool active);
-    void applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, int pageLimit);
+    void applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, const std::optional<QString>& tagKey, int pageLimit);
     void resetFilters();
     void setAutoRefreshEnabled(bool enabled);
     void setRefreshSeconds(int seconds);

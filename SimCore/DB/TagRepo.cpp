@@ -239,6 +239,51 @@ std::future<DbResult<std::vector<TagRecord>>> TagRepo::ListTagsAsync(std::option
         });
 }
 
+std::future<DbResult<std::vector<TagRecord>>> TagRepo::ListTagsForEntityKindAsync(const std::string& entity_kind, RetryPolicy rp) {
+    if (entity_kind.empty() || is_blank(entity_kind)) {
+        std::promise<DbResult<std::vector<TagRecord>>> p;
+        p.set_value(invalid_arg_tags("entity_kind cannot be blank"));
+        return p.get_future();
+    }
+
+    return DBService::instance().submit_res<std::vector<TagRecord>>(OpType::Read, Priority::Normal, rp,
+        [entity_kind](DbEnv& env) {
+            sqlite3* db = env.handle();
+            const char* sql =
+                "SELECT DISTINCT t.tag_id, t.tag_key, t.namespace, t.leaf_name, t.parent_tag_id, t.description, t.created_at, t.updated_at "
+                "FROM entity_tags et "
+                "JOIN tags t ON t.tag_id = et.tag_id "
+                "WHERE et.entity_kind = ? "
+                "ORDER BY t.namespace ASC, t.leaf_name ASC, t.tag_id ASC;";
+
+            sqlite3_stmt* st = nullptr;
+            int rc = sqlite3_prepare_v2(db, sql, -1, &st, nullptr);
+            if (rc != SQLITE_OK) {
+                return DbResult<std::vector<TagRecord>>::Err({ map_sqlite_err(sqlite3_errcode(db)), rc, sqlite3_errmsg(db) });
+            }
+            sqlite3_bind_text(st, 1, entity_kind.c_str(), -1, SQLITE_TRANSIENT);
+
+            std::vector<TagRecord> out;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                TagRecord t{};
+                t.tag_id = sqlite3_column_int64(st, 0);
+                t.tag_key = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+                t.namespace = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+                t.leaf_name = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+                if (sqlite3_column_type(st, 4) != SQLITE_NULL) t.parent_tag_id = sqlite3_column_int64(st, 4);
+                if (sqlite3_column_type(st, 5) != SQLITE_NULL) t.description = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+                t.created_at = sqlite3_column_int64(st, 6);
+                t.updated_at = sqlite3_column_int64(st, 7);
+                out.push_back(std::move(t));
+            }
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE) {
+                return DbResult<std::vector<TagRecord>>::Err({ map_sqlite_err(rc), rc, "list tags for entity kind" });
+            }
+            return DbResult<std::vector<TagRecord>>::Ok(std::move(out));
+        });
+}
+
 std::future<DbResult<void>> TagRepo::AttachTagToEntityAsync(const std::string& entity_kind, int64_t entity_id, const std::string& tag_key, std::optional<std::string> created_by, RetryPolicy rp) {
     if (entity_kind.empty() || is_blank(entity_kind)) {
         std::promise<DbResult<void>> p;

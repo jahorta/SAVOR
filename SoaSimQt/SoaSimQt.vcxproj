@@ -158,6 +158,7 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp" />
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
@@ -165,6 +166,7 @@
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
+    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\MainWindow.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
