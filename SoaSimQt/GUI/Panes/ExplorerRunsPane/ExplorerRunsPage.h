@@ -129,4 +129,5 @@ private:
     QPlainTextEdit* progressText_ = nullptr;
     QPlainTextEdit* resultsText_ = nullptr;
     QString lastToastSignature_;
+    bool refreshingWaveTree_ = false;
 };

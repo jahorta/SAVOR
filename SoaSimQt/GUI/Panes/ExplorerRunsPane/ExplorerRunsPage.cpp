@@ -16,6 +16,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
@@ -43,6 +44,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <unordered_map>
 
 using namespace simcore::db;
@@ -322,6 +324,9 @@ void ExplorerRunsPage::wireSignals()
     });
 
     connect(wavesView_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this](const QItemSelection&, const QItemSelection&) {
+        if (refreshingWaveTree_) {
+            return;
+        }
         const std::vector<qint64> selected = selectedWaveIdsFromTree();
         if (selected == state_.selectedWaves) {
             return;
@@ -473,11 +478,18 @@ void ExplorerRunsPage::refreshGroupModel()
 void ExplorerRunsPage::refreshWaveTree()
 {
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(wavesView_);
+    QScopedValueRollback<bool> refreshingWaveTreeGuard(refreshingWaveTree_, true);
+    QItemSelectionModel* selection = wavesView_->selectionModel();
+    const std::optional<QSignalBlocker> selectionBlocker = selection
+        ? std::optional<QSignalBlocker>(std::in_place, selection)
+        : std::nullopt;
+
     wavesModel_->clear();
     wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
 
     const ExplorerRunsCoordinator::GroupRow* group = selectedGroup();
     if (!group) {
+        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
         return;
     }
 
@@ -519,11 +531,12 @@ void ExplorerRunsPage::refreshWaveTree()
     }
 
     if (state_.selectedWaves.empty()) {
+        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
         return;
     }
 
-    QItemSelectionModel* selection = wavesView_->selectionModel();
     if (!selection) {
+        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
         return;
     }
     selection->clearSelection();
