@@ -513,6 +513,9 @@
     <ClInclude Include="DB\UiConfigRowRepo.h">
       <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
+    <ClInclude Include="DB\TagRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Script\ScriptProgress.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
@@ -777,6 +780,9 @@
       <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
     <ClCompile Include="DB\UiConfigRowRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\TagRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
     </ClCompile>
     <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
