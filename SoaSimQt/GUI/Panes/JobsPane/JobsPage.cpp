@@ -235,7 +235,7 @@ void JobsPage::wireSignals()
         refreshModel();
         updateInspector();
         updateStatusWidgets();
-    });
+    }, Qt::QueuedConnection);
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
         controller_->applyFilters(selectedProgramKind(), selectedState(), selectedJobSetId(), pageSizeSpin_->value());
     });
@@ -251,8 +251,18 @@ void JobsPage::wireSignals()
     connect(jobsTable_, &QWidget::customContextMenuRequested, this, &JobsPage::showJobsContextMenu);
 
     connect(jobsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, [this](const QModelIndex& current, const QModelIndex&) {
-        if (!current.isValid()) return;
-        if (const JobsTableModel::Row* row = jobsModel_->rowAt(current.row())) controller_->selectJob(row->jobId);
+        if (!current.isValid()) {
+            return;
+        }
+        const JobsTableModel::Row* row = jobsModel_->rowAt(current.row());
+        if (!row) {
+            return;
+        }
+        if (refreshingModel_) {
+            pendingSelectedJobId_ = row->jobId;
+            return;
+        }
+        controller_->selectJob(row->jobId);
     });
 
     connect(jobsTable_, &JobsTableView::doubleClicked, this, [this](const QModelIndex& current) {
@@ -369,6 +379,9 @@ void JobsPage::refreshModel()
 {
     const auto& state = controller_->viewState();
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(jobsTable_);
+    QItemSelectionModel* selectionModel = jobsTable_->selectionModel();
+    const QSignalBlocker selectionBlocker(selectionModel);
+    refreshingModel_ = true;
 
     std::vector<JobsTableModel::Row> rows;
     rows.reserve(state.page.items.size());
@@ -392,6 +405,15 @@ void JobsPage::refreshModel()
         }
     }
     restoreItemViewScrollSnapshot(jobsTable_, scrollSnapshot);
+    refreshingModel_ = false;
+
+    if (pendingSelectedJobId_.has_value()) {
+        const qint64 pendingJobId = *pendingSelectedJobId_;
+        pendingSelectedJobId_.reset();
+        if (pendingJobId != controller_->viewState().selectedJobId) {
+            controller_->selectJob(pendingJobId);
+        }
+    }
 }
 
 void JobsPage::updateInspector()
