@@ -229,6 +229,7 @@ void SettingsPage::createWidgets()
     eventBufferSpin_->setMaximum(1000000);
 
     startPausedCheck_ = new QCheckBox("Start paused", coordinatorSection.content);
+    requeueFailuresAutomaticallyCheck_ = new QCheckBox("Requeue failures automatically", coordinatorSection.content);
 
     QHBoxLayout* isoLayout = new QHBoxLayout();
     isoLayout->setContentsMargins(0, 0, 0, 0);
@@ -247,6 +248,7 @@ void SettingsPage::createWidgets()
     startupLayout->setSpacing(10);
     startupLayout->addWidget(eventBufferSpin_);
     startupLayout->addWidget(startPausedCheck_);
+    startupLayout->addWidget(requeueFailuresAutomaticallyCheck_);
     startupLayout->addStretch();
 
     QLabel* isoLabel = new QLabel("ISO", coordinatorSection.content);
@@ -275,6 +277,7 @@ void SettingsPage::createWidgets()
         connect(dolphinBaseDirEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setDolphinBaseDir);
         connect(eventBufferSpin_, qOverload<int>(&QSpinBox::valueChanged), coordinatorController_, &CoordinatorController::setEventBufferCapacity);
         connect(startPausedCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setStartPaused);
+        connect(requeueFailuresAutomaticallyCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setRestartFailedJobsAutomatically);
     }
     connect(isoBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForIsoPath);
     connect(dolphinBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForDolphinBaseDir);
@@ -689,6 +692,10 @@ void SettingsPage::refreshCoordinatorUi()
         const QSignalBlocker blocker(startPausedCheck_);
         startPausedCheck_->setChecked(coordinatorController_->startPaused());
     }
+    {
+        const QSignalBlocker blocker(requeueFailuresAutomaticallyCheck_);
+        requeueFailuresAutomaticallyCheck_->setChecked(coordinatorController_->restartFailedJobsAutomatically());
+    }
 
     const bool running = coordinatorController_->isRunning();
     isoPathEdit_->setEnabled(!running);
@@ -697,6 +704,7 @@ void SettingsPage::refreshCoordinatorUi()
     dolphinBrowseButton_->setEnabled(!running);
     eventBufferSpin_->setEnabled(!running);
     startPausedCheck_->setEnabled(!running);
+    requeueFailuresAutomaticallyCheck_->setEnabled(!running);
 
     coordinatorValidationLabel_->setText(
         coordinatorController_->validationMessage().isEmpty()

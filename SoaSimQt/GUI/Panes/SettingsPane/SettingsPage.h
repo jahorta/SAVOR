@@ -101,6 +101,7 @@ private:
     QPushButton* dolphinBrowseButton_ = nullptr;
     QSpinBox* eventBufferSpin_ = nullptr;
     QCheckBox* startPausedCheck_ = nullptr;
+    QCheckBox* requeueFailuresAutomaticallyCheck_ = nullptr;
     QLabel* coordinatorValidationLabel_ = nullptr;
     QToolButton* coordinatorSectionToggle_ = nullptr;
 

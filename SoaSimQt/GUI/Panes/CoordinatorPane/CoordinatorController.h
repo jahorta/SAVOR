@@ -26,6 +26,7 @@ public:
     int activeWorkers() const;
     int eventBufferCapacity() const;
     bool startPaused() const;
+    bool restartFailedJobsAutomatically() const;
 
     QString isoPath() const;
     QString dolphinBaseDir() const;
@@ -45,6 +46,7 @@ public slots:
     void setTargetWorkers(int targetWorkers);
     void setEventBufferCapacity(int capacity);
     void setStartPaused(bool startPaused);
+    void setRestartFailedJobsAutomatically(bool enabled);
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
     void setVisualRenderWidgetHandle(quintptr hwnd);
@@ -83,6 +85,7 @@ private:
     int eventBufferCapacity_ = 64;
     bool paused_ = false;
     bool startPaused_ = true;
+    bool restartFailedJobsAutomatically_ = true;
     quintptr visualRenderWidgetHandle_ = 0;
     QString isoPath_;
     QString dolphinBaseDir_;

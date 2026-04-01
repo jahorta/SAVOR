@@ -759,8 +759,10 @@ namespace simcore {
     }
 
     void WorkerCoordinator::drain_results_loop() {
+        constexpr int kMaxAutoRestartRetries = 3;
         PRResult r;
         while (results_q_.pop_wait(r)) {
+            bool restart_worker_for_retry = false;
             auto find_slot_by_worker_id = [this](size_t worker_id) -> Slot* {
                 auto it = std::find_if(slots_.begin(), slots_.end(), [worker_id](const std::unique_ptr<Slot>& slot) {
                     return slot && slot->id == worker_id;
@@ -816,6 +818,12 @@ namespace simcore {
                         (void)codec.encode_results_into_db((int64_t)r.job_id, ini.value, r.ps.ok);
                         auto tr = simcore::TriggerEngine::after_terminal(r.job_id);
                         (void)tr; // ignore errors for now; they will be visible in DB events/logs if you add them later
+                        if (!r.ps.ok) {
+                            auto retried = simcore::db::JobsRepo::Get((int64_t)r.job_id);
+                            if (retried.ok && retried.value.state == "QUEUED" && retried.value.attempts <= kMaxAutoRestartRetries) {
+                                restart_worker_for_retry = true;
+                            }
+                        }
                     }
                 }
             }
@@ -846,9 +854,13 @@ namespace simcore {
                 s->assigned_job_id.reset();
                 s->idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.idle_keepalive_ms);
                 SetCurrentJob((int64_t)s->id, std::nullopt, std::nullopt);
-                UpdateState((int64_t)s->id, WorkerStateKind::Idle);
-                s->phase = Slot::Phase::Ready;
-                RecordHeartbeat((int64_t)s->id);
+                if (restart_worker_for_retry && cfg_.restart_failed_jobs_automatically) {
+                    mark_slot_start_failed(*s, "job auto-retried; restarting worker before next attempt");
+                } else {
+                    UpdateState((int64_t)s->id, WorkerStateKind::Idle);
+                    s->phase = Slot::Phase::Ready;
+                    RecordHeartbeat((int64_t)s->id);
+                }
             }
 
             if (stop_.load()) break;

@@ -337,6 +337,25 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     }
 }
 
+void JobsPage::handleRestartRequested()
+{
+    const auto& state = controller_->viewState();
+    if (state.selectedJobId <= 0) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Restart Failed Job"));
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can optionally edit the current job INI first."), &dialog));
+    QPlainTextEdit* iniEdit = new QPlainTextEdit(&dialog);
+    iniEdit->setPlainText(state.detail.payloadText);
+    layout->addWidget(iniEdit, 1);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save INI & Restart"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() == QDialog::Accepted) controller_->restartSelectedFailedJob(iniEdit->toPlainText());
+}
+
 void JobsPage::syncControlsFromController(bool syncAll)
 {
     const auto& state = controller_->viewState();
@@ -527,22 +546,3 @@ void JobsPage::updateLoadingIndicatorState()
 std::optional<int> JobsPage::selectedProgramKind() const { const QVariant data = kindFilter_->currentData(); return data.isValid() ? std::optional<int>(data.toInt()) : std::nullopt; }
 std::optional<QString> JobsPage::selectedState() const { const QVariant data = stateFilter_->currentData(); return data.isValid() ? std::optional<QString>(data.toString()) : std::nullopt; }
 std::optional<qint64> JobsPage::selectedJobSetId() const { bool ok = false; const qint64 value = jobSetFilter_->text().trimmed().toLongLong(&ok); return ok ? std::optional<qint64>(value) : std::nullopt; }
-
-void JobsPage::handleRestartRequested()
-{
-    const auto& state = controller_->viewState();
-    if (state.selectedJobId <= 0) return;
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Restart Failed Job"));
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can optionally edit the current job INI first."), &dialog));
-    QPlainTextEdit* iniEdit = new QPlainTextEdit(&dialog);
-    iniEdit->setPlainText(state.detail.payloadText);
-    layout->addWidget(iniEdit, 1);
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save INI & Restart"));
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() == QDialog::Accepted) controller_->restartSelectedFailedJob(iniEdit->toPlainText());
-}

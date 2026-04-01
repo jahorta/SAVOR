@@ -175,7 +175,6 @@ JobsController::JobsController(QObject* parent)
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(restartWatcher_, restartInFlight_, Operation::Restart, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
-
     refreshTimer_ = new QTimer(this);
     connect(refreshTimer_, &QTimer::timeout, this, [this]() {
         if (canAutoRefresh()) {
@@ -295,16 +294,6 @@ void JobsController::cancelSelectedJob()
     cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::CancelJobAsync(jobId).get(); }));
 }
 
-void JobsController::replaySelectedJobVisually()
-{
-    const JobLite* job = selectedJob();
-    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
-    actionJobId_ = job->job_id;
-    replayVisualInFlight_ = true;
-    setBusy(Operation::ReplayVisual, true);
-    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
-}
-
 void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
 {
     const JobLite* job = selectedJob();
@@ -319,6 +308,16 @@ void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride
         }
         return DataService::RestartFailedJobAsync(jobId).get();
     }));
+}
+
+void JobsController::replaySelectedJobVisually()
+{
+    const JobLite* job = selectedJob();
+    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
+    actionJobId_ = job->job_id;
+    replayVisualInFlight_ = true;
+    setBusy(Operation::ReplayVisual, true);
+    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
 }
 
 void JobsController::kickKindsFetch()
