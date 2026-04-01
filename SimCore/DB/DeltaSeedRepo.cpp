@@ -200,6 +200,21 @@ namespace simcore {
             return DbResult<std::optional<DeltaSeedRow>>::Ok(out);
         }
 
+        static inline DbResult<bool> Impl_ExistsForProbeSeedDelta(DbEnv& env, int64_t probe_id, int32_t seed_delta) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(db,
+                "SELECT 1 FROM seed_delta WHERE probe_id=? AND seed_delta=? LIMIT 1;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<bool>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            sqlite3_bind_int64(st, 1, probe_id);
+            sqlite3_bind_int(st, 2, seed_delta);
+            rc = sqlite3_step(st);
+            const bool exists = (rc == SQLITE_ROW);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_ROW && rc != SQLITE_DONE) return DbResult<bool>::Err({ map_sqlite_err(rc), rc, "scan" });
+            return DbResult<bool>::Ok(exists);
+        }
+
         static inline DbResult<int64_t> Impl_InsertOne(DbEnv& env, int64_t probe_id, const DeltaSeedRow& r, bool is_grid, bool is_unique) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
@@ -273,6 +288,11 @@ namespace simcore {
         std::future<DbResult<std::optional<DeltaSeedRow>>> DeltaSeedRepo::GetAsync(int64_t id, RetryPolicy rp) {
             return DBService::instance().submit_res<std::optional<DeltaSeedRow>>(OpType::Read, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_Get(e, id); });
+        }
+
+        std::future<DbResult<bool>> DeltaSeedRepo::ExistsForProbeSeedDeltaAsync(int64_t probe_id, int32_t seed_delta, RetryPolicy rp) {
+            return DBService::instance().submit_res<bool>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ExistsForProbeSeedDelta(e, probe_id, seed_delta); });
         }
 
     } // namespace db

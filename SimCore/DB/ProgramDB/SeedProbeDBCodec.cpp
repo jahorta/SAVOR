@@ -22,6 +22,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <unordered_set>
 #include "../Querying/DataService.h"
 
 using simcore::db::DbResult;
@@ -166,6 +167,13 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     auto dr = simcore::db::DeltaSeedRepo::ListGridForProbe(bp_ini.probe_id);
     if (!dr.ok) return simcore::db::DbResult<int64_t>::Err(dr.error);
 
+    auto all_deltas = simcore::db::DeltaSeedRepo::ListForProbe(bp_ini.probe_id);
+    if (!all_deltas.ok) return simcore::db::DbResult<int64_t>::Err(all_deltas.error);
+
+    std::unordered_set<int32_t> known_deltas;
+    known_deltas.reserve(all_deltas.value.size());
+    for (const auto& ds : all_deltas.value) known_deltas.insert(ds.seed_delta);
+
     simcore::RandSeedProbeResult result{.base_seed=(uint32_t)pr.value.neutral_seed};
     for (auto ds : dr.value) {
         auto family = (simcore::SeedFamily)ds.input.get_family();
@@ -200,6 +208,9 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     
     int64_t enqueued = 0;
     for (auto sample : samples.samples) {
+        if (known_deltas.count(sample.target_delta)) {
+            continue;
+        }
 
         int32_t expected_delta = sample.target_delta;
         auto ds = JobSetsRepo::CreateChild(job_set_id,
@@ -431,8 +442,24 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
     }
 
     if (bp.cur_phase == SeedProbePhase::Unique) {
+        const int32_t expected_delta = job_ini.expected_delta;
+        const bool matched_expected = (expected_delta == seed_delta);
 
-        const uint32_t expected_delta = job_ini.expected_delta;
+        auto existing = simcore::db::DeltaSeedRepo::ExistsForProbeSeedDelta(probe_id, seed_delta);
+        if (!existing.ok) return simcore::db::DbResult<void>::Err(existing.error);
+
+        if (existing.value) {
+            if (matched_expected) {
+                auto others = JobsRepo::GetQueuedByJobSet(jr.value.job_set_id);
+                for (auto other : others.value)
+                    JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            }
+
+            JobsRepo::SetState(job_id, "SUCCEEDED_DUPLICATE");
+            JobEventsRepo::Append(job_id, "RESULTS", "dedupe=known_delta delta=" + std::to_string(seed_delta));
+            return simcore::db::DbResult<void>::Ok();
+        }
+
         const std::string expected_tag = job_ini.unique_tag;
         const int64_t child_js = jr.value.job_set_id;
         auto parent = JobSetsRepo::GetParent(child_js);
@@ -457,16 +484,18 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
             auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/false, /*is_unique=*/true);
             if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
 
-            if (expected_delta == seed_delta) {
+            if (matched_expected) {
                 auto others = JobsRepo::GetQueuedByJobSet(child_js);
                 for (auto other : others.value)
                     JobsRepo::SetState(other.job_id, "SUPERSEDED");
             }
         }
         else {
-            auto others = JobsRepo::GetQueuedByJobSet(child_js);
-            for (auto other : others.value)
-                JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            if (matched_expected) {
+                auto others = JobsRepo::GetQueuedByJobSet(child_js);
+                for (auto other : others.value)
+                    JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            }
         }
 
         JobsRepo::SetState(job_id, is_winner ? "SUCCEEDED_WINNER" : "SUCCEEDED_DUPLICATE");
