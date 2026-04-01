@@ -89,6 +89,7 @@ private:
     void triggerNextWave();
     void showJobsContextMenu(const QPoint& pos);
     void openTurnInputsDialogForJob(const ExplorerRunsJobRow& row);
+    void showBattlePlanDialogForJob(const ExplorerRunsJobRow& row);
     void restoreSelectedGroupRow();
     void restoreSelectedJobRow();
     void selectFirstWaveIfNeeded();

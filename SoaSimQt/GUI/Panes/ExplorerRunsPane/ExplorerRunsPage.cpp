@@ -30,6 +30,10 @@
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
@@ -816,12 +820,15 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
 
     QMenu menu(this);
     QAction* viewTurnInputsAction = menu.addAction(QStringLiteral("View Turn Inputs"));
+    QAction* regurgitatePlanAction = menu.addAction(QStringLiteral("Regurgitate Battle Plan"));
     QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     viewTurnInputsAction->setEnabled(isTurnInputEligibleState(row->state));
     replayVisualAction->setEnabled(isFinished);
     QAction* selectedAction = menu.exec(jobsView_->viewport()->mapToGlobal(pos));
     if (selectedAction == viewTurnInputsAction && viewTurnInputsAction->isEnabled()) {
         openTurnInputsDialogForJob(*row);
+    } else if (selectedAction == regurgitatePlanAction) {
+        showBattlePlanDialogForJob(*row);
     } else if (selectedAction == replayVisualAction && replayVisualAction->isEnabled()) {
         emit visualReplayRequested(row->jobId);
     }
@@ -831,6 +838,25 @@ void ExplorerRunsPage::openTurnInputsDialogForJob(const ExplorerRunsJobRow& row)
 {
     ExplorerRunsTurnInputsDialog dialog(this);
     dialog.loadForJob(row);
+    dialog.exec();
+}
+
+void ExplorerRunsPage::showBattlePlanDialogForJob(const ExplorerRunsJobRow& row)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Battle Plan for Job %1").arg(row.jobId));
+    dialog.resize(800, 460);
+
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    QPlainTextEdit* text = new QPlainTextEdit(&dialog);
+    text->setReadOnly(true);
+    text->setPlainText(coordinator_->describeBattlePlanForJob(row.jobId));
+    layout->addWidget(text);
+
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
     dialog.exec();
 }
 
