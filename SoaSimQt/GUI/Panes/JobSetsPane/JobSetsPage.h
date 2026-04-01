@@ -28,6 +28,7 @@ class JobSetsPage final : public QWidget
 
 public:
     explicit JobSetsPage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void statusToastRequested(StatusToast toast);

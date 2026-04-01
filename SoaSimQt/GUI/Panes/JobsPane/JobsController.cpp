@@ -182,17 +182,39 @@ JobsController::JobsController(QObject* parent)
             requestRefresh();
         }
     });
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
 }
 
 const JobsController::ViewState& JobsController::viewState() const { return state_; }
 
 void JobsController::loadInitial()
 {
-    if (initialLoadStarted_) return;
+    if (initialLoadStarted_ || !pageActive_) return;
     initialLoadStarted_ = true;
     kickKindsFetch();
     kickPageFetch();
+}
+
+void JobsController::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        if (refreshTimer_) {
+            refreshTimer_->stop();
+        }
+        return;
+    }
+
+    if (refreshTimer_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
+    loadInitial();
 }
 
 void JobsController::applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, int pageLimit)
@@ -229,13 +251,15 @@ void JobsController::resetFilters()
     state_.infoMessage.clear();
     syncFetchStateFromView();
     persistSettings();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     kickPageFetch();
     emitStateChanged();
 }
 
 void JobsController::setAutoRefreshEnabled(bool enabled) { state_.autoRefresh = enabled; persistSettings(); emitStateChanged(); }
-void JobsController::setRefreshSeconds(int seconds) { state_.refreshSeconds = seconds; persistSettings(); refreshTimer_->start(seconds * 1000); emitStateChanged(); }
+void JobsController::setRefreshSeconds(int seconds) { state_.refreshSeconds = seconds; persistSettings(); if (pageActive_) refreshTimer_->start(seconds * 1000); emitStateChanged(); }
 void JobsController::requestRefresh() { before_.reset(); after_.reset(); kickPageFetch(); }
 void JobsController::requestNextPage() { if (state_.page.next) { before_ = state_.page.next; after_.reset(); kickPageFetch(); } }
 void JobsController::requestPreviousPage() { if (state_.page.prev) { after_ = state_.page.prev; before_.reset(); kickPageFetch(); } }
@@ -380,7 +404,7 @@ void JobsController::setBusy(Operation, bool)
 
 bool JobsController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
+    return pageActive_ && state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
 }
 
 bool JobsController::anyWorkInFlight() const
