@@ -21,6 +21,7 @@ public:
 signals:
     void boostRequested(qint64 jobSetId);
     void cancelQueuedRequested(qint64 jobSetId);
+    void tagsRequested(qint64 jobSetId);
     void deleteRequested(qint64 jobSetId);
 
 private:

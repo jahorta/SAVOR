@@ -7,6 +7,9 @@
 #include "Phases/DBPhaseBuilder/PhaseBuilderPreview.h"
 #include "Runner/IPC/Wire.h"
 #include "DB/ExplorerSettingsPredicateRepo.h"
+#include "DB/TagRepo.h"
+#include "DB/Scheduling/JobsRepo.h"
+#include "GUI/Widgets/EntityTagsDialog.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QScopedValueRollback>
@@ -399,6 +402,11 @@ void JobBuilderPage::createWidgets()
         submitStatusLabel_ = new QLabel(card);
         submitStatusLabel_->setWordWrap(true);
         purposeEdit_ = new QLineEdit(card);
+        setTagsButton_ = new QPushButton(QStringLiteral("Set Tags"), card);
+        setTagsButton_->setObjectName("jobsSecondaryButton");
+        tagsSummaryLabel_ = new QLabel(QStringLiteral("No tags selected."), card);
+        tagsSummaryLabel_->setObjectName("jobsMetaText");
+        tagsSummaryLabel_->setWordWrap(true);
         metaEdit_ = new QPlainTextEdit(card);
         metaEdit_->setMinimumHeight(100);
         submitButton_ = new QPushButton(QStringLiteral("Create Job Set & Enqueue"), card);
@@ -406,6 +414,8 @@ void JobBuilderPage::createWidgets()
         QFormLayout* form = new QFormLayout();
         form->addRow(QStringLiteral("Status"), submitStatusLabel_);
         form->addRow(QStringLiteral("Purpose"), purposeEdit_);
+        form->addRow(QStringLiteral("Tags"), setTagsButton_);
+        form->addRow(QString(), tagsSummaryLabel_);
         form->addRow(QStringLiteral("Meta"), metaEdit_);
         cardLayout->addLayout(form);
         cardLayout->addWidget(submitButton_);
@@ -511,6 +521,7 @@ void JobBuilderPage::wireSignals()
     connect(validateButton_, &QPushButton::clicked, this, [this]() { syncIniFromWidgets(); refreshValidation(); refreshSubmitPanel(); updateStatusMessage(); });
     connect(previewButton_, &QPushButton::clicked, this, [this]() { requestPreview(); });
     connect(submitButton_, &QPushButton::clicked, this, [this]() { requestSubmit(); });
+    connect(setTagsButton_, &QPushButton::clicked, this, &JobBuilderPage::openSubmitTagsDialog);
 
     connect(pickSavestateButton_, &QPushButton::clicked, this, &JobBuilderPage::openSavestatePicker);
     connect(pickArtifactButton_, &QPushButton::clicked, this, &JobBuilderPage::openArtifactPicker);
@@ -995,6 +1006,16 @@ void JobBuilderPage::refreshSubmitPanel()
     }
     submitStatusLabel_->setText(status);
     submitButton_->setEnabled(canSubmit() && !submitBusy_);
+    setTagsButton_->setEnabled(!submitBusy_);
+    if (submissionTagKeys_.empty()) {
+        tagsSummaryLabel_->setText(QStringLiteral("No tags selected."));
+    } else {
+        QStringList tags;
+        for (const auto& key : submissionTagKeys_) {
+            tags << QString::fromStdString(key);
+        }
+        tagsSummaryLabel_->setText(tags.join(QStringLiteral(", ")));
+    }
 }
 
 void JobBuilderPage::refreshIniPanel()
@@ -1192,6 +1213,16 @@ void JobBuilderPage::openExplorerSettingsPicker()
     }
 }
 
+void JobBuilderPage::openSubmitTagsDialog()
+{
+    auto result = EntityTagsDialog::SelectTagsForNewEntity(QStringLiteral("job_set"), submissionTagKeys_, QStringLiteral("Set Tags for Submission"), this);
+    if (!result.ok) {
+        return;
+    }
+    submissionTagKeys_ = std::move(result.selectedTagKeys);
+    refreshSubmitPanel();
+}
+
 void JobBuilderPage::requestPreview()
 {
     if (!hasIni_) {
@@ -1234,8 +1265,9 @@ void JobBuilderPage::requestSubmit()
     const auto selectedSeedProbes = selectedSeedProbeIds_;
     const auto selectedDeltas = selectedDeltaIdsByProbe_;
     const auto previewCopy = preview_;
+    const auto tagKeys = submissionTagKeys_;
 
-    submitWatcher_.setFuture(runAsync([programKind, baseIni, purpose, meta, selectedSettings, selectedSeedProbes, selectedDeltas, previewCopy]() -> SubmitResultPayload {
+    submitWatcher_.setFuture(runAsync([programKind, baseIni, purpose, meta, selectedSettings, selectedSeedProbes, selectedDeltas, previewCopy, tagKeys]() -> SubmitResultPayload {
         SubmitResultPayload out{};
         try {
             const std::optional<std::string> metaText = meta.isEmpty() ? std::optional<std::string>{} : std::optional<std::string>{ meta.toStdString() };
@@ -1293,6 +1325,27 @@ void JobBuilderPage::requestSubmit()
                             out.errorMessage = QString::fromStdString(encodeResult.error.message);
                             return out;
                         }
+                        for (const auto& tagKey : tagKeys) {
+                            const auto attachJobSetTag = simcore::db::TagRepo::AttachTagToEntity("job_set", createResult.value, tagKey, std::nullopt);
+                            if (!attachJobSetTag.ok) {
+                                out.errorMessage = QString::fromStdString(attachJobSetTag.error.message);
+                                return out;
+                            }
+                        }
+                        const auto jobsResult = simcore::db::JobsRepo::GetByJobSet(createResult.value);
+                        if (!jobsResult.ok) {
+                            out.errorMessage = QString::fromStdString(jobsResult.error.message);
+                            return out;
+                        }
+                        for (const auto& job : jobsResult.value) {
+                            for (const auto& tagKey : tagKeys) {
+                                const auto attachJobTag = simcore::db::TagRepo::AttachTagToEntity("job", job.job_id, tagKey, std::nullopt);
+                                if (!attachJobTag.ok) {
+                                    out.errorMessage = QString::fromStdString(attachJobTag.error.message);
+                                    return out;
+                                }
+                            }
+                        }
                         ++createdCount;
                     }
                 }
@@ -1313,6 +1366,27 @@ void JobBuilderPage::requestSubmit()
             if (!encodeResult.ok) {
                 out.errorMessage = QString::fromStdString(encodeResult.error.message);
                 return out;
+            }
+            for (const auto& tagKey : tagKeys) {
+                const auto attachJobSetTag = simcore::db::TagRepo::AttachTagToEntity("job_set", createResult.value, tagKey, std::nullopt);
+                if (!attachJobSetTag.ok) {
+                    out.errorMessage = QString::fromStdString(attachJobSetTag.error.message);
+                    return out;
+                }
+            }
+            const auto jobsResult = simcore::db::JobsRepo::GetByJobSet(createResult.value);
+            if (!jobsResult.ok) {
+                out.errorMessage = QString::fromStdString(jobsResult.error.message);
+                return out;
+            }
+            for (const auto& job : jobsResult.value) {
+                for (const auto& tagKey : tagKeys) {
+                    const auto attachJobTag = simcore::db::TagRepo::AttachTagToEntity("job", job.job_id, tagKey, std::nullopt);
+                    if (!attachJobTag.ok) {
+                        out.errorMessage = QString::fromStdString(attachJobTag.error.message);
+                        return out;
+                    }
+                }
             }
             if (programKind == PK_TasMovie && previewCopy.has_value() && previewCopy->tasmovie.has_value()) {
                 const auto expectedResult = DataService::SetJobSetExpectedTotalAsync(createResult.value, previewCopy->tasmovie->jobs, {}).get();
