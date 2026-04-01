@@ -526,6 +526,7 @@ void ExplorerRunsPage::refreshWaveTree()
     if (!selection) {
         return;
     }
+    const QSignalBlocker selectionBlocker(selection);
     selection->clearSelection();
     for (int row = 0; row < wavesModel_->rowCount(); ++row) {
         const QStandardItem* turnItem = wavesModel_->item(row, 0);
