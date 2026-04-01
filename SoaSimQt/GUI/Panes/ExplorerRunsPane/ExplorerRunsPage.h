@@ -90,6 +90,7 @@ private:
     void showJobsContextMenu(const QPoint& pos);
     void openTurnInputsDialogForJob(const ExplorerRunsJobRow& row);
     void showBattlePlanDialogForJob(const ExplorerRunsJobRow& row);
+    void showReplicationDialogForJob(const ExplorerRunsJobRow& row);
     void restoreSelectedGroupRow();
     void restoreSelectedJobRow();
     void selectFirstWaveIfNeeded();
