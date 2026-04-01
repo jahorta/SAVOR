@@ -96,6 +96,7 @@ public:
     bool detailsInFlight() const;
     bool autoRefreshEnabled() const;
     int refreshSeconds() const;
+    QString describeBattlePlanForJob(qint64 jobId) const;
 
 public slots:
     void requestGroupsRefresh();
