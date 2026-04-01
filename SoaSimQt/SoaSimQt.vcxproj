@@ -138,6 +138,7 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
@@ -192,6 +193,7 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />

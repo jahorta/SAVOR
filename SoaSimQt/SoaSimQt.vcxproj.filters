@@ -110,6 +110,9 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
@@ -334,6 +337,9 @@
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h">
