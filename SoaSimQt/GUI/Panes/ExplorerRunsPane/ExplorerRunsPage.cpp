@@ -171,10 +171,9 @@ void ExplorerRunsPage::createWidgets()
     wavesLayout->setContentsMargins(12, 12, 12, 12);
     wavesLayout->addWidget(new QLabel(QStringLiteral("Wave Tree"), wavesPanel));
     wavesView_ = new QTreeView(wavesPanel);
-    configureFlatTreeView(wavesView_, QStringLiteral("explorerRunsWavesTree"));
     wavesView_->setRootIsDecorated(true);
     wavesView_->setItemsExpandable(true);
-    wavesView_->setIndentation(20);
+    wavesView_->setIndentation(10);
     wavesView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
     wavesView_->setModel(wavesModel_);
