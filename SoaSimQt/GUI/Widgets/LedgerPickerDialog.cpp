@@ -203,16 +203,16 @@ LedgerPickerDialogBase::LedgerPickerDialogBase(const QString& title,
         if (!pageData_.prev.has_value()) {
             return;
         }
-        before_ = pageData_.prev;
-        after_.reset();
+        after_ = pageData_.prev;
+        before_.reset();
         fetchPage();
     });
     connect(olderButton_, &QPushButton::clicked, this, [this]() {
         if (!pageData_.next.has_value()) {
             return;
         }
-        after_ = pageData_.next;
-        before_.reset();
+        before_ = pageData_.next;
+        after_.reset();
         fetchPage();
     });
     connect(treeView_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
