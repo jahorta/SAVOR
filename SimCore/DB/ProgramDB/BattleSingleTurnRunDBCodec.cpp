@@ -555,7 +555,8 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
                 "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) });
         }
 
-        auto crt = simcore::db::JobSetsRepo::Create("BattleRun", kPK, std::nullopt, std::nullopt, std::nullopt, "",
+        std::string purpose = std::format("SingleTurnBattle: SeedProbe={}, SaveState={}", spbp.probe_id, spbp.savestate_id);
+        auto crt = simcore::db::JobSetsRepo::Create(purpose, kPK, std::nullopt, std::nullopt, std::nullopt, "",
             plans.value.size() * unique_count.value.size());
         if (!crt.ok) return DbResult<void>::Err(crt.error);
 
