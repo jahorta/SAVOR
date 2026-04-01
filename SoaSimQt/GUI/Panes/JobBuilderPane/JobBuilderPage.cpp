@@ -179,13 +179,18 @@ void JobBuilderPage::createWidgets()
         seedProbeViMsSpin_ = new QSpinBox(card);
         seedProbeViMsSpin_->setRange(0, 1000000000);
         seedProbeClearWinnersCheck_ = new QCheckBox(QStringLiteral("Clear result winners"), card);
+        seedProbeSaveStateWidget_ = new QWidget(card);
+        QFormLayout* seedProbeSaveStateForm = new QFormLayout();
+        seedProbeSaveStateForm->addRow(QStringLiteral("Savestate"), savestateSummaryLabel_);
+        seedProbeSaveStateForm->addRow(QString(), pickSavestateButton_);
+        seedProbeSaveStateWidget_->setLayout(seedProbeSaveStateForm);
+
         QFormLayout* form = new QFormLayout();
-        form->addRow(QStringLiteral("Savestate"), savestateSummaryLabel_);
-        form->addRow(QString(), pickSavestateButton_);
         form->addRow(QStringLiteral("Priority"), seedProbePrioritySpin_);
         form->addRow(QStringLiteral("Run ms"), seedProbeRunMsSpin_);
         form->addRow(QStringLiteral("VI stall ms"), seedProbeViMsSpin_);
         form->addRow(QString(), seedProbeClearWinnersCheck_);
+        cardLayout->addWidget(seedProbeSaveStateWidget_);
         cardLayout->addLayout(form);
         seedLayout->addWidget(card);
     }
@@ -648,7 +653,7 @@ void JobBuilderPage::updateFormVisibility()
     if (tasMovieForm_) tasMovieForm_->setVisible(showTas);
     if (seedProbeForm_) seedProbeForm_->setVisible(showSeed);
     if (explorerForm_) explorerForm_->setVisible(showExplorer);
-    if (seedProbeGeneralCard_) seedProbeGeneralCard_->setVisible(!(showTas && tasAutoSeeds));
+    if (seedProbeSaveStateWidget_) seedProbeSaveStateWidget_->setVisible(!(showTas && tasAutoSeeds));
     if (explorerDeltaCard_) explorerDeltaCard_->setVisible(!explorerDownstreamAuto);
     if (addExplorerSeedProbeButton_) addExplorerSeedProbeButton_->setVisible(!explorerDownstreamAuto);
     if (clearExplorerSeedProbeButton_) clearExplorerSeedProbeButton_->setVisible(!explorerDownstreamAuto);

@@ -129,6 +129,7 @@ private:
     QWidget* battleContextForm_ = nullptr;
     QWidget* seedProbeForm_ = nullptr;
     QFrame* seedProbeGeneralCard_ = nullptr;
+    QWidget* seedProbeSaveStateWidget_ = nullptr;
     QLabel* savestateSummaryLabel_ = nullptr;
     QPushButton* pickSavestateButton_ = nullptr;
     QSpinBox* seedProbePrioritySpin_ = nullptr;
