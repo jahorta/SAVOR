@@ -5,6 +5,7 @@
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
 #include "ExplorerRunsTurnInputsDialog.h"
+#include "ExplorerRunsWaveTreeModel.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include "Core/Input/SoaBattle/PlanWriter.h"
@@ -21,8 +22,6 @@
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
-#include <QtGui/QStandardItem>
-#include <QtGui/QStandardItemModel>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -46,13 +45,11 @@
 
 #include <algorithm>
 #include <optional>
-#include <unordered_map>
 
 using namespace simcore::db;
 using namespace simcore::db::codec::battle::singleturn;
 
 namespace {
-constexpr int kWaveJobSetIdUserRole = Qt::UserRole + 1;
 constexpr auto kSettingsGroup = "ExplorerRunsPage";
 constexpr auto kWinnersOnlyKey = "winners_only";
 constexpr auto kShowDuplicatesKey = "show_duplicates";
@@ -105,7 +102,7 @@ ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
     , coordinator_(new ExplorerRunsCoordinator(this))
     , groupsModel_(new ExplorerRunsGroupTableModel(this))
     , jobsModel_(new ExplorerRunsJobsTableModel(this))
-    , wavesModel_(new QStandardItemModel(this))
+    , wavesModel_(new ExplorerRunsWaveTreeModel(this))
 {
     createWidgets();
     loadFilterSettings();
@@ -175,7 +172,6 @@ void ExplorerRunsPage::createWidgets()
     wavesView_->setItemsExpandable(true);
     wavesView_->setIndentation(10);
     wavesView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
     wavesView_->setModel(wavesModel_);
     wavesView_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     wavesView_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -485,82 +481,35 @@ void ExplorerRunsPage::refreshWaveTree()
             restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
         }, Qt::QueuedConnection);
     };
+
     QScopedValueRollback<bool> refreshingWaveTreeGuard(refreshingWaveTree_, true);
     QItemSelectionModel* selection = wavesView_->selectionModel();
     const std::optional<QSignalBlocker> selectionBlocker = selection
         ? std::optional<QSignalBlocker>(std::in_place, selection)
         : std::nullopt;
 
-    wavesModel_->clear();
-    wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
-
     const ExplorerRunsCoordinator::GroupRow* group = selectedGroup();
-    if (!group) {
+    wavesModel_->syncFromGroup(group);
+
+    for (int row = 0; row < wavesModel_->rowCount(); ++row) {
+        wavesView_->expand(wavesModel_->index(row, 0));
+    }
+
+    if (state_.selectedWaves.empty() || !selection) {
         restoreWaveTreeScroll();
         return;
     }
 
-    std::unordered_map<quint32, std::vector<const ExplorerRunsCoordinator::WaveRow*>> byTurn;
-    for (const ExplorerRunsCoordinator::WaveRow& wave : group->waves) {
-        byTurn[wave.waveTurn].push_back(&wave);
-    }
-
-    std::vector<quint32> turns;
-    turns.reserve(byTurn.size());
-    for (const auto& entry : byTurn) {
-        turns.push_back(entry.first);
-    }
-    std::sort(turns.begin(), turns.end());
-
-    for (quint32 turn : turns) {
-        QStandardItem* turnItem = new QStandardItem(QStringLiteral("Turn %1").arg(turn));
-        turnItem->setSelectable(false);
-        QStandardItem* turnStatus = new QStandardItem(QStringLiteral("%1 waves").arg(byTurn[turn].size()));
-        turnStatus->setSelectable(false);
-
-        auto waves = byTurn[turn];
-        std::sort(waves.begin(), waves.end(), [](const auto* a, const auto* b) {
-            return a->createdAt < b->createdAt;
-        });
-
-        for (const auto* wave : waves) {
-            QStandardItem* waveItem = new QStandardItem(QStringLiteral("%1 Wave %2")
-                .arg(waveStatusIcon(wave->hasWinner, wave->hasSuccessOutcome))
-                .arg(wave->jobSetId));
-            waveItem->setData(wave->jobSetId, kWaveJobSetIdUserRole);
-            QStandardItem* statusItem = new QStandardItem(wave->statusSummary);
-            statusItem->setData(wave->jobSetId, kWaveJobSetIdUserRole);
-            turnItem->appendRow({ waveItem, statusItem });
-        }
-
-        wavesModel_->appendRow({ turnItem, turnStatus });
-        wavesView_->expand(turnItem->index());
-    }
-
-    if (state_.selectedWaves.empty()) {
-        restoreWaveTreeScroll();
-        return;
-    }
-
-    if (!selection) {
-        restoreWaveTreeScroll();
-        return;
-    }
     selection->clearSelection();
     for (int row = 0; row < wavesModel_->rowCount(); ++row) {
-        const QStandardItem* turnItem = wavesModel_->item(row, 0);
-        if (!turnItem) {
-            continue;
-        }
-        for (int childRow = 0; childRow < turnItem->rowCount(); ++childRow) {
-            QStandardItem* waveItem = turnItem->child(childRow, 0);
-            if (!waveItem) {
-                continue;
-            }
-            const qint64 waveId = waveItem->data(kWaveJobSetIdUserRole).toLongLong();
+        QModelIndex turnIndex = wavesModel_->index(row, 0);
+        const int childCount = wavesModel_->rowCount(turnIndex);
+        for (int childRow = 0; childRow < childCount; ++childRow) {
+            QModelIndex waveIndex = wavesModel_->index(childRow, 0, turnIndex);
+            const qint64 waveId = waveIndex.data(Qt::UserRole + 1).toLongLong();
             if (std::find(state_.selectedWaves.begin(), state_.selectedWaves.end(), waveId) != state_.selectedWaves.end()) {
-                selection->select(waveItem->index(), QItemSelectionModel::Select | QItemSelectionModel::Rows);
-                selection->setCurrentIndex(waveItem->index(), QItemSelectionModel::NoUpdate);
+                selection->select(waveIndex, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                selection->setCurrentIndex(waveIndex, QItemSelectionModel::NoUpdate);
             }
         }
     }
@@ -936,7 +885,7 @@ std::vector<qint64> ExplorerRunsPage::selectedWaveIdsFromTree() const
     const QModelIndexList rows = wavesView_->selectionModel()->selectedRows(0);
     ids.reserve(rows.size());
     for (const QModelIndex& index : rows) {
-        const QVariant value = index.data(kWaveJobSetIdUserRole);
+        const QVariant value = index.data(Qt::UserRole + 1);
         if (value.isValid()) {
             ids.push_back(value.toLongLong());
         }
