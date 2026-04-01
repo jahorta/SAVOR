@@ -245,6 +245,7 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     if (bp_ini.auto_schedule_battle_run) {
         IniKV cond;
         cond.add("type", "ALL_FINISHED");
+        cond.add("require_child_job_set_triggers_resolved", std::to_string(1));
 
         IniDoc bini = IniDoc::parse(blueprint_ini);
         auto brbp = simcore::db::codec::battle::run::BlueprintIni::from_section(bini);
