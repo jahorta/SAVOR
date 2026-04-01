@@ -34,7 +34,11 @@ JobSetsPage::JobSetsPage(QWidget* parent)
     wireSignals();
     treeView_->attachModel(treeModel_);
     treeView_->setItemDelegateForColumn(JobSetsTreeModel::ProgressColumn, progressDelegate_.get());
-    controller_->loadInitial();
+}
+
+void JobSetsPage::setPageActive(bool active)
+{
+    controller_->setPageActive(active);
 }
 
 void JobSetsPage::createWidgets()

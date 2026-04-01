@@ -41,6 +41,7 @@ public:
     const ViewState& viewState() const;
 
     void loadInitial();
+    void setPageActive(bool active);
     void applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, int pageLimit);
     void resetFilters();
     void setAutoRefreshEnabled(bool enabled);
@@ -100,4 +101,5 @@ private:
     QFutureWatcher<CancelResult> cancelWatcher_;
     QFutureWatcher<DeleteResult> deleteWatcher_;
     QTimer* refreshTimer_ = nullptr;
+    bool pageActive_ = false;
 };

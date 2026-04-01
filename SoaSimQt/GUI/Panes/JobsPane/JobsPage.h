@@ -29,6 +29,7 @@ class JobsPage final : public QWidget
 
 public:
     explicit JobsPage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void visualReplayRequested(qint64 jobId);

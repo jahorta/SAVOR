@@ -10,6 +10,8 @@
 
 class CoordinatorController;
 class CoordinatorPane;
+class JobSetsPage;
+class JobsPage;
 class QLabel;
 
 class QListWidget;
@@ -46,6 +48,8 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
+    JobSetsPage* jobSetsPage_ = nullptr;
+    JobsPage* jobsPage_ = nullptr;
     SettingsPage* settingsPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;

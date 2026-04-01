@@ -171,7 +171,9 @@ JobSetsController::JobSetsController(QObject* parent)
             requestRefresh();
         }
     });
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
 }
 
 const JobSetsController::ViewState& JobSetsController::viewState() const
@@ -181,7 +183,7 @@ const JobSetsController::ViewState& JobSetsController::viewState() const
 
 void JobSetsController::loadInitial()
 {
-    if (initialLoadStarted_) {
+    if (initialLoadStarted_ || !pageActive_) {
         return;
     }
 
@@ -190,6 +192,26 @@ void JobSetsController::loadInitial()
     state_.infoMessage.clear();
     kickKindsFetch();
     kickPageFetch();
+}
+
+void JobSetsController::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        if (refreshTimer_) {
+            refreshTimer_->stop();
+        }
+        return;
+    }
+
+    if (refreshTimer_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
+    loadInitial();
 }
 
 void JobSetsController::applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, int pageLimit)
@@ -219,7 +241,9 @@ void JobSetsController::resetFilters()
     state_.infoMessage.clear();
     syncFetchStateFromView();
     persistSettings();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     kickPageFetch();
     emitStateChanged();
 }
@@ -235,7 +259,9 @@ void JobSetsController::setRefreshSeconds(int seconds)
 {
     state_.refreshSeconds = seconds;
     persistSettings();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     emitStateChanged();
 }
 
@@ -355,7 +381,7 @@ void JobSetsController::setBusy(Operation operation, bool busy)
 
 bool JobSetsController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
+    return pageActive_ && state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
 }
 
 bool JobSetsController::anyWorkInFlight() const

@@ -63,7 +63,11 @@ JobsPage::JobsPage(QWidget* parent)
     createWidgets();
     wireSignals();
     syncControlsFromController(true);
-    controller_->loadInitial();
+}
+
+void JobsPage::setPageActive(bool active)
+{
+    controller_->setPageActive(active);
 }
 
 void JobsPage::createWidgets()
