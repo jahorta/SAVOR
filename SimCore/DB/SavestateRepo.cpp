@@ -139,7 +139,11 @@ namespace simcore {
             try { num = std::stoi(search); has_num = true; }
             catch (...) {}
             if (!search.empty()) {
-                where += "WHERE (s.note LIKE ? OR o.filename LIKE ? OR s.savestate_type " + std::string(has_num ? "= ?" : ">= -1") + ")";
+                where += "WHERE (s.note LIKE ? OR o.filename LIKE ?";
+                if (has_num) {
+                    where += " OR s.savestate_type = ?";
+                }
+                where += ")";
             }
             std::string keyset; KeysetCursor cur{}; bool has_cursor = false;
             if (q.before) { has_cursor = true; cur = *q.before; keyset = " AND s.id < ? "; }
