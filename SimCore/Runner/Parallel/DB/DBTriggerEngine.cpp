@@ -132,6 +132,61 @@ namespace {
             }).get();
     }
 
+    // Returns true when all active job_set-scoped triggers on descendant job sets
+    // have been resolved (deactivated). Descendants are recursive children and
+    // exclude the root job_set itself.
+    static DbResult<bool> condition_child_job_set_triggers_resolved(int64_t root_job_set_id) {
+        return simcore::db::DBService::instance().submit_res<bool>(simcore::db::OpType::Read, simcore::db::Priority::Normal, {},
+            [=](simcore::db::DbEnv& env)->DbResult<bool> {
+                sqlite3* db = env.handle();
+                sqlite3_stmt* st = nullptr;
+                const char* sql =
+                    "WITH RECURSIVE children(job_set_id) AS ("
+                    "  SELECT job_set_id FROM job_sets WHERE parent_job_set_id=? "
+                    "  UNION ALL "
+                    "  SELECT js.job_set_id "
+                    "  FROM job_sets js "
+                    "  JOIN children c ON js.parent_job_set_id = c.job_set_id"
+                    ") "
+                    "SELECT COUNT(1) "
+                    "FROM triggers t "
+                    "JOIN children c ON c.job_set_id = t.scope_id "
+                    "WHERE t.scope='job_set' AND t.active=1";
+                if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+                    return DbResult<bool>::Err({
+                        simcore::db::map_sqlite_err(sqlite3_errcode(db)),
+                        sqlite3_errcode(db),
+                        "prepare unresolved child job_set triggers"
+                        });
+                }
+                if (sqlite3_bind_int64(st, 1, root_job_set_id) != SQLITE_OK) {
+                    sqlite3_finalize(st);
+                    return DbResult<bool>::Err({
+                        simcore::db::map_sqlite_err(sqlite3_errcode(db)),
+                        sqlite3_errcode(db),
+                        "bind root job_set_id for unresolved child triggers"
+                        });
+                }
+                bool resolved = false;
+                const int rc = sqlite3_step(st);
+                if (rc == SQLITE_ROW) {
+                    const int64_t unresolved = sqlite3_column_int64(st, 0);
+                    resolved = (unresolved == 0);
+                }
+                else if (rc != SQLITE_DONE) {
+                    auto err = DbResult<bool>::Err({
+                        simcore::db::map_sqlite_err(sqlite3_errcode(db)),
+                        sqlite3_errcode(db),
+                        "step unresolved child job_set triggers"
+                        });
+                    sqlite3_finalize(st);
+                    return err;
+                }
+                sqlite3_finalize(st);
+                return DbResult<bool>::Ok(resolved);
+            }).get();
+    }
+
     static DbResult<void> handle_trigger(const simcore::db::TriggerRow& t, const simcore::db::JobRow& jr) {
         IniKV cond = IniDoc::parse(t.condition).section_kv(IniDoc::GLOBAL);
         bool satisfied = false;
@@ -161,6 +216,12 @@ namespace {
         else {
             // Unknown condition => ignore.
             return DbResult<void>::Ok();
+        }
+
+        if (satisfied && t.scope == "job_set" && cond.get_i64("require_child_job_set_triggers_resolved", 0) != 0) {
+            auto resolved = condition_child_job_set_triggers_resolved(t.scope_id);
+            if (!resolved.ok) return DbResult<void>::Err(resolved.error);
+            satisfied = resolved.value;
         }
 
         if (!satisfied) return DbResult<void>::Ok();
