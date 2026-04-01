@@ -612,7 +612,7 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
     if (ctx.prev_program_kind == (int)simcore::PK_TasMovie) {
 
-        if (ctx.scope != "job") return DbResult<void>::Err({DbErrorKind::InvalidState, 0, "scope of trigger from TasMovie to SeedProbe should be a single job"});
+        if (strcmp(ctx.scope, "job") != 0) return DbResult<void>::Err({ DbErrorKind::InvalidState, 0, "scope of trigger from TasMovie to SeedProbe should be a single job" });
 
         auto jb = JobsRepo::Get(ctx.prev_job_id);
         if (!jb.ok) return DbResult<void>::Err(jb.error);
@@ -633,10 +633,15 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
         bp.probe_id = sp.value;
 
-        auto js = JobSetsRepo::Create("seed probe", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Neutral", 1);
+        std::string purpose = std::format("SeedProbe TAS={}", tm.value.id);
+        std::string desc = std::format("Seed Probe auto-queued from TAS({}) with base file ({})", tm.value.id, tm.value.base_file_id);
+
+        auto js = JobSetsRepo::Create(purpose, simcore::PK_SeedProbe, std::nullopt, desc, bp.probe_id, "phase=Neutral", 1);
         if (!js.ok) return DbResult<void>::Err(js.error);
 
         bp.cur_phase = SeedProbePhase::Neutral;
+        bp.savestate_id = tm.value.output_savestate_id.value();
+        bp.root_jobset_id = js.value;
         bp.set_section(ini);
         auto e = encode_job_into_db(js.value, ini.to_string_sorted());
         if (!e.ok) return DbResult<void>::Err(e.error);
