@@ -96,6 +96,12 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 
     contentStack_->setCurrentIndex(currentRow);
+    if (jobSetsPage_) {
+        jobSetsPage_->setPageActive(currentRow == 0);
+    }
+    if (jobsPage_) {
+        jobsPage_->setPageActive(currentRow == 1);
+    }
 
     if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
         contentTitleLabel_->setText(kPageMetadata[currentRow].title);
@@ -250,17 +256,17 @@ QWidget* MainWindow::createContentPane()
     layout->addLayout(topLayout);
 
     contentStack_ = new QStackedWidget(contentPane);
-    auto* jobSetsPage = new JobSetsPage(contentPane);
-    connect(jobSetsPage, &JobSetsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(jobSetsPage);
-    auto* jobsPage = new JobsPage(contentPane);
-    connect(jobsPage, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(jobsPage);
+    jobSetsPage_ = new JobSetsPage(contentPane);
+    connect(jobSetsPage_, &JobSetsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobSetsPage_);
+    jobsPage_ = new JobsPage(contentPane);
+    connect(jobsPage_, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobsPage_);
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
     connect(coordinatorPane_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
-    connect(jobsPage, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
+    connect(jobsPage_, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     auto* jobBuilderPage = new JobBuilderPage(contentStack_);
     connect(jobBuilderPage, &JobBuilderPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(jobBuilderPage);
