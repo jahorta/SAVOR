@@ -62,6 +62,7 @@ namespace soa::battle::actions {
         if (dst < 0) { err = MaterializeErr::NoValidTarget; return false; }
         navTargetTo(p, cur, dst);
         tapA(p); // confirm target; game returns to main menu highlight (assume 3)
+        neutral(p, 1);
         cmd_index_ = 3;
         return true;
     }
@@ -91,7 +92,7 @@ namespace soa::battle::actions {
     bool PlanWriter::stop_zoom(InputPlan& p) {
         neutral(p, 1);
         tapA(p);
-        neutral(p, 1);
+        neutral(p, 2);
         return true;
     }
 
