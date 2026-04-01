@@ -16,6 +16,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QMetaObject>
 #include <QtCore/QScopedValueRollback>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
@@ -173,6 +174,7 @@ void ExplorerRunsPage::createWidgets()
     configureFlatTreeView(wavesView_, QStringLiteral("explorerRunsWavesTree"));
     wavesView_->setRootIsDecorated(true);
     wavesView_->setItemsExpandable(true);
+    wavesView_->setIndentation(20);
     wavesView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
     wavesView_->setModel(wavesModel_);
@@ -478,6 +480,12 @@ void ExplorerRunsPage::refreshGroupModel()
 void ExplorerRunsPage::refreshWaveTree()
 {
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(wavesView_);
+    const auto restoreWaveTreeScroll = [this, scrollSnapshot]() {
+        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        QMetaObject::invokeMethod(wavesView_, [this, scrollSnapshot]() {
+            restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        }, Qt::QueuedConnection);
+    };
     QScopedValueRollback<bool> refreshingWaveTreeGuard(refreshingWaveTree_, true);
     QItemSelectionModel* selection = wavesView_->selectionModel();
     const std::optional<QSignalBlocker> selectionBlocker = selection
@@ -489,7 +497,7 @@ void ExplorerRunsPage::refreshWaveTree()
 
     const ExplorerRunsCoordinator::GroupRow* group = selectedGroup();
     if (!group) {
-        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        restoreWaveTreeScroll();
         return;
     }
 
@@ -531,12 +539,12 @@ void ExplorerRunsPage::refreshWaveTree()
     }
 
     if (state_.selectedWaves.empty()) {
-        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        restoreWaveTreeScroll();
         return;
     }
 
     if (!selection) {
-        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        restoreWaveTreeScroll();
         return;
     }
     selection->clearSelection();
@@ -558,7 +566,7 @@ void ExplorerRunsPage::refreshWaveTree()
         }
     }
 
-    restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+    restoreWaveTreeScroll();
 }
 
 void ExplorerRunsPage::refreshJobModel()
