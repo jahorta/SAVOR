@@ -836,28 +836,36 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
 
 void ExplorerRunsPage::openTurnInputsDialogForJob(const ExplorerRunsJobRow& row)
 {
-    ExplorerRunsTurnInputsDialog dialog(this);
-    dialog.loadForJob(row);
-    dialog.exec();
+    auto* dialog = new ExplorerRunsTurnInputsDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->loadForJob(row);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void ExplorerRunsPage::showBattlePlanDialogForJob(const ExplorerRunsJobRow& row)
 {
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Battle Plan for Job %1").arg(row.jobId));
-    dialog.resize(800, 460);
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->setWindowTitle(QStringLiteral("Battle Plan for Job %1").arg(row.jobId));
+    dialog->resize(800, 460);
 
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    QPlainTextEdit* text = new QPlainTextEdit(&dialog);
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
+    QPlainTextEdit* text = new QPlainTextEdit(dialog);
     text->setReadOnly(true);
     text->setPlainText(coordinator_->describeBattlePlanForJob(row.jobId));
     layout->addWidget(text);
 
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     layout->addWidget(buttons);
 
-    dialog.exec();
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void ExplorerRunsPage::restoreSelectedGroupRow()
