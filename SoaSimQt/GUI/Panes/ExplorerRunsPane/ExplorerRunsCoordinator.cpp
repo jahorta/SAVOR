@@ -3,6 +3,7 @@
 #include "DB/BattlePlanAtomRepo.h"
 #include "DB/BattlePlanTurnRepo.h"
 #include "DB/DeltaSeedRepo.h"
+#include "DB/ExplorerRunRepo.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Querying/DataService.h"
 #include "DB/Scheduling/JobEventsRepo.h"
@@ -423,6 +424,26 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
 std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsCoordinator::buildJobsForWaves(const std::vector<qint64>& waveJobSetIds) const
 {
     std::vector<JobViewRow> out;
+    std::unordered_set<qint64> runIds;
+    std::unordered_map<qint64, bool> runHasVictory;
+
+    for (qint64 waveJobSetId : waveJobSetIds) {
+        auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
+        if (!jobs.ok) {
+            continue;
+        }
+        for (const JobRow& job : jobs.value) {
+            if (job.program_ref_id > 0) {
+                runIds.insert(job.program_ref_id);
+            }
+        }
+    }
+
+    for (qint64 runId : runIds) {
+        auto runRow = ExplorerRunRepo::Get(runId);
+        runHasVictory[runId] = runRow.ok && runRow.value.has_victory;
+    }
+
     for (qint64 waveJobSetId : waveJobSetIds) {
         auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
         if (!jobs.ok) {
@@ -455,7 +476,8 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsCoordinator::buildJ
                 summary.predPassed,
                 summary.predTotal,
                 summary.predAbortRun,
-                summary.hasResults
+                summary.hasResults,
+                runHasVictory.contains(job.program_ref_id) && runHasVictory[job.program_ref_id]
             });
         }
     }

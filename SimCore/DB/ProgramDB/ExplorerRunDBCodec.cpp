@@ -26,6 +26,7 @@
 
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
+#include "../../Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "../../Core/Input/InputPlanFmt.h"
 #include "../../Core/Input/AppliedTurnTapeBlob.h"
 #include "../../Runner/Script/PSContext.h"
@@ -178,7 +179,7 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
             if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
             auto fake_vectors = enumerate_fake_vectors(turns.value.size(), bp_ini.min_fake_attacks, bp_ini.max_fake_attacks);
 
-            auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_row.plan_id, delta_row.id);
+            auto run = ExplorerRunRepo::IdempotentCreate(job_set_id, settings_id, plan_row.plan_id, delta_row.id);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
             for (const auto& fv : fake_vectors) {
@@ -344,24 +345,10 @@ DbResult<void> ExplorerRunDBCodec::encode_results_into_db(int64_t job_id, const 
         if (!jr.ok) return DbResult<void>::Err(jr.error);
         const int64_t run_id = jr.value.program_ref_id;
 
-        auto s1 = simcore::db::ExplorerRunRepo::SetResultsIni(run_id, persisted_results_ini);
-        if (!s1.ok) return DbResult<void>::Err(s1.error);
-
-        auto lines = JobEventsRepo::ListByJobAndKind(job_id, "PROGRESS");
-        if (!lines.ok) return DbResult<void>::Err(lines.error);
-        std::string transcript;
-        for (size_t i = 0; i < lines.value.size(); ++i) {
-            if (i) transcript.push_back('\n');
-            if (lines.value[i].payload) transcript.append(*lines.value[i].payload);
+        if (results.battle_outcome == static_cast<uint32_t>(simcore::battle::Outcome::Victory)) {
+            auto setVictory = simcore::db::ExplorerRunRepo::SetHasVictory(run_id, true);
+            if (!setVictory.ok) return DbResult<void>::Err(setVictory.error);
         }
-        auto art = simcore::db::ObjectStore::PutText(transcript);
-        if (!art.ok) return DbResult<void>::Err(art.error);
-
-        auto s2 = simcore::db::ExplorerRunRepo::SetProgressLogArtifactId(run_id, art.value.id);
-        if (!s2.ok) return DbResult<void>::Err(s2.error);
-
-        auto md = simcore::db::ExplorerRunRepo::MarkDone(run_id);
-        if (!md.ok) return DbResult<void>::Err(md.error);
     }
     return DbResult<void>::Ok();
 }
@@ -373,8 +360,6 @@ DbResult<std::string> ExplorerRunDBCodec::decode_progress_from_db(std::optional<
     if (job_id) {
         auto jr = JobsRepo::Get(*job_id);
         if (!jr.ok) return DbResult<std::string>::Err(jr.error);
-        auto run = simcore::db::ExplorerRunRepo::Get(jr.value.program_ref_id);
-        if (!run.ok) return DbResult<std::string>::Err(run.error);
 
         auto rows = JobEventsRepo::ListByJobAndKind(*job_id, "PROGRESS");
         if (!rows.ok) return DbResult<std::string>::Err(rows.error);

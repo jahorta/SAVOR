@@ -13,6 +13,7 @@
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/Scheduling/JobsRepo.h"
+#include "DB/TagRepo.h"
 #include "Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "Utils/IniDoc.h"
 
@@ -46,6 +47,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <unordered_set>
 
 using namespace simcore::db;
 using namespace simcore::db::codec::battle::singleturn;
@@ -55,6 +57,8 @@ constexpr auto kSettingsGroup = "ExplorerRunsPage";
 constexpr auto kWinnersOnlyKey = "winners_only";
 constexpr auto kShowDuplicatesKey = "show_duplicates";
 constexpr auto kSuccessOnlyKey = "success_only";
+constexpr auto kChildVictoryOnlyKey = "child_victory_only";
+constexpr auto kTagKey = "tag_key";
 constexpr auto kSortMetricPrefix = "sort_metric_";
 constexpr auto kSortAscendingPrefix = "sort_ascending_";
 constexpr auto kOverrideFakeAttacksKey = "override_fake_attacks";
@@ -198,9 +202,17 @@ void ExplorerRunsPage::createWidgets()
     showDuplicatesCheck_->setObjectName("jobsCheckBox");
     successOnlyCheck_ = new QCheckBox(QStringLiteral("Success outcome only"), jobsPanel);
     successOnlyCheck_->setObjectName("jobsCheckBox");
+    childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child reached Victory breakpoint"), jobsPanel);
+    childVictoryOnlyCheck_->setObjectName("jobsCheckBox");
+    tagFilter_ = new QComboBox(jobsPanel);
+    tagFilter_->setObjectName("jobsFilterCombo");
+    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
     filtersLayout->addWidget(winnersOnlyCheck_, 0, 0);
     filtersLayout->addWidget(showDuplicatesCheck_, 0, 1);
     filtersLayout->addWidget(successOnlyCheck_, 0, 2);
+    filtersLayout->addWidget(childVictoryOnlyCheck_, 0, 3);
+    filtersLayout->addWidget(new QLabel(QStringLiteral("Tag"), jobsPanel), 1, 6);
+    filtersLayout->addWidget(tagFilter_, 1, 7);
 
     for (int i = 0; i < 3; ++i) {
         sortMetricBoxes_[i] = new QComboBox(jobsPanel);
@@ -360,6 +372,21 @@ void ExplorerRunsPage::wireSignals()
         persistFilterSettings();
         refreshJobs();
     });
+    connect(childVictoryOnlyCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
+        state_.childVictoryOnly = checked;
+        persistFilterSettings();
+        refreshJobs();
+    });
+    connect(tagFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, refreshJobs](int) {
+        const QVariant data = tagFilter_->currentData();
+        if (data.isValid()) {
+            state_.tagKey = data.toString();
+        } else {
+            state_.tagKey.reset();
+        }
+        persistFilterSettings();
+        refreshJobs();
+    });
 
     for (int i = 0; i < 3; ++i) {
         connect(sortMetricBoxes_[i], qOverload<int>(&QComboBox::currentIndexChanged), this, [this, i, refreshJobs](int) {
@@ -421,6 +448,11 @@ void ExplorerRunsPage::syncControls()
         QSignalBlocker blocker(successOnlyCheck_);
         successOnlyCheck_->setChecked(state_.successOnly);
     }
+    {
+        QSignalBlocker blocker(childVictoryOnlyCheck_);
+        childVictoryOnlyCheck_->setChecked(state_.childVictoryOnly);
+    }
+    refreshTagFilterOptions();
     showDuplicatesCheck_->setEnabled(state_.winnersOnly);
     {
         QSignalBlocker blocker(overrideFakeAttacksCheck_);
@@ -663,6 +695,15 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsPage::buildVisibleS
 {
     std::vector<ExplorerRunsCoordinator::JobViewRow> out;
     out.reserve(coordinator_->jobs().size());
+
+    std::unordered_set<qint64> tagFilteredJobIds;
+    if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty()) {
+        const auto tagged = TagRepo::FindEntityIdsByTag("job", state_.tagKey->trimmed().toStdString(), true);
+        if (tagged.ok) {
+            tagFilteredJobIds.insert(tagged.value.begin(), tagged.value.end());
+        }
+    }
+
     for (const ExplorerRunsCoordinator::JobViewRow& job : coordinator_->jobs()) {
         const bool winner = isWinnerState(job.state);
         const bool duplicate = isDuplicateState(job.state);
@@ -672,6 +713,12 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsPage::buildVisibleS
             }
         }
         if (state_.successOnly && (!job.hasResults || !isSuccessOutcome(job.battleOutcome))) {
+            continue;
+        }
+        if (state_.childVictoryOnly && !job.hasChildVictory) {
+            continue;
+        }
+        if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty() && !tagFilteredJobIds.contains(job.jobId)) {
             continue;
         }
         out.push_back(job);
@@ -914,6 +961,13 @@ void ExplorerRunsPage::loadFilterSettings()
     state_.winnersOnly = settings.value(kWinnersOnlyKey, state_.winnersOnly).toBool();
     state_.showDuplicates = settings.value(kShowDuplicatesKey, state_.showDuplicates).toBool();
     state_.successOnly = settings.value(kSuccessOnlyKey, state_.successOnly).toBool();
+    state_.childVictoryOnly = settings.value(kChildVictoryOnlyKey, state_.childVictoryOnly).toBool();
+    const QString tagKey = settings.value(kTagKey).toString().trimmed();
+    if (!tagKey.isEmpty()) {
+        state_.tagKey = tagKey;
+    } else {
+        state_.tagKey.reset();
+    }
     if (!state_.winnersOnly) {
         state_.showDuplicates = false;
     }
@@ -945,6 +999,12 @@ void ExplorerRunsPage::persistFilterSettings() const
     settings.setValue(kWinnersOnlyKey, state_.winnersOnly);
     settings.setValue(kShowDuplicatesKey, state_.showDuplicates);
     settings.setValue(kSuccessOnlyKey, state_.successOnly);
+    settings.setValue(kChildVictoryOnlyKey, state_.childVictoryOnly);
+    if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty()) {
+        settings.setValue(kTagKey, state_.tagKey->trimmed());
+    } else {
+        settings.remove(kTagKey);
+    }
     for (int i = 0; i < 3; ++i) {
         settings.setValue(QStringLiteral("%1%2").arg(kSortMetricPrefix).arg(i), static_cast<int>(state_.sortKeys[static_cast<size_t>(i)].metric));
         settings.setValue(QStringLiteral("%1%2").arg(kSortAscendingPrefix).arg(i), state_.sortKeys[static_cast<size_t>(i)].ascending);
@@ -953,4 +1013,30 @@ void ExplorerRunsPage::persistFilterSettings() const
     settings.setValue(kMaxFakeAttacksKey, state_.maxFakeAttacksOverride);
 
     settings.endGroup();
+}
+
+void ExplorerRunsPage::refreshTagFilterOptions()
+{
+    if (!tagFilter_) {
+        return;
+    }
+
+    const QVariant targetTag = (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty())
+        ? QVariant(state_.tagKey->trimmed())
+        : QVariant();
+
+    QSignalBlocker blocker(tagFilter_);
+    tagFilter_->clear();
+    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
+
+    const auto tagsResult = TagRepo::ListTagsForEntityKind("job");
+    if (tagsResult.ok) {
+        for (const auto& tag : tagsResult.value) {
+            const QString key = QString::fromStdString(tag.tag_key);
+            tagFilter_->addItem(key, key);
+        }
+    }
+
+    const int idx = targetTag.isValid() ? tagFilter_->findData(targetTag) : 0;
+    tagFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
 }
