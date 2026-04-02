@@ -7,13 +7,15 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QListWidget>
-#include <QtWidgets/QListWidgetItem>
+#include <QtWidgets/QTreeWidget>
+#include <QtWidgets/QTreeWidgetItem>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
+#include <map>
 
 EntityTagsDialog::EntityTagsDialog(const QString& entityKind, qint64 entityId, const QString& title, QWidget* parent)
     : QDialog(parent)
@@ -74,9 +76,10 @@ void EntityTagsDialog::createWidgets()
     createRow->addWidget(createTagButton_);
     root->addLayout(createRow);
 
-    tagList_ = new QListWidget(this);
-    tagList_->setSelectionMode(QAbstractItemView::NoSelection);
-    root->addWidget(tagList_, 1);
+    tagTree_ = new QTreeWidget(this);
+    tagTree_->setHeaderHidden(true);
+    tagTree_->setSelectionMode(QAbstractItemView::NoSelection);
+    root->addWidget(tagTree_, 1);
 
     QDialogButtonBox* box = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
     saveButton_ = box->addButton(entityExists_ ? QStringLiteral("Save") : QStringLiteral("Apply"), QDialogButtonBox::AcceptRole);
@@ -132,13 +135,53 @@ void EntityTagsDialog::loadTags()
 
 void EntityTagsDialog::refreshTagList()
 {
-    tagList_->clear();
+    tagTree_->clear();
+    std::map<QString, QTreeWidgetItem*> namespaceNodes;
     for (const auto& tag : allTags_) {
-        QListWidgetItem* item = new QListWidgetItem(QString::fromStdString(tag.tag_key), tagList_);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        const QString fullKey = QString::fromStdString(tag.tag_key);
+        const QStringList parts = fullKey.split(QStringLiteral("::"), Qt::SkipEmptyParts);
+        if (parts.isEmpty()) {
+            continue;
+        }
+
+        QTreeWidgetItem* parentNode = nullptr;
+        if (parts.size() > 1) {
+            QString namespacePath;
+            for (int i = 0; i < parts.size() - 1; ++i) {
+                namespacePath = namespacePath.isEmpty() ? parts.at(i) : namespacePath + QStringLiteral("::") + parts.at(i);
+                auto it = namespaceNodes.find(namespacePath);
+                if (it != namespaceNodes.end()) {
+                    parentNode = it->second;
+                    continue;
+                }
+
+                QTreeWidgetItem* namespaceItem = new QTreeWidgetItem(QStringList(parts.at(i)));
+                namespaceItem->setFlags(namespaceItem->flags() & ~Qt::ItemIsUserCheckable);
+                if (parentNode) {
+                    parentNode->addChild(namespaceItem);
+                }
+                else {
+                    tagTree_->addTopLevelItem(namespaceItem);
+                }
+                namespaceNodes.emplace(namespacePath, namespaceItem);
+                parentNode = namespaceItem;
+            }
+        }
+
+        const QString leafText = parts.last();
+        QTreeWidgetItem* leafItem = new QTreeWidgetItem(QStringList(leafText));
+        leafItem->setFlags(leafItem->flags() | Qt::ItemIsUserCheckable);
+        leafItem->setData(0, Qt::UserRole, fullKey);
         const bool checked = std::find(initialTagKeys_.begin(), initialTagKeys_.end(), tag.tag_key) != initialTagKeys_.end();
-        item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+        leafItem->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+        if (parentNode) {
+            parentNode->addChild(leafItem);
+        }
+        else {
+            tagTree_->addTopLevelItem(leafItem);
+        }
     }
+    tagTree_->expandAll();
 }
 
 void EntityTagsDialog::applyChanges()
@@ -176,12 +219,23 @@ void EntityTagsDialog::setSelectedTags(const std::vector<std::string>& tagKeys)
 std::vector<std::string> EntityTagsDialog::selectedTagKeys() const
 {
     std::vector<std::string> out;
-    out.reserve(static_cast<size_t>(tagList_->count()));
-    for (int i = 0; i < tagList_->count(); ++i) {
-        QListWidgetItem* item = tagList_->item(i);
-        if (item && item->checkState() == Qt::Checked) {
-            out.push_back(item->text().trimmed().toStdString());
+    const std::function<void(QTreeWidgetItem*)> collectChecked = [&](QTreeWidgetItem* item) {
+        if (!item) {
+            return;
         }
+        if (item->childCount() == 0 && item->checkState(0) == Qt::Checked) {
+            const QString fullKey = item->data(0, Qt::UserRole).toString().trimmed();
+            if (!fullKey.isEmpty()) {
+                out.push_back(fullKey.toStdString());
+            }
+        }
+        for (int i = 0; i < item->childCount(); ++i) {
+            collectChecked(item->child(i));
+        }
+    };
+
+    for (int i = 0; i < tagTree_->topLevelItemCount(); ++i) {
+        collectChecked(tagTree_->topLevelItem(i));
     }
     return out;
 }
