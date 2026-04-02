@@ -108,7 +108,7 @@ DbResult<simcore::PSJob> TasMovieDBCodec::decode_job_from_db(int64_t job_id) {
 
     simcore::tas::DtmFile base_dtm;
     base_dtm.load(dtm_pathr.value);
-    base_dtm.set_recording_start_time(job_ini.new_rtc, false);
+    base_dtm.set_recording_start_time_unix_seconds(job_ini.new_rtc);
 
     std::string base_dtm_filename = dtm_deets.value.filename.empty() ? "temp.dtm" : dtm_deets.value.filename;
     std::string temp_filename = std::filesystem::path(base_dtm_filename).stem().string()+ "_rtc" + std::to_string(job_ini.new_rtc) + ".dtm";

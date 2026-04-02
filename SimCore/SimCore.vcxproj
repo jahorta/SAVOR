@@ -333,6 +333,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Script\PSContext.h" />
     <ClInclude Include="Runner\Script\PSContextCodec.h" />
     <ClInclude Include="Runner\Script\ScriptProgress.h" />
+    <ClInclude Include="Tas\DtmAnnotationFile.h" />
     <ClInclude Include="Tas\DtmFile.h" />
     <ClInclude Include="Utils\DeltaColorizer.h" />
     <ClInclude Include="Utils\EnsureSys.h" />
@@ -432,6 +433,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
+    <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />
     <ClCompile Include="Utils\Log.cpp" />

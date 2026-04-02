@@ -7,6 +7,7 @@
 #include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
+#include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 
 #include <QtCore/QStringList>
 
@@ -40,6 +41,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Seed probe grid and unique probing results." },
     { "Explorer Runs", "Explorer run history and controls." },
+    { "DTM Editor", "Poll-based DTM editing with deterministic annotation sidecar binding." },
     { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
 };
 } // namespace
@@ -115,7 +117,7 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
         return;
     }
 
-    navigationList_->setCurrentRow(8);
+    navigationList_->setCurrentRow(9);
 
     SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
     switch (target) {
@@ -221,6 +223,7 @@ QWidget* MainWindow::createNavigationPane()
         "Artifacts",
         "Seed Probe",
         "Explorer Runs",
+        "DTM Editor",
         "Settings"
     });
 
@@ -283,6 +286,9 @@ QWidget* MainWindow::createContentPane()
     connect(explorerRunsPage, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(explorerRunsPage, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     contentStack_->addWidget(explorerRunsPage);
+    dtmEditorPage_ = new DtmEditorPage(contentStack_);
+    connect(dtmEditorPage_, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(dtmEditorPage_);
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
     connect(settingsPage_, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(settingsPage_);

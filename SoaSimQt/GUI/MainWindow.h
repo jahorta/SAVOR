@@ -51,6 +51,7 @@ private:
     JobSetsPage* jobSetsPage_ = nullptr;
     JobsPage* jobsPage_ = nullptr;
     SettingsPage* settingsPage_ = nullptr;
+    DtmEditorPage* dtmEditorPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;
