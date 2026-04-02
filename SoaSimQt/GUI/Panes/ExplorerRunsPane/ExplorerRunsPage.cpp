@@ -491,10 +491,6 @@ void ExplorerRunsPage::refreshWaveTree()
     const ExplorerRunsCoordinator::GroupRow* group = selectedGroup();
     wavesModel_->syncFromGroup(group);
 
-    for (int row = 0; row < wavesModel_->rowCount(); ++row) {
-        wavesView_->expand(wavesModel_->index(row, 0));
-    }
-
     if (state_.selectedWaves.empty() || !selection) {
         restoreWaveTreeScroll();
         return;
