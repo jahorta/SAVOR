@@ -289,6 +289,9 @@
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
@@ -343,9 +346,6 @@
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h">

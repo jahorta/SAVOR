@@ -227,8 +227,6 @@ void ExplorerRunsReplicationDialog::setStatusMessage(const QString& message, boo
 {
     statusLabel_->setText(message);
     statusLabel_->setProperty("error", isError);
-    statusLabel_->style()->unpolish(statusLabel_);
-    statusLabel_->style()->polish(statusLabel_);
 }
 
 void ExplorerRunsReplicationDialog::materializeObjectToPath(qint64 objectRefId, const QString& suggestedFilename)
