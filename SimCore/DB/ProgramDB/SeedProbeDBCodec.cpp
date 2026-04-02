@@ -12,6 +12,7 @@
 #include "../TasMovieRepo.h"
 #include "../SavestateRepo.h"
 #include "../DeltaSeedRepo.h"
+#include "../TagRepo.h"
 #include "../../Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../Phases/RNGSeedDeltaMap.h"
 #include "../../Runner/IPC/Wire.h"
@@ -33,6 +34,7 @@ using simcore::db::TriggersRepo;
 using simcore::db::JobEventsRepo;
 using simcore::db::SeedProbeRepo;
 using simcore::db::SeedProbeRow;
+using simcore::db::TagRepo;
 using simcore::db::codec::seedprobe::GridIni;
 using simcore::db::codec::seedprobe::UniqueIni;
 using simcore::db::codec::seedprobe::BlueprintIni;
@@ -50,6 +52,17 @@ static inline std::string fingerprint_for(int64_t probe_id, const std::string& f
     oss << "PK=" << PK << ";PV=" << PV << ";probe_id=" << probe_id
         << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
     return oss.str();
+}
+
+static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+    auto tags = TagRepo::ListEntityTags("job_set", from_job_set_id);
+    if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+    for (const auto& tag : tags.value) {
+        auto attach = TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+        if (!attach.ok) return DbResult<void>::Err(attach.error);
+    }
+    return DbResult<void>::Ok();
 }
 
 static simcore::db::DbResult<int64_t> encode_neutral(int64_t job_set_id, const std::string& blueprint_ini)
@@ -638,6 +651,10 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
         auto js = JobSetsRepo::Create(purpose, simcore::PK_SeedProbe, std::nullopt, desc, bp.probe_id, "phase=Neutral", 1);
         if (!js.ok) return DbResult<void>::Err(js.error);
+        auto prev_root = JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+        if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+        auto copy_tags = copy_job_set_tags(prev_root.value, js.value);
+        if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
 
         bp.cur_phase = SeedProbePhase::Neutral;
         bp.savestate_id = tm.value.output_savestate_id.value();

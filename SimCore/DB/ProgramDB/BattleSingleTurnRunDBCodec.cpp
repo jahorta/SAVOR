@@ -23,6 +23,7 @@
 #include "../ExplorerSettingsRepo.h"
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
+#include "../TagRepo.h"
 #include "SeedProbeDBCodec.h"
 #include "../SavestateRepo.h"
 #include "../DBCore/ObjectStore.h"
@@ -45,6 +46,17 @@ static constexpr int kPK = simcore::PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
+    static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+        auto tags = simcore::db::TagRepo::ListEntityTags("job_set", from_job_set_id);
+        if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+        for (const auto& tag : tags.value) {
+            auto attach = simcore::db::TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+            if (!attach.ok) return DbResult<void>::Err(attach.error);
+        }
+        return DbResult<void>::Ok();
+    }
+
     static std::vector<uint16_t> parse_csv_u16(const std::optional<std::string>& csv) {
         std::vector<uint16_t> out;
         if (!csv.has_value() || csv->empty()) return out;
@@ -566,6 +578,10 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         auto crt = simcore::db::JobSetsRepo::Create(purpose, kPK, std::nullopt, std::nullopt, std::nullopt, "",
             plans.value.size() * unique_count.value.size());
         if (!crt.ok) return DbResult<void>::Err(crt.error);
+        auto prev_root = simcore::db::JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+        if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+        auto copy_tags = copy_job_set_tags(prev_root.value, crt.value);
+        if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
 
         bp.seed_probe_id = spbp.probe_id;
         bp.set_section(ini);

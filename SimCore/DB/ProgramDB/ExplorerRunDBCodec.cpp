@@ -22,6 +22,7 @@
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
 #include "../SavestateRepo.h"
+#include "../TagRepo.h"
 #include "../Querying/DataService.h"
 
 #include "../../Phases/Programs/ProgramRegistry.h"
@@ -63,6 +64,17 @@ static constexpr int kPK = PK_BattleTurnRunner;                                 
 static constexpr int kProgramVersion = phase::battle::runner::PayloadVersion;       // from BattleRunnerPayload.h
 
 namespace {
+    static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+        auto tags = simcore::db::TagRepo::ListEntityTags("job_set", from_job_set_id);
+        if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+        for (const auto& tag : tags.value) {
+            auto attach = simcore::db::TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+            if (!attach.ok) return DbResult<void>::Err(attach.error);
+        }
+        return DbResult<void>::Ok();
+    }
+
     static void dfs_fake_vectors(std::size_t idx, uint32_t remaining, std::vector<uint32_t>& cur, std::vector<std::vector<uint32_t>>& out) {
         if (idx + 1 == cur.size()) {
             cur[idx] = remaining;
@@ -506,6 +518,10 @@ DbResult<void> ExplorerRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx,
     const int action_kind = bp.use_single_turn_runner ? PK_BattleSingleTurnRunner : PK_BattleTurnRunner;
     auto crt = simcore::db::JobSetsRepo::Create("BattleRun", action_kind, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
     if (!crt.ok) return DbResult<void>::Err(crt.error);
+    auto prev_root = simcore::db::JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+    if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+    auto copy_tags = copy_job_set_tags(prev_root.value, crt.value);
+    if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
 
     bp.seed_probe_id = spbp.probe_id;
     
