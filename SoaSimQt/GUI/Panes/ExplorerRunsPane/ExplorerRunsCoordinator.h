@@ -77,6 +77,7 @@ public:
         quint32 predTotal = 0;
         quint32 predAbortRun = 0;
         bool hasResults = false;
+        bool hasChildVictory = false;
     };
 
     struct DetailBundle {
