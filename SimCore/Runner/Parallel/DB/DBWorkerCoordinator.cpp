@@ -855,6 +855,7 @@ namespace simcore {
                 SetCurrentJob((int64_t)s->id, std::nullopt, std::nullopt);
                 if (restart_worker_for_retry && cfg_.restart_failed_jobs_automatically) {
                     mark_slot_start_failed(*s, "job auto-retried; restarting worker before next attempt");
+                    simcore::db::JobsRepo::RestartFailed(r.job_id);
                 } else {
                     UpdateState((int64_t)s->id, WorkerStateKind::Idle);
                     s->phase = Slot::Phase::Ready;
