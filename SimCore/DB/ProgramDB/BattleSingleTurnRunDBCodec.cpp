@@ -238,7 +238,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
             jb.fake_attacks_this_turn = 0;
             jb.action_key = action_key_for_plan_turn(plan.plan_id, wave.cur_turn - 1);
 
-            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
+            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(root.value, bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
             const uint32_t fake_min = std::min(bp.min_fake_attacks, bp.max_fake_attacks);
@@ -426,6 +426,13 @@ DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id
         if (!r.savestate_path.empty() && std::filesystem::exists(r.savestate_path)) std::filesystem::remove(r.savestate_path);
         auto st = simcore::db::JobsRepo::SetState(job_id, "FAILED");
         if (!st.ok) return DbResult<void>::Err(st.error);
+    }
+
+    if (r.battle_outcome == static_cast<uint32_t>(simcore::battle::Outcome::Victory)) {
+        auto jr = simcore::db::JobsRepo::Get(job_id);
+        if (!jr.ok) return DbResult<void>::Err(jr.error);
+        auto victoryMark = simcore::db::ExplorerRunRepo::SetHasVictory(jr.value.program_ref_id, true);
+        if (!victoryMark.ok) return DbResult<void>::Err(victoryMark.error);
     }
 
     return DbResult<void>::Ok();
@@ -730,7 +737,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
         nj.fake_attacks_used_before = r.fake_attacks_used;
         nj.action_key = action_key_for_plan_turn(pl.plan_id, next.cur_turn - 1);
 
-        auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
+        auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(root.value, bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
         if (!run.ok) continue;
 
         if (r.fake_attacks_used > bp.max_fake_attacks) continue;

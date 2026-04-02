@@ -4,154 +4,85 @@
 namespace simcore {
     namespace db {
 
-        static inline DbResult<int64_t> Impl_IdempotentCreate(DbEnv& env, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id) {
+        static inline DbResult<int64_t> Impl_IdempotentCreate(DbEnv& env, int64_t root_job_set_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
 
             int rc = sqlite3_prepare_v2(db,
-                "SELECT id FROM explorer_run WHERE settings_id=? AND plan_id=? AND delta_seed_id=? LIMIT 1;",
+                "SELECT id FROM explorer_run WHERE root_job_set_id=? AND settings_id=? AND plan_id=? AND delta_seed_id=? LIMIT 1;",
                 -1, &st, nullptr);
             if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare find" });
-            sqlite3_bind_int64(st, 1, settings_id);
-            sqlite3_bind_int64(st, 2, plan_id);
-            sqlite3_bind_int64(st, 3, delta_seed_id);
-            rc = sqlite3_step(st);
-            if (rc == SQLITE_ROW) { int64_t id = sqlite3_column_int64(st, 0); sqlite3_finalize(st); return DbResult<int64_t>::Ok(id); }
-            sqlite3_finalize(st);
-
-            // derive probe_id from delta
-            sqlite3_stmt* stp{};
-            rc = sqlite3_prepare_v2(db, "SELECT probe_id FROM seed_delta WHERE id=? LIMIT 1;", -1, &stp, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare probe" });
-            sqlite3_bind_int64(stp, 1, delta_seed_id);
-            rc = sqlite3_step(stp);
-            if (rc != SQLITE_ROW) { sqlite3_finalize(stp); return DbResult<int64_t>::Err({ DbErrorKind::NotFound, rc, "seed_delta not found" }); }
-            int64_t probe_id = sqlite3_column_int64(stp, 0);
-            sqlite3_finalize(stp);
-
-            rc = sqlite3_prepare_v2(db,
-                "INSERT INTO explorer_run(probe_id, settings_id, plan_id, delta_seed_id, status, progress_log, complete) "
-                "VALUES(?,?,?,?,'planned','',0);",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare ins" });
-            sqlite3_bind_int64(st, 1, probe_id);
+            sqlite3_bind_int64(st, 1, root_job_set_id);
             sqlite3_bind_int64(st, 2, settings_id);
             sqlite3_bind_int64(st, 3, plan_id);
             sqlite3_bind_int64(st, 4, delta_seed_id);
             rc = sqlite3_step(st);
-            if (rc != SQLITE_DONE) 
-            { 
-                sqlite3_finalize(st); 
-                std::string err = sqlite3_errmsg(db); 
-                return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert: " + err}); 
+            if (rc == SQLITE_ROW) {
+                int64_t id = sqlite3_column_int64(st, 0);
+                sqlite3_finalize(st);
+                return DbResult<int64_t>::Ok(id);
             }
-            int64_t id = sqlite3_last_insert_rowid(db);
+            sqlite3_finalize(st);
+
+            rc = sqlite3_prepare_v2(db,
+                "INSERT INTO explorer_run(root_job_set_id, settings_id, plan_id, delta_seed_id, has_victory) VALUES(?,?,?,?,0);",
+                -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "prepare insert" });
+            sqlite3_bind_int64(st, 1, root_job_set_id);
+            sqlite3_bind_int64(st, 2, settings_id);
+            sqlite3_bind_int64(st, 3, plan_id);
+            sqlite3_bind_int64(st, 4, delta_seed_id);
+            rc = sqlite3_step(st);
+            if (rc != SQLITE_DONE) {
+                sqlite3_finalize(st);
+                return DbResult<int64_t>::Err({ map_sqlite_err(rc), rc, "insert explorer_run" });
+            }
+            const int64_t id = sqlite3_last_insert_rowid(db);
             sqlite3_finalize(st);
             return DbResult<int64_t>::Ok(id);
-        }
-
-        static inline DbResult<void> Impl_AppendProgress(DbEnv& env, int64_t run_id, const std::string& text, int max_bytes) {
-            sqlite3* db = env.handle();
-            sqlite3_stmt* st{};
-            int rc = sqlite3_prepare_v2(db,
-                "UPDATE explorer_run SET progress_log=substr(progress_log || ?, -?), complete=0 WHERE id=?;",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_text(st, 1, text.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(st, 2, max_bytes);
-            sqlite3_bind_int64(st, 3, run_id);
-            rc = sqlite3_step(st); sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
-            return DbResult<void>{ true };
-        }
-
-        static inline DbResult<void> Impl_MarkRunning(DbEnv& env, int64_t run_id) {
-            sqlite3* db = env.handle();
-            sqlite3_stmt* st{};
-            int rc = sqlite3_prepare_v2(db, "UPDATE explorer_run SET status='running' WHERE id=? AND status='planned';", -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, run_id);
-            rc = sqlite3_step(st); sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
-            return DbResult<void>{ true };
-        }
-
-        static inline DbResult<void> Impl_MarkDone(DbEnv& env, int64_t run_id) {
-            sqlite3* db = env.handle();
-            sqlite3_stmt* st{};
-            int rc = sqlite3_prepare_v2(db, "UPDATE explorer_run SET status='done', complete=1 WHERE id=?;", -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, run_id);
-            rc = sqlite3_step(st); sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update" });
-            return DbResult<void>{ true };
         }
 
         static inline DbResult<ExplorerRunRow> Impl_Get(DbEnv& env, int64_t run_id) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
             int rc = sqlite3_prepare_v2(db,
-                "SELECT id, probe_id, settings_id, status, progress_log, complete FROM explorer_run WHERE id=? LIMIT 1;",
+                "SELECT id, root_job_set_id, settings_id, plan_id, delta_seed_id, has_victory FROM explorer_run WHERE id=? LIMIT 1;",
                 -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<ExplorerRunRow>::Err({ map_sqlite_err(rc), rc, "prepare" });
+            if (rc != SQLITE_OK) return DbResult<ExplorerRunRow>::Err({ map_sqlite_err(rc), rc, "prepare get" });
             sqlite3_bind_int64(st, 1, run_id);
             rc = sqlite3_step(st);
-            if (rc != SQLITE_ROW) { sqlite3_finalize(st); return DbResult<ExplorerRunRow>::Err({ DbErrorKind::NotFound, SQLITE_DONE, "not found" }); }
-            ExplorerRunRow r{};
-            r.id = sqlite3_column_int64(st, 0);
-            r.probe_id = sqlite3_column_int64(st, 1);
-            r.settings_id = sqlite3_column_int64(st, 2);
-            r.status = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
-            r.progress_log = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
-            r.complete = static_cast<int32_t>(sqlite3_column_int64(st, 5));
+            if (rc != SQLITE_ROW) {
+                sqlite3_finalize(st);
+                return DbResult<ExplorerRunRow>::Err({ DbErrorKind::NotFound, SQLITE_DONE, "explorer_run not found" });
+            }
+
+            ExplorerRunRow row{};
+            row.id = sqlite3_column_int64(st, 0);
+            row.root_job_set_id = sqlite3_column_int64(st, 1);
+            row.settings_id = sqlite3_column_int64(st, 2);
+            row.plan_id = sqlite3_column_int64(st, 3);
+            row.delta_seed_id = sqlite3_column_int64(st, 4);
+            row.has_victory = sqlite3_column_int(st, 5) != 0;
             sqlite3_finalize(st);
-            return DbResult<ExplorerRunRow>::Ok(r);
+            return DbResult<ExplorerRunRow>::Ok(row);
         }
 
-        static inline DbResult<std::vector<ExplorerRunRow>> Impl_ListActiveForProbe(DbEnv& env, int64_t probe_id) {
+        static inline DbResult<void> Impl_SetHasVictory(DbEnv& env, int64_t run_id, bool has_victory) {
             sqlite3* db = env.handle();
             sqlite3_stmt* st{};
-            int rc = sqlite3_prepare_v2(db,
-                "SELECT id, probe_id, settings_id, status, progress_log, complete FROM explorer_run WHERE probe_id=? AND status IN('planned','running') ORDER BY id ASC;",
-                -1, &st, nullptr);
-            if (rc != SQLITE_OK) return DbResult<std::vector<ExplorerRunRow>>::Err({ map_sqlite_err(rc), rc, "prepare" });
-            sqlite3_bind_int64(st, 1, probe_id);
-            std::vector<ExplorerRunRow> out;
-            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-                ExplorerRunRow r{};
-                r.id = sqlite3_column_int64(st, 0);
-                r.probe_id = sqlite3_column_int64(st, 1);
-                r.settings_id = sqlite3_column_int64(st, 2);
-                r.status = reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
-                r.progress_log = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
-                r.complete = static_cast<int32_t>(sqlite3_column_int64(st, 5));
-                out.push_back(r);
-            }
+            int rc = sqlite3_prepare_v2(db, "UPDATE explorer_run SET has_victory=? WHERE id=?;", -1, &st, nullptr);
+            if (rc != SQLITE_OK) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "prepare set has_victory" });
+            sqlite3_bind_int(st, 1, has_victory ? 1 : 0);
+            sqlite3_bind_int64(st, 2, run_id);
+            rc = sqlite3_step(st);
             sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<std::vector<ExplorerRunRow>>::Err({ map_sqlite_err(rc), rc, "select" });
-            return DbResult<std::vector<ExplorerRunRow>>::Ok(std::move(out));
+            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(rc), rc, "update has_victory" });
+            return DbResult<void>::Ok();
         }
 
-        // Async via DBService
-
-        std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t settings_id, int64_t plan_id, int64_t delta_seed_id, RetryPolicy rp) {
+        std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t root_job_set_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_IdempotentCreate(e, settings_id, plan_id, delta_seed_id); });
-        }
-
-        std::future<DbResult<void>> ExplorerRunRepo::AppendProgressAsync(int64_t run_id, std::string text, int max_bytes, RetryPolicy rp) {
-            return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [run_id, text = std::move(text), max_bytes](DbEnv& e) { return Impl_AppendProgress(e, run_id, text, max_bytes); });
-        }
-
-        std::future<DbResult<void>> ExplorerRunRepo::MarkRunningAsync(int64_t run_id, RetryPolicy rp) {
-            return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
-                [=](DbEnv& e) { return Impl_MarkRunning(e, run_id); });
-        }
-
-        std::future<DbResult<void>> ExplorerRunRepo::MarkDoneAsync(int64_t run_id, RetryPolicy rp) {
-            return DBService::instance().submit_res<void>(OpType::Write, Priority::High, rp,
-                [=](DbEnv& e) { return Impl_MarkDone(e, run_id); });
+                [=](DbEnv& e) { return Impl_IdempotentCreate(e, root_job_set_id, settings_id, plan_id, delta_seed_id); });
         }
 
         std::future<DbResult<ExplorerRunRow>> ExplorerRunRepo::GetAsync(int64_t run_id, RetryPolicy rp) {
@@ -159,44 +90,9 @@ namespace simcore {
                 [=](DbEnv& e) { return Impl_Get(e, run_id); });
         }
 
-        std::future<DbResult<std::vector<ExplorerRunRow>>> ExplorerRunRepo::ListActiveForProbeAsync(int64_t probe_id, RetryPolicy rp) {
-            return DBService::instance().submit_res<std::vector<ExplorerRunRow>>(OpType::Read, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_ListActiveForProbe(e, probe_id); });
-        }
-
-        static inline DbResult<void> Impl_SetResultsIni(DbEnv& env, int64_t run_id, const std::string& ini_text) {
-            auto* db = env.handle();
-            sqlite3_stmt* st{};
-            if (sqlite3_prepare_v2(db, "UPDATE explorer_run SET results_ini=? WHERE id=?;", -1, &st, nullptr) != SQLITE_OK)
-                return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
-            sqlite3_bind_text(st, 1, ini_text.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(st, 2, run_id);
-            int rc = sqlite3_step(st);
-            sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
-            return DbResult<void>::Ok();
-        }
-
-        static inline DbResult<void> Impl_SetProgressLogArtifactId(DbEnv& env, int64_t run_id, int64_t artifact_id) {
-            auto* db = env.handle();
-            sqlite3_stmt* st{};
-            if (sqlite3_prepare_v2(db, "UPDATE explorer_run SET progress_log_artifact_id=? WHERE id=?;", -1, &st, nullptr) != SQLITE_OK)
-                return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
-            sqlite3_bind_int64(st, 1, artifact_id);
-            sqlite3_bind_int64(st, 2, run_id);
-            int rc = sqlite3_step(st);
-            sqlite3_finalize(st);
-            if (rc != SQLITE_DONE) return DbResult<void>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
-            return DbResult<void>::Ok();
-        }
-
-        std::future<DbResult<void>> ExplorerRunRepo::SetResultsIniAsync(int64_t run_id, std::string ini_text, RetryPolicy rp) {
+        std::future<DbResult<void>> ExplorerRunRepo::SetHasVictoryAsync(int64_t run_id, bool has_victory, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_SetResultsIni(e, run_id, ini_text); });
-        }
-        std::future<DbResult<void>> ExplorerRunRepo::SetProgressLogArtifactIdAsync(int64_t run_id, int64_t artifact_id, RetryPolicy rp) {
-            return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
-                [=](DbEnv& e) { return Impl_SetProgressLogArtifactId(e, run_id, artifact_id); });
+                [=](DbEnv& e) { return Impl_SetHasVictory(e, run_id, has_victory); });
         }
 
     } // db

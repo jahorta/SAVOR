@@ -6,6 +6,7 @@
 #include "ExplorerRunsCoordinator.h"
 
 #include <array>
+#include <optional>
 #include <vector>
 
 class ExplorerRunsGroupTableModel;
@@ -59,6 +60,8 @@ private:
         bool winnersOnly = true;
         bool showDuplicates = false;
         bool successOnly = true;
+        bool childVictoryOnly = false;
+        std::optional<QString> tagKey;
         std::array<SortKey, 3> sortKeys{{
             { SortMetric::PredicatesPassed, false },
             { SortMetric::DeltaVI, true },
@@ -97,6 +100,7 @@ private:
     std::vector<qint64> selectedWaveIdsFromTree() const;
     void loadFilterSettings();
     void persistFilterSettings() const;
+    void refreshTagFilterOptions();
     void maybeEmitStatusToast(const QString& text, bool error);
 
     ViewState state_;
@@ -116,6 +120,8 @@ private:
     QCheckBox* winnersOnlyCheck_ = nullptr;
     QCheckBox* showDuplicatesCheck_ = nullptr;
     QCheckBox* successOnlyCheck_ = nullptr;
+    QCheckBox* childVictoryOnlyCheck_ = nullptr;
+    QComboBox* tagFilter_ = nullptr;
     QComboBox* sortMetricBoxes_[3]{};
     QCheckBox* sortAscendingChecks_[3]{};
     QLabel* jobsSummaryLabel_ = nullptr;
