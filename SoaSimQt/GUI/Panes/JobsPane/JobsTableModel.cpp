@@ -67,7 +67,11 @@ QVariant JobsTableModel::data(const QModelIndex& index, int role) const
     case StateColumn: return row->state;
     case AttemptsColumn: return row->attempts;
     case QueuedAtColumn: return row->queuedAt;
-    case ProgressColumn: return row->progress;
+    case ProgressColumn:
+    {
+        QString progress = row->progress.split("\n").first();
+        return progress;
+    }
     default: return {};
     }
 }

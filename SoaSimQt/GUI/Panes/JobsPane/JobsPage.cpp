@@ -162,6 +162,7 @@ void JobsPage::createWidgets()
     tableLayout->setContentsMargins(12, 12, 12, 12);
     tableLayout->addWidget(new QLabel(QStringLiteral("Jobs Table"), tablePanel));
     jobsTable_ = new JobsTableView(tablePanel);
+    jobsTable_->setWordWrap(false);
     jobsModel_ = new JobsTableModel(jobsTable_);
     jobsTable_->attachModel(jobsModel_);
     tableLayout->addWidget(jobsTable_, 1);
