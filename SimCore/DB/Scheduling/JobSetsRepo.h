@@ -69,6 +69,7 @@ namespace simcore::db {
             std::optional<int64_t> expected_total,
             RetryPolicy rp = {});
         static std::future<DbResult<std::optional<int64_t>>> GetParentAsync(int64_t job_set_id);
+        static std::future<DbResult<int64_t>> GetRootJobSetIdAsync(int64_t job_set_id, RetryPolicy rp = {});
         static std::future<DbResult<std::vector<JobSetLite>>> ListFamiliesForSeedsAsync(const std::vector<int64_t>& seed_job_set_ids, RetryPolicy rp = {});
         static std::future<DbResult<void>> DeleteTreeAsync(int64_t job_set_id, RetryPolicy rp = {});
 
@@ -105,6 +106,9 @@ namespace simcore::db {
         }
         static inline DbResult<std::optional<int64_t>> GetParent(int64_t job_set_id) {
             return GetParentAsync(job_set_id).get();
+        }
+        static inline DbResult<int64_t> GetRootJobSetId(int64_t job_set_id) {
+            return GetRootJobSetIdAsync(job_set_id).get();
         }
         static inline DbResult<std::vector<JobSetLite>> ListFamiliesForSeeds(const std::vector<int64_t>& seed_job_set_ids) {
             return ListFamiliesForSeedsAsync(seed_job_set_ids).get();

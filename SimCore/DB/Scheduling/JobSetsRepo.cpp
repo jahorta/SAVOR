@@ -380,6 +380,22 @@ namespace simcore::db {
             [=](DbEnv& env) { return impl_get_parent(env, job_set_id); });
     }
 
+    static DbResult<int64_t> impl_get_root_job_set_id(DbEnv& env, int64_t job_set_id) {
+        int64_t root_id = job_set_id;
+        while (true) {
+            auto parent = impl_get_parent(env, root_id);
+            if (!parent.ok) return DbResult<int64_t>::Err(parent.error);
+            if (!parent.value.has_value()) break;
+            root_id = *parent.value;
+        }
+        return DbResult<int64_t>::Ok(root_id);
+    }
+
+    std::future<DbResult<int64_t>> JobSetsRepo::GetRootJobSetIdAsync(int64_t job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<int64_t>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& env) { return impl_get_root_job_set_id(env, job_set_id); });
+    }
+
 
     static DbResult<std::vector<JobSetLite>> impl_list_families_for_seeds(
         DbEnv& env,
