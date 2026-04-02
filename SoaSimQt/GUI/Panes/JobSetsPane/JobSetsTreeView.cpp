@@ -106,11 +106,13 @@ void JobSetsTreeView::showContextMenu(const QPoint& position)
     QMenu menu(this);
     QAction* boostAction = menu.addAction(QStringLiteral("Boost"));
     QAction* cancelQueuedAction = menu.addAction(QStringLiteral("Cancel queued"));
+    QAction* tagsAction = menu.addAction(QStringLiteral("Edit tags..."));
     menu.addSeparator();
     QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
 
     boostAction->setEnabled(actionsEnabled_);
     cancelQueuedAction->setEnabled(actionsEnabled_);
+    tagsAction->setEnabled(actionsEnabled_);
     deleteAction->setEnabled(actionsEnabled_);
 
     QAction* chosen = menu.exec(viewport()->mapToGlobal(position));
@@ -118,6 +120,8 @@ void JobSetsTreeView::showContextMenu(const QPoint& position)
         emit boostRequested(jobSetId);
     } else if (chosen == cancelQueuedAction) {
         emit cancelQueuedRequested(jobSetId);
+    } else if (chosen == tagsAction) {
+        emit tagsRequested(jobSetId);
     } else if (chosen == deleteAction) {
         emit deleteRequested(jobSetId);
     }

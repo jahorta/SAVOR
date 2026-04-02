@@ -110,6 +110,9 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
@@ -194,6 +197,9 @@
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
@@ -248,6 +254,9 @@
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
@@ -334,6 +343,9 @@
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h">

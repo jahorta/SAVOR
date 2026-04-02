@@ -5,6 +5,7 @@
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
 #include "ExplorerRunsTurnInputsDialog.h"
+#include "ExplorerRunsReplicationDialog.h"
 #include "ExplorerRunsWaveTreeModel.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
@@ -785,6 +786,7 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
 
     QMenu menu(this);
     QAction* viewTurnInputsAction = menu.addAction(QStringLiteral("View Turn Inputs"));
+    QAction* replicationDetailsAction = menu.addAction(QStringLiteral("Replication Details"));
     QAction* regurgitatePlanAction = menu.addAction(QStringLiteral("Regurgitate Battle Plan"));
     QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     viewTurnInputsAction->setEnabled(isTurnInputEligibleState(row->state));
@@ -792,6 +794,8 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
     QAction* selectedAction = menu.exec(jobsView_->viewport()->mapToGlobal(pos));
     if (selectedAction == viewTurnInputsAction && viewTurnInputsAction->isEnabled()) {
         openTurnInputsDialogForJob(*row);
+    } else if (selectedAction == replicationDetailsAction) {
+        showReplicationDialogForJob(*row);
     } else if (selectedAction == regurgitatePlanAction) {
         showBattlePlanDialogForJob(*row);
     } else if (selectedAction == replayVisualAction && replayVisualAction->isEnabled()) {
@@ -810,6 +814,17 @@ void ExplorerRunsPage::openTurnInputsDialogForJob(const ExplorerRunsJobRow& row)
     dialog->activateWindow();
 }
 
+
+void ExplorerRunsPage::showReplicationDialogForJob(const ExplorerRunsJobRow& row)
+{
+    auto* dialog = new ExplorerRunsReplicationDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->loadForJob(row.jobId, coordinator_->describeBattlePlanForJob(row.jobId));
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
 void ExplorerRunsPage::showBattlePlanDialogForJob(const ExplorerRunsJobRow& row)
 {
     auto* dialog = new QDialog(this);

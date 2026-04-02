@@ -172,6 +172,10 @@ namespace simcore::db {
 
         if (scope.program_kind) { add_and(true); sql << "js.program_kind=?"; }
         if (scope.min_job_set_id) { add_and(true); sql << "js.job_set_id >= ?"; }
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) {
+            add_and(true);
+            sql << "js.job_set_id IN (SELECT et.entity_id FROM entity_tags et JOIN tags t ON t.tag_id = et.tag_id WHERE et.entity_kind='job_set' AND t.tag_key=?)";
+        }
         if (scope.state_filter.has_value()) {
             switch (*scope.state_filter) {
             case JobSetStateFilter::Completed:
@@ -203,6 +207,7 @@ namespace simcore::db {
         int bi = 1;
         if (scope.program_kind) sqlite3_bind_int(st, bi++, *scope.program_kind);
         if (scope.min_job_set_id) sqlite3_bind_int64(st, bi++, *scope.min_job_set_id);
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) sqlite3_bind_text(st, bi++, scope.tag_key->c_str(), -1, SQLITE_TRANSIENT);
         if (before) {
             sqlite3_bind_int64(st, bi++, before->primary);   // created_at
             sqlite3_bind_int64(st, bi++, before->primary);   // created_at (tie)

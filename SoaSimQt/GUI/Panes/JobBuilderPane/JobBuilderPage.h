@@ -80,6 +80,7 @@ private:
     void openArtifactPicker();
     void openSeedProbePicker();
     void openExplorerSettingsPicker();
+    void openSubmitTagsDialog();
 
     void requestPreview();
     void requestSubmit();
@@ -114,6 +115,7 @@ private:
     QHash<qint64, QVector<simcore::db::DeltaSeedRow>> deltaRowsByProbe_;
     QHash<qint64, QSet<qint64>> selectedDeltaIdsByProbe_;
     bool suppressDeltaTreeRefresh_ = false;
+    std::vector<std::string> submissionTagKeys_;
 
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
@@ -181,6 +183,8 @@ private:
     QPlainTextEdit* previewText_ = nullptr;
     QLabel* submitStatusLabel_ = nullptr;
     QLineEdit* purposeEdit_ = nullptr;
+    QPushButton* setTagsButton_ = nullptr;
+    QLabel* tagsSummaryLabel_ = nullptr;
     QPlainTextEdit* metaEdit_ = nullptr;
     QPushButton* submitButton_ = nullptr;
     QPlainTextEdit* iniText_ = nullptr;

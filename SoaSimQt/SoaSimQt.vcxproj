@@ -143,6 +143,7 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
@@ -162,6 +163,7 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp" />
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
@@ -169,6 +171,7 @@
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
+    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
     <QtMoc Include="GUI\MainWindow.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
@@ -197,6 +200,7 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h" />
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />

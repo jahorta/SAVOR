@@ -6,6 +6,8 @@
 #include "JobsController.h"
 #include "JobsTableModel.h"
 #include "JobsTableView.h"
+#include "GUI/Widgets/EntityTagsDialog.h"
+#include "DB/TagRepo.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
@@ -85,6 +87,7 @@ void JobsPage::createWidgets()
 
     kindFilter_ = new QComboBox(filterPanel);
     stateFilter_ = new QComboBox(filterPanel);
+    tagFilter_ = new QComboBox(filterPanel);
     jobSetFilter_ = new QLineEdit(filterPanel);
     pageSizeSpin_ = new QSpinBox(filterPanel);
     applyButton_ = new QPushButton(QStringLiteral("Apply"), filterPanel);
@@ -94,6 +97,7 @@ void JobsPage::createWidgets()
 
     kindFilter_->setObjectName("jobsFilterCombo");
     stateFilter_->setObjectName("jobsFilterCombo");
+    tagFilter_->setObjectName("jobsFilterCombo");
     jobSetFilter_->setObjectName("jobsFilterEdit");
     pageSizeSpin_->setObjectName("jobsRefreshSpin");
     applyButton_->setObjectName("jobsPrimaryButton");
@@ -107,6 +111,7 @@ void JobsPage::createWidgets()
 
     kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
     stateFilter_->addItem(QStringLiteral("All states"), QVariant());
+    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
     for (const QString& state : QStringList{QStringLiteral("QUEUED"), QStringLiteral("CLAIMED"), QStringLiteral("RUNNING"), QStringLiteral("INTERRUPTED"), QStringLiteral("SUCCEEDED"), QStringLiteral("FAILED"), QStringLiteral("CANCELED"), QStringLiteral("SUPERSEDED"), QStringLiteral("SUCCEEDED_WINNER"), QStringLiteral("SUCCEEDED_DUPLICATE")}) {
         stateFilter_->addItem(state, state);
     }
@@ -117,13 +122,15 @@ void JobsPage::createWidgets()
     filterLayout->addWidget(stateFilter_, 1, 1);
     filterLayout->addWidget(new QLabel(QStringLiteral("Job Set"), filterPanel), 0, 2);
     filterLayout->addWidget(jobSetFilter_, 1, 2);
-    filterLayout->addWidget(new QLabel(QStringLiteral("Page size"), filterPanel), 0, 3);
-    filterLayout->addWidget(pageSizeSpin_, 1, 3);
-    filterLayout->addWidget(applyButton_, 1, 4);
-    filterLayout->addWidget(resetButton_, 1, 5);
-    filterLayout->addWidget(autoRefreshCheck_, 0, 6, 1, 2, Qt::AlignBottom);
-    filterLayout->addWidget(refreshSecondsSpin_, 1, 6);
-    filterLayout->addWidget(new QLabel(QStringLiteral("Interval"), filterPanel), 1, 7);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Tag"), filterPanel), 0, 3);
+    filterLayout->addWidget(tagFilter_, 1, 3);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Page size"), filterPanel), 0, 4);
+    filterLayout->addWidget(pageSizeSpin_, 1, 4);
+    filterLayout->addWidget(applyButton_, 1, 5);
+    filterLayout->addWidget(resetButton_, 1, 6);
+    filterLayout->addWidget(autoRefreshCheck_, 0, 7, 1, 2, Qt::AlignBottom);
+    filterLayout->addWidget(refreshSecondsSpin_, 1, 7);
+    filterLayout->addWidget(new QLabel(QStringLiteral("Interval"), filterPanel), 1, 8);
     filterLayout->setColumnStretch(2, 1);
     rootLayout->addWidget(filterPanel);
 
@@ -242,7 +249,7 @@ void JobsPage::wireSignals()
         updateStatusWidgets();
     }, Qt::QueuedConnection);
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
-        controller_->applyFilters(selectedProgramKind(), selectedState(), selectedJobSetId(), pageSizeSpin_->value());
+        controller_->applyFilters(selectedProgramKind(), selectedState(), selectedJobSetId(), selectedTagKey(), pageSizeSpin_->value());
     });
     connect(resetButton_, &QPushButton::clicked, this, [this]() {
         controller_->resetFilters();
@@ -317,12 +324,15 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* requeueAction = menu.addAction(QStringLiteral("Requeue"));
     QAction* restartAction = menu.addAction(QStringLiteral("Edit INI + Restart"));
     QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
+    menu.addSeparator();
+    QAction* tagsAction = menu.addAction(QStringLiteral("Edit tags..."));
 
     refreshDetailAction->setEnabled(actionsEnabled);
     replayVisualAction->setEnabled(canReplayVisual);
     requeueAction->setEnabled(canRequeue);
     restartAction->setEnabled(canRestart);
     cancelAction->setEnabled(canCancel);
+    tagsAction->setEnabled(actionsEnabled);
 
     QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
     if (chosen == refreshDetailAction) {
@@ -335,6 +345,9 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
         handleRestartRequested();
     } else if (chosen == cancelAction) {
         controller_->cancelSelectedJob();
+    } else if (chosen == tagsAction) {
+        EntityTagsDialog::EditEntityTags(QStringLiteral("job"), row->jobId, QStringLiteral("Edit Job Tags"), this);
+        controller_->requestRefresh();
     }
 }
 
@@ -377,6 +390,25 @@ void JobsPage::syncControlsFromController(bool syncAll)
         const int idx = targetData.isValid() ? kindFilter_->findData(targetData) : 0;
         kindFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
     }
+    {
+        QSignalBlocker blocker(tagFilter_);
+        QVariant targetTag = tagFilter_->currentData();
+        if (syncAll || !targetTag.isValid()) {
+            targetTag = state.scope.tag_key.has_value() ? QVariant(QString::fromStdString(*state.scope.tag_key)) : QVariant();
+        }
+
+        tagFilter_->clear();
+        tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
+        const auto tagsResult = simcore::db::TagRepo::ListTagsForEntityKind("job");
+        if (tagsResult.ok) {
+            for (const auto& tag : tagsResult.value) {
+                const QString key = QString::fromStdString(tag.tag_key);
+                tagFilter_->addItem(key, key);
+            }
+        }
+        const int idx = targetTag.isValid() ? tagFilter_->findData(targetTag) : 0;
+        tagFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
 
     if (syncAll) {
         {
@@ -397,6 +429,7 @@ void JobsPage::syncControlsFromController(bool syncAll)
     refreshButton_->setEnabled(enabled);
     applyButton_->setEnabled(enabled);
     resetButton_->setEnabled(enabled);
+    tagFilter_->setEnabled(enabled);
 }
 
 void JobsPage::refreshModel()
@@ -547,3 +580,4 @@ void JobsPage::updateLoadingIndicatorState()
 std::optional<int> JobsPage::selectedProgramKind() const { const QVariant data = kindFilter_->currentData(); return data.isValid() ? std::optional<int>(data.toInt()) : std::nullopt; }
 std::optional<QString> JobsPage::selectedState() const { const QVariant data = stateFilter_->currentData(); return data.isValid() ? std::optional<QString>(data.toString()) : std::nullopt; }
 std::optional<qint64> JobsPage::selectedJobSetId() const { bool ok = false; const qint64 value = jobSetFilter_->text().trimmed().toLongLong(&ok); return ok ? std::optional<qint64>(value) : std::nullopt; }
+std::optional<QString> JobsPage::selectedTagKey() const { const QVariant data = tagFilter_->currentData(); return data.isValid() ? std::optional<QString>(data.toString()) : std::nullopt; }

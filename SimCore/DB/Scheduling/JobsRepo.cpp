@@ -453,6 +453,10 @@ namespace simcore::db {
 
         if (scope.job_set_id) { add_and(true); sql << "job_set_id=?"; }
         if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) {
+            add_and(true);
+            sql << "job_id IN (SELECT et.entity_id FROM entity_tags et JOIN tags t ON t.tag_id = et.tag_id WHERE et.entity_kind='job' AND t.tag_key=?)";
+        }
         if (!scope.states.empty()) {
             add_and(true);
             sql << "state IN (";
@@ -478,6 +482,7 @@ namespace simcore::db {
         int bi = 1;
         if (scope.job_set_id) sqlite3_bind_int64(st, bi++, *scope.job_set_id);
         if (scope.program_kind) sqlite3_bind_int(st, bi++, *scope.program_kind);
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) sqlite3_bind_text(st, bi++, scope.tag_key->c_str(), -1, SQLITE_TRANSIENT);
         for (auto const& s : scope.states) sqlite3_bind_text(st, bi++, s.c_str(), -1, SQLITE_TRANSIENT);
         if (scope.since_queued_at) sqlite3_bind_int64(st, bi++, *scope.since_queued_at);
         if (before) {
@@ -549,6 +554,10 @@ namespace simcore::db {
 
         if (scope.job_set_id) { add_and(true); sql << "job_set_id=?"; }
         if (scope.program_kind) { add_and(true); sql << "program_kind=?"; }
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) {
+            add_and(true);
+            sql << "job_id IN (SELECT et.entity_id FROM entity_tags et JOIN tags t ON t.tag_id = et.tag_id WHERE et.entity_kind='job' AND t.tag_key=?)";
+        }
         if (!scope.states.empty()) {
             add_and(true);
             sql << "state IN(";
@@ -572,6 +581,7 @@ namespace simcore::db {
         int bind = 1;
         if (scope.job_set_id) sqlite3_bind_int64(st, bind++, *scope.job_set_id);
         if (scope.program_kind) sqlite3_bind_int(st, bind++, *scope.program_kind);
+        if (scope.tag_key.has_value() && !scope.tag_key->empty()) sqlite3_bind_text(st, bind++, scope.tag_key->c_str(), -1, SQLITE_TRANSIENT);
         for (auto& s : scope.states) sqlite3_bind_text(st, bind++, s.c_str(), -1, SQLITE_TRANSIENT);
         if (scope.since_queued_at) sqlite3_bind_int64(st, bind++, *scope.since_queued_at);
         if (after) {

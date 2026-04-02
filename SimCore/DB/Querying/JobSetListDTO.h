@@ -27,4 +27,5 @@ struct JobSetsListScope {
     std::optional<int> program_kind;
     std::optional<int64_t> min_job_set_id;
     std::optional<JobSetStateFilter> state_filter;
+    std::optional<std::string> tag_key;
 };
