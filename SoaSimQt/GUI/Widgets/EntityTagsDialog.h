@@ -7,9 +7,9 @@
 #include <vector>
 
 class QLineEdit;
-class QListWidget;
+class QTreeWidget;
 class QPushButton;
-class QListWidgetItem;
+class QTreeWidgetItem;
 
 class EntityTagsDialog final : public QDialog
 {
@@ -41,7 +41,7 @@ private:
 
     QLineEdit* createTagEdit_ = nullptr;
     QPushButton* createTagButton_ = nullptr;
-    QListWidget* tagList_ = nullptr;
+    QTreeWidget* tagTree_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 
     std::vector<simcore::db::TagRecord> allTags_;
