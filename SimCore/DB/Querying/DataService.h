@@ -35,6 +35,14 @@ namespace simcore::db {
         int64_t changed_jobs{};
     };
 
+    struct ExplorerRunReconcileResult {
+        int64_t roots_scanned{};
+        int64_t roots_with_existing_runs{};
+        int64_t roots_reconciled{};
+        int64_t runs_created{};
+        int64_t jobs_updated{};
+    };
+
     struct UiConfigRowDTO { int64_t id{}, preset_id{}; int32_t turn_index{}, actor_slot{}; int64_t created_at{}; };
 
     struct ArtifactRefLite {
@@ -214,6 +222,7 @@ namespace simcore::db {
             ListPredicateSpecsAsync(const std::string& search, int32_t limit, RetryPolicy rp = {});
 
         static std::future<DbResult<void>> SetJobVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp = {});
+        static std::future<DbResult<ExplorerRunReconcileResult>> ReconcileMissingExplorerRunsAsync(RetryPolicy rp = {});
 
 
     private:
