@@ -465,6 +465,8 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
         r.ps.ctx.get(simcore::keys::core::VI_FIRST, results.vi_start);
         r.ps.ctx.get(simcore::keys::core::VI_LAST, results.vi_end);
 
+        r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, results.battle_outcome);
+
         std::string turn_blob;
         r.ps.ctx.get(simcore::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
@@ -473,6 +475,9 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
                 results.applied_input_tape_text = simcore::inputtape::render_text(chunks);
             }
         }
+
+        r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, results.battle_outcome);
+
     }
 
     IniDoc ini;
