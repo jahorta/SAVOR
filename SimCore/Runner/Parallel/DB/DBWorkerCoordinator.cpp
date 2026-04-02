@@ -207,7 +207,6 @@ namespace simcore {
         if (s.proc) s.proc->stop();
         UnregisterWorker((int64_t)s.id);
         s.ready.store(false);
-        s.startup_attempts += 1;
         s.dead.store(true);
         s.phase = Slot::Phase::Dead;
         s.assigned_visual_replay_id.reset();
