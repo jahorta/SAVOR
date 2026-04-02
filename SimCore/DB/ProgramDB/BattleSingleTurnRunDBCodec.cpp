@@ -621,6 +621,21 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         if (winner_jobs.count(s.job_id)) {
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_WINNER");
         } else {
+            auto loser_result = latest_result_by_job.find(s.job_id);
+            if (loser_result != latest_result_by_job.end() && loser_result->second.payload.has_value()) {
+                IniDoc loser_doc = IniDoc::parse(*loser_result->second.payload);
+                if (loser_doc.has_section(STRes::SECTION_NAME)) {
+                    STRes loser_res = STRes::from_section(loser_doc);
+                    if (loser_res.output_savestate_id > 0
+                        && (loser_res.battle_outcome == (uint32_t)simcore::battle::Outcome::ReachedNextTurn
+                            || loser_res.battle_outcome == (uint32_t)simcore::battle::Outcome::Victory)) {
+                        (void)simcore::db::SavestateRepo::Delete(loser_res.output_savestate_id);
+                        loser_res.output_savestate_id = 0;
+                        loser_res.set_section(loser_doc);
+                        (void)simcore::db::JobEventsRepo::Append(s.job_id, "RESULTS", loser_doc.to_string_sorted());
+                    }
+                }
+            }
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_DUPLICATE");
         }
     }
