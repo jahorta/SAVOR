@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
+#include <fstream>
+#include <sstream>
+#include <optional>
 #include "IniKV.h"
 
 struct IniDoc {
@@ -89,6 +92,25 @@ struct IniDoc {
             doc.ensure_section(doc.current_).add(std::move(key), std::move(val));
         }
         return doc;
+    }
+
+    // Parse INI text from a file path. Returns std::nullopt on file I/O failure.
+    static std::optional<IniDoc> load(const std::string& path, const ParseOptions& p = {}, const ReadOptions& r = {}) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in.is_open()) return std::nullopt;
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        if (!in.good() && !in.eof()) return std::nullopt;
+        return parse(buf.str(), p, r);
+    }
+
+    // Save INI text to a file path. Returns false on file I/O failure.
+    bool save(const std::string& path, bool sorted = false) const {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        const std::string text = sorted ? to_string_sorted() : to_string_preserve_order();
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        return out.good();
     }
 
     // ---- Emission ------------------------------------------------------------
