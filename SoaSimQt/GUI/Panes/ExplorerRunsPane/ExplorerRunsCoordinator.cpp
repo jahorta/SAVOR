@@ -224,7 +224,8 @@ void ExplorerRunsCoordinator::requestGroupsRefresh()
     }
 
     groupsInFlight_ = true;
-    groupsWatcher_.setFuture(runAsync([this]() { return buildGroups(); }));
+    const bool childVictoryOnly = childVictoryOnly_;
+    groupsWatcher_.setFuture(runAsync([this, childVictoryOnly]() { return buildGroups(childVictoryOnly); }));
     emitStateChanged();
 }
 
@@ -286,6 +287,15 @@ void ExplorerRunsCoordinator::setRefreshSeconds(int seconds)
     emitStateChanged();
 }
 
+void ExplorerRunsCoordinator::setChildVictoryOnly(bool enabled)
+{
+    if (childVictoryOnly_ == enabled) {
+        return;
+    }
+    childVictoryOnly_ = enabled;
+    requestGroupsRefresh();
+}
+
 void ExplorerRunsCoordinator::clearJobs()
 {
     const bool changed = !jobs_.empty() || jobsInFlight_;
@@ -329,8 +339,17 @@ void ExplorerRunsCoordinator::handleAutoRefreshTick()
     requestGroupsRefresh();
 }
 
-std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGroups() const
+std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGroups(bool childVictoryOnly) const
 {
+    std::unordered_set<qint64> winningRootJobSetIds;
+    if (childVictoryOnly) {
+        auto victoriousRoots = ExplorerRunRepo::ListRootJobSetIdsByVictory(true);
+        if (!victoriousRoots.ok) {
+            return {};
+        }
+        winningRootJobSetIds.insert(victoriousRoots.value.begin(), victoriousRoots.value.end());
+    }
+
     JobSetsListScope scope{};
     scope.program_kind = simcore::PK_BattleSingleTurnRunner;
     auto page = JobSetsRepo::ListRecentAsync(scope, std::nullopt, 400).get();
@@ -347,6 +366,9 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
 
         const WaveMeta meta = parseWaveMeta(js.value.meta_text);
         const qint64 rootId = resolveRoot(js.value);
+        if (childVictoryOnly && !winningRootJobSetIds.contains(rootId)) {
+            continue;
+        }
 
         GroupRow& group = groupMap[rootId];
         group.rootGroupId = rootId;
@@ -370,6 +392,7 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
             for (const JobRow& job : jobs.value) {
                 ids.push_back(job.job_id);
             }
+
             const auto resultMap = loadJobResultsMap(ids);
             for (const JobRow& job : jobs.value) {
                 hasWinner = hasWinner || isWinnerState(QString::fromStdString(job.state));
