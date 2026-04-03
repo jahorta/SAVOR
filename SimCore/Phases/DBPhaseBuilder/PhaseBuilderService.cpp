@@ -10,6 +10,7 @@ using SPBp = db::codec::seedprobe::BlueprintIni;
 using SPGrid = db::codec::seedprobe::GridIni;
 using SPUni = db::codec::seedprobe::UniqueIni;
 using db::codec::seedprobe::SeedProbePhase;
+using TIDBp = db::codec::tasframedetector::BlueprintIni;
 
 namespace simcore::db::phasebuilder {
 
@@ -80,6 +81,15 @@ namespace simcore::db::phasebuilder {
             }
             if (bp.max_fake_attacks > 100000) errs.push_back({ "BattleRun.Blueprint.max_fake_attacks","too large" });
             if (bp.min_fake_attacks > bp.max_fake_attacks) errs.push_back({ "BattleRun.Blueprint.min_fake_attacks","must be <= max_fake_attacks" });
+            break;
+        }
+        case PK_TasInputStreamDetector: {
+            auto bp = TIDBp::from_section(ini);
+            if (bp.base_dtm_artifact_id <= 0) errs.push_back({ "TasFrameDetector.Blueprint.base_dtm_artifact_id","required" });
+            if (bp.base_dtm_artifact_id > 0) {
+                auto orow = ObjectStore::Get(bp.base_dtm_artifact_id);
+                if (!orow.ok) errs.push_back({ "TasFrameDetector.Blueprint.base_dtm_artifact_id","artifact not found" });
+            }
             break;
         }
         default: break;

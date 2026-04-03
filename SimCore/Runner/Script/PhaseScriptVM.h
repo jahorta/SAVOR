@@ -56,7 +56,8 @@ namespace simcore {
 		SET_U32,                    // ctx[key] = imm
 		ADD_U32,                    // ctx[key] += imm
 		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
-		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH // build plan from actions
+		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
+		RECORD_TAS_INPUT_SAMPLE
 	};
 
 	struct PSOp;
@@ -116,6 +117,7 @@ namespace simcore {
 	inline PSOp OpAddU32(simcore::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpApplyPlanFrameFrom(simcore::keys::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
+	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 
@@ -258,6 +260,7 @@ namespace simcore {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
+		void op_record_tas_input_sample(PSContext& ctx);
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u32(const PSOp& op, PSResult& result, PSContext& ctx);

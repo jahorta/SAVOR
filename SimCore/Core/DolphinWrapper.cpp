@@ -1550,6 +1550,18 @@ namespace simcore {
         return movie.IsPlayingInput();
     }
 
+    bool DolphinWrapper::isMoviePlaybackEnded() const
+    {
+        auto& movie = m_system->GetMovie();
+        return !movie.IsPlayingInput();
+    }
+
+    uint64_t DolphinWrapper::getCurrentMovieInputCount() const
+    {
+        auto& movie = m_system->GetMovie();
+        return static_cast<uint64_t>(movie.GetCurrentInputCount());
+    }
+
     void DolphinWrapper::silenceStdOutInfo()
     {
         logger::Logger::get().set_stdout_level(logger::Level::Warn);

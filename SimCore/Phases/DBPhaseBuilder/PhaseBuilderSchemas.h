@@ -4,6 +4,7 @@
 #include "../../DB/ProgramDB/IProgramDBCodec.h"
 #include "../../DB/ProgramDB/SeedProbeDBCodec.h"
 #include "../../DB/ProgramDB/TasMovieDBCodec.h"
+#include "../../DB/ProgramDB/TasFrameDetectorDBCodec.h"
 #include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
 
 namespace simcore::db::phasebuilder {

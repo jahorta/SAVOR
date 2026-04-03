@@ -1,6 +1,11 @@
 #include "DtmEditorPage.h"
+#include "DB/DBCore/ObjectStore.h"
+#include "DB/Querying/DataService.h"
+#include "Runner/IPC/Wire.h"
+#include "Utils/IniDoc.h"
 
 #include <QtCore/QStringList>
+#include <QtCore/QFileInfo>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
@@ -30,10 +35,12 @@ DtmEditorPage::DtmEditorPage(QWidget* parent)
     auto* topRow = new QHBoxLayout();
     auto* pickButton = new QPushButton(QStringLiteral("Open DTM..."), this);
     auto* saveButton = new QPushButton(QStringLiteral("Save DTM As..."), this);
+    auto* detectButton = new QPushButton(QStringLiteral("Detect Input Stream…"), this);
     auto* loadAnnButton = new QPushButton(QStringLiteral("Load Annotations..."), this);
     auto* saveAnnButton = new QPushButton(QStringLiteral("Save Annotations..."), this);
     topRow->addWidget(pickButton);
     topRow->addWidget(saveButton);
+    topRow->addWidget(detectButton);
     topRow->addSpacing(16);
     topRow->addWidget(loadAnnButton);
     topRow->addWidget(saveAnnButton);
@@ -118,6 +125,7 @@ DtmEditorPage::DtmEditorPage(QWidget* parent)
 
     connect(pickButton, &QPushButton::clicked, this, &DtmEditorPage::onPickDtm);
     connect(saveButton, &QPushButton::clicked, this, &DtmEditorPage::onSaveDtmAs);
+    connect(detectButton, &QPushButton::clicked, this, &DtmEditorPage::onDetectInputStream);
     connect(loadAnnButton, &QPushButton::clicked, this, &DtmEditorPage::onLoadAnnotations);
     connect(saveAnnButton, &QPushButton::clicked, this, &DtmEditorPage::onSaveAnnotations);
     connect(applyPollButton, &QPushButton::clicked, this, &DtmEditorPage::onApplyPoll);
@@ -173,6 +181,50 @@ void DtmEditorPage::onSaveDtmAs()
         return;
     }
     emit statusToastRequested(makeToast(StatusToast::Level::Success, QStringLiteral("DTM saved.")));
+}
+
+void DtmEditorPage::onDetectInputStream()
+{
+    if (loadedDtmPath_.isEmpty()) {
+        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Load a DTM first.")));
+        return;
+    }
+
+    const QFileInfo fi(loadedDtmPath_);
+    auto objectRow = simcore::db::ObjectStore::FinalizeFromFile(loadedDtmPath_.toStdString(), simcore::db::Compression::None, fi.fileName().toStdString());
+    if (!objectRow.ok) {
+        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to import DTM artifact for detector job.")));
+        return;
+    }
+
+    IniDoc ini;
+    ini.ensure_section("TasFrameDetector.Blueprint");
+    ini.set("TasFrameDetector.Blueprint", "base_dtm_artifact_id", std::to_string(objectRow.value.id));
+    ini.set("TasFrameDetector.Blueprint", "priority", "0");
+    ini.set("TasFrameDetector.Blueprint", "vi_stall_ms", "0");
+    const std::string iniText = ini.to_string_sorted();
+
+    auto js = simcore::db::DataService::CreateJobSetAsync(
+        std::string("TasFrameDetector"),
+        simcore::PK_TasInputStreamDetector,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        std::optional<std::string>(iniText),
+        std::optional<int64_t>(1)).get();
+    if (!js.ok) {
+        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to create TasFrameDetector job set.")));
+        return;
+    }
+
+    auto encoded = simcore::db::DataService::EncodeJobSetWithCodecAsync(simcore::PK_TasInputStreamDetector, js.value, iniText).get();
+    if (!encoded.ok) {
+        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to enqueue TasFrameDetector job.")));
+        return;
+    }
+
+    emit statusToastRequested(makeToast(StatusToast::Level::Success,
+        QStringLiteral("TasFrameDetector job queued (job set %1).").arg(js.value)));
 }
 
 void DtmEditorPage::onInsertPoll()

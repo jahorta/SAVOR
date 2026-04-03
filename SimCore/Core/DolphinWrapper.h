@@ -159,6 +159,8 @@ namespace simcore {
 
         // Convenience: query whether a DTM is currently being played back.
         bool isMoviePlaying() const;
+        bool isMoviePlaybackEnded() const;
+        uint64_t getCurrentMovieInputCount() const;
         bool startMoviePlayback(const std::string& dtm_path);
         bool endMoviePlaybackBlocking(uint32_t timeout_ms = 4000);
         bool setGCMemoryCardA(const std::string& raw_path);

@@ -3,6 +3,7 @@
 
 #include "SeedProbeDBCodec.h"
 #include "TasMovieDBCodec.h"
+#include "TasFrameDetectorDBCodec.h"
 #include "ExplorerRunDBCodec.h"
 #include "BattleSingleTurnRunDBCodec.h"
 #include "BattleContextDBCodec.h"
@@ -15,6 +16,7 @@ namespace simcore::db::codec {
         std::call_once(once, [] {
             static SeedProbeDBCodec  seed_codec;
             static TasMovieDBCodec   tas_codec;
+            static TasFrameDetectorDBCodec tas_frame_detector_codec;
             static ExplorerRunDBCodec battle_runner_codec;
             static BattleSingleTurnRunDBCodec battle_single_turn_runner_codec;
             static BattleContextDBCodec battle_context_codec;
@@ -22,6 +24,7 @@ namespace simcore::db::codec {
             // Use your existing ProgramKind ids here:
             ProgramDBCodecRegistry::register_codec(simcore::PK_SeedProbe, &seed_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_TasMovie, &tas_codec);
+            ProgramDBCodecRegistry::register_codec(simcore::PK_TasInputStreamDetector, &tas_frame_detector_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_BattleTurnRunner, &battle_runner_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_BattleSingleTurnRunner, &battle_single_turn_runner_codec);
             ProgramDBCodecRegistry::register_codec(simcore::PK_BattleContextProbe, &battle_context_codec);
