@@ -80,6 +80,7 @@ public:
     const ViewState& viewState() const;
 
     void loadInitial();
+    void setPageActive(bool active);
     void setSearch(const QString& search);
     void setOnlyDone(bool onlyDone);
     void setAutoRefreshEnabled(bool enabled);
@@ -142,4 +143,5 @@ private:
     QFutureWatcher<DetailBundleResult> detailWatcher_;
     QFutureWatcher<RunningProbeUpdateResult> runningRefreshWatcher_;
     QTimer* refreshTimer_ = nullptr;
+    bool pageActive_ = false;
 };

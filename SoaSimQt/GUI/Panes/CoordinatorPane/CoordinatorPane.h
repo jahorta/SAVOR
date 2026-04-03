@@ -28,6 +28,7 @@ public:
     };
 
     explicit CoordinatorPane(CoordinatorController* controller, QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void settingsNavigationRequested(SettingsFocusTarget target);

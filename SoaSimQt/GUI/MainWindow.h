@@ -13,6 +13,8 @@ class CoordinatorController;
 class CoordinatorPane;
 class JobSetsPage;
 class JobsPage;
+class SeedProbePage;
+class ExplorerRunsPage;
 class QLabel;
 
 class QListWidget;
@@ -51,6 +53,8 @@ private:
     CoordinatorPane* coordinatorPane_ = nullptr;
     JobSetsPage* jobSetsPage_ = nullptr;
     JobsPage* jobsPage_ = nullptr;
+    SeedProbePage* seedProbePage_ = nullptr;
+    ExplorerRunsPage* explorerRunsPage_ = nullptr;
     SettingsPage* settingsPage_ = nullptr;
     DtmEditorPage* dtmEditorPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;

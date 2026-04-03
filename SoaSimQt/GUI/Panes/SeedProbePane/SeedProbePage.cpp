@@ -49,7 +49,11 @@ SeedProbePage::SeedProbePage(QWidget* parent)
 {
     createWidgets();
     wireSignals();
-    controller_->loadInitial();
+}
+
+void SeedProbePage::setPageActive(bool active)
+{
+    controller_->setPageActive(active);
 }
 
 void SeedProbePage::createWidgets()
