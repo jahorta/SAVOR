@@ -10,6 +10,8 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
+#include <QtCore/QPointer>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
@@ -62,6 +64,37 @@ QString statusKindToString(SettingsPage::StatusKind kind)
     }
 
     return "info";
+}
+
+QString snapshotPhaseLabel(simcore::db::DbSnapshotPhase phase)
+{
+    using Phase = simcore::db::DbSnapshotPhase;
+    switch (phase) {
+    case Phase::Preparing:
+        return QStringLiteral("Preparing snapshot");
+    case Phase::ScanningArtifacts:
+        return QStringLiteral("Scanning artifacts");
+    case Phase::WritingCoreEntries:
+        return QStringLiteral("Writing database snapshot");
+    case Phase::WritingArtifacts:
+        return QStringLiteral("Writing artifact files");
+    case Phase::Finalizing:
+        return QStringLiteral("Finalizing snapshot");
+    }
+
+    return QStringLiteral("Saving snapshot");
+}
+
+QString formatSnapshotProgressMessage(const simcore::db::DbSnapshotProgress& progress, const QString& outputPath)
+{
+    QString message = QStringLiteral("%1 to %2…").arg(snapshotPhaseLabel(progress.phase), outputPath);
+    if (progress.total > 0) {
+        message += QStringLiteral(" (%1/%2)").arg(progress.completed).arg(progress.total);
+    }
+    if (!progress.detail.empty()) {
+        message += QStringLiteral(" — %1").arg(QString::fromStdString(progress.detail));
+    }
+    return message;
 }
 } // namespace
 
@@ -566,11 +599,23 @@ void SettingsPage::handleSaveSnapshotClicked()
         return;
     }
 
+    const QPointer<SettingsPage> self(this);
     startStorageOperation(
         StorageOperation::SaveSnapshot,
         QStringLiteral("Saving database snapshot to %1…").arg(normalizedSnapshotPath),
-        [path = normalizedSnapshotPath.toStdString()]() {
-            const auto result = simcore::db::DbSnapshotService::SaveSnapshot(path);
+        [path = normalizedSnapshotPath.toStdString(), outputPath = normalizedSnapshotPath, self]() {
+            const auto result = simcore::db::DbSnapshotService::SaveSnapshot(path, [self, outputPath](const simcore::db::DbSnapshotProgress& progress) {
+                if (!self) {
+                    return;
+                }
+
+                const QString progressMessage = formatSnapshotProgressMessage(progress, outputPath);
+                QMetaObject::invokeMethod(self, [self, progressMessage]() {
+                    if (self && self->storageBusy_) {
+                        self->setStatus(StatusKind::Working, progressMessage);
+                    }
+                }, Qt::QueuedConnection);
+            });
             return StorageResult{ result.ok, result.ok ? QString() : QString::fromStdString(result.error) };
         });
 }
