@@ -174,6 +174,23 @@ void ExplorerRunsPage::createWidgets()
     childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child reached Victory breakpoint"), groupsPanel);
     childVictoryOnlyCheck_->setObjectName("jobsCheckBox");
     groupsLayout->addWidget(childVictoryOnlyCheck_);
+    QHBoxLayout* groupsPagingLayout = new QHBoxLayout();
+    groupsPrevPageButton_ = new QPushButton(QStringLiteral("Prev"), groupsPanel);
+    groupsPrevPageButton_->setObjectName("jobsSecondaryButton");
+    groupsNextPageButton_ = new QPushButton(QStringLiteral("Next"), groupsPanel);
+    groupsNextPageButton_->setObjectName("jobsSecondaryButton");
+    groupsPageSizeSpin_ = new QSpinBox(groupsPanel);
+    groupsPageSizeSpin_->setObjectName("jobsRefreshSpin");
+    groupsPageSizeSpin_->setRange(1, 500);
+    groupsPageSummaryLabel_ = new QLabel(groupsPanel);
+    groupsPageSummaryLabel_->setObjectName("jobsMetaText");
+    groupsPagingLayout->addWidget(groupsPrevPageButton_);
+    groupsPagingLayout->addWidget(groupsNextPageButton_);
+    groupsPagingLayout->addWidget(new QLabel(QStringLiteral("Page size"), groupsPanel));
+    groupsPagingLayout->addWidget(groupsPageSizeSpin_);
+    groupsPagingLayout->addStretch();
+    groupsPagingLayout->addWidget(groupsPageSummaryLabel_);
+    groupsLayout->addLayout(groupsPagingLayout);
     groupsView_ = new ExplorerRunsGroupTableView(groupsPanel);
     groupsView_->attachModel(groupsModel_);
     groupsLayout->addWidget(groupsView_, 1);
@@ -385,6 +402,9 @@ void ExplorerRunsPage::wireSignals()
         persistFilterSettings();
         coordinator_->setChildVictoryOnly(checked);
     });
+    connect(groupsPrevPageButton_, &QPushButton::clicked, coordinator_, &ExplorerRunsCoordinator::requestPreviousGroupsPage);
+    connect(groupsNextPageButton_, &QPushButton::clicked, coordinator_, &ExplorerRunsCoordinator::requestNextGroupsPage);
+    connect(groupsPageSizeSpin_, qOverload<int>(&QSpinBox::valueChanged), coordinator_, &ExplorerRunsCoordinator::setGroupsPageLimit);
     connect(tagFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, refreshJobs](int) {
         const QVariant data = tagFilter_->currentData();
         if (data.isValid()) {
@@ -460,6 +480,12 @@ void ExplorerRunsPage::syncControls()
         QSignalBlocker blocker(childVictoryOnlyCheck_);
         childVictoryOnlyCheck_->setChecked(state_.childVictoryOnly);
     }
+    {
+        QSignalBlocker blocker(groupsPageSizeSpin_);
+        groupsPageSizeSpin_->setValue(coordinator_->groupsPageLimit());
+    }
+    groupsPrevPageButton_->setEnabled(coordinator_->canLoadPreviousGroupsPage() && !coordinator_->groupsInFlight());
+    groupsNextPageButton_->setEnabled(coordinator_->canLoadNextGroupsPage() && !coordinator_->groupsInFlight());
     refreshTagFilterOptions();
     showDuplicatesCheck_->setEnabled(state_.winnersOnly);
     {
@@ -531,6 +557,9 @@ void ExplorerRunsPage::refreshGroupModel()
     summaryLabel_->setText(QStringLiteral("%1 groups · %2 selected waves")
         .arg(coordinator_->groups().size())
         .arg(state_.selectedWaves.size()));
+    groupsPageSummaryLabel_->setText(QStringLiteral("Rows: %1 • page size: %2")
+        .arg(coordinator_->groups().size())
+        .arg(coordinator_->groupsPageLimit()));
 }
 
 void ExplorerRunsPage::refreshWaveTree()

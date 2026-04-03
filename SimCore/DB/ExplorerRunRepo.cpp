@@ -111,6 +111,76 @@ namespace simcore {
             return DbResult<std::vector<int64_t>>::Ok(std::move(rootIds));
         }
 
+        static inline DbResult<Page<int64_t>> Impl_ListRootJobSetIdsByVictoryPaged(
+            DbEnv& env,
+            bool has_victory,
+            const std::optional<KeysetCursor>& before,
+            int limit)
+        {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            const char* sqlWithCursor =
+                "SELECT r.root_job_set_id, js.created_at "
+                "FROM explorer_run r "
+                "JOIN job_sets js ON js.job_set_id = r.root_job_set_id "
+                "WHERE r.has_victory=? "
+                "  AND (js.created_at < ? OR (js.created_at = ? AND r.root_job_set_id < ?)) "
+                "GROUP BY r.root_job_set_id, js.created_at "
+                "ORDER BY js.created_at DESC, r.root_job_set_id DESC "
+                "LIMIT ?;";
+            const char* sqlWithoutCursor =
+                "SELECT r.root_job_set_id, js.created_at "
+                "FROM explorer_run r "
+                "JOIN job_sets js ON js.job_set_id = r.root_job_set_id "
+                "WHERE r.has_victory=? "
+                "GROUP BY r.root_job_set_id, js.created_at "
+                "ORDER BY js.created_at DESC, r.root_job_set_id DESC "
+                "LIMIT ?;";
+
+            int rc = sqlite3_prepare_v2(db, before.has_value() ? sqlWithCursor : sqlWithoutCursor, -1, &st, nullptr);
+            if (rc != SQLITE_OK) {
+                return DbResult<Page<int64_t>>::Err({ map_sqlite_err(rc), rc, "prepare list root_job_set_ids by victory paged" });
+            }
+
+            int bindIdx = 1;
+            sqlite3_bind_int(st, bindIdx++, has_victory ? 1 : 0);
+            if (before.has_value()) {
+                sqlite3_bind_int64(st, bindIdx++, before->primary);
+                sqlite3_bind_int64(st, bindIdx++, before->primary);
+                sqlite3_bind_int64(st, bindIdx++, before->secondary);
+            }
+            sqlite3_bind_int(st, bindIdx++, limit);
+
+            Page<int64_t> page{};
+            page.items.reserve(static_cast<size_t>(limit));
+            std::optional<KeysetCursor> lastCursor;
+            while (true) {
+                rc = sqlite3_step(st);
+                if (rc == SQLITE_ROW) {
+                    page.items.push_back(sqlite3_column_int64(st, 0));
+                    lastCursor = KeysetCursor{
+                        sqlite3_column_int64(st, 1),
+                        sqlite3_column_int64(st, 0)
+                    };
+                    continue;
+                }
+                if (rc == SQLITE_DONE) {
+                    break;
+                }
+                sqlite3_finalize(st);
+                return DbResult<Page<int64_t>>::Err({ map_sqlite_err(rc), rc, "step list root_job_set_ids by victory paged" });
+            }
+            sqlite3_finalize(st);
+
+            if (before.has_value() && !page.items.empty()) {
+                page.prev = before;
+            }
+            if (static_cast<int>(page.items.size()) == limit && lastCursor.has_value()) {
+                page.next = lastCursor;
+            }
+            return DbResult<Page<int64_t>>::Ok(std::move(page));
+        }
+
         std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t root_job_set_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_IdempotentCreate(e, root_job_set_id, settings_id, plan_id, delta_seed_id); });
@@ -129,6 +199,19 @@ namespace simcore {
         std::future<DbResult<std::vector<int64_t>>> ExplorerRunRepo::ListRootJobSetIdsByVictoryAsync(bool has_victory, RetryPolicy rp) {
             return DBService::instance().submit_res<std::vector<int64_t>>(OpType::Read, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_ListRootJobSetIdsByVictory(e, has_victory); });
+        }
+
+        std::future<DbResult<Page<int64_t>>> ExplorerRunRepo::ListRootJobSetIdsByVictoryPagedAsync(
+            bool has_victory,
+            std::optional<KeysetCursor> before,
+            int limit,
+            RetryPolicy rp)
+        {
+            if (limit <= 0) {
+                limit = 50;
+            }
+            return DBService::instance().submit_res<Page<int64_t>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListRootJobSetIdsByVictoryPaged(e, has_victory, before, limit); });
         }
 
     } // db

@@ -63,6 +63,11 @@ public:
         std::vector<WaveRow> waves;
     };
 
+    struct GroupPage {
+        std::vector<GroupRow> groups;
+        std::optional<KeysetCursor> next;
+    };
+
     struct JobViewRow {
         qint64 jobId = 0;
         QString state;
@@ -97,6 +102,9 @@ public:
     bool detailsInFlight() const;
     bool autoRefreshEnabled() const;
     int refreshSeconds() const;
+    int groupsPageLimit() const;
+    bool canLoadNextGroupsPage() const;
+    bool canLoadPreviousGroupsPage() const;
     QString describeBattlePlanForJob(qint64 jobId) const;
 
 public slots:
@@ -107,6 +115,9 @@ public slots:
     void setAutoRefreshEnabled(bool enabled);
     void setRefreshSeconds(int seconds);
     void setChildVictoryOnly(bool enabled);
+    void setGroupsPageLimit(int limit);
+    void requestNextGroupsPage();
+    void requestPreviousGroupsPage();
     void clearJobs();
     void clearDetails();
 
@@ -118,7 +129,7 @@ private:
     void startAutoRefreshTimer();
     void handleAutoRefreshTick();
 
-    std::vector<GroupRow> buildGroups(bool childVictoryOnly) const;
+    GroupPage buildGroups(bool childVictoryOnly, std::optional<KeysetCursor> before, int pageLimit) const;
     std::vector<JobViewRow> buildJobsForWaves(const std::vector<qint64>& waveJobSetIds) const;
     std::unordered_map<qint64, JobResultSummary> loadJobResultsMap(const std::vector<qint64>& ids) const;
     QString buildProgressLog(qint64 jobId) const;
@@ -139,10 +150,14 @@ private:
     bool detailsInFlight_ = false;
     bool autoRefreshEnabled_ = true;
     int refreshSeconds_ = 3;
+    int groupsPageLimit_ = 100;
     bool childVictoryOnly_ = false;
+    std::optional<KeysetCursor> groupsBeforeCursor_;
+    std::optional<KeysetCursor> groupsNextCursor_;
+    std::vector<std::optional<KeysetCursor>> groupsBeforeHistory_;
     qint64 detailsRequestJobId_ = 0;
     QDateTime lastGroupsRefresh_;
-    QFutureWatcher<std::vector<GroupRow>> groupsWatcher_;
+    QFutureWatcher<GroupPage> groupsWatcher_;
     QFutureWatcher<std::vector<JobViewRow>> jobsWatcher_;
     QFutureWatcher<DetailBundle> detailsWatcher_;
     QTimer autoRefreshTimer_;

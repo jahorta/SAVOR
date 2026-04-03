@@ -122,6 +122,10 @@ private:
     QCheckBox* showDuplicatesCheck_ = nullptr;
     QCheckBox* successOnlyCheck_ = nullptr;
     QCheckBox* childVictoryOnlyCheck_ = nullptr;
+    QPushButton* groupsPrevPageButton_ = nullptr;
+    QPushButton* groupsNextPageButton_ = nullptr;
+    QSpinBox* groupsPageSizeSpin_ = nullptr;
+    QLabel* groupsPageSummaryLabel_ = nullptr;
     QComboBox* tagFilter_ = nullptr;
     QComboBox* sortMetricBoxes_[3]{};
     QCheckBox* sortAscendingChecks_[3]{};
