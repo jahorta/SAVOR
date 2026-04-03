@@ -150,7 +150,9 @@ ExplorerRunsCoordinator::ExplorerRunsCoordinator(QObject* parent)
     });
 
     connect(&autoRefreshTimer_, &QTimer::timeout, this, &ExplorerRunsCoordinator::handleAutoRefreshTick);
-    startAutoRefreshTimer();
+    if (pageActive_) {
+        startAutoRefreshTimer();
+    }
 }
 
 const std::vector<ExplorerRunsCoordinator::GroupRow>& ExplorerRunsCoordinator::groups() const { return groups_; }
@@ -217,8 +219,29 @@ QString ExplorerRunsCoordinator::describeBattlePlanForJob(qint64 jobId) const
     return blocks.join(QStringLiteral("\n\n------------------------------\n\n"));
 }
 
+void ExplorerRunsCoordinator::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        autoRefreshTimer_.stop();
+        return;
+    }
+
+    startAutoRefreshTimer();
+    if (groups_.empty() && !groupsInFlight_) {
+        requestGroupsRefresh();
+    }
+}
+
 void ExplorerRunsCoordinator::requestGroupsRefresh()
 {
+    if (!pageActive_) {
+        return;
+    }
     if (groupsInFlight_) {
         return;
     }
@@ -231,6 +254,9 @@ void ExplorerRunsCoordinator::requestGroupsRefresh()
 
 void ExplorerRunsCoordinator::requestJobsRefresh(const std::vector<qint64>& waveJobSetIds)
 {
+    if (!pageActive_) {
+        return;
+    }
     if (jobsInFlight_) {
         return;
     }
@@ -246,6 +272,9 @@ void ExplorerRunsCoordinator::requestJobsRefresh(const std::vector<qint64>& wave
 
 void ExplorerRunsCoordinator::requestDetailsRefresh(qint64 jobId)
 {
+    if (!pageActive_) {
+        return;
+    }
     if (jobId <= 0) {
         clearDetails();
         return;
@@ -330,7 +359,7 @@ void ExplorerRunsCoordinator::startAutoRefreshTimer()
 
 void ExplorerRunsCoordinator::handleAutoRefreshTick()
 {
-    if (!autoRefreshEnabled_ || groupsInFlight_) {
+    if (!pageActive_ || !autoRefreshEnabled_ || groupsInFlight_) {
         return;
     }
     if (lastGroupsRefresh_.secsTo(QDateTime::currentDateTimeUtc()) < refreshSeconds_) {

@@ -327,7 +327,9 @@ SeedProbeController::SeedProbeController(QObject* parent)
             kickRunningRefresh(runningProbeIds);
         }
     });
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
 }
 
 const SeedProbeController::ViewState& SeedProbeController::viewState() const
@@ -337,11 +339,31 @@ const SeedProbeController::ViewState& SeedProbeController::viewState() const
 
 void SeedProbeController::loadInitial()
 {
-    if (initialLoadStarted_) {
+    if (initialLoadStarted_ || !pageActive_) {
         return;
     }
     initialLoadStarted_ = true;
     kickPageFetch();
+}
+
+void SeedProbeController::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        if (refreshTimer_) {
+            refreshTimer_->stop();
+        }
+        return;
+    }
+
+    if (refreshTimer_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
+    loadInitial();
 }
 
 void SeedProbeController::setSearch(const QString& search)
@@ -365,7 +387,9 @@ void SeedProbeController::setRefreshSeconds(int seconds)
 {
     state_.refreshSeconds = seconds;
     persistSettings();
-    refreshTimer_->start(seconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(seconds * 1000);
+    }
     emitStateChanged();
 }
 
@@ -412,7 +436,9 @@ void SeedProbeController::resetFilters()
     state_.uniqueRows.clear();
     syncFetchStateFromView();
     persistSettings();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     kickPageFetch();
     emitStateChanged();
 }
@@ -548,7 +574,7 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
 
 bool SeedProbeController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_ && !runningRefreshInFlight_;
+    return pageActive_ && state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_ && !runningRefreshInFlight_;
 }
 
 

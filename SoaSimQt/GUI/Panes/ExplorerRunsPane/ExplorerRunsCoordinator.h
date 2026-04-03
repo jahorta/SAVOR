@@ -100,6 +100,7 @@ public:
     QString describeBattlePlanForJob(qint64 jobId) const;
 
 public slots:
+    void setPageActive(bool active);
     void requestGroupsRefresh();
     void requestJobsRefresh(const std::vector<qint64>& waveJobSetIds);
     void requestDetailsRefresh(qint64 jobId);
@@ -145,4 +146,5 @@ private:
     QFutureWatcher<std::vector<JobViewRow>> jobsWatcher_;
     QFutureWatcher<DetailBundle> detailsWatcher_;
     QTimer autoRefreshTimer_;
+    bool pageActive_ = false;
 };

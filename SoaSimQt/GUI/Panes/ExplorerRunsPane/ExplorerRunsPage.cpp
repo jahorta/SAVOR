@@ -115,10 +115,17 @@ ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
     syncControls();
     refreshView();
     coordinator_->setChildVictoryOnly(state_.childVictoryOnly);
-    coordinator_->requestGroupsRefresh();
 }
 
 ExplorerRunsPage::~ExplorerRunsPage() = default;
+
+void ExplorerRunsPage::setPageActive(bool active)
+{
+    coordinator_->setPageActive(active);
+    if (active) {
+        coordinator_->requestGroupsRefresh();
+    }
+}
 
 void ExplorerRunsPage::createWidgets()
 {

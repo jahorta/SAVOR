@@ -103,6 +103,15 @@ void MainWindow::handleNavigationChanged(int currentRow)
     if (jobsPage_) {
         jobsPage_->setPageActive(currentRow == 1);
     }
+    if (coordinatorPane_) {
+        coordinatorPane_->setPageActive(currentRow == 2);
+    }
+    if (seedProbePage_) {
+        seedProbePage_->setPageActive(currentRow == 6);
+    }
+    if (explorerRunsPage_) {
+        explorerRunsPage_->setPageActive(currentRow == 7);
+    }
 
     if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
         contentTitleLabel_->setText(kPageMetadata[currentRow].title);
@@ -278,13 +287,13 @@ QWidget* MainWindow::createContentPane()
     auto* artifactsPage = new ArtifactsPage(contentPane);
     connect(artifactsPage, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(artifactsPage);
-    auto* seedProbePage = new SeedProbePage(contentStack_);
-    connect(seedProbePage, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(seedProbePage);
-    auto* explorerRunsPage = new ExplorerRunsPage(contentStack_);
-    connect(explorerRunsPage, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    connect(explorerRunsPage, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
-    contentStack_->addWidget(explorerRunsPage);
+    seedProbePage_ = new SeedProbePage(contentStack_);
+    connect(seedProbePage_, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(seedProbePage_);
+    explorerRunsPage_ = new ExplorerRunsPage(contentStack_);
+    connect(explorerRunsPage_, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    connect(explorerRunsPage_, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
+    contentStack_->addWidget(explorerRunsPage_);
     dtmEditorPage_ = new DtmEditorPage(contentStack_);
     connect(dtmEditorPage_, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(dtmEditorPage_);

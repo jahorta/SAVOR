@@ -33,12 +33,24 @@ CoordinatorPane::CoordinatorPane(CoordinatorController* controller, QWidget* par
     refreshTimer_ = new QTimer(this);
     refreshTimer_->setInterval(kRefreshIntervalMs);
     connect(refreshTimer_, &QTimer::timeout, controller_, &CoordinatorController::refreshSnapshot);
-    refreshTimer_->start();
 
     connect(controller_, &CoordinatorController::stateChanged, this, &CoordinatorPane::refreshUi);
     connect(controller_, &CoordinatorController::snapshotChanged, this, &CoordinatorPane::refreshUi);
 
     refreshUi();
+}
+
+void CoordinatorPane::setPageActive(bool active)
+{
+    if (!refreshTimer_) {
+        return;
+    }
+    if (active) {
+        refreshTimer_->start();
+        controller_->refreshSnapshot();
+    } else {
+        refreshTimer_->stop();
+    }
 }
 
 void CoordinatorPane::refreshUi()

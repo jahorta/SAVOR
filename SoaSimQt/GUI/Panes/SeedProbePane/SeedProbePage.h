@@ -24,6 +24,7 @@ signals:
 
 public:
     explicit SeedProbePage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 private:
     void createWidgets();

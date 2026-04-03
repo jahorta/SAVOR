@@ -32,6 +32,7 @@ class ExplorerRunsPage final : public QWidget
 public:
     explicit ExplorerRunsPage(QWidget* parent = nullptr);
     ~ExplorerRunsPage() override;
+    void setPageActive(bool active);
 
 signals:
     void visualReplayRequested(qint64 jobId);
