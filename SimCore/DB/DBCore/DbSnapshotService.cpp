@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <zlib.h>
@@ -17,6 +18,20 @@ namespace simcore::db {
     namespace {
         constexpr char kSnapshotMagic[] = "SOASNAP1";
         constexpr uint32_t kSnapshotVersion = 1;
+
+        void emit_progress(const DbSnapshotService::ProgressCallback& on_progress, DbSnapshotPhase phase, uint64_t completed, uint64_t total, std::string detail = {})
+        {
+            if (!on_progress) {
+                return;
+            }
+
+            on_progress(DbSnapshotProgress{
+                .phase = phase,
+                .completed = completed,
+                .total = total,
+                .detail = std::move(detail),
+            });
+        }
 
         fs::path canonicalish(const fs::path& path)
         {
@@ -182,10 +197,11 @@ namespace simcore::db {
         }
     } // namespace
 
-    DbSnapshotResult DbSnapshotService::SaveSnapshot(const fs::path& snapshot_path)
+    DbSnapshotResult DbSnapshotService::SaveSnapshot(const fs::path& snapshot_path, ProgressCallback on_progress)
     {
         DbSnapshotResult result;
         result.snapshot_path = snapshot_path;
+        emit_progress(on_progress, DbSnapshotPhase::Preparing, 0, 0, "Preparing snapshot save");
 
         if (snapshot_path.empty()) {
             result.error = "Snapshot path is required";
@@ -213,6 +229,7 @@ namespace simcore::db {
             return result;
         }
 
+        emit_progress(on_progress, DbSnapshotPhase::ScanningArtifacts, 0, 0, "Scanning artifact files");
         std::vector<fs::path> objectFiles;
         if (fs::exists(objectsRoot, ec) && fs::is_directory(objectsRoot, ec)) {
             for (const auto& entry : fs::recursive_directory_iterator(objectsRoot, ec)) {
@@ -228,6 +245,7 @@ namespace simcore::db {
                 }
             }
         }
+        emit_progress(on_progress, DbSnapshotPhase::ScanningArtifacts, static_cast<uint64_t>(objectFiles.size()), static_cast<uint64_t>(objectFiles.size()), "Artifact file scan complete");
 
         fs::create_directories(snapshot_path.parent_path(), ec);
         if (ec) {
@@ -249,6 +267,7 @@ namespace simcore::db {
 
         out.write(kSnapshotMagic, sizeof(kSnapshotMagic) - 1);
         const uint32_t entryCount = static_cast<uint32_t>(2 + objectFiles.size());
+        emit_progress(on_progress, DbSnapshotPhase::WritingCoreEntries, 0, static_cast<uint64_t>(entryCount), "Writing manifest and database");
         if (!write_u32(out, kSnapshotVersion) || !write_u32(out, entryCount)) {
             result.error = "Failed to write snapshot header";
             if (wasRunning) {
@@ -266,7 +285,10 @@ namespace simcore::db {
             }
             return result;
         }
+        emit_progress(on_progress, DbSnapshotPhase::WritingCoreEntries, 2, static_cast<uint64_t>(entryCount), "Core entries written");
 
+        uint64_t artifactsWritten = 0;
+        emit_progress(on_progress, DbSnapshotPhase::WritingArtifacts, artifactsWritten, static_cast<uint64_t>(objectFiles.size()), "Writing artifact entries");
         for (const auto& file : objectFiles) {
             const fs::path rel = fs::relative(file, root, ec);
             if (ec) {
@@ -282,8 +304,11 @@ namespace simcore::db {
                 }
                 return result;
             }
+            ++artifactsWritten;
+            emit_progress(on_progress, DbSnapshotPhase::WritingArtifacts, artifactsWritten, static_cast<uint64_t>(objectFiles.size()), "Wrote artifact " + rel.generic_string());
         }
 
+        emit_progress(on_progress, DbSnapshotPhase::Finalizing, 0, 0, "Finalizing snapshot file");
         result.ok = out.good();
         if (!result.ok && result.error.empty()) {
             result.error = "Failed to finalize snapshot file";
