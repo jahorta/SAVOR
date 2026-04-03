@@ -8,6 +8,7 @@ using SPBp = simcore::db::codec::seedprobe::BlueprintIni;
 using SPGrid = simcore::db::codec::seedprobe::GridIni;
 using SPUni = simcore::db::codec::seedprobe::UniqueIni;
 using simcore::db::codec::seedprobe::SeedProbePhase;
+using TIDBp = simcore::db::codec::tasframedetector::BlueprintIni;
 
 namespace simcore::db::phasebuilder {
 
@@ -92,6 +93,15 @@ namespace simcore::db::phasebuilder {
         case PK_TasMovie:         return DefaultTasMovie();
         case PK_BattleTurnRunner: return DefaultExplorerRun();
         case PK_BattleSingleTurnRunner: return DefaultExplorerRun();
+        case PK_TasInputStreamDetector: {
+            IniDoc doc{};
+            TIDBp bp{};
+            bp.base_dtm_artifact_id = -1;
+            bp.priority = 0;
+            bp.vi_stall_ms = 0;
+            bp.set_section(doc);
+            return doc;
+        }
         default:                  return IniDoc{};
         }
     }

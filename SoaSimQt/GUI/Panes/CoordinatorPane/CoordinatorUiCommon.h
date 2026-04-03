@@ -36,6 +36,7 @@ inline std::string WorkerProgramKindLabel(const std::optional<int>& kind)
     case simcore::PK_None: return "None";
     case simcore::PK_SeedProbe: return "SeedProbe";
     case simcore::PK_TasMovie: return "TasMovie";
+    case simcore::PK_TasInputStreamDetector: return "TasInputStreamDetector";
     case simcore::PK_BattleTurnRunner: return "BattleTurnRunner";
     case simcore::PK_BattleContextProbe: return "BattleContextProbe";
     case simcore::PK_BattleSingleTurnRunner: return "BattleSingleTurnRunner";

@@ -34,6 +34,7 @@ private slots:
     void onAddBookmark();
     void onSaveAnnotations();
     void onLoadAnnotations();
+    void onDetectInputStream();
 
 private:
     void rebuildValidationText();

@@ -3,6 +3,8 @@
 #include "SeedProbe/SeedProbeScript.h"
 #include "PlayTasMovie/TasMoviePayload.h"
 #include "PlayTasMovie/TasMovieScript.h"
+#include "TasFrameDetector/TasFrameDetectorPayload.h"
+#include "TasFrameDetector/TasFrameDetectorScript.h"
 #include "BattleRunner/BattleRunnerPayload.h"
 #include "BattleRunner/BattleRunnerScript.h"
 #include "BattleContext/BattleContextScript.h"
@@ -11,6 +13,7 @@
 #include "BattleTurnRunner/BattleTurnRunnerScript.h"
 #include "../../DB/ProgramDB/SeedProbeDBCodec.h"
 #include "../../DB/ProgramDB/TasMovieDBCodec.h"
+#include "../../DB/ProgramDB/TasFrameDetectorDBCodec.h"
 #include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
 #include "../../DB/ProgramDB/BattleContextDBCodec.h"
 #include "../../DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
@@ -27,6 +30,8 @@ namespace simcore::programs {
         case PK_TasMovie:
             // TAS fixed program should use *_FROM("tas.*") keys (id6, dtm_path, run_ms, save_path)
             return tasmovie::MakeTasMovieProgram();
+        case PK_TasInputStreamDetector:
+            return tasframedetector::MakeTasFrameDetectorProgram();
         case PK_BattleTurnRunner:
             return phase::battle::runner::MakeBattleRunnerProgram();
         case PK_BattleContextProbe:
@@ -54,6 +59,8 @@ namespace simcore::programs {
             return seedprobe::decode_payload(payload, out_ctx);
         case PK_TasMovie:
             return tasmovie::decode_payload(payload, out_ctx);
+        case PK_TasInputStreamDetector:
+            return tasframedetector::decode_payload(payload, out_ctx);
         case PK_BattleTurnRunner:          
             return phase::battle::runner::decode_payload(payload, out_ctx);
         case PK_BattleContextProbe:
@@ -75,6 +82,10 @@ namespace simcore::programs {
             simcore::db::codec::tas::BlueprintIni::SECTION_NAME,
             simcore::db::codec::tas::ResultsIni::SECTION_NAME
         };
+        static const RetryTuningInfo tas_input_stream_info{
+            simcore::db::codec::tasframedetector::BlueprintIni::SECTION_NAME,
+            simcore::db::codec::tasframedetector::ResultsIni::SECTION_NAME
+        };
         static const RetryTuningInfo battleturn_info{
             simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME,
             simcore::db::codec::battle::run::ResultsIni::SECTION_NAME
@@ -91,6 +102,7 @@ namespace simcore::programs {
         switch (program_kind) {
         case PK_SeedProbe: return &seedprobe_info;
         case PK_TasMovie: return &tasmovie_info;
+        case PK_TasInputStreamDetector: return &tas_input_stream_info;
         case PK_BattleTurnRunner: return &battleturn_info;
         case PK_BattleContextProbe: return &battlecontext_info;
         case PK_BattleSingleTurnRunner: return &battlest_info;

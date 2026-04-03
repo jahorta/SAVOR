@@ -17,6 +17,7 @@
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "../Breakpoints/BPRegistry.h"
 #include "ScriptProgress.h"
+#include "../../Utils/IniDoc.h"
 #include <thread>
 #include <sstream>
 
@@ -382,6 +383,36 @@ namespace simcore {
         ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
         if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
     }
+    void PhaseScriptVM::op_record_tas_input_sample(PSContext& ctx) {
+        uint32_t sample_count = 0;
+        ctx.get<uint32_t>(keys::tasframedetector::SAMPLE_COUNT, sample_count);
+
+        const uint32_t vi = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        const uint64_t input_count = host_.getCurrentMovieInputCount();
+        const uint32_t movie_ended = host_.isMoviePlaybackEnded() ? 1u : 0u;
+
+        std::string stream_ini;
+        (void)ctx.get<std::string>(keys::tasframedetector::STREAM_INI, stream_ini);
+        IniDoc doc = stream_ini.empty() ? IniDoc{} : IniDoc::parse(stream_ini);
+        doc.ensure_section("FrameSamples");
+        const std::string idx = std::to_string(sample_count);
+        doc.set("FrameSamples", "frame." + idx, idx);
+        doc.set("FrameSamples", "vi." + idx, std::to_string(vi));
+        doc.set("FrameSamples", "input_count." + idx, std::to_string(input_count));
+        doc.set("FrameSamples", "movie_ended." + idx, std::to_string(movie_ended));
+        doc.set("FrameSamples", "count", std::to_string(sample_count + 1));
+
+        ctx[keys::tasframedetector::STREAM_INI] = doc.to_string_sorted();
+        ctx[keys::tasframedetector::SAMPLE_COUNT] = sample_count + 1;
+        ctx[keys::tasframedetector::MOVIE_ENDED] = movie_ended;
+        ctx[keys::tasframedetector::INPUT_COUNT] = static_cast<uint32_t>(input_count & 0xFFFFFFFFu);
+
+        SCLOGT("[TasInputStreamDetector] sample=%u vi=%u input_count=%llu movie_ended=%u",
+            sample_count,
+            vi,
+            static_cast<unsigned long long>(input_count),
+            movie_ended);
+    }
     void PhaseScriptVM::op_get_battle_context(PSResult& result, PSContext& ctx) const {
         std::string mem1;
         if (!host_.getMem1(mem1)) { result.ok = false; return; }
@@ -524,6 +555,7 @@ namespace simcore {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::RECORD_TAS_INPUT_SAMPLE: op_record_tas_input_sample(ctx); break;
             case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
             case PSOpCode::READ_U16: if (!op_read_u16(op, R, ctx)) return R; break;
             case PSOpCode::READ_U32: if (!op_read_u32(op, R, ctx)) return R; break;
@@ -536,6 +568,7 @@ namespace simcore {
             case PSOpCode::SET_TIMEOUT: op_set_timeout(op, ctx); break;
             case PSOpCode::SET_TIMEOUT_FROM: op_set_timeout_from(op, ctx); break;
             case PSOpCode::MOVIE_PLAY_FROM: if (!op_movie_play_from(op, R, ctx)) return R; break;
+            case PSOpCode::MOVIE_STOP: host_.endMoviePlaybackBlocking(); break;
             case PSOpCode::SAVE_SAVESTATE_FROM: if (!op_save_savestate_from(op, R, ctx)) return R; break;
             case PSOpCode::REQUIRE_DISC_GAMEID_FROM: if (!op_require_disc_gameid_from(op, R, ctx)) return R; break;
             case PSOpCode::ARM_BPS_FROM_PRED_TABLE: op_arm_bps_from_pred_table(ctx); break;
@@ -584,6 +617,7 @@ namespace simcore {
         case PSOpCode::SET_U32: return { "Set a u32 Context Value" };
         case PSOpCode::ADD_U32: return { "Add to a u32 Context Value" };
         case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES : return { "Apply Inputplan Frame from Context" };
+        case PSOpCode::RECORD_TAS_INPUT_SAMPLE: return { "Record TAS Input Sample" };
         default:
             return { "Unknown Code" };
         }

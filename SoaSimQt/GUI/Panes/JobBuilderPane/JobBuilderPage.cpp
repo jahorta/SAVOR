@@ -451,6 +451,9 @@ void JobBuilderPage::wireSignals()
                     if (kind.name == "BattleSingleTurnRunner") {
                         continue;
                     }
+                    if (kind.id == simcore::PK_TasInputStreamDetector) {
+                        continue;
+                    }
                     programKinds_.push_back(kind);
                 }
                 kindCombo_->clear();

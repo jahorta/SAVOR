@@ -7,6 +7,7 @@
 #include "ContextKeys/VMCoreKeys.reg.h"
 #include "ContextKeys/SeedProbeKeys.reg.h"
 #include "ContextKeys/TasMovieKeys.reg.h"
+#include "ContextKeys/TasFrameDetectorKeys.reg.h"
 #include "ContextKeys/BattleRunnerKeys.reg.h"
 
 namespace simcore::keys {
