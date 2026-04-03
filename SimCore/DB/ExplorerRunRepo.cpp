@@ -80,6 +80,37 @@ namespace simcore {
             return DbResult<void>::Ok();
         }
 
+        static inline DbResult<std::vector<int64_t>> Impl_ListRootJobSetIdsByVictory(DbEnv& env, bool has_victory) {
+            sqlite3* db = env.handle();
+            sqlite3_stmt* st{};
+            int rc = sqlite3_prepare_v2(
+                db,
+                "SELECT DISTINCT root_job_set_id FROM explorer_run WHERE has_victory=?;",
+                -1,
+                &st,
+                nullptr);
+            if (rc != SQLITE_OK) {
+                return DbResult<std::vector<int64_t>>::Err({ map_sqlite_err(rc), rc, "prepare list root_job_set_ids by victory" });
+            }
+
+            sqlite3_bind_int(st, 1, has_victory ? 1 : 0);
+            std::vector<int64_t> rootIds;
+            while (true) {
+                rc = sqlite3_step(st);
+                if (rc == SQLITE_ROW) {
+                    rootIds.push_back(sqlite3_column_int64(st, 0));
+                    continue;
+                }
+                if (rc == SQLITE_DONE) {
+                    break;
+                }
+                sqlite3_finalize(st);
+                return DbResult<std::vector<int64_t>>::Err({ map_sqlite_err(rc), rc, "step list root_job_set_ids by victory" });
+            }
+            sqlite3_finalize(st);
+            return DbResult<std::vector<int64_t>>::Ok(std::move(rootIds));
+        }
+
         std::future<DbResult<int64_t>> ExplorerRunRepo::IdempotentCreateAsync(int64_t root_job_set_id, int64_t settings_id, int64_t plan_id, int64_t delta_seed_id, RetryPolicy rp) {
             return DBService::instance().submit_res<int64_t>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_IdempotentCreate(e, root_job_set_id, settings_id, plan_id, delta_seed_id); });
@@ -93,6 +124,11 @@ namespace simcore {
         std::future<DbResult<void>> ExplorerRunRepo::SetHasVictoryAsync(int64_t run_id, bool has_victory, RetryPolicy rp) {
             return DBService::instance().submit_res<void>(OpType::Write, Priority::Normal, rp,
                 [=](DbEnv& e) { return Impl_SetHasVictory(e, run_id, has_victory); });
+        }
+
+        std::future<DbResult<std::vector<int64_t>>> ExplorerRunRepo::ListRootJobSetIdsByVictoryAsync(bool has_victory, RetryPolicy rp) {
+            return DBService::instance().submit_res<std::vector<int64_t>>(OpType::Read, Priority::Normal, rp,
+                [=](DbEnv& e) { return Impl_ListRootJobSetIdsByVictory(e, has_victory); });
         }
 
     } // db

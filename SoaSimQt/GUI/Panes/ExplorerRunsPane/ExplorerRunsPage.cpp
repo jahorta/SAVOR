@@ -114,6 +114,7 @@ ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
     wireSignals();
     syncControls();
     refreshView();
+    coordinator_->setChildVictoryOnly(state_.childVictoryOnly);
     coordinator_->requestGroupsRefresh();
 }
 
@@ -163,6 +164,9 @@ void ExplorerRunsPage::createWidgets()
     QVBoxLayout* groupsLayout = new QVBoxLayout(groupsPanel);
     groupsLayout->setContentsMargins(12, 12, 12, 12);
     groupsLayout->addWidget(new QLabel(QStringLiteral("Run Groups"), groupsPanel));
+    childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child reached Victory breakpoint"), groupsPanel);
+    childVictoryOnlyCheck_->setObjectName("jobsCheckBox");
+    groupsLayout->addWidget(childVictoryOnlyCheck_);
     groupsView_ = new ExplorerRunsGroupTableView(groupsPanel);
     groupsView_->attachModel(groupsModel_);
     groupsLayout->addWidget(groupsView_, 1);
@@ -202,15 +206,12 @@ void ExplorerRunsPage::createWidgets()
     showDuplicatesCheck_->setObjectName("jobsCheckBox");
     successOnlyCheck_ = new QCheckBox(QStringLiteral("Success outcome only"), jobsPanel);
     successOnlyCheck_->setObjectName("jobsCheckBox");
-    childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child reached Victory breakpoint"), jobsPanel);
-    childVictoryOnlyCheck_->setObjectName("jobsCheckBox");
     tagFilter_ = new QComboBox(jobsPanel);
     tagFilter_->setObjectName("jobsFilterCombo");
     tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
     filtersLayout->addWidget(winnersOnlyCheck_, 0, 0);
     filtersLayout->addWidget(showDuplicatesCheck_, 0, 1);
     filtersLayout->addWidget(successOnlyCheck_, 0, 2);
-    filtersLayout->addWidget(childVictoryOnlyCheck_, 0, 3);
     filtersLayout->addWidget(new QLabel(QStringLiteral("Tag"), jobsPanel), 1, 6);
     filtersLayout->addWidget(tagFilter_, 1, 7);
 
@@ -372,10 +373,10 @@ void ExplorerRunsPage::wireSignals()
         persistFilterSettings();
         refreshJobs();
     });
-    connect(childVictoryOnlyCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
+    connect(childVictoryOnlyCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         state_.childVictoryOnly = checked;
         persistFilterSettings();
-        refreshJobs();
+        coordinator_->setChildVictoryOnly(checked);
     });
     connect(tagFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, refreshJobs](int) {
         const QVariant data = tagFilter_->currentData();
@@ -496,6 +497,26 @@ void ExplorerRunsPage::refreshGroupModel()
     for (const ExplorerRunsCoordinator::GroupRow& row : coordinator_->groups()) {
         rows.push_back(ExplorerRunsGroupRow{ row.rootGroupId, row.settingsLabel, row.resultsSummary, row.totalWaves, row.statusSummary });
     }
+
+    if (!rows.empty()) {
+        const bool hasSelectedRoot = std::any_of(rows.begin(), rows.end(), [this](const ExplorerRunsGroupRow& row) {
+            return row.rootGroupId == state_.selectedRoot;
+        });
+        if (!hasSelectedRoot) {
+            state_.selectedRoot = rows.front().rootGroupId;
+            state_.selectedWaves.clear();
+            state_.selectedJob = -1;
+            coordinator_->clearJobs();
+            coordinator_->clearDetails();
+        }
+    } else {
+        state_.selectedRoot = -1;
+        state_.selectedWaves.clear();
+        state_.selectedJob = -1;
+        coordinator_->clearJobs();
+        coordinator_->clearDetails();
+    }
+
     groupsModel_->setRows(std::move(rows));
     restoreSelectedGroupRow();
     restoreItemViewScrollSnapshot(groupsView_, scrollSnapshot);
@@ -713,9 +734,6 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsPage::buildVisibleS
             }
         }
         if (state_.successOnly && (!job.hasResults || !isSuccessOutcome(job.battleOutcome))) {
-            continue;
-        }
-        if (state_.childVictoryOnly && !job.hasChildVictory) {
             continue;
         }
         if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty() && !tagFilteredJobIds.contains(job.jobId)) {
