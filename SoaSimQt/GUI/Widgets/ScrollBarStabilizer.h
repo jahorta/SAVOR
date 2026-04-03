@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QScrollBar>
+#include <QtCore/QTimer>
 
 #include <algorithm>
 
@@ -63,4 +65,30 @@ inline void restoreItemViewScrollSnapshot(QAbstractItemView* view, const ItemVie
 
     restoreScrollBarSnapshot(view->verticalScrollBar(), snapshot.vertical);
     restoreScrollBarSnapshot(view->horizontalScrollBar(), snapshot.horizontal);
+}
+
+using ScrollAreaScrollSnapshot = ItemViewScrollSnapshot;
+
+inline ScrollAreaScrollSnapshot captureScrollAreaScrollSnapshot(const QAbstractScrollArea* scrollArea)
+{
+    if (!scrollArea) {
+        return {};
+    }
+
+    return ScrollAreaScrollSnapshot{
+        captureScrollBarSnapshot(scrollArea->verticalScrollBar()),
+        captureScrollBarSnapshot(scrollArea->horizontalScrollBar())
+    };
+}
+
+inline void restoreScrollAreaScrollSnapshot(QAbstractScrollArea* scrollArea, const ScrollAreaScrollSnapshot& snapshot)
+{
+    if (!scrollArea) {
+        return;
+    }
+
+    QTimer::singleShot(5, [scrollArea, snapshot]() {
+        restoreScrollBarSnapshot(scrollArea->verticalScrollBar(), snapshot.vertical);
+        restoreScrollBarSnapshot(scrollArea->horizontalScrollBar(), snapshot.horizontal);
+        });
 }

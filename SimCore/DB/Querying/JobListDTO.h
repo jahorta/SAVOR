@@ -20,4 +20,5 @@ struct JobsListScope {
     std::optional<int> program_kind;
     std::optional<int64_t> job_set_id;
     std::optional<int64_t> since_queued_at;
+    std::optional<std::string> tag_key;
 };

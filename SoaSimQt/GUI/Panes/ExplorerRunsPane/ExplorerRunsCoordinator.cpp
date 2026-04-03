@@ -3,6 +3,7 @@
 #include "DB/BattlePlanAtomRepo.h"
 #include "DB/BattlePlanTurnRepo.h"
 #include "DB/DeltaSeedRepo.h"
+#include "DB/ExplorerRunRepo.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Querying/DataService.h"
 #include "DB/Scheduling/JobEventsRepo.h"
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <unordered_set>
 #include <utility>
 
 using namespace simcore::db;
@@ -40,6 +42,75 @@ auto runAsync(AsyncCall&& asyncCall)
     return QtConcurrent::run([call = std::forward<AsyncCall>(asyncCall)]() mutable {
         return call();
     });
+}
+
+std::optional<ResultsIni> readSingleTurnResults(qint64 jobId)
+{
+    auto payload = JobEventsRepo::GetLatestPayload(jobId, "RESULTS");
+    if (!payload.ok || !payload.value.has_value()) {
+        return std::nullopt;
+    }
+
+    IniDoc ini = IniDoc::parse(*payload.value);
+    if (!ini.has_section(ResultsIni::SECTION_NAME)) {
+        return std::nullopt;
+    }
+    return ResultsIni::from_section(ini);
+}
+
+std::optional<qint64> resolveParentJobId(qint64 childJobId)
+{
+    auto childJobRow = JobsRepo::Get(childJobId);
+    if (!childJobRow.ok || !childJobRow.value.vm_kv.has_value()) {
+        return std::nullopt;
+    }
+    if (childJobRow.value.parent_job_id.has_value() && *childJobRow.value.parent_job_id > 0) {
+        return childJobRow.value.parent_job_id;
+    }
+
+    const JobIni childJob = JobIni::from_section(IniDoc::parse(*childJobRow.value.vm_kv));
+    if (childJob.turn_index <= 1) {
+        return std::nullopt;
+    }
+
+    auto parentJobSet = JobSetsRepo::GetParent(childJobRow.value.job_set_id);
+    if (!parentJobSet.ok) {
+        return std::nullopt;
+    }
+
+    auto candidates = JobsRepo::GetByJobSet(*parentJobSet.value);
+    if (!candidates.ok || candidates.value.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<qint64> matched;
+    for (const auto& parent : candidates.value) {
+        if (!parent.vm_kv.has_value()) {
+            continue;
+        }
+        const JobIni parentJob = JobIni::from_section(IniDoc::parse(*parent.vm_kv));
+        if (parentJob.turn_index + 1 != childJob.turn_index || parentJob.delta_seed_id != childJob.delta_seed_id) {
+            continue;
+        }
+
+        const auto parentResults = readSingleTurnResults(parent.job_id);
+        if (!parentResults.has_value()) {
+            continue;
+        }
+        if (parentResults->output_savestate_id != childJob.savestate_id) {
+            continue;
+        }
+        if (parentResults->fake_attacks_used != childJob.fake_attacks_used_before) {
+            continue;
+        }
+        matched.push_back(parent.job_id);
+    }
+
+    if (matched.empty()) {
+        return std::nullopt;
+    }
+    std::sort(matched.begin(), matched.end());
+    return matched.front();
 }
 }
 
@@ -79,7 +150,9 @@ ExplorerRunsCoordinator::ExplorerRunsCoordinator(QObject* parent)
     });
 
     connect(&autoRefreshTimer_, &QTimer::timeout, this, &ExplorerRunsCoordinator::handleAutoRefreshTick);
-    startAutoRefreshTimer();
+    if (pageActive_) {
+        startAutoRefreshTimer();
+    }
 }
 
 const std::vector<ExplorerRunsCoordinator::GroupRow>& ExplorerRunsCoordinator::groups() const { return groups_; }
@@ -91,20 +164,99 @@ bool ExplorerRunsCoordinator::jobsInFlight() const { return jobsInFlight_; }
 bool ExplorerRunsCoordinator::detailsInFlight() const { return detailsInFlight_; }
 bool ExplorerRunsCoordinator::autoRefreshEnabled() const { return autoRefreshEnabled_; }
 int ExplorerRunsCoordinator::refreshSeconds() const { return refreshSeconds_; }
+QString ExplorerRunsCoordinator::describeBattlePlanForJob(qint64 jobId) const
+{
+    if (jobId <= 0) {
+        return QStringLiteral("(invalid job id)");
+    }
+
+    struct HistoryEntry {
+        quint32 turn = 0;
+        qint64 jobId = 0;
+        QString text;
+    };
+
+    std::unordered_set<qint64> visited;
+    std::vector<HistoryEntry> entries;
+    qint64 currentJobId = jobId;
+    while (currentJobId > 0 && !visited.contains(currentJobId)) {
+        visited.insert(currentJobId);
+
+        quint32 turn = 0;
+        auto job = JobsRepo::Get(currentJobId);
+        if (job.ok && job.value.vm_kv.has_value()) {
+            turn = JobIni::from_section(IniDoc::parse(*job.value.vm_kv)).turn_index;
+        }
+
+        entries.push_back(HistoryEntry{
+            turn,
+            currentJobId,
+            buildBlueprintInfo(currentJobId)
+        });
+
+        const std::optional<qint64> parentJobId = resolveParentJobId(currentJobId);
+        if (!parentJobId.has_value()) {
+            break;
+        }
+        currentJobId = *parentJobId;
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const HistoryEntry& a, const HistoryEntry& b) {
+        if (a.turn == b.turn) {
+            return a.jobId < b.jobId;
+        }
+        return a.turn < b.turn;
+    });
+
+    QStringList blocks;
+    blocks.reserve(static_cast<qsizetype>(entries.size()));
+    for (const HistoryEntry& entry : entries) {
+        const QString turnLabel = entry.turn > 0
+            ? QStringLiteral("Turn %1").arg(entry.turn)
+            : QStringLiteral("Turn ?");
+        blocks.push_back(QStringLiteral("%1 · job_id=%2\n%3").arg(turnLabel).arg(entry.jobId).arg(entry.text));
+    }
+    return blocks.join(QStringLiteral("\n\n------------------------------\n\n"));
+}
+
+void ExplorerRunsCoordinator::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        autoRefreshTimer_.stop();
+        return;
+    }
+
+    startAutoRefreshTimer();
+    if (groups_.empty() && !groupsInFlight_) {
+        requestGroupsRefresh();
+    }
+}
 
 void ExplorerRunsCoordinator::requestGroupsRefresh()
 {
+    if (!pageActive_) {
+        return;
+    }
     if (groupsInFlight_) {
         return;
     }
 
     groupsInFlight_ = true;
-    groupsWatcher_.setFuture(runAsync([this]() { return buildGroups(); }));
+    const bool childVictoryOnly = childVictoryOnly_;
+    groupsWatcher_.setFuture(runAsync([this, childVictoryOnly]() { return buildGroups(childVictoryOnly); }));
     emitStateChanged();
 }
 
 void ExplorerRunsCoordinator::requestJobsRefresh(const std::vector<qint64>& waveJobSetIds)
 {
+    if (!pageActive_) {
+        return;
+    }
     if (jobsInFlight_) {
         return;
     }
@@ -120,6 +272,9 @@ void ExplorerRunsCoordinator::requestJobsRefresh(const std::vector<qint64>& wave
 
 void ExplorerRunsCoordinator::requestDetailsRefresh(qint64 jobId)
 {
+    if (!pageActive_) {
+        return;
+    }
     if (jobId <= 0) {
         clearDetails();
         return;
@@ -161,6 +316,15 @@ void ExplorerRunsCoordinator::setRefreshSeconds(int seconds)
     emitStateChanged();
 }
 
+void ExplorerRunsCoordinator::setChildVictoryOnly(bool enabled)
+{
+    if (childVictoryOnly_ == enabled) {
+        return;
+    }
+    childVictoryOnly_ = enabled;
+    requestGroupsRefresh();
+}
+
 void ExplorerRunsCoordinator::clearJobs()
 {
     const bool changed = !jobs_.empty() || jobsInFlight_;
@@ -195,7 +359,7 @@ void ExplorerRunsCoordinator::startAutoRefreshTimer()
 
 void ExplorerRunsCoordinator::handleAutoRefreshTick()
 {
-    if (!autoRefreshEnabled_ || groupsInFlight_) {
+    if (!pageActive_ || !autoRefreshEnabled_ || groupsInFlight_) {
         return;
     }
     if (lastGroupsRefresh_.secsTo(QDateTime::currentDateTimeUtc()) < refreshSeconds_) {
@@ -204,8 +368,17 @@ void ExplorerRunsCoordinator::handleAutoRefreshTick()
     requestGroupsRefresh();
 }
 
-std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGroups() const
+std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGroups(bool childVictoryOnly) const
 {
+    std::unordered_set<qint64> winningRootJobSetIds;
+    if (childVictoryOnly) {
+        auto victoriousRoots = ExplorerRunRepo::ListRootJobSetIdsByVictory(true);
+        if (!victoriousRoots.ok) {
+            return {};
+        }
+        winningRootJobSetIds.insert(victoriousRoots.value.begin(), victoriousRoots.value.end());
+    }
+
     JobSetsListScope scope{};
     scope.program_kind = simcore::PK_BattleSingleTurnRunner;
     auto page = JobSetsRepo::ListRecentAsync(scope, std::nullopt, 400).get();
@@ -222,6 +395,9 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
 
         const WaveMeta meta = parseWaveMeta(js.value.meta_text);
         const qint64 rootId = resolveRoot(js.value);
+        if (childVictoryOnly && !winningRootJobSetIds.contains(rootId)) {
+            continue;
+        }
 
         GroupRow& group = groupMap[rootId];
         group.rootGroupId = rootId;
@@ -245,6 +421,7 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
             for (const JobRow& job : jobs.value) {
                 ids.push_back(job.job_id);
             }
+
             const auto resultMap = loadJobResultsMap(ids);
             for (const JobRow& job : jobs.value) {
                 hasWinner = hasWinner || isWinnerState(QString::fromStdString(job.state));
@@ -299,6 +476,26 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
 std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsCoordinator::buildJobsForWaves(const std::vector<qint64>& waveJobSetIds) const
 {
     std::vector<JobViewRow> out;
+    std::unordered_set<qint64> runIds;
+    std::unordered_map<qint64, bool> runHasVictory;
+
+    for (qint64 waveJobSetId : waveJobSetIds) {
+        auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
+        if (!jobs.ok) {
+            continue;
+        }
+        for (const JobRow& job : jobs.value) {
+            if (job.program_ref_id > 0) {
+                runIds.insert(job.program_ref_id);
+            }
+        }
+    }
+
+    for (qint64 runId : runIds) {
+        auto runRow = ExplorerRunRepo::Get(runId);
+        runHasVictory[runId] = runRow.ok && runRow.value.has_victory;
+    }
+
     for (qint64 waveJobSetId : waveJobSetIds) {
         auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
         if (!jobs.ok) {
@@ -331,7 +528,8 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsCoordinator::buildJ
                 summary.predPassed,
                 summary.predTotal,
                 summary.predAbortRun,
-                summary.hasResults
+                summary.hasResults,
+                runHasVictory.contains(job.program_ref_id) && runHasVictory[job.program_ref_id]
             });
         }
     }
@@ -441,9 +639,16 @@ QString ExplorerRunsCoordinator::buildBlueprintInfo(qint64 jobId) const
         planSummary = QString::fromStdString(soa::battle::actions::get_turn_plan_summary(turnPlan));
     }
 
-    return QStringLiteral("delta_seed_id: %1\ninitial_frame_input: %2\nbattle_action_plan: %3")
+    return QStringLiteral(
+        "delta_seed_id: %1\n"
+        "initial_frame_input: %2\n"
+        "fake_attacks_used_before: %3\n"
+        "fake_attacks_this_turn: %4\n"
+        "battle_action_plan: %5")
         .arg(singleTurnJob.delta_seed_id)
         .arg(initialFrame)
+        .arg(singleTurnJob.fake_attacks_used_before)
+        .arg(singleTurnJob.fake_attacks_this_turn)
         .arg(planSummary);
 }
 
@@ -528,7 +733,8 @@ QString ExplorerRunsCoordinator::summarizeStates(const std::vector<JobRow>& jobs
 
 bool ExplorerRunsCoordinator::isSuccessOutcome(quint32 battleOutcome) const
 {
-    return battleOutcome == static_cast<quint32>(simcore::battle::Outcome::ReachedNextTurn);
+    return battleOutcome == static_cast<quint32>(simcore::battle::Outcome::ReachedNextTurn)
+        || battleOutcome == static_cast<quint32>(simcore::battle::Outcome::Victory);
 }
 
 bool ExplorerRunsCoordinator::isWinnerState(const QString& state) const

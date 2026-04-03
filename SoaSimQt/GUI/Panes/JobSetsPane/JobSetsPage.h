@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "GUI/Common/StatusToast.h"
 #include "DB/Querying/JobSetListDTO.h"
 #include "JobSetsProgressDelegate.h"
 
@@ -23,8 +24,14 @@ class QTimer;
 
 class JobSetsPage final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit JobSetsPage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private:
     void createWidgets();
@@ -35,6 +42,7 @@ private:
     void updateLoadingIndicatorState();
     std::optional<int> selectedProgramKind() const;
     std::optional<JobSetStateFilter> selectedStateFilter() const;
+    std::optional<QString> selectedTagKey() const;
     void handleDeleteRequested(qint64 jobSetId);
 
     JobSetsController* controller_ = nullptr;
@@ -45,6 +53,7 @@ private:
     QLabel* descriptionLabel_ = nullptr;
     QComboBox* kindFilter_ = nullptr;
     QComboBox* stateFilter_ = nullptr;
+    QComboBox* tagFilter_ = nullptr;
     QSpinBox* pageSizeSpin_ = nullptr;
     QPushButton* applyButton_ = nullptr;
     QPushButton* resetButton_ = nullptr;
@@ -62,4 +71,5 @@ private:
     std::unique_ptr<JobSetsProgressDelegate> progressDelegate_;
     QTimer* loadingStateTimer_ = nullptr;
     bool delayedLoadingVisible_ = false;
+    QString lastToastSignature_;
 };

@@ -22,6 +22,7 @@ namespace simcore::db {
         std::string status;
         std::string purpose;
         int complete{};
+        bool has_battle_context = false;
     };
 
     struct TasMovieLite {

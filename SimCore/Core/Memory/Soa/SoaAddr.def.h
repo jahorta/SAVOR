@@ -1,6 +1,6 @@
 #pragma once
 
-// domain, NAME,                  REGION, MODE,     BASE_VA,     WIDTH, /* optional offsets... */
+// domain, NAME,                  REGION,     BASE_VA /* optional offsets... */
 // Offsets semantics for PtrChain: cur=BASE; for each off: cur = *(u32*)cur + off; final VA = cur.
 
 #define ADDR_TABLE_CORE(X) \

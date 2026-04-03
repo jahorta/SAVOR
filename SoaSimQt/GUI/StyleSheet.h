@@ -375,6 +375,24 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #6d7684;
         font-size: 12px;
     }
+    QPushButton#statusHistoryButton {
+        min-width: 20px;
+        max-width: 24px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        border: 1px solid #3a4352;
+        background-color: #202633;
+        color: #dce3ed;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    QPushButton#statusHistoryButton:hover {
+        background-color: #2a3241;
+        border-color: #4a5568;
+    }
+    QPushButton#statusHistoryButton:pressed {
+        background-color: #161c26;
+    }
     QLabel#statusBadge {
         color: white;
         border-radius: 10px;
@@ -405,6 +423,17 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
     }
     QLabel#statusBadge[variant="error"] {
         background-color: rgba(200, 80, 80, 220);
+    }
+    QLabel#toastHistoryPath {
+        color: #b6c1cf;
+        font-size: 12px;
+    }
+    QPlainTextEdit#toastHistoryText {
+        background-color: #0f1319;
+        border: 1px solid #2e3542;
+        border-radius: 6px;
+        color: #d7dee8;
+        font-family: Consolas, "Courier New", monospace;
     }
 
     QFrame#jobSetsToolbarPanel,

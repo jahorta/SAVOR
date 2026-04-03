@@ -23,6 +23,8 @@
 #include "../ExplorerSettingsRepo.h"
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
+#include "../TagRepo.h"
+#include "SeedProbeDBCodec.h"
 #include "../SavestateRepo.h"
 #include "../DBCore/ObjectStore.h"
 
@@ -35,6 +37,7 @@
 #include "../Querying/DataService.h"
 
 using BRBp = simcore::db::codec::battle::run::BlueprintIni;
+using SeedProbeBp = simcore::db::codec::seedprobe::BlueprintIni;
 using STJob = simcore::db::codec::battle::singleturn::JobIni;
 using STRes = simcore::db::codec::battle::singleturn::ResultsIni;
 using STWave = simcore::db::codec::battle::singleturn::WaveIni;
@@ -43,6 +46,17 @@ static constexpr int kPK = simcore::PK_BattleSingleTurnRunner;
 static constexpr int kPV = phase::battle::turnrunner::PayloadVersion;
 
 namespace {
+    static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+        auto tags = simcore::db::TagRepo::ListEntityTags("job_set", from_job_set_id);
+        if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+        for (const auto& tag : tags.value) {
+            auto attach = simcore::db::TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+            if (!attach.ok) return DbResult<void>::Err(attach.error);
+        }
+        return DbResult<void>::Ok();
+    }
+
     static std::vector<uint16_t> parse_csv_u16(const std::optional<std::string>& csv) {
         std::vector<uint16_t> out;
         if (!csv.has_value() || csv->empty()) return out;
@@ -236,7 +250,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::encode_job_into_db(int64_t job_set
             jb.fake_attacks_this_turn = 0;
             jb.action_key = action_key_for_plan_turn(plan.plan_id, wave.cur_turn - 1);
 
-            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
+            auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(root.value, bp.settings_id, plan.plan_id, std::get<1>(st) > 0 ? std::get<1>(st) : 0);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
             const uint32_t fake_min = std::min(bp.min_fake_attacks, bp.max_fake_attacks);
@@ -426,6 +440,13 @@ DbResult<void> BattleSingleTurnRunDBCodec::encode_results_into_db(int64_t job_id
         if (!st.ok) return DbResult<void>::Err(st.error);
     }
 
+    if (r.battle_outcome == static_cast<uint32_t>(simcore::battle::Outcome::Victory)) {
+        auto jr = simcore::db::JobsRepo::Get(job_id);
+        if (!jr.ok) return DbResult<void>::Err(jr.error);
+        auto victoryMark = simcore::db::ExplorerRunRepo::SetHasVictory(jr.value.program_ref_id, true);
+        if (!victoryMark.ok) return DbResult<void>::Err(victoryMark.error);
+    }
+
     return DbResult<void>::Ok();
 }
 
@@ -537,6 +558,41 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
     BRBp bp = BRBp::from_section(ini);
     STWave wave = STWave::from_section(ini);
 
+    if (ctx.prev_program_kind == (uint32_t)simcore::PK_SeedProbe) {
+        auto plans = simcore::db::ExplorerSettingsPlanLinkRepo::ListBySettings(bp.settings_id);
+        if (!plans.ok) return DbResult<void>::Err(plans.error);
+        if (plans.value.empty()) {
+            return DbResult<void>::Err({ DbErrorKind::NotFound, 0,
+                "No plans found for setting_id=" + std::to_string(bp.settings_id) });
+        }
+
+        SeedProbeBp spbp = SeedProbeBp::from_section(ini);
+        auto unique_count = simcore::db::DeltaSeedRepo::ListUniqueForProbe(spbp.probe_id);
+        if (!unique_count.ok) return DbResult<void>::Err(unique_count.error);
+        if (unique_count.value.empty()) {
+            return DbResult<void>::Err({ DbErrorKind::NotFound, 0,
+                "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) });
+        }
+
+        std::string purpose = std::format("SingleTurnBattle: SeedProbe={}, SaveState={}", spbp.probe_id, spbp.savestate_id);
+        auto crt = simcore::db::JobSetsRepo::Create(purpose, kPK, std::nullopt, std::nullopt, std::nullopt, "",
+            plans.value.size() * unique_count.value.size());
+        if (!crt.ok) return DbResult<void>::Err(crt.error);
+        auto prev_root = simcore::db::JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+        if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+        auto copy_tags = copy_job_set_tags(prev_root.value, crt.value);
+        if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
+
+        bp.seed_probe_id = spbp.probe_id;
+        bp.set_section(ini);
+        wave.cur_turn = 1;
+        wave.set_section(ini);
+
+        auto enc = encode_job_into_db(crt.value, ini.to_string_sorted());
+        if (!enc.ok) return DbResult<void>::Err(enc.error);
+        return DbResult<void>::Ok();
+    }
+
     auto results = simcore::db::JobEventsRepo::ListByJobSetTreeAndKind(ctx.prev_job_set_id, "RESULTS");
     if (!results.ok) return DbResult<void>::Err(results.error);
 
@@ -588,6 +644,21 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
         if (winner_jobs.count(s.job_id)) {
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_WINNER");
         } else {
+            auto loser_result = latest_result_by_job.find(s.job_id);
+            if (loser_result != latest_result_by_job.end() && loser_result->second.payload.has_value()) {
+                IniDoc loser_doc = IniDoc::parse(*loser_result->second.payload);
+                if (loser_doc.has_section(STRes::SECTION_NAME)) {
+                    STRes loser_res = STRes::from_section(loser_doc);
+                    if (loser_res.output_savestate_id > 0
+                        && (loser_res.battle_outcome == (uint32_t)simcore::battle::Outcome::ReachedNextTurn
+                            || loser_res.battle_outcome == (uint32_t)simcore::battle::Outcome::Victory)) {
+                        (void)simcore::db::SavestateRepo::Delete(loser_res.output_savestate_id);
+                        loser_res.output_savestate_id = 0;
+                        loser_res.set_section(loser_doc);
+                        (void)simcore::db::JobEventsRepo::Append(s.job_id, "RESULTS", loser_doc.to_string_sorted());
+                    }
+                }
+            }
             (void)simcore::db::JobsRepo::SetState(s.job_id, "SUCCEEDED_DUPLICATE");
         }
     }
@@ -603,7 +674,11 @@ DbResult<void> BattleSingleTurnRunDBCodec::phase_setup_on_trigger(const TriggerC
 }
 
 
-DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable, std::optional<uint32_t> additional_fake_attacks) {
+DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
+    int64_t source_job_id,
+    bool auto_wave_trigger_enable,
+    std::optional<uint32_t> additional_fake_attacks,
+    bool force_create_jobs) {
     auto jr = simcore::db::JobsRepo::Get(source_job_id);
     if (!jr.ok) return DbResult<int64_t>::Err(jr.error);
     if (!jr.value.vm_kv.has_value()) return DbResult<int64_t>::Err({ DbErrorKind::NotFound, 0, "vm_kv missing" });
@@ -678,7 +753,7 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
         nj.fake_attacks_used_before = r.fake_attacks_used;
         nj.action_key = action_key_for_plan_turn(pl.plan_id, next.cur_turn - 1);
 
-        auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
+        auto run = simcore::db::ExplorerRunRepo::IdempotentCreate(root.value, bp.settings_id, pl.plan_id, (jb.delta_seed_id > 0) ? jb.delta_seed_id : 0);
         if (!run.ok) continue;
 
         if (r.fake_attacks_used > bp.max_fake_attacks) continue;
@@ -688,7 +763,11 @@ DbResult<int64_t> BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(int64_t
         for (uint32_t fake = needed_to_reach_min; fake <= remaining; ++fake) {
             nj.fake_attacks_this_turn = fake;
             const std::string vm = nj.append_section(t_ini).to_string_sorted();
-            const std::string fp = hash::sha256(vm.data(), vm.size());
+            std::string fp_input = vm;
+            if (force_create_jobs) {
+                fp_input.append(std::format(":force:{}", js.value));
+            }
+            const std::string fp = hash::sha256(fp_input.data(), fp_input.size());
             auto cj = simcore::db::JobsRepo::CreateOrGetByFingerprint(js.value, kPK, kPV, run.value, fp, bp.priority, vm, nj.savestate_id, source_job_id);
             if (!cj.ok) continue;
             (void)simcore::db::JobEventsRepo::Append(cj.value, "ENQUEUED");

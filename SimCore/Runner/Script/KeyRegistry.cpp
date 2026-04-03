@@ -10,10 +10,10 @@ namespace simcore::keys {
 
     // Fixed list of module tables (deterministic order)
     static constexpr const KeyPair* kTablesPtrs[] = {
-    core::kKeys, seed::kKeys, tas::kKeys, battle::kKeys,
+    core::kKeys, seed::kKeys, tas::kKeys, tasframedetector::kKeys, battle::kKeys,
     };
     static constexpr std::size_t kTablesSizes[] = {
-      core::kCount, seed::kCount, tas::kCount, battle::kCount
+      core::kCount, seed::kCount, tas::kCount, tasframedetector::kCount, battle::kCount
     };
 
     static constexpr size_t kNumTables = sizeof(kTablesPtrs) / sizeof(kTablesPtrs[0]);

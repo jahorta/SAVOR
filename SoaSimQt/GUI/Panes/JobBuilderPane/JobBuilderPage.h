@@ -7,6 +7,10 @@
 #include <QtCore/QString>
 #include <QtCore/QVector>
 #include <QtWidgets/QWidget>
+#include <QtWidgets/QFrame>
+#include <QtWidgets/QScrollArea>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QListWidget>
 
 #include "GUI/Common/StatusToast.h"
 #include "DB/DeltaSeedRepo.h"
@@ -27,9 +31,9 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
 class QSplitter;
-class QStackedWidget;
 class QTreeWidget;
 
 class JobBuilderPage final : public QWidget
@@ -59,6 +63,7 @@ private:
     void wireSignals();
     void loadProgramKinds();
     void handleKindSelectionChanged();
+    void updateFormVisibility();
     void loadDefaultsForSelectedKind();
     void syncWidgetsFromIni();
     void syncIniFromWidgets();
@@ -75,6 +80,7 @@ private:
     void openArtifactPicker();
     void openSeedProbePicker();
     void openExplorerSettingsPicker();
+    void openSubmitTagsDialog();
 
     void requestPreview();
     void requestSubmit();
@@ -109,6 +115,7 @@ private:
     QHash<qint64, QVector<simcore::db::DeltaSeedRow>> deltaRowsByProbe_;
     QHash<qint64, QSet<qint64>> selectedDeltaIdsByProbe_;
     bool suppressDeltaTreeRefresh_ = false;
+    std::vector<std::string> submissionTagKeys_;
 
     QLabel* titleLabel_ = nullptr;
     QLabel* descriptionLabel_ = nullptr;
@@ -119,9 +126,12 @@ private:
     QPushButton* validateButton_ = nullptr;
     QPushButton* previewButton_ = nullptr;
     QSplitter* splitLayout_ = nullptr;
-    QStackedWidget* formStack_ = nullptr;
+    QScrollArea* formsScrollArea_ = nullptr;
 
+    QWidget* battleContextForm_ = nullptr;
     QWidget* seedProbeForm_ = nullptr;
+    QFrame* seedProbeGeneralCard_ = nullptr;
+    QWidget* seedProbeSaveStateWidget_ = nullptr;
     QLabel* savestateSummaryLabel_ = nullptr;
     QPushButton* pickSavestateButton_ = nullptr;
     QSpinBox* seedProbePrioritySpin_ = nullptr;
@@ -135,6 +145,7 @@ private:
     QCheckBox* seedProbeIgnoreTriggerCheck_ = nullptr;
     QSpinBox* seedProbeComboAttemptsSpin_ = nullptr;
     QSpinBox* seedProbeComboSamplerTriesSpin_ = nullptr;
+    QCheckBox* seedProbeAutoBattleCheck_ = nullptr;
 
     QWidget* tasMovieForm_ = nullptr;
     QLabel* artifactSummaryLabel_ = nullptr;
@@ -158,6 +169,7 @@ private:
     QPushButton* useAllDeltasButton_ = nullptr;
     QPushButton* selectAllDeltasButton_ = nullptr;
     QTreeWidget* deltaTree_ = nullptr;
+    QFrame* explorerDeltaCard_ = nullptr;
     QSpinBox* explorerPrioritySpin_ = nullptr;
     QSpinBox* explorerRunMsSpin_ = nullptr;
     QSpinBox* explorerViMsSpin_ = nullptr;
@@ -171,6 +183,8 @@ private:
     QPlainTextEdit* previewText_ = nullptr;
     QLabel* submitStatusLabel_ = nullptr;
     QLineEdit* purposeEdit_ = nullptr;
+    QPushButton* setTagsButton_ = nullptr;
+    QLabel* tagsSummaryLabel_ = nullptr;
     QPlainTextEdit* metaEdit_ = nullptr;
     QPushButton* submitButton_ = nullptr;
     QPlainTextEdit* iniText_ = nullptr;

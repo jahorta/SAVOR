@@ -54,7 +54,8 @@ public:
     const ViewState& viewState() const;
 
     void loadInitial();
-    void applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, int pageLimit);
+    void setPageActive(bool active);
+    void applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, const std::optional<QString>& tagKey, int pageLimit);
     void resetFilters();
     void setAutoRefreshEnabled(bool enabled);
     void setRefreshSeconds(int seconds);
@@ -99,13 +100,19 @@ private:
     const JobLite* selectedJob() const;
     QString programKindLabel(int id) const;
     void emitStateChanged();
+    void loadSettings();
+    void persistSettings() const;
+    void syncFetchStateFromView();
 
     ViewState state_;
+    JobsListScope fetchScope_{};
+    int fetchPageLimit_ = 100;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;
+    bool pendingPageFetch_ = false;
     bool detailInFlight_ = false;
     bool requeueInFlight_ = false;
     bool replayVisualInFlight_ = false;
@@ -121,4 +128,5 @@ private:
     QFutureWatcher<VoidResult> cancelWatcher_;
     QFutureWatcher<VoidResult> restartWatcher_;
     QTimer* refreshTimer_ = nullptr;
+    bool pageActive_ = false;
 };

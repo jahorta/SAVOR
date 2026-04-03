@@ -5,6 +5,7 @@
 #include <variant>
 #include <optional>
 #include <cstdint>
+#include <atomic>
 
 #include "../Breakpoints/BPRegistry.h"    // BreakpointMap, BPKey
 #include "../Breakpoints/Predicate.h"
@@ -55,10 +56,13 @@ namespace simcore {
 		SET_U32,                    // ctx[key] = imm
 		ADD_U32,                    // ctx[key] += imm
 		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
-		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH // build plan from actions
+		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
+		RECORD_TAS_INPUT_SAMPLE
 	};
 
+	struct PSOp;
 	static std::string get_psop_name(PSOpCode op);
+	static std::string get_psop_desc(const PSOp& op);
 
 	enum class PSCmp : uint8_t { EQ, NE, LT, LE, GT, GE };
 
@@ -113,6 +117,7 @@ namespace simcore {
 	inline PSOp OpAddU32(simcore::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpApplyPlanFrameFrom(simcore::keys::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
+	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 
@@ -207,6 +212,11 @@ namespace simcore {
 
 		// Run the program once for a given job
 		PSResult run(const PSJob& job);
+		void SetVisualDebugMode(bool enabled);
+		void SetVisualDebugPaused(bool paused);
+		void StepVisualDebugVmOnce();
+		bool IsVisualDebugVmPaused() const;
+		bool IsRunUntilBpActive() const;
 
 	private:
 		simcore::DolphinWrapper& host_;
@@ -216,6 +226,10 @@ namespace simcore {
 		PhaseScript prog_;
 		PSInit init_;
 		std::vector<uint32_t> armed_pcs_;
+		bool visual_debug_mode_{ false };
+		std::atomic<bool> visual_debug_paused_{ false };
+		std::atomic<uint32_t> visual_debug_vm_step_budget_{ 0 };
+		std::atomic<bool> run_until_bp_active_{ false };
 
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
@@ -228,6 +242,7 @@ namespace simcore {
 
 		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
 		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
+		void wait_for_visual_debug_gate();
 
 		bool op_arm_phase_bps_once();
 		bool op_load_snapshot(PSContext& ctx);
@@ -245,6 +260,7 @@ namespace simcore {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
+		void op_record_tas_input_sample(PSContext& ctx);
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u32(const PSOp& op, PSResult& result, PSContext& ctx);

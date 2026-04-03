@@ -8,6 +8,7 @@ using SPBp = simcore::db::codec::seedprobe::BlueprintIni;
 using SPGrid = simcore::db::codec::seedprobe::GridIni;
 using SPUni = simcore::db::codec::seedprobe::UniqueIni;
 using simcore::db::codec::seedprobe::SeedProbePhase;
+using TIDBp = simcore::db::codec::tasframedetector::BlueprintIni;
 
 namespace simcore::db::phasebuilder {
 
@@ -23,6 +24,21 @@ namespace simcore::db::phasebuilder {
         bp.progress_enable = true;
         bp.auto_queue_seeds = false;
         bp.set_section(doc);
+
+        SPBp sp = SPBp::from_section(DefaultSeedProbe());
+        sp.cur_phase = SeedProbePhase::None;
+        sp.probe_id = -1;
+        sp.savestate_id = -1;
+        sp.set_section(doc);
+
+        SPGrid grid = SPGrid::from_section(DefaultSeedProbe());
+        grid.set_section(doc);
+
+        SPUni uni = SPUni::from_section(DefaultSeedProbe());
+        uni.set_section(doc);
+
+        BRBp br = BRBp::from_section(DefaultExplorerRun());
+        br.set_section(doc);
         return doc;
     }
 
@@ -60,10 +76,10 @@ namespace simcore::db::phasebuilder {
         bp.settings_id = -1;
         bp.seed_probe_id = -1;
         bp.priority = 0;
-        bp.run_ms = 0u;
-        bp.vi_stall_ms = 0u;
+        bp.run_ms = 200000u;
+        bp.vi_stall_ms = 5000u;
         bp.progress_enable = true;
-        bp.use_single_turn_runner = false;
+        bp.use_single_turn_runner = true;
         bp.auto_wave_trigger_enable = false;
         bp.min_fake_attacks = 0;
         bp.max_fake_attacks = 0;
@@ -77,6 +93,15 @@ namespace simcore::db::phasebuilder {
         case PK_TasMovie:         return DefaultTasMovie();
         case PK_BattleTurnRunner: return DefaultExplorerRun();
         case PK_BattleSingleTurnRunner: return DefaultExplorerRun();
+        case PK_TasInputStreamDetector: {
+            IniDoc doc{};
+            TIDBp bp{};
+            bp.base_dtm_artifact_id = -1;
+            bp.priority = 0;
+            bp.vi_stall_ms = 0;
+            bp.set_section(doc);
+            return doc;
+        }
         default:                  return IniDoc{};
         }
     }

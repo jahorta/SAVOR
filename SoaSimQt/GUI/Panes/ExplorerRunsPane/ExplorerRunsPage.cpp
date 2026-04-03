@@ -5,20 +5,25 @@
 #include "ExplorerRunsJobsTableModel.h"
 #include "ExplorerRunsJobsTableView.h"
 #include "ExplorerRunsTurnInputsDialog.h"
+#include "ExplorerRunsReplicationDialog.h"
+#include "ExplorerRunsWaveTreeModel.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include "Core/Input/SoaBattle/PlanWriter.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/Scheduling/JobsRepo.h"
+#include "DB/TagRepo.h"
 #include "Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "Utils/IniDoc.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QMetaObject>
+#include <QtCore/QScopedValueRollback>
+#include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
-#include <QtGui/QStandardItem>
-#include <QtGui/QStandardItemModel>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -28,6 +33,10 @@
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
@@ -37,13 +46,23 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
-#include <unordered_map>
+#include <optional>
+#include <unordered_set>
 
 using namespace simcore::db;
 using namespace simcore::db::codec::battle::singleturn;
 
 namespace {
-constexpr int kWaveJobSetIdUserRole = Qt::UserRole + 1;
+constexpr auto kSettingsGroup = "ExplorerRunsPage";
+constexpr auto kWinnersOnlyKey = "winners_only";
+constexpr auto kShowDuplicatesKey = "show_duplicates";
+constexpr auto kSuccessOnlyKey = "success_only";
+constexpr auto kChildVictoryOnlyKey = "child_victory_only";
+constexpr auto kTagKey = "tag_key";
+constexpr auto kSortMetricPrefix = "sort_metric_";
+constexpr auto kSortAscendingPrefix = "sort_ascending_";
+constexpr auto kOverrideFakeAttacksKey = "override_fake_attacks";
+constexpr auto kMaxFakeAttacksKey = "max_fake_attacks";
 
 bool isTurnInputEligibleState(const QString& state)
 {
@@ -88,14 +107,25 @@ ExplorerRunsPage::ExplorerRunsPage(QWidget* parent)
     , coordinator_(new ExplorerRunsCoordinator(this))
     , groupsModel_(new ExplorerRunsGroupTableModel(this))
     , jobsModel_(new ExplorerRunsJobsTableModel(this))
-    , wavesModel_(new QStandardItemModel(this))
+    , wavesModel_(new ExplorerRunsWaveTreeModel(this))
 {
     createWidgets();
+    loadFilterSettings();
     wireSignals();
-    coordinator_->requestGroupsRefresh();
+    syncControls();
+    refreshView();
+    coordinator_->setChildVictoryOnly(state_.childVictoryOnly);
 }
 
 ExplorerRunsPage::~ExplorerRunsPage() = default;
+
+void ExplorerRunsPage::setPageActive(bool active)
+{
+    coordinator_->setPageActive(active);
+    if (active) {
+        coordinator_->requestGroupsRefresh();
+    }
+}
 
 void ExplorerRunsPage::createWidgets()
 {
@@ -141,6 +171,9 @@ void ExplorerRunsPage::createWidgets()
     QVBoxLayout* groupsLayout = new QVBoxLayout(groupsPanel);
     groupsLayout->setContentsMargins(12, 12, 12, 12);
     groupsLayout->addWidget(new QLabel(QStringLiteral("Run Groups"), groupsPanel));
+    childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child reached Victory breakpoint"), groupsPanel);
+    childVictoryOnlyCheck_->setObjectName("jobsCheckBox");
+    groupsLayout->addWidget(childVictoryOnlyCheck_);
     groupsView_ = new ExplorerRunsGroupTableView(groupsPanel);
     groupsView_->attachModel(groupsModel_);
     groupsLayout->addWidget(groupsView_, 1);
@@ -151,11 +184,10 @@ void ExplorerRunsPage::createWidgets()
     wavesLayout->setContentsMargins(12, 12, 12, 12);
     wavesLayout->addWidget(new QLabel(QStringLiteral("Wave Tree"), wavesPanel));
     wavesView_ = new QTreeView(wavesPanel);
-    configureFlatTreeView(wavesView_, QStringLiteral("explorerRunsWavesTree"));
     wavesView_->setRootIsDecorated(true);
     wavesView_->setItemsExpandable(true);
+    wavesView_->setIndentation(10);
     wavesView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
     wavesView_->setModel(wavesModel_);
     wavesView_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     wavesView_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -181,9 +213,14 @@ void ExplorerRunsPage::createWidgets()
     showDuplicatesCheck_->setObjectName("jobsCheckBox");
     successOnlyCheck_ = new QCheckBox(QStringLiteral("Success outcome only"), jobsPanel);
     successOnlyCheck_->setObjectName("jobsCheckBox");
+    tagFilter_ = new QComboBox(jobsPanel);
+    tagFilter_->setObjectName("jobsFilterCombo");
+    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
     filtersLayout->addWidget(winnersOnlyCheck_, 0, 0);
     filtersLayout->addWidget(showDuplicatesCheck_, 0, 1);
     filtersLayout->addWidget(successOnlyCheck_, 0, 2);
+    filtersLayout->addWidget(new QLabel(QStringLiteral("Tag"), jobsPanel), 1, 6);
+    filtersLayout->addWidget(tagFilter_, 1, 7);
 
     for (int i = 0; i < 3; ++i) {
         sortMetricBoxes_[i] = new QComboBox(jobsPanel);
@@ -305,6 +342,9 @@ void ExplorerRunsPage::wireSignals()
     });
 
     connect(wavesView_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this](const QItemSelection&, const QItemSelection&) {
+        if (refreshingWaveTree_) {
+            return;
+        }
         const std::vector<qint64> selected = selectedWaveIdsFromTree();
         if (selected == state_.selectedWaves) {
             return;
@@ -326,25 +366,45 @@ void ExplorerRunsPage::wireSignals()
         if (!checked) {
             state_.showDuplicates = false;
         }
+        persistFilterSettings();
         syncControls();
         refreshJobs();
     });
     connect(showDuplicatesCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
         state_.showDuplicates = checked;
+        persistFilterSettings();
         refreshJobs();
     });
     connect(successOnlyCheck_, &QCheckBox::toggled, this, [this, refreshJobs](bool checked) {
         state_.successOnly = checked;
+        persistFilterSettings();
+        refreshJobs();
+    });
+    connect(childVictoryOnlyCheck_, &QCheckBox::toggled, this, [this](bool checked) {
+        state_.childVictoryOnly = checked;
+        persistFilterSettings();
+        coordinator_->setChildVictoryOnly(checked);
+    });
+    connect(tagFilter_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, refreshJobs](int) {
+        const QVariant data = tagFilter_->currentData();
+        if (data.isValid()) {
+            state_.tagKey = data.toString();
+        } else {
+            state_.tagKey.reset();
+        }
+        persistFilterSettings();
         refreshJobs();
     });
 
     for (int i = 0; i < 3; ++i) {
         connect(sortMetricBoxes_[i], qOverload<int>(&QComboBox::currentIndexChanged), this, [this, i, refreshJobs](int) {
             state_.sortKeys[static_cast<size_t>(i)].metric = static_cast<SortMetric>(sortMetricBoxes_[i]->currentData().toInt());
+            persistFilterSettings();
             refreshJobs();
         });
         connect(sortAscendingChecks_[i], &QCheckBox::toggled, this, [this, i, refreshJobs](bool checked) {
             state_.sortKeys[static_cast<size_t>(i)].ascending = checked;
+            persistFilterSettings();
             refreshJobs();
         });
     }
@@ -364,10 +424,12 @@ void ExplorerRunsPage::wireSignals()
 
     connect(overrideFakeAttacksCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         state_.overrideMaxFakeAttacks = checked;
+        persistFilterSettings();
         syncControls();
     });
     connect(fakeAttacksSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         state_.maxFakeAttacksOverride = value;
+        persistFilterSettings();
     });
     connect(triggerButton_, &QPushButton::clicked, this, &ExplorerRunsPage::triggerNextWave);
 }
@@ -394,6 +456,11 @@ void ExplorerRunsPage::syncControls()
         QSignalBlocker blocker(successOnlyCheck_);
         successOnlyCheck_->setChecked(state_.successOnly);
     }
+    {
+        QSignalBlocker blocker(childVictoryOnlyCheck_);
+        childVictoryOnlyCheck_->setChecked(state_.childVictoryOnly);
+    }
+    refreshTagFilterOptions();
     showDuplicatesCheck_->setEnabled(state_.winnersOnly);
     {
         QSignalBlocker blocker(overrideFakeAttacksCheck_);
@@ -437,6 +504,26 @@ void ExplorerRunsPage::refreshGroupModel()
     for (const ExplorerRunsCoordinator::GroupRow& row : coordinator_->groups()) {
         rows.push_back(ExplorerRunsGroupRow{ row.rootGroupId, row.settingsLabel, row.resultsSummary, row.totalWaves, row.statusSummary });
     }
+
+    if (!rows.empty()) {
+        const bool hasSelectedRoot = std::any_of(rows.begin(), rows.end(), [this](const ExplorerRunsGroupRow& row) {
+            return row.rootGroupId == state_.selectedRoot;
+        });
+        if (!hasSelectedRoot) {
+            state_.selectedRoot = rows.front().rootGroupId;
+            state_.selectedWaves.clear();
+            state_.selectedJob = -1;
+            coordinator_->clearJobs();
+            coordinator_->clearDetails();
+        }
+    } else {
+        state_.selectedRoot = -1;
+        state_.selectedWaves.clear();
+        state_.selectedJob = -1;
+        coordinator_->clearJobs();
+        coordinator_->clearDetails();
+    }
+
     groupsModel_->setRows(std::move(rows));
     restoreSelectedGroupRow();
     restoreItemViewScrollSnapshot(groupsView_, scrollSnapshot);
@@ -449,79 +536,42 @@ void ExplorerRunsPage::refreshGroupModel()
 void ExplorerRunsPage::refreshWaveTree()
 {
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(wavesView_);
-    wavesModel_->clear();
-    wavesModel_->setHorizontalHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Status") });
+    const auto restoreWaveTreeScroll = [this, scrollSnapshot]() {
+        restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        QMetaObject::invokeMethod(wavesView_, [this, scrollSnapshot]() {
+            restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+        }, Qt::QueuedConnection);
+    };
+
+    QScopedValueRollback<bool> refreshingWaveTreeGuard(refreshingWaveTree_, true);
+    QItemSelectionModel* selection = wavesView_->selectionModel();
+    const std::optional<QSignalBlocker> selectionBlocker = selection
+        ? std::optional<QSignalBlocker>(std::in_place, selection)
+        : std::nullopt;
 
     const ExplorerRunsCoordinator::GroupRow* group = selectedGroup();
-    if (!group) {
+    wavesModel_->syncFromGroup(group);
+
+    if (state_.selectedWaves.empty() || !selection) {
+        restoreWaveTreeScroll();
         return;
     }
 
-    std::unordered_map<quint32, std::vector<const ExplorerRunsCoordinator::WaveRow*>> byTurn;
-    for (const ExplorerRunsCoordinator::WaveRow& wave : group->waves) {
-        byTurn[wave.waveTurn].push_back(&wave);
-    }
-
-    std::vector<quint32> turns;
-    turns.reserve(byTurn.size());
-    for (const auto& entry : byTurn) {
-        turns.push_back(entry.first);
-    }
-    std::sort(turns.begin(), turns.end());
-
-    for (quint32 turn : turns) {
-        QStandardItem* turnItem = new QStandardItem(QStringLiteral("Turn %1").arg(turn));
-        turnItem->setSelectable(false);
-        QStandardItem* turnStatus = new QStandardItem(QStringLiteral("%1 waves").arg(byTurn[turn].size()));
-        turnStatus->setSelectable(false);
-
-        auto waves = byTurn[turn];
-        std::sort(waves.begin(), waves.end(), [](const auto* a, const auto* b) {
-            return a->createdAt < b->createdAt;
-        });
-
-        for (const auto* wave : waves) {
-            QStandardItem* waveItem = new QStandardItem(QStringLiteral("%1 Wave %2")
-                .arg(waveStatusIcon(wave->hasWinner, wave->hasSuccessOutcome))
-                .arg(wave->jobSetId));
-            waveItem->setData(wave->jobSetId, kWaveJobSetIdUserRole);
-            QStandardItem* statusItem = new QStandardItem(wave->statusSummary);
-            statusItem->setData(wave->jobSetId, kWaveJobSetIdUserRole);
-            turnItem->appendRow({ waveItem, statusItem });
-        }
-
-        wavesModel_->appendRow({ turnItem, turnStatus });
-        wavesView_->expand(turnItem->index());
-    }
-
-    if (state_.selectedWaves.empty()) {
-        return;
-    }
-
-    QItemSelectionModel* selection = wavesView_->selectionModel();
-    if (!selection) {
-        return;
-    }
     selection->clearSelection();
     for (int row = 0; row < wavesModel_->rowCount(); ++row) {
-        const QStandardItem* turnItem = wavesModel_->item(row, 0);
-        if (!turnItem) {
-            continue;
-        }
-        for (int childRow = 0; childRow < turnItem->rowCount(); ++childRow) {
-            QStandardItem* waveItem = turnItem->child(childRow, 0);
-            if (!waveItem) {
-                continue;
-            }
-            const qint64 waveId = waveItem->data(kWaveJobSetIdUserRole).toLongLong();
+        QModelIndex turnIndex = wavesModel_->index(row, 0);
+        const int childCount = wavesModel_->rowCount(turnIndex);
+        for (int childRow = 0; childRow < childCount; ++childRow) {
+            QModelIndex waveIndex = wavesModel_->index(childRow, 0, turnIndex);
+            const qint64 waveId = waveIndex.data(Qt::UserRole + 1).toLongLong();
             if (std::find(state_.selectedWaves.begin(), state_.selectedWaves.end(), waveId) != state_.selectedWaves.end()) {
-                selection->select(waveItem->index(), QItemSelectionModel::Select | QItemSelectionModel::Rows);
-                selection->setCurrentIndex(waveItem->index(), QItemSelectionModel::NoUpdate);
+                selection->select(waveIndex, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                selection->setCurrentIndex(waveIndex, QItemSelectionModel::NoUpdate);
             }
         }
     }
 
-    restoreItemViewScrollSnapshot(wavesView_, scrollSnapshot);
+    restoreWaveTreeScroll();
 }
 
 void ExplorerRunsPage::refreshJobModel()
@@ -566,9 +616,15 @@ void ExplorerRunsPage::refreshDetailPanel()
         : QStringLiteral("Select a successful next-turn winner job with an output savestate to enable triggering."));
 
     const ExplorerRunsCoordinator::DetailBundle& details = coordinator_->details();
+    const ScrollAreaScrollSnapshot blueprintScrollSnapshot = captureScrollAreaScrollSnapshot(blueprintText_);
+    const ScrollAreaScrollSnapshot progressScrollSnapshot = captureScrollAreaScrollSnapshot(progressText_);
+    const ScrollAreaScrollSnapshot resultsScrollSnapshot = captureScrollAreaScrollSnapshot(resultsText_);
     blueprintText_->setPlainText(details.blueprintInfo.isEmpty() ? QStringLiteral("(select a job to view blueprint info)") : details.blueprintInfo);
     progressText_->setPlainText(details.progressLog.isEmpty() ? QStringLiteral("(no progress)") : details.progressLog);
     resultsText_->setPlainText(details.resultsLog.isEmpty() ? QStringLiteral("(no results)") : details.resultsLog);
+    restoreScrollAreaScrollSnapshot(blueprintText_, blueprintScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(progressText_, progressScrollSnapshot);
+    restoreScrollAreaScrollSnapshot(resultsText_, resultsScrollSnapshot);
 }
 
 void ExplorerRunsPage::setStatusMessage(const QString& text, bool error)
@@ -577,6 +633,23 @@ void ExplorerRunsPage::setStatusMessage(const QString& text, bool error)
     inlineMessageLabel_->setProperty("error", error);
     inlineMessageLabel_->style()->unpolish(inlineMessageLabel_);
     inlineMessageLabel_->style()->polish(inlineMessageLabel_);
+    maybeEmitStatusToast(text, error);
+}
+
+void ExplorerRunsPage::maybeEmitStatusToast(const QString& text, bool error)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+
+    const StatusToast::Severity severity = error ? StatusToast::Severity::Error : StatusToast::Severity::Info;
+    const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(severity)).arg(text);
+    if (signature == lastToastSignature_) {
+        return;
+    }
+
+    lastToastSignature_ = signature;
+    emit statusToastRequested(StatusToast{ severity, text, QString(), 1, QDateTime{}, 4000 });
 }
 
 void ExplorerRunsPage::handleCoordinatorStateChanged()
@@ -650,6 +723,15 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsPage::buildVisibleS
 {
     std::vector<ExplorerRunsCoordinator::JobViewRow> out;
     out.reserve(coordinator_->jobs().size());
+
+    std::unordered_set<qint64> tagFilteredJobIds;
+    if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty()) {
+        const auto tagged = TagRepo::FindEntityIdsByTag("job", state_.tagKey->trimmed().toStdString(), true);
+        if (tagged.ok) {
+            tagFilteredJobIds.insert(tagged.value.begin(), tagged.value.end());
+        }
+    }
+
     for (const ExplorerRunsCoordinator::JobViewRow& job : coordinator_->jobs()) {
         const bool winner = isWinnerState(job.state);
         const bool duplicate = isDuplicateState(job.state);
@@ -659,6 +741,9 @@ std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsPage::buildVisibleS
             }
         }
         if (state_.successOnly && (!job.hasResults || !isSuccessOutcome(job.battleOutcome))) {
+            continue;
+        }
+        if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty() && !tagFilteredJobIds.contains(job.jobId)) {
             continue;
         }
         out.push_back(job);
@@ -735,7 +820,11 @@ void ExplorerRunsPage::triggerNextWave()
         overrideValue = static_cast<quint32>(state_.maxFakeAttacksOverride);
     }
 
-    const auto result = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(state_.selectedJob, false, overrideValue);
+    const auto result = BattleSingleTurnRunDBCodec::enqueue_next_wave_from_job(
+        state_.selectedJob,
+        false,
+        overrideValue,
+        true);
     if (result.ok) {
         setStatusMessage(QStringLiteral("Queued next wave job set %1.").arg(result.value));
         coordinator_->requestGroupsRefresh();
@@ -769,12 +858,18 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
 
     QMenu menu(this);
     QAction* viewTurnInputsAction = menu.addAction(QStringLiteral("View Turn Inputs"));
+    QAction* replicationDetailsAction = menu.addAction(QStringLiteral("Replication Details"));
+    QAction* regurgitatePlanAction = menu.addAction(QStringLiteral("Regurgitate Battle Plan"));
     QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     viewTurnInputsAction->setEnabled(isTurnInputEligibleState(row->state));
     replayVisualAction->setEnabled(isFinished);
     QAction* selectedAction = menu.exec(jobsView_->viewport()->mapToGlobal(pos));
     if (selectedAction == viewTurnInputsAction && viewTurnInputsAction->isEnabled()) {
         openTurnInputsDialogForJob(*row);
+    } else if (selectedAction == replicationDetailsAction) {
+        showReplicationDialogForJob(*row);
+    } else if (selectedAction == regurgitatePlanAction) {
+        showBattlePlanDialogForJob(*row);
     } else if (selectedAction == replayVisualAction && replayVisualAction->isEnabled()) {
         emit visualReplayRequested(row->jobId);
     }
@@ -782,9 +877,47 @@ void ExplorerRunsPage::showJobsContextMenu(const QPoint& pos)
 
 void ExplorerRunsPage::openTurnInputsDialogForJob(const ExplorerRunsJobRow& row)
 {
-    ExplorerRunsTurnInputsDialog dialog(this);
-    dialog.loadForJob(row);
-    dialog.exec();
+    auto* dialog = new ExplorerRunsTurnInputsDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->loadForJob(row);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+
+void ExplorerRunsPage::showReplicationDialogForJob(const ExplorerRunsJobRow& row)
+{
+    auto* dialog = new ExplorerRunsReplicationDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->loadForJob(row.jobId, coordinator_->describeBattlePlanForJob(row.jobId));
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+void ExplorerRunsPage::showBattlePlanDialogForJob(const ExplorerRunsJobRow& row)
+{
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setModal(false);
+    dialog->setWindowTitle(QStringLiteral("Battle Plan for Job %1").arg(row.jobId));
+    dialog->resize(800, 460);
+
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
+    QPlainTextEdit* text = new QPlainTextEdit(dialog);
+    text->setReadOnly(true);
+    text->setPlainText(coordinator_->describeBattlePlanForJob(row.jobId));
+    layout->addWidget(text);
+
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void ExplorerRunsPage::restoreSelectedGroupRow()
@@ -835,7 +968,7 @@ std::vector<qint64> ExplorerRunsPage::selectedWaveIdsFromTree() const
     const QModelIndexList rows = wavesView_->selectionModel()->selectedRows(0);
     ids.reserve(rows.size());
     for (const QModelIndex& index : rows) {
-        const QVariant value = index.data(kWaveJobSetIdUserRole);
+        const QVariant value = index.data(Qt::UserRole + 1);
         if (value.isValid()) {
             ids.push_back(value.toLongLong());
         }
@@ -843,4 +976,92 @@ std::vector<qint64> ExplorerRunsPage::selectedWaveIdsFromTree() const
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
+}
+
+void ExplorerRunsPage::loadFilterSettings()
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    state_.winnersOnly = settings.value(kWinnersOnlyKey, state_.winnersOnly).toBool();
+    state_.showDuplicates = settings.value(kShowDuplicatesKey, state_.showDuplicates).toBool();
+    state_.successOnly = settings.value(kSuccessOnlyKey, state_.successOnly).toBool();
+    state_.childVictoryOnly = settings.value(kChildVictoryOnlyKey, state_.childVictoryOnly).toBool();
+    const QString tagKey = settings.value(kTagKey).toString().trimmed();
+    if (!tagKey.isEmpty()) {
+        state_.tagKey = tagKey;
+    } else {
+        state_.tagKey.reset();
+    }
+    if (!state_.winnersOnly) {
+        state_.showDuplicates = false;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        const SortMetric fallbackMetric = state_.sortKeys[static_cast<size_t>(i)].metric;
+        const int metricValue = settings.value(QStringLiteral("%1%2").arg(kSortMetricPrefix).arg(i), static_cast<int>(fallbackMetric)).toInt();
+        const bool metricInRange = metricValue >= static_cast<int>(SortMetric::PredicatesPassed)
+            && metricValue <= static_cast<int>(SortMetric::RngSeed);
+        state_.sortKeys[static_cast<size_t>(i)].metric = metricInRange
+            ? static_cast<SortMetric>(metricValue)
+            : fallbackMetric;
+        state_.sortKeys[static_cast<size_t>(i)].ascending = settings.value(
+            QStringLiteral("%1%2").arg(kSortAscendingPrefix).arg(i),
+            state_.sortKeys[static_cast<size_t>(i)].ascending).toBool();
+    }
+
+    state_.overrideMaxFakeAttacks = settings.value(kOverrideFakeAttacksKey, state_.overrideMaxFakeAttacks).toBool();
+    state_.maxFakeAttacksOverride = settings.value(kMaxFakeAttacksKey, state_.maxFakeAttacksOverride).toInt();
+
+    settings.endGroup();
+}
+
+void ExplorerRunsPage::persistFilterSettings() const
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    settings.setValue(kWinnersOnlyKey, state_.winnersOnly);
+    settings.setValue(kShowDuplicatesKey, state_.showDuplicates);
+    settings.setValue(kSuccessOnlyKey, state_.successOnly);
+    settings.setValue(kChildVictoryOnlyKey, state_.childVictoryOnly);
+    if (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty()) {
+        settings.setValue(kTagKey, state_.tagKey->trimmed());
+    } else {
+        settings.remove(kTagKey);
+    }
+    for (int i = 0; i < 3; ++i) {
+        settings.setValue(QStringLiteral("%1%2").arg(kSortMetricPrefix).arg(i), static_cast<int>(state_.sortKeys[static_cast<size_t>(i)].metric));
+        settings.setValue(QStringLiteral("%1%2").arg(kSortAscendingPrefix).arg(i), state_.sortKeys[static_cast<size_t>(i)].ascending);
+    }
+    settings.setValue(kOverrideFakeAttacksKey, state_.overrideMaxFakeAttacks);
+    settings.setValue(kMaxFakeAttacksKey, state_.maxFakeAttacksOverride);
+
+    settings.endGroup();
+}
+
+void ExplorerRunsPage::refreshTagFilterOptions()
+{
+    if (!tagFilter_) {
+        return;
+    }
+
+    const QVariant targetTag = (state_.tagKey.has_value() && !state_.tagKey->trimmed().isEmpty())
+        ? QVariant(state_.tagKey->trimmed())
+        : QVariant();
+
+    QSignalBlocker blocker(tagFilter_);
+    tagFilter_->clear();
+    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
+
+    const auto tagsResult = TagRepo::ListTagsForEntityKind("job");
+    if (tagsResult.ok) {
+        for (const auto& tag : tagsResult.value) {
+            const QString key = QString::fromStdString(tag.tag_key);
+            tagFilter_->addItem(key, key);
+        }
+    }
+
+    const int idx = targetTag.isValid() ? tagFilter_->findData(targetTag) : 0;
+    tagFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
 }

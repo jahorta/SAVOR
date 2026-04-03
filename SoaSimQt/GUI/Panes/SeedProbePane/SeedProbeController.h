@@ -80,6 +80,7 @@ public:
     const ViewState& viewState() const;
 
     void loadInitial();
+    void setPageActive(bool active);
     void setSearch(const QString& search);
     void setOnlyDone(bool onlyDone);
     void setAutoRefreshEnabled(bool enabled);
@@ -122,12 +123,19 @@ private:
     void kickRunningRefresh(const QVector<qint64>& probeIds);
     bool canAutoRefresh() const;
     void emitStateChanged();
+    void loadSettings();
+    void persistSettings() const;
+    void syncFetchStateFromView();
 
     ViewState state_;
+    QString fetchSearch_;
+    bool fetchOnlyDone_ = false;
+    int fetchPageLimit_ = 50;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
     bool initialLoadStarted_ = false;
     bool pageInFlight_ = false;
+    bool pendingPageFetch_ = false;
     bool detailInFlight_ = false;
     bool runningRefreshInFlight_ = false;
     qint64 detailRequestProbeId_ = 0;
@@ -135,4 +143,5 @@ private:
     QFutureWatcher<DetailBundleResult> detailWatcher_;
     QFutureWatcher<RunningProbeUpdateResult> runningRefreshWatcher_;
     QTimer* refreshTimer_ = nullptr;
+    bool pageActive_ = false;
 };

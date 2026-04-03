@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
 class CoordinatorController;
 class QCheckBox;
 class QFrame;
@@ -12,7 +14,7 @@ class QSpinBox;
 class QTimer;
 class QTreeView;
 class WorkerTableModel;
-class VisualWorkerDialog;
+class VisualReplayDialog;
 
 class CoordinatorPane : public QWidget
 {
@@ -26,9 +28,11 @@ public:
     };
 
     explicit CoordinatorPane(CoordinatorController* controller, QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void settingsNavigationRequested(SettingsFocusTarget target);
+    void statusToastRequested(StatusToast toast);
 
 private slots:
     void refreshUi();
@@ -38,7 +42,7 @@ public slots:
 
 private:
     void createWidgets();
-    void configureTable();
+    void configureTable(QTreeView* tableView);
     QWidget* createControlsCard();
     QWidget* createTableCard();
     QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
@@ -48,6 +52,7 @@ private:
     CoordinatorController* controller_ = nullptr;
     QTimer* refreshTimer_ = nullptr;
     WorkerTableModel* workerTableModel_ = nullptr;
+    WorkerTableModel* visualWorkerTableModel_ = nullptr;
 
     QPushButton* startButton_ = nullptr;
     QPushButton* pauseButton_ = nullptr;
@@ -59,6 +64,12 @@ private:
     QLabel* validationLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
+    QLabel* visualTableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;
-    VisualWorkerDialog* visualWorkerDialog_ = nullptr;
+    QTreeView* visualWorkerTableView_ = nullptr;
+    VisualReplayDialog* visualReplayDialog_ = nullptr;
+    bool visualReplayRequested_ = false;
+    bool visualWorkerObservedRunning_ = false;
+    bool visualReplayDoneShown_ = false;
+    QString lastToastSignature_;
 };

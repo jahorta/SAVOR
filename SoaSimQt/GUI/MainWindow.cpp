@@ -40,6 +40,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Seed probe grid and unique probing results." },
     { "Explorer Runs", "Explorer run history and controls." },
+    { "DTM Editor", "Poll-based DTM editing with deterministic annotation sidecar binding." },
     { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
 };
 } // namespace
@@ -96,6 +97,21 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 
     contentStack_->setCurrentIndex(currentRow);
+    if (jobSetsPage_) {
+        jobSetsPage_->setPageActive(currentRow == 0);
+    }
+    if (jobsPage_) {
+        jobsPage_->setPageActive(currentRow == 1);
+    }
+    if (coordinatorPane_) {
+        coordinatorPane_->setPageActive(currentRow == 2);
+    }
+    if (seedProbePage_) {
+        seedProbePage_->setPageActive(currentRow == 6);
+    }
+    if (explorerRunsPage_) {
+        explorerRunsPage_->setPageActive(currentRow == 7);
+    }
 
     if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
         contentTitleLabel_->setText(kPageMetadata[currentRow].title);
@@ -109,7 +125,7 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
         return;
     }
 
-    navigationList_->setCurrentRow(8);
+    navigationList_->setCurrentRow(9);
 
     SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
     switch (target) {
@@ -215,6 +231,7 @@ QWidget* MainWindow::createNavigationPane()
         "Artifacts",
         "Seed Probe",
         "Explorer Runs",
+        "DTM Editor",
         "Settings"
     });
 
@@ -250,25 +267,38 @@ QWidget* MainWindow::createContentPane()
     layout->addLayout(topLayout);
 
     contentStack_ = new QStackedWidget(contentPane);
-    contentStack_->addWidget(new JobSetsPage(contentPane));
-    auto* jobsPage = new JobsPage(contentPane);
-    contentStack_->addWidget(jobsPage);
+    jobSetsPage_ = new JobSetsPage(contentPane);
+    connect(jobSetsPage_, &JobSetsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobSetsPage_);
+    jobsPage_ = new JobsPage(contentPane);
+    connect(jobsPage_, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(jobsPage_);
     coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
     contentStack_->addWidget(coordinatorPane_);
+    connect(coordinatorPane_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
-    connect(jobsPage, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
+    connect(jobsPage_, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
     auto* jobBuilderPage = new JobBuilderPage(contentStack_);
     connect(jobBuilderPage, &JobBuilderPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(jobBuilderPage);
     auto* battleRunSettingsPage = new BattleRunSettingsPage(contentStack_);
     connect(battleRunSettingsPage, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(battleRunSettingsPage);
-    contentStack_->addWidget(new ArtifactsPage(contentPane));
-    contentStack_->addWidget(new SeedProbePage(contentStack_));
-    auto* explorerRunsPage = new ExplorerRunsPage(contentStack_);
-    connect(explorerRunsPage, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
-    contentStack_->addWidget(explorerRunsPage);
+    auto* artifactsPage = new ArtifactsPage(contentPane);
+    connect(artifactsPage, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(artifactsPage);
+    seedProbePage_ = new SeedProbePage(contentStack_);
+    connect(seedProbePage_, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(seedProbePage_);
+    explorerRunsPage_ = new ExplorerRunsPage(contentStack_);
+    connect(explorerRunsPage_, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    connect(explorerRunsPage_, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
+    contentStack_->addWidget(explorerRunsPage_);
+    dtmEditorPage_ = new DtmEditorPage(contentStack_);
+    connect(dtmEditorPage_, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(dtmEditorPage_);
     settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
+    connect(settingsPage_, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(settingsPage_);
 
     layout->addWidget(contentStack_, 1);

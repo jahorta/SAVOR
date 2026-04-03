@@ -2,12 +2,16 @@
 
 #include "DB/DBCore/DbSnapshotService.h"
 #include "DB/DBCore/DbService.h"
+#include "DB/Querying/DataService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
+#include <QtCore/QPointer>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
@@ -61,6 +65,37 @@ QString statusKindToString(SettingsPage::StatusKind kind)
 
     return "info";
 }
+
+QString snapshotPhaseLabel(simcore::db::DbSnapshotPhase phase)
+{
+    using Phase = simcore::db::DbSnapshotPhase;
+    switch (phase) {
+    case Phase::Preparing:
+        return QStringLiteral("Preparing snapshot");
+    case Phase::ScanningArtifacts:
+        return QStringLiteral("Scanning artifacts");
+    case Phase::WritingCoreEntries:
+        return QStringLiteral("Writing database snapshot");
+    case Phase::WritingArtifacts:
+        return QStringLiteral("Writing artifact files");
+    case Phase::Finalizing:
+        return QStringLiteral("Finalizing snapshot");
+    }
+
+    return QStringLiteral("Saving snapshot");
+}
+
+QString formatSnapshotProgressMessage(const simcore::db::DbSnapshotProgress& progress, const QString& outputPath)
+{
+    QString message = QStringLiteral("%1 to %2…").arg(snapshotPhaseLabel(progress.phase), outputPath);
+    if (progress.total > 0) {
+        message += QStringLiteral(" (%1/%2)").arg(progress.completed).arg(progress.total);
+    }
+    if (!progress.detail.empty()) {
+        message += QStringLiteral(" — %1").arg(QString::fromStdString(progress.detail));
+    }
+    return message;
+}
 } // namespace
 
 SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget* parent)
@@ -68,6 +103,7 @@ SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget
     , coordinatorController_(coordinatorController)
 {
     connect(&storageWatcher_, &QFutureWatcher<StorageResult>::finished, this, &SettingsPage::handleStorageOperationFinished);
+    connect(&reconcileWatcher_, &QFutureWatcher<simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult>>::finished, this, &SettingsPage::handleReconcileOperationFinished);
 
     createWidgets();
     loadState();
@@ -228,6 +264,7 @@ void SettingsPage::createWidgets()
     eventBufferSpin_->setMaximum(1000000);
 
     startPausedCheck_ = new QCheckBox("Start paused", coordinatorSection.content);
+    requeueFailuresAutomaticallyCheck_ = new QCheckBox("Requeue failures automatically", coordinatorSection.content);
 
     QHBoxLayout* isoLayout = new QHBoxLayout();
     isoLayout->setContentsMargins(0, 0, 0, 0);
@@ -246,6 +283,7 @@ void SettingsPage::createWidgets()
     startupLayout->setSpacing(10);
     startupLayout->addWidget(eventBufferSpin_);
     startupLayout->addWidget(startPausedCheck_);
+    startupLayout->addWidget(requeueFailuresAutomaticallyCheck_);
     startupLayout->addStretch();
 
     QLabel* isoLabel = new QLabel("ISO", coordinatorSection.content);
@@ -274,11 +312,39 @@ void SettingsPage::createWidgets()
         connect(dolphinBaseDirEdit_, &QLineEdit::textChanged, coordinatorController_, &CoordinatorController::setDolphinBaseDir);
         connect(eventBufferSpin_, qOverload<int>(&QSpinBox::valueChanged), coordinatorController_, &CoordinatorController::setEventBufferCapacity);
         connect(startPausedCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setStartPaused);
+        connect(requeueFailuresAutomaticallyCheck_, &QCheckBox::toggled, coordinatorController_, &CoordinatorController::setRestartFailedJobsAutomatically);
     }
     connect(isoBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForIsoPath);
     connect(dolphinBrowseButton_, &QPushButton::clicked, this, &SettingsPage::browseForDolphinBaseDir);
 
     rootLayout->addWidget(coordinatorSection.card);
+
+    const CollapsibleSection reconcileSection = createCollapsibleSection(
+        "MAINTENANCE SECTION",
+        "Reconcile DB changes",
+        "Run one-shot maintenance routines that backfill data introduced by newer schema and detection logic.");
+
+    QVBoxLayout* reconcileLayout = new QVBoxLayout(reconcileSection.content);
+    reconcileLayout->setContentsMargins(0, 0, 0, 0);
+    reconcileLayout->setSpacing(10);
+
+    QLabel* reconcileDescription = new QLabel(
+        "Populate explorer_run rows for historical Explorer / BattleSingleTurn root job-set trees that predate explorer_run linkage.",
+        reconcileSection.content);
+    reconcileDescription->setObjectName("settingsSectionDescription");
+    reconcileDescription->setWordWrap(true);
+    reconcileLayout->addWidget(reconcileDescription);
+
+    QHBoxLayout* reconcileButtonLayout = new QHBoxLayout();
+    reconcileButtonLayout->setContentsMargins(0, 0, 0, 0);
+    reconcileButtonLayout->addStretch();
+    reconcileExplorerRunsButton_ = new QPushButton("Backfill Explorer Runs", reconcileSection.content);
+    reconcileExplorerRunsButton_->setObjectName("jobsSecondaryButton");
+    connect(reconcileExplorerRunsButton_, &QPushButton::clicked, this, &SettingsPage::handleReconcileExplorerRunsClicked);
+    reconcileButtonLayout->addWidget(reconcileExplorerRunsButton_);
+    reconcileLayout->addLayout(reconcileButtonLayout);
+
+    rootLayout->addWidget(reconcileSection.card);
 
     const CollapsibleSection futureSection = createCollapsibleSection(
         "PLACEHOLDER",
@@ -370,12 +436,13 @@ void SettingsPage::refreshActiveRoot()
 void SettingsPage::refreshStorageUi()
 {
     refreshActiveRoot();
-    const bool enabled = !storageBusy_;
+    const bool enabled = !storageBusy_ && !reconcileBusy_;
     if (moveDatabaseButton_) moveDatabaseButton_->setEnabled(enabled);
     if (resetDatabaseButton_) resetDatabaseButton_->setEnabled(enabled);
     if (useExistingButton_) useExistingButton_->setEnabled(enabled);
     if (saveSnapshotButton_) saveSnapshotButton_->setEnabled(enabled);
     if (loadSnapshotButton_) loadSnapshotButton_->setEnabled(enabled);
+    if (reconcileExplorerRunsButton_) reconcileExplorerRunsButton_->setEnabled(enabled);
 }
 
 void SettingsPage::handleMoveDatabaseClicked()
@@ -532,11 +599,23 @@ void SettingsPage::handleSaveSnapshotClicked()
         return;
     }
 
+    const QPointer<SettingsPage> self(this);
     startStorageOperation(
         StorageOperation::SaveSnapshot,
         QStringLiteral("Saving database snapshot to %1…").arg(normalizedSnapshotPath),
-        [path = normalizedSnapshotPath.toStdString()]() {
-            const auto result = simcore::db::DbSnapshotService::SaveSnapshot(path);
+        [path = normalizedSnapshotPath.toStdString(), outputPath = normalizedSnapshotPath, self]() {
+            const auto result = simcore::db::DbSnapshotService::SaveSnapshot(path, [self, outputPath](const simcore::db::DbSnapshotProgress& progress) {
+                if (!self) {
+                    return;
+                }
+
+                const QString progressMessage = formatSnapshotProgressMessage(progress, outputPath);
+                QMetaObject::invokeMethod(self, [self, progressMessage]() {
+                    if (self && self->storageBusy_) {
+                        self->setStatus(StatusKind::Working, progressMessage);
+                    }
+                }, Qt::QueuedConnection);
+            });
             return StorageResult{ result.ok, result.ok ? QString() : QString::fromStdString(result.error) };
         });
 }
@@ -589,6 +668,31 @@ void SettingsPage::handleLoadSnapshotClicked()
             const auto result = simcore::db::DbSnapshotService::LoadSnapshot(snapshot, target, true);
             return StorageResult{ result.ok, result.ok ? QString() : QString::fromStdString(result.error) };
         });
+}
+
+void SettingsPage::handleReconcileExplorerRunsClicked()
+{
+    if (storageBusy_ || reconcileBusy_) {
+        return;
+    }
+
+    const auto answer = QMessageBox::question(
+        this,
+        "Backfill Explorer Runs",
+        QStringLiteral("Scan historical Explorer/BattleSingleTurn runner roots and backfill missing explorer_run rows?\n\nThis is safe to run multiple times."),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    reconcileBusy_ = true;
+    refreshStorageUi();
+    setStatus(StatusKind::Working, QStringLiteral("Reconciling explorer_run backfill across existing root job sets…"));
+    QCoreApplication::processEvents();
+    reconcileWatcher_.setFuture(runAsync([]() {
+        return simcore::db::DataService::ReconcileMissingExplorerRunsAsync().get();
+    }));
 }
 
 void SettingsPage::startStorageOperation(StorageOperation op, const QString& workingMessage, StorageTask task)
@@ -666,6 +770,39 @@ void SettingsPage::handleStorageOperationFinished()
     }
 }
 
+void SettingsPage::handleReconcileOperationFinished()
+{
+    reconcileBusy_ = false;
+    refreshStorageUi();
+
+    simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult> result
+        = simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult>::Err({ simcore::db::DbErrorKind::Unknown, 0, "Unknown reconcile failure." });
+    try {
+        result = reconcileWatcher_.result();
+    } catch (const std::exception& ex) {
+        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed: %1").arg(QString::fromUtf8(ex.what())));
+        return;
+    } catch (...) {
+        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed with an unknown exception."));
+        return;
+    }
+
+    if (!result.ok) {
+        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed: %1").arg(QString::fromStdString(result.error.message)));
+        return;
+    }
+
+    const auto& stats = result.value;
+    setStatus(
+        StatusKind::Success,
+        QStringLiteral("Explorer runs reconciled. Roots scanned: %1 · roots with existing runs: %2 · roots backfilled: %3 · runs created: %4 · jobs updated: %5")
+            .arg(stats.roots_scanned)
+            .arg(stats.roots_with_existing_runs)
+            .arg(stats.roots_reconciled)
+            .arg(stats.runs_created)
+            .arg(stats.jobs_updated));
+}
+
 void SettingsPage::refreshCoordinatorUi()
 {
     if (!coordinatorController_) {
@@ -688,6 +825,10 @@ void SettingsPage::refreshCoordinatorUi()
         const QSignalBlocker blocker(startPausedCheck_);
         startPausedCheck_->setChecked(coordinatorController_->startPaused());
     }
+    {
+        const QSignalBlocker blocker(requeueFailuresAutomaticallyCheck_);
+        requeueFailuresAutomaticallyCheck_->setChecked(coordinatorController_->restartFailedJobsAutomatically());
+    }
 
     const bool running = coordinatorController_->isRunning();
     isoPathEdit_->setEnabled(!running);
@@ -696,6 +837,7 @@ void SettingsPage::refreshCoordinatorUi()
     dolphinBrowseButton_->setEnabled(!running);
     eventBufferSpin_->setEnabled(!running);
     startPausedCheck_->setEnabled(!running);
+    requeueFailuresAutomaticallyCheck_->setEnabled(!running);
 
     coordinatorValidationLabel_->setText(
         coordinatorController_->validationMessage().isEmpty()
@@ -740,6 +882,31 @@ void SettingsPage::setStatus(StatusKind kind, const QString& message)
     statusLabel_->style()->unpolish(statusLabel_);
     statusLabel_->style()->polish(statusLabel_);
     statusLabel_->setText(message);
+
+    StatusToast::Severity severity = StatusToast::Severity::Info;
+    switch (kind) {
+    case StatusKind::Warning:
+        severity = StatusToast::Severity::Warn;
+        break;
+    case StatusKind::Success:
+        severity = StatusToast::Severity::Success;
+        break;
+    case StatusKind::Failure:
+        severity = StatusToast::Severity::Error;
+        break;
+    case StatusKind::Working:
+    case StatusKind::Info:
+        severity = StatusToast::Severity::Info;
+        break;
+    }
+
+    if (!message.isEmpty()) {
+        const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(severity)).arg(message);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{ severity, message, QString(), 1, QDateTime{}, 4000 });
+        }
+    }
 }
 
 QString SettingsPage::normalizePath(const QString& path)

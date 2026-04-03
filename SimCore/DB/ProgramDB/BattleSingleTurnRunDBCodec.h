@@ -138,5 +138,9 @@ struct BattleSingleTurnRunDBCodec final : IProgramDBCodec {
     DbResult<std::string> build_artifact_ini_from_db(int64_t job_id) override;
     DbResult<void> phase_setup_on_trigger(const TriggerCtx& ctx, const std::string& action_args_ini) override;
 
-    static DbResult<int64_t> enqueue_next_wave_from_job(int64_t source_job_id, bool auto_wave_trigger_enable = false, std::optional<uint32_t> max_fake_attacks_override = std::nullopt);
+    static DbResult<int64_t> enqueue_next_wave_from_job(
+        int64_t source_job_id,
+        bool auto_wave_trigger_enable = false,
+        std::optional<uint32_t> max_fake_attacks_override = std::nullopt,
+        bool force_create_jobs = false);
 };

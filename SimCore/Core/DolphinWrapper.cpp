@@ -681,6 +681,27 @@ namespace simcore {
         return ok;
     }
 
+    bool DolphinWrapper::pauseEmulationBlocking(uint32_t timeout_ms)
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+        Core::SetState(*m_system, Core::State::Paused);
+        return waitForPausedCoreState(timeout_ms ? timeout_ms : 1000);
+    }
+
+    bool DolphinWrapper::resumeEmulation()
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+        Core::SetState(*m_system, Core::State::Running);
+        return Core::GetState(*m_system) == Core::State::Running;
+    }
+
+    bool DolphinWrapper::isEmulationPaused() const
+    {
+        return m_system && Core::GetState(*m_system) == Core::State::Paused;
+    }
+
     static uint64_t g_vi_ticks_baseline = 0;
 
     void DolphinWrapper::resetViCounterBaseline()
@@ -1395,7 +1416,7 @@ namespace simcore {
                     const auto left_ms_now2 = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - now2).count();
                     if (left_ms_now2 <= std::max<uint32_t>(2000u, timeout_ms / 10u))
                     {
-                        SCLOGD("[run] close to timeout! time remaining: %lld ms", left_ms_now2);
+                        SCLOGW("[run] close to timeout! time remaining: %lld ms", left_ms_now2);
                         flags |= PF_TIMEOUT_NEAR;
                     }
 
@@ -1408,7 +1429,7 @@ namespace simcore {
                             const auto since_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - last_vi_change).count();
                             if (since_ms >= (vi_stall_ms / 2u))
                             {
-                                SCLOGD("[run] close to VI stall!", left_ms_now2);
+                                SCLOGW("[run] close to VI stall!", left_ms_now2);
                                 if (progflags & (uint32_t)CoreProgressFlags::WarnViStall) msg_strs.push_back("VI stall imminent");
                             }
                         }
@@ -1416,9 +1437,23 @@ namespace simcore {
 
                     const uint32_t cur_frames = (uint32_t)getFrameCountApprox(false);
 
-                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) msg_strs.push_back(std::format("VIDelta={}", cur_frames));
-                    if (progflags & (uint32_t)CoreProgressFlags::Filename) msg_strs.push_back(getCurrentSctFileTag());
-                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) msg_strs.push_back(getCurrentSctSection());
+                    if (progflags & (uint32_t)CoreProgressFlags::ViDelta) 
+                    {
+                        SCLOGTX(SC_TAGS("progress"), std::format("VIDelta={}", cur_frames).c_str());
+                        msg_strs.push_back(std::format("VIDelta={}", cur_frames));
+                    }
+                    if (progflags & (uint32_t)CoreProgressFlags::Filename) 
+                    {
+                        std::string msg = getCurrentSctFileTag();
+                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                        msg_strs.push_back(msg);
+                    }
+                    if (progflags & (uint32_t)CoreProgressFlags::ScriptSection) 
+                    {
+                        std::string msg = getCurrentSctSection();
+                        SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                        msg_strs.push_back(getCurrentSctSection());
+                    }
 
                     last_emit = now2;
                 }
@@ -1429,9 +1464,14 @@ namespace simcore {
                     if (simcore::progress::BattleProgressBPs().contains(cur_pc))
                     {
                         for (simcore::progress::BattleProgressEntry entry : simcore::progress::BattleProgress) {
-                            if (entry.key == cur_pc) msg_strs.push_back(entry.fxn(*this));
+                            if (entry.key == cur_pc) 
+                            {
+                                std::string msg = entry.fxn(*this);
+                                SCLOGTX(SC_TAGS("progress"), msg.c_str());
+                                msg_strs.push_back(msg);
+                            }
                         }
-                        SCLOGD("[DW/run] Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
+                        SCLOGDX(SC_TAGS("run"), "Stepping past pc=%08X to avoid battle breakpoint", cur_pc);
                         Common::Event sync_event;
                         auto& power_pc = m_system->GetPowerPC();
                         PowerPC::CoreMode old_mode = power_pc.GetMode();
@@ -1464,7 +1504,7 @@ namespace simcore {
             }
 
             if ((polls++ & 0x3F) == 0) {
-                SCLOGD("[DW/run] poll=%zu state=%d pc=%08X movie=%d vi=%llu",
+                SCLOGDX(SC_TAGS("run"), "poll=%zu state=%d pc=%08X movie=%d vi=%llu",
                     polls, (int)Core::GetState(*m_system), getPC(),
                     movie.IsPlayingInput() ? 1 : 0,
                     (unsigned long long)getViFieldCountApproxFromBaseline());
@@ -1510,6 +1550,18 @@ namespace simcore {
         return movie.IsPlayingInput();
     }
 
+    bool DolphinWrapper::isMoviePlaybackEnded() const
+    {
+        auto& movie = m_system->GetMovie();
+        return !movie.IsPlayingInput();
+    }
+
+    uint64_t DolphinWrapper::getCurrentMovieInputCount() const
+    {
+        auto& movie = m_system->GetMovie();
+        return static_cast<uint64_t>(movie.GetCurrentInputCount());
+    }
+
     void DolphinWrapper::silenceStdOutInfo()
     {
         logger::Logger::get().set_stdout_level(logger::Level::Warn);
@@ -1523,7 +1575,7 @@ namespace simcore {
     bool DolphinWrapper::waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate_ms)
     {
         const auto start = std::chrono::steady_clock::now();
-        SCLOGD("[DW/run] waitForPaused start state=%d timeout=%u", (int)Core::GetState(*m_system), timeout_ms);
+        SCLOGDX(SC_TAGS("run"), "waitForPaused start state=%d timeout=%u", (int)Core::GetState(*m_system), timeout_ms);
 
         auto deadline = start + std::chrono::milliseconds(timeout_ms);
 
@@ -1535,7 +1587,7 @@ namespace simcore {
         
 
         bool result = Core::GetState(*m_system) == Core::State::Paused;        
-        SCLOGD("[DW/run] waitForPaused end ok=%d waited_ms=%lld state=%d",
+        SCLOGDX(SC_TAGS("run"), "waitForPaused end ok=%d waited_ms=%lld state=%d",
             result ? 1 : 0,
             (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start).count(),
@@ -1545,8 +1597,14 @@ namespace simcore {
 
     void DolphinWrapper::sterilizeConfigs()
     {
-        SCLOGT("Setting GFX Backend to Null.");
-        Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
+        if (m_visual_mode) {
+            SCLOGT("Setting GFX Backend to D3D11.");
+            Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("D3D"));
+        }
+        else {
+            SCLOGT("Setting GFX Backend to Null.");
+            Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string("Null"));
+        }
 
         SCLOGT("Turning off background input.");
         Config::SetCurrent(Config::MAIN_INPUT_BACKGROUND_INPUT, false);

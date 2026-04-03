@@ -1,4 +1,5 @@
 #include "CoordinatorController.h"
+#include "CoordinatorUiCommon.h"
 
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
@@ -17,7 +18,7 @@ constexpr auto kDolphinBaseKey = "dolphin_base";
 constexpr auto kTargetWorkersKey = "target_workers";
 constexpr auto kEventRingKey = "event_ring";
 constexpr auto kStartPausedKey = "start_paused";
-constexpr auto kVisualRenderHandleKey = "visual_render_widget_handle";
+constexpr auto kAutoRestartFailedJobsKey = "auto_restart_failed_jobs";
 }
 
 CoordinatorController::CoordinatorController(QObject* parent)
@@ -64,6 +65,11 @@ bool CoordinatorController::startPaused() const
     return startPaused_;
 }
 
+bool CoordinatorController::restartFailedJobsAutomatically() const
+{
+    return restartFailedJobsAutomatically_;
+}
+
 QString CoordinatorController::isoPath() const
 {
     return isoPath_;
@@ -82,6 +88,47 @@ QString CoordinatorController::validationMessage() const
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const
 {
     return snapshotCache_;
+}
+
+const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const
+{
+    return visualSnapshotCache_;
+}
+
+QStringList CoordinatorController::takeVisualLiveLogLineUpdates()
+{
+    // Update model: return only lines that have not yet been consumed by the UI.
+    QStringList updates;
+    if (!coordinator_) {
+        visualLiveLogLinesConsumed_ = 0;
+        return updates;
+    }
+
+    const auto lines = coordinator_->GetVisualLogTail();
+    if (visualLiveLogLinesConsumed_ > lines.size()) {
+        visualLiveLogLinesConsumed_ = 0;
+    }
+
+    for (size_t i = visualLiveLogLinesConsumed_; i < lines.size(); ++i) {
+        updates.append(QString::fromStdString(lines[i]));
+    }
+    visualLiveLogLinesConsumed_ = lines.size();
+    return updates;
+}
+
+QString CoordinatorController::visualReplayRuntimeStateText() const
+{
+    return soasimqt::ui::VisualReplayRuntimeStateText(coordinator_.get());
+}
+
+bool CoordinatorController::visualReplayControlsEnabled() const
+{
+    if (!coordinator_) {
+        return false;
+    }
+    using VisualState = simcore::WorkerCoordinator::VisualReplayRuntimeState;
+    const auto state = coordinator_->GetVisualReplayRuntimeState();
+    return state == VisualState::AttachReady || state == VisualState::Active;
 }
 
 void CoordinatorController::startCoordinator()
@@ -118,6 +165,8 @@ void CoordinatorController::stopCoordinator()
     coordinator_.reset();
     paused_ = false;
     snapshotCache_.clear();
+    visualSnapshotCache_.clear();
+    visualLiveLogLinesConsumed_ = 0;
 
     emit stateChanged();
     emit snapshotChanged();
@@ -141,7 +190,7 @@ void CoordinatorController::togglePaused()
 
 void CoordinatorController::setTargetWorkers(int targetWorkers)
 {
-    const int clampedValue = (std::max)(kMinTargetWorkers, targetWorkers);
+    const int clampedValue = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, targetWorkers));
     if (targetWorkers_ == clampedValue) {
         return;
     }
@@ -184,6 +233,16 @@ void CoordinatorController::setStartPaused(bool startPaused)
     emit stateChanged();
 }
 
+void CoordinatorController::setRestartFailedJobsAutomatically(bool enabled)
+{
+    if (restartFailedJobsAutomatically_ == enabled) {
+        return;
+    }
+    restartFailedJobsAutomatically_ = enabled;
+    persistInt(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0);
+    emit stateChanged();
+}
+
 void CoordinatorController::setIsoPath(const QString& isoPath)
 {
     if (isoPath_ == isoPath) {
@@ -217,10 +276,14 @@ void CoordinatorController::setVisualRenderWidgetHandle(quintptr hwnd)
     if (coordinator_) {
         coordinator_->SetVisualRenderWidgetHandle(static_cast<uint64_t>(visualRenderWidgetHandle_));
     }
-    QSettings settings;
-    settings.beginGroup(kSettingsGroup);
-    settings.setValue(kVisualRenderHandleKey, QVariant::fromValue(static_cast<qulonglong>(visualRenderWidgetHandle_)));
-    settings.endGroup();
+}
+
+void CoordinatorController::setVisualHostEventsPipeName(const QString& pipeName)
+{
+    if (!coordinator_) {
+        return;
+    }
+    coordinator_->SetVisualHostEventsPipeName(pipeName.toStdString());
 }
 
 void CoordinatorController::requestVisualReplay(qint64 jobId)
@@ -231,6 +294,38 @@ void CoordinatorController::requestVisualReplay(qint64 jobId)
     QtConcurrent::run([jobId]() {
         (void)simcore::db::DataService::ReplayJobVisuallyAsync(jobId).get();
     });
+}
+
+void CoordinatorController::pauseVisualReplayEmulation()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->PauseVisualReplayEmulation();
+}
+
+void CoordinatorController::stepVisualReplayVm()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->StepVisualReplayVm();
+}
+
+void CoordinatorController::resumeVisualReplayEmulation()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->ResumeVisualReplayEmulation();
+}
+
+void CoordinatorController::stopVisualReplay()
+{
+    if (!coordinator_) return;
+    (void)coordinator_->StopVisualReplay();
+}
+
+void CoordinatorController::handleVisualLiveLogLinesRequested()
+{
+    const QStringList lines = takeVisualLiveLogLineUpdates();
+    if (!lines.isEmpty()) {
+        emit visualLiveLogLinesReady(lines);
+    }
 }
 
 void CoordinatorController::refreshSnapshot()
@@ -247,10 +342,10 @@ void CoordinatorController::loadSettings()
 
     isoPath_ = settings.value(kIsoPathKey).toString();
     dolphinBaseDir_ = settings.value(kDolphinBaseKey).toString();
-    targetWorkers_ = (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt());
+    targetWorkers_ = (std::min)(kMaxTargetWorkers, (std::max)(kMinTargetWorkers, settings.value(kTargetWorkersKey, targetWorkers_).toInt()));
     eventBufferCapacity_ = (std::max)(kMinEventBufferCapacity, settings.value(kEventRingKey, eventBufferCapacity_).toInt());
     startPaused_ = settings.value(kStartPausedKey, startPaused_ ? 1 : 0).toInt() != 0;
-    visualRenderWidgetHandle_ = static_cast<quintptr>(settings.value(kVisualRenderHandleKey, 0).toULongLong());
+    restartFailedJobsAutomatically_ = settings.value(kAutoRestartFailedJobsKey, restartFailedJobsAutomatically_ ? 1 : 0).toInt() != 0;
 
     settings.endGroup();
 }
@@ -288,19 +383,32 @@ void CoordinatorController::updateSnapshotCache()
 {
     if (!coordinator_) {
         snapshotCache_.clear();
+        visualSnapshotCache_.clear();
+        visualLiveLogLinesConsumed_ = 0;
         return;
     }
 
-    snapshotCache_ = coordinator_->GetClusterSnapshot();
+    const auto snapshot = coordinator_->GetAllWorkerSnapshots();
+    snapshotCache_.clear();
+    visualSnapshotCache_.clear();
+    for (const auto& row : snapshot) {
+        if (row.worker_id == simcore::WorkerCoordinator::kVisualWorkerId) {
+            visualSnapshotCache_.push_back(row);
+        } else {
+            snapshotCache_.push_back(row);
+        }
+    }
+
 }
 
 WorkerCoordinatorConfig CoordinatorController::buildConfig() const
 {
     WorkerCoordinatorConfig cfg{};
-    cfg.max_concurrent_processes = static_cast<size_t>((std::max)(64, targetWorkers_));
-    cfg.desired_workers = static_cast<size_t>(targetWorkers_);
+    cfg.max_concurrent_processes = static_cast<size_t>((std::min)(kMaxTargetWorkers, (std::max)(64, targetWorkers_)));
+    cfg.desired_workers = static_cast<size_t>((std::min)(kMaxTargetWorkers, targetWorkers_));
     cfg.iso_path = isoPath_.toStdString();
     cfg.dolphin_base_dir = dolphinBaseDir_.toStdString();
     cfg.start_to_paused = startPaused_;
+    cfg.restart_failed_jobs_automatically = restartFailedJobsAutomatically_;
     return cfg;
 }

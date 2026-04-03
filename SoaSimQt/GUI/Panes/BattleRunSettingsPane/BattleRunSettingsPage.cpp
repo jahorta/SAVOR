@@ -4,7 +4,6 @@
 #include "DB/AddressProgramRepo.h"
 #include "DB/DBCore/ObjectStore.h"
 #include "DB/ProgramDB/BattleContextDBCodec.h"
-#include "DB/SavestateRepo.h"
 #include "Phases/BattleExplorer.h"
 #include "Phases/Programs/BattleRunner/BattleRunnerDBSettingsWriter.h"
 #include "Runner/Breakpoints/BPRegistry.h"
@@ -60,7 +59,6 @@ using simcore::db::ObjectStore;
 using simcore::db::PredicateSpecLite;
 using simcore::db::PredicateSpecRepo;
 using simcore::db::PredicateSpecRow;
-using simcore::db::SavestateLite;
 using simcore::db::SeedProbeLite;
 using simcore::db::TurnActionPresetLite;
 using simcore::db::TurnActionPresetRepo;
@@ -307,15 +305,13 @@ void BattleRunSettingsPage::createWidgets()
         contextTree_->setMinimumHeight(220);
         cardLayout->addWidget(contextTree_);
         QGridLayout* grid = new QGridLayout();
-        pickSavestateButton_ = new QPushButton(QStringLiteral("Pick Savestate…"), card);
         pickSeedProbeButton_ = new QPushButton(QStringLiteral("Pick Seed Probe…"), card);
         clearContextButton_ = new QPushButton(QStringLiteral("Clear Context"), card);
         getContextButton_ = new QPushButton(QStringLiteral("Get Context Update"), card);
-        for (QPushButton* button : { pickSavestateButton_, pickSeedProbeButton_, clearContextButton_, getContextButton_ }) {
+        for (QPushButton* button : { pickSeedProbeButton_, clearContextButton_, getContextButton_ }) {
             button->setObjectName("jobsSecondaryButton");
         }
-        grid->addWidget(pickSavestateButton_, 0, 0);
-        grid->addWidget(pickSeedProbeButton_, 0, 1);
+        grid->addWidget(pickSeedProbeButton_, 0, 0);
         grid->addWidget(getContextButton_, 1, 0);
         grid->addWidget(clearContextButton_, 1, 1);
         cardLayout->addLayout(grid);
@@ -382,7 +378,7 @@ void BattleRunSettingsPage::wireSignals()
 
         const qint64 predicateId = predicateTableModel_->data(sourceIndex, battlerunsettings::kPredicateIdRole).toLongLong();
         if (predicateId > 0) {
-            addPredicateToDraft(predicateId);
+            openAddPredicateDialog(std::nullopt, predicateId);
         }
     });
     connect(templateTable_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -436,7 +432,6 @@ void BattleRunSettingsPage::wireSignals()
         }
     });
 
-    connect(pickSavestateButton_, &QPushButton::clicked, this, [this]() { openSavestatePicker(); });
     connect(pickSeedProbeButton_, &QPushButton::clicked, this, [this]() { openSeedProbePicker(); });
     connect(clearContextButton_, &QPushButton::clicked, this, [this]() { clearBattleContext(); });
     connect(getContextButton_, &QPushButton::clicked, this, [this]() { requestFreshBattleContext(); });
@@ -972,6 +967,7 @@ void BattleRunSettingsPage::validateGridAgainstContext()
 {
     invalidCells_.clear();
     invalidReasons_.clear();
+    QString presetLookupError;
     if (!hasContext_) {
         return;
     }
@@ -1002,6 +998,11 @@ void BattleRunSettingsPage::validateGridAgainstContext()
             } else {
                 const auto result = TurnActionPresetRepo::Get(instance.presetId);
                 if (!result.ok) {
+                    if (presetLookupError.isEmpty()) {
+                        presetLookupError = QStringLiteral("Failed to validate preset %1: %2")
+                                                .arg(instance.presetId)
+                                                .arg(QString::fromStdString(result.error.message));
+                    }
                     continue;
                 }
                 preset = result.value;
@@ -1053,6 +1054,10 @@ void BattleRunSettingsPage::validateGridAgainstContext()
             }
         }
     }
+
+    if (!presetLookupError.isEmpty()) {
+        setErrorMessage(presetLookupError);
+    }
 }
 
 bool BattleRunSettingsPage::allSlotsFilled() const
@@ -1070,31 +1075,6 @@ bool BattleRunSettingsPage::allSlotsFilled() const
     return true;
 }
 
-void BattleRunSettingsPage::openSavestatePicker()
-{
-    LedgerPickerDialog<SavestateLite> dialog(
-        QStringLiteral("Pick Savestate"),
-        { { QStringLiteral("ID"), [](const SavestateLite& row) { return QString::number(row.id); } },
-          { QStringLiteral("Type"), [](const SavestateLite& row) { return QString::number(row.savestate_type); } },
-          { QStringLiteral("Filename"), [](const SavestateLite& row) { return QString::fromStdString(row.filename); } },
-          { QStringLiteral("Note"), [](const SavestateLite& row) { return QString::fromStdString(row.note); }, 2 } },
-        [](const PagedQuery<>& query, const QString& search) {
-            return DataService::FetchSavestatesPage(query, search.toStdString()).get();
-        },
-        [](const SavestateLite& row) { return static_cast<qint64>(row.id); },
-        [](const SavestateLite& row) {
-            return QStringLiteral("Savestate %1 · type %2 · %3%4")
-                .arg(row.id)
-                .arg(row.savestate_type)
-                .arg(QString::fromStdString(row.note))
-                .arg(row.filename.empty() ? QString{} : QStringLiteral(" · file %1").arg(QString::fromStdString(row.filename)));
-        },
-        this);
-    if (dialog.exec() == QDialog::Accepted && dialog.selectedId() > 0) {
-        requestBattleContextForSavestate(dialog.selectedId());
-    }
-}
-
 void BattleRunSettingsPage::openSeedProbePicker()
 {
     LedgerPickerDialog<SeedProbeLite> dialog(
@@ -1102,7 +1082,9 @@ void BattleRunSettingsPage::openSeedProbePicker()
         { { QStringLiteral("ID"), [](const SeedProbeLite& row) { return QString::number(row.id); } },
           { QStringLiteral("Savestate"), [](const SeedProbeLite& row) { return QString::number(row.savestate_id); } },
           { QStringLiteral("Status"), [](const SeedProbeLite& row) { return QString::fromStdString(row.status); } },
-          { QStringLiteral("Purpose"), [](const SeedProbeLite& row) { return QString::fromStdString(row.purpose); }, 2 } },
+          { QStringLiteral("Purpose"), [](const SeedProbeLite& row) { return QString::fromStdString(row.purpose); } },
+          { QStringLiteral("BattleContext"), [](const SeedProbeLite& row) { return row.has_battle_context ? QStringLiteral("Yes") : QStringLiteral("--"); }, 2 }
+        },
         [](const PagedQuery<>& query, const QString& search) {
             return DataService::FetchSeedProbesPage(query, search.toStdString(), true).get();
         },
@@ -1202,6 +1184,10 @@ void BattleRunSettingsPage::openAddPresetDialog(std::optional<std::pair<int, int
         const auto result = TurnActionPresetRepo::Get(initialPresetId.value());
         if (result.ok) {
             dialog.loadRow(result.value);
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load UI action preset %1: %2")
+                                .arg(initialPresetId.value())
+                                .arg(QString::fromStdString(result.error.message)));
         }
     }
     if (dialog.exec() != QDialog::Accepted) {
@@ -1241,6 +1227,10 @@ void BattleRunSettingsPage::openAddPresetDialog(std::optional<std::pair<int, int
     const auto reload = TurnActionPresetRepo::Get(presetId);
     if (reload.ok) {
         presetCache_.insert(presetId, reload.value);
+    } else {
+        setErrorMessage(QStringLiteral("Saved UI action preset %1, but failed to reload it: %2")
+                            .arg(presetId)
+                            .arg(QString::fromStdString(reload.error.message)));
     }
 
     if (targetCell.has_value()) {
@@ -1256,6 +1246,10 @@ void BattleRunSettingsPage::openAddPredicateDialog(std::optional<int> editIndex,
         const auto result = PredicateSpecRepo::Get(initialPredicateId.value());
         if (result.ok) {
             dialog.loadRow(result.value);
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load predicate %1: %2")
+                                .arg(initialPredicateId.value())
+                                .arg(QString::fromStdString(result.error.message)));
         }
     }
     if (dialog.exec() != QDialog::Accepted) {
@@ -1386,6 +1380,12 @@ void BattleRunSettingsPage::loadAuthoringTemplate(qint64 templateId)
             uiConfig_.actions[uiRow.turn_index][uiRow.actor_slot].actorSlot = static_cast<quint32>(uiRow.actor_slot);
             uiConfig_.actions[uiRow.turn_index][uiRow.actor_slot].presetId = uiRow.preset_id;
         }
+    } else {
+        setErrorMessage(QStringLiteral("Failed to load UI config rows for template %1: %2")
+                            .arg(templateId)
+                            .arg(QString::fromStdString(uiRowsResult.error.message)));
+        refreshInlineMessage();
+        return;
     }
 
     predicates_.clear();
@@ -1394,6 +1394,13 @@ void BattleRunSettingsPage::loadAuthoringTemplate(qint64 templateId)
         if (predResult.ok) {
             predicateRowCache_.insert(predicateId, predResult.value);
             predicates_.push_back({ predicateId, QString::fromStdString(predResult.value.name), QString::fromStdString(predResult.value.description) });
+        } else {
+            setErrorMessage(QStringLiteral("Failed to load predicate %1 from template %2: %3")
+                                .arg(predicateId)
+                                .arg(templateId)
+                                .arg(QString::fromStdString(predResult.error.message)));
+            refreshInlineMessage();
+            return;
         }
     }
 
@@ -1424,7 +1431,9 @@ bool BattleRunSettingsPage::buildUiConfigFromDraft(simcore::battleexplorer::UI_C
                 const auto result = TurnActionPresetRepo::Get(instance.presetId);
                 if (!result.ok) {
                     if (errorMessage) {
-                        *errorMessage = QStringLiteral("Failed to resolve preset %1.").arg(instance.presetId);
+                        *errorMessage = QStringLiteral("Failed to resolve preset %1: %2")
+                                            .arg(instance.presetId)
+                                            .arg(QString::fromStdString(result.error.message));
                     }
                     return false;
                 }
@@ -1537,7 +1546,9 @@ void BattleRunSettingsPage::saveExplorerSettings()
     for (const PredicateDraft& predicate : predicates_) {
         auto result = PredicateSpecRepo::Get(predicate.predicateId);
         if (!result.ok) {
-            setErrorMessage(QStringLiteral("Failed to reload predicate %1.").arg(predicate.predicateId));
+            setErrorMessage(QStringLiteral("Failed to reload predicate %1: %2")
+                                .arg(predicate.predicateId)
+                                .arg(QString::fromStdString(result.error.message)));
             refreshInlineMessage();
             return;
         }
@@ -1705,7 +1716,8 @@ void BattleRunSettingsPage::postStatusToast(const QString& text, bool error, con
     }
 
     const StatusToast::Severity severity = error ? StatusToast::Severity::Error : StatusToast::Severity::Info;
-    if (lastToastMessage_ == text && lastToastSeverity_ == severity) {
+    const bool isDuplicate = (lastToastMessage_ == text && lastToastSeverity_ == severity);
+    if (!error && isDuplicate) {
         return;
     }
 

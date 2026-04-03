@@ -58,6 +58,9 @@
     <Filter Include="Phases\TasMovie">
       <UniqueIdentifier>{b45cfc68-55c6-4d32-9ebf-6c99a00387fb}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Phases\TasFrameDetector">
+      <UniqueIdentifier>{c3cc7f37-cf63-4f3b-9db5-e57c8eb60f81}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Phases\BattleContext">
       <UniqueIdentifier>{8b0fb7f2-30e4-415d-aa1e-d7151ae137a9}</UniqueIdentifier>
     </Filter>
@@ -189,6 +192,12 @@
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMoviePayload.h">
       <Filter>Phases\TasMovie</Filter>
     </ClInclude>
+    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h">
+      <Filter>Phases\TasFrameDetector</Filter>
+    </ClInclude>
+    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.h">
+      <Filter>Phases\TasFrameDetector</Filter>
+    </ClInclude>
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h">
       <Filter>Phases\BattleContext</Filter>
     </ClInclude>
@@ -214,6 +223,9 @@
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h">
+      <Filter>Runner\VM\ContextKeys</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h">
@@ -393,6 +405,9 @@
     <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h">
       <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
+    <ClInclude Include="DB\ProgramDB\TasFrameDetectorDBCodec.h">
+      <Filter>DB\ProgramCodecs</Filter>
+    </ClInclude>
     <ClInclude Include="DB\Scheduling\JobEventsRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
@@ -513,6 +528,12 @@
     <ClInclude Include="DB\UiConfigRowRepo.h">
       <Filter>DB\CatalogRepos</Filter>
     </ClInclude>
+    <ClInclude Include="DB\TagRepo.h">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\TasFrameDetectRepo.h">
+      <Filter>DB\PhaseRepos</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Script\ScriptProgress.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
@@ -586,6 +607,9 @@
     </ClCompile>
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp">
       <Filter>Phases\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp">
+      <Filter>Phases\TasFrameDetector</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp">
       <Filter>Runner\Breakpoints</Filter>
@@ -701,6 +725,9 @@
     <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
     </ClCompile>
+    <ClCompile Include="DB\ProgramDB\TasFrameDetectorDBCodec.cpp">
+      <Filter>DB\ProgramCodecs</Filter>
+    </ClCompile>
     <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
     </ClCompile>
@@ -778,6 +805,12 @@
     </ClCompile>
     <ClCompile Include="DB\UiConfigRowRepo.cpp">
       <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\TagRepo.cpp">
+      <Filter>DB\CatalogRepos</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\TasFrameDetectRepo.cpp">
+      <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
     <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
       <Filter>DolphinSource</Filter>
@@ -1087,6 +1120,18 @@
       <Filter>DB\Migration</Filter>
     </None>
     <None Include="DB\migration\0035.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0036.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0037.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0038.sql">
+      <Filter>DB\Migration</Filter>
+    </None>
+    <None Include="DB\migration\0039.sql">
       <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>

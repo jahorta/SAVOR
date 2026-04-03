@@ -33,6 +33,7 @@ namespace simcore {
             static std::future<DbResult<std::vector<DeltaSeedRow>>> ListGridForProbeAsync(int64_t probe_id, RetryPolicy rp = {});
             static std::future<DbResult<std::vector<DeltaSeedRow>>> ListUniqueForProbeAsync(int64_t probe_id, RetryPolicy rp = {});
             static std::future<DbResult<std::optional<DeltaSeedRow>>> GetAsync(int64_t id, RetryPolicy rp = {});
+            static std::future<DbResult<bool>> ExistsForProbeSeedDeltaAsync(int64_t probe_id, int32_t seed_delta, RetryPolicy rp = {});
 
             // Blocking convenience
             static inline DbResult<int64_t> BulkQueue(int64_t probe_id, const std::vector<DeltaSeedRow>& rows) { return BulkQueueAsync(probe_id, rows).get(); }
@@ -47,6 +48,7 @@ namespace simcore {
             static inline DbResult<std::vector<DeltaSeedRow>> ListGridForProbe(int64_t probe_id) { return ListGridForProbeAsync(probe_id).get(); }
             static inline DbResult<std::vector<DeltaSeedRow>> ListUniqueForProbe(int64_t probe_id) { return ListUniqueForProbeAsync(probe_id).get(); }
             static inline DbResult<std::optional<DeltaSeedRow>> Get(int64_t id) { return GetAsync(id).get(); }
+            static inline DbResult<bool> ExistsForProbeSeedDelta(int64_t probe_id, int32_t seed_delta) { return ExistsForProbeSeedDeltaAsync(probe_id, seed_delta).get(); }
         };
 
     } // namespace db

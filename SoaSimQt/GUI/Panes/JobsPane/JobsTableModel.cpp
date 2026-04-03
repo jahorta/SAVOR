@@ -2,6 +2,8 @@
 
 #include <QtCore/QVariant>
 
+#include <algorithm>
+
 JobsTableModel::JobsTableModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
@@ -65,16 +67,75 @@ QVariant JobsTableModel::data(const QModelIndex& index, int role) const
     case StateColumn: return row->state;
     case AttemptsColumn: return row->attempts;
     case QueuedAtColumn: return row->queuedAt;
-    case ProgressColumn: return row->progress;
+    case ProgressColumn:
+    {
+        QString progress = row->progress.split("\n").first();
+        return progress;
+    }
     default: return {};
     }
 }
 
 void JobsTableModel::setRows(const std::vector<Row>& rows)
 {
-    beginResetModel();
-    rows_ = rows;
-    endResetModel();
+    int targetRow = 0;
+    while (targetRow < static_cast<int>(rows.size())) {
+        const qint64 targetJobId = rows[static_cast<size_t>(targetRow)].jobId;
+
+        if (targetRow < static_cast<int>(rows_.size()) && rows_[static_cast<size_t>(targetRow)].jobId == targetJobId) {
+            ++targetRow;
+            continue;
+        }
+
+        auto existingIt = std::find_if(rows_.begin() + std::min(targetRow, static_cast<int>(rows_.size())), rows_.end(), [targetJobId](const Row& row) {
+            return row.jobId == targetJobId;
+        });
+
+        if (existingIt != rows_.end()) {
+            const int sourceRow = static_cast<int>(std::distance(rows_.begin(), existingIt));
+            const int destinationChild = targetRow;
+            beginMoveRows(QModelIndex(), sourceRow, sourceRow, QModelIndex(), destinationChild);
+            Row moved = std::move(rows_[static_cast<size_t>(sourceRow)]);
+            rows_.erase(rows_.begin() + sourceRow);
+            rows_.insert(rows_.begin() + destinationChild, std::move(moved));
+            endMoveRows();
+            ++targetRow;
+            continue;
+        }
+
+        beginInsertRows(QModelIndex(), targetRow, targetRow);
+        rows_.insert(rows_.begin() + targetRow, rows[static_cast<size_t>(targetRow)]);
+        endInsertRows();
+        ++targetRow;
+    }
+
+    while (static_cast<int>(rows_.size()) > static_cast<int>(rows.size())) {
+        const int staleRow = static_cast<int>(rows_.size()) - 1;
+        beginRemoveRows(QModelIndex(), staleRow, staleRow);
+        rows_.pop_back();
+        endRemoveRows();
+    }
+
+    int changeStart = -1;
+    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+        const Row& incoming = rows[static_cast<size_t>(row)];
+        if (rowsAffectDisplay(rows_[static_cast<size_t>(row)], incoming)) {
+            rows_[static_cast<size_t>(row)] = incoming;
+            if (changeStart < 0) {
+                changeStart = row;
+            }
+            continue;
+        }
+
+        if (changeStart >= 0) {
+            emit dataChanged(index(changeStart, 0), index(row - 1, ColumnCount - 1));
+            changeStart = -1;
+        }
+    }
+
+    if (changeStart >= 0) {
+        emit dataChanged(index(changeStart, 0), index(static_cast<int>(rows.size()) - 1, ColumnCount - 1));
+    }
 }
 
 const JobsTableModel::Row* JobsTableModel::rowAt(int row) const
@@ -83,4 +144,16 @@ const JobsTableModel::Row* JobsTableModel::rowAt(int row) const
         return nullptr;
     }
     return &rows_[row];
+}
+
+bool JobsTableModel::rowsAffectDisplay(const Row& lhs, const Row& rhs)
+{
+    return lhs.jobId != rhs.jobId
+        || lhs.jobSetId != rhs.jobSetId
+        || lhs.savestateId != rhs.savestateId
+        || lhs.programKind != rhs.programKind
+        || lhs.state != rhs.state
+        || lhs.attempts != rhs.attempts
+        || lhs.queuedAt != rhs.queuedAt
+        || lhs.progress != rhs.progress;
 }

@@ -111,7 +111,6 @@ private:
     std::optional<PredicateDraft> makePredicateDraft(qint64 predicateId);
     bool addPredicateToDraft(qint64 predicateId, std::optional<int> insertRow = std::nullopt);
     bool allSlotsFilled() const;
-    void openSavestatePicker();
     void openSeedProbePicker();
     void requestBattleContextForSavestate(qint64 savestateId);
     void requestBattleContextForSeedProbe(qint64 seedProbeId);
@@ -201,7 +200,6 @@ private:
 
     QLabel* contextSummaryLabel_ = nullptr;
     BattleContextTreeWidget* contextTree_ = nullptr;
-    QPushButton* pickSavestateButton_ = nullptr;
     QPushButton* pickSeedProbeButton_ = nullptr;
     QPushButton* clearContextButton_ = nullptr;
     QPushButton* getContextButton_ = nullptr;

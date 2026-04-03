@@ -5,6 +5,7 @@
 #include "SeedProbeTableModels.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
+#include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
@@ -48,7 +49,11 @@ SeedProbePage::SeedProbePage(QWidget* parent)
 {
     createWidgets();
     wireSignals();
-    controller_->loadInitial();
+}
+
+void SeedProbePage::setPageActive(bool active)
+{
+    controller_->setPageActive(active);
 }
 
 void SeedProbePage::createWidgets()
@@ -362,14 +367,19 @@ void SeedProbePage::refreshDetails()
 void SeedProbePage::updateStatusWidgets()
 {
     const auto& state = controller_->viewState();
+    StatusToast::Severity toastSeverity = StatusToast::Severity::Info;
+    QString toastMessage;
     if (!state.errorMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("error"));
         inlineMessageLabel_->setText(state.errorMessage);
         inlineMessageLabel_->show();
+        toastSeverity = StatusToast::Severity::Error;
+        toastMessage = state.errorMessage;
     } else if (!state.infoMessage.isEmpty()) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(state.infoMessage);
         inlineMessageLabel_->show();
+        toastMessage = state.infoMessage;
     } else if (state.loadingList) {
         inlineMessageLabel_->setProperty("severity", QStringLiteral("info"));
         inlineMessageLabel_->setText(QStringLiteral("Loading seed probes…"));
@@ -384,6 +394,14 @@ void SeedProbePage::updateStatusWidgets()
 
     style()->unpolish(inlineMessageLabel_);
     style()->polish(inlineMessageLabel_);
+
+    if (!toastMessage.isEmpty()) {
+        const QString signature = QStringLiteral("%1|%2").arg(static_cast<int>(toastSeverity)).arg(toastMessage);
+        if (signature != lastToastSignature_) {
+            lastToastSignature_ = signature;
+            emit statusToastRequested(StatusToast{ toastSeverity, toastMessage, QString(), 1, QDateTime{}, 4000 });
+        }
+    }
 }
 
 void SeedProbePage::rebuildLegend(const QVector<int>& deltas)

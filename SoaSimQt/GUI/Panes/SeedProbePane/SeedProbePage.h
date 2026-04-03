@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtWidgets/QWidget>
+#include "GUI/Common/StatusToast.h"
 
 class QCheckBox;
 class QHBoxLayout;
@@ -16,8 +17,14 @@ class SeedProbeUniqueTableModel;
 
 class SeedProbePage final : public QWidget
 {
+    Q_OBJECT
+
+signals:
+    void statusToastRequested(StatusToast toast);
+
 public:
     explicit SeedProbePage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 private:
     void createWidgets();
@@ -59,4 +66,5 @@ private:
     SeedProbeGridWidget* triggerGrid_ = nullptr;
     QHBoxLayout* legendLayout_ = nullptr;
     QTreeView* uniqueTable_ = nullptr;
+    QString lastToastSignature_;
 };

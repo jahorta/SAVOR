@@ -3,6 +3,8 @@
 #include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
+
 class ArtifactsController;
 class ArtifactsBrowserTableModel;
 class ArtifactsBrowserTableView;
@@ -17,6 +19,9 @@ class ArtifactsPage final : public QWidget
 
 public:
     explicit ArtifactsPage(QWidget* parent = nullptr);
+
+signals:
+    void statusToastRequested(StatusToast toast);
 
 private slots:
     void handleImportRequested();
@@ -65,4 +70,5 @@ private:
     QLabel* inspectorCreatedValue_ = nullptr;
     QTextEdit* inspectorShaText_ = nullptr;
     QPushButton* exportButton_ = nullptr;
+    QString lastToastSignature_;
 };

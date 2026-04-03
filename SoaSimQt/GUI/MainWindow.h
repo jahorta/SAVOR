@@ -7,9 +7,14 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorPane.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
+#include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 
 class CoordinatorController;
 class CoordinatorPane;
+class JobSetsPage;
+class JobsPage;
+class SeedProbePage;
+class ExplorerRunsPage;
 class QLabel;
 
 class QListWidget;
@@ -46,7 +51,12 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
+    JobSetsPage* jobSetsPage_ = nullptr;
+    JobsPage* jobsPage_ = nullptr;
+    SeedProbePage* seedProbePage_ = nullptr;
+    ExplorerRunsPage* explorerRunsPage_ = nullptr;
     SettingsPage* settingsPage_ = nullptr;
+    DtmEditorPage* dtmEditorPage_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;

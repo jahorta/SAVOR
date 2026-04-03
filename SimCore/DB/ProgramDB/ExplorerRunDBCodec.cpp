@@ -22,10 +22,12 @@
 #include "../DeltaSeedRepo.h"
 #include "../SeedProbeRepo.h"
 #include "../SavestateRepo.h"
+#include "../TagRepo.h"
 #include "../Querying/DataService.h"
 
 #include "../../Phases/Programs/ProgramRegistry.h"
 #include "../../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
+#include "../../Phases/Programs/BattleRunner/BattleOutcome.h"
 #include "../../Core/Input/InputPlanFmt.h"
 #include "../../Core/Input/AppliedTurnTapeBlob.h"
 #include "../../Runner/Script/PSContext.h"
@@ -62,6 +64,17 @@ static constexpr int kPK = PK_BattleTurnRunner;                                 
 static constexpr int kProgramVersion = phase::battle::runner::PayloadVersion;       // from BattleRunnerPayload.h
 
 namespace {
+    static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+        auto tags = simcore::db::TagRepo::ListEntityTags("job_set", from_job_set_id);
+        if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+        for (const auto& tag : tags.value) {
+            auto attach = simcore::db::TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+            if (!attach.ok) return DbResult<void>::Err(attach.error);
+        }
+        return DbResult<void>::Ok();
+    }
+
     static void dfs_fake_vectors(std::size_t idx, uint32_t remaining, std::vector<uint32_t>& cur, std::vector<std::vector<uint32_t>>& out) {
         if (idx + 1 == cur.size()) {
             cur[idx] = remaining;
@@ -178,7 +191,7 @@ DbResult<int64_t> ExplorerRunDBCodec::encode_job_into_db(int64_t job_set_id, con
             if (!turns.ok) return DbResult<int64_t>::Err(turns.error);
             auto fake_vectors = enumerate_fake_vectors(turns.value.size(), bp_ini.min_fake_attacks, bp_ini.max_fake_attacks);
 
-            auto run = ExplorerRunRepo::IdempotentCreate(settings_id, plan_row.plan_id, delta_row.id);
+            auto run = ExplorerRunRepo::IdempotentCreate(job_set_id, settings_id, plan_row.plan_id, delta_row.id);
             if (!run.ok) return DbResult<int64_t>::Err(run.error);
 
             for (const auto& fv : fake_vectors) {
@@ -344,24 +357,10 @@ DbResult<void> ExplorerRunDBCodec::encode_results_into_db(int64_t job_id, const 
         if (!jr.ok) return DbResult<void>::Err(jr.error);
         const int64_t run_id = jr.value.program_ref_id;
 
-        auto s1 = simcore::db::ExplorerRunRepo::SetResultsIni(run_id, persisted_results_ini);
-        if (!s1.ok) return DbResult<void>::Err(s1.error);
-
-        auto lines = JobEventsRepo::ListByJobAndKind(job_id, "PROGRESS");
-        if (!lines.ok) return DbResult<void>::Err(lines.error);
-        std::string transcript;
-        for (size_t i = 0; i < lines.value.size(); ++i) {
-            if (i) transcript.push_back('\n');
-            if (lines.value[i].payload) transcript.append(*lines.value[i].payload);
+        if (results.battle_outcome == static_cast<uint32_t>(simcore::battle::Outcome::Victory)) {
+            auto setVictory = simcore::db::ExplorerRunRepo::SetHasVictory(run_id, true);
+            if (!setVictory.ok) return DbResult<void>::Err(setVictory.error);
         }
-        auto art = simcore::db::ObjectStore::PutText(transcript);
-        if (!art.ok) return DbResult<void>::Err(art.error);
-
-        auto s2 = simcore::db::ExplorerRunRepo::SetProgressLogArtifactId(run_id, art.value.id);
-        if (!s2.ok) return DbResult<void>::Err(s2.error);
-
-        auto md = simcore::db::ExplorerRunRepo::MarkDone(run_id);
-        if (!md.ok) return DbResult<void>::Err(md.error);
     }
     return DbResult<void>::Ok();
 }
@@ -373,8 +372,6 @@ DbResult<std::string> ExplorerRunDBCodec::decode_progress_from_db(std::optional<
     if (job_id) {
         auto jr = JobsRepo::Get(*job_id);
         if (!jr.ok) return DbResult<std::string>::Err(jr.error);
-        auto run = simcore::db::ExplorerRunRepo::Get(jr.value.program_ref_id);
-        if (!run.ok) return DbResult<std::string>::Err(run.error);
 
         auto rows = JobEventsRepo::ListByJobAndKind(*job_id, "PROGRESS");
         if (!rows.ok) return DbResult<std::string>::Err(rows.error);
@@ -480,6 +477,8 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
         r.ps.ctx.get(simcore::keys::core::VI_FIRST, results.vi_start);
         r.ps.ctx.get(simcore::keys::core::VI_LAST, results.vi_end);
 
+        r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, results.battle_outcome);
+
         std::string turn_blob;
         r.ps.ctx.get(simcore::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
@@ -488,6 +487,9 @@ DbResult<std::string> ExplorerRunDBCodec::build_results_ini_from_prresult(int64_
                 results.applied_input_tape_text = simcore::inputtape::render_text(chunks);
             }
         }
+
+        r.ps.ctx.get(simcore::keys::battle::BATTLE_OUTCOME, results.battle_outcome);
+
     }
 
     IniDoc ini;
@@ -518,8 +520,13 @@ DbResult<void> ExplorerRunDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx,
         "No unique seeds found for probe_id=" + std::to_string(spbp.probe_id) + ". Make sure that the SeedProbe is done and that they were registered in the DeltaSeed repo." });
 
 
-    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", PK_BattleTurnRunner, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
+    const int action_kind = bp.use_single_turn_runner ? PK_BattleSingleTurnRunner : PK_BattleTurnRunner;
+    auto crt = simcore::db::JobSetsRepo::Create("BattleRun", action_kind, std::nullopt, std::nullopt, std::nullopt, "", plans.value.size() * unique_count.value.size());
     if (!crt.ok) return DbResult<void>::Err(crt.error);
+    auto prev_root = simcore::db::JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+    if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+    auto copy_tags = copy_job_set_tags(prev_root.value, crt.value);
+    if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
 
     bp.seed_probe_id = spbp.probe_id;
     

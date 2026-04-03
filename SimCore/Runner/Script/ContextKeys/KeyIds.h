@@ -12,6 +12,7 @@ namespace simcore::keys {
     inline constexpr KeyId SEED_MIN = 0x0100, SEED_MAX = 0x01FF;
     inline constexpr KeyId TAS_MIN = 0x0200, TAS_MAX = 0x02FF;
     inline constexpr KeyId BATTLE_MIN = 0x0300, BATTLE_MAX = 0x03FF;
+    inline constexpr KeyId TAS_FRAME_DETECTOR_MIN = 0x0400, TAS_FRAME_DETECTOR_MAX = 0x04FF;
 
     struct KeyPair {
         KeyId id;

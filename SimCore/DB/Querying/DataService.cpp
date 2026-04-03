@@ -3,11 +3,16 @@
 #include "../SeedProbeRepo.h"
 #include "../TasMovieRepo.h"
 #include "../ExplorerSettingsRepo.h"
+#include "../ExplorerRunRepo.h"
 #include "../DBCore/ObjectStore.h"
+#include "../ProgramDB/BattleSingleTurnRunDBCodec.h"
+#include "../ProgramDB/ExplorerRunDBCodec.h"
 #include "../ProgramKindsRepo.h"
 #include "../Scheduling/VisualReplayRepo.h"
 #include "../../Runner/IPC/Wire.h"
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace simcore::db {
     namespace {
@@ -673,6 +678,148 @@ namespace simcore::db {
 
     std::future<DbResult<void>> DataService::SetJobVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp) {
         return JobsRepo::SetVmKvAsync(job_id, std::move(vm_kv), rp);
+    }
+
+    std::future<DbResult<ExplorerRunReconcileResult>> DataService::ReconcileMissingExplorerRunsAsync(RetryPolicy rp) {
+        return std::async(std::launch::async, [rp]() -> DbResult<ExplorerRunReconcileResult> {
+            ExplorerRunReconcileResult out{};
+
+            std::vector<JobSetLite> candidateJobSets;
+            candidateJobSets.reserve(512);
+
+            for (const int programKind : { simcore::PK_BattleTurnRunner, simcore::PK_BattleSingleTurnRunner }) {
+                JobSetsListScope scope{};
+                scope.program_kind = programKind;
+                std::optional<KeysetCursor> cursor;
+                while (true) {
+                    auto page = JobSetsRepo::ListRecentAsync(scope, cursor, 200, rp).get();
+                    if (!page.ok) {
+                        return DbResult<ExplorerRunReconcileResult>::Err(page.error);
+                    }
+                    candidateJobSets.insert(candidateJobSets.end(), page.value.items.begin(), page.value.items.end());
+                    if (!page.value.next.has_value()) {
+                        break;
+                    }
+                    cursor = page.value.next;
+                }
+            }
+
+            std::unordered_map<int64_t, std::unordered_set<int64_t>> rootsToWaveSets;
+            rootsToWaveSets.reserve(candidateJobSets.size());
+            for (const JobSetLite& js : candidateJobSets) {
+                int64_t root = js.job_set_id;
+                while (true) {
+                    auto parent = JobSetsRepo::GetParent(root);
+                    if (!parent.ok) {
+                        return DbResult<ExplorerRunReconcileResult>::Err(parent.error);
+                    }
+                    if (!parent.value.has_value() || *parent.value <= 0) {
+                        break;
+                    }
+                    root = *parent.value;
+                }
+                rootsToWaveSets[root].insert(js.job_set_id);
+            }
+
+            out.roots_scanned = static_cast<int64_t>(rootsToWaveSets.size());
+
+            for (const auto& [rootJobSetId, waveJobSetIds] : rootsToWaveSets) {
+                bool hadExistingRunsForRoot = false;
+                std::unordered_set<std::string> keysForRoot;
+
+                for (int64_t waveJobSetId : waveJobSetIds) {
+                    auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
+                    if (!jobs.ok) {
+                        return DbResult<ExplorerRunReconcileResult>::Err(jobs.error);
+                    }
+                    for (const JobRow& job : jobs.value) {
+                        if (job.program_kind != simcore::PK_BattleTurnRunner
+                            && job.program_kind != simcore::PK_BattleSingleTurnRunner) {
+                            continue;
+                        }
+                        if (job.program_ref_id > 0) {
+                            auto run = ExplorerRunRepo::Get(job.program_ref_id);
+                            if (run.ok && run.value.root_job_set_id == rootJobSetId) {
+                                hadExistingRunsForRoot = true;
+                            }
+                        }
+                    }
+                }
+
+                if (hadExistingRunsForRoot) {
+                    ++out.roots_with_existing_runs;
+                    continue;
+                }
+
+                bool createdForRoot = false;
+                for (int64_t waveJobSetId : waveJobSetIds) {
+                    auto jobs = JobsRepo::GetByJobSet(waveJobSetId);
+                    if (!jobs.ok) {
+                        return DbResult<ExplorerRunReconcileResult>::Err(jobs.error);
+                    }
+                    for (const JobRow& job : jobs.value) {
+                        if (job.program_kind != simcore::PK_BattleTurnRunner
+                            && job.program_kind != simcore::PK_BattleSingleTurnRunner) {
+                            continue;
+                        }
+                        if (!job.vm_kv.has_value() || job.vm_kv->empty()) {
+                            continue;
+                        }
+
+                        const IniDoc ini = IniDoc::parse(*job.vm_kv);
+                        const codec::battle::run::BlueprintIni bp = codec::battle::run::BlueprintIni::from_section(ini);
+                        if (bp.settings_id <= 0) {
+                            continue;
+                        }
+
+                        int64_t planId = -1;
+                        int64_t deltaSeedId = -1;
+                        if (job.program_kind == simcore::PK_BattleTurnRunner) {
+                            const codec::battle::run::JobIni runJob = codec::battle::run::JobIni::from_section(ini);
+                            planId = runJob.plan_id;
+                            deltaSeedId = runJob.delta_seed_id;
+                        } else {
+                            const codec::battle::singleturn::JobIni stJob = codec::battle::singleturn::JobIni::from_section(ini);
+                            planId = stJob.plan_id;
+                            deltaSeedId = stJob.delta_seed_id;
+                        }
+
+                        if (planId <= 0 || deltaSeedId <= 0) {
+                            continue;
+                        }
+
+                        const std::string key = std::to_string(bp.settings_id)
+                            + "|" + std::to_string(planId)
+                            + "|" + std::to_string(deltaSeedId);
+                        if (keysForRoot.contains(key)) {
+                            continue;
+                        }
+                        keysForRoot.insert(key);
+
+                        auto created = ExplorerRunRepo::IdempotentCreate(rootJobSetId, bp.settings_id, planId, deltaSeedId);
+                        if (!created.ok) {
+                            return DbResult<ExplorerRunReconcileResult>::Err(created.error);
+                        }
+                        ++out.runs_created;
+                        createdForRoot = true;
+
+                        if (job.program_ref_id <= 0) {
+                            auto setRef = JobsRepo::SetProgramRefId(job.job_id, created.value);
+                            if (!setRef.ok) {
+                                return DbResult<ExplorerRunReconcileResult>::Err(setRef.error);
+                            }
+                            ++out.jobs_updated;
+                        }
+                    }
+                }
+
+                if (createdForRoot) {
+                    ++out.roots_reconciled;
+                }
+            }
+
+            return DbResult<ExplorerRunReconcileResult>::Ok(out);
+            });
     }
 
 

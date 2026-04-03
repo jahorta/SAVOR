@@ -55,6 +55,9 @@
     <Filter Include="GUI\Common">
       <UniqueIdentifier>{005bee8e-54dc-4167-8e35-e84d3cfe37c1}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Widgets\VisualReplay">
+      <UniqueIdentifier>{354d8c69-ffaf-4ea9-bc49-e4a7c83d8399}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <QtRcc Include="SoaSimQt.qrc">
@@ -105,6 +108,12 @@
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
@@ -188,14 +197,32 @@
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
     <ClCompile Include="main.cpp">
       <Filter>Main</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -229,6 +256,9 @@
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
@@ -245,6 +275,21 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </QtMoc>
   </ItemGroup>
@@ -303,6 +348,9 @@
     <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
@@ -321,8 +369,8 @@
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
-      <Filter>GUI\Panes\JobSets</Filter>
+    <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
+      <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h">
       <Filter>GUI\Panes\JobSets</Filter>
@@ -331,9 +379,6 @@
       <Filter>GUI\Panes\JobSets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h">
-      <Filter>GUI\Panes\SeedProbe</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h">
@@ -345,14 +390,14 @@
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
-    <ClCompile Include="GUI\Widgets\VisualWorkerDialog.cpp">
-      <Filter>GUI\Widgets</Filter>
-    </ClCompile>
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Widgets\VisualWorkerDialog.h">
-      <Filter>GUI\Widgets</Filter>
-    </QtMoc>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

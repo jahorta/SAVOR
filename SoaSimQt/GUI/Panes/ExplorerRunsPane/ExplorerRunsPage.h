@@ -2,9 +2,11 @@
 
 #include <QtWidgets/QWidget>
 
+#include "GUI/Common/StatusToast.h"
 #include "ExplorerRunsCoordinator.h"
 
 #include <array>
+#include <optional>
 #include <vector>
 
 class ExplorerRunsGroupTableModel;
@@ -16,7 +18,7 @@ class QCheckBox;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
-class QStandardItemModel;
+class ExplorerRunsWaveTreeModel;
 class QTreeView;
 class QComboBox;
 class QModelIndex;
@@ -30,9 +32,11 @@ class ExplorerRunsPage final : public QWidget
 public:
     explicit ExplorerRunsPage(QWidget* parent = nullptr);
     ~ExplorerRunsPage() override;
+    void setPageActive(bool active);
 
 signals:
     void visualReplayRequested(qint64 jobId);
+    void statusToastRequested(StatusToast toast);
 
 private:
     enum class SortMetric {
@@ -57,6 +61,8 @@ private:
         bool winnersOnly = true;
         bool showDuplicates = false;
         bool successOnly = true;
+        bool childVictoryOnly = false;
+        std::optional<QString> tagKey;
         std::array<SortKey, 3> sortKeys{{
             { SortMetric::PredicatesPassed, false },
             { SortMetric::DeltaVI, true },
@@ -87,10 +93,16 @@ private:
     void triggerNextWave();
     void showJobsContextMenu(const QPoint& pos);
     void openTurnInputsDialogForJob(const ExplorerRunsJobRow& row);
+    void showBattlePlanDialogForJob(const ExplorerRunsJobRow& row);
+    void showReplicationDialogForJob(const ExplorerRunsJobRow& row);
     void restoreSelectedGroupRow();
     void restoreSelectedJobRow();
     void selectFirstWaveIfNeeded();
     std::vector<qint64> selectedWaveIdsFromTree() const;
+    void loadFilterSettings();
+    void persistFilterSettings() const;
+    void refreshTagFilterOptions();
+    void maybeEmitStatusToast(const QString& text, bool error);
 
     ViewState state_;
     ExplorerRunsCoordinator* coordinator_ = nullptr;
@@ -103,12 +115,14 @@ private:
 
     ExplorerRunsGroupTableModel* groupsModel_ = nullptr;
     ExplorerRunsGroupTableView* groupsView_ = nullptr;
-    QStandardItemModel* wavesModel_ = nullptr;
+    ExplorerRunsWaveTreeModel* wavesModel_ = nullptr;
     QTreeView* wavesView_ = nullptr;
 
     QCheckBox* winnersOnlyCheck_ = nullptr;
     QCheckBox* showDuplicatesCheck_ = nullptr;
     QCheckBox* successOnlyCheck_ = nullptr;
+    QCheckBox* childVictoryOnlyCheck_ = nullptr;
+    QComboBox* tagFilter_ = nullptr;
     QComboBox* sortMetricBoxes_[3]{};
     QCheckBox* sortAscendingChecks_[3]{};
     QLabel* jobsSummaryLabel_ = nullptr;
@@ -122,4 +136,6 @@ private:
     QPlainTextEdit* blueprintText_ = nullptr;
     QPlainTextEdit* progressText_ = nullptr;
     QPlainTextEdit* resultsText_ = nullptr;
+    QString lastToastSignature_;
+    bool refreshingWaveTree_ = false;
 };

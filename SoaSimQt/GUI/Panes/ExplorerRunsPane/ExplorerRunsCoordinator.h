@@ -77,6 +77,7 @@ public:
         quint32 predTotal = 0;
         quint32 predAbortRun = 0;
         bool hasResults = false;
+        bool hasChildVictory = false;
     };
 
     struct DetailBundle {
@@ -96,13 +97,16 @@ public:
     bool detailsInFlight() const;
     bool autoRefreshEnabled() const;
     int refreshSeconds() const;
+    QString describeBattlePlanForJob(qint64 jobId) const;
 
 public slots:
+    void setPageActive(bool active);
     void requestGroupsRefresh();
     void requestJobsRefresh(const std::vector<qint64>& waveJobSetIds);
     void requestDetailsRefresh(qint64 jobId);
     void setAutoRefreshEnabled(bool enabled);
     void setRefreshSeconds(int seconds);
+    void setChildVictoryOnly(bool enabled);
     void clearJobs();
     void clearDetails();
 
@@ -114,7 +118,7 @@ private:
     void startAutoRefreshTimer();
     void handleAutoRefreshTick();
 
-    std::vector<GroupRow> buildGroups() const;
+    std::vector<GroupRow> buildGroups(bool childVictoryOnly) const;
     std::vector<JobViewRow> buildJobsForWaves(const std::vector<qint64>& waveJobSetIds) const;
     std::unordered_map<qint64, JobResultSummary> loadJobResultsMap(const std::vector<qint64>& ids) const;
     QString buildProgressLog(qint64 jobId) const;
@@ -135,10 +139,12 @@ private:
     bool detailsInFlight_ = false;
     bool autoRefreshEnabled_ = true;
     int refreshSeconds_ = 3;
+    bool childVictoryOnly_ = false;
     qint64 detailsRequestJobId_ = 0;
     QDateTime lastGroupsRefresh_;
     QFutureWatcher<std::vector<GroupRow>> groupsWatcher_;
     QFutureWatcher<std::vector<JobViewRow>> jobsWatcher_;
     QFutureWatcher<DetailBundle> detailsWatcher_;
     QTimer autoRefreshTimer_;
+    bool pageActive_ = false;
 };

@@ -27,8 +27,10 @@ void initializeDatabase()
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QCoreApplication::setOrganizationName("JahortaInc");
-    QCoreApplication::setApplicationName("Skies of Arcadia Simulator");
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::applicationDirPath());
+    QCoreApplication::setOrganizationName(QString());
+    QCoreApplication::setApplicationName("SoaSimQt");
 
     initializeDatabase();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {

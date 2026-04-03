@@ -1,14 +1,25 @@
 #include "JobsController.h"
 
+#include <QtCore/QSettings>
 #include <QtCore/QTimer>
 
 #include <exception>
+#include <algorithm>
 #include <utility>
 
 using simcore::db::DataService;
 using simcore::db::ProgramKindKV;
 
 namespace {
+constexpr auto kSettingsGroup = "JobsPane";
+constexpr auto kProgramKindKey = "program_kind";
+constexpr auto kStateFilterKey = "state_filter";
+constexpr auto kJobSetIdKey = "job_set_id";
+constexpr auto kTagKey = "tag_key";
+constexpr auto kPageLimitKey = "page_limit";
+constexpr auto kAutoRefreshKey = "auto_refresh";
+constexpr auto kRefreshSecondsKey = "refresh_seconds";
+
 QString describeException(const char* prefix)
 {
     try {
@@ -32,6 +43,9 @@ auto runDataServiceCall(AsyncCall&& asyncCall)
 JobsController::JobsController(QObject* parent)
     : QObject(parent)
 {
+    loadSettings();
+    syncFetchStateFromView();
+
     connect(&kindsWatcher_, &QFutureWatcher<ProgramKindsResult>::finished, this, [this]() {
         try {
             const auto result = kindsWatcher_.result();
@@ -55,6 +69,8 @@ JobsController::JobsController(QObject* parent)
     });
 
     connect(&pageWatcher_, &QFutureWatcher<JobPageResult>::finished, this, [this]() {
+        const bool shouldRefetch = pendingPageFetch_;
+        pendingPageFetch_ = false;
         try {
             const auto result = pageWatcher_.result();
             pageInFlight_ = false;
@@ -95,6 +111,9 @@ JobsController::JobsController(QObject* parent)
             state_.errorMessage = describeException("Jobs failed");
         }
         emitStateChanged();
+        if (shouldRefetch) {
+            kickPageFetch();
+        }
     });
 
     connect(&detailWatcher_, &QFutureWatcher<JobDetailResult>::finished, this, [this]() {
@@ -157,27 +176,48 @@ JobsController::JobsController(QObject* parent)
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(restartWatcher_, restartInFlight_, Operation::Restart, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
-
     refreshTimer_ = new QTimer(this);
     connect(refreshTimer_, &QTimer::timeout, this, [this]() {
         if (canAutoRefresh()) {
             requestRefresh();
         }
     });
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
 }
 
 const JobsController::ViewState& JobsController::viewState() const { return state_; }
 
 void JobsController::loadInitial()
 {
-    if (initialLoadStarted_) return;
+    if (initialLoadStarted_ || !pageActive_) return;
     initialLoadStarted_ = true;
     kickKindsFetch();
     kickPageFetch();
 }
 
-void JobsController::applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, int pageLimit)
+void JobsController::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        if (refreshTimer_) {
+            refreshTimer_->stop();
+        }
+        return;
+    }
+
+    if (refreshTimer_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
+    loadInitial();
+}
+
+void JobsController::applyFilters(const std::optional<int>& programKind, const std::optional<QString>& stateFilter, const std::optional<qint64>& jobSetId, const std::optional<QString>& tagKey, int pageLimit)
 {
     state_.scope = {};
     state_.scope.program_kind = programKind;
@@ -185,6 +225,9 @@ void JobsController::applyFilters(const std::optional<int>& programKind, const s
         state_.scope.states = { stateFilter->toStdString() };
     }
     state_.scope.job_set_id = jobSetId;
+    if (tagKey.has_value() && !tagKey->trimmed().isEmpty()) {
+        state_.scope.tag_key = tagKey->trimmed().toStdString();
+    }
     state_.pageLimit = pageLimit;
     before_.reset();
     after_.reset();
@@ -192,6 +235,8 @@ void JobsController::applyFilters(const std::optional<int>& programKind, const s
     state_.detail = {};
     state_.errorMessage.clear();
     state_.infoMessage.clear();
+    syncFetchStateFromView();
+    persistSettings();
     kickPageFetch();
 }
 
@@ -207,13 +252,17 @@ void JobsController::resetFilters()
     state_.detail = {};
     state_.errorMessage.clear();
     state_.infoMessage.clear();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    syncFetchStateFromView();
+    persistSettings();
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     kickPageFetch();
     emitStateChanged();
 }
 
-void JobsController::setAutoRefreshEnabled(bool enabled) { state_.autoRefresh = enabled; emitStateChanged(); }
-void JobsController::setRefreshSeconds(int seconds) { state_.refreshSeconds = seconds; refreshTimer_->start(seconds * 1000); emitStateChanged(); }
+void JobsController::setAutoRefreshEnabled(bool enabled) { state_.autoRefresh = enabled; persistSettings(); emitStateChanged(); }
+void JobsController::setRefreshSeconds(int seconds) { state_.refreshSeconds = seconds; persistSettings(); if (pageActive_) refreshTimer_->start(seconds * 1000); emitStateChanged(); }
 void JobsController::requestRefresh() { before_.reset(); after_.reset(); kickPageFetch(); }
 void JobsController::requestNextPage() { if (state_.page.next) { before_ = state_.page.next; after_.reset(); kickPageFetch(); } }
 void JobsController::requestPreviousPage() { if (state_.page.prev) { after_ = state_.page.prev; before_.reset(); kickPageFetch(); } }
@@ -249,16 +298,6 @@ void JobsController::cancelSelectedJob()
     cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::CancelJobAsync(jobId).get(); }));
 }
 
-void JobsController::replaySelectedJobVisually()
-{
-    const JobLite* job = selectedJob();
-    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
-    actionJobId_ = job->job_id;
-    replayVisualInFlight_ = true;
-    setBusy(Operation::ReplayVisual, true);
-    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
-}
-
 void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
 {
     const JobLite* job = selectedJob();
@@ -275,6 +314,16 @@ void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride
     }));
 }
 
+void JobsController::replaySelectedJobVisually()
+{
+    const JobLite* job = selectedJob();
+    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
+    actionJobId_ = job->job_id;
+    replayVisualInFlight_ = true;
+    setBusy(Operation::ReplayVisual, true);
+    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
+}
+
 void JobsController::kickKindsFetch()
 {
     if (kindsInFlight_) return;
@@ -285,11 +334,15 @@ void JobsController::kickKindsFetch()
 
 void JobsController::kickPageFetch()
 {
-    if (pageInFlight_) return;
+    if (pageInFlight_) {
+        pendingPageFetch_ = true;
+        return;
+    }
     pageInFlight_ = true;
+    pendingPageFetch_ = false;
     state_.errorMessage.clear();
-    PagedQuery<> query; query.before = before_; query.after = after_; query.limit = state_.pageLimit;
-    pageWatcher_.setFuture(runDataServiceCall([scope = state_.scope, query]() -> JobPageResult {
+    PagedQuery<> query; query.before = before_; query.after = after_; query.limit = fetchPageLimit_;
+    pageWatcher_.setFuture(runDataServiceCall([scope = fetchScope_, query]() -> JobPageResult {
         auto pageResult = DataService::FetchJobsPageAsync(scope, query.before, query.after, query.limit).get();
         if (!pageResult.ok) return JobPageResult::Err(pageResult.error);
         JobPageBundle bundle{};
@@ -354,7 +407,7 @@ void JobsController::setBusy(Operation, bool)
 
 bool JobsController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
+    return pageActive_ && state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !state_.actionsBusy;
 }
 
 bool JobsController::anyWorkInFlight() const
@@ -375,4 +428,66 @@ void JobsController::emitStateChanged()
     state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
     state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || anyWorkInFlight();
     emit stateChanged();
+}
+
+void JobsController::loadSettings()
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    const QVariant programKind = settings.value(kProgramKindKey);
+    state_.scope.program_kind = programKind.isValid() ? std::optional<int>(programKind.toInt()) : std::nullopt;
+    const QString stateFilter = settings.value(kStateFilterKey).toString().trimmed();
+    if (!stateFilter.isEmpty()) {
+        state_.scope.states = { stateFilter.toStdString() };
+    }
+    const QVariant jobSetId = settings.value(kJobSetIdKey);
+    state_.scope.job_set_id = jobSetId.isValid() ? std::optional<qint64>(jobSetId.toLongLong()) : std::nullopt;
+    const QString tagKey = settings.value(kTagKey).toString().trimmed();
+    if (!tagKey.isEmpty()) {
+        state_.scope.tag_key = tagKey.toStdString();
+    }
+    state_.pageLimit = (std::max)(1, settings.value(kPageLimitKey, state_.pageLimit).toInt());
+    state_.autoRefresh = settings.value(kAutoRefreshKey, state_.autoRefresh).toBool();
+    state_.refreshSeconds = (std::max)(1, settings.value(kRefreshSecondsKey, state_.refreshSeconds).toInt());
+
+    settings.endGroup();
+}
+
+void JobsController::persistSettings() const
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    if (state_.scope.program_kind.has_value()) {
+        settings.setValue(kProgramKindKey, *state_.scope.program_kind);
+    } else {
+        settings.remove(kProgramKindKey);
+    }
+    if (!state_.scope.states.empty()) {
+        settings.setValue(kStateFilterKey, QString::fromStdString(*state_.scope.states.begin()));
+    } else {
+        settings.remove(kStateFilterKey);
+    }
+    if (state_.scope.job_set_id.has_value()) {
+        settings.setValue(kJobSetIdKey, *state_.scope.job_set_id);
+    } else {
+        settings.remove(kJobSetIdKey);
+    }
+    if (state_.scope.tag_key.has_value() && !state_.scope.tag_key->empty()) {
+        settings.setValue(kTagKey, QString::fromStdString(*state_.scope.tag_key));
+    } else {
+        settings.remove(kTagKey);
+    }
+    settings.setValue(kPageLimitKey, state_.pageLimit);
+    settings.setValue(kAutoRefreshKey, state_.autoRefresh);
+    settings.setValue(kRefreshSecondsKey, state_.refreshSeconds);
+
+    settings.endGroup();
+}
+
+void JobsController::syncFetchStateFromView()
+{
+    fetchScope_ = state_.scope;
+    fetchPageLimit_ = state_.pageLimit;
 }

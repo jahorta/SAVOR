@@ -1,6 +1,7 @@
 #include "SeedProbeController.h"
 
 #include <QtCore/QTimer>
+#include <QtCore/QSettings>
 
 #include "Core/Input/InputPlanFmt.h"
 #include "DB/DBCore/ObjectStore.h"
@@ -24,6 +25,13 @@ using simcore::db::SeedProbeRepo;
 using simcore::db::SeedProbeRow;
 
 namespace {
+constexpr auto kSettingsGroup = "SeedProbePane";
+constexpr auto kSearchKey = "search";
+constexpr auto kOnlyDoneKey = "only_done";
+constexpr auto kAutoRefreshKey = "auto_refresh";
+constexpr auto kRefreshSecondsKey = "refresh_seconds";
+constexpr auto kPageLimitKey = "page_limit";
+
 QString describeException(const char* prefix)
 {
     try {
@@ -184,7 +192,12 @@ QString resolveSavestateLabel(qint64 probeId, qint64 savestateId)
 SeedProbeController::SeedProbeController(QObject* parent)
     : QObject(parent)
 {
+    loadSettings();
+    syncFetchStateFromView();
+
     connect(&pageWatcher_, &QFutureWatcher<ListBundleResult>::finished, this, [this]() {
+        const bool shouldRefetch = pendingPageFetch_;
+        pendingPageFetch_ = false;
         try {
             const auto result = pageWatcher_.result();
             pageInFlight_ = false;
@@ -222,6 +235,9 @@ SeedProbeController::SeedProbeController(QObject* parent)
             state_.errorMessage = describeException("Seed probes failed");
         }
         emitStateChanged();
+        if (shouldRefetch) {
+            kickPageFetch();
+        }
     });
 
     connect(&runningRefreshWatcher_, &QFutureWatcher<RunningProbeUpdateResult>::finished, this, [this]() {
@@ -311,7 +327,9 @@ SeedProbeController::SeedProbeController(QObject* parent)
             kickRunningRefresh(runningProbeIds);
         }
     });
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
 }
 
 const SeedProbeController::ViewState& SeedProbeController::viewState() const
@@ -321,11 +339,31 @@ const SeedProbeController::ViewState& SeedProbeController::viewState() const
 
 void SeedProbeController::loadInitial()
 {
-    if (initialLoadStarted_) {
+    if (initialLoadStarted_ || !pageActive_) {
         return;
     }
     initialLoadStarted_ = true;
     kickPageFetch();
+}
+
+void SeedProbeController::setPageActive(bool active)
+{
+    if (pageActive_ == active) {
+        return;
+    }
+
+    pageActive_ = active;
+    if (!pageActive_) {
+        if (refreshTimer_) {
+            refreshTimer_->stop();
+        }
+        return;
+    }
+
+    if (refreshTimer_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
+    loadInitial();
 }
 
 void SeedProbeController::setSearch(const QString& search)
@@ -341,13 +379,17 @@ void SeedProbeController::setOnlyDone(bool onlyDone)
 void SeedProbeController::setAutoRefreshEnabled(bool enabled)
 {
     state_.autoRefresh = enabled;
+    persistSettings();
     emitStateChanged();
 }
 
 void SeedProbeController::setRefreshSeconds(int seconds)
 {
     state_.refreshSeconds = seconds;
-    refreshTimer_->start(seconds * 1000);
+    persistSettings();
+    if (pageActive_) {
+        refreshTimer_->start(seconds * 1000);
+    }
     emitStateChanged();
 }
 
@@ -367,6 +409,8 @@ void SeedProbeController::applyFilters(int pageLimit)
     state_.triggerGrid = {};
     state_.legendDeltas.clear();
     state_.uniqueRows.clear();
+    syncFetchStateFromView();
+    persistSettings();
     kickPageFetch();
 }
 
@@ -390,7 +434,11 @@ void SeedProbeController::resetFilters()
     state_.triggerGrid = {};
     state_.legendDeltas.clear();
     state_.uniqueRows.clear();
-    refreshTimer_->start(state_.refreshSeconds * 1000);
+    syncFetchStateFromView();
+    persistSettings();
+    if (pageActive_) {
+        refreshTimer_->start(state_.refreshSeconds * 1000);
+    }
     kickPageFetch();
     emitStateChanged();
 }
@@ -435,9 +483,11 @@ void SeedProbeController::selectProbe(qint64 probeId)
 void SeedProbeController::kickPageFetch()
 {
     if (pageInFlight_) {
+        pendingPageFetch_ = true;
         return;
     }
 
+    pendingPageFetch_ = false;
     pageInFlight_ = true;
     state_.loadingList = true;
     state_.errorMessage.clear();
@@ -445,9 +495,9 @@ void SeedProbeController::kickPageFetch()
     PagedQuery<> query;
     query.before = before_;
     query.after = after_;
-    query.limit = state_.pageLimit;
+    query.limit = fetchPageLimit_;
 
-    pageWatcher_.setFuture(runDataServiceCall([search = state_.search, onlyDone = state_.onlyDone, query]() -> ListBundleResult {
+    pageWatcher_.setFuture(runDataServiceCall([search = fetchSearch_, onlyDone = fetchOnlyDone_, query]() -> ListBundleResult {
         auto pageResult = DataService::FetchSeedProbesPage(query, search.toStdString(), onlyDone).get();
         if (!pageResult.ok) {
             return ListBundleResult::Err(pageResult.error);
@@ -524,7 +574,7 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
 
 bool SeedProbeController::canAutoRefresh() const
 {
-    return state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_ && !runningRefreshInFlight_;
+    return pageActive_ && state_.autoRefresh && !before_.has_value() && !after_.has_value() && !pageInFlight_ && !detailInFlight_ && !runningRefreshInFlight_;
 }
 
 
@@ -552,4 +602,37 @@ void SeedProbeController::kickRunningRefresh(const QVector<qint64>& probeIds)
 void SeedProbeController::emitStateChanged()
 {
     emit stateChanged();
+}
+
+void SeedProbeController::loadSettings()
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+
+    state_.search = settings.value(kSearchKey, QString()).toString();
+    state_.onlyDone = settings.value(kOnlyDoneKey, state_.onlyDone).toBool();
+    state_.autoRefresh = settings.value(kAutoRefreshKey, state_.autoRefresh).toBool();
+    state_.refreshSeconds = (std::max)(1, settings.value(kRefreshSecondsKey, state_.refreshSeconds).toInt());
+    state_.pageLimit = (std::max)(1, settings.value(kPageLimitKey, state_.pageLimit).toInt());
+
+    settings.endGroup();
+}
+
+void SeedProbeController::persistSettings() const
+{
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kSearchKey, state_.search);
+    settings.setValue(kOnlyDoneKey, state_.onlyDone);
+    settings.setValue(kAutoRefreshKey, state_.autoRefresh);
+    settings.setValue(kRefreshSecondsKey, state_.refreshSeconds);
+    settings.setValue(kPageLimitKey, state_.pageLimit);
+    settings.endGroup();
+}
+
+void SeedProbeController::syncFetchStateFromView()
+{
+    fetchSearch_ = state_.search;
+    fetchOnlyDone_ = state_.onlyDone;
+    fetchPageLimit_ = state_.pageLimit;
 }

@@ -267,6 +267,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\ProgramDB\IProgramDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\SeedProbeDBCodec.h" />
     <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h" />
+    <ClInclude Include="DB\ProgramDB\TasFrameDetectorDBCodec.h" />
     <ClInclude Include="DB\ProgramKindsRepo.h" />
     <ClInclude Include="DB\Querying\DataService.h" />
     <ClInclude Include="DB\Querying\IdRepoListDTO.h" />
@@ -285,6 +286,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h" />
     <ClInclude Include="DB\Scheduling\TriggersRepo.h" />
     <ClInclude Include="DB\SeedProbeRepo.h" />
+    <ClInclude Include="DB\TagRepo.h" />
+    <ClInclude Include="DB\TasFrameDetectRepo.h" />
     <ClInclude Include="DB\TasMovieRepo.h" />
     <ClInclude Include="DB\TurnActionPresetRepo.h" />
     <ClInclude Include="DB\UiConfigRowRepo.h" />
@@ -304,6 +307,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerScript.h" />
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMoviePayload.h" />
     <ClInclude Include="Phases\Programs\PlayTasMovie\TasMovieScript.h" />
+    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.h" />
+    <ClInclude Include="Phases\Programs\TasFrameDetector\TasFrameDetectorScript.h" />
     <ClInclude Include="Phases\Programs\ProgramRegistry.h" />
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbePayload.h" />
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeScript.h" />
@@ -327,11 +332,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Script\KeyRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
+    <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h" />
     <ClInclude Include="Runner\Script\PhaseScriptVM.h" />
     <ClInclude Include="Runner\Script\PSContext.h" />
     <ClInclude Include="Runner\Script\PSContextCodec.h" />
     <ClInclude Include="Runner\Script\ScriptProgress.h" />
+    <ClInclude Include="Tas\DtmAnnotationFile.h" />
     <ClInclude Include="Tas\DtmFile.h" />
     <ClInclude Include="Utils\DeltaColorizer.h" />
     <ClInclude Include="Utils\EnsureSys.h" />
@@ -393,6 +400,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\ProgramDB\ExplorerRunDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp" />
+    <ClCompile Include="DB\ProgramDB\TasFrameDetectorDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\SeedProbeDBCodec.cpp" />
     <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp" />
     <ClCompile Include="DB\ProgramKindsRepo.cpp" />
@@ -406,6 +414,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp" />
     <ClCompile Include="DB\Scheduling\TriggersRepo.cpp" />
     <ClCompile Include="DB\SeedProbeRepo.cpp" />
+    <ClCompile Include="DB\TagRepo.cpp" />
+    <ClCompile Include="DB\TasFrameDetectRepo.cpp" />
     <ClCompile Include="DB\TasMovieRepo.cpp" />
     <ClCompile Include="DB\TurnActionPresetRepo.cpp" />
     <ClCompile Include="DB\UiConfigRowRepo.cpp" />
@@ -418,6 +428,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
+    <ClCompile Include="Phases\Programs\TasFrameDetector\TasFrameDetectorPayload.cpp" />
     <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
@@ -430,6 +441,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
+    <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />
     <ClCompile Include="Utils\Log.cpp" />
@@ -729,6 +741,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <None Include="DB\migration\0033.sql" />
     <None Include="DB\migration\0034.sql" />
     <None Include="DB\migration\0035.sql" />
+    <None Include="DB\migration\0036.sql" />
+    <None Include="DB\migration\0037.sql" />
+    <None Include="DB\migration\0038.sql" />
+    <None Include="DB\migration\0039.sql" />
     <None Include="DB\update_generated_migrations_command.txt" />
     <None Include="Interesting SOA Addresses.md">
       <SubType>

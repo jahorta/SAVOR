@@ -12,6 +12,7 @@
 #include "../TasMovieRepo.h"
 #include "../SavestateRepo.h"
 #include "../DeltaSeedRepo.h"
+#include "../TagRepo.h"
 #include "../../Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../Phases/RNGSeedDeltaMap.h"
 #include "../../Runner/IPC/Wire.h"
@@ -22,6 +23,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <unordered_set>
 #include "../Querying/DataService.h"
 
 using simcore::db::DbResult;
@@ -32,6 +34,7 @@ using simcore::db::TriggersRepo;
 using simcore::db::JobEventsRepo;
 using simcore::db::SeedProbeRepo;
 using simcore::db::SeedProbeRow;
+using simcore::db::TagRepo;
 using simcore::db::codec::seedprobe::GridIni;
 using simcore::db::codec::seedprobe::UniqueIni;
 using simcore::db::codec::seedprobe::BlueprintIni;
@@ -49,6 +52,17 @@ static inline std::string fingerprint_for(int64_t probe_id, const std::string& f
     oss << "PK=" << PK << ";PV=" << PV << ";probe_id=" << probe_id
         << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
     return oss.str();
+}
+
+static DbResult<void> copy_job_set_tags(int64_t from_job_set_id, int64_t to_job_set_id) {
+    auto tags = TagRepo::ListEntityTags("job_set", from_job_set_id);
+    if (!tags.ok) return DbResult<void>::Err(tags.error);
+
+    for (const auto& tag : tags.value) {
+        auto attach = TagRepo::AttachTagToEntity("job_set", to_job_set_id, tag.tag_key, "auto-queue");
+        if (!attach.ok) return DbResult<void>::Err(attach.error);
+    }
+    return DbResult<void>::Ok();
 }
 
 static simcore::db::DbResult<int64_t> encode_neutral(int64_t job_set_id, const std::string& blueprint_ini)
@@ -166,6 +180,13 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     auto dr = simcore::db::DeltaSeedRepo::ListGridForProbe(bp_ini.probe_id);
     if (!dr.ok) return simcore::db::DbResult<int64_t>::Err(dr.error);
 
+    auto all_deltas = simcore::db::DeltaSeedRepo::ListForProbe(bp_ini.probe_id);
+    if (!all_deltas.ok) return simcore::db::DbResult<int64_t>::Err(all_deltas.error);
+
+    std::unordered_set<int32_t> known_deltas;
+    known_deltas.reserve(all_deltas.value.size());
+    for (const auto& ds : all_deltas.value) known_deltas.insert(ds.seed_delta);
+
     simcore::RandSeedProbeResult result{.base_seed=(uint32_t)pr.value.neutral_seed};
     for (auto ds : dr.value) {
         auto family = (simcore::SeedFamily)ds.input.get_family();
@@ -200,6 +221,9 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     
     int64_t enqueued = 0;
     for (auto sample : samples.samples) {
+        if (known_deltas.count(sample.target_delta)) {
+            continue;
+        }
 
         int32_t expected_delta = sample.target_delta;
         auto ds = JobSetsRepo::CreateChild(job_set_id,
@@ -245,6 +269,7 @@ static simcore::db::DbResult<int64_t> encode_unique(int64_t job_set_id, const st
     if (bp_ini.auto_schedule_battle_run) {
         IniKV cond;
         cond.add("type", "ALL_FINISHED");
+        cond.add("require_child_job_set_triggers_resolved", std::to_string(1));
 
         IniDoc bini = IniDoc::parse(blueprint_ini);
         auto brbp = simcore::db::codec::battle::run::BlueprintIni::from_section(bini);
@@ -430,8 +455,24 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
     }
 
     if (bp.cur_phase == SeedProbePhase::Unique) {
+        const int32_t expected_delta = job_ini.expected_delta;
+        const bool matched_expected = (expected_delta == seed_delta);
 
-        const uint32_t expected_delta = job_ini.expected_delta;
+        auto existing = simcore::db::DeltaSeedRepo::ExistsForProbeSeedDelta(probe_id, seed_delta);
+        if (!existing.ok) return simcore::db::DbResult<void>::Err(existing.error);
+
+        if (existing.value) {
+            if (matched_expected) {
+                auto others = JobsRepo::GetQueuedByJobSet(jr.value.job_set_id);
+                for (auto other : others.value)
+                    JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            }
+
+            JobsRepo::SetState(job_id, "SUCCEEDED_DUPLICATE");
+            JobEventsRepo::Append(job_id, "RESULTS", "dedupe=known_delta delta=" + std::to_string(seed_delta));
+            return simcore::db::DbResult<void>::Ok();
+        }
+
         const std::string expected_tag = job_ini.unique_tag;
         const int64_t child_js = jr.value.job_set_id;
         auto parent = JobSetsRepo::GetParent(child_js);
@@ -456,16 +497,18 @@ simcore::db::DbResult<void> SeedProbeDBCodec::encode_results_into_db(int64_t job
             auto ins = simcore::db::DeltaSeedRepo::InsertOne(probe_id, row, /*is_grid=*/false, /*is_unique=*/true);
             if (!ins.ok) return simcore::db::DbResult<void>::Err(ins.error);
 
-            if (expected_delta == seed_delta) {
+            if (matched_expected) {
                 auto others = JobsRepo::GetQueuedByJobSet(child_js);
                 for (auto other : others.value)
                     JobsRepo::SetState(other.job_id, "SUPERSEDED");
             }
         }
         else {
-            auto others = JobsRepo::GetQueuedByJobSet(child_js);
-            for (auto other : others.value)
-                JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            if (matched_expected) {
+                auto others = JobsRepo::GetQueuedByJobSet(child_js);
+                for (auto other : others.value)
+                    JobsRepo::SetState(other.job_id, "SUPERSEDED");
+            }
         }
 
         JobsRepo::SetState(job_id, is_winner ? "SUCCEEDED_WINNER" : "SUCCEEDED_DUPLICATE");
@@ -582,7 +625,7 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
     if (ctx.prev_program_kind == (int)simcore::PK_TasMovie) {
 
-        if (ctx.scope != "job") return DbResult<void>::Err({DbErrorKind::InvalidState, 0, "scope of trigger from TasMovie to SeedProbe should be a single job"});
+        if (strcmp(ctx.scope, "job") != 0) return DbResult<void>::Err({ DbErrorKind::InvalidState, 0, "scope of trigger from TasMovie to SeedProbe should be a single job" });
 
         auto jb = JobsRepo::Get(ctx.prev_job_id);
         if (!jb.ok) return DbResult<void>::Err(jb.error);
@@ -603,10 +646,19 @@ DbResult<void> SeedProbeDBCodec::phase_setup_on_trigger(const TriggerCtx& ctx, c
 
         bp.probe_id = sp.value;
 
-        auto js = JobSetsRepo::Create("seed probe", simcore::PK_SeedProbe, std::nullopt, "SeedProbe", bp.probe_id, "phase=Neutral", 1);
+        std::string purpose = std::format("SeedProbe TAS={}", tm.value.id);
+        std::string desc = std::format("Seed Probe auto-queued from TAS({}) with base file ({})", tm.value.id, tm.value.base_file_id);
+
+        auto js = JobSetsRepo::Create(purpose, simcore::PK_SeedProbe, std::nullopt, desc, bp.probe_id, "phase=Neutral", 1);
         if (!js.ok) return DbResult<void>::Err(js.error);
+        auto prev_root = JobSetsRepo::GetRootJobSetId(ctx.prev_job_set_id);
+        if (!prev_root.ok) return DbResult<void>::Err(prev_root.error);
+        auto copy_tags = copy_job_set_tags(prev_root.value, js.value);
+        if (!copy_tags.ok) return DbResult<void>::Err(copy_tags.error);
 
         bp.cur_phase = SeedProbePhase::Neutral;
+        bp.savestate_id = tm.value.output_savestate_id.value();
+        bp.root_jobset_id = js.value;
         bp.set_section(ini);
         auto e = encode_job_into_db(js.value, ini.to_string_sorted());
         if (!e.ok) return DbResult<void>::Err(e.error);

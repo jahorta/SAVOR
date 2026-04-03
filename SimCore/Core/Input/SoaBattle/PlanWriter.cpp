@@ -5,8 +5,11 @@ using simcore::InputPlan;
 
 namespace soa::battle::actions {
 
-    static inline void push_btn(InputPlan& p, uint16_t btn) {
-        GCInputFrame f{}; f.buttons = btn; p.push_back(f);
+    static inline void push_btn(InputPlan& p, uint16_t btn, int duration = 1) {
+        GCInputFrame f{}; f.buttons = btn; 
+        for (int i = 0; i < duration; i++) {
+            p.push_back(f);
+        }
         p.push_back(GCInputFrame{}); // enforce neutral between identical presses
     }
 
@@ -59,6 +62,7 @@ namespace soa::battle::actions {
         if (dst < 0) { err = MaterializeErr::NoValidTarget; return false; }
         navTargetTo(p, cur, dst);
         tapA(p); // confirm target; game returns to main menu highlight (assume 3)
+        neutral(p, 1);
         cmd_index_ = 3;
         return true;
     }
@@ -87,12 +91,15 @@ namespace soa::battle::actions {
 
     bool PlanWriter::stop_zoom(InputPlan& p) {
         neutral(p, 1);
-        tapA(p); 
+        tapA(p);
+        neutral(p, 2);
         return true;
     }
 
     bool PlanWriter::stop_rotate(InputPlan& p) {
+        neutral(p, 1);
         tapA(p);
+        neutral(p, 1);
         return true;
     }
 

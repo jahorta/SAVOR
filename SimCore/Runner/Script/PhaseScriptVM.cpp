@@ -17,6 +17,9 @@
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "../Breakpoints/BPRegistry.h"
 #include "ScriptProgress.h"
+#include "../../Utils/IniDoc.h"
+#include <thread>
+#include <sstream>
 
 namespace {
     inline bool read_via_addrprog(simcore::DolphinWrapper& host,
@@ -61,9 +64,78 @@ namespace {
 }
 
 namespace simcore {
+    namespace {
+        std::string ps_cmp_to_string(PSCmp cmp) {
+            switch (cmp) {
+            case PSCmp::EQ: return "EQ";
+            case PSCmp::NE: return "NE";
+            case PSCmp::LT: return "LT";
+            case PSCmp::LE: return "LE";
+            case PSCmp::GT: return "GT";
+            case PSCmp::GE: return "GE";
+            default: return "?";
+            }
+        }
+
+        std::string key_desc(simcore::keys::KeyId key) {
+            const std::string_view name = simcore::keys::name_for_id(key);
+            if (!name.empty()) return std::string(name);
+            return std::to_string(static_cast<uint32_t>(key));
+        }
+    }
 
     PhaseScriptVM::PhaseScriptVM(simcore::DolphinWrapper& host, const BreakpointMap& bpmap)
         : host_(host), bpmap_(bpmap) {
+    }
+
+    void PhaseScriptVM::SetVisualDebugMode(bool enabled)
+    {
+        visual_debug_mode_ = enabled;
+        if (!enabled) {
+            visual_debug_paused_.store(false, std::memory_order_release);
+            visual_debug_vm_step_budget_.store(0, std::memory_order_release);
+        }
+    }
+
+    void PhaseScriptVM::SetVisualDebugPaused(bool paused)
+    {
+        visual_debug_paused_.store(paused, std::memory_order_release);
+        if (!paused) {
+            visual_debug_vm_step_budget_.store(0, std::memory_order_release);
+        }
+    }
+
+    void PhaseScriptVM::StepVisualDebugVmOnce()
+    {
+        visual_debug_paused_.store(true, std::memory_order_release);
+        visual_debug_vm_step_budget_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    bool PhaseScriptVM::IsVisualDebugVmPaused() const
+    {
+        return visual_debug_paused_.load(std::memory_order_acquire);
+    }
+
+    bool PhaseScriptVM::IsRunUntilBpActive() const
+    {
+        return run_until_bp_active_.load(std::memory_order_acquire);
+    }
+
+    void PhaseScriptVM::wait_for_visual_debug_gate()
+    {
+        if (!visual_debug_mode_) return;
+        for (;;) {
+            if (!visual_debug_paused_.load(std::memory_order_acquire)) {
+                return;
+            }
+            uint32_t budget = visual_debug_vm_step_budget_.load(std::memory_order_acquire);
+            if (budget > 0) {
+                if (visual_debug_vm_step_budget_.compare_exchange_strong(budget, budget - 1, std::memory_order_acq_rel)) {
+                    return;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     bool PhaseScriptVM::save_snapshot() {
@@ -99,7 +171,7 @@ namespace simcore {
         default: derived_.reset(); break;
         }
 
-        SCLOGD("[VM] init begin sav=%s timeout=%u", init.savestate_path.c_str(), init.default_timeout_ms);
+        SCLOGDX(SC_TAGS("vm", "init"), "[VM] init begin sav=%s timeout=%u", init.savestate_path.c_str(), init.default_timeout_ms);
 
         // Disarm any previously armed set (enables program swapping)
         if (armed_ && !armed_pcs_.empty()) {
@@ -117,12 +189,12 @@ namespace simcore {
         // Update canonical BP keys and arm once
         canonical_bp_keys_ = prog_.canonical_bp_keys;
 
-        SCLOGD("[VM] attach bp count=%zu", program.canonical_bp_keys.size());
+        SCLOGDX(SC_TAGS("vm", "breakpoint"), "[VM] attach bp count=%zu", program.canonical_bp_keys.size());
         arm_bps_once();
 
         // Capture a snapshot to use as the per-job baseline
         const bool snapshot_ok = save_snapshot();
-        if (snapshot_ok) SCLOGD("[VM] init ok");
+        if (snapshot_ok) SCLOGDX(SC_TAGS("vm", "init"), "[VM] init ok");
         return snapshot_ok;
     }
 
@@ -247,15 +319,21 @@ namespace simcore {
         const uint32_t count = *(const uint32_t*)(counts);
         simcore::InputPlan applied_plan{}; applied_plan.reserve(count);
         std::vector<uint32_t> vi_durations{}; vi_durations.reserve(count);
+        uint32_t rand{ 0 };
+        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG before inputs %X", rand);
         for (idx = 0; idx < count; idx++) {
+            wait_for_visual_debug_gate();
             GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
             const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-            SCLOGD("[vm] setting input [%d]: %s", idx, DescribeFrame(f).c_str());
+            SCLOGDX(SC_TAGS("VM","input"), "setting input [%d]: %s", idx, DescribeFrameCompact(f).c_str());
             host_.setInput(f);
             host_.stepOneFrameBlocking();
             const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
             vi_durations.push_back((vi_after >= vi_before) ? (vi_after - vi_before) : 0u);
         }
+        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG after inputs %X", rand);
         host_.setEnableAllBreakpoints(true);
         const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         uint32_t turn_number = 0;
@@ -271,6 +349,7 @@ namespace simcore {
     }
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         using simcore::RunToBpOutcome;
+        run_until_bp_active_.store(true, std::memory_order_release);
         uint32_t timeout_ms = init_.default_timeout_ms; ctx.get<uint32_t>(keys::core::RUN_MS, timeout_ms);
         uint32_t vi_stall_ms = 0; ctx.get<uint32_t>(keys::core::VI_STALL_MS, vi_stall_ms);
         const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
@@ -279,6 +358,7 @@ namespace simcore {
         auto t0 = std::chrono::steady_clock::now();
         host_.disableThrottle();
         auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
+        run_until_bp_active_.store(false, std::memory_order_release);
         host_.enableThrottle();
         auto t1 = std::chrono::steady_clock::now();
         const uint32_t elapsed_ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -302,6 +382,36 @@ namespace simcore {
         }
         ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
         if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
+    }
+    void PhaseScriptVM::op_record_tas_input_sample(PSContext& ctx) {
+        uint32_t sample_count = 0;
+        ctx.get<uint32_t>(keys::tasframedetector::SAMPLE_COUNT, sample_count);
+
+        const uint32_t vi = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        const uint64_t input_count = host_.getCurrentMovieInputCount();
+        const uint32_t movie_ended = host_.isMoviePlaybackEnded() ? 1u : 0u;
+
+        std::string stream_ini;
+        (void)ctx.get<std::string>(keys::tasframedetector::STREAM_INI, stream_ini);
+        IniDoc doc = stream_ini.empty() ? IniDoc{} : IniDoc::parse(stream_ini);
+        doc.ensure_section("FrameSamples");
+        const std::string idx = std::to_string(sample_count);
+        doc.set("FrameSamples", "frame." + idx, idx);
+        doc.set("FrameSamples", "vi." + idx, std::to_string(vi));
+        doc.set("FrameSamples", "input_count." + idx, std::to_string(input_count));
+        doc.set("FrameSamples", "movie_ended." + idx, std::to_string(movie_ended));
+        doc.set("FrameSamples", "count", std::to_string(sample_count + 1));
+
+        ctx[keys::tasframedetector::STREAM_INI] = doc.to_string_sorted();
+        ctx[keys::tasframedetector::SAMPLE_COUNT] = sample_count + 1;
+        ctx[keys::tasframedetector::MOVIE_ENDED] = movie_ended;
+        ctx[keys::tasframedetector::INPUT_COUNT] = static_cast<uint32_t>(input_count & 0xFFFFFFFFu);
+
+        SCLOGT("[TasInputStreamDetector] sample=%u vi=%u input_count=%llu movie_ended=%u",
+            sample_count,
+            vi,
+            static_cast<unsigned long long>(input_count),
+            movie_ended);
     }
     void PhaseScriptVM::op_get_battle_context(PSResult& result, PSContext& ctx) const {
         std::string mem1;
@@ -424,8 +534,9 @@ namespace simcore {
         }
 
         for (size_t vm_pc = 0; vm_pc < prog_.ops.size(); ++vm_pc) {
+            wait_for_visual_debug_gate();
             const auto& op = prog_.ops[vm_pc];
-            SCLOGT("[VM] running op: %s", get_psop_name(op.code).c_str());
+            SCLOGT("[VM] running op: %s", get_psop_desc(op).c_str());
 
             switch (op.code) {
             case PSOpCode::ARM_PHASE_BPS_ONCE: if (!op_arm_phase_bps_once()) return R; break;
@@ -444,6 +555,7 @@ namespace simcore {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::RECORD_TAS_INPUT_SAMPLE: op_record_tas_input_sample(ctx); break;
             case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
             case PSOpCode::READ_U16: if (!op_read_u16(op, R, ctx)) return R; break;
             case PSOpCode::READ_U32: if (!op_read_u32(op, R, ctx)) return R; break;
@@ -456,6 +568,7 @@ namespace simcore {
             case PSOpCode::SET_TIMEOUT: op_set_timeout(op, ctx); break;
             case PSOpCode::SET_TIMEOUT_FROM: op_set_timeout_from(op, ctx); break;
             case PSOpCode::MOVIE_PLAY_FROM: if (!op_movie_play_from(op, R, ctx)) return R; break;
+            case PSOpCode::MOVIE_STOP: host_.endMoviePlaybackBlocking(); break;
             case PSOpCode::SAVE_SAVESTATE_FROM: if (!op_save_savestate_from(op, R, ctx)) return R; break;
             case PSOpCode::REQUIRE_DISC_GAMEID_FROM: if (!op_require_disc_gameid_from(op, R, ctx)) return R; break;
             case PSOpCode::ARM_BPS_FROM_PRED_TABLE: op_arm_bps_from_pred_table(ctx); break;
@@ -504,9 +617,66 @@ namespace simcore {
         case PSOpCode::SET_U32: return { "Set a u32 Context Value" };
         case PSOpCode::ADD_U32: return { "Add to a u32 Context Value" };
         case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES : return { "Apply Inputplan Frame from Context" };
+        case PSOpCode::RECORD_TAS_INPUT_SAMPLE: return { "Record TAS Input Sample" };
         default:
             return { "Unknown Code" };
         }
+    }
+
+    std::string get_psop_desc(const PSOp& op)
+    {
+        std::ostringstream args;
+        switch (op.code) {
+        case PSOpCode::READ_U8:
+        case PSOpCode::READ_U16:
+        case PSOpCode::READ_U32:
+        case PSOpCode::READ_F32:
+        case PSOpCode::READ_F64:
+            args << "addr=" << op.rd.addr << ", dst=" << key_desc(op.rd.dst);
+            break;
+        case PSOpCode::APPLY_INPUT_FROM:
+        case PSOpCode::SET_TIMEOUT_FROM:
+        case PSOpCode::MOVIE_PLAY_FROM:
+        case PSOpCode::SAVE_SAVESTATE_FROM:
+        case PSOpCode::REQUIRE_DISC_GAMEID_FROM:
+        case PSOpCode::GC_SLOT_A_SET_FROM:
+        case PSOpCode::EMIT_RESULT:
+        case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES:
+            args << "key=" << key_desc(op.key.id);
+            break;
+        case PSOpCode::STEP_FRAMES:
+            args << "n=" << op.step.n << ", disable_breakpoints=" << op.imm.v;
+            break;
+        case PSOpCode::SET_TIMEOUT:
+            args << "ms=" << op.imm.v;
+            break;
+        case PSOpCode::LABEL:
+            args << "name=" << op.label.name;
+            break;
+        case PSOpCode::GOTO:
+            args << "name=" << op.jmp.name;
+            break;
+        case PSOpCode::GOTO_IF:
+            args << "key=" << key_desc(op.jcc.key)
+                 << ", cmp=" << ps_cmp_to_string(op.jcc.cmp)
+                 << ", imm=" << op.jcc.imm
+                 << ", name=" << op.jcc.name;
+            break;
+        case PSOpCode::GOTO_IF_KEYS:
+            args << "left=" << key_desc(op.jcc2.left)
+                 << ", cmp=" << ps_cmp_to_string(op.jcc2.cmp)
+                 << ", right=" << key_desc(op.jcc2.right)
+                 << ", name=" << op.jcc2.name;
+            break;
+        case PSOpCode::RETURN_RESULT:
+        case PSOpCode::SET_U32:
+        case PSOpCode::ADD_U32:
+            args << "key=" << key_desc(op.keyimm.key) << ", imm=" << op.keyimm.imm;
+            break;
+        default:
+            break;
+        }
+        return get_psop_name(op.code) + ": [" + args.str() + "]";
     }
 
 } // namespace simcore

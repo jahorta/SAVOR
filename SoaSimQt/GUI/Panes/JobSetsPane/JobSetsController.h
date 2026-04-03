@@ -41,7 +41,8 @@ public:
     const ViewState& viewState() const;
 
     void loadInitial();
-    void applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, int pageLimit);
+    void setPageActive(bool active);
+    void applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, const std::optional<QString>& tagKey, int pageLimit);
     void resetFilters();
     void setAutoRefreshEnabled(bool enabled);
     void setRefreshSeconds(int seconds);
@@ -77,14 +78,20 @@ private:
     bool canAutoRefresh() const;
     bool anyWorkInFlight() const;
     void emitStateChanged();
+    void loadSettings();
+    void persistSettings() const;
+    void syncFetchStateFromView();
 
     ViewState state_;
+    JobSetsListScope fetchScope_{};
+    int fetchPageLimit_ = 100;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
     qint64 pendingActionJobSetId_ = 0;
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;
+    bool pendingPageFetch_ = false;
     bool boostInFlight_ = false;
     bool cancelInFlight_ = false;
     bool deleteInFlight_ = false;
@@ -94,4 +101,5 @@ private:
     QFutureWatcher<CancelResult> cancelWatcher_;
     QFutureWatcher<DeleteResult> deleteWatcher_;
     QTimer* refreshTimer_ = nullptr;
+    bool pageActive_ = false;
 };

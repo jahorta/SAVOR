@@ -1,18 +1,27 @@
 #include "GUI/Widgets/StatusBarWidget.h"
 
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "GUI/Widgets/ToastHistoryDialog.h"
 
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QStandardPaths>
+#include <QtCore/QTextStream>
 #include <QtCore/QTimer>
+#include <QtGui/QResizeEvent>
 #include <QtWidgets/QHBoxLayout>
 #include <utility>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QStyle>
 
 namespace {
 constexpr int kDefaultToastTtlMs = 4000;
 constexpr int kValidationToastTtlMs = 5000;
-constexpr int kDuplicateWindowMs = 1500;
-constexpr int kMaxStoredToasts = 6;
+constexpr int kMinValidToastHostWidthPx = 80;
+constexpr int kFallbackToastWidthFloorPx = 240;
+constexpr int kToastHistoryMemoryCap = 1000;
 
 QString toastVariant(StatusToast::Severity severity)
 {
@@ -66,6 +75,7 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     toastExpiryTimer_->setSingleShot(true);
     connect(toastExpiryTimer_, &QTimer::timeout, this, [this]() {
         pruneExpiredToasts();
+        reconcileVisibleToastsWithWidth();
         rebuildToasts();
     });
 
@@ -73,30 +83,48 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     layout->setContentsMargins(12, 6, 12, 6);
     layout->setSpacing(10);
 
+    auto* leftHost = new QWidget(this);
+    leftHost->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    auto* leftLayout = new QHBoxLayout(leftHost);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(10);
+
+    historyButton_ = new QPushButton(QStringLiteral("H"), this);
+    historyButton_->setObjectName("statusHistoryButton");
+    historyButton_->setFixedWidth(24);
+    historyButton_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    historyButton_->setToolTip(QStringLiteral("Open toast history"));
+    connect(historyButton_, &QPushButton::clicked, this, [this]() { showToastHistoryDialog(); });
+    leftLayout->addWidget(historyButton_);
+    leftLayout->addWidget(createSeparator());
+
     connectionBadge_ = createBadge(QString(), QStringLiteral("connected"));
-    layout->addWidget(connectionBadge_);
-    layout->addWidget(createSeparator());
+    leftLayout->addWidget(connectionBadge_);
+    leftLayout->addWidget(createSeparator());
 
     envLabel_ = new QLabel(this);
     envLabel_->setObjectName("statusText");
-    layout->addWidget(envLabel_);
-    layout->addWidget(createSeparator());
+    leftLayout->addWidget(envLabel_);
+    leftLayout->addWidget(createSeparator());
 
     refreshLabel_ = new QLabel(this);
     refreshLabel_->setObjectName("statusText");
-    layout->addWidget(refreshLabel_);
+    leftLayout->addWidget(refreshLabel_);
 
     coordinatorBadge_ = createBadge(QString(), QStringLiteral("stopped"));
-    layout->addWidget(coordinatorBadge_);
-    layout->addStretch();
+    leftLayout->addWidget(coordinatorBadge_);
+
+    layout->addWidget(leftHost, 0);
 
     toastHost_ = new QWidget(this);
+    toastHost_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toastLayout_ = new QHBoxLayout(toastHost_);
     toastLayout_->setContentsMargins(0, 0, 0, 0);
     toastLayout_->setSpacing(8);
-    layout->addWidget(toastHost_);
+    layout->addWidget(toastHost_, 1);
 
     setSnapshot(StatusBarSnapshot{});
+    ensureToastHistoryLogReady();
 }
 
 void StatusBarWidget::setSnapshot(const StatusBarSnapshot& snapshot)
@@ -109,6 +137,7 @@ void StatusBarWidget::setSnapshot(const StatusBarSnapshot& snapshot)
     updateRefreshLabel();
     updateCoordinatorBadge();
     pruneExpiredToasts();
+    reconcileVisibleToastsWithWidth();
     rebuildToasts();
 }
 
@@ -128,32 +157,17 @@ void StatusBarWidget::postToast(StatusToast toast)
     if (toast.count < 1) {
         toast.count = 1;
     }
+    appendToastHistory(toast);
 
     pruneExpiredToasts();
-
-    for (StatusToast& activeToast : activeToasts_) {
-        if (activeToast.severity != toast.severity || activeToast.message != toast.message) {
-            continue;
-        }
-
-        const qint64 ageMs = activeToast.createdAt.msecsTo(now);
-        if (ageMs <= kDuplicateWindowMs) {
-            activeToast.count += toast.count;
-            activeToast.createdAt = now;
-            activeToast.ttlMs = qMax(activeToast.ttlMs, toast.ttlMs);
-            if (!toast.details.isEmpty()) {
-                activeToast.details = toast.details;
-            }
-            rebuildToasts();
-            return;
-        }
+    if (hasDuplicateMessage(toast.message)) {
+        reconcileVisibleToastsWithWidth();
+        rebuildToasts();
+        return;
     }
 
-    activeToasts_.append(std::move(toast));
-    while (activeToasts_.size() > kMaxStoredToasts) {
-        activeToasts_.removeFirst();
-    }
-
+    queuedToasts_.append(std::move(toast));
+    reconcileVisibleToastsWithWidth();
     rebuildToasts();
 }
 
@@ -169,11 +183,12 @@ void StatusBarWidget::postToast(StatusToast::Severity severity, const QString& m
 
 void StatusBarWidget::clearToasts()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         return;
     }
 
-    activeToasts_.clear();
+    visibleToasts_.clear();
+    queuedToasts_.clear();
     rebuildToasts();
 }
 
@@ -253,15 +268,17 @@ void StatusBarWidget::rebuildToasts()
         delete item;
     }
 
-    for (const StatusToast& toast : activeToasts_) {
+    for (const StatusToast& toast : visibleToasts_) {
         QLabel* badge = createBadge(buildToastText(toast), toastVariant(toast.severity));
+        badge->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
         if (!toast.details.isEmpty()) {
             badge->setToolTip(toast.details);
         }
         toastLayout_->addWidget(badge);
     }
 
-    toastHost_->setVisible(!activeToasts_.isEmpty());
+    toastLayout_->addStretch(1);
+    toastHost_->setVisible(true);
     scheduleToastExpiry();
 }
 
@@ -302,15 +319,24 @@ void StatusBarWidget::updateCoordinatorBadge()
 
 void StatusBarWidget::pruneExpiredToasts()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         return;
     }
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    for (auto it = activeToasts_.begin(); it != activeToasts_.end();) {
+    for (auto it = visibleToasts_.begin(); it != visibleToasts_.end();) {
         const qint64 ageMs = it->createdAt.msecsTo(now);
         if (ageMs > it->ttlMs) {
-            it = activeToasts_.erase(it);
+            it = visibleToasts_.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
+    for (auto it = queuedToasts_.begin(); it != queuedToasts_.end();) {
+        const qint64 ageMs = it->createdAt.msecsTo(now);
+        if (ageMs > it->ttlMs) {
+            it = queuedToasts_.erase(it);
             continue;
         }
         ++it;
@@ -319,7 +345,7 @@ void StatusBarWidget::pruneExpiredToasts()
 
 void StatusBarWidget::scheduleToastExpiry()
 {
-    if (activeToasts_.isEmpty()) {
+    if (visibleToasts_.isEmpty() && queuedToasts_.isEmpty()) {
         toastExpiryTimer_->stop();
         return;
     }
@@ -327,7 +353,15 @@ void StatusBarWidget::scheduleToastExpiry()
     const QDateTime now = QDateTime::currentDateTimeUtc();
     int nextExpiryMs = 0;
     bool foundExpiry = false;
-    for (const StatusToast& toast : activeToasts_) {
+    for (const StatusToast& toast : visibleToasts_) {
+        const qint64 ageMs = toast.createdAt.msecsTo(now);
+        const int remainingMs = qMax(0, toast.ttlMs - static_cast<int>(ageMs));
+        if (!foundExpiry || remainingMs < nextExpiryMs) {
+            nextExpiryMs = remainingMs;
+            foundExpiry = true;
+        }
+    }
+    for (const StatusToast& toast : queuedToasts_) {
         const qint64 ageMs = toast.createdAt.msecsTo(now);
         const int remainingMs = qMax(0, toast.ttlMs - static_cast<int>(ageMs));
         if (!foundExpiry || remainingMs < nextExpiryMs) {
@@ -337,4 +371,205 @@ void StatusBarWidget::scheduleToastExpiry()
     }
 
     toastExpiryTimer_->start(qMax(1, nextExpiryMs));
+}
+
+void StatusBarWidget::reconcileVisibleToastsWithWidth()
+{
+    const int availableWidth = availableToastWidth();
+    while (!queuedToasts_.isEmpty() && canFitToast(queuedToasts_.front())) {
+        visibleToasts_.append(queuedToasts_.takeFirst());
+    }
+
+    // Keep one toast visible on cramped layouts so newly queued messages still surface.
+    if (visibleToasts_.isEmpty() && !queuedToasts_.isEmpty() && availableWidth > 0) {
+        visibleToasts_.append(queuedToasts_.takeFirst());
+    }
+
+    while (!visibleToasts_.isEmpty()) {
+        int totalWidth = 0;
+        for (int i = 0; i < visibleToasts_.size(); ++i) {
+            totalWidth += toastWidth(visibleToasts_.at(i));
+            if (i > 0) {
+                totalWidth += toastLayout_->spacing();
+            }
+        }
+
+        if (totalWidth <= availableWidth) {
+            break;
+        }
+
+        if (visibleToasts_.size() == 1) {
+            break;
+        }
+
+        queuedToasts_.prepend(visibleToasts_.takeLast());
+    }
+}
+
+bool StatusBarWidget::canFitToast(const StatusToast& toast) const
+{
+    const int availableWidth = availableToastWidth();
+    int requiredWidth = toastWidth(toast);
+    if (!visibleToasts_.isEmpty()) {
+        requiredWidth += toastLayout_->spacing();
+    }
+
+    for (const StatusToast& visibleToast : visibleToasts_) {
+        requiredWidth += toastWidth(visibleToast);
+    }
+
+    return requiredWidth <= availableWidth;
+}
+
+int StatusBarWidget::toastWidth(const StatusToast& toast) const
+{
+    QLabel probe(buildToastText(toast));
+    probe.setObjectName("statusBadge");
+    probe.setProperty("variant", toastVariant(toast.severity));
+    probe.setAlignment(Qt::AlignCenter);
+    probe.setMargin(6);
+    probe.ensurePolished();
+    return probe.sizeHint().width();
+}
+
+int StatusBarWidget::availableToastWidth() const
+{
+    const int hostWidth = toastHost_->contentsRect().width();
+    if (hostWidth >= kMinValidToastHostWidthPx) {
+        return hostWidth;
+    }
+
+    const int fallbackWidth = qMax(kFallbackToastWidthFloorPx, contentsRect().width() / 3);
+    return qMax(0, fallbackWidth);
+}
+
+bool StatusBarWidget::hasDuplicateMessage(const QString& message) const
+{
+    for (const StatusToast& toast : visibleToasts_) {
+        if (toast.message == message) {
+            return true;
+        }
+    }
+
+    for (const StatusToast& toast : queuedToasts_) {
+        if (toast.message == message) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QString StatusBarWidget::formatHistoryLine(const ToastHistoryEntry& entry) const
+{
+    const QString timestamp = entry.createdAt.isValid()
+        ? entry.createdAt.toString(Qt::ISODateWithMs)
+        : QStringLiteral("unknown-time");
+    const QString severity = toastVariant(entry.severity).toUpper();
+    const QString detailsSuffix = entry.details.isEmpty() ? QString() : QStringLiteral(" | details=%1").arg(entry.details);
+    return QStringLiteral("[%1] [%2] %3 | count=%4 | ttlMs=%5%6")
+        .arg(timestamp)
+        .arg(severity)
+        .arg(entry.message)
+        .arg(entry.count)
+        .arg(entry.ttlMs)
+        .arg(detailsSuffix);
+}
+
+void StatusBarWidget::appendToastHistory(const StatusToast& toast)
+{
+    ToastHistoryEntry entry;
+    entry.createdAt = toast.createdAt;
+    entry.severity = toast.severity;
+    entry.message = toast.message;
+    entry.details = toast.details;
+    entry.count = toast.count;
+    entry.ttlMs = toast.ttlMs;
+    toastHistory_.append(entry);
+    while (toastHistory_.size() > kToastHistoryMemoryCap) {
+        toastHistory_.removeFirst();
+    }
+
+    ensureToastHistoryLogReady();
+    if (toastHistoryFilePath_.isEmpty()) {
+        return;
+    }
+
+    QFile file(toastHistoryFilePath_);
+    if (!file.open(QIODevice::Append | QIODevice::Text)) {
+        return;
+    }
+
+    QTextStream stream(&file);
+    stream << formatHistoryLine(entry) << '\n';
+    stream.flush();
+}
+
+void StatusBarWidget::ensureToastHistoryLogReady()
+{
+    if (!toastHistoryFilePath_.isEmpty()) {
+        return;
+    }
+
+    const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (baseDir.isEmpty()) {
+        return;
+    }
+
+    const QString historyDir = QDir(baseDir).filePath(QStringLiteral("toast-history"));
+    QDir dir;
+    if (!dir.mkpath(historyDir)) {
+        return;
+    }
+
+    const QString filename = QStringLiteral("toast-history-%1.log")
+        .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz")));
+    toastHistoryFilePath_ = QDir(historyDir).filePath(filename);
+}
+
+QStringList StatusBarWidget::buildHistoryLinesFromMemory() const
+{
+    QStringList lines;
+    lines.reserve(toastHistory_.size());
+    for (const ToastHistoryEntry& entry : toastHistory_) {
+        lines.append(formatHistoryLine(entry));
+    }
+    return lines;
+}
+
+QStringList StatusBarWidget::loadHistoryLinesFromFile() const
+{
+    if (toastHistoryFilePath_.isEmpty()) {
+        return { QStringLiteral("History file is unavailable for this run.") };
+    }
+
+    QFile file(toastHistoryFilePath_);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return { QStringLiteral("Failed to open history file: %1").arg(toastHistoryFilePath_) };
+    }
+
+    QTextStream stream(&file);
+    QStringList lines;
+    while (!stream.atEnd()) {
+        lines.append(stream.readLine());
+    }
+    return lines;
+}
+
+void StatusBarWidget::showToastHistoryDialog()
+{
+    ToastHistoryDialog dialog(
+        toastHistoryFilePath_,
+        [this]() { return loadHistoryLinesFromFile(); },
+        this);
+    dialog.setHistoryLines(buildHistoryLinesFromMemory());
+    dialog.exec();
+}
+
+void StatusBarWidget::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    pruneExpiredToasts();
+    reconcileVisibleToastsWithWidth();
+    rebuildToasts();
 }

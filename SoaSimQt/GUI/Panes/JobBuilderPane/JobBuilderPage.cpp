@@ -1,11 +1,15 @@
 #include "JobBuilderPage.h"
 
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 #include "GUI/Widgets/LedgerPickerDialog.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderSchemas.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderService.h"
 #include "Phases/DBPhaseBuilder/PhaseBuilderPreview.h"
 #include "Runner/IPC/Wire.h"
 #include "DB/ExplorerSettingsPredicateRepo.h"
+#include "DB/TagRepo.h"
+#include "DB/Scheduling/JobsRepo.h"
+#include "GUI/Widgets/EntityTagsDialog.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QScopedValueRollback>
@@ -26,7 +30,6 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QSplitter>
-#include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QTreeWidget>
 #include <QtWidgets/QTreeWidgetItem>
 #include <QtWidgets/QVBoxLayout>
@@ -133,11 +136,33 @@ void JobBuilderPage::createWidgets()
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(10);
 
-    formStack_ = new QStackedWidget(leftPanel);
-    leftLayout->addWidget(formStack_, 1);
+    formsScrollArea_ = new QScrollArea(leftPanel);
+    formsScrollArea_->setWidgetResizable(true);
+    formsScrollArea_->setFrameShape(QFrame::NoFrame);
+    QWidget* formsHost = new QWidget(formsScrollArea_);
+    QVBoxLayout* formsHostLayout = new QVBoxLayout(formsHost);
+    formsHostLayout->setContentsMargins(0, 0, 0, 0);
+    formsHostLayout->setSpacing(10);
+    formsScrollArea_->setWidget(formsHost);
+    leftLayout->addWidget(formsScrollArea_, 1);
+
+    // BattleContext form (placeholder for ordered chaining)
+    battleContextForm_ = new QWidget(formsHost);
+    {
+        QVBoxLayout* layout = new QVBoxLayout(battleContextForm_);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(10);
+        QVBoxLayout* cardLayout = nullptr;
+        QFrame* card = createCard(QStringLiteral("BattleContext"), battleContextForm_, &cardLayout);
+        QLabel* label = new QLabel(QStringLiteral("BattleContext job creation is not yet available in this builder."), card);
+        label->setWordWrap(true);
+        cardLayout->addWidget(label);
+        layout->addWidget(card);
+        layout->addStretch();
+    }
 
     // SeedProbe form
-    seedProbeForm_ = new QWidget(formStack_);
+    seedProbeForm_ = new QWidget(formsHost);
     QVBoxLayout* seedLayout = new QVBoxLayout(seedProbeForm_);
     seedLayout->setContentsMargins(0, 0, 0, 0);
     seedLayout->setSpacing(10);
@@ -145,6 +170,7 @@ void JobBuilderPage::createWidgets()
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("SeedProbe · General"), seedProbeForm_, &cardLayout);
+        seedProbeGeneralCard_ = card;
         savestateSummaryLabel_ = new QLabel(QStringLiteral("No savestate selected."), card);
         savestateSummaryLabel_->setWordWrap(true);
         pickSavestateButton_ = new QPushButton(QStringLiteral("Pick Savestate…"), card);
@@ -156,13 +182,18 @@ void JobBuilderPage::createWidgets()
         seedProbeViMsSpin_ = new QSpinBox(card);
         seedProbeViMsSpin_->setRange(0, 1000000000);
         seedProbeClearWinnersCheck_ = new QCheckBox(QStringLiteral("Clear result winners"), card);
+        seedProbeSaveStateWidget_ = new QWidget(card);
+        QFormLayout* seedProbeSaveStateForm = new QFormLayout();
+        seedProbeSaveStateForm->addRow(QStringLiteral("Savestate"), savestateSummaryLabel_);
+        seedProbeSaveStateForm->addRow(QString(), pickSavestateButton_);
+        seedProbeSaveStateWidget_->setLayout(seedProbeSaveStateForm);
+
         QFormLayout* form = new QFormLayout();
-        form->addRow(QStringLiteral("Savestate"), savestateSummaryLabel_);
-        form->addRow(QString(), pickSavestateButton_);
         form->addRow(QStringLiteral("Priority"), seedProbePrioritySpin_);
         form->addRow(QStringLiteral("Run ms"), seedProbeRunMsSpin_);
         form->addRow(QStringLiteral("VI stall ms"), seedProbeViMsSpin_);
         form->addRow(QString(), seedProbeClearWinnersCheck_);
+        cardLayout->addWidget(seedProbeSaveStateWidget_);
         cardLayout->addLayout(form);
         seedLayout->addWidget(card);
     }
@@ -196,14 +227,15 @@ void JobBuilderPage::createWidgets()
         QFormLayout* form = new QFormLayout();
         form->addRow(QStringLiteral("Combo attempts / target"), seedProbeComboAttemptsSpin_);
         form->addRow(QStringLiteral("Combo sampler tries"), seedProbeComboSamplerTriesSpin_);
+        seedProbeAutoBattleCheck_ = new QCheckBox(QStringLiteral("Auto queue battle run from unique seeds"), card);
+        form->addRow(QString(), seedProbeAutoBattleCheck_);
         cardLayout->addLayout(form);
         seedLayout->addWidget(card);
     }
     seedLayout->addStretch();
-    formStack_->addWidget(seedProbeForm_);
 
     // Tas form
-    tasMovieForm_ = new QWidget(formStack_);
+    tasMovieForm_ = new QWidget(formsHost);
     QVBoxLayout* tasLayout = new QVBoxLayout(tasMovieForm_);
     tasLayout->setContentsMargins(0, 0, 0, 0);
     tasLayout->setSpacing(10);
@@ -241,10 +273,9 @@ void JobBuilderPage::createWidgets()
         tasLayout->addWidget(card);
     }
     tasLayout->addStretch();
-    formStack_->addWidget(tasMovieForm_);
 
     // Explorer form
-    explorerForm_ = new QWidget(formStack_);
+    explorerForm_ = new QWidget(formsHost);
     QVBoxLayout* explorerLayout = new QVBoxLayout(explorerForm_);
     explorerLayout->setContentsMargins(0, 0, 0, 0);
     explorerLayout->setSpacing(10);
@@ -282,6 +313,7 @@ void JobBuilderPage::createWidgets()
     {
         QVBoxLayout* cardLayout = nullptr;
         QFrame* card = createCard(QStringLiteral("ExplorerRun · Delta Seed Selection"), explorerForm_, &cardLayout);
+        explorerDeltaCard_ = card;
         QLabel* helper = new QLabel(QStringLiteral("Qt-native delta selection: each seed probe appears as a parent node. Check zero child rows to keep the default \"all deltas\" behavior, or check specific delta IDs to pin that probe to explicit deltas."), card);
         helper->setWordWrap(true);
         cardLayout->addWidget(helper);
@@ -329,7 +361,11 @@ void JobBuilderPage::createWidgets()
         explorerLayout->addWidget(card);
     }
     explorerLayout->addStretch();
-    formStack_->addWidget(explorerForm_);
+    formsHostLayout->addWidget(battleContextForm_);
+    formsHostLayout->addWidget(tasMovieForm_);
+    formsHostLayout->addWidget(seedProbeForm_);
+    formsHostLayout->addWidget(explorerForm_);
+    formsHostLayout->addStretch();
 
     QWidget* centerPanel = new QWidget(splitLayout_);
     QVBoxLayout* centerLayout = new QVBoxLayout(centerPanel);
@@ -366,6 +402,11 @@ void JobBuilderPage::createWidgets()
         submitStatusLabel_ = new QLabel(card);
         submitStatusLabel_->setWordWrap(true);
         purposeEdit_ = new QLineEdit(card);
+        setTagsButton_ = new QPushButton(QStringLiteral("Set Tags"), card);
+        setTagsButton_->setObjectName("jobsSecondaryButton");
+        tagsSummaryLabel_ = new QLabel(QStringLiteral("No tags selected."), card);
+        tagsSummaryLabel_->setObjectName("jobsMetaText");
+        tagsSummaryLabel_->setWordWrap(true);
         metaEdit_ = new QPlainTextEdit(card);
         metaEdit_->setMinimumHeight(100);
         submitButton_ = new QPushButton(QStringLiteral("Create Job Set & Enqueue"), card);
@@ -373,6 +414,8 @@ void JobBuilderPage::createWidgets()
         QFormLayout* form = new QFormLayout();
         form->addRow(QStringLiteral("Status"), submitStatusLabel_);
         form->addRow(QStringLiteral("Purpose"), purposeEdit_);
+        form->addRow(QStringLiteral("Tags"), setTagsButton_);
+        form->addRow(QString(), tagsSummaryLabel_);
         form->addRow(QStringLiteral("Meta"), metaEdit_);
         cardLayout->addLayout(form);
         cardLayout->addWidget(submitButton_);
@@ -406,6 +449,9 @@ void JobBuilderPage::wireSignals()
                 programKinds_.clear();
                 for (const ProgramKindKV& kind : result.value) {
                     if (kind.name == "BattleSingleTurnRunner") {
+                        continue;
+                    }
+                    if (kind.id == simcore::PK_TasInputStreamDetector) {
                         continue;
                     }
                     programKinds_.push_back(kind);
@@ -478,6 +524,7 @@ void JobBuilderPage::wireSignals()
     connect(validateButton_, &QPushButton::clicked, this, [this]() { syncIniFromWidgets(); refreshValidation(); refreshSubmitPanel(); updateStatusMessage(); });
     connect(previewButton_, &QPushButton::clicked, this, [this]() { requestPreview(); });
     connect(submitButton_, &QPushButton::clicked, this, [this]() { requestSubmit(); });
+    connect(setTagsButton_, &QPushButton::clicked, this, &JobBuilderPage::openSubmitTagsDialog);
 
     connect(pickSavestateButton_, &QPushButton::clicked, this, &JobBuilderPage::openSavestatePicker);
     connect(pickArtifactButton_, &QPushButton::clicked, this, &JobBuilderPage::openArtifactPicker);
@@ -562,6 +609,7 @@ void JobBuilderPage::wireSignals()
     connectCheck(seedProbeClearWinnersCheck_);
     connectCheck(seedProbeCapTopCheck_);
     connectCheck(seedProbeIgnoreTriggerCheck_);
+    connectCheck(seedProbeAutoBattleCheck_);
 
     connect(tasRtcLowEdit_, &QLineEdit::textChanged, this, [this](const QString&) { syncIniFromWidgets(); });
     connect(tasRtcHighEdit_, &QLineEdit::textChanged, this, [this](const QString&) { syncIniFromWidgets(); });
@@ -571,6 +619,8 @@ void JobBuilderPage::wireSignals()
     connectSpin(tasHeadroomSpin_);
     connectCheck(tasProgressEnableCheck_);
     connectCheck(tasAutoQueueCheck_);
+    connect(tasAutoQueueCheck_, &QCheckBox::toggled, this, [this](bool) { updateFormVisibility(); });
+    connect(seedProbeAutoBattleCheck_, &QCheckBox::toggled, this, [this](bool) { updateFormVisibility(); });
 
     connectSpin(explorerPrioritySpin_);
     connectSpin(explorerRunMsSpin_);
@@ -594,15 +644,34 @@ void JobBuilderPage::loadProgramKinds()
 
 void JobBuilderPage::handleKindSelectionChanged()
 {
-    const int programKind = selectedProgramKind();
-    if (programKind == PK_TasMovie) {
-        formStack_->setCurrentWidget(tasMovieForm_);
-    } else if (programKind == PK_BattleTurnRunner) {
-        formStack_->setCurrentWidget(explorerForm_);
-    } else {
-        formStack_->setCurrentWidget(seedProbeForm_);
-    }
+    updateFormVisibility();
     loadDefaultsForSelectedKind();
+}
+
+void JobBuilderPage::updateFormVisibility()
+{
+    const int programKind = selectedProgramKind();
+    const bool tasAutoSeeds = tasAutoQueueCheck_ && tasAutoQueueCheck_->isChecked();
+    const bool seedAutoBattle = seedProbeAutoBattleCheck_ && seedProbeAutoBattleCheck_->isChecked();
+
+    const bool showCtx = (programKind == simcore::PK_BattleContextProbe);
+    const bool showTas = (programKind == PK_TasMovie);
+    const bool showSeed = (programKind == PK_SeedProbe) || (showTas && tasAutoSeeds);
+    const bool showExplorer = (programKind == PK_BattleTurnRunner) ||
+        (programKind == PK_SeedProbe && seedAutoBattle) ||
+        (showTas && tasAutoSeeds && seedAutoBattle);
+
+    const bool explorerDownstreamAuto = showExplorer && (programKind != PK_BattleTurnRunner);
+
+    if (battleContextForm_) battleContextForm_->setVisible(showCtx);
+    if (tasMovieForm_) tasMovieForm_->setVisible(showTas);
+    if (seedProbeForm_) seedProbeForm_->setVisible(showSeed);
+    if (explorerForm_) explorerForm_->setVisible(showExplorer);
+    if (seedProbeSaveStateWidget_) seedProbeSaveStateWidget_->setVisible(!(showTas && tasAutoSeeds));
+    if (explorerDeltaCard_) explorerDeltaCard_->setVisible(!explorerDownstreamAuto);
+    if (addExplorerSeedProbeButton_) addExplorerSeedProbeButton_->setVisible(!explorerDownstreamAuto);
+    if (clearExplorerSeedProbeButton_) clearExplorerSeedProbeButton_->setVisible(!explorerDownstreamAuto);
+    if (explorerSeedProbesList_) explorerSeedProbesList_->setVisible(!explorerDownstreamAuto);
 }
 
 void JobBuilderPage::loadDefaultsForSelectedKind()
@@ -627,6 +696,7 @@ void JobBuilderPage::loadDefaultsForSelectedKind()
     primaryExplorerSettingsId_ = 0;
     primarySeedProbeId_ = 0;
     syncWidgetsFromIni();
+    updateFormVisibility();
     refreshSelectionLists();
     refreshDeltaTree();
     refreshValidation();
@@ -646,6 +716,7 @@ void JobBuilderPage::syncWidgetsFromIni()
         auto bp = simcore::db::codec::seedprobe::BlueprintIni::from_section(ini_);
         auto grid = simcore::db::codec::seedprobe::GridIni::from_section(ini_);
         auto uni = simcore::db::codec::seedprobe::UniqueIni::from_section(ini_);
+        auto br = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         savestateId_ = bp.savestate_id;
         savestateSummaryLabel_->setText(savestateId_ > 0 ? QStringLiteral("Savestate ID %1").arg(savestateId_) : QStringLiteral("No savestate selected."));
         seedProbePrioritySpin_->setValue(bp.priority);
@@ -659,8 +730,24 @@ void JobBuilderPage::syncWidgetsFromIni()
         seedProbeIgnoreTriggerCheck_->setChecked(grid.ignore_trigger_minmax);
         seedProbeComboAttemptsSpin_->setValue(uni.combo_attempts_per_target);
         seedProbeComboSamplerTriesSpin_->setValue(uni.combo_sampler_tries);
+        seedProbeAutoBattleCheck_->setChecked(bp.auto_schedule_battle_run);
+        selectedExplorerSettingsIds_.clear();
+        if (br.settings_id > 0) {
+            selectedExplorerSettingsIds_.append(br.settings_id);
+            primaryExplorerSettingsId_ = br.settings_id;
+        }
+        explorerSingleTurnCheck_->setChecked(br.use_single_turn_runner);
+        explorerAutoWaveTriggerCheck_->setChecked(br.auto_wave_trigger_enable);
+        explorerRunMsSpin_->setValue(static_cast<int>(br.run_ms));
+        explorerViMsSpin_->setValue(static_cast<int>(br.vi_stall_ms));
+        explorerMinFakeAttacksSpin_->setValue(static_cast<int>(br.min_fake_attacks));
+        explorerMaxFakeAttacksSpin_->setValue(static_cast<int>(br.max_fake_attacks));
     } else if (selectedProgramKind() == PK_TasMovie) {
         auto bp = simcore::db::codec::tas::BlueprintIni::from_section(ini_);
+        auto sp = simcore::db::codec::seedprobe::BlueprintIni::from_section(ini_);
+        auto grid = simcore::db::codec::seedprobe::GridIni::from_section(ini_);
+        auto uni = simcore::db::codec::seedprobe::UniqueIni::from_section(ini_);
+        auto br = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         artifactId_ = bp.base_dtm_artifact_id;
         artifactSummaryLabel_->setText(artifactId_ > 0 ? QStringLiteral("Artifact ID %1").arg(artifactId_) : QStringLiteral("No .dtm artifact selected."));
         tasRtcLowEdit_->setText(QString::number(bp.rtc_low));
@@ -671,7 +758,30 @@ void JobBuilderPage::syncWidgetsFromIni()
         tasHeadroomSpin_->setValue(static_cast<int>(bp.headroom_x10));
         tasProgressEnableCheck_->setChecked(bp.progress_enable);
         tasAutoQueueCheck_->setChecked(bp.auto_queue_seeds);
-    } else {
+        seedProbeRunMsSpin_->setValue(static_cast<int>(sp.run_ms));
+        seedProbeViMsSpin_->setValue(static_cast<int>(sp.vi_stall_ms));
+        seedProbeClearWinnersCheck_->setChecked(sp.clear_result_winners);
+        seedProbeSamplesSpin_->setValue(grid.samples_per_axis);
+        seedProbeMinValueSpin_->setValue(grid.min_value);
+        seedProbeMaxValueSpin_->setValue(grid.max_value);
+        seedProbeCapTopCheck_->setChecked(grid.cap_trigger_top);
+        seedProbeIgnoreTriggerCheck_->setChecked(grid.ignore_trigger_minmax);
+        seedProbeComboAttemptsSpin_->setValue(uni.combo_attempts_per_target);
+        seedProbeComboSamplerTriesSpin_->setValue(uni.combo_sampler_tries);
+        seedProbeAutoBattleCheck_->setChecked(sp.auto_schedule_battle_run);
+        selectedExplorerSettingsIds_.clear();
+        if (br.settings_id > 0) {
+            selectedExplorerSettingsIds_.append(br.settings_id);
+            primaryExplorerSettingsId_ = br.settings_id;
+        }
+        explorerSingleTurnCheck_->setChecked(br.use_single_turn_runner);
+        explorerAutoWaveTriggerCheck_->setChecked(br.auto_wave_trigger_enable);
+        explorerRunMsSpin_->setValue(static_cast<int>(br.run_ms));
+        explorerViMsSpin_->setValue(static_cast<int>(br.vi_stall_ms));
+        explorerMinFakeAttacksSpin_->setValue(static_cast<int>(br.min_fake_attacks));
+        explorerMaxFakeAttacksSpin_->setValue(static_cast<int>(br.max_fake_attacks));
+        updateFormVisibility();
+    } else if (selectedProgramKind() == PK_BattleTurnRunner || selectedProgramKind() == PK_BattleSingleTurnRunner) {
         auto bp = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         primaryExplorerSettingsId_ = bp.settings_id;
         primarySeedProbeId_ = bp.seed_probe_id;
@@ -702,6 +812,7 @@ void JobBuilderPage::syncIniFromWidgets()
         auto bp = simcore::db::codec::seedprobe::BlueprintIni::from_section(ini_);
         auto grid = simcore::db::codec::seedprobe::GridIni::from_section(ini_);
         auto uni = simcore::db::codec::seedprobe::UniqueIni::from_section(ini_);
+        auto br = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         bp.savestate_id = savestateId_;
         bp.priority = seedProbePrioritySpin_->value();
         bp.run_ms = static_cast<uint32_t>(seedProbeRunMsSpin_->value());
@@ -717,8 +828,26 @@ void JobBuilderPage::syncIniFromWidgets()
         uni.combo_attempts_per_target = seedProbeComboAttemptsSpin_->value();
         uni.combo_sampler_tries = seedProbeComboSamplerTriesSpin_->value();
         uni.set_section(ini_);
+        bp.auto_schedule_battle_run = seedProbeAutoBattleCheck_->isChecked();
+        bp.set_section(ini_);
+        if (!selectedExplorerSettingsIds_.isEmpty()) {
+            primaryExplorerSettingsId_ = selectedExplorerSettingsIds_.front();
+        }
+        br.settings_id = primaryExplorerSettingsId_;
+        br.use_single_turn_runner = explorerSingleTurnCheck_->isChecked();
+        br.auto_wave_trigger_enable = explorerAutoWaveTriggerCheck_->isChecked();
+        br.run_ms = static_cast<uint32_t>(explorerRunMsSpin_->value());
+        br.vi_stall_ms = static_cast<uint32_t>(explorerViMsSpin_->value());
+        br.min_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMinFakeAttacksSpin_->value()));
+        br.max_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMaxFakeAttacksSpin_->value()));
+        br.seed_probe_id = -1;
+        br.set_section(ini_);
     } else if (selectedProgramKind() == PK_TasMovie) {
         auto bp = simcore::db::codec::tas::BlueprintIni::from_section(ini_);
+        auto sp = simcore::db::codec::seedprobe::BlueprintIni::from_section(ini_);
+        auto grid = simcore::db::codec::seedprobe::GridIni::from_section(ini_);
+        auto uni = simcore::db::codec::seedprobe::UniqueIni::from_section(ini_);
+        auto br = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         bp.base_dtm_artifact_id = artifactId_;
         bp.rtc_low = tasRtcLowEdit_->text().trimmed().toLongLong();
         bp.rtc_high = tasRtcHighEdit_->text().trimmed().toLongLong();
@@ -729,7 +858,36 @@ void JobBuilderPage::syncIniFromWidgets()
         bp.progress_enable = tasProgressEnableCheck_->isChecked();
         bp.auto_queue_seeds = tasAutoQueueCheck_->isChecked();
         bp.set_section(ini_);
-    } else {
+        sp.run_ms = static_cast<uint32_t>(seedProbeRunMsSpin_->value());
+        sp.vi_stall_ms = static_cast<uint32_t>(seedProbeViMsSpin_->value());
+        sp.clear_result_winners = seedProbeClearWinnersCheck_->isChecked();
+        sp.auto_schedule_battle_run = seedProbeAutoBattleCheck_->isChecked();
+        sp.cur_phase = simcore::db::codec::seedprobe::SeedProbePhase::None;
+        sp.probe_id = -1;
+        sp.savestate_id = -1;
+        sp.set_section(ini_);
+        grid.samples_per_axis = seedProbeSamplesSpin_->value();
+        grid.min_value = static_cast<uint8_t>(seedProbeMinValueSpin_->value());
+        grid.max_value = static_cast<uint8_t>(seedProbeMaxValueSpin_->value());
+        grid.cap_trigger_top = seedProbeCapTopCheck_->isChecked();
+        grid.ignore_trigger_minmax = seedProbeIgnoreTriggerCheck_->isChecked();
+        grid.set_section(ini_);
+        uni.combo_attempts_per_target = seedProbeComboAttemptsSpin_->value();
+        uni.combo_sampler_tries = seedProbeComboSamplerTriesSpin_->value();
+        uni.set_section(ini_);
+        if (!selectedExplorerSettingsIds_.isEmpty()) {
+            primaryExplorerSettingsId_ = selectedExplorerSettingsIds_.front();
+        }
+        br.settings_id = primaryExplorerSettingsId_;
+        br.use_single_turn_runner = explorerSingleTurnCheck_->isChecked();
+        br.auto_wave_trigger_enable = explorerAutoWaveTriggerCheck_->isChecked();
+        br.run_ms = static_cast<uint32_t>(explorerRunMsSpin_->value());
+        br.vi_stall_ms = static_cast<uint32_t>(explorerViMsSpin_->value());
+        br.min_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMinFakeAttacksSpin_->value()));
+        br.max_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMaxFakeAttacksSpin_->value()));
+        br.seed_probe_id = -1;
+        br.set_section(ini_);
+    } else if (selectedProgramKind() == PK_BattleTurnRunner || selectedProgramKind() == PK_BattleSingleTurnRunner) {
         auto bp = simcore::db::codec::battle::run::BlueprintIni::from_section(ini_);
         if (!selectedExplorerSettingsIds_.isEmpty()) {
             primaryExplorerSettingsId_ = selectedExplorerSettingsIds_.front();
@@ -749,9 +907,12 @@ void JobBuilderPage::syncIniFromWidgets()
         bp.min_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMinFakeAttacksSpin_->value()));
         bp.max_fake_attacks = static_cast<uint32_t>(std::max(0, explorerMaxFakeAttacksSpin_->value()));
         bp.set_section(ini_);
+    } else {
+        return;
     }
 
     refreshSelectionLists();
+    updateFormVisibility();
     if (!suppressDeltaTreeRefresh_) {
         refreshDeltaTree();
     }
@@ -763,9 +924,11 @@ void JobBuilderPage::syncIniFromWidgets()
 
 void JobBuilderPage::refreshValidation()
 {
+    const ScrollAreaScrollSnapshot validationScrollSnapshot = captureScrollAreaScrollSnapshot(validationText_);
     validationEntries_.clear();
     if (!hasIni_) {
         validationText_->setPlainText(QStringLiteral("No blueprint loaded yet."));
+        restoreScrollAreaScrollSnapshot(validationText_, validationScrollSnapshot);
         return;
     }
 
@@ -782,10 +945,12 @@ void JobBuilderPage::refreshValidation()
         }
     }
     validationText_->setPlainText(joinLines(lines));
+    restoreScrollAreaScrollSnapshot(validationText_, validationScrollSnapshot);
 }
 
 void JobBuilderPage::refreshPreviewPanel()
 {
+    const ScrollAreaScrollSnapshot previewScrollSnapshot = captureScrollAreaScrollSnapshot(previewText_);
     QVector<QString> lines;
     if (previewBusy_) {
         lines.append(QStringLiteral("Previewing…"));
@@ -825,6 +990,7 @@ void JobBuilderPage::refreshPreviewPanel()
         lines.append(QStringLiteral("No preview generated yet."));
     }
     previewText_->setPlainText(joinLines(lines));
+    restoreScrollAreaScrollSnapshot(previewText_, previewScrollSnapshot);
 }
 
 void JobBuilderPage::refreshSubmitPanel()
@@ -843,15 +1009,28 @@ void JobBuilderPage::refreshSubmitPanel()
     }
     submitStatusLabel_->setText(status);
     submitButton_->setEnabled(canSubmit() && !submitBusy_);
+    setTagsButton_->setEnabled(!submitBusy_);
+    if (submissionTagKeys_.empty()) {
+        tagsSummaryLabel_->setText(QStringLiteral("No tags selected."));
+    } else {
+        QStringList tags;
+        for (const auto& key : submissionTagKeys_) {
+            tags << QString::fromStdString(key);
+        }
+        tagsSummaryLabel_->setText(tags.join(QStringLiteral(", ")));
+    }
 }
 
 void JobBuilderPage::refreshIniPanel()
 {
+    const ScrollAreaScrollSnapshot iniScrollSnapshot = captureScrollAreaScrollSnapshot(iniText_);
     if (!hasIni_) {
         iniText_->setPlainText(QStringLiteral("No blueprint loaded yet."));
+        restoreScrollAreaScrollSnapshot(iniText_, iniScrollSnapshot);
         return;
     }
     iniText_->setPlainText(QString::fromStdString(ini_.to_string_preserve_order()));
+    restoreScrollAreaScrollSnapshot(iniText_, iniScrollSnapshot);
 }
 
 void JobBuilderPage::refreshSelectionLists()
@@ -1037,6 +1216,16 @@ void JobBuilderPage::openExplorerSettingsPicker()
     }
 }
 
+void JobBuilderPage::openSubmitTagsDialog()
+{
+    auto result = EntityTagsDialog::SelectTagsForNewEntity(QStringLiteral("job_set"), submissionTagKeys_, QStringLiteral("Set Tags for Submission"), this);
+    if (!result.ok) {
+        return;
+    }
+    submissionTagKeys_ = std::move(result.selectedTagKeys);
+    refreshSubmitPanel();
+}
+
 void JobBuilderPage::requestPreview()
 {
     if (!hasIni_) {
@@ -1079,8 +1268,9 @@ void JobBuilderPage::requestSubmit()
     const auto selectedSeedProbes = selectedSeedProbeIds_;
     const auto selectedDeltas = selectedDeltaIdsByProbe_;
     const auto previewCopy = preview_;
+    const auto tagKeys = submissionTagKeys_;
 
-    submitWatcher_.setFuture(runAsync([programKind, baseIni, purpose, meta, selectedSettings, selectedSeedProbes, selectedDeltas, previewCopy]() -> SubmitResultPayload {
+    submitWatcher_.setFuture(runAsync([programKind, baseIni, purpose, meta, selectedSettings, selectedSeedProbes, selectedDeltas, previewCopy, tagKeys]() -> SubmitResultPayload {
         SubmitResultPayload out{};
         try {
             const std::optional<std::string> metaText = meta.isEmpty() ? std::optional<std::string>{} : std::optional<std::string>{ meta.toStdString() };
@@ -1138,6 +1328,27 @@ void JobBuilderPage::requestSubmit()
                             out.errorMessage = QString::fromStdString(encodeResult.error.message);
                             return out;
                         }
+                        for (const auto& tagKey : tagKeys) {
+                            const auto attachJobSetTag = simcore::db::TagRepo::AttachTagToEntity("job_set", createResult.value, tagKey, std::nullopt);
+                            if (!attachJobSetTag.ok) {
+                                out.errorMessage = QString::fromStdString(attachJobSetTag.error.message);
+                                return out;
+                            }
+                        }
+                        const auto jobsResult = simcore::db::JobsRepo::GetByJobSet(createResult.value);
+                        if (!jobsResult.ok) {
+                            out.errorMessage = QString::fromStdString(jobsResult.error.message);
+                            return out;
+                        }
+                        for (const auto& job : jobsResult.value) {
+                            for (const auto& tagKey : tagKeys) {
+                                const auto attachJobTag = simcore::db::TagRepo::AttachTagToEntity("job", job.job_id, tagKey, std::nullopt);
+                                if (!attachJobTag.ok) {
+                                    out.errorMessage = QString::fromStdString(attachJobTag.error.message);
+                                    return out;
+                                }
+                            }
+                        }
                         ++createdCount;
                     }
                 }
@@ -1158,6 +1369,27 @@ void JobBuilderPage::requestSubmit()
             if (!encodeResult.ok) {
                 out.errorMessage = QString::fromStdString(encodeResult.error.message);
                 return out;
+            }
+            for (const auto& tagKey : tagKeys) {
+                const auto attachJobSetTag = simcore::db::TagRepo::AttachTagToEntity("job_set", createResult.value, tagKey, std::nullopt);
+                if (!attachJobSetTag.ok) {
+                    out.errorMessage = QString::fromStdString(attachJobSetTag.error.message);
+                    return out;
+                }
+            }
+            const auto jobsResult = simcore::db::JobsRepo::GetByJobSet(createResult.value);
+            if (!jobsResult.ok) {
+                out.errorMessage = QString::fromStdString(jobsResult.error.message);
+                return out;
+            }
+            for (const auto& job : jobsResult.value) {
+                for (const auto& tagKey : tagKeys) {
+                    const auto attachJobTag = simcore::db::TagRepo::AttachTagToEntity("job", job.job_id, tagKey, std::nullopt);
+                    if (!attachJobTag.ok) {
+                        out.errorMessage = QString::fromStdString(attachJobTag.error.message);
+                        return out;
+                    }
+                }
             }
             if (programKind == PK_TasMovie && previewCopy.has_value() && previewCopy->tasmovie.has_value()) {
                 const auto expectedResult = DataService::SetJobSetExpectedTotalAsync(createResult.value, previewCopy->tasmovie->jobs, {}).get();

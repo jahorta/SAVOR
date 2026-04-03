@@ -55,6 +55,7 @@ namespace simcore::db {
         static std::future<DbResult<JobRow>> GetAsync(int64_t job_id, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetStateAsync(int64_t job_id, std::string new_state, RetryPolicy rp = {});
         static std::future<DbResult<void>> SetVmKvAsync(int64_t job_id, std::optional<std::string> vm_kv, RetryPolicy rp = {});
+        static std::future<DbResult<void>> SetProgramRefIdAsync(int64_t job_id, int64_t program_ref_id, RetryPolicy rp = {});
         static std::future<DbResult<std::optional<JobRow>>> ClaimNextReadyAsync(
             std::string claim_token, int lease_seconds, double aging_factor,
             std::optional<int64_t> savestate_id = std::nullopt, RetryPolicy rp = {});
@@ -95,6 +96,7 @@ namespace simcore::db {
         static inline DbResult<JobRow> Get(int64_t job_id) { return GetAsync(job_id).get(); }
         static inline DbResult<void> SetState(int64_t job_id, std::string new_state) { return SetStateAsync(job_id, std::move(new_state)).get(); }
         static inline DbResult<void> SetVmKv(int64_t job_id, std::optional<std::string> vm_kv) { return SetVmKvAsync(job_id, std::move(vm_kv)).get(); }
+        static inline DbResult<void> SetProgramRefId(int64_t job_id, int64_t program_ref_id) { return SetProgramRefIdAsync(job_id, program_ref_id).get(); }
 
         static inline DbResult<std::optional<JobRow>> ClaimNextReady(
             std::string claim_token, int lease_seconds, double aging_factor,

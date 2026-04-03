@@ -4,6 +4,8 @@
 
 #include <optional>
 
+#include "GUI/Common/StatusToast.h"
+
 class QPoint;
 
 class ArtifactsTableModel;
@@ -19,6 +21,7 @@ class QPushButton;
 class QSpinBox;
 class QTabWidget;
 class QTextEdit;
+class QTimer;
 
 class JobsPage final : public QWidget
 {
@@ -26,21 +29,25 @@ class JobsPage final : public QWidget
 
 public:
     explicit JobsPage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void visualReplayRequested(qint64 jobId);
+    void statusToastRequested(StatusToast toast);
 
 private:
     void createWidgets();
     void wireSignals();
-    void syncControlsFromController();
+    void syncControlsFromController(bool syncAll = false);
     void refreshModel();
     void updateInspector();
     void updateStatusWidgets();
+    void updateLoadingIndicatorState();
     QTextEdit* createReadOnlyTextEdit();
     std::optional<int> selectedProgramKind() const;
     std::optional<QString> selectedState() const;
     std::optional<qint64> selectedJobSetId() const;
+    std::optional<QString> selectedTagKey() const;
     void handleRestartRequested();
     void showJobsContextMenu(const QPoint& position);
 
@@ -52,6 +59,7 @@ private:
     QLabel* descriptionLabel_ = nullptr;
     QComboBox* kindFilter_ = nullptr;
     QComboBox* stateFilter_ = nullptr;
+    QComboBox* tagFilter_ = nullptr;
     QLineEdit* jobSetFilter_ = nullptr;
     QSpinBox* pageSizeSpin_ = nullptr;
     QPushButton* applyButton_ = nullptr;
@@ -63,7 +71,11 @@ private:
     QPushButton* refreshButton_ = nullptr;
     QLabel* pageSummaryLabel_ = nullptr;
     QLabel* lastRefreshLabel_ = nullptr;
+    QLabel* pageStatusLabel_ = nullptr;
     QLabel* inlineMessageLabel_ = nullptr;
+    QTimer* loadingStateTimer_ = nullptr;
+    bool delayedLoadingVisible_ = false;
+    QString lastToastSignature_;
 
     JobsTableView* jobsTable_ = nullptr;
     QLabel* inspectorSummary_ = nullptr;
@@ -76,4 +88,8 @@ private:
     QTextEdit* payloadText_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     ArtifactsTableView* artifactsTable_ = nullptr;
+
+    bool refreshingModel_ = false;
+    std::optional<qint64> pendingSelectedJobId_;
+
 };

@@ -14,6 +14,7 @@ struct WorkerCoordinatorConfig {
     double   aging_factor{ 0.0 };
     uint32_t idle_keepalive_ms{ 300000 };
     bool start_to_paused{ true };
+    bool restart_failed_jobs_automatically{ true };
 
     std::string worker_exe_path;
     std::string iso_path;
