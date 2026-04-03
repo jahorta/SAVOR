@@ -1,6 +1,6 @@
 #include "DtmAnnotationFile.h"
 
-#include "Utils/IniDoc.h"
+#include "../Utils/IniDoc.h"
 
 #include <algorithm>
 
@@ -64,14 +64,14 @@ std::optional<DtmAnnotationDoc> DtmAnnotationIo::load_ini(const std::string& pat
     if (!ini.has_value()) return std::nullopt;
 
     DtmAnnotationDoc doc;
-    doc.schema_version = ini->get_i32(kSecMeta, "schema_version", 1);
+    doc.schema_version = ini->get_u32(kSecMeta, "schema_version", 1);
     doc.dtm_sha256 = ini->get(kSecBinding, "dtm_sha256", "");
     doc.dtm_byte_length = static_cast<uint64_t>(ini->get_i64(kSecBinding, "dtm_byte_length", 0));
     doc.sav_required = ini->get_bool(kSecBinding, "sav_required", false);
     doc.sav_sha256 = ini->get(kSecBinding, "sav_sha256", "");
     doc.sav_byte_length = static_cast<uint64_t>(ini->get_i64(kSecBinding, "sav_byte_length", 0));
 
-    const int count = ini->get_i32(kSecBookmarks, "count", 0);
+    const int count = ini->get_u32(kSecBookmarks, "count", 0);
     doc.bookmarks.reserve(static_cast<size_t>(std::max(0, count)));
     for (int i = 0; i < count; ++i) {
         DtmBookmark bm;

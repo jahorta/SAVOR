@@ -5,6 +5,7 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
+#include "DB/Querying/DataService.h"
 
 #include <functional>
 #include <utility>

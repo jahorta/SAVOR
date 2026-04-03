@@ -1,6 +1,6 @@
 #include "DtmFile.h"
 
-#include "Utils/Hash.h"
+#include "../Utils/Hash.h"
 
 #include <algorithm>
 #include <cstring>

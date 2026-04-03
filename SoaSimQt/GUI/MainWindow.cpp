@@ -7,7 +7,6 @@
 #include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
-#include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 
 #include <QtCore/QStringList>
 

@@ -7,6 +7,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorPane.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
+#include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 
 class CoordinatorController;
 class CoordinatorPane;

@@ -21,9 +21,9 @@
 #include <QtWidgets/QVBoxLayout>
 
 namespace {
-StatusToast makeToast(StatusToast::Level level, const QString& text)
+StatusToast makeToast(StatusToast::Severity level, const QString& text)
 {
-    return StatusToast{ level, text, 4000 };
+    return StatusToast{ level, text };
 }
 }
 
@@ -156,7 +156,7 @@ void DtmEditorPage::onPickDtm()
 
     simcore::tas::DtmFile dtm;
     if (!dtm.load(path.toStdString())) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to load DTM file.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to load DTM file.")));
         return;
     }
 
@@ -168,7 +168,7 @@ void DtmEditorPage::onPickDtm()
     rebuildValidationText();
     rebuildPollTable();
     rebuildBookmarkTable();
-    emit statusToastRequested(makeToast(StatusToast::Level::Info, QStringLiteral("DTM loaded.")));
+    emit statusToastRequested(makeToast(StatusToast::Severity::Info, QStringLiteral("DTM loaded.")));
 }
 
 void DtmEditorPage::onSaveDtmAs()
@@ -177,23 +177,23 @@ void DtmEditorPage::onSaveDtmAs()
     const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save DTM As"), loadedDtmPath_, QStringLiteral("DTM (*.dtm);;All Files (*)"));
     if (path.isEmpty()) return;
     if (!dtm_->save(path.toStdString())) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to save DTM file.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to save DTM file.")));
         return;
     }
-    emit statusToastRequested(makeToast(StatusToast::Level::Success, QStringLiteral("DTM saved.")));
+    emit statusToastRequested(makeToast(StatusToast::Severity::Success, QStringLiteral("DTM saved.")));
 }
 
 void DtmEditorPage::onDetectInputStream()
 {
     if (loadedDtmPath_.isEmpty()) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Load a DTM first.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Load a DTM first.")));
         return;
     }
 
     const QFileInfo fi(loadedDtmPath_);
     auto objectRow = simcore::db::ObjectStore::FinalizeFromFile(loadedDtmPath_.toStdString(), simcore::db::Compression::None, fi.fileName().toStdString());
     if (!objectRow.ok) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to import DTM artifact for detector job.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to import DTM artifact for detector job.")));
         return;
     }
 
@@ -213,17 +213,17 @@ void DtmEditorPage::onDetectInputStream()
         std::optional<std::string>(iniText),
         std::optional<int64_t>(1)).get();
     if (!js.ok) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to create TasFrameDetector job set.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to create TasFrameDetector job set.")));
         return;
     }
 
     auto encoded = simcore::db::DataService::EncodeJobSetWithCodecAsync(simcore::PK_TasInputStreamDetector, js.value, iniText).get();
     if (!encoded.ok) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to enqueue TasFrameDetector job.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to enqueue TasFrameDetector job.")));
         return;
     }
 
-    emit statusToastRequested(makeToast(StatusToast::Level::Success,
+    emit statusToastRequested(makeToast(StatusToast::Severity::Success,
         QStringLiteral("TasFrameDetector job queued (job set %1).").arg(js.value)));
 }
 
@@ -240,7 +240,7 @@ void DtmEditorPage::onInsertPoll()
     poll.cstick_x = static_cast<uint8_t>(cstickXSpin_->value());
     poll.cstick_y = static_cast<uint8_t>(cstickYSpin_->value());
     if (!dtm_->insert_gc_polls(static_cast<size_t>(row), { poll })) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Insert poll failed (likely unsupported payload mode).")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Insert poll failed (likely unsupported payload mode).")));
         return;
     }
     rebuildValidationText();
@@ -253,7 +253,7 @@ void DtmEditorPage::onDeletePoll()
     const int row = pollTable_->currentRow();
     if (row < 0) return;
     if (!dtm_->erase_gc_polls(static_cast<size_t>(row), 1)) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Delete poll failed.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Delete poll failed.")));
         return;
     }
     rebuildValidationText();
@@ -276,7 +276,7 @@ void DtmEditorPage::onApplyPoll()
     poll.cstick_y = static_cast<uint8_t>(cstickYSpin_->value());
 
     if (!dtm_->write_gc_poll(static_cast<size_t>(row), poll)) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Poll update failed.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Poll update failed.")));
         return;
     }
     rebuildPollTable();
@@ -314,12 +314,12 @@ void DtmEditorPage::onSaveAnnotations()
 {
     if (!dtm_.has_value()) return;
     if (!annotations_.has_value()) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Warning, QStringLiteral("No annotations to save.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Warn, QStringLiteral("No annotations to save.")));
         return;
     }
 
     if (annotations_->dtm_sha256 != dtm_->compute_sha256()) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Annotation binding hash mismatch with currently loaded DTM.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Annotation binding hash mismatch with currently loaded DTM.")));
         return;
     }
 
@@ -330,11 +330,11 @@ void DtmEditorPage::onSaveAnnotations()
     if (path.isEmpty()) return;
 
     if (!simcore::tas::DtmAnnotationIo::save_ini(path.toStdString(), *annotations_)) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to save annotations.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to save annotations.")));
         return;
     }
 
-    emit statusToastRequested(makeToast(StatusToast::Level::Success, QStringLiteral("Annotations saved.")));
+    emit statusToastRequested(makeToast(StatusToast::Severity::Success, QStringLiteral("Annotations saved.")));
 }
 
 void DtmEditorPage::onLoadAnnotations()
@@ -345,18 +345,18 @@ void DtmEditorPage::onLoadAnnotations()
 
     const auto loaded = simcore::tas::DtmAnnotationIo::load_ini(path.toStdString());
     if (!loaded.has_value()) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Failed to parse annotation file.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Failed to parse annotation file.")));
         return;
     }
 
     if (loaded->dtm_sha256 != dtm_->compute_sha256()) {
-        emit statusToastRequested(makeToast(StatusToast::Level::Error, QStringLiteral("Annotation binding hash mismatch; refusing load.")));
+        emit statusToastRequested(makeToast(StatusToast::Severity::Error, QStringLiteral("Annotation binding hash mismatch; refusing load.")));
         return;
     }
 
     annotations_ = loaded;
     rebuildBookmarkTable();
-    emit statusToastRequested(makeToast(StatusToast::Level::Info, QStringLiteral("Annotations loaded.")));
+    emit statusToastRequested(makeToast(StatusToast::Severity::Info, QStringLiteral("Annotations loaded.")));
 }
 
 void DtmEditorPage::rebuildValidationText()
