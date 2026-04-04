@@ -118,12 +118,15 @@ ExplorerRunsCoordinator::ExplorerRunsCoordinator(QObject* parent)
     : QObject(parent)
     , lastGroupsRefresh_(QDateTime::currentDateTimeUtc())
 {
-    connect(&groupsWatcher_, &QFutureWatcher<std::vector<GroupRow>>::finished, this, [this]() {
+    connect(&groupsWatcher_, &QFutureWatcher<GroupPage>::finished, this, [this]() {
         try {
-            groups_ = groupsWatcher_.result();
+            const GroupPage page = groupsWatcher_.result();
+            groups_ = page.groups;
+            groupsNextCursor_ = page.next;
             lastGroupsRefresh_ = QDateTime::currentDateTimeUtc();
         } catch (...) {
             groups_.clear();
+            groupsNextCursor_.reset();
         }
         groupsInFlight_ = false;
         emitStateChanged();
@@ -164,6 +167,9 @@ bool ExplorerRunsCoordinator::jobsInFlight() const { return jobsInFlight_; }
 bool ExplorerRunsCoordinator::detailsInFlight() const { return detailsInFlight_; }
 bool ExplorerRunsCoordinator::autoRefreshEnabled() const { return autoRefreshEnabled_; }
 int ExplorerRunsCoordinator::refreshSeconds() const { return refreshSeconds_; }
+int ExplorerRunsCoordinator::groupsPageLimit() const { return groupsPageLimit_; }
+bool ExplorerRunsCoordinator::canLoadNextGroupsPage() const { return groupsNextCursor_.has_value(); }
+bool ExplorerRunsCoordinator::canLoadPreviousGroupsPage() const { return !groupsBeforeHistory_.empty(); }
 QString ExplorerRunsCoordinator::describeBattlePlanForJob(qint64 jobId) const
 {
     if (jobId <= 0) {
@@ -248,7 +254,11 @@ void ExplorerRunsCoordinator::requestGroupsRefresh()
 
     groupsInFlight_ = true;
     const bool childVictoryOnly = childVictoryOnly_;
-    groupsWatcher_.setFuture(runAsync([this, childVictoryOnly]() { return buildGroups(childVictoryOnly); }));
+    const std::optional<KeysetCursor> before = groupsBeforeCursor_;
+    const int pageLimit = groupsPageLimit_;
+    groupsWatcher_.setFuture(runAsync([this, childVictoryOnly, before, pageLimit]() {
+        return buildGroups(childVictoryOnly, before, pageLimit);
+    }));
     emitStateChanged();
 }
 
@@ -322,6 +332,43 @@ void ExplorerRunsCoordinator::setChildVictoryOnly(bool enabled)
         return;
     }
     childVictoryOnly_ = enabled;
+    groupsBeforeCursor_.reset();
+    groupsNextCursor_.reset();
+    groupsBeforeHistory_.clear();
+    lastGroupsRefresh_ = QDateTime::currentDateTimeUtc();
+    requestGroupsRefresh();
+}
+
+void ExplorerRunsCoordinator::setGroupsPageLimit(int limit)
+{
+    const int clamped = (std::max)(1, limit);
+    if (groupsPageLimit_ == clamped) {
+        return;
+    }
+    groupsPageLimit_ = clamped;
+    groupsBeforeCursor_.reset();
+    groupsNextCursor_.reset();
+    groupsBeforeHistory_.clear();
+    requestGroupsRefresh();
+}
+
+void ExplorerRunsCoordinator::requestNextGroupsPage()
+{
+    if (groupsInFlight_ || !groupsNextCursor_.has_value()) {
+        return;
+    }
+    groupsBeforeHistory_.push_back(groupsBeforeCursor_);
+    groupsBeforeCursor_ = groupsNextCursor_;
+    requestGroupsRefresh();
+}
+
+void ExplorerRunsCoordinator::requestPreviousGroupsPage()
+{
+    if (groupsInFlight_ || groupsBeforeHistory_.empty()) {
+        return;
+    }
+    groupsBeforeCursor_ = groupsBeforeHistory_.back();
+    groupsBeforeHistory_.pop_back();
     requestGroupsRefresh();
 }
 
@@ -368,26 +415,70 @@ void ExplorerRunsCoordinator::handleAutoRefreshTick()
     requestGroupsRefresh();
 }
 
-std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGroups(bool childVictoryOnly) const
+ExplorerRunsCoordinator::GroupPage ExplorerRunsCoordinator::buildGroups(
+    bool childVictoryOnly,
+    std::optional<KeysetCursor> before,
+    int pageLimit) const
 {
-    std::unordered_set<qint64> winningRootJobSetIds;
-    if (childVictoryOnly) {
-        auto victoriousRoots = ExplorerRunRepo::ListRootJobSetIdsByVictory(true);
-        if (!victoriousRoots.ok) {
-            return {};
-        }
-        winningRootJobSetIds.insert(victoriousRoots.value.begin(), victoriousRoots.value.end());
+    GroupPage out{};
+    std::unordered_set<qint64> pageRootIds;
+    std::optional<KeysetCursor> nextCursor;
+
+    if (pageLimit <= 0) {
+        return out;
     }
 
-    JobSetsListScope scope{};
-    scope.program_kind = simcore::PK_BattleSingleTurnRunner;
-    auto page = JobSetsRepo::ListRecentAsync(scope, std::nullopt, 400).get();
-    if (!page.ok) {
-        return {};
+    if (childVictoryOnly) {
+        auto victoriousRoots = ExplorerRunRepo::ListRootJobSetIdsByVictoryPaged(true, before, pageLimit);
+        if (!victoriousRoots.ok) {
+            return out;
+        }
+        pageRootIds.insert(victoriousRoots.value.items.begin(), victoriousRoots.value.items.end());
+        nextCursor = victoriousRoots.value.next;
+    } else {
+        JobSetsListScope scope{};
+        scope.program_kind = simcore::PK_BattleSingleTurnRunner;
+        std::optional<KeysetCursor> scanCursor = before;
+        std::optional<KeysetCursor> lastAcceptedCursor;
+
+        constexpr int scanBatchSize = 400;
+        while (static_cast<int>(pageRootIds.size()) < pageLimit) {
+            auto page = JobSetsRepo::ListRecentAsync(scope, scanCursor, scanBatchSize).get();
+            if (!page.ok || page.value.items.empty()) {
+                break;
+            }
+
+            bool hitLimit = false;
+            for (const JobSetLite& lite : page.value.items) {
+                auto js = JobSetsRepo::Get(lite.job_set_id);
+                if (!js.ok) {
+                    continue;
+                }
+                const qint64 rootId = resolveRoot(js.value);
+                if (!pageRootIds.contains(rootId) && static_cast<int>(pageRootIds.size()) >= pageLimit) {
+                    nextCursor = lastAcceptedCursor;
+                    hitLimit = true;
+                    break;
+                }
+                pageRootIds.insert(rootId);
+                lastAcceptedCursor = KeysetCursor{ lite.created_at, lite.job_set_id };
+            }
+
+            if (hitLimit || !page.value.next.has_value()) {
+                break;
+            }
+            scanCursor = page.value.next;
+        }
+    }
+
+    std::vector<int64_t> roots(pageRootIds.begin(), pageRootIds.end());
+    auto familyRows = JobSetsRepo::ListFamiliesForSeeds(roots);
+    if (!familyRows.ok) {
+        return out;
     }
 
     std::unordered_map<qint64, GroupRow> groupMap;
-    for (const JobSetLite& lite : page.value.items) {
+    for (const JobSetLite& lite : familyRows.value) {
         auto js = JobSetsRepo::Get(lite.job_set_id);
         if (!js.ok) {
             continue;
@@ -395,7 +486,7 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
 
         const WaveMeta meta = parseWaveMeta(js.value.meta_text);
         const qint64 rootId = resolveRoot(js.value);
-        if (childVictoryOnly && !winningRootJobSetIds.contains(rootId)) {
+        if (!pageRootIds.contains(rootId)) {
             continue;
         }
 
@@ -470,7 +561,9 @@ std::vector<ExplorerRunsCoordinator::GroupRow> ExplorerRunsCoordinator::buildGro
     std::sort(groups.begin(), groups.end(), [](const GroupRow& a, const GroupRow& b) {
         return a.createdAt > b.createdAt;
     });
-    return groups;
+    out.groups = std::move(groups);
+    out.next = nextCursor;
+    return out;
 }
 
 std::vector<ExplorerRunsCoordinator::JobViewRow> ExplorerRunsCoordinator::buildJobsForWaves(const std::vector<qint64>& waveJobSetIds) const
