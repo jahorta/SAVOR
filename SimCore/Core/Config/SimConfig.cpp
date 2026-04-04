@@ -33,6 +33,18 @@ namespace simcore {
 
     namespace SimConfigIO {
 
+        void ApplyDefaultDbPaths(SimConfig& cfg) {
+            const auto db_root = cfg.user_dir / "DB";
+            cfg.execution_db_path = db_root / "Execution.sqlite";
+            cfg.state_db_path = db_root / "State.sqlite";
+            cfg.analysis_db_path = db_root / "Analysis.sqlite";
+            cfg.authoring_db_path = db_root / "Authoring.sqlite";
+            cfg.ui_read_db_path = db_root / "UiRead.sqlite";
+            cfg.archive_db_path = db_root / "ArchiveIndex.sqlite";
+            cfg.object_store_root = cfg.user_dir / "ObjectStore";
+            cfg.archive_store_root = cfg.user_dir / "ArchiveStore";
+        }
+
         std::string TrimAndUnquote(std::string s) {
             auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
             // trim left
@@ -112,6 +124,33 @@ namespace simcore {
                     else if (key == "dolphin_base_dir") {
                         cfg.dolphin_base_dir = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
                     }
+                    else if (key == "execution_db_path") {
+                        cfg.execution_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "state_db_path") {
+                        cfg.state_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "analysis_db_path" ||
+                        key == "analysis_spine_db_path" ||
+                        key == "analysis_seed_probe_db_path" ||
+                        key == "analysis_battle_db_path") {
+                        cfg.analysis_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "authoring_db_path") {
+                        cfg.authoring_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "ui_read_db_path") {
+                        cfg.ui_read_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "archive_db_path") {
+                        cfg.archive_db_path = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "object_store_root") {
+                        cfg.object_store_root = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
+                    else if (key == "archive_store_root") {
+                        cfg.archive_store_root = MakeAbsoluteRelativeToFile(path, std::filesystem::path(val));
+                    }
                 }
             }
 
@@ -119,18 +158,51 @@ namespace simcore {
                 if (error_out) *error_out = "Config missing required keys (user_dir, dolphin_base_dir).";
                 return std::nullopt;
             }
+            const SimConfig defaults = [&cfg]() {
+                SimConfig out = cfg;
+                ApplyDefaultDbPaths(out);
+                return out;
+            }();
+            if (cfg.execution_db_path.empty()) cfg.execution_db_path = defaults.execution_db_path;
+            if (cfg.state_db_path.empty()) cfg.state_db_path = defaults.state_db_path;
+            if (cfg.analysis_db_path.empty()) cfg.analysis_db_path = defaults.analysis_db_path;
+            if (cfg.authoring_db_path.empty()) cfg.authoring_db_path = defaults.authoring_db_path;
+            if (cfg.ui_read_db_path.empty()) cfg.ui_read_db_path = defaults.ui_read_db_path;
+            if (cfg.archive_db_path.empty()) cfg.archive_db_path = defaults.archive_db_path;
+            if (cfg.object_store_root.empty()) cfg.object_store_root = defaults.object_store_root;
+            if (cfg.archive_store_root.empty()) cfg.archive_store_root = defaults.archive_store_root;
             return cfg;
         }
 
         bool Save(const SimConfig& cfg, const std::filesystem::path& path, std::string* error_out) {
             try {
+                SimConfig cfg_to_save = cfg;
+                if (cfg_to_save.execution_db_path.empty() ||
+                    cfg_to_save.state_db_path.empty() ||
+                    cfg_to_save.analysis_db_path.empty() ||
+                    cfg_to_save.authoring_db_path.empty() ||
+                    cfg_to_save.ui_read_db_path.empty() ||
+                    cfg_to_save.archive_db_path.empty() ||
+                    cfg_to_save.object_store_root.empty() ||
+                    cfg_to_save.archive_store_root.empty()) {
+                    ApplyDefaultDbPaths(cfg_to_save);
+                }
+
                 std::filesystem::create_directories(path.parent_path());
                 std::ostringstream os;
                 os << "# SOASim simulator configuration\n"
                     "# Stores paths for your isolated User folder and a DolphinQt *portable* base.\n"
                     "\n[Paths]\n";
-                os << "user_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg.user_dir)) << "\n";
-                os << "dolphin_base_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg.dolphin_base_dir)) << "\n";
+                os << "user_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.user_dir)) << "\n";
+                os << "dolphin_base_dir=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.dolphin_base_dir)) << "\n";
+                os << "execution_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.execution_db_path)) << "\n";
+                os << "state_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.state_db_path)) << "\n";
+                os << "analysis_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.analysis_db_path)) << "\n";
+                os << "authoring_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.authoring_db_path)) << "\n";
+                os << "ui_read_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.ui_read_db_path)) << "\n";
+                os << "archive_db_path=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.archive_db_path)) << "\n";
+                os << "object_store_root=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.object_store_root)) << "\n";
+                os << "archive_store_root=" << ToUtf8(std::filesystem::weakly_canonical(cfg_to_save.archive_store_root)) << "\n";
 
                 std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
                 if (!ofs) { if (error_out) *error_out = "Could not open for write: " + ToUtf8(path); return false; }
