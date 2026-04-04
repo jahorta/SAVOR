@@ -18,4 +18,10 @@ TEST(SimConfig, RoundTrip) {
         std::filesystem::weakly_canonical(out->user_dir));
     EXPECT_EQ(std::filesystem::weakly_canonical(in.dolphin_base_dir),
         std::filesystem::weakly_canonical(out->dolphin_base_dir));
+    EXPECT_EQ(std::filesystem::weakly_canonical(tmp / "User" / "DB" / "Execution.sqlite"),
+        std::filesystem::weakly_canonical(out->execution_db_path));
+    EXPECT_EQ(std::filesystem::weakly_canonical(tmp / "User" / "DB" / "Analysis.sqlite"),
+        std::filesystem::weakly_canonical(out->analysis_db_path));
+    EXPECT_EQ(std::filesystem::weakly_canonical(tmp / "User" / "ArchiveStore"),
+        std::filesystem::weakly_canonical(out->archive_store_root));
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files"><UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier><Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions></Filter>
+    <Filter Include="Header Files"><UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier><Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Migrations\MigrationContext.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Migrations\MigrationRunner.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Types\TypedIds.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Types\UtcTimestamp.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\IExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+</Project>

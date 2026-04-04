@@ -1,0 +1,248 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F0FA41E9-503A-4A58-9AE6-1A9E112D6F51}</ProjectGuid>
+    <Keyword>QtVS_v304</Keyword>
+    <WindowsTargetPlatformVersion Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">10.0</WindowsTargetPlatformVersion>
+    <QtMsBuild Condition="'$(QtMsBuild)'=='' OR !Exists('$(QtMsBuild)\qt.targets')">$(MSBuildProjectDirectory)\QtMsBuild</QtMsBuild>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Condition="Exists('$(QtMsBuild)\qt_defaults.props')">
+    <Import Project="$(QtMsBuild)\qt_defaults.props" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="QtSettings">
+    <QtInstall>6.10.2_msvc2022_64</QtInstall>
+    <QtModules>concurrent;core;gui;widgets</QtModules>
+    <QtBuildConfig>debug</QtBuildConfig>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="QtSettings">
+    <QtInstall>6.10.2_msvc2022_64</QtInstall>
+    <QtModules>concurrent;core;gui;widgets</QtModules>
+    <QtBuildConfig>release</QtBuildConfig>
+  </PropertyGroup>
+  <Target Name="QtMsBuildNotFound" BeforeTargets="CustomBuild;ClCompile" Condition="!Exists('$(QtMsBuild)\qt.targets') or !Exists('$(QtMsBuild)\qt.props')">
+    <Message Importance="High" Text="QtMsBuild: could not locate qt.targets, qt.props; project may not build correctly." />
+  </Target>
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="..\ThirdParty.props" />
+    <Import Project="..\linked_libs.props" />
+    <Import Project="..\linked_libs.debug.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="..\ThirdParty.props" />
+    <Import Project="..\linked_libs.props" />
+    <Import Project="..\linked_libs.release.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <PostBuildEvent>
+      <Command>C:\Qt\6.10.2\msvc2022_64\bin\windeployqt.exe "$(TargetPath)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="Configuration">
+    <ClCompile>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>_DEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="Configuration">
+    <ClCompile>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
+    <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp" />
+    <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\JobsController.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\JobsPage.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp" />
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp" />
+    <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeController.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
+    <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp" />
+    <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp" />
+    <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
+    <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
+    <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
+    <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
+    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h" />
+    <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
+    <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h" />
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h" />
+    <ClInclude Include="GUI\Common\StatusToast.h" />
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h" />
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
+    <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h" />
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h" />
+    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h" />
+    <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
+    <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
+    <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
+    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h" />
+    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
+    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
+    <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h" />
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h" />
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h" />
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h" />
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h" />
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />
+    <ClInclude Include="GUI\StyleSheet.h" />
+    <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
+    <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
+    <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
+    <QtRcc Include="SoaSimQt2.qrc" />
+    <ClCompile Include="GUI\MainWindow.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SimCoreWorker\SimCoreWorker.vcxproj">
+      <Project>{41DB0E12-AB09-4BC8-9647-1D8713A6A73E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SimCore\SimCore.vcxproj">
+      <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')">
+    <Import Project="$(QtMsBuild)\qt.targets" />
+  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

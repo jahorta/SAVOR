@@ -70,13 +70,14 @@ This document captures the finalized architecture decisions for the database spl
 
 1. **Execution DB** (ephemeral): jobs, triggers, lease state, event log, outbox.
 2. **State DB** (durable): object refs, savestates, derivations.
-3. **Analysis Spine DB** (durable): small cross-mode provenance.
-4. **Analysis.SeedProbe DB** (durable): seed probe durable facts/results.
-5. **Analysis.Battle DB** (durable): explicit battle exploration tables.
-6. **Authoring DB** (durable): plans/templates/predicates/settings.
-7. **UI Read DB** (rebuildable): denormalized query models.
-8. **Archive Index DB** (durable): package catalog and restore requests.
-9. **Blob/Object Store** (durable): artifacts and archive files.
+3. **Analysis DB** (durable): one DB file with logical schema groups:
+   - Analysis.Spine (small cross-mode provenance)
+   - Analysis.SeedProbe (seed probe durable facts/results)
+   - Analysis.Battle (explicit battle exploration tables)
+4. **Authoring DB** (durable): plans/templates/predicates/settings.
+5. **UI Read DB** (rebuildable): denormalized query models.
+6. **Archive Index DB** (durable): package catalog and restore requests.
+7. **Blob/Object Store** (durable): artifacts and archive files.
 
 ---
 

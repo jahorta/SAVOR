@@ -42,9 +42,7 @@ Create initial namespaces/folders:
 Introduce context-specific DB factories/interfaces:
 - `IExecutionDb`
 - `IStateDb`
-- `IAnalysisSpineDb`
-- `IAnalysisSeedProbeDb`
-- `IAnalysisBattleDb`
+- `IAnalysisDb` (single DB file; logical groups for Spine/SeedProbe/Battle)
 - `IAuthoringDb`
 - `IUiReadDb`
 - `IArchiveDb`
@@ -53,9 +51,7 @@ Introduce context-specific DB factories/interfaces:
 Define configurable paths:
 - `ExecutionDbPath`
 - `StateDbPath`
-- `AnalysisSpineDbPath`
-- `AnalysisSeedProbeDbPath`
-- `AnalysisBattleDbPath`
+- `AnalysisDbPath`
 - `AuthoringDbPath`
 - `UiReadDbPath`
 - `ArchiveDbPath`

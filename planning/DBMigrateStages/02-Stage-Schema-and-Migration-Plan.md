@@ -1,7 +1,7 @@
 # Stage 2 - Schema and Migration Plan
 
 ## Objective
-Create concrete schemas and migrations for all new context DBs, including the new Analysis.SeedProbe tables and hybrid provenance spine.
+Create concrete schemas and migrations for all new context DBs, including a single Analysis DB file with Analysis.Spine, Analysis.SeedProbe, and Analysis.Battle schema groups.
 
 ## Exit Criteria
 - All target DB files can be created from migrations.
@@ -44,7 +44,7 @@ Create concrete schemas and migrations for all new context DBs, including the ne
 
 ---
 
-## 2.3 Analysis Spine DB (Durable, Minimal)
+## 2.3 Analysis DB - Spine Schema Group (Durable, Minimal)
 
 ### Tables
 1. `asp_run`
@@ -59,7 +59,7 @@ Create concrete schemas and migrations for all new context DBs, including the ne
 
 ---
 
-## 2.4 Analysis.SeedProbe DB (Durable, New)
+## 2.4 Analysis DB - SeedProbe Schema Group (Durable, New)
 
 ## Purpose
 Persist canonical seed probe outputs as durable analysis facts.
@@ -138,7 +138,7 @@ Persist canonical seed probe outputs as durable analysis facts.
 
 ---
 
-## 2.5 Analysis.Battle DB (Durable)
+## 2.5 Analysis DB - Battle Schema Group (Durable)
 
 ### Tables
 1. `ab_battle_set`
