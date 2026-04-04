@@ -3,7 +3,7 @@
 namespace simcore::db {
 
 bool Stage1ScaffoldReady() {
-    return !ListAllMigrationContexts().empty();
+    return !migrations::ListAllMigrationContexts().empty();
 }
 
 } // namespace simcore::db
