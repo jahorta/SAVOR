@@ -31,7 +31,12 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
    - `ui_artifact_browser`
 5. Archive package and rehydrate status:
    - `ui_archive_catalog`
-6. Projector checkpoints:
+6. Workflow orchestration visibility:
+   - `ui_workflow_instance`
+   - `ui_workflow_step`
+   - `ui_workflow_edge`
+   - `ui_workflow_alert`
+7. Projector checkpoints:
    - `ui_projection_checkpoint`
 
 ---
