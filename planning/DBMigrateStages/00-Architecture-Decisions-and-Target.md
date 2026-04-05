@@ -95,9 +95,10 @@ This document captures the finalized architecture decisions for the database spl
 
 1. Foundation and project structure.
 2. Schema definitions + migrations for all target DBs.
-3. Outbox + event contracts + projector scaffolding.
-4. Archive/rehydration pipeline for execution data.
-5. UI Read model projections and SoaSimQt2 read cutover.
-6. Validation suite, backfill, and production hardening.
+3. Workflow orchestration transition (codec decomposition + explicit workflow steps + trigger compatibility bridge).
+4. Outbox + event contracts + projector scaffolding.
+5. Archive/rehydration pipeline for execution data.
+6. UI Read model projections and SoaSimQt2 read cutover.
+7. Validation suite, backfill, and production hardening.
 
-See stage documents `01` through `05` for concrete tasks.
+See stage documents `01`, `02`, `03b`, `03`, `04`, and `05` for concrete tasks.
