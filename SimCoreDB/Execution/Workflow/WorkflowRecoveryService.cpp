@@ -36,9 +36,9 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
     constexpr const char* kSelect =
         "SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, "
         "CASE "
-        "  WHEN COALESCE(SUM(CASE WHEN j.state IN ('FAILED','CANCELED','SUPERSEDED') THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state IN ('FAILED','CANCELED') THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
         "  WHEN COUNT(j.job_id) > 0 "
-        "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
+        "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
         "  ELSE NULL "
         "END AS terminal_state "
         "FROM exec_workflow_step s "
