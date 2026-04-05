@@ -59,7 +59,50 @@ inline bool ValidateV1PayloadRef(
 }
 
 inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {
-    return ValidateV1PayloadRef(envelope, "Execution", "workflow_event", error_out);
+    if (!ValidateV1EnvelopeBasics(envelope, error_out)) {
+        return false;
+    }
+    if (envelope.context_name != "Execution") {
+        if (error_out) *error_out = "context_name does not match expected payload family";
+        return false;
+    }
+
+    if (envelope.event_type == "Execution.JobSetCreated.v1") {
+        if (envelope.payload_ref_kind != "job_set") {
+            if (error_out) *error_out = "payload_ref_kind must be job_set for Execution.JobSetCreated.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "Execution.JobQueued.v1"
+        || envelope.event_type == "Execution.JobClaimed.v1"
+        || envelope.event_type == "Execution.JobLeaseRenewed.v1"
+        || envelope.event_type == "Execution.JobProgressed.v1"
+        || envelope.event_type == "Execution.JobCompleted.v1"
+        || envelope.event_type == "Execution.JobEventArchived.v1"
+        || envelope.event_type == "Execution.JobRestored.v1") {
+        if (envelope.payload_ref_kind != "job") {
+            if (error_out) *error_out = "payload_ref_kind must be job for Execution.Job* event";
+            return false;
+        }
+        return true;
+    }
+
+    if (envelope.event_type == "Execution.WorkflowInstanceCreated.v1"
+        || envelope.event_type == "Execution.WorkflowStepReady.v1"
+        || envelope.event_type == "Execution.WorkflowStepMaterialized.v1"
+        || envelope.event_type == "Execution.WorkflowStepCompleted.v1"
+        || envelope.event_type == "Execution.WorkflowStepFailed.v1"
+        || envelope.event_type == "Execution.WorkflowInstanceCompleted.v1") {
+        if (envelope.payload_ref_kind != "workflow_event") {
+            if (error_out) *error_out = "payload_ref_kind must be workflow_event for Execution.Workflow* event";
+            return false;
+        }
+        return true;
+    }
+
+    if (error_out) *error_out = "unsupported Execution event_type";
+    return false;
 }
 
 inline bool ValidateAnalysisSeedProbePayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {

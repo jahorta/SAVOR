@@ -74,8 +74,8 @@ bool JobProjector::ProjectFromOutbox(const std::string& projector_name, int max_
         .db = db_,
         .outbox_table = "exec_outbox_message",
         .context_name = "Execution",
-        .aggregate_kind = "workflow_instance",
-        .payload_ref_kind = "workflow_event",
+        .aggregate_kind = "",
+        .payload_ref_kind = "",
         .max_attempts = max_attempts,
     });
 

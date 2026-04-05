@@ -29,6 +29,7 @@
     <ClInclude Include="Common\Types\TypedIds.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Types\UtcTimestamp.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\IExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Jobs\JobEventOrchestration.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\ExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
@@ -60,6 +61,7 @@
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>

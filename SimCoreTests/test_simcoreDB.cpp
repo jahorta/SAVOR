@@ -15,6 +15,7 @@
 #include "Common/Events/OutboxRelay.h"
 #include "SimCoreDB.h"
 #include "Execution/Workflow/ExecutionDb.h"
+#include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowEngine.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
@@ -92,6 +93,13 @@ public:
     }
 };
 
+class NullJobEventCommandService final : public simcore::db::execution::jobs::IJobEventCommandService {
+public:
+    bool AppendLifecycleEvent(const simcore::db::execution::jobs::JobLifecycleEventCommand&, std::string*) override {
+        return true;
+    }
+};
+
 class RecordingExecutionDb final : public simcore::db::IExecutionDb {
 public:
     simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override {
@@ -100,9 +108,13 @@ public:
     simcore::db::execution::workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() override {
         return &command_service;
     }
+    simcore::db::execution::jobs::IJobEventCommandService* JobCommandService() override {
+        return &job_command_service;
+    }
 
     NullWorkflowQueryService query_service;
     RecordingWorkflowCommandService command_service;
+    NullJobEventCommandService job_command_service;
 };
 
 } // namespace
@@ -1702,4 +1714,84 @@ VALUES
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "COMPLETED");
     sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceEmitsEventsOneThroughEight) {
+    using namespace simcore::db::execution::jobs;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(501, 1, 'stage3d', unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    ExecutionDb execution_db(db_);
+    auto* job_commands = execution_db.JobCommandService();
+    ASSERT_NE(job_commands, nullptr);
+
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobSetCreated, .job_set_id = 501 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobQueued, .job_id = 601 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobClaimed, .job_id = 601, .claimed_by_token = std::string("worker-1"), .lease_expires_at_utc = 2000000 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobLeaseRenewed, .job_id = 601, .lease_expires_at_utc = 3000000 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 601, .message = std::string("50%") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 601 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobEventArchived, .job_id = 601, .message = std::string("archived") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobRestored, .job_id = 601, .message = std::string("restored") }, &err)) << err;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type LIKE 'Execution.Job%.v1';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 8);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='job' AND payload_ref_id=601;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dExecutionPayloadResolverReadsJobSetAndJobPayloads) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(701, 1, 'payload', unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, unixepoch()*1000);
+)SQL"));
+
+    ExecutionDb execution_db(db_);
+
+    const auto from_job_set = execution_db.ResolveExecutionWorkflowJobPayload(
+        "Execution.JobSetCreated.v1", 1, "job_set", 701);
+    ASSERT_TRUE(from_job_set.has_value());
+    EXPECT_EQ(from_job_set->job_set_id, 701);
+    EXPECT_EQ(from_job_set->job_id, 0);
+
+    const auto from_job = execution_db.ResolveExecutionWorkflowJobPayload(
+        "Execution.JobQueued.v1", 1, "job", 801);
+    ASSERT_TRUE(from_job.has_value());
+    EXPECT_EQ(from_job->job_set_id, 701);
+    EXPECT_EQ(from_job->job_id, 801);
+
+    simcore::db::events::EventEnvelope invalid{};
+    invalid.event_type = "Execution.JobQueued.v1";
+    invalid.event_version = 1;
+    invalid.context_name = "Execution";
+    invalid.aggregate_kind = "job";
+    invalid.payload_ref_kind = "workflow_event";
+    invalid.payload_ref_id = 801;
+    EXPECT_FALSE(execution_db.ResolveExecutionWorkflowJobPayload(invalid).has_value());
 }

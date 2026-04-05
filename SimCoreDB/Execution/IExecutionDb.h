@@ -12,6 +12,10 @@ struct IWorkflowOrchestrationCommandService;
 struct IWorkflowOrchestrationQueryService;
 }
 
+namespace simcore::db::execution::jobs {
+struct IJobEventCommandService;
+}
+
 namespace simcore::db {
 
 struct IExecutionDb {
@@ -19,6 +23,7 @@ struct IExecutionDb {
 
     virtual execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() = 0;
     virtual execution::workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() = 0;
+    virtual execution::jobs::IJobEventCommandService* JobCommandService() = 0;
 
     // Resolves execution workflow/job payload references to typed v1 view fields.
     virtual std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
