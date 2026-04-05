@@ -24,4 +24,7 @@
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="update_generated_migrations_command.txt" />
+  </ItemGroup>
 </Project>

@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -103,3 +105,5 @@ CREATE INDEX IF NOT EXISTS ix_exec_job_job_set_state_queue_desc
 
 CREATE INDEX IF NOT EXISTS ix_exec_outbox_unpublished
     ON exec_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;

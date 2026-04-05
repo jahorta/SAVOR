@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -81,3 +83,5 @@ CREATE INDEX IF NOT EXISTS ix_state_savestate_derivation_to
 
 CREATE INDEX IF NOT EXISTS ix_state_outbox_unpublished
     ON state_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;

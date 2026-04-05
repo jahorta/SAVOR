@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -167,3 +169,5 @@ CREATE TABLE IF NOT EXISTS au_outbox_message (
 
 CREATE INDEX IF NOT EXISTS ix_au_outbox_unpublished
     ON au_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;

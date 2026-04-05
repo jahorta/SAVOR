@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -59,3 +61,5 @@ CREATE TABLE IF NOT EXISTS asp_outbox_message (
 
 CREATE INDEX IF NOT EXISTS ix_asp_outbox_unpublished
     ON asp_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;
