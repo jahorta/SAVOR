@@ -65,6 +65,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         const char* next_step_state = nullptr;
         const char* event_kind = nullptr;
         const char* message = nullptr;
+        const auto operation_ts = NowUtc();
         if (terminal_state == "COMPLETED") {
             next_step_state = "COMPLETED";
             event_kind = "Execution.WorkflowStepCompleted.v1";
@@ -91,7 +92,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         }
         sqlite3_bind_int64(up, 1, workflow_step_id);
         sqlite3_bind_text(up, 2, next_step_state, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(up, 3, NowUtc());
+        sqlite3_bind_int64(up, 3, operation_ts);
         if (sqlite3_step(up) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
             sqlite3_finalize(up);
@@ -114,7 +115,7 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         sqlite3_bind_int64(ev, 1, workflow_instance_id);
         sqlite3_bind_int64(ev, 2, workflow_step_id);
         sqlite3_bind_text(ev, 3, event_kind, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(ev, 4, NowUtc());
+        sqlite3_bind_int64(ev, 4, operation_ts);
         sqlite3_bind_text(ev, 5, message, -1, SQLITE_STATIC);
         if (sqlite3_step(ev) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -139,14 +140,16 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
         }
         std::ostringstream event_id;
         event_id << "workflow-recovery-" << workflow_instance_id << "-" << workflow_event_id;
+        const auto event_id_value = event_id.str();
         const auto aggregate_id = std::to_string(workflow_instance_id);
-        const auto occurred_at_utc = NowUtc();
-        sqlite3_bind_text(outbox, 1, event_id.str().c_str(), -1, SQLITE_TRANSIENT);
+        const auto correlation_id = "workflow-instance-" + aggregate_id;
+        const auto causation_id = "workflow-step-" + std::to_string(workflow_step_id);
+        sqlite3_bind_text(outbox, 1, event_id_value.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(outbox, 2, event_kind, -1, SQLITE_STATIC);
         sqlite3_bind_text(outbox, 3, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(outbox, 4, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(outbox, 5, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(outbox, 6, occurred_at_utc);
+        sqlite3_bind_text(outbox, 4, correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(outbox, 5, causation_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(outbox, 6, operation_ts);
         sqlite3_bind_int64(outbox, 7, workflow_event_id);
         if (sqlite3_step(outbox) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);

@@ -18,6 +18,8 @@ Detailed staged implementation plan for the SOASim bounded-context database spli
   - Concrete mapping of Stage 3b workflow schema/contracts to source files plus Stage 3c startup guard requirements.
 - `03-Stage-Events-Outbox-and-Projectors.md`
   - Event catalog v1, outbox rules, and projector implementation plan.
+- `03d-Event-Emission-Coverage-Checklist.md`
+  - Catalog-wide event emission coverage map with concrete code paths and deferred rationale.
 - `04-Stage-Archive-and-Rehydrate.md`
   - JSONL+blob archive packaging and execution DB rehydration.
 - `05-Stage-UI-Cutover-and-Validation.md`
@@ -38,5 +40,6 @@ Recommended implementation sequence:
 3. `03b-Stage-Workflow-Orchestration-and-Codec-Decomposition.md`
 4. `03c-Stage-Workflow-Validation-Vertical-Slice.md`
 5. `03-Stage-Events-Outbox-and-Projectors.md`
-6. `04-Stage-Archive-and-Rehydrate.md`
-7. `05-Stage-UI-Cutover-and-Validation.md`
+6. `03d-Event-Emission-Coverage-Checklist.md`
+7. `04-Stage-Archive-and-Rehydrate.md`
+8. `05-Stage-UI-Cutover-and-Validation.md`
