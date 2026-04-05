@@ -37,6 +37,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="State\SqliteStateDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" ><Filter>Header Files</Filter></ClInclude>
@@ -62,6 +63,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="State\SqliteStateDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" ><Filter>Source Files</Filter></ClCompile>

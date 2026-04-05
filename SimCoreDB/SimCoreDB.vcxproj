@@ -189,6 +189,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SimCoreDB.h" />
     <ClInclude Include="State\IStateDb.h" />
+    <ClInclude Include="State\SqliteStateDb.h" />
     <ClInclude Include="UIRead\IUiReadDb.h" />
     <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" />
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" />
@@ -214,6 +215,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
+    <ClCompile Include="State\SqliteStateDb.cpp" />
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" />
