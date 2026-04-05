@@ -7,15 +7,12 @@
 #include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
+#include "../Common/Events/EventPayloadViews.h"
 #include "../Common/Types/UtcTimestamp.h"
 
 namespace simcore::db {
 
-struct ArtifactPayloadRecord {
-    std::int64_t artifact_id = 0;
-    std::int64_t savestate_id = 0;
-    std::int64_t tas_variant_id = 0;
-};
+using ArtifactPayloadRecord = events::StateArtifactPayloadView;
 
 struct IStateDb {
     virtual ~IStateDb() = default;
@@ -40,6 +37,9 @@ struct IStateDb {
         int event_version,
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<ArtifactPayloadRecord> ResolveArtifactPayload(
+        const events::EventEnvelope& envelope) const = 0;
 };
 
 } // namespace simcore::db

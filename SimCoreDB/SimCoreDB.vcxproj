@@ -163,6 +163,9 @@
     <ClInclude Include="Common\DbConfigPaths.h" />
     <ClInclude Include="Common\Events\EventEnvelope.h" />
     <ClInclude Include="Common\Events\EventCatalog.h" />
+    <ClInclude Include="Common\Events\EventPayloadDispatch.h" />
+    <ClInclude Include="Common\Events\EventPayloadValidation.h" />
+    <ClInclude Include="Common\Events\EventPayloadViews.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />

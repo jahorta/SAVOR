@@ -7,21 +7,13 @@
 #include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
+#include "../Common/Events/EventPayloadViews.h"
 #include "../Common/Types/UtcTimestamp.h"
 
 namespace simcore::db {
 
-struct SeedProbePayloadRecord {
-    std::int64_t probe_set_id = 0;
-    std::int64_t probe_run_id = 0;
-    std::int64_t probe_result_id = 0;
-};
-
-struct BattlePayloadRecord {
-    std::int64_t battle_set_id = 0;
-    std::int64_t wave_id = 0;
-    std::int64_t turn_job_id = 0;
-};
+using SeedProbePayloadRecord = events::AnalysisSeedProbePayloadView;
+using BattlePayloadRecord = events::AnalysisBattlePayloadView;
 
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
@@ -44,11 +36,17 @@ struct IAnalysisDb {
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
+    virtual std::optional<SeedProbePayloadRecord> ResolveSeedProbePayload(
+        const events::EventEnvelope& envelope) const = 0;
+
     // Battle-analysis family payload resolver.
     virtual std::optional<BattlePayloadRecord> ResolveBattlePayload(
         int event_version,
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<BattlePayloadRecord> ResolveBattlePayload(
+        const events::EventEnvelope& envelope) const = 0;
 };
 
 } // namespace simcore::db
