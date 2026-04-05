@@ -172,6 +172,14 @@
     <ClInclude Include="Common\Types\TypedIds.h" />
     <ClInclude Include="Common\Types\UtcTimestamp.h" />
     <ClInclude Include="Execution\IExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\ExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h" />
+    <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowEngine.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SimCoreDB.h" />
     <ClInclude Include="State\IStateDb.h" />
     <ClInclude Include="UIRead\IUiReadDb.h" />
@@ -180,6 +188,14 @@
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Execution\ProgramDB\ProgramKindLegacyCodecShim.cpp" />
+    <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
+    <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
+    <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
   </ItemGroup>
   <ItemGroup>

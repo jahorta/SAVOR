@@ -320,6 +320,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\DB\DBTriggerEngine.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinator.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h" />
+    <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.h" />
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.h" />
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowIntegrationMode.h" />
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
@@ -436,6 +440,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
+    <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp" />
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp" />
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.cpp" />
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />

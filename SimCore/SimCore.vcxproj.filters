@@ -459,6 +459,18 @@
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowIntegrationMode.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\IniKV.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -774,6 +786,15 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">

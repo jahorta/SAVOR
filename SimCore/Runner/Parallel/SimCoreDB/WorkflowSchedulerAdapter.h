@@ -1,0 +1,34 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <string>
+
+namespace simcore::runner::parallel::simcoredb {
+
+struct WorkflowReadyStep {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string step_key;
+    std::string step_kind;
+    int priority = 0;
+};
+
+struct ScheduledJobSet {
+    std::int64_t job_set_id = 0;
+    std::int64_t workflow_step_id = 0;
+};
+
+class WorkflowSchedulerAdapter {
+public:
+    using ScheduleFn = std::function<ScheduledJobSet(const WorkflowReadyStep& step)>;
+
+    explicit WorkflowSchedulerAdapter(ScheduleFn schedule_fn);
+
+    ScheduledJobSet MaterializeReadyStep(const WorkflowReadyStep& step) const;
+
+private:
+    ScheduleFn schedule_fn_;
+};
+
+} // namespace simcore::runner::parallel::simcoredb
