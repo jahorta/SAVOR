@@ -10,6 +10,10 @@
     <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\EventCatalog.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Migrations\MigrationContext.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Migrations\MigrationRunner.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Types\TypedIds.h"><Filter>Header Files</Filter></ClInclude>

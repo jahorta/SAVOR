@@ -32,6 +32,7 @@ struct EventEnvelope {
     types::UtcTimePoint occurred_at_utc{};
     std::string payload_ref_kind;
     std::int64_t payload_ref_id = 0;
+    // Optional debugging mirror; canonical payload is addressed by (payload_ref_kind, payload_ref_id).
     std::string payload_json;
 };
 

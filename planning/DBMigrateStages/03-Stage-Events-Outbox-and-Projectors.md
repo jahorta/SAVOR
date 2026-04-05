@@ -49,52 +49,58 @@ Field usage expectations:
 6. `Execution.JobCompleted.v1`
 7. `Execution.JobEventArchived.v1`
 8. `Execution.JobRestored.v1`
+9. `Execution.WorkflowInstanceCreated.v1`
+10. `Execution.WorkflowStepReady.v1`
+11. `Execution.WorkflowStepMaterialized.v1`
+12. `Execution.WorkflowStepCompleted.v1`
+13. `Execution.WorkflowStepFailed.v1`
+14. `Execution.WorkflowInstanceCompleted.v1`
 
 ## State events
-9. `State.ArtifactStored.v1`
-10. `State.SavestateCreated.v1`
-11. `State.SavestateDerived.v1`
-12. `State.TasVariantCreated.v1`
+15. `State.ArtifactStored.v1`
+16. `State.SavestateCreated.v1`
+17. `State.SavestateDerived.v1`
+18. `State.TasVariantCreated.v1`
 
 ## Analysis spine events
-13. `AnalysisSpine.RunCreated.v1`
-14. `AnalysisSpine.StateRefRegistered.v1`
-15. `AnalysisSpine.LineageEdgeAdded.v1`
-16. `AnalysisSpine.ArtifactLinked.v1`
+19. `AnalysisSpine.RunCreated.v1`
+20. `AnalysisSpine.StateRefRegistered.v1`
+21. `AnalysisSpine.LineageEdgeAdded.v1`
+22. `AnalysisSpine.ArtifactLinked.v1`
 
 ## Analysis.SeedProbe events
-17. `AnalysisSeedProbe.SetCreated.v1`
-18. `AnalysisSeedProbe.RunRequested.v1`
-19. `AnalysisSeedProbe.NeutralSeedRecorded.v1`
-20. `AnalysisSeedProbe.GridSeedRecorded.v1`
-21. `AnalysisSeedProbe.UniqueSeedRecorded.v1`
-22. `AnalysisSeedProbe.EncounterProjectionRecorded.v1`
-23. `AnalysisSeedProbe.RunCompleted.v1`
+23. `AnalysisSeedProbe.SetCreated.v1`
+24. `AnalysisSeedProbe.RunRequested.v1`
+25. `AnalysisSeedProbe.NeutralSeedRecorded.v1`
+26. `AnalysisSeedProbe.GridSeedRecorded.v1`
+27. `AnalysisSeedProbe.UniqueSeedRecorded.v1`
+28. `AnalysisSeedProbe.EncounterProjectionRecorded.v1`
+29. `AnalysisSeedProbe.RunCompleted.v1`
 
 ## Analysis.Battle events
-24. `AnalysisBattle.BattleSetCreated.v1`
-25. `AnalysisBattle.SeedCandidateAdded.v1`
-26. `AnalysisBattle.TurnWaveCreated.v1`
-27. `AnalysisBattle.TurnJobRecorded.v1`
-28. `AnalysisBattle.SelectionPoolCreated.v1`
-29. `AnalysisBattle.SelectionDecisionRecorded.v1`
-30. `AnalysisBattle.TerminalFollowupUpdated.v1`
+30. `AnalysisBattle.BattleSetCreated.v1`
+31. `AnalysisBattle.SeedCandidateAdded.v1`
+32. `AnalysisBattle.TurnWaveCreated.v1`
+33. `AnalysisBattle.TurnJobRecorded.v1`
+34. `AnalysisBattle.SelectionPoolCreated.v1`
+35. `AnalysisBattle.SelectionDecisionRecorded.v1`
+36. `AnalysisBattle.TerminalFollowupUpdated.v1`
 
 ## Authoring events
-31. `Authoring.SeedProbeSpecSaved.v1`
-32. `Authoring.TasSpecSaved.v1`
-33. `Authoring.BattleRunSpecSaved.v1`
-34. `Authoring.PlanSaved.v1`
-35. `Authoring.PredicateSpecSaved.v1`
-36. `Authoring.SettingsSaved.v1`
-37. `Authoring.TemplateSaved.v1`
+37. `Authoring.SeedProbeSpecSaved.v1`
+38. `Authoring.TasSpecSaved.v1`
+39. `Authoring.BattleRunSpecSaved.v1`
+40. `Authoring.PlanSaved.v1`
+41. `Authoring.PredicateSpecSaved.v1`
+42. `Authoring.SettingsSaved.v1`
+43. `Authoring.TemplateSaved.v1`
 
 ## Archive events
-38. `Archive.PackageCreated.v1`
-39. `Archive.PackageIndexed.v1`
-40. `Archive.RehydrateRequested.v1`
-41. `Archive.RehydrateCompleted.v1`
-42. `Archive.RehydrateFailed.v1`
+44. `Archive.PackageCreated.v1`
+45. `Archive.PackageIndexed.v1`
+46. `Archive.RehydrateRequested.v1`
+47. `Archive.RehydrateCompleted.v1`
+48. `Archive.RehydrateFailed.v1`
 
 ---
 
@@ -213,6 +219,15 @@ Outputs:
 - `ui_battle_wave`
 - `ui_battle_turn_job`
 - `ui_battle_followup`
+
+### `WorkflowProjector`
+Consumes:
+- `Execution.Workflow*`
+Outputs:
+- `ui_workflow_instance`
+- `ui_workflow_step`
+- `ui_workflow_edge`
+- `ui_workflow_alert`
 
 ### `ArtifactProjector`
 Consumes:
