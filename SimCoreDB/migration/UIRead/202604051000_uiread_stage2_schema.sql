@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -154,3 +156,5 @@ CREATE INDEX IF NOT EXISTS ix_ui_battle_followup_status
 
 CREATE INDEX IF NOT EXISTS ix_ui_projection_checkpoint_outbox
     ON ui_projection_checkpoint(last_outbox_id);
+
+COMMIT;

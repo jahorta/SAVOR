@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -139,3 +141,5 @@ CREATE INDEX IF NOT EXISTS ix_ab_terminal_followup_status_victory
 
 CREATE INDEX IF NOT EXISTS ix_ab_outbox_unpublished
     ON ab_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;

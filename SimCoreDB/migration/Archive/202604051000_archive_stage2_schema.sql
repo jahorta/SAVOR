@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -52,3 +54,5 @@ CREATE INDEX IF NOT EXISTS ix_ar_rehydrate_request_status
 
 CREATE INDEX IF NOT EXISTS ix_ar_rehydrate_map_lookup
     ON ar_rehydrate_map(rehydrate_request_id, entity_kind, old_id);
+
+COMMIT;

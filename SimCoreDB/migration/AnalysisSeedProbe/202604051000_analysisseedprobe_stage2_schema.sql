@@ -1,3 +1,5 @@
+BEGIN IMMEDIATE;
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -131,3 +133,5 @@ CREATE INDEX IF NOT EXISTS ix_sp_unique_seed_probe_result
 
 CREATE INDEX IF NOT EXISTS ix_sp_outbox_unpublished
     ON sp_outbox_message(published_at_utc, outbox_id);
+
+COMMIT;
