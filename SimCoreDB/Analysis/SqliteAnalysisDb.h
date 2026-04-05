@@ -16,6 +16,36 @@ class SqliteAnalysisDb final : public simcore::db::IAnalysisDb {
 public:
     explicit SqliteAnalysisDb(sqlite3* db);
 
+    bool RequestSeedProbeRun(
+        const RequestSeedProbeRunCommand& command,
+        std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordSeedProbeNeutralSeed(
+        const RecordSeedProbeNeutralSeedCommand& command,
+        std::int64_t* neutral_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordSeedProbeGridSeed(
+        const RecordSeedProbeGridSeedCommand& command,
+        std::int64_t* grid_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordSeedProbeUniqueSeed(
+        const RecordSeedProbeUniqueSeedCommand& command,
+        std::int64_t* unique_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordSeedProbeEncounterProjection(
+        const RecordSeedProbeEncounterProjectionCommand& command,
+        std::int64_t* encounter_projection_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CompleteSeedProbeRun(
+        const CompleteSeedProbeRunCommand& command,
+        std::int64_t* probe_result_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;
