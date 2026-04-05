@@ -33,6 +33,13 @@ struct DBWorkflowWorkerCoordinatorConfig {
     std::string worker_dir_root;
 };
 
+struct WorkflowCoordinatorTelemetry {
+    std::int64_t ready_scan_count = 0;
+    std::int64_t ready_steps_enqueued = 0;
+    std::int64_t last_ready_scan_latency_ms = 0;
+    std::int64_t max_ready_queue_depth = 0;
+};
+
 class DBWorkflowWorkerCoordinator {
 public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
@@ -72,6 +79,7 @@ public:
     void SetResultCallback(ResultCallback callback);
 
     PRStatus SnapshotStatus() const;
+    WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
 
 private:
     struct WorkerSlot {
@@ -121,6 +129,10 @@ private:
     TSQueue<simcore::PRResult> results_q_;
     size_t materialized_count_ = 0;
     size_t terminal_published_count_ = 0;
+    std::atomic<std::int64_t> ready_scan_count_{ 0 };
+    std::atomic<std::int64_t> ready_steps_enqueued_{ 0 };
+    std::atomic<std::int64_t> last_ready_scan_latency_ms_{ 0 };
+    std::atomic<std::int64_t> max_ready_queue_depth_{ 0 };
 };
 
 } // namespace simcore::runner::parallel::simcoredb

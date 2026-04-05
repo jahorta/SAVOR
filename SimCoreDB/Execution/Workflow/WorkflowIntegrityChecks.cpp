@@ -59,6 +59,23 @@ bool RunWorkflowIntegrityChecks(sqlite3* db, WorkflowIntegrityReport* report_out
         return false;
     }
 
+    constexpr const char* kNonTerminalInTerminalInstanceSql =
+        "SELECT COUNT(1) "
+        "FROM exec_workflow_step s "
+        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "WHERE i.state IN ('COMPLETED','FAILED','CANCELED') AND s.state NOT IN ('COMPLETED','FAILED','SKIPPED');";
+    if (!QueryScalarInt(db, kNonTerminalInTerminalInstanceSql, &report.non_terminal_step_in_terminal_instance_count, error_out)) {
+        return false;
+    }
+
+    constexpr const char* kCompletedStepMissingCompletionTsSql =
+        "SELECT COUNT(1) "
+        "FROM exec_workflow_step "
+        "WHERE state='COMPLETED' AND completed_at_utc IS NULL;";
+    if (!QueryScalarInt(db, kCompletedStepMissingCompletionTsSql, &report.completed_step_missing_completion_ts_count, error_out)) {
+        return false;
+    }
+
     if (report_out) {
         *report_out = report;
     }

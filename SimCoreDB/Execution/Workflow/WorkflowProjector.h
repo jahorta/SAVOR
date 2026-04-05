@@ -12,8 +12,12 @@ public:
     explicit WorkflowProjector(sqlite3* db);
 
     bool ProjectInstance(std::int64_t workflow_instance_id, std::string* error_out);
+    bool ProjectFromOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out);
+    std::int64_t GetCheckpoint(const std::string& projector_name, std::string* error_out) const;
 
 private:
+    bool EnsureCheckpointSchema(std::string* error_out) const;
+
     sqlite3* db_ = nullptr;
 };
 
