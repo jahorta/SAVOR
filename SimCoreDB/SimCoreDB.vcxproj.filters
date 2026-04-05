@@ -14,6 +14,7 @@
     <ClInclude Include="Common\Events\EventPayloadDispatch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventPayloadValidation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventPayloadViews.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\OutboxRelay.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
@@ -40,6 +41,7 @@
   <ItemGroup>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
