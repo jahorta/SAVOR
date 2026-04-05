@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -715,6 +716,71 @@ TEST(Stage3cWorkflowPromotionGate, ProducesMachineReadableDecisionArtifacts) {
     EXPECT_NE(fail_json.find("parity_below_99_percent"), std::string::npos);
     EXPECT_NE(fail_json.find("recovery_failed"), std::string::npos);
     EXPECT_NE(fail_json.find("readiness_latency_above_threshold"), std::string::npos);
+
+    const std::vector<std::string> required_json_fields{
+        "\"approved\":",
+        "\"parity_percent\":",
+        "\"parity_compared_steps\":",
+        "\"parity_matched_steps\":",
+        "\"recovery_passed\":",
+        "\"integrity_passed\":",
+        "\"readiness_scan_p95_ms\":",
+        "\"readiness_scan_threshold_ms\":",
+        "\"blockers\":[",
+    };
+
+    auto has_all_required_fields = [&](const std::string& json) {
+        for (const auto& token : required_json_fields) {
+            if (json.find(token) == std::string::npos) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    EXPECT_TRUE(has_all_required_fields(pass_json));
+    EXPECT_TRUE(has_all_required_fields(fail_json));
+
+    const auto pass_parity_percent =
+        (static_cast<double>(pass_evidence.parity_matched_steps) / static_cast<double>(pass_evidence.parity_compared_steps)) * 100.0;
+    const auto fail_parity_percent =
+        (static_cast<double>(fail_evidence.parity_matched_steps) / static_cast<double>(fail_evidence.parity_compared_steps)) * 100.0;
+
+    std::ostringstream detail_summary;
+    detail_summary << "Item18PromotionGate\n";
+    detail_summary << "RequiredDataFieldsPresent(pass_json)="
+                   << (has_all_required_fields(pass_json) ? "YES" : "NO") << "\n";
+    detail_summary << "RequiredDataFieldsPresent(fail_json)="
+                   << (has_all_required_fields(fail_json) ? "YES" : "NO") << "\n";
+    detail_summary << "PassEvidence: "
+                   << "approved=" << (pass_decision.approved ? "true" : "false")
+                   << ", parity_percent=" << pass_parity_percent
+                   << ", parity_compared_steps=" << pass_evidence.parity_compared_steps
+                   << ", parity_matched_steps=" << pass_evidence.parity_matched_steps
+                   << ", recovery_passed=" << (pass_evidence.recovery_passed ? "true" : "false")
+                   << ", integrity_passed=" << (pass_evidence.integrity_passed ? "true" : "false")
+                   << ", readiness_scan_p95_ms=" << pass_evidence.readiness_scan_p95_ms
+                   << ", readiness_scan_threshold_ms=" << pass_evidence.readiness_scan_threshold_ms
+                   << ", blockers_count=" << pass_decision.blockers.size() << "\n";
+    detail_summary << "FailEvidence: "
+                   << "approved=" << (fail_decision.approved ? "true" : "false")
+                   << ", parity_percent=" << fail_parity_percent
+                   << ", parity_compared_steps=" << fail_evidence.parity_compared_steps
+                   << ", parity_matched_steps=" << fail_evidence.parity_matched_steps
+                   << ", recovery_passed=" << (fail_evidence.recovery_passed ? "true" : "false")
+                   << ", integrity_passed=" << (fail_evidence.integrity_passed ? "true" : "false")
+                   << ", readiness_scan_p95_ms=" << fail_evidence.readiness_scan_p95_ms
+                   << ", readiness_scan_threshold_ms=" << fail_evidence.readiness_scan_threshold_ms
+                   << ", blockers_count=" << fail_decision.blockers.size() << "\n";
+    detail_summary << "FailBlockers=";
+    for (size_t i = 0; i < fail_decision.blockers.size(); ++i) {
+        if (i > 0) {
+            detail_summary << "|";
+        }
+        detail_summary << fail_decision.blockers[i];
+    }
+
+    ::testing::Test::RecordProperty("TestDetailSummary", detail_summary.str());
 }
 
 TEST(Stage3cWorkflowModeProvider, ParsesAndReturnsSelectedModes) {
