@@ -4,6 +4,8 @@
 #include <ctime>
 #include <vector>
 
+#include "../../UIRead/SqliteUiReadDb.h"
+
 namespace simcore::db::execution::workflow {
 
 namespace {
@@ -18,26 +20,10 @@ bool Exec(sqlite3* db, const char* sql, std::string* error_out) {
     return true;
 }
 
-std::int64_t NowUtc() {
-    return static_cast<std::int64_t>(std::time(nullptr));
-}
-
 } // namespace
 
 WorkflowProjector::WorkflowProjector(sqlite3* db)
     : db_(db) {
-}
-
-bool WorkflowProjector::EnsureCheckpointSchema(std::string* error_out) const {
-    constexpr const char* kSql = R"SQL(
-CREATE TABLE IF NOT EXISTS ui_projector_checkpoint (
-    projector_name TEXT PRIMARY KEY,
-    last_outbox_message_id INTEGER NOT NULL,
-    updated_at_utc INTEGER NOT NULL
-);
-)SQL";
-
-    return Exec(db_, kSql, error_out);
 }
 
 std::int64_t WorkflowProjector::GetCheckpoint(const std::string& projector_name, std::string* error_out) const {
@@ -45,25 +31,14 @@ std::int64_t WorkflowProjector::GetCheckpoint(const std::string& projector_name,
         if (error_out) *error_out = "projector_name is required";
         return 0;
     }
-    if (!EnsureCheckpointSchema(error_out)) {
+
+    simcore::db::SqliteUiReadDb ui_read_db(db_);
+    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
+    if (!checkpoint.has_value()) {
         return 0;
     }
 
-    sqlite3_stmt* st = nullptr;
-    constexpr const char* kSql =
-        "SELECT last_outbox_message_id FROM ui_projector_checkpoint WHERE projector_name=?1;";
-    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return 0;
-    }
-    sqlite3_bind_text(st, 1, projector_name.c_str(), -1, SQLITE_TRANSIENT);
-
-    std::int64_t checkpoint = 0;
-    if (sqlite3_step(st) == SQLITE_ROW) {
-        checkpoint = sqlite3_column_int64(st, 0);
-    }
-    sqlite3_finalize(st);
-    return checkpoint;
+    return checkpoint->last_outbox_id;
 }
 
 bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::string* error_out) {
@@ -146,7 +121,7 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
     }
     sqlite3_finalize(edges);
 
-    const auto now_ts = NowUtc();
+    const auto now_ts = static_cast<std::int64_t>(std::time(nullptr));
 
     sqlite3_stmt* clear_alerts = nullptr;
     constexpr const char* kClearAlerts =
@@ -242,9 +217,6 @@ bool WorkflowProjector::ProjectFromOutbox(const std::string& projector_name, int
         if (error_out) *error_out = "max_batch_size must be > 0";
         return false;
     }
-    if (!EnsureCheckpointSchema(error_out)) {
-        return false;
-    }
 
     const auto checkpoint = GetCheckpoint(projector_name, error_out);
 
@@ -294,26 +266,18 @@ bool WorkflowProjector::ProjectFromOutbox(const std::string& projector_name, int
     }
 
     if (last_outbox_message_id > checkpoint) {
-        sqlite3_stmt* upsert = nullptr;
-        constexpr const char* kUpsert =
-            "INSERT INTO ui_projector_checkpoint(projector_name, last_outbox_message_id, updated_at_utc) "
-            "VALUES(?1, ?2, ?3) "
-            "ON CONFLICT(projector_name) DO UPDATE SET "
-            "last_outbox_message_id=excluded.last_outbox_message_id, "
-            "updated_at_utc=excluded.updated_at_utc;";
-        if (sqlite3_prepare_v2(db_, kUpsert, -1, &upsert, nullptr) != SQLITE_OK) {
+        simcore::db::SqliteUiReadDb ui_read_db(db_);
+        const bool upserted = ui_read_db.UpsertProjectionCheckpoint({
+            projector_name,
+            std::string{},
+            last_outbox_message_id,
+            simcore::db::types::UtcNow(),
+        });
+
+        if (!upserted) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
             return false;
         }
-        sqlite3_bind_text(upsert, 1, projector_name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(upsert, 2, last_outbox_message_id);
-        sqlite3_bind_int64(upsert, 3, NowUtc());
-        if (sqlite3_step(upsert) != SQLITE_DONE) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            sqlite3_finalize(upsert);
-            return false;
-        }
-        sqlite3_finalize(upsert);
     }
 
     return true;

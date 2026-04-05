@@ -35,6 +35,7 @@
     <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -50,6 +51,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="UIRead\SqliteUiReadDb.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="update_generated_migrations_command.txt" />

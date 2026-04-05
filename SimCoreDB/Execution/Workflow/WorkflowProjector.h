@@ -16,8 +16,6 @@ public:
     std::int64_t GetCheckpoint(const std::string& projector_name, std::string* error_out) const;
 
 private:
-    bool EnsureCheckpointSchema(std::string* error_out) const;
-
     sqlite3* db_ = nullptr;
 };
 
