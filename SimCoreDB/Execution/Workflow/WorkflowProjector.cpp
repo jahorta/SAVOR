@@ -159,6 +159,7 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
         "  FROM exec_workflow_step "
         "  WHERE workflow_instance_id=?1 AND state='FAILED'"
         ") AS src "
+        "WHERE 1=1 "
         "ON CONFLICT(workflow_alert_id) DO UPDATE SET "
         "  alert_kind=excluded.alert_kind,"
         "  alert_code=excluded.alert_code,"
