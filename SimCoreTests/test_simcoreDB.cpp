@@ -58,7 +58,7 @@ TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerCon
     namespace fs = std::filesystem;
     using namespace simcore::db::migrations;
 
-    const auto root = fs::weakly_canonical(fs::path("../SimCoreDB/migration"));
+    const auto root = fs::weakly_canonical(fs::path("../../SimCoreDB/migration"));
     const MigrationSourceOptions filesystem_options{
         .source_kind = MigrationSourceKind::Filesystem,
         .filesystem_root = root,
