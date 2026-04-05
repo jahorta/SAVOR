@@ -187,6 +187,7 @@
     <ClInclude Include="SimCoreDB.h" />
     <ClInclude Include="State\IStateDb.h" />
     <ClInclude Include="UIRead\IUiReadDb.h" />
+    <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
@@ -202,6 +203,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
+    <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="update_generated_migrations_command.txt" />
