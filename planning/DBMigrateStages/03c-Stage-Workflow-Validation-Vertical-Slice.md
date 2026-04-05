@@ -18,6 +18,7 @@ This stage proves that workflow orchestration works with real worker execution b
 1. Confirm Stage 3b schema contracts are present and stable (`exec_workflow_*`, `ui_workflow_*`, workflow query/command contracts).
    - Review merged migration files and interface headers, then create a short compatibility matrix mapping each required table/column/enum/API to its concrete source file.
    - Add a startup guard in the vertical-slice bootstrap that checks schema version and fails fast if Stage 3b migrations are missing.
+   - Current matrix artifact: `03c-Stage3b-Compatibility-Matrix.md` (keep updated as interfaces evolve).
 
 2. Implement concrete `IExecutionDb` wiring for workflow orchestration query/command services.
    - Create a concrete `ExecutionDb` composition root that owns query and command service implementations and exposes them through `IExecutionDb`.
