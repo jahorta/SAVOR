@@ -12,6 +12,8 @@ Detailed staged implementation plan for the SOASim bounded-context database spli
   - Concrete DB schema inventory and migration sequencing.
 - `03-Stage-Events-Outbox-and-Projectors.md`
   - Event catalog v1, outbox rules, and projector implementation plan.
+- `03b-Stage-Workflow-Orchestration-and-Codec-Decomposition.md`
+  - Codec responsibility split, workflow-step orchestration model, and trigger compatibility cutover plan.
 - `04-Stage-Archive-and-Rehydrate.md`
   - JSONL+blob archive packaging and execution DB rehydration.
 - `05-Stage-UI-Cutover-and-Validation.md`
@@ -25,3 +27,11 @@ Implement in numeric order. Each stage file contains:
 - ordered tasks
 - exit criteria
 - validation checklist
+
+Recommended implementation sequence:
+1. `01-Stage-Foundations-and-Project-Setup.md`
+2. `02-Stage-Schema-and-Migration-Plan.md`
+3. `03b-Stage-Workflow-Orchestration-and-Codec-Decomposition.md`
+4. `03-Stage-Events-Outbox-and-Projectors.md`
+5. `04-Stage-Archive-and-Rehydrate.md`
+6. `05-Stage-UI-Cutover-and-Validation.md`
