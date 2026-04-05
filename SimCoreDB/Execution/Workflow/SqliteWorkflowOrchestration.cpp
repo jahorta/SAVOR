@@ -1,6 +1,6 @@
 #include "SqliteWorkflowOrchestration.h"
 
-#include <ctime>
+#include <chrono>
 #include <sstream>
 
 #include "../../Common/Events/EventCatalog.h"
@@ -71,7 +71,9 @@ WorkflowStepState ParseStepState(const unsigned char* state_text) {
 }
 
 std::int64_t NowUtc() {
-    return static_cast<std::int64_t>(std::time(nullptr));
+    const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now());
+    return now.time_since_epoch().count();
 }
 
 bool Prepare(sqlite3* db, const char* sql, Statement* stmt, std::string* error_out) {

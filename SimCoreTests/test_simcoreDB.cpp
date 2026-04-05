@@ -10,6 +10,7 @@
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/EventTypeFormat.h"
+#include "Common/Events/OutboxRelay.h"
 #include "SimCoreDB.h"
 #include "Execution/Workflow/ExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
@@ -1172,6 +1173,61 @@ VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 
     EXPECT_EQ(checkpoint_after_second, checkpoint_after_first);
 }
 
+TEST_F(SqliteDbFixture, Stage3cOutboxRelayRoundTripsOccurredAtUtcEpochMilliseconds) {
+    using namespace simcore::db::events;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    constexpr std::int64_t kOccurredAtUtcEpochMillis = 1735689600123; // 2025-01-01T00:00:00.123Z
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_outbox_message(
+    outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id
+)
+VALUES(
+    6001,'evt-workflow-ms-roundtrip','Execution.WorkflowStepCompleted.v1',1,'Execution','workflow_instance','42','42','42',1735689600123,'workflow_event',4201
+);
+)SQL"));
+
+    OutboxRelay relay({
+        .db = db_,
+        .outbox_table = "exec_outbox_message",
+        .context_name = "Execution",
+        .aggregate_kind = "workflow_instance",
+        .payload_ref_kind = "workflow_event",
+        .max_attempts = 3,
+    });
+
+    std::int64_t observed_occurred_at_utc_epoch_millis = -1;
+    std::vector<OutboxRelayDispatchBinding> bindings;
+    bindings.push_back(OutboxRelayDispatchBinding{
+        .key = { .event_type = "Execution.WorkflowStepCompleted.v1", .event_version = 1 },
+        .handler = [&observed_occurred_at_utc_epoch_millis](const EventEnvelope& envelope, std::string*) {
+            observed_occurred_at_utc_epoch_millis = envelope.occurred_at_utc.time_since_epoch().count();
+            return true;
+        },
+    });
+
+    OutboxRelayResult result{};
+    ASSERT_TRUE(relay.RelayBatch(0, 100, bindings, &result, &err)) << err;
+    EXPECT_EQ(result.published_count, 1);
+    EXPECT_EQ(observed_occurred_at_utc_epoch_millis, kOccurredAtUtcEpochMillis);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT occurred_at_utc, published_at_utc FROM exec_outbox_message WHERE outbox_id=6001;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), kOccurredAtUtcEpochMillis);
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_INTEGER);
+    sqlite3_finalize(st);
+}
+
 TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorOutboxRelayFailureIncrementsAttemptsAndDeadLetters) {
     using namespace simcore::db::migrations;
     using namespace simcore::db::execution::workflow;
@@ -1186,7 +1242,7 @@ INSERT INTO exec_outbox_message(
     outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id
 )
 VALUES(
-    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked',1,'Execution','workflow_instance','999',unixepoch(),'workflow_event',9001
+    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked',1,'Execution','workflow_instance','999',unixepoch()*1000,'workflow_event',9001
 );
 )SQL"));
 

@@ -30,6 +30,7 @@ Rules:
 - Breaking changes require a new event version.
 - Projectors must be idempotent by `event_id`.
 - Payloads should be read from typed source tables using (`payload_ref_kind`, `payload_ref_id`) rather than embedding large JSON blobs.
+- `occurred_at_utc` is an integer Unix epoch timestamp in **milliseconds**; emitters and relays must preserve this value without seconds/milliseconds conversion.
 
 Field usage expectations:
 - `context_name` identifies the producing bounded context and supports projector routing/diagnostics.

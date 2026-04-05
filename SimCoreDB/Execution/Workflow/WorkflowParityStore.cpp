@@ -1,6 +1,6 @@
 #include "WorkflowParityStore.h"
 
-#include <ctime>
+#include <chrono>
 
 namespace simcore::db::execution::workflow {
 
@@ -19,7 +19,9 @@ bool Exec(sqlite3* db, const char* sql, std::string* error_out) {
 }
 
 std::int64_t NowUtc() {
-    return static_cast<std::int64_t>(std::time(nullptr));
+    const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now());
+    return now.time_since_epoch().count();
 }
 
 } // namespace
