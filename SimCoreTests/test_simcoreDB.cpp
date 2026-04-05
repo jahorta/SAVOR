@@ -928,37 +928,16 @@ TEST(Stage3cWorkflowPromotionGate, EvaluatesDecisionFromLegacyAndWorkflowPathsAn
 TEST(Stage3cWorkflowModeProvider, ParsesAndReturnsSelectedModes) {
     using namespace simcore::db::execution::workflow;
 
-    StaticWorkflowModeProvider provider({ .mode = WorkflowExecutionMode::DualWriteObserve, .source = "unit-test" });
+    StaticWorkflowModeProvider provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
     const auto selection = provider.GetModeSelection();
-    EXPECT_EQ(selection.mode, WorkflowExecutionMode::DualWriteObserve);
+    EXPECT_EQ(selection.mode, WorkflowExecutionMode::Workflow);
     EXPECT_EQ(selection.source, "unit-test");
 
-    EXPECT_EQ(ParseWorkflowExecutionMode("WorkflowOnly", WorkflowExecutionMode::LegacyOnly), WorkflowExecutionMode::WorkflowOnly);
-    EXPECT_EQ(ParseWorkflowExecutionMode("invalid", WorkflowExecutionMode::DualWriteObserve), WorkflowExecutionMode::DualWriteObserve);
+    EXPECT_EQ(ParseWorkflowExecutionMode("Workflow", WorkflowExecutionMode::Workflow), WorkflowExecutionMode::Workflow);
+    EXPECT_EQ(ParseWorkflowExecutionMode("invalid", WorkflowExecutionMode::Workflow), WorkflowExecutionMode::Workflow);
 
-    const auto legacy_policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::LegacyOnly);
-    EXPECT_TRUE(legacy_policy.run_legacy);
-    EXPECT_FALSE(legacy_policy.run_workflow);
-    EXPECT_TRUE(legacy_policy.legacy_authoritative);
-    EXPECT_FALSE(legacy_policy.workflow_authoritative);
-
-    const auto dual_policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::DualWriteObserve);
-    EXPECT_TRUE(dual_policy.run_legacy);
-    EXPECT_TRUE(dual_policy.run_workflow);
-    EXPECT_TRUE(dual_policy.legacy_authoritative);
-    EXPECT_FALSE(dual_policy.workflow_authoritative);
-
-    const auto primary_policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::WorkflowPrimary);
-    EXPECT_TRUE(primary_policy.run_legacy);
-    EXPECT_TRUE(primary_policy.run_workflow);
-    EXPECT_FALSE(primary_policy.legacy_authoritative);
-    EXPECT_TRUE(primary_policy.workflow_authoritative);
-
-    const auto workflow_only_policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::WorkflowOnly);
-    EXPECT_FALSE(workflow_only_policy.run_legacy);
-    EXPECT_TRUE(workflow_only_policy.run_workflow);
-    EXPECT_FALSE(workflow_only_policy.legacy_authoritative);
-    EXPECT_TRUE(workflow_only_policy.workflow_authoritative);
+    const auto policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::Workflow);
+    EXPECT_TRUE(policy.run_workflow);
 }
 
 TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps) {
@@ -993,7 +972,7 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::WorkflowPrimary, .source = "unit-test" });
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
 
     DBWorkflowWorkerCoordinator coordinator(
         nullptr,
@@ -1002,8 +981,7 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+
         },
         [](const WorkflowReadyStep& step) {
             return ScheduledJobSet{
@@ -1057,7 +1035,7 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::WorkflowPrimary, .source = "unit-test" });
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
 
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
@@ -1066,8 +1044,7 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+
         },
         [](const WorkflowReadyStep& step) {
             return ScheduledJobSet{
@@ -1102,12 +1079,12 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     EXPECT_EQ(execution_db.command_service.terminal_calls[0].terminal_state, "FAILED");
 }
 
-TEST(Stage3cCoordinatorReplacement, LegacyOnlyModeSkipsWorkflowPersistencePath) {
+TEST(Stage3cCoordinatorReplacement, DisabledWorkflowModeSkipsWorkflowPersistencePath) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::LegacyOnly, .source = "unit-test" });
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
 
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
@@ -1116,8 +1093,7 @@ TEST(Stage3cCoordinatorReplacement, LegacyOnlyModeSkipsWorkflowPersistencePath) 
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+            .workflow_enabled = false,
         },
         [](const WorkflowReadyStep& step) {
             return ScheduledJobSet{
@@ -1197,16 +1173,14 @@ TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
-    const std::vector<std::pair<WorkflowExecutionMode, bool>> matrix{
-        { WorkflowExecutionMode::LegacyOnly, false },
-        { WorkflowExecutionMode::DualWriteObserve, true },
-        { WorkflowExecutionMode::WorkflowPrimary, true },
-        { WorkflowExecutionMode::WorkflowOnly, true },
+    const std::vector<std::pair<CoordinatorIntegrationConfig, bool>> matrix{
+        { CoordinatorIntegrationConfig{ .workflow_enabled = false }, false },
+        { CoordinatorIntegrationConfig{ .workflow_enabled = true }, true },
     };
 
-    for (const auto& [mode, should_run_workflow] : matrix) {
+    for (const auto& [integration_cfg, should_run_workflow] : matrix) {
         RecordingExecutionDb execution_db;
-        StaticWorkflowModeProvider mode_provider({ .mode = mode, .source = "mode-matrix" });
+        StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "mode-matrix" });
 
         DBWorkflowWorkerCoordinator coordinator(
             &execution_db,
@@ -1214,10 +1188,7 @@ TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
             DBWorkflowWorkerCoordinatorConfig{
                 .desired_workers = 0,
             },
-            CoordinatorIntegrationConfig{
-                .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-                .dual_write_observe = true,
-            },
+            integration_cfg,
             [](const WorkflowReadyStep& step) {
                 return ScheduledJobSet{
                     .job_set_id = 10000 + step.workflow_step_id,
@@ -1260,7 +1231,7 @@ TEST(Stage3cCoordinatorTelemetry, CapturesReadinessScanLatencyAndQueueDepth) {
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::WorkflowPrimary, .source = "telemetry-test" });
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "telemetry-test" });
 
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
@@ -1269,8 +1240,7 @@ TEST(Stage3cCoordinatorTelemetry, CapturesReadinessScanLatencyAndQueueDepth) {
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+
         },
         [](const WorkflowReadyStep& step) {
             return ScheduledJobSet{
@@ -1327,7 +1297,7 @@ VALUES
 )SQL"));
 
     ExecutionDb execution_db(db_);
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::DualWriteObserve, .source = "stage3c-item15-test" });
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage3c-item15-test" });
 
     std::int64_t next_job_set_id = 12000;
     auto schedule = [&](const WorkflowReadyStep& step) {
@@ -1350,8 +1320,7 @@ VALUES
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+
         },
         schedule);
 
@@ -1393,8 +1362,7 @@ VALUES
             .desired_workers = 0,
         },
         CoordinatorIntegrationConfig{
-            .mode = CoordinatorIntegrationMode::SimCoreDbWorkflow,
-            .dual_write_observe = true,
+
         },
         schedule);
 

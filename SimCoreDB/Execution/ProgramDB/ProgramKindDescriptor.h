@@ -76,7 +76,6 @@ struct ProgramKindDescriptor {
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
 
     bool supports_workflow_orchestration = false;
-    bool supports_legacy_trigger_bridge = true;
 };
 
 } // namespace simcore::db::execution::programdb

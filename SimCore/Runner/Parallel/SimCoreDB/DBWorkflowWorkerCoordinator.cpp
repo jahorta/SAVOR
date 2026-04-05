@@ -98,12 +98,7 @@ void DBWorkflowWorkerCoordinator::SetWorkflowTerminalCallback(WorkflowCoordinato
 }
 
 bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSignal& signal) {
-    if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
-        return false;
-    }
-    const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
-    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
-    if (!policy.run_workflow) {
+    if (!integration_cfg_.workflow_enabled) {
         return false;
     }
 
@@ -137,12 +132,7 @@ void DBWorkflowWorkerCoordinator::EnqueueReadyStep(const WorkflowReadyStep& step
 }
 
 std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowStep(const WorkflowReadyStep& step) {
-    if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
-        return std::nullopt;
-    }
-    const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
-    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
-    if (!policy.run_workflow) {
+    if (!integration_cfg_.workflow_enabled) {
         return std::nullopt;
     }
 
@@ -240,12 +230,7 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             continue;
         }
 
-        if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
-            continue;
-        }
-        const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
-        const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
-        if (!policy.run_workflow) {
+        if (!integration_cfg_.workflow_enabled) {
             continue;
         }
 
@@ -380,9 +365,7 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
         return;
     }
 
-    const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
-    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
-    if (!policy.run_workflow) {
+    if (!integration_cfg_.workflow_enabled) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
         last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
         ++ready_scan_count_;

@@ -11,24 +11,18 @@
 namespace simcore::db::execution::workflow {
 
 enum class WorkflowExecutionMode {
-    LegacyOnly = 0,
-    DualWriteObserve = 1,
-    WorkflowPrimary = 2,
-    WorkflowOnly = 3,
+    Workflow = 0,
 };
 
 inline constexpr std::string_view ToString(WorkflowExecutionMode mode) {
     switch (mode) {
-    case WorkflowExecutionMode::LegacyOnly: return "LegacyOnly";
-    case WorkflowExecutionMode::DualWriteObserve: return "DualWriteObserve";
-    case WorkflowExecutionMode::WorkflowPrimary: return "WorkflowPrimary";
-    case WorkflowExecutionMode::WorkflowOnly: return "WorkflowOnly";
+    case WorkflowExecutionMode::Workflow: return "Workflow";
     }
     return "Unknown";
 }
 
 struct WorkflowModeSelection {
-    WorkflowExecutionMode mode = WorkflowExecutionMode::LegacyOnly;
+    WorkflowExecutionMode mode = WorkflowExecutionMode::Workflow;
     std::string source;
 };
 
