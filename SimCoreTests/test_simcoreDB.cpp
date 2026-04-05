@@ -1319,12 +1319,52 @@ TEST(Stage3cEventContracts, PayloadDispatchAndValidationRejectVersionSuffixMisma
     envelope.event_type = "Execution.WorkflowStepFailed.v2";
     envelope.event_version = 1;
     envelope.context_name = "Execution";
+    envelope.aggregate_kind = "workflow_instance";
     envelope.payload_ref_kind = "workflow_event";
     envelope.payload_ref_id = 42;
 
     std::string error;
     EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(envelope, &error));
     EXPECT_EQ(error, "event_type must end with .v<event_version>");
+}
+
+
+TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) {
+    using namespace simcore::db::events;
+
+    EventEnvelope envelope{};
+    envelope.event_type = "AnalysisSeedProbe.RunCompleted.v1";
+    envelope.event_version = 1;
+    envelope.context_name = "AnalysisSeedProbe";
+    envelope.aggregate_kind = "probe_run";
+    envelope.payload_ref_kind = "seed_probe_event";
+    envelope.payload_ref_id = 42;
+
+    std::string error;
+    EXPECT_FALSE(ValidateAnalysisSeedProbePayloadV1(envelope, &error));
+    EXPECT_EQ(error, "payload_ref_kind must be probe_result for AnalysisSeedProbe.RunCompleted.v1");
+
+    envelope.payload_ref_kind = "probe_result";
+    EXPECT_TRUE(ValidateAnalysisSeedProbePayloadV1(envelope, &error)) << error;
+}
+
+TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
+    using namespace simcore::db::events;
+
+    EventEnvelope envelope{};
+    envelope.event_type = "AnalysisBattle.TurnJobRecorded.v1";
+    envelope.event_version = 1;
+    envelope.context_name = "AnalysisBattle";
+    envelope.aggregate_kind = "battle_set";
+    envelope.payload_ref_kind = "battle_event";
+    envelope.payload_ref_id = 77;
+
+    std::string error;
+    EXPECT_FALSE(ValidateAnalysisBattlePayloadV1(envelope, &error));
+    EXPECT_EQ(error, "payload_ref_kind must be turn_job for AnalysisBattle.TurnJobRecorded.v1");
+
+    envelope.payload_ref_kind = "turn_job";
+    EXPECT_TRUE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << error;
 }
 
 TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {

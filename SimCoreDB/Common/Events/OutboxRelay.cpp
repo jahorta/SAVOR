@@ -4,6 +4,7 @@
 #include <chrono>
 #include <utility>
 
+#include "EventPayloadValidation.h"
 #include "EventTypeFormat.h"
 
 namespace simcore::db::events {
@@ -138,7 +139,7 @@ bool OutboxRelay::RelayBatch(
     result.last_scanned_outbox_id = after_outbox_id;
 
     Statement st;
-    const std::string sql =
+    std::string sql =
         "SELECT outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,"
         "correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,attempt_count "
         "FROM " + config_.outbox_table + " "
@@ -146,10 +147,15 @@ bool OutboxRelay::RelayBatch(
         "AND published_at_utc IS NULL "
         "AND attempt_count < ?2 "
         "AND context_name=?3 "
-        "AND aggregate_kind=?4 "
-        "AND payload_ref_kind=?5 "
-        "ORDER BY outbox_id ASC "
-        "LIMIT ?6;";
+        "AND aggregate_kind=?4 ";
+
+    int limit_param_index = 5;
+    if (!config_.payload_ref_kind.empty()) {
+        sql += "AND payload_ref_kind=?5 ";
+        limit_param_index = 6;
+    }
+
+    sql += "ORDER BY outbox_id ASC LIMIT ?" + std::to_string(limit_param_index) + ";";
 
     if (sqlite3_prepare_v2(config_.db, sql.c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(config_.db);
@@ -160,8 +166,11 @@ bool OutboxRelay::RelayBatch(
     sqlite3_bind_int(st.st, 2, std::max(config_.max_attempts, 1));
     sqlite3_bind_text(st.st, 3, config_.context_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st.st, 4, config_.aggregate_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, config_.payload_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(st.st, 6, max_batch_size);
+
+    if (!config_.payload_ref_kind.empty()) {
+        sqlite3_bind_text(st.st, 5, config_.payload_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    sqlite3_bind_int(st.st, limit_param_index, max_batch_size);
 
     while (sqlite3_step(st.st) == SQLITE_ROW) {
         EventEnvelope envelope{};
@@ -195,6 +204,19 @@ bool OutboxRelay::RelayBatch(
         result.scanned_count += 1;
 
         std::string handler_error;
+        if (!ValidateEventPayloadRequiredFieldsV1(envelope, &handler_error)) {
+            bool dead_lettered = false;
+            if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
+                return false;
+            }
+
+            result.failure_count += 1;
+            if (dead_lettered) {
+                result.dead_lettered_count += 1;
+            }
+            continue;
+        }
+
         auto handler = ResolveHandler(envelope.event_type, envelope.event_version, bindings);
         const bool handled = handler && handler(envelope, &handler_error);
         if (handled) {
