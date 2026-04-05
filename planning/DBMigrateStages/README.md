@@ -14,6 +14,8 @@ Detailed staged implementation plan for the SOASim bounded-context database spli
   - Codec responsibility split, workflow-step orchestration model, and trigger compatibility cutover plan.
 - `03c-Stage-Workflow-Validation-Vertical-Slice.md`
   - Vertical slice implementation plan to validate workflow orchestration with real runner integration before broad Stage 3 rollout.
+- `03c-Stage3b-Compatibility-Matrix.md`
+  - Concrete mapping of Stage 3b workflow schema/contracts to source files plus Stage 3c startup guard requirements.
 - `03-Stage-Events-Outbox-and-Projectors.md`
   - Event catalog v1, outbox rules, and projector implementation plan.
 - `04-Stage-Archive-and-Rehydrate.md`

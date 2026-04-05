@@ -138,6 +138,7 @@
     <ClInclude Include="Common\Events\EventEnvelope.h" />
     <ClInclude Include="Common\Events\EventCatalog.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
+    <ClInclude Include="Execution\ProgramDB\ProgramKindLegacyCodecShim.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
@@ -152,6 +153,7 @@
   <ItemGroup>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
+    <ClCompile Include="Execution\ProgramDB\ProgramKindLegacyCodecShim.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
   </ItemGroup>
   <ItemGroup>
