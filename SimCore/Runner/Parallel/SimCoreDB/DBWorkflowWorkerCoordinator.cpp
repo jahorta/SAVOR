@@ -4,6 +4,8 @@
 #include <sstream>
 #include <utility>
 
+#include "../../../../SimCoreDB/Execution/Workflow/WorkflowModeProvider.h"
+
 namespace simcore::runner::parallel::simcoredb {
 
 namespace {
@@ -106,9 +108,25 @@ bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSign
     if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
         return false;
     }
+    const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
+    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
+    if (!policy.run_workflow) {
+        return false;
+    }
 
     const bool published = workflow_bridge_.NotifyTerminal(signal);
     if (published) {
+        if (execution_db_ && execution_db_->WorkflowCommandService()) {
+            std::string error;
+            (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
+                {
+                    .workflow_step_id = signal.workflow_step_id,
+                    .terminal_state = signal.terminal_state,
+                    .requested_by = "workflow_terminal_bridge",
+                },
+                &error);
+        }
+
         std::lock_guard<std::mutex> lock(queue_mtx_);
         ++terminal_published_count_;
     }
@@ -129,8 +147,23 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
     if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
         return std::nullopt;
     }
+    const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
+    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
+    if (!policy.run_workflow) {
+        return std::nullopt;
+    }
 
     const auto scheduled = workflow_scheduler_adapter_.MaterializeReadyStep(step);
+    if (execution_db_ && execution_db_->WorkflowCommandService()) {
+        std::string error;
+        (void)execution_db_->WorkflowCommandService()->MarkStepMaterialized(
+            {
+                .workflow_step_id = step.workflow_step_id,
+                .job_set_id = scheduled.job_set_id,
+                .requested_by = "workflow_materialize",
+            },
+            &error);
+    }
     workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
     if (persist_materialization_fn_) {
         persist_materialization_fn_(step, scheduled);
@@ -208,8 +241,23 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         if (integration_cfg_.mode != CoordinatorIntegrationMode::SimCoreDbWorkflow) {
             continue;
         }
+        const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
+        const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
+        if (!policy.run_workflow) {
+            continue;
+        }
 
         const auto scheduled = workflow_scheduler_adapter_.MaterializeReadyStep(step);
+        if (execution_db_ && execution_db_->WorkflowCommandService()) {
+            std::string error;
+            (void)execution_db_->WorkflowCommandService()->MarkStepMaterialized(
+                {
+                    .workflow_step_id = step.workflow_step_id,
+                    .job_set_id = scheduled.job_set_id,
+                    .requested_by = "workflow_materialize",
+                },
+                &error);
+        }
         workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
         if (persist_materialization_fn_) {
             persist_materialization_fn_(step, scheduled);
@@ -327,8 +375,8 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
     }
 
     const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
-    const auto mode = mode_selection.mode;
-    if (mode == simcore::db::execution::workflow::WorkflowExecutionMode::LegacyOnly) {
+    const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
+    if (!policy.run_workflow) {
         return;
     }
 

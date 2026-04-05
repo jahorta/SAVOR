@@ -20,4 +20,39 @@ WorkflowExecutionMode ParseWorkflowExecutionMode(const std::string& value, Workf
     return fallback;
 }
 
+WorkflowAuthorityPolicy BuildWorkflowAuthorityPolicy(WorkflowExecutionMode mode) {
+    switch (mode) {
+    case WorkflowExecutionMode::LegacyOnly:
+        return WorkflowAuthorityPolicy{
+            .run_legacy = true,
+            .run_workflow = false,
+            .legacy_authoritative = true,
+            .workflow_authoritative = false,
+        };
+    case WorkflowExecutionMode::DualWriteObserve:
+        return WorkflowAuthorityPolicy{
+            .run_legacy = true,
+            .run_workflow = true,
+            .legacy_authoritative = true,
+            .workflow_authoritative = false,
+        };
+    case WorkflowExecutionMode::WorkflowPrimary:
+        return WorkflowAuthorityPolicy{
+            .run_legacy = true,
+            .run_workflow = true,
+            .legacy_authoritative = false,
+            .workflow_authoritative = true,
+        };
+    case WorkflowExecutionMode::WorkflowOnly:
+        return WorkflowAuthorityPolicy{
+            .run_legacy = false,
+            .run_workflow = true,
+            .legacy_authoritative = false,
+            .workflow_authoritative = true,
+        };
+    }
+
+    return WorkflowAuthorityPolicy{};
+}
+
 } // namespace simcore::db::execution::workflow
