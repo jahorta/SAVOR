@@ -1,7 +1,7 @@
 #include "WorkflowProjector.h"
 
 #include <cstdlib>
-#include <ctime>
+#include <chrono>
 #include <vector>
 
 #include "../../Common/Events/OutboxRelay.h"
@@ -122,7 +122,8 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
     }
     sqlite3_finalize(edges);
 
-    const auto now_ts = static_cast<std::int64_t>(std::time(nullptr));
+    const auto now_ts = std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now()).time_since_epoch().count();
 
     sqlite3_stmt* clear_alerts = nullptr;
     constexpr const char* kClearAlerts =
