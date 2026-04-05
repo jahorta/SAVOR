@@ -1,4 +1,4 @@
-#include "Execution/Workflow/WorkflowIntegrityChecks.h"
+#include "WorkflowIntegrityChecks.h"
 
 namespace simcore::db::execution::workflow {
 

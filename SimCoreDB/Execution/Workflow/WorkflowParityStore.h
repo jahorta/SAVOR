@@ -6,7 +6,7 @@
 
 #include <sqlite3.h>
 
-#include "Execution/Workflow/WorkflowParityDiagnostics.h"
+#include "WorkflowParityDiagnostics.h"
 
 namespace simcore::db::execution::workflow {
 
