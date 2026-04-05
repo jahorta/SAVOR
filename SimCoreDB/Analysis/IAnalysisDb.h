@@ -89,6 +89,106 @@ struct CompleteSeedProbeRunCommand {
     std::string causation_id;
 };
 
+struct CreateBattleSetCommand {
+    std::string name;
+    std::int64_t entry_savestate_id = 0;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct AddBattleSeedCandidateCommand {
+    std::int64_t battle_set_id = 0;
+    std::optional<std::int64_t> source_unique_seed_id;
+    std::int64_t seed_value = 0;
+    std::string source_kind;
+    std::string candidate_status;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CreateBattleTurnWaveCommand {
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::optional<std::int64_t> parent_wave_id;
+    std::int64_t seed_candidate_id = 0;
+    std::optional<std::int64_t> selection_pool_id;
+    std::string status;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct RecordBattleTurnJobCommand {
+    std::int64_t wave_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t plan_id = 0;
+    int fake_attacks_this_turn = 0;
+    int fake_attacks_used_before = 0;
+    std::string job_state;
+    std::optional<types::UtcTimePoint> started_at_utc;
+    std::optional<types::UtcTimePoint> ended_at_utc;
+    bool has_results = false;
+    std::optional<int> vi_start;
+    std::optional<int> vi_end;
+    std::optional<int> delta_vi;
+    std::optional<std::int64_t> rng_seed;
+    std::optional<int> battle_outcome;
+    std::optional<int> plan_materialize_err;
+    std::optional<int> pred_passed;
+    std::optional<int> pred_total;
+    std::optional<int> pred_abort_run;
+    std::optional<std::int64_t> output_savestate_id;
+    std::optional<types::UtcTimePoint> recorded_at_utc;
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CreateBattleSelectionPoolCommand {
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::string pool_name;
+    std::string criterion_kind;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct RecordBattleSelectionDecisionCommand {
+    std::int64_t selection_pool_id = 0;
+    std::int64_t turn_job_id = 0;
+    std::string decision_kind;
+    std::optional<std::string> decision_reason;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct UpsertBattleTerminalFollowupCommand {
+    std::int64_t turn_job_id = 0;
+    bool is_victory = false;
+    std::string manual_followup_status;
+    std::optional<std::int64_t> recorded_dtm_artifact_id;
+    std::optional<std::int64_t> recorded_dtmini_artifact_id;
+    std::optional<std::int64_t> recorded_sav_artifact_id;
+    std::optional<std::string> note;
+    types::UtcTimePoint updated_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
@@ -120,6 +220,41 @@ struct IAnalysisDb {
     virtual bool CompleteSeedProbeRun(
         const CompleteSeedProbeRunCommand& command,
         std::int64_t* probe_result_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateBattleSet(
+        const CreateBattleSetCommand& command,
+        std::int64_t* battle_set_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool AddBattleSeedCandidate(
+        const AddBattleSeedCandidateCommand& command,
+        std::int64_t* seed_candidate_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateBattleTurnWave(
+        const CreateBattleTurnWaveCommand& command,
+        std::int64_t* wave_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool RecordBattleTurnJob(
+        const RecordBattleTurnJobCommand& command,
+        std::int64_t* turn_job_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateBattleSelectionPool(
+        const CreateBattleSelectionPoolCommand& command,
+        std::int64_t* selection_pool_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool RecordBattleSelectionDecision(
+        const RecordBattleSelectionDecisionCommand& command,
+        std::int64_t* selection_decision_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool UpsertBattleTerminalFollowup(
+        const UpsertBattleTerminalFollowupCommand& command,
+        std::int64_t* terminal_followup_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
