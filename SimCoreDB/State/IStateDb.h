@@ -14,8 +14,80 @@ namespace simcore::db {
 
 using ArtifactPayloadRecord = events::StateArtifactPayloadView;
 
+struct StoreArtifactCommand {
+    std::string sha256;
+    std::int64_t size_bytes = 0;
+    int compression_kind = 0;
+    std::string filename;
+    std::string file_ext;
+    std::string artifact_kind;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CreateSavestateCommand {
+    std::int64_t artifact_id = 0;
+    std::string savestate_type;
+    std::string note;
+    bool is_complete = false;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct DeriveSavestateCommand {
+    std::int64_t from_savestate_id = 0;
+    std::int64_t to_savestate_id = 0;
+    std::string method_kind;
+    std::string source_context_kind;
+    std::int64_t source_context_id = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CreateTasVariantCommand {
+    std::string name;
+    std::int64_t base_dtm_artifact_id = 0;
+    std::optional<std::int64_t> dtmini_artifact_id;
+    std::string mutation_mode;
+    std::optional<std::int64_t> rtc_value;
+    std::optional<std::string> bookmark_name;
+    std::optional<std::int64_t> insert_frame_count;
+    std::optional<std::int64_t> parent_tas_variant_id;
+    std::optional<std::int64_t> produced_savestate_id;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
 struct IStateDb {
     virtual ~IStateDb() = default;
+
+    virtual bool StoreArtifact(
+        const StoreArtifactCommand& command,
+        std::int64_t* artifact_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateSavestate(
+        const CreateSavestateCommand& command,
+        std::int64_t* savestate_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool DeriveSavestate(
+        const DeriveSavestateCommand& command,
+        std::int64_t* derivation_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateTasVariant(
+        const CreateTasVariantCommand& command,
+        std::int64_t* tas_variant_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     // Reads unpublished outbox rows in ascending outbox cursor order.
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(

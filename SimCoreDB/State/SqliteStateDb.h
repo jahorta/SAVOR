@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -14,6 +15,26 @@ namespace simcore::db::state {
 class SqliteStateDb final : public simcore::db::IStateDb {
 public:
     explicit SqliteStateDb(sqlite3* db);
+
+    bool StoreArtifact(
+        const StoreArtifactCommand& command,
+        std::int64_t* artifact_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CreateSavestate(
+        const CreateSavestateCommand& command,
+        std::int64_t* savestate_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool DeriveSavestate(
+        const DeriveSavestateCommand& command,
+        std::int64_t* derivation_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CreateTasVariant(
+        const CreateTasVariantCommand& command,
+        std::int64_t* tas_variant_id_out = nullptr,
+        std::string* error_out = nullptr) override;
 
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

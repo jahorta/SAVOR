@@ -29,8 +29,11 @@ Deferred write points (schema complete; command services pending):
 - `ab_battle_set`, `ab_seed_candidate`, `ab_turn_wave`, `ab_turn_job`, `ab_selection_pool`, `ab_selection_decision`, `ab_terminal_followup` writes should append to `ab_outbox_message` in the same transaction.
 
 ### State
-Deferred write points (schema complete; command services pending):
-- `state_artifact`, `state_savestate`, `state_savestate_derivation`, `state_tas_movie_variant` writes should append to `state_outbox_message` in the same transaction.
+Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteStateDb::StoreArtifact` -> `State.ArtifactStored.v1`
+- `SqliteStateDb::CreateSavestate` -> `State.SavestateCreated.v1`
+- `SqliteStateDb::DeriveSavestate` -> `State.SavestateDerived.v1`
+- `SqliteStateDb::CreateTasVariant` -> `State.TasVariantCreated.v1`
 
 ### Authoring
 Deferred write points (schema complete; command services pending):
@@ -58,10 +61,10 @@ Deferred write points (schema complete; command services pending):
 | 12 | `Execution.WorkflowStepCompleted.v1` | Implemented | `SkipStep`/`MarkStepTerminal` and recovery reconciliation emit via workflow event + outbox insert. |
 | 13 | `Execution.WorkflowStepFailed.v1` | Implemented | `MarkStepTerminal` and recovery reconciliation emit via workflow event + outbox insert. |
 | 14 | `Execution.WorkflowInstanceCompleted.v1` | Implemented | `SqliteWorkflowOrchestrationCommandService::CancelWorkflowInstance` -> `EmitLifecycleEvent`. |
-| 15 | `State.ArtifactStored.v1` | Deferred | State command services are stage placeholder; outbox table exists but no writer yet. |
-| 16 | `State.SavestateCreated.v1` | Deferred | Same as #15. |
-| 17 | `State.SavestateDerived.v1` | Deferred | Same as #15. |
-| 18 | `State.TasVariantCreated.v1` | Deferred | Same as #15. |
+| 15 | `State.ArtifactStored.v1` | Implemented | `SqliteStateDb::StoreArtifact` inserts `state_artifact` + outbox row atomically (`payload_ref_kind=artifact`). |
+| 16 | `State.SavestateCreated.v1` | Implemented | `SqliteStateDb::CreateSavestate` inserts `state_savestate` + outbox row atomically (`payload_ref_kind=savestate`). |
+| 17 | `State.SavestateDerived.v1` | Implemented | `SqliteStateDb::DeriveSavestate` inserts `state_savestate_derivation` + outbox row atomically (`payload_ref_kind=savestate_derivation`). |
+| 18 | `State.TasVariantCreated.v1` | Implemented | `SqliteStateDb::CreateTasVariant` inserts `state_tas_movie_variant` + outbox row atomically (`payload_ref_kind=tas_variant`). |
 | 19 | `AnalysisSpine.RunCreated.v1` | Deferred | AnalysisSpine bounded-context command services pending. |
 | 20 | `AnalysisSpine.StateRefRegistered.v1` | Deferred | Same as #19. |
 | 21 | `AnalysisSpine.LineageEdgeAdded.v1` | Deferred | Same as #19. |

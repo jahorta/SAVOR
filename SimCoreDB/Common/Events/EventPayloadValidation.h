@@ -232,7 +232,45 @@ inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::
 }
 
 inline bool ValidateStateArtifactPayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {
-    return ValidateV1PayloadRef(envelope, "State", "artifact", error_out);
+    if (!ValidateV1EnvelopeBasics(envelope, error_out)) {
+        return false;
+    }
+    if (envelope.context_name != "State") {
+        if (error_out) *error_out = "context_name does not match expected payload family";
+        return false;
+    }
+
+    if (envelope.event_type == "State.ArtifactStored.v1") {
+        if (envelope.payload_ref_kind != "artifact") {
+            if (error_out) *error_out = "payload_ref_kind must be artifact for State.ArtifactStored.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "State.SavestateCreated.v1") {
+        if (envelope.payload_ref_kind != "savestate") {
+            if (error_out) *error_out = "payload_ref_kind must be savestate for State.SavestateCreated.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "State.SavestateDerived.v1") {
+        if (envelope.payload_ref_kind != "savestate_derivation" && envelope.payload_ref_kind != "derivation") {
+            if (error_out) *error_out = "payload_ref_kind must be savestate_derivation for State.SavestateDerived.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "State.TasVariantCreated.v1") {
+        if (envelope.payload_ref_kind != "tas_variant" && envelope.payload_ref_kind != "tas-variant") {
+            if (error_out) *error_out = "payload_ref_kind must be tas_variant for State.TasVariantCreated.v1";
+            return false;
+        }
+        return true;
+    }
+
+    if (error_out) *error_out = "unsupported State event_type";
+    return false;
 }
 
 inline bool ValidateArchivePackagePayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {
