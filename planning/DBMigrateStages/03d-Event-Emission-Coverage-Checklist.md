@@ -65,10 +65,10 @@ Deferred write points (schema complete; command services pending):
 | 16 | `State.SavestateCreated.v1` | Implemented | `SqliteStateDb::CreateSavestate` inserts `state_savestate` + outbox row atomically (`payload_ref_kind=savestate`). |
 | 17 | `State.SavestateDerived.v1` | Implemented | `SqliteStateDb::DeriveSavestate` inserts `state_savestate_derivation` + outbox row atomically (`payload_ref_kind=savestate_derivation`). |
 | 18 | `State.TasVariantCreated.v1` | Implemented | `SqliteStateDb::CreateTasVariant` inserts `state_tas_movie_variant` + outbox row atomically (`payload_ref_kind=tas_variant`). |
-| 19 | `AnalysisSpine.RunCreated.v1` | Deferred | AnalysisSpine bounded-context command services pending. |
-| 20 | `AnalysisSpine.StateRefRegistered.v1` | Deferred | Same as #19. |
-| 21 | `AnalysisSpine.LineageEdgeAdded.v1` | Deferred | Same as #19. |
-| 22 | `AnalysisSpine.ArtifactLinked.v1` | Deferred | Same as #19. |
+| 19 | `AnalysisSpine.RunCreated.v1` | Implemented | `SqliteAnalysisDb::ResolveSpinePayload` + `SqliteAnalysisSpinePayloadRowResolver::ResolveSpineRunCreated` resolve v1 payloads from `asp_run`. |
+| 20 | `AnalysisSpine.StateRefRegistered.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineStateRefRegistered` resolve v1 payloads from `asp_state_ref`. |
+| 21 | `AnalysisSpine.LineageEdgeAdded.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineLineageEdgeAdded` resolve v1 payloads from `asp_lineage_edge`. |
+| 22 | `AnalysisSpine.ArtifactLinked.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineArtifactLinked` resolve v1 payloads from `asp_artifact_ref`. |
 | 23 | `AnalysisSeedProbe.SetCreated.v1` | Deferred | AnalysisSeedProbe command services pending; no transactional writer yet. |
 | 24 | `AnalysisSeedProbe.RunRequested.v1` | Deferred | Same as #23. |
 | 25 | `AnalysisSeedProbe.NeutralSeedRecorded.v1` | Deferred | Same as #23. |

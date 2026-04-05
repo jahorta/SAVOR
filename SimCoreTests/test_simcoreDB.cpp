@@ -1360,6 +1360,25 @@ TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) 
     EXPECT_TRUE(ValidateAnalysisSeedProbePayloadV1(envelope, &error)) << error;
 }
 
+TEST(Stage3cEventContracts, AnalysisSpineValidationRequiresConcretePayloadRefKinds) {
+    using namespace simcore::db::events;
+
+    EventEnvelope envelope{};
+    envelope.event_type = "AnalysisSpine.StateRefRegistered.v1";
+    envelope.event_version = 1;
+    envelope.context_name = "AnalysisSpine";
+    envelope.aggregate_kind = "run";
+    envelope.payload_ref_kind = "spine_ref";
+    envelope.payload_ref_id = 22;
+
+    std::string error;
+    EXPECT_FALSE(ValidateAnalysisSpinePayloadV1(envelope, &error));
+    EXPECT_EQ(error, "payload_ref_kind must be state_ref for AnalysisSpine.StateRefRegistered.v1");
+
+    envelope.payload_ref_kind = "state_ref";
+    EXPECT_TRUE(ValidateAnalysisSpinePayloadV1(envelope, &error)) << error;
+}
+
 TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
     using namespace simcore::db::events;
 
@@ -1377,6 +1396,23 @@ TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
 
     envelope.payload_ref_kind = "turn_job";
     EXPECT_TRUE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << error;
+}
+
+TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) {
+    using namespace simcore::db::events;
+
+    constexpr std::array<std::string_view, 4> kSpineEventTypes{ {
+        "AnalysisSpine.RunCreated.v1",
+        "AnalysisSpine.StateRefRegistered.v1",
+        "AnalysisSpine.LineageEdgeAdded.v1",
+        "AnalysisSpine.ArtifactLinked.v1",
+    } };
+
+    for (const auto event_type : kSpineEventTypes) {
+        const auto contract = ResolvePayloadResolverContract(event_type, 1);
+        ASSERT_TRUE(contract.has_value()) << event_type;
+        EXPECT_EQ(*contract, PayloadResolverContract::AnalysisSpineV1) << event_type;
+    }
 }
 
 TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {

@@ -11,6 +11,7 @@ namespace simcore::db::events {
 enum class PayloadResolverContract {
     Unknown = 0,
     ExecutionWorkflowJobV1,
+    AnalysisSpineV1,
     AnalysisSeedProbeV1,
     AnalysisBattleV1,
     AuthoringV1,
@@ -28,7 +29,7 @@ struct EventDispatchBinding {
     PayloadResolverContract contract = PayloadResolverContract::Unknown;
 };
 
-inline constexpr std::array<EventDispatchBinding, 35> kPayloadDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 39> kPayloadDispatchBindingsV1{ {
     { { "Execution.JobSetCreated.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobQueued.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobClaimed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
@@ -43,6 +44,10 @@ inline constexpr std::array<EventDispatchBinding, 35> kPayloadDispatchBindingsV1
     { { "Execution.WorkflowStepCompleted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowStepFailed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowInstanceCompleted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
+    { { "AnalysisSpine.RunCreated.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
+    { { "AnalysisSpine.StateRefRegistered.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
+    { { "AnalysisSpine.LineageEdgeAdded.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
+    { { "AnalysisSpine.ArtifactLinked.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
     { { "AnalysisSeedProbe.SetCreated.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },
     { { "AnalysisSeedProbe.RunRequested.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },
     { { "AnalysisSeedProbe.NeutralSeedRecorded.v1", 1 }, PayloadResolverContract::AnalysisSeedProbeV1 },

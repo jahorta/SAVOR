@@ -168,6 +168,48 @@ inline bool ValidateAnalysisSeedProbePayloadV1(const EventEnvelope& envelope, st
     return false;
 }
 
+inline bool ValidateAnalysisSpinePayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {
+    if (!ValidateV1EnvelopeBasics(envelope, error_out)) {
+        return false;
+    }
+    if (envelope.context_name != "AnalysisSpine") {
+        if (error_out) *error_out = "context_name does not match expected payload family";
+        return false;
+    }
+
+    if (envelope.event_type == "AnalysisSpine.RunCreated.v1") {
+        if (envelope.payload_ref_kind != "run") {
+            if (error_out) *error_out = "payload_ref_kind must be run for AnalysisSpine.RunCreated.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisSpine.StateRefRegistered.v1") {
+        if (envelope.payload_ref_kind != "state_ref") {
+            if (error_out) *error_out = "payload_ref_kind must be state_ref for AnalysisSpine.StateRefRegistered.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisSpine.LineageEdgeAdded.v1") {
+        if (envelope.payload_ref_kind != "lineage_edge") {
+            if (error_out) *error_out = "payload_ref_kind must be lineage_edge for AnalysisSpine.LineageEdgeAdded.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisSpine.ArtifactLinked.v1") {
+        if (envelope.payload_ref_kind != "artifact_ref") {
+            if (error_out) *error_out = "payload_ref_kind must be artifact_ref for AnalysisSpine.ArtifactLinked.v1";
+            return false;
+        }
+        return true;
+    }
+
+    if (error_out) *error_out = "unsupported AnalysisSpine event_type";
+    return false;
+}
+
 inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::string* error_out = nullptr) {
     if (!ValidateV1EnvelopeBasics(envelope, error_out)) {
         return false;
@@ -283,6 +325,9 @@ inline bool ValidateEventPayloadRequiredFieldsV1(const EventEnvelope& envelope, 
     }
     if (envelope.context_name == "AnalysisSeedProbe") {
         return ValidateAnalysisSeedProbePayloadV1(envelope, error_out);
+    }
+    if (envelope.context_name == "AnalysisSpine") {
+        return ValidateAnalysisSpinePayloadV1(envelope, error_out);
     }
     if (envelope.context_name == "AnalysisBattle") {
         return ValidateAnalysisBattlePayloadV1(envelope, error_out);

@@ -441,4 +441,121 @@ std::optional<events::AnalysisBattleTerminalFollowupUpdatedPayloadView> SqliteBa
     return view;
 }
 
+SqliteAnalysisSpinePayloadRowResolver::SqliteAnalysisSpinePayloadRowResolver(sqlite3* db)
+    : db_(db) {
+}
+
+std::optional<events::AnalysisSpineRunCreatedPayloadView> SqliteAnalysisSpinePayloadRowResolver::ResolveSpineRunCreated(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    if (db_ == nullptr || !MatchesRef("run", payload_ref_kind, payload_ref_id)) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(db_, "SELECT run_id FROM asp_run WHERE run_id=?1;", -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    events::AnalysisSpineRunCreatedPayloadView view{};
+    view.run_id = sqlite3_column_int64(st.st, 0);
+    return view;
+}
+
+std::optional<events::AnalysisSpineStateRefRegisteredPayloadView> SqliteAnalysisSpinePayloadRowResolver::ResolveSpineStateRefRegistered(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    if (db_ == nullptr || !MatchesRef("state_ref", payload_ref_kind, payload_ref_id)) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT run_id, state_ref_id FROM asp_state_ref WHERE state_ref_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    events::AnalysisSpineStateRefRegisteredPayloadView view{};
+    view.run_id = sqlite3_column_int64(st.st, 0);
+    view.state_ref_id = sqlite3_column_int64(st.st, 1);
+    return view;
+}
+
+std::optional<events::AnalysisSpineLineageEdgeAddedPayloadView> SqliteAnalysisSpinePayloadRowResolver::ResolveSpineLineageEdgeAdded(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    if (db_ == nullptr || !MatchesRef("lineage_edge", payload_ref_kind, payload_ref_id)) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT parent_run_id, child_run_id, lineage_edge_id "
+            "FROM asp_lineage_edge WHERE lineage_edge_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    events::AnalysisSpineLineageEdgeAddedPayloadView view{};
+    view.parent_run_id = sqlite3_column_int64(st.st, 0);
+    view.child_run_id = sqlite3_column_int64(st.st, 1);
+    view.lineage_edge_id = sqlite3_column_int64(st.st, 2);
+    return view;
+}
+
+std::optional<events::AnalysisSpineArtifactLinkedPayloadView> SqliteAnalysisSpinePayloadRowResolver::ResolveSpineArtifactLinked(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    if (db_ == nullptr || !MatchesRef("artifact_ref", payload_ref_kind, payload_ref_id)) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT run_id, artifact_ref_id, artifact_id "
+            "FROM asp_artifact_ref WHERE artifact_ref_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, payload_ref_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    events::AnalysisSpineArtifactLinkedPayloadView view{};
+    view.run_id = sqlite3_column_int64(st.st, 0);
+    view.artifact_ref_id = sqlite3_column_int64(st.st, 1);
+    view.artifact_id = sqlite3_column_int64(st.st, 2);
+    return view;
+}
+
 } // namespace simcore::db::analysis
