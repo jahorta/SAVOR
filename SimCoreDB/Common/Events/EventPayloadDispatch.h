@@ -13,6 +13,7 @@ enum class PayloadResolverContract {
     ExecutionWorkflowJobV1,
     AnalysisSeedProbeV1,
     AnalysisBattleV1,
+    AuthoringV1,
     StateArtifactV1,
     ArchivePackageV1,
 };
@@ -27,7 +28,7 @@ struct EventDispatchBinding {
     PayloadResolverContract contract = PayloadResolverContract::Unknown;
 };
 
-inline constexpr std::array<EventDispatchBinding, 28> kPayloadDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 35> kPayloadDispatchBindingsV1{ {
     { { "Execution.JobSetCreated.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobQueued.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobClaimed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
@@ -56,6 +57,13 @@ inline constexpr std::array<EventDispatchBinding, 28> kPayloadDispatchBindingsV1
     { { "AnalysisBattle.SelectionPoolCreated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "AnalysisBattle.SelectionDecisionRecorded.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
     { { "AnalysisBattle.TerminalFollowupUpdated.v1", 1 }, PayloadResolverContract::AnalysisBattleV1 },
+    { { "Authoring.SeedProbeSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.TasSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.BattleRunSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.PlanSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.PredicateSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.SettingsSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.TemplateSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
 } };
 
 inline constexpr std::array<EventDispatchBinding, 9> kStateArchiveDispatchBindingsV1{ {

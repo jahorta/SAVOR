@@ -32,8 +32,13 @@ struct IAuthoringDb {
         std::int64_t outbox_id,
         std::string_view last_error) = 0;
 
-    // Resolves authoring payload references for a specific event version.
+    // Resolves authoring payload references from a canonical outbox/event envelope.
     virtual std::optional<AuthoringPayloadRecord> ResolveAuthoringPayload(
+        const events::EventEnvelope& envelope) const = 0;
+
+    // Dispatch-key variant for projector/consumer code paths that already split key fields.
+    virtual std::optional<AuthoringPayloadRecord> ResolveAuthoringPayload(
+        std::string_view event_type,
         int event_version,
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
