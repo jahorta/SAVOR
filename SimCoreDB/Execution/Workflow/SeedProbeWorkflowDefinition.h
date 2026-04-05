@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace simcore::db::execution::workflow {
@@ -23,5 +24,15 @@ struct WorkflowDefinition {
 
 WorkflowDefinition BuildSeedProbeChainDefinition();
 bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::string* error_out);
+
+class WorkflowDefinitionRegistry {
+public:
+    bool RegisterDefinition(WorkflowDefinition definition, std::string* error_out);
+    const WorkflowDefinition* Find(std::string_view workflow_kind) const;
+    bool RegisterSeedProbeDefaults(std::string* error_out);
+
+private:
+    std::unordered_map<std::string, WorkflowDefinition> definitions_;
+};
 
 } // namespace simcore::db::execution::workflow

@@ -1,6 +1,7 @@
 #include "WorkflowRecoveryService.h"
 
 #include <ctime>
+#include <sstream>
 
 namespace simcore::db::execution::workflow {
 
@@ -113,7 +114,39 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
             Exec(db_, "ROLLBACK;", nullptr);
             return false;
         }
+        const auto workflow_event_id = sqlite3_last_insert_rowid(db_);
         sqlite3_finalize(ev);
+
+        sqlite3_stmt* outbox = nullptr;
+        constexpr const char* kOutboxInsert =
+            "INSERT INTO exec_outbox_message("
+            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+            "VALUES(?1, ?2, 1, 'Execution', 'workflow_instance', ?3, ?4, ?5, ?6, 'workflow_event', ?7);";
+        if (sqlite3_prepare_v2(db_, kOutboxInsert, -1, &outbox, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            sqlite3_finalize(st);
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        std::ostringstream event_id;
+        event_id << "workflow-recovery-" << workflow_instance_id << "-" << workflow_event_id;
+        const auto aggregate_id = std::to_string(workflow_instance_id);
+        const auto occurred_at_utc = NowUtc();
+        sqlite3_bind_text(outbox, 1, event_id.str().c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(outbox, 2, event_kind, -1, SQLITE_STATIC);
+        sqlite3_bind_text(outbox, 3, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(outbox, 4, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(outbox, 5, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(outbox, 6, occurred_at_utc);
+        sqlite3_bind_int64(outbox, 7, workflow_event_id);
+        if (sqlite3_step(outbox) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            sqlite3_finalize(outbox);
+            sqlite3_finalize(st);
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        sqlite3_finalize(outbox);
     }
     sqlite3_finalize(st);
 

@@ -23,5 +23,7 @@ Database-layer scaffolding for SOASim bounded contexts.
   - deterministic workflow-engine helpers for readiness resolution and startup reconciliation,
   - recovery reconciliation service for in-flight steps bound to terminal `job_set` outcomes,
   - UIRead workflow projector that upserts instance/step/edge visibility rows from execution state,
+  - outbox-driven workflow projector replay with checkpointing for idempotent catch-up,
   - parity-diagnostics utility for comparing legacy trigger outcomes vs workflow outcomes,
+  - promotion-gate decision helper for go/no-go artifact generation,
   - static mode-provider implementation for runtime mode selection integration.

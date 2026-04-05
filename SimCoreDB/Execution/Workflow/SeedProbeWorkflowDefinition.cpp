@@ -81,4 +81,35 @@ bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::strin
     return true;
 }
 
+bool WorkflowDefinitionRegistry::RegisterDefinition(WorkflowDefinition definition, std::string* error_out) {
+    std::string validation_error;
+    if (!ValidateWorkflowDefinition(definition, &validation_error)) {
+        if (error_out) {
+            *error_out = "invalid workflow definition '" + definition.workflow_kind + "': " + validation_error;
+        }
+        return false;
+    }
+
+    const auto inserted = definitions_.emplace(definition.workflow_kind, std::move(definition));
+    if (!inserted.second) {
+        if (error_out) {
+            *error_out = "workflow definition already registered: " + inserted.first->first;
+        }
+        return false;
+    }
+    return true;
+}
+
+const WorkflowDefinition* WorkflowDefinitionRegistry::Find(std::string_view workflow_kind) const {
+    const auto it = definitions_.find(std::string(workflow_kind));
+    if (it == definitions_.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+bool WorkflowDefinitionRegistry::RegisterSeedProbeDefaults(std::string* error_out) {
+    return RegisterDefinition(BuildSeedProbeChainDefinition(), error_out);
+}
+
 } // namespace simcore::db::execution::workflow

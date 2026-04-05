@@ -221,6 +221,15 @@ PRStatus DBWorkflowWorkerCoordinator::SnapshotStatus() const {
     return status;
 }
 
+WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() const {
+    WorkflowCoordinatorTelemetry telemetry{};
+    telemetry.ready_scan_count = ready_scan_count_.load();
+    telemetry.ready_steps_enqueued = ready_steps_enqueued_.load();
+    telemetry.last_ready_scan_latency_ms = last_ready_scan_latency_ms_.load();
+    telemetry.max_ready_queue_depth = max_ready_queue_depth_.load();
+    return telemetry;
+}
+
 void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
     while (!stop_.load()) {
         if (paused_.load()) {
@@ -370,13 +379,20 @@ void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const simcore::PRResult&
 }
 
 void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
+    const auto t0 = std::chrono::steady_clock::now();
     if (execution_db_ == nullptr || execution_db_->WorkflowQueryService() == nullptr) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
+        ++ready_scan_count_;
         return;
     }
 
     const auto mode_selection = mode_provider_ ? mode_provider_->GetModeSelection() : simcore::db::execution::workflow::WorkflowModeSelection{};
     const auto policy = simcore::db::execution::workflow::BuildWorkflowAuthorityPolicy(mode_selection.mode);
     if (!policy.run_workflow) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
+        ++ready_scan_count_;
         return;
     }
 
@@ -405,8 +421,22 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
                 .step_kind = step.step_kind,
                 .priority = step.priority,
             });
+            ++ready_steps_enqueued_;
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mtx_);
+        const auto depth = static_cast<std::int64_t>(ready_queue_.size());
+        const auto prev = max_ready_queue_depth_.load();
+        if (depth > prev) {
+            max_ready_queue_depth_.store(depth);
+        }
+    }
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
+    ++ready_scan_count_;
 }
 
 bool DBWorkflowWorkerCoordinator::TryDequeueReadyStep(WorkflowReadyStep* step_out) {
