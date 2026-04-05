@@ -250,13 +250,13 @@ bool WorkflowProjector::ProjectFromOutbox(const std::string& projector_name, int
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kOutboxSql =
-        "SELECT outbox_message_id, aggregate_id "
+        "SELECT outbox_id, aggregate_id "
         "FROM exec_outbox_message "
-        "WHERE outbox_message_id > ?1 "
+        "WHERE outbox_id > ?1 "
         "AND context_name='Execution' "
         "AND aggregate_kind='workflow_instance' "
         "AND payload_ref_kind='workflow_event' "
-        "ORDER BY outbox_message_id ASC "
+        "ORDER BY outbox_id ASC "
         "LIMIT ?2;";
     if (sqlite3_prepare_v2(db_, kOutboxSql, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
