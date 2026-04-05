@@ -1,5 +1,7 @@
 #include "Execution/Workflow/WorkflowProjector.h"
 
+#include <ctime>
+
 namespace simcore::db::execution::workflow {
 
 namespace {
@@ -99,6 +101,85 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
         return false;
     }
     sqlite3_finalize(edges);
+
+    const auto now_ts = static_cast<std::int64_t>(std::time(nullptr));
+
+    sqlite3_stmt* clear_alerts = nullptr;
+    constexpr const char* kClearAlerts =
+        "UPDATE ui_workflow_alert "
+        "SET is_active=0, cleared_at_utc=?2 "
+        "WHERE workflow_instance_id=?1 AND is_active=1 AND workflow_alert_id NOT IN ("
+        "    SELECT (workflow_step_id * 10) + 1 AS workflow_alert_id "
+        "    FROM exec_workflow_step "
+        "    WHERE workflow_instance_id=?1 AND blocked_reason IS NOT NULL "
+        "    UNION ALL "
+        "    SELECT (workflow_step_id * 10) + 2 AS workflow_alert_id "
+        "    FROM exec_workflow_step "
+        "    WHERE workflow_instance_id=?1 AND state='FAILED'"
+        ");";
+    if (sqlite3_prepare_v2(db_, kClearAlerts, -1, &clear_alerts, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(clear_alerts, 1, workflow_instance_id);
+    sqlite3_bind_int64(clear_alerts, 2, now_ts);
+    if (sqlite3_step(clear_alerts) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        sqlite3_finalize(clear_alerts);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_finalize(clear_alerts);
+
+    sqlite3_stmt* upsert_alerts = nullptr;
+    constexpr const char* kUpsertAlerts =
+        "INSERT INTO ui_workflow_alert("
+        "workflow_alert_id,workflow_instance_id,workflow_step_id,alert_kind,alert_code,message,is_active,first_seen_at_utc,last_seen_at_utc,cleared_at_utc) "
+        "SELECT "
+        "  src.workflow_alert_id,src.workflow_instance_id,src.workflow_step_id,src.alert_kind,src.alert_code,src.message,1,?2,?2,NULL "
+        "FROM ("
+        "  SELECT "
+        "    (workflow_step_id * 10) + 1 AS workflow_alert_id,"
+        "    workflow_instance_id,"
+        "    workflow_step_id,"
+        "    'BLOCKED_STEP' AS alert_kind,"
+        "    'STEP_BLOCKED' AS alert_code,"
+        "    blocked_reason AS message "
+        "  FROM exec_workflow_step "
+        "  WHERE workflow_instance_id=?1 AND blocked_reason IS NOT NULL "
+        "  UNION ALL "
+        "  SELECT "
+        "    (workflow_step_id * 10) + 2 AS workflow_alert_id,"
+        "    workflow_instance_id,"
+        "    workflow_step_id,"
+        "    'FAILED_STEP' AS alert_kind,"
+        "    'STEP_FAILED' AS alert_code,"
+        "    COALESCE(blocked_reason, 'step failed') AS message "
+        "  FROM exec_workflow_step "
+        "  WHERE workflow_instance_id=?1 AND state='FAILED'"
+        ") AS src "
+        "ON CONFLICT(workflow_alert_id) DO UPDATE SET "
+        "  alert_kind=excluded.alert_kind,"
+        "  alert_code=excluded.alert_code,"
+        "  message=excluded.message,"
+        "  is_active=1,"
+        "  last_seen_at_utc=excluded.last_seen_at_utc,"
+        "  cleared_at_utc=NULL;";
+    if (sqlite3_prepare_v2(db_, kUpsertAlerts, -1, &upsert_alerts, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(upsert_alerts, 1, workflow_instance_id);
+    sqlite3_bind_int64(upsert_alerts, 2, now_ts);
+    if (sqlite3_step(upsert_alerts) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        sqlite3_finalize(upsert_alerts);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_finalize(upsert_alerts);
 
     if (!Exec(db_, "COMMIT;", error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);

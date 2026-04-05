@@ -471,6 +471,187 @@ bool SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
+    const WorkflowMarkStepMaterializedCommand& command,
+    std::string* error_out) {
+    if (command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_step_id must be > 0";
+        return false;
+    }
+    if (command.job_set_id <= 0) {
+        if (error_out) *error_out = "job_set_id must be > 0";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_id, state, job_set_id "
+        "FROM exec_workflow_step WHERE workflow_step_id=?1;",
+        &read,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_step_id);
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const auto workflow_instance_id = sqlite3_column_int64(read.st, 0);
+    const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 1));
+    const auto existing_job_set_id = ColumnInt64Optional(read.st, 2);
+
+    if (existing_job_set_id.has_value() && *existing_job_set_id != command.job_set_id) {
+        if (error_out) *error_out = "materialize precondition failed (step already mapped to a different job_set_id)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (state == "COMPLETED" || state == "FAILED" || state == "SKIPPED") {
+        if (error_out) *error_out = "materialize precondition failed (step is terminal)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    bool should_emit = false;
+    if (state != "MATERIALIZED" || !existing_job_set_id.has_value()) {
+        Statement update;
+        if (!Prepare(db_,
+            "UPDATE exec_workflow_step "
+            "SET state='MATERIALIZED', job_set_id=?2, started_at_utc=COALESCE(started_at_utc, ?3) "
+            "WHERE workflow_step_id=?1 AND state IN ('READY','MATERIALIZED','RUNNING');",
+            &update,
+            error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(update.st, 1, command.workflow_step_id);
+        sqlite3_bind_int64(update.st, 2, command.job_set_id);
+        sqlite3_bind_int64(update.st, 3, NowUtc());
+        if (sqlite3_step(update.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        if (sqlite3_changes(db_) == 0) {
+            if (error_out) *error_out = "materialize precondition failed";
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        should_emit = true;
+    }
+
+    if (should_emit
+        && !EmitLifecycleEvent(workflow_instance_id, command.workflow_step_id, "Execution.WorkflowStepMaterialized.v1", "materialized", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
+    const WorkflowMarkStepTerminalCommand& command,
+    std::string* error_out) {
+    if (command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_step_id must be > 0";
+        return false;
+    }
+
+    const bool completed = command.terminal_state == "COMPLETED";
+    const bool failed = command.terminal_state == "FAILED";
+    if (!completed && !failed) {
+        if (error_out) *error_out = "terminal_state must be COMPLETED or FAILED";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_id, state "
+        "FROM exec_workflow_step WHERE workflow_step_id=?1;",
+        &read,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_step_id);
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const auto workflow_instance_id = sqlite3_column_int64(read.st, 0);
+    const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 1));
+    const std::string target_state = completed ? "COMPLETED" : "FAILED";
+
+    if (state == target_state) {
+        if (!Exec(db_, "COMMIT;", error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        return true;
+    }
+    if (state == "COMPLETED" || state == "FAILED" || state == "SKIPPED") {
+        if (error_out) *error_out = "terminal precondition failed (step already terminal with different outcome)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_step "
+        "SET state=?2, "
+        "completed_at_utc=CASE WHEN ?2='COMPLETED' THEN ?3 ELSE completed_at_utc END, "
+        "failed_at_utc=CASE WHEN ?2='FAILED' THEN ?3 ELSE failed_at_utc END "
+        "WHERE workflow_step_id=?1 AND state IN ('MATERIALIZED','RUNNING','READY');",
+        &update,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, command.workflow_step_id);
+    sqlite3_bind_text(update.st, 2, target_state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update.st, 3, NowUtc());
+
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "terminal precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const char* event_kind = completed ? "Execution.WorkflowStepCompleted.v1" : "Execution.WorkflowStepFailed.v1";
+    const char* message = completed ? "terminal_completed" : "terminal_failed";
+    if (!EmitLifecycleEvent(workflow_instance_id, command.workflow_step_id, event_kind, message, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::EmitLifecycleEvent(
     std::int64_t workflow_instance_id,
     std::optional<std::int64_t> workflow_step_id,

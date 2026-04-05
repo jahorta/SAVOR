@@ -176,8 +176,10 @@
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h" />
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowEngine.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
     <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h" />
     <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowParityStore.h" />
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SimCoreDB.h" />
@@ -192,8 +194,10 @@
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowParityStore.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
