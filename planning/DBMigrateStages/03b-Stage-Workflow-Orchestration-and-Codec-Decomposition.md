@@ -276,7 +276,22 @@ Add command APIs:
 
 ---
 
-## 3b.9 Dependencies and Sequencing
+
+## 3b.9 Handoff to Stage 3c Vertical Slice
+
+Stage 3b should deliver schema + contracts + compatibility hooks sufficient to enable a focused Stage 3c validation slice.
+
+Stage 3b is considered implementation-complete for handoff when:
+1. Workflow schema migrations and indexes are merged.
+2. Program descriptor/adapters contracts are in place with compatibility shim support.
+3. Workflow orchestration query/command contracts are defined for concrete service implementation in Stage 3c.
+4. Dual-path mode wiring points exist so Stage 3c can run `DualWriteObserve` with runner integration and parity checks.
+
+Stage 3c then owns real runner integration, end-to-end execution validation, parity diagnostics, and crash-recovery proof for the SeedProbe pilot chain before broad Stage 3 expansion.
+
+---
+
+## 3b.10 Dependencies and Sequencing
 
 - Depends on Stage 2 schema baseline and migration infrastructure.
 - Should begin before or alongside Stage 3 event/projector implementation so workflow events are first-class.
@@ -286,6 +301,7 @@ Recommended execution order update:
 1. Stage 1
 2. Stage 2
 3. **Stage 3b (this stage)**
-4. Stage 3
-5. Stage 4
-6. Stage 5
+4. **Stage 3c (workflow validation vertical slice)**
+5. Stage 3
+6. Stage 4
+7. Stage 5
