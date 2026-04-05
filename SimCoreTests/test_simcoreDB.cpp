@@ -1,3 +1,4 @@
+#include <array>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -7,6 +8,7 @@
 #include <sqlite3.h>
 
 #include "Common/Migrations/MigrationRunner.h"
+#include "Common/Events/EventCatalog.h"
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/EventTypeFormat.h"
@@ -1323,6 +1325,47 @@ TEST(Stage3cEventContracts, PayloadDispatchAndValidationRejectVersionSuffixMisma
     std::string error;
     EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(envelope, &error));
     EXPECT_EQ(error, "event_type must end with .v<event_version>");
+}
+
+TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {
+    using namespace simcore::db::events;
+
+    constexpr std::array<std::string_view, 7> kAuthoringEventTypes{ {
+        "Authoring.SeedProbeSpecSaved.v1",
+        "Authoring.TasSpecSaved.v1",
+        "Authoring.BattleRunSpecSaved.v1",
+        "Authoring.PlanSaved.v1",
+        "Authoring.PredicateSpecSaved.v1",
+        "Authoring.SettingsSaved.v1",
+        "Authoring.TemplateSaved.v1",
+    } };
+
+    for (const auto event_type : kAuthoringEventTypes) {
+        const auto contract = ResolvePayloadResolverContract(event_type, 1);
+        ASSERT_TRUE(contract.has_value()) << event_type;
+        EXPECT_EQ(*contract, PayloadResolverContract::AuthoringV1) << event_type;
+    }
+}
+
+TEST(Stage3cEventContracts, AuthoringCatalogEntriesRemainDispatched) {
+    using namespace simcore::db::events;
+
+    constexpr std::string_view kAuthoringPrefix = "Authoring.";
+    constexpr std::size_t kPrefixLength = 10;
+    std::size_t authoring_entries = 0;
+
+    for (const auto event_type : kEventCatalogV1) {
+        if (event_type.substr(0, kPrefixLength) != kAuthoringPrefix) {
+            continue;
+        }
+        ++authoring_entries;
+
+        const auto contract = ResolvePayloadResolverContract(event_type, 1);
+        ASSERT_TRUE(contract.has_value()) << event_type;
+        EXPECT_EQ(*contract, PayloadResolverContract::AuthoringV1) << event_type;
+    }
+
+    EXPECT_EQ(authoring_entries, 7u);
 }
 
 TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
