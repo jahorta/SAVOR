@@ -733,6 +733,13 @@ bool SqliteWorkflowOrchestrationCommandService::EmitLifecycleEvent(
     const auto workflow_event_id = sqlite3_last_insert_rowid(db_);
     std::ostringstream event_id;
     event_id << "workflow-" << workflow_instance_id << "-" << workflow_event_id;
+    const auto event_id_value = event_id.str();
+    const auto aggregate_id = std::to_string(workflow_instance_id);
+    const auto correlation_id = "workflow-instance-" + aggregate_id;
+    std::string causation_id = event_id_value;
+    if (workflow_step_id.has_value()) {
+        causation_id = "workflow-step-" + std::to_string(*workflow_step_id);
+    }
 
     Statement outbox;
     if (!Prepare(db_,
@@ -744,12 +751,11 @@ bool SqliteWorkflowOrchestrationCommandService::EmitLifecycleEvent(
         return false;
     }
 
-    sqlite3_bind_text(outbox.st, 1, event_id.str().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 1, event_id_value.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(outbox.st, 2, event_kind, -1, SQLITE_STATIC);
-    const auto aggregate_id = std::to_string(workflow_instance_id);
     sqlite3_bind_text(outbox.st, 3, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(outbox.st, 4, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(outbox.st, 5, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 4, correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 5, causation_id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(outbox.st, 6, ts);
     sqlite3_bind_int64(outbox.st, 7, workflow_event_id);
 
