@@ -83,10 +83,14 @@ Queueing, claiming, retries, parent/child orchestration, and event/outbox mechan
 
 #### 5) `exec_outbox_message`
 - `outbox_id` (PK)
+- `event_id` (text UNIQUE)
 - `event_type` (text)
 - `event_version` (int)
+- `context_name` (text)
 - `aggregate_kind` (text)
 - `aggregate_id` (text)
+- `correlation_id` (text nullable)
+- `causation_id` (text nullable)
 - `occurred_at_utc` (int)
 - `payload_ref_kind` (text)
 - `payload_ref_id` (int)
@@ -102,6 +106,7 @@ Queueing, claiming, retries, parent/child orchestration, and event/outbox mechan
 
 ### Key Constraints / Indexes
 - Unique job fingerprint (`exec_job.fingerprint`).
+- `exec_job_set.domain_ref_kind/domain_ref_id` are lightweight links only; source-of-truth domain facts remain in domain context tables.
 - Parent pointers indexed (`exec_job.parent_job_id`, `exec_job_set.parent_job_set_id`).
 - Claim queue index on `(state, priority DESC, queued_at_utc ASC)`.
 - Traversal index on `exec_job(job_set_id, state, queued_at_utc DESC)`.
@@ -148,8 +153,7 @@ Store artifacts, savestates, and deterministic derivation lineage.
 - `base_dtm_artifact_id` (FK -> `state_artifact.artifact_id`)
 - `dtmini_artifact_id` (nullable FK -> `state_artifact.artifact_id`)
 - `mutation_mode` (text enum: `NONE`, `RTC_OVERRIDE`, `INSERT_NEUTRAL_FRAME`)
-- `rtc_low` (int nullable)
-- `rtc_high` (int nullable)
+- `rtc_value` (int nullable)
 - `bookmark_name` (text nullable)
 - `insert_frame_count` (int nullable)
 - `parent_tas_variant_id` (nullable FK -> `state_tas_movie_variant.tas_variant_id`)
@@ -392,6 +396,8 @@ Persist explicit battle exploration tree, turn waves, selection decisions, and m
 - `is_victory` (bool)
 - `manual_followup_status` (text enum: `UNREVIEWED`, `RECORDED`; default `UNREVIEWED`)
 - `recorded_dtm_artifact_id` (int nullable cross-context reference)
+- `recorded_dtmini_artifact_id` (int nullable cross-context reference)
+- `recorded_sav_artifact_id` (int nullable cross-context reference)
 - `note` (text nullable)
 - `updated_at_utc` (int)
 - Check: `manual_followup_status='RECORDED'` requires non-null `recorded_dtm_artifact_id`.
@@ -434,12 +440,9 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `auto_schedule_battle_run` (bool)
 - `created_at_utc` (int)
 
-#### 2) `au_tas_spec`
-- `tas_spec_id` (PK)
+#### 2) `au_tas_spec_base`
+- `tas_spec_base_id` (PK)
 - `name` (text UNIQUE NOT NULL)
-- `base_dtm_artifact_id` (int cross-context reference)
-- `rtc_low` (int)
-- `rtc_high` (int)
 - `priority` (int)
 - `run_ms` (int)
 - `vi_stall_ms` (int)
@@ -448,7 +451,15 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `auto_queue_seeds` (bool)
 - `created_at_utc` (int)
 
-#### 3) `au_battle_run_spec`
+#### 3) `au_tas_spec`
+- `tas_spec_id` (PK)
+- `tas_spec_base_id` (FK -> `au_tas_spec_base.tas_spec_base_id`)
+- `base_dtm_artifact_id` (int cross-context reference)
+- `rtc_low` (int)
+- `rtc_high` (int)
+- `created_at_utc` (int)
+
+#### 4) `au_battle_run_spec`
 - `battle_run_spec_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `priority` (int)
@@ -461,20 +472,20 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `max_fake_attacks` (int)
 - `created_at_utc` (int)
 
-#### 4) `au_battle_plan`
+#### 5) `au_battle_plan`
 - `plan_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `fingerprint` (text UNIQUE NOT NULL)
 - `num_turns` (int)
 - `created_at_utc` (int)
 
-#### 5) `au_battle_plan_turn`
+#### 6) `au_battle_plan_turn`
 - `plan_turn_id` (PK)
 - `plan_id` (FK -> `au_battle_plan.plan_id`)
 - `turn_index` (int)
 - UNIQUE(`plan_id`, `turn_index`)
 
-#### 6) `au_battle_plan_action`
+#### 7) `au_battle_plan_action`
 - `plan_action_id` (PK)
 - `plan_turn_id` (FK -> `au_battle_plan_turn.plan_turn_id`)
 - `actor_slot` (int)
@@ -484,25 +495,24 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `item_id` (int nullable)
 - `ordinal` (int)
 
-#### 7) `au_predicate_spec`
+#### 8) `au_predicate_spec`
 - `predicate_spec_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - typed predicate columns (required breakpoint(s), lhs/rhs, cmp op, flags, masks)
 - `abort_on_fail` (bool)
 - `created_at_utc` (int)
 
-#### 8) `au_predicate_set`
+#### 9) `au_predicate_set`
 - `predicate_set_id` (PK)
-- `name` (text UNIQUE NOT NULL)
 - `created_at_utc` (int)
 
-#### 9) `au_predicate_set_item`
+#### 10) `au_predicate_set_item`
 - `predicate_set_id` (FK -> `au_predicate_set.predicate_set_id`)
 - `predicate_spec_id` (FK -> `au_predicate_spec.predicate_spec_id`)
 - `ordinal` (int)
 - PRIMARY KEY(`predicate_set_id`, `ordinal`)
 
-#### 10) `au_explorer_settings`
+#### 11) `au_explorer_settings`
 - `explorer_settings_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `description` (text nullable)
@@ -510,7 +520,7 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `default_predicate_set_id` (nullable FK -> `au_predicate_set.predicate_set_id`)
 - `created_at_utc` (int)
 
-#### 11) `au_template`
+#### 12) `au_template`
 - `template_id` (PK)
 - `name` (text UNIQUE NOT NULL)
 - `description` (text nullable)
@@ -520,7 +530,7 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `explorer_settings_id` (nullable FK -> `au_explorer_settings.explorer_settings_id`)
 - `created_at_utc` (int)
 
-#### 12) `au_outbox_message`
+#### 13) `au_outbox_message`
 - same envelope fields as `exec_outbox_message`
 
 ---

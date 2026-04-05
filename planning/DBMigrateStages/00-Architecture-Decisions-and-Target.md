@@ -84,6 +84,7 @@ This document captures the finalized architecture decisions for the database spl
 ## Operating Principles
 
 - Event-driven integration via transactional outbox in each write context.
+- Outbox/event envelopes must include `event_id`, `event_type`, `event_version`, `context_name`, `correlation_id`, and `causation_id` to support idempotency and cross-context traceability.
 - Idempotent projectors only.
 - No cross-DB foreign keys assumed.
 - Strong auditability: every derivation should have event provenance.
