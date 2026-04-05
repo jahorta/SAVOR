@@ -7,15 +7,12 @@
 #include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
+#include "../Common/Events/EventPayloadViews.h"
 #include "../Common/Types/UtcTimestamp.h"
 
 namespace simcore::db {
 
-struct ArchivePayloadRecord {
-    std::int64_t archive_package_id = 0;
-    std::int64_t archive_item_id = 0;
-    std::int64_t rehydrate_request_id = 0;
-};
+using ArchivePayloadRecord = events::ArchivePackagePayloadView;
 
 struct IArchiveDb {
     virtual ~IArchiveDb() = default;
@@ -37,6 +34,9 @@ struct IArchiveDb {
         int event_version,
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<ArchivePayloadRecord> ResolveArchivePayload(
+        const events::EventEnvelope& envelope) const = 0;
 };
 
 } // namespace simcore::db

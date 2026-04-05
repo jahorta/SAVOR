@@ -11,6 +11,9 @@
     <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventCatalog.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadDispatch.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadValidation.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadViews.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
