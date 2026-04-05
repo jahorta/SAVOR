@@ -161,6 +161,7 @@
     <ClInclude Include="Analysis\IAnalysisDb.h" />
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
+    <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
     <ClInclude Include="Common\Events\EventEnvelope.h" />
     <ClInclude Include="Common\Events\EventCatalog.h" />
@@ -204,6 +205,7 @@
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
+    <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
