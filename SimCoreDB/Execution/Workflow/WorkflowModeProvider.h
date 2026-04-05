@@ -16,10 +16,7 @@ private:
 };
 
 struct WorkflowAuthorityPolicy {
-    bool run_legacy = true;
-    bool run_workflow = false;
-    bool legacy_authoritative = true;
-    bool workflow_authoritative = false;
+    bool run_workflow = true;
 };
 
 WorkflowExecutionMode ParseWorkflowExecutionMode(const std::string& value, WorkflowExecutionMode fallback);
