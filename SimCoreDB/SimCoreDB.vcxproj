@@ -158,6 +158,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Archive\IArchiveDb.h" />
+    <ClInclude Include="Archive\SqliteArchiveDb.h" />
     <ClInclude Include="Analysis\IAnalysisDb.h" />
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
@@ -201,6 +202,7 @@
     <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Archive\SqliteArchiveDb.cpp" />
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />

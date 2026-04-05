@@ -6,6 +6,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Archive\SqliteArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
@@ -49,6 +50,7 @@
     <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Archive\SqliteArchiveDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>
