@@ -6,7 +6,7 @@
 
 #include "Common/Migrations/MigrationRunner.h"
 
-TEST(Stage1DbMigrate, HasMigrationPerContext) {
+TEST(DbMigrateMigrations, HasMigrationPerContext) {
     namespace fs = std::filesystem;
     using namespace simcore::db::migrations;
 
@@ -30,6 +30,6 @@ TEST(Stage1DbMigrate, HasMigrationPerContext) {
                 return true;
             });
 
-        EXPECT_TRUE(executed) << "No-op migration failed in context " << ToString(context);
+        EXPECT_TRUE(executed) << "Migration failed in context " << ToString(context);
     }
 }
