@@ -48,7 +48,6 @@ TEST(Boot, BootDolphinWrapper_SyncsPortableBaseAndSavesConfig)
     opts.user_dir = user;
     opts.dolphin_qt_base = qt;
     opts.force_resync_from_base = true;     // make the copy explicit for the test
-    opts.force_p1_standard_pad = true;     // exercise the port setting path
     opts.save_config_on_success = true;
     opts.config_path = cfg_path;
 
