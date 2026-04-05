@@ -6,10 +6,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Archive\SqliteArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Authoring\SqliteAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventCatalog.h"><Filter>Header Files</Filter></ClInclude>
@@ -38,6 +40,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="State\SqliteStateDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" ><Filter>Header Files</Filter></ClInclude>
@@ -48,11 +51,13 @@
     <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Archive\SqliteArchiveDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Authoring\SqliteAuthoringDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -64,6 +69,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="State\SqliteStateDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
