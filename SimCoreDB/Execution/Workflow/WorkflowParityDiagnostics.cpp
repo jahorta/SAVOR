@@ -1,10 +1,35 @@
 #include "WorkflowParityDiagnostics.h"
 
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <unordered_map>
 
 namespace simcore::db::execution::workflow {
+
+namespace {
+
+std::string ToUpperCopy(const std::string& value) {
+    std::string out = value;
+    for (char& ch : out) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return out;
+}
+
+std::string NormalizeOutcome(std::string outcome) {
+    outcome = ToUpperCopy(outcome);
+    if (outcome == "COMPLETED" || outcome == "SUCCEEDED" || outcome == "SUCCEEDED_WINNER"
+        || outcome == "SUCCEEDED_DUPLICATE") {
+        return "COMPLETED";
+    }
+    if (outcome == "FAILED" || outcome == "CANCELED" || outcome == "SUPERSEDED") {
+        return "FAILED";
+    }
+    return outcome;
+}
+
+} // namespace
 
 WorkflowParityReport CompareLegacyAndWorkflowOutcomes(
     const std::vector<WorkflowOutcomeItem>& legacy,
@@ -15,10 +40,10 @@ WorkflowParityReport CompareLegacyAndWorkflowOutcomes(
     std::unordered_map<std::string, std::string> workflow_by_key;
 
     for (const auto& item : legacy) {
-        legacy_by_key[item.step_key] = item.outcome;
+        legacy_by_key[ToUpperCopy(item.step_key)] = NormalizeOutcome(item.outcome);
     }
     for (const auto& item : workflow) {
-        workflow_by_key[item.step_key] = item.outcome;
+        workflow_by_key[ToUpperCopy(item.step_key)] = NormalizeOutcome(item.outcome);
     }
 
     for (const auto& [step_key, legacy_outcome] : legacy_by_key) {

@@ -20,6 +20,7 @@ public:
         std::int64_t created_at_utc_start,
         std::int64_t created_at_utc_end) const override;
 
+    std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const override;
     std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const override;
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const override;

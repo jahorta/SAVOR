@@ -8,13 +8,6 @@
 
 namespace simcore::runner::parallel::simcoredb {
 
-namespace {
-
-using WorkflowInstanceState = simcore::db::execution::workflow::WorkflowInstanceState;
-using WorkflowStepState = simcore::db::execution::workflow::WorkflowStepState;
-
-} // namespace
-
 DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     simcore::db::IExecutionDb* execution_db,
     simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider,
@@ -396,33 +389,17 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
         return;
     }
 
-    constexpr std::int64_t kWindowStart = 0;
-    constexpr std::int64_t kWindowEnd = 9223372036854775807LL;
-    const auto instances = execution_db_->WorkflowQueryService()->ListWorkflowInstances(
-        WorkflowInstanceState::Running,
-        kWindowStart,
-        kWindowEnd);
-
-    for (const auto& instance : instances) {
-        const auto graph = execution_db_->WorkflowQueryService()->GetWorkflowGraph(instance.workflow_instance_id);
-        if (!graph.has_value()) {
-            continue;
-        }
-
-        for (const auto& step : graph->steps) {
-            if (step.state != WorkflowStepState::Ready) {
-                continue;
-            }
-
-            EnqueueReadyStep(WorkflowReadyStep{
-                .workflow_instance_id = step.workflow_instance_id,
-                .workflow_step_id = step.workflow_step_id,
-                .step_key = step.step_key,
-                .step_kind = step.step_kind,
-                .priority = step.priority,
-            });
-            ++ready_steps_enqueued_;
-        }
+    constexpr std::size_t kReadyStepScanLimit = 2048;
+    const auto ready_steps = execution_db_->WorkflowQueryService()->ListReadySteps(kReadyStepScanLimit);
+    for (const auto& step : ready_steps) {
+        EnqueueReadyStep(WorkflowReadyStep{
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .step_key = step.step_key,
+            .step_kind = step.step_kind,
+            .priority = step.priority,
+        });
+        ++ready_steps_enqueued_;
     }
 
     {
@@ -447,6 +424,7 @@ bool DBWorkflowWorkerCoordinator::TryDequeueReadyStep(WorkflowReadyStep* step_ou
 
     *step_out = ready_queue_.front();
     ready_queue_.pop_front();
+    seen_ready_step_ids_.erase(ReadyDedupKey(step_out->workflow_step_id));
     return true;
 }
 
