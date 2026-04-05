@@ -14,14 +14,25 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 ## 5.1 UIRead Coverage Requirements
 
 ### Must-have projections before cutover
-1. Run list and run detail summaries.
-2. Seed probe result views:
-   - neutral seed
-   - grid seed values list
-   - unique seed values list
-   - counts per class
-3. Battle turn tree and per-node outcomes.
-4. Archive package catalog and restore request status.
+1. Job list and detail summaries.
+   - `ui_job_summary`
+   - `ui_job_detail`
+   - `ui_job_artifact`
+2. Seed probe views:
+   - `ui_seed_probe_summary`
+   - `ui_seed_probe_delta_point` (family + x/y/span + delta)
+   - `ui_seed_probe_unique_value`
+3. Battle exploration views:
+   - `ui_battle_group`
+   - `ui_battle_wave`
+   - `ui_battle_turn_job`
+   - `ui_battle_followup`
+4. Artifact browser:
+   - `ui_artifact_browser`
+5. Archive package and rehydrate status:
+   - `ui_archive_catalog`
+6. Projector checkpoints:
+   - `ui_projection_checkpoint`
 
 ---
 
@@ -29,27 +40,29 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 
 1. Replace direct data queries with read-model gateway calls.
 2. Replace direct writes with command handlers invoking context services.
-3. Add feature flags:
+3. Replace INI-derived output reads with typed read-model fields for seed probe/battle result screens.
+4. Add feature flags:
    - `UseNewUIRead`
    - `UseNewExecutionWrites`
    - `UseArchivePipeline`
-4. Instrument screen-level query times.
+5. Instrument screen-level query times.
 
 ---
 
 ## 5.3 Backfill Plan
 
 ### Backfill scope
-- Existing seed probe records -> Analysis.SeedProbe tables.
-- Existing battle result records -> Analysis.Battle tables.
-- Existing run metadata -> Analysis Spine.
+- Existing artifact/savestate records -> State DB.
+- Existing run metadata -> Analysis Spine (`asp_*`).
+- Existing seed probe records -> Analysis.SeedProbe (`sp_*`) including axis/input-frame normalization.
+- Existing battle result records -> Analysis.Battle (`ab_*`) including terminal follow-up defaults (`UNREVIEWED`).
 - Existing execution events -> optional archive package bootstrap.
 
 ### Backfill order
-1. State objects and savestates.
+1. State artifacts and savestates.
 2. Analysis spine runs and lineage.
-3. SeedProbe durable records.
-4. Battle records.
+3. SeedProbe durable records (`sp_probe_*`, `sp_axis_xy`, `sp_input_frame`, seeds).
+4. Battle records (`ab_battle_set`, candidates, waves, turn jobs, selection, follow-up).
 5. UIRead rebuild.
 
 ---
@@ -57,17 +70,26 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 ## 5.4 Validation Gates
 
 ## Functional gates
-- SeedProbe screen parity with expected neutral/grid/unique values.
-- Battle tree parity with expected parent/child links.
+- SeedProbe screen parity:
+  - neutral seed, status, codec, savestate label
+  - delta maps by family
+  - unique seeds list
+- Battle explorer parity:
+  - root groups, wave-by-turn hierarchy
+  - per-turn metrics (`rng_seed`, `delta_vi`, predicate counters, outcome)
+  - manual follow-up status (`UNREVIEWED`/`RECORDED`) and recorded DTM linkage
+- Artifact browser parity.
 - Archive list and restore flow works end-to-end.
 
 ## Data integrity gates
 - No orphaned typed references after backfill.
-- Event replay into empty UIRead produces same counts as live read DB.
+- `RECORDED` follow-up rows always have a DTM artifact reference.
+- Event replay into empty UIRead reproduces same counts as live UIRead.
 
 ## Performance gates
-- Run list query under target latency.
+- Job list query under target latency.
 - Seed probe detail query under target latency for large runs.
+- Battle wave/job query under target latency for large trees.
 - Projector lag remains under threshold.
 
 ---

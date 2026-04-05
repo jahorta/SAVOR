@@ -6,7 +6,7 @@ Implement v1 event catalog with per-event schema versioning and projector pipeli
 ## Exit Criteria
 - Outbox tables active in all write contexts.
 - Relay can publish events in order and mark published.
-- UIRead projectors can build run summaries, seed probe views, and battle tree views.
+- UIRead projectors can build job, seed probe, battle, artifact, and archive read models defined in Stage 2.
 
 ---
 
@@ -22,12 +22,19 @@ Required envelope fields:
 - `aggregate_id`
 - `correlation_id` (optional)
 - `causation_id` (optional)
-- `payload_json`
+- `payload_ref_kind`
+- `payload_ref_id`
 
 Rules:
 - `event_type + event_version` uniquely identifies payload schema.
 - Breaking changes require a new event version.
 - Projectors must be idempotent by `event_id`.
+- Payloads should be read from typed source tables using (`payload_ref_kind`, `payload_ref_id`) rather than embedding large JSON blobs.
+
+Field usage expectations:
+- `context_name` identifies the producing bounded context and supports projector routing/diagnostics.
+- `correlation_id` links all events for a single workflow/request across contexts.
+- `causation_id` links an emitted event to the immediate event that triggered it, preserving causal chains.
 
 ---
 
@@ -44,107 +51,174 @@ Rules:
 8. `Execution.JobRestored.v1`
 
 ## State events
-9. `State.ObjectStored.v1`
+9. `State.ArtifactStored.v1`
 10. `State.SavestateCreated.v1`
 11. `State.SavestateDerived.v1`
+12. `State.TasVariantCreated.v1`
 
 ## Analysis spine events
-12. `AnalysisSpine.RunCreated.v1`
-13. `AnalysisSpine.StateRefRegistered.v1`
-14. `AnalysisSpine.LineageEdgeAdded.v1`
-15. `AnalysisSpine.ArtifactLinked.v1`
+13. `AnalysisSpine.RunCreated.v1`
+14. `AnalysisSpine.StateRefRegistered.v1`
+15. `AnalysisSpine.LineageEdgeAdded.v1`
+16. `AnalysisSpine.ArtifactLinked.v1`
 
 ## Analysis.SeedProbe events
-16. `AnalysisSeedProbe.SetCreated.v1`
-17. `AnalysisSeedProbe.RunRequested.v1`
-18. `AnalysisSeedProbe.NeutralSeedRecorded.v1`
-19. `AnalysisSeedProbe.GridSeedRecorded.v1`
-20. `AnalysisSeedProbe.UniqueSeedRecorded.v1`
-21. `AnalysisSeedProbe.RunCompleted.v1`
+17. `AnalysisSeedProbe.SetCreated.v1`
+18. `AnalysisSeedProbe.RunRequested.v1`
+19. `AnalysisSeedProbe.NeutralSeedRecorded.v1`
+20. `AnalysisSeedProbe.GridSeedRecorded.v1`
+21. `AnalysisSeedProbe.UniqueSeedRecorded.v1`
+22. `AnalysisSeedProbe.EncounterProjectionRecorded.v1`
+23. `AnalysisSeedProbe.RunCompleted.v1`
 
 ## Analysis.Battle events
-22. `AnalysisBattle.BattleSetCreated.v1`
-23. `AnalysisBattle.SeedCandidateDiscovered.v1`
-24. `AnalysisBattle.TurnNodeCreated.v1`
-25. `AnalysisBattle.TurnOutcomeRecorded.v1`
-26. `AnalysisBattle.BranchSelectionRecorded.v1`
+24. `AnalysisBattle.BattleSetCreated.v1`
+25. `AnalysisBattle.SeedCandidateAdded.v1`
+26. `AnalysisBattle.TurnWaveCreated.v1`
+27. `AnalysisBattle.TurnJobRecorded.v1`
+28. `AnalysisBattle.SelectionPoolCreated.v1`
+29. `AnalysisBattle.SelectionDecisionRecorded.v1`
+30. `AnalysisBattle.TerminalFollowupUpdated.v1`
 
 ## Authoring events
-27. `Authoring.PlanSaved.v1`
-28. `Authoring.TemplateSaved.v1`
-29. `Authoring.PredicateSpecSaved.v1`
-30. `Authoring.SettingsSaved.v1`
+31. `Authoring.SeedProbeSpecSaved.v1`
+32. `Authoring.TasSpecSaved.v1`
+33. `Authoring.BattleRunSpecSaved.v1`
+34. `Authoring.PlanSaved.v1`
+35. `Authoring.PredicateSpecSaved.v1`
+36. `Authoring.SettingsSaved.v1`
+37. `Authoring.TemplateSaved.v1`
 
 ## Archive events
-31. `Archive.PackageCreated.v1`
-32. `Archive.PackageIndexed.v1`
-33. `Archive.RehydrateRequested.v1`
-34. `Archive.RehydrateCompleted.v1`
-35. `Archive.RehydrateFailed.v1`
+38. `Archive.PackageCreated.v1`
+39. `Archive.PackageIndexed.v1`
+40. `Archive.RehydrateRequested.v1`
+41. `Archive.RehydrateCompleted.v1`
+42. `Archive.RehydrateFailed.v1`
 
 ---
 
 ## 3.3 SeedProbe Event Payload Requirements (v1)
 
 ### `AnalysisSeedProbe.NeutralSeedRecorded.v1`
-- `seed_probe_run_id`
-- `seed_probe_result_id`
-- `neutral_seed_value`
-- `source_kind`
-- `recorded_at`
+- `probe_run_id`
+- `probe_result_id`
+- `neutral_seed_id`
 
 ### `AnalysisSeedProbe.GridSeedRecorded.v1`
-- `seed_probe_run_id`
-- `seed_probe_result_id`
+- `probe_run_id`
+- `probe_result_id`
 - `grid_seed_id`
+- `source_family`
+- `axis_xy_id`
 - `seed_value`
 - `seed_delta`
-- `input_frame_ref` (optional)
-- `recorded_at`
 
 ### `AnalysisSeedProbe.UniqueSeedRecorded.v1`
-- `seed_probe_run_id`
-- `seed_probe_result_id`
+- `probe_run_id`
+- `probe_result_id`
 - `unique_seed_id`
+- `input_frame_id`
 - `seed_value`
 - `seed_delta`
-- `input_frame_ref` (optional)
-- `recorded_at`
 
 ### `AnalysisSeedProbe.RunCompleted.v1`
-- `seed_probe_run_id`
-- `seed_probe_result_id`
+- `probe_run_id`
+- `probe_result_id`
 - `neutral_seed_value`
 - `grid_count`
 - `unique_count`
 - `result_status`
-- `completed_at`
+- `completed_at_utc`
+
+### `AnalysisSeedProbe.EncounterProjectionRecorded.v1`
+- `probe_run_id`
+- `encounter_projection_id`
+- `seed_value`
+- `option_ordinal`
 
 ---
 
-## 3.4 Projectors
+## 3.4 Battle Event Payload Requirements (v1)
+
+### `AnalysisBattle.SeedCandidateAdded.v1`
+- `battle_set_id`
+- `seed_candidate_id`
+- `source_kind`
+- `seed_value`
+
+### `AnalysisBattle.TurnWaveCreated.v1`
+- `battle_set_id`
+- `wave_id`
+- `turn_index`
+- `parent_wave_id` (optional)
+- `seed_candidate_id`
+
+### `AnalysisBattle.TurnJobRecorded.v1`
+- `wave_id`
+- `turn_job_id`
+- `exec_job_id` (optional)
+- `job_state`
+- result columns if `has_results=true`:
+  - `fake_attacks_this_turn`
+  - `fake_attacks_used_before`
+  - `vi_start`, `vi_end`, `delta_vi`
+  - `rng_seed`
+  - `battle_outcome`
+  - `plan_materialize_err`
+  - `pred_passed`, `pred_total`, `pred_abort_run`
+
+### `AnalysisBattle.SelectionDecisionRecorded.v1`
+- `selection_pool_id`
+- `turn_job_id`
+- `decision_kind`
+- `decision_reason` (optional)
+
+### `AnalysisBattle.TerminalFollowupUpdated.v1`
+- `turn_job_id`
+- `is_victory`
+- `manual_followup_status` (`UNREVIEWED`/`RECORDED`)
+- `recorded_dtm_artifact_id` (required for `RECORDED`)
+- `recorded_dtmini_artifact_id` (optional)
+- `recorded_sav_artifact_id` (optional)
+
+---
+
+## 3.5 Projectors
 
 ## UIRead projectors
 
-### `RunSummaryProjector`
+### `JobProjector`
 Consumes:
-- execution lifecycle events
-- analysis run events
+- `Execution.*`
 Outputs:
-- `ui_run_summary`
+- `ui_job_summary`
+- `ui_job_detail`
+- `ui_job_artifact`
 
 ### `SeedProbeProjector`
 Consumes:
-- all `AnalysisSeedProbe.*` events
+- `AnalysisSeedProbe.*`
 Outputs:
 - `ui_seed_probe_summary`
-- `ui_seed_probe_values`
+- `ui_seed_probe_delta_point`
+- `ui_seed_probe_unique_value`
 
-### `BattleTreeProjector`
+### `BattleProjector`
 Consumes:
 - `AnalysisBattle.*`
+- `Execution.*` (for state rollups)
 Outputs:
-- `ui_battle_tree_node`
+- `ui_battle_group`
+- `ui_battle_wave`
+- `ui_battle_turn_job`
+- `ui_battle_followup`
+
+### `ArtifactProjector`
+Consumes:
+- `State.ArtifactStored.v1`
+Outputs:
+- `ui_artifact_browser`
 
 ### `ArchiveCatalogProjector`
 Consumes:
@@ -158,21 +232,23 @@ Outputs:
 
 ---
 
-## 3.5 Outbox Relay Behavior
+## 3.6 Outbox Relay Behavior
 
 1. Read unpublished outbox messages ordered by `outbox_id`.
-2. Deserialize envelope.
-3. Dispatch to projector handlers.
-4. On success, mark `published_at`.
-5. On failure, increment `attempt_count`, store `last_error`.
-6. Dead-letter after configurable max attempts.
+2. Deserialize envelope and route by (`event_type`,`event_version`).
+3. Resolve typed payload rows from (`payload_ref_kind`,`payload_ref_id`).
+4. Dispatch to projector handlers.
+5. On success, mark `published_at_utc`.
+6. On failure, increment `attempt_count`, store `last_error`.
+7. Dead-letter after configurable max attempts.
 
 ---
 
-## 3.6 Test Plan
+## 3.7 Test Plan
 
 - Event serialization round-trip tests per event type.
 - Version router tests (`v1` dispatch).
 - Projector idempotency tests (same event twice).
 - Relay failure/retry tests.
-- SeedProbe projector tests for neutral/grid/unique counters and value lists.
+- SeedProbe projector tests for neutral/grid/unique counters and delta-point rendering feeds.
+- Battle projector tests for wave hierarchy, per-turn metrics, and terminal follow-up status transitions.
