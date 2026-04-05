@@ -19,6 +19,10 @@ Directory structure:
 - `job_sets.jsonl`
 - `jobs.jsonl`
 - `job_events.jsonl`
+- `workflow_instances.jsonl`
+- `workflow_steps.jsonl`
+- `workflow_edges.jsonl`
+- `workflow_events.jsonl` (optional)
 - `triggers.jsonl` (optional)
 - `outbox.jsonl` (optional)
 - `blobs/` (large payload files)
@@ -33,14 +37,14 @@ Directory structure:
 - `event_catalog_version`
 - `time_range_start_utc`
 - `time_range_end_utc`
-- `counts` (job_sets, jobs, job_events, triggers, blobs)
+- `counts` (job_sets, jobs, job_events, workflow_instances, workflow_steps, workflow_edges, workflow_events, triggers, blobs)
 
 ---
 
 ## 4.2 Archiver Pipeline
 
 1. Select eligible root job sets by retention policy.
-2. Export `exec_job_set`, `exec_job`, `exec_job_event`, and optional `exec_trigger` rows to JSONL in deterministic order.
+2. Export `exec_job_set`, `exec_job`, `exec_job_event`, workflow rows (`exec_workflow_instance`, `exec_workflow_step`, `exec_workflow_edge`, optional `exec_workflow_event`), and optional `exec_trigger` rows to JSONL in deterministic order.
 3. Extract large payloads to blobs folder and replace payloads with blob references.
 4. Compute checksums.
 5. Store package files in ArchiveStore root.
@@ -60,7 +64,7 @@ Directory structure:
 1. Create `ar_rehydrate_request` with `REQUESTED`.
 2. Validate package checksum and schema compatibility.
 3. Allocate restore namespace token.
-4. Import job_sets/jobs/events into Execution DB with deterministic ID remapping.
+4. Import job_sets/jobs/events/workflows into Execution DB with deterministic ID remapping.
 5. Build `ar_rehydrate_map` old_id -> new_id.
 6. Recreate trigger rows if included.
 7. Regenerate execution fingerprints deterministically for namespace safety.
