@@ -8,6 +8,7 @@
 #include <sqlite3.h>
 
 #include "../IExecutionDb.h"
+#include "../Jobs/JobEventOrchestration.h"
 #include "SqliteWorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
@@ -21,6 +22,7 @@ public:
 
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
+    jobs::IJobEventCommandService* JobCommandService() override;
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const events::EventEnvelope& envelope) const override;
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
@@ -33,6 +35,7 @@ private:
     sqlite3* db_ = nullptr;
     std::unique_ptr<SqliteWorkflowOrchestrationQueryService> query_service_;
     std::unique_ptr<SqliteWorkflowOrchestrationCommandService> command_service_;
+    std::unique_ptr<jobs::SqliteJobEventCommandService> job_command_service_;
 };
 
 } // namespace simcore::db::execution::workflow

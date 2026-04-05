@@ -146,15 +146,19 @@ bool OutboxRelay::RelayBatch(
         "WHERE outbox_id > ?1 "
         "AND published_at_utc IS NULL "
         "AND attempt_count < ?2 "
-        "AND context_name=?3 "
-        "AND aggregate_kind=?4 ";
+        "AND context_name=?3 ";
 
-    int limit_param_index = 5;
+    int next_param_index = 4;
+    if (!config_.aggregate_kind.empty()) {
+        sql += "AND aggregate_kind=?" + std::to_string(next_param_index) + " ";
+        next_param_index += 1;
+    }
     if (!config_.payload_ref_kind.empty()) {
-        sql += "AND payload_ref_kind=?5 ";
-        limit_param_index = 6;
+        sql += "AND payload_ref_kind=?" + std::to_string(next_param_index) + " ";
+        next_param_index += 1;
     }
 
+    const int limit_param_index = next_param_index;
     sql += "ORDER BY outbox_id ASC LIMIT ?" + std::to_string(limit_param_index) + ";";
 
     if (sqlite3_prepare_v2(config_.db, sql.c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
@@ -165,11 +169,18 @@ bool OutboxRelay::RelayBatch(
     sqlite3_bind_int64(st.st, 1, after_outbox_id);
     sqlite3_bind_int(st.st, 2, std::max(config_.max_attempts, 1));
     sqlite3_bind_text(st.st, 3, config_.context_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, config_.aggregate_kind.c_str(), -1, SQLITE_TRANSIENT);
+
+    int next_bind_index = 4;
+    if (!config_.aggregate_kind.empty()) {
+        sqlite3_bind_text(st.st, next_bind_index, config_.aggregate_kind.c_str(), -1, SQLITE_TRANSIENT);
+        next_bind_index += 1;
+    }
 
     if (!config_.payload_ref_kind.empty()) {
-        sqlite3_bind_text(st.st, 5, config_.payload_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, next_bind_index, config_.payload_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+        next_bind_index += 1;
     }
+
     sqlite3_bind_int(st.st, limit_param_index, max_batch_size);
 
     while (sqlite3_step(st.st) == SQLITE_ROW) {

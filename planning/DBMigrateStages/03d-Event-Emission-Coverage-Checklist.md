@@ -11,6 +11,7 @@ Atomicity rule for all implemented emitters:
 
 ### Execution
 Implemented write points emitting outbox rows inside the same DB transaction:
+- `AppendLifecycleEvent(JobSetCreated/JobQueued/JobClaimed/JobLeaseRenewed/JobProgressed/JobCompleted/JobEventArchived/JobRestored)` -> matching `Execution.Job*.v1`
 - `RetryFailedStep` -> `Execution.WorkflowStepReady.v1`
 - `SkipStep` -> `Execution.WorkflowStepCompleted.v1`
 - `CancelWorkflowInstance` -> `Execution.WorkflowInstanceCompleted.v1`
@@ -43,14 +44,14 @@ Deferred write points (schema complete; command services pending):
 
 | # | Event | Status | Emission path / rationale |
 |---:|---|---|---|
-| 1 | `Execution.JobSetCreated.v1` | Deferred | Job orchestration command service not yet landed in `SimCoreDB/Execution`; no transactional writer exists yet. |
-| 2 | `Execution.JobQueued.v1` | Deferred | Same as #1. |
-| 3 | `Execution.JobClaimed.v1` | Deferred | Same as #1. |
-| 4 | `Execution.JobLeaseRenewed.v1` | Deferred | Same as #1. |
-| 5 | `Execution.JobProgressed.v1` | Deferred | Same as #1. |
-| 6 | `Execution.JobCompleted.v1` | Deferred | Same as #1. |
-| 7 | `Execution.JobEventArchived.v1` | Deferred | Archive bridge for execution job-history events not implemented yet. |
-| 8 | `Execution.JobRestored.v1` | Deferred | Rehydrate-to-execution job-event writer not implemented yet. |
+| 1 | `Execution.JobSetCreated.v1` | Implemented | `SqliteJobEventCommandService::AppendLifecycleEvent(JobSetCreated)` inserts outbox with `payload_ref_kind=job_set` in the same transaction. |
+| 2 | `Execution.JobQueued.v1` | Implemented | `AppendLifecycleEvent(JobQueued)` updates job state and appends outbox atomically (`payload_ref_kind=job`). |
+| 3 | `Execution.JobClaimed.v1` | Implemented | `AppendLifecycleEvent(JobClaimed)` updates claim/lease/start columns and appends outbox atomically (`payload_ref_kind=job`). |
+| 4 | `Execution.JobLeaseRenewed.v1` | Implemented | `AppendLifecycleEvent(JobLeaseRenewed)` updates lease and appends outbox atomically (`payload_ref_kind=job`). |
+| 5 | `Execution.JobProgressed.v1` | Implemented | `AppendLifecycleEvent(JobProgressed)` updates job row and appends outbox atomically (`payload_ref_kind=job`). |
+| 6 | `Execution.JobCompleted.v1` | Implemented | `AppendLifecycleEvent(JobCompleted)` marks terminal job state and appends outbox atomically (`payload_ref_kind=job`). |
+| 7 | `Execution.JobEventArchived.v1` | Implemented | `AppendLifecycleEvent(JobEventArchived)` appends outbox row for archive bridge handoff (`payload_ref_kind=job`). |
+| 8 | `Execution.JobRestored.v1` | Implemented | `AppendLifecycleEvent(JobRestored)` appends outbox row for rehydrate restore handoff (`payload_ref_kind=job`). |
 | 9 | `Execution.WorkflowInstanceCreated.v1` | Implemented | `SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance` -> `EmitLifecycleEvent`. |
 | 10 | `Execution.WorkflowStepReady.v1` | Implemented | `SqliteWorkflowOrchestrationCommandService::RetryFailedStep` -> `EmitLifecycleEvent`. |
 | 11 | `Execution.WorkflowStepMaterialized.v1` | Implemented | `SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized` -> `EmitLifecycleEvent`. |
@@ -94,5 +95,4 @@ Deferred write points (schema complete; command services pending):
 
 ## Next implementation increments
 1. Add transactional command services per non-Execution context and emit one event per domain write point in the same transaction.
-2. Land Execution job-orchestration writers for events #1-#8.
-3. Promote this checklist to “all implemented” gate in CI once command services exist.
+2. Promote this checklist to “all implemented” gate in CI once remaining bounded-context command services exist.
