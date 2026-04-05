@@ -10,5 +10,8 @@ Database-layer scaffolding for SOASim bounded contexts.
   - UIRead workflow visibility tables,
   - archive item-kind catalog entries for workflow export/rehydrate,
   - program-kind descriptor/adapters contracts,
+  - legacy codec -> descriptor compatibility shim scaffolding,
   - workflow orchestration query/command contracts,
+  - Stage 3c startup readiness guard for required schema versions,
+  - workflow mode provider contracts for dual-path runtime selection,
   - event catalog constants including workflow lifecycle events.

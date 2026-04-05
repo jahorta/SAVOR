@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <utility>
 
@@ -13,6 +14,26 @@ enum class WorkflowExecutionMode {
     DualWriteObserve = 1,
     WorkflowPrimary = 2,
     WorkflowOnly = 3,
+};
+
+inline constexpr std::string_view ToString(WorkflowExecutionMode mode) {
+    switch (mode) {
+    case WorkflowExecutionMode::LegacyOnly: return "LegacyOnly";
+    case WorkflowExecutionMode::DualWriteObserve: return "DualWriteObserve";
+    case WorkflowExecutionMode::WorkflowPrimary: return "WorkflowPrimary";
+    case WorkflowExecutionMode::WorkflowOnly: return "WorkflowOnly";
+    }
+    return "Unknown";
+}
+
+struct WorkflowModeSelection {
+    WorkflowExecutionMode mode = WorkflowExecutionMode::LegacyOnly;
+    std::string source;
+};
+
+struct IWorkflowModeProvider {
+    virtual ~IWorkflowModeProvider() = default;
+    virtual WorkflowModeSelection GetModeSelection() const = 0;
 };
 
 enum class WorkflowInstanceState {
