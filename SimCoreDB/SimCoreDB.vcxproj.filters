@@ -13,6 +13,7 @@
     <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Authoring\SqliteAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\DbService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventCatalog.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Events\EventPayloadDispatch.h"><Filter>Header Files</Filter></ClInclude>
@@ -55,6 +56,7 @@
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Common\DbService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp"><Filter>Source Files</Filter></ClCompile>
