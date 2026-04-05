@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -92,6 +93,14 @@ struct WorkflowGraphSnapshot {
     std::vector<WorkflowEdgeRecord> edges;
 };
 
+struct WorkflowReadyStepRecord {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string step_key;
+    std::string step_kind;
+    int priority = 0;
+};
+
 struct WorkflowRetryStepCommand {
     std::int64_t workflow_step_id = 0;
     std::string requested_by;
@@ -134,6 +143,7 @@ struct IWorkflowOrchestrationQueryService {
         std::int64_t created_at_utc_start,
         std::int64_t created_at_utc_end) const = 0;
 
+    virtual std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const = 0;
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const = 0;

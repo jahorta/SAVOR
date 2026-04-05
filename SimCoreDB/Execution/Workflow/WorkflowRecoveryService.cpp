@@ -35,10 +35,17 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSelect =
         "SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, "
-        "(SELECT j.state FROM exec_job j WHERE j.job_set_id = s.job_set_id ORDER BY j.ended_at_utc DESC, j.job_id DESC LIMIT 1) AS terminal_state "
+        "CASE "
+        "  WHEN COALESCE(SUM(CASE WHEN j.state IN ('FAILED','CANCELED','SUPERSEDED') THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
+        "  WHEN COUNT(j.job_id) > 0 "
+        "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
+        "  ELSE NULL "
+        "END AS terminal_state "
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "WHERE i.state IN ('PENDING','RUNNING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL;";
+        "LEFT JOIN exec_job j ON j.job_set_id=s.job_set_id "
+        "WHERE i.state IN ('PENDING','RUNNING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
+        "GROUP BY s.workflow_step_id, s.workflow_instance_id, s.job_set_id;";
 
     if (sqlite3_prepare_v2(db_, kSelect, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);

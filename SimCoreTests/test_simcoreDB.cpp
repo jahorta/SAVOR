@@ -75,6 +75,9 @@ public:
     std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t) const override {
         return std::nullopt;
     }
+    std::vector<simcore::db::execution::workflow::WorkflowReadyStepRecord> ListReadySteps(std::size_t) const override {
+        return {};
+    }
     std::vector<simcore::db::execution::workflow::WorkflowStepRecord> ListBlockedSteps(std::int64_t) const override {
         return {};
     }
@@ -378,6 +381,34 @@ VALUES (3001,1001,2001,2002,unixepoch()),(3002,1001,2002,2003,unixepoch()),(3003
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage3cWorkflowQueryListsReadyStepsWithoutGraphFanout) {
+    using namespace simcore::db::migrations;
+    using namespace simcore::db::execution::workflow;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_at_utc)
+VALUES
+  (1101, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', unixepoch()),
+  (1102, 'SEED_PROBE_CHAIN', 'PENDING', 'manual', unixepoch());
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, ready_at_utc, attempts, max_attempts, created_at_utc)
+VALUES
+  (2101, 1101, 'Grid', 'seedprobe.grid', 'READY', 8, unixepoch()-5, 0, 2, unixepoch()),
+  (2102, 1101, 'Unique', 'seedprobe.unique', 'READY', 10, unixepoch()-10, 0, 2, unixepoch()),
+  (2103, 1101, 'Done', 'seedprobe.done', 'WAITING', 0, NULL, 0, 1, unixepoch()),
+  (2104, 1102, 'Grid', 'seedprobe.grid', 'READY', 9, unixepoch()-20, 0, 2, unixepoch());
+)SQL"));
+
+    ExecutionDb execution_db(db_);
+    const auto ready_steps = execution_db.WorkflowQueryService()->ListReadySteps(10);
+    ASSERT_EQ(ready_steps.size(), 2u);
+    EXPECT_EQ(ready_steps[0].workflow_step_id, 2102);
+    EXPECT_EQ(ready_steps[1].workflow_step_id, 2101);
+}
+
 TEST(Stage3cSeedProbeDefinition, ValidatesAndRejectsCycleDefinitions) {
     using namespace simcore::db::execution::workflow;
 
@@ -567,6 +598,65 @@ VALUES(7101, 7001, 'Grid', 'seedprobe.grid', 'RUNNING', 8001, 10, 1, 2, unixepoc
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage3cRecoveryServiceUsesJobSetAggregateTerminalState) {
+    using namespace simcore::db::migrations;
+    using namespace simcore::db::execution::workflow;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_at_utc)
+VALUES
+  (7011, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', unixepoch()),
+  (7012, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', unixepoch()),
+  (7013, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', unixepoch());
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES
+  (8011, 1, 'workflow', unixepoch()),
+  (8012, 1, 'workflow', unixepoch()),
+  (8013, 1, 'workflow', unixepoch());
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES
+  (7111, 7011, 'Grid', 'seedprobe.grid', 'RUNNING', 8011, 10, 1, 2, unixepoch()),
+  (7112, 7012, 'Grid', 'seedprobe.grid', 'RUNNING', 8012, 10, 1, 2, unixepoch()),
+  (7113, 7013, 'Grid', 'seedprobe.grid', 'RUNNING', 8013, 10, 1, 2, unixepoch());
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES
+  (8111, 8011, 1, 1, 'seedprobe', 1, 'agg-success-1', 10, 'SUCCEEDED', 1, 2, unixepoch(), unixepoch()),
+  (8112, 8011, 1, 1, 'seedprobe', 1, 'agg-success-2', 10, 'SUCCEEDED_WINNER', 1, 2, unixepoch(), unixepoch()),
+  (8121, 8012, 1, 1, 'seedprobe', 1, 'agg-fail-1', 10, 'SUCCEEDED', 1, 2, unixepoch(), unixepoch()),
+  (8122, 8012, 1, 1, 'seedprobe', 1, 'agg-fail-2', 10, 'FAILED', 1, 2, unixepoch(), unixepoch()),
+  (8131, 8013, 1, 1, 'seedprobe', 1, 'agg-running', 10, 'RUNNING', 1, 2, unixepoch(), NULL);
+)SQL"));
+
+    WorkflowRecoveryService recovery(db_);
+    WorkflowRecoveryResult result{};
+    ASSERT_TRUE(recovery.ReconcileInFlightInstances(&result, &err)) << err;
+    EXPECT_EQ(result.completed_steps, 1);
+    EXPECT_EQ(result.failed_steps, 1);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT workflow_step_id, state FROM exec_workflow_step WHERE workflow_step_id IN (7111,7112,7113) ORDER BY workflow_step_id;",
+        -1,
+        &st,
+        nullptr));
+
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 7111);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 1))), "COMPLETED");
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 7112);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 1))), "FAILED");
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 7113);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 1))), "RUNNING");
+    sqlite3_finalize(st);
+}
+
 TEST_F(SqliteDbFixture, Stage3cWorkflowIntegrityChecksDetectViolations) {
     using namespace simcore::db::migrations;
     using namespace simcore::db::execution::workflow;
@@ -640,6 +730,26 @@ TEST(Stage3cWorkflowParityDiagnostics, ClassifiesMissingAndMismatchedOutcomes) {
     EXPECT_EQ(report.compared_steps, 3);
     EXPECT_EQ(report.matched_steps, 0);
     EXPECT_EQ(report.mismatches.size(), 3);
+}
+
+TEST(Stage3cWorkflowParityDiagnostics, NormalizesLegacyAndWorkflowOutcomeVocabulary) {
+    using namespace simcore::db::execution::workflow;
+
+    const auto report = CompareLegacyAndWorkflowOutcomes(
+        {
+            WorkflowOutcomeItem{ .step_key = "neutral", .outcome = "SUCCEEDED" },
+            WorkflowOutcomeItem{ .step_key = "Grid", .outcome = "SUCCEEDED_WINNER" },
+            WorkflowOutcomeItem{ .step_key = "Unique", .outcome = "CANCELED" },
+        },
+        {
+            WorkflowOutcomeItem{ .step_key = "NEUTRAL", .outcome = "COMPLETED" },
+            WorkflowOutcomeItem{ .step_key = "grid", .outcome = "COMPLETED" },
+            WorkflowOutcomeItem{ .step_key = "unique", .outcome = "FAILED" },
+        });
+
+    EXPECT_EQ(report.compared_steps, 3);
+    EXPECT_EQ(report.matched_steps, 3);
+    EXPECT_TRUE(report.mismatches.empty());
 }
 
 TEST_F(SqliteDbFixture, Stage3cWorkflowParityStorePersistsAndListsSummaryRows) {

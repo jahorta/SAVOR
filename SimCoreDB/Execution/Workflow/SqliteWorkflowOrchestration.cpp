@@ -138,6 +138,39 @@ std::vector<WorkflowInstanceRecord> SqliteWorkflowOrchestrationQueryService::Lis
     return rows;
 }
 
+std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::ListReadySteps(std::size_t limit) const {
+    std::vector<WorkflowReadyStepRecord> rows;
+    if (limit == 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority "
+        "FROM exec_workflow_step s "
+        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "WHERE i.state='RUNNING' AND s.state='READY' AND s.job_set_id IS NULL "
+        "ORDER BY s.priority DESC, s.ready_at_utc ASC, s.workflow_step_id ASC "
+        "LIMIT ?1;",
+        &st,
+        nullptr)) {
+        return rows;
+    }
+
+    sqlite3_bind_int64(st.st, 1, static_cast<sqlite3_int64>(limit));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        WorkflowReadyStepRecord row;
+        row.workflow_instance_id = sqlite3_column_int64(st.st, 0);
+        row.workflow_step_id = sqlite3_column_int64(st.st, 1);
+        row.step_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
+        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+        row.priority = sqlite3_column_int(st.st, 4);
+        rows.push_back(std::move(row));
+    }
+
+    return rows;
+}
+
 std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::GetWorkflowGraph(std::int64_t workflow_instance_id) const {
     Statement inst;
     if (!Prepare(db_,
