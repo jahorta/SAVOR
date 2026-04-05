@@ -31,6 +31,11 @@ Rules:
 - Projectors must be idempotent by `event_id`.
 - Payloads should be read from typed source tables using (`payload_ref_kind`, `payload_ref_id`) rather than embedding large JSON blobs.
 
+Field usage expectations:
+- `context_name` identifies the producing bounded context and supports projector routing/diagnostics.
+- `correlation_id` links all events for a single workflow/request across contexts.
+- `causation_id` links an emitted event to the immediate event that triggered it, preserving causal chains.
+
 ---
 
 ## 3.2 Event Catalog v1
@@ -174,6 +179,8 @@ Rules:
 - `is_victory`
 - `manual_followup_status` (`UNREVIEWED`/`RECORDED`)
 - `recorded_dtm_artifact_id` (required for `RECORDED`)
+- `recorded_dtmini_artifact_id` (optional)
+- `recorded_sav_artifact_id` (optional)
 
 ---
 
