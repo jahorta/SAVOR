@@ -245,12 +245,63 @@ std::optional<events::AnalysisBattlePayloadView> ResolveBattleByKind(
     return std::nullopt;
 }
 
+std::optional<events::AnalysisSpinePayloadView> ResolveSpineByKind(
+    const SqliteAnalysisSpinePayloadRowResolver& resolver,
+    int event_version,
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) {
+    if (event_version != 1 || payload_ref_id <= 0) {
+        return std::nullopt;
+    }
+
+    events::AnalysisSpinePayloadView record{};
+
+    if (payload_ref_kind == "run") {
+        const auto view = resolver.ResolveSpineRunCreated(payload_ref_kind, payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+        record.run_id = view->run_id;
+        return record;
+    }
+    if (payload_ref_kind == "state_ref") {
+        const auto view = resolver.ResolveSpineStateRefRegistered(payload_ref_kind, payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+        record.run_id = view->run_id;
+        record.state_ref_id = view->state_ref_id;
+        return record;
+    }
+    if (payload_ref_kind == "lineage_edge") {
+        const auto view = resolver.ResolveSpineLineageEdgeAdded(payload_ref_kind, payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+        record.run_id = view->child_run_id;
+        record.lineage_edge_id = view->lineage_edge_id;
+        return record;
+    }
+    if (payload_ref_kind == "artifact_ref") {
+        const auto view = resolver.ResolveSpineArtifactLinked(payload_ref_kind, payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+        record.run_id = view->run_id;
+        record.artifact_ref_id = view->artifact_ref_id;
+        return record;
+    }
+
+    return std::nullopt;
+}
+
 } // namespace
 
 SqliteAnalysisDb::SqliteAnalysisDb(sqlite3* db)
     : db_(db)
     , seed_probe_row_resolver_(db_)
-    , battle_row_resolver_(db_) {
+    , battle_row_resolver_(db_)
+    , spine_row_resolver_(db_) {
 }
 
 std::vector<events::EventEnvelope> SqliteAnalysisDb::ReadUnpublishedOutboxBatch(
@@ -621,6 +672,71 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         BattlePayloadRecord record{};
         record.battle_set_id = view->battle_set_id;
         record.turn_job_id = view->turn_job_id;
+        return record;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<SpinePayloadRecord> SqliteAnalysisDb::ResolveSpinePayload(
+    int event_version,
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    return ResolveSpineByKind(spine_row_resolver_, event_version, payload_ref_kind, payload_ref_id);
+}
+
+std::optional<SpinePayloadRecord> SqliteAnalysisDb::ResolveSpinePayload(
+    const events::EventEnvelope& envelope) const {
+    if (!events::ValidateAnalysisSpinePayloadV1(envelope)) {
+        return std::nullopt;
+    }
+
+    const auto contract = events::ResolvePayloadResolverContract(envelope.event_type, envelope.event_version);
+    if (!contract.has_value() || contract.value() != events::PayloadResolverContract::AnalysisSpineV1) {
+        return std::nullopt;
+    }
+
+    if (envelope.event_type == "AnalysisSpine.RunCreated.v1") {
+        const auto view = spine_row_resolver_.ResolveSpineRunCreated(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        SpinePayloadRecord record{};
+        record.run_id = view->run_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisSpine.StateRefRegistered.v1") {
+        const auto view = spine_row_resolver_.ResolveSpineStateRefRegistered(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        SpinePayloadRecord record{};
+        record.run_id = view->run_id;
+        record.state_ref_id = view->state_ref_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisSpine.LineageEdgeAdded.v1") {
+        const auto view = spine_row_resolver_.ResolveSpineLineageEdgeAdded(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        SpinePayloadRecord record{};
+        record.run_id = view->child_run_id;
+        record.lineage_edge_id = view->lineage_edge_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisSpine.ArtifactLinked.v1") {
+        const auto view = spine_row_resolver_.ResolveSpineArtifactLinked(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        SpinePayloadRecord record{};
+        record.run_id = view->run_id;
+        record.artifact_ref_id = view->artifact_ref_id;
         return record;
     }
 

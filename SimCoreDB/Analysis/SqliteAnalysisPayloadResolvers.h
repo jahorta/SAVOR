@@ -70,4 +70,25 @@ private:
     sqlite3* db_ = nullptr;
 };
 
+class SqliteAnalysisSpinePayloadRowResolver final : public events::IAnalysisSpinePayloadRowResolver {
+public:
+    explicit SqliteAnalysisSpinePayloadRowResolver(sqlite3* db);
+
+    std::optional<events::AnalysisSpineRunCreatedPayloadView> ResolveSpineRunCreated(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisSpineStateRefRegisteredPayloadView> ResolveSpineStateRefRegistered(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisSpineLineageEdgeAddedPayloadView> ResolveSpineLineageEdgeAdded(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<events::AnalysisSpineArtifactLinkedPayloadView> ResolveSpineArtifactLinked(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+
+private:
+    sqlite3* db_ = nullptr;
+};
+
 } // namespace simcore::db::analysis

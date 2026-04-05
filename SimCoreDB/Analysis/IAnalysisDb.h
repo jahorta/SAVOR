@@ -14,6 +14,7 @@ namespace simcore::db {
 
 using SeedProbePayloadRecord = events::AnalysisSeedProbePayloadView;
 using BattlePayloadRecord = events::AnalysisBattlePayloadView;
+using SpinePayloadRecord = events::AnalysisSpinePayloadView;
 
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
@@ -46,6 +47,15 @@ struct IAnalysisDb {
         std::int64_t payload_ref_id) const = 0;
 
     virtual std::optional<BattlePayloadRecord> ResolveBattlePayload(
+        const events::EventEnvelope& envelope) const = 0;
+
+    // Analysis-spine family payload resolver.
+    virtual std::optional<SpinePayloadRecord> ResolveSpinePayload(
+        int event_version,
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<SpinePayloadRecord> ResolveSpinePayload(
         const events::EventEnvelope& envelope) const = 0;
 };
 
