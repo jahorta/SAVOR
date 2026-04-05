@@ -6,7 +6,7 @@
 
 #include "Common/Migrations/MigrationRunner.h"
 
-TEST(Stage1DbMigrate, HasNoopMigrationPerContext) {
+TEST(Stage1DbMigrate, HasMigrationPerContext) {
     namespace fs = std::filesystem;
     using namespace simcore::db::migrations;
 

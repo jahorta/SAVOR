@@ -135,7 +135,7 @@
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
-    <ClCompile Include="test_stage1_dbmigrate.cpp" />
+    <ClCompile Include="test_dbmigrate.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
   </ItemGroup>
   <ItemGroup>
