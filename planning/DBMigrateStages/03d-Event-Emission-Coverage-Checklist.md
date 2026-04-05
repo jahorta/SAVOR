@@ -21,8 +21,13 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 - `WorkflowRecoveryService::ReconcileInFlightInstances` -> `Execution.WorkflowStepCompleted.v1` / `Execution.WorkflowStepFailed.v1`
 
 ### AnalysisSeedProbe
-Deferred write points (schema complete; command services pending):
-- `sp_probe_set`, `sp_probe_run`, `sp_probe_result`, `sp_neutral_seed`, `sp_grid_seed`, `sp_unique_seed`, `sp_encounter_projection` writes should append to `sp_outbox_message` in the same transaction.
+Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteAnalysisDb::RequestSeedProbeRun` -> `AnalysisSeedProbe.RunRequested.v1`
+- `SqliteAnalysisDb::RecordSeedProbeNeutralSeed` -> `AnalysisSeedProbe.NeutralSeedRecorded.v1`
+- `SqliteAnalysisDb::RecordSeedProbeGridSeed` -> `AnalysisSeedProbe.GridSeedRecorded.v1`
+- `SqliteAnalysisDb::RecordSeedProbeUniqueSeed` -> `AnalysisSeedProbe.UniqueSeedRecorded.v1`
+- `SqliteAnalysisDb::RecordSeedProbeEncounterProjection` -> `AnalysisSeedProbe.EncounterProjectionRecorded.v1`
+- `SqliteAnalysisDb::CompleteSeedProbeRun` -> `AnalysisSeedProbe.RunCompleted.v1`
 
 ### AnalysisBattle
 Deferred write points (schema complete; command services pending):
@@ -70,12 +75,12 @@ Deferred write points (schema complete; command services pending):
 | 21 | `AnalysisSpine.LineageEdgeAdded.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineLineageEdgeAdded` resolve v1 payloads from `asp_lineage_edge`. |
 | 22 | `AnalysisSpine.ArtifactLinked.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineArtifactLinked` resolve v1 payloads from `asp_artifact_ref`. |
 | 23 | `AnalysisSeedProbe.SetCreated.v1` | Deferred | AnalysisSeedProbe command services pending; no transactional writer yet. |
-| 24 | `AnalysisSeedProbe.RunRequested.v1` | Deferred | Same as #23. |
-| 25 | `AnalysisSeedProbe.NeutralSeedRecorded.v1` | Deferred | Same as #23. |
-| 26 | `AnalysisSeedProbe.GridSeedRecorded.v1` | Deferred | Same as #23. |
-| 27 | `AnalysisSeedProbe.UniqueSeedRecorded.v1` | Deferred | Same as #23. |
-| 28 | `AnalysisSeedProbe.EncounterProjectionRecorded.v1` | Deferred | Same as #23. |
-| 29 | `AnalysisSeedProbe.RunCompleted.v1` | Deferred | Same as #23. |
+| 24 | `AnalysisSeedProbe.RunRequested.v1` | Implemented | `SqliteAnalysisDb::RequestSeedProbeRun` inserts `sp_probe_run` + outbox row atomically (`payload_ref_kind=probe_run`). |
+| 25 | `AnalysisSeedProbe.NeutralSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeNeutralSeed` inserts `sp_neutral_seed` + outbox row atomically (`payload_ref_kind=neutral_seed`). |
+| 26 | `AnalysisSeedProbe.GridSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeGridSeed` inserts `sp_grid_seed` + outbox row atomically (`payload_ref_kind=grid_seed`). |
+| 27 | `AnalysisSeedProbe.UniqueSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeUniqueSeed` inserts `sp_unique_seed` + outbox row atomically (`payload_ref_kind=unique_seed`). |
+| 28 | `AnalysisSeedProbe.EncounterProjectionRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeEncounterProjection` inserts `sp_encounter_projection` + outbox row atomically (`payload_ref_kind=encounter_projection`). |
+| 29 | `AnalysisSeedProbe.RunCompleted.v1` | Implemented | `SqliteAnalysisDb::CompleteSeedProbeRun` inserts `sp_probe_result`, finalizes run status, and appends outbox atomically (`payload_ref_kind=probe_result`). |
 | 30 | `AnalysisBattle.BattleSetCreated.v1` | Deferred | AnalysisBattle command services pending; no transactional writer yet. |
 | 31 | `AnalysisBattle.SeedCandidateAdded.v1` | Deferred | Same as #30. |
 | 32 | `AnalysisBattle.TurnWaveCreated.v1` | Deferred | Same as #30. |
