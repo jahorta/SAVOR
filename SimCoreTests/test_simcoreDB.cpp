@@ -789,12 +789,26 @@ TEST_F(SqliteDbFixture, Stage3cWorkflowParityStorePersistsAndListsSummaryRows) {
     sqlite3_finalize(st);
 }
 
-TEST(Stage3cWorkflowPromotionGate, ProducesMachineReadableDecisionArtifacts) {
+TEST(Stage3cWorkflowPromotionGate, EvaluatesDecisionFromLegacyAndWorkflowPathsAndBuildsArtifact) {
     using namespace simcore::db::execution::workflow;
 
+    const std::vector<WorkflowOutcomeItem> legacy_pass_path{
+        { .step_key = "Neutral", .outcome = "SUCCEEDED" },
+        { .step_key = "Grid", .outcome = "SUCCEEDED_WINNER" },
+        { .step_key = "Unique", .outcome = "SUCCEEDED" },
+        { .step_key = "Done", .outcome = "COMPLETED" },
+    };
+    const std::vector<WorkflowOutcomeItem> workflow_pass_path{
+        { .step_key = "neutral", .outcome = "COMPLETED" },
+        { .step_key = "grid", .outcome = "COMPLETED" },
+        { .step_key = "unique", .outcome = "COMPLETED" },
+        { .step_key = "done", .outcome = "COMPLETED" },
+    };
+    const auto pass_parity = CompareLegacyAndWorkflowOutcomes(legacy_pass_path, workflow_pass_path);
+
     const WorkflowPromotionEvidence pass_evidence{
-        .parity_compared_steps = 100,
-        .parity_matched_steps = 100,
+        .parity_compared_steps = pass_parity.compared_steps,
+        .parity_matched_steps = pass_parity.matched_steps,
         .recovery_passed = true,
         .integrity_passed = true,
         .readiness_scan_p95_ms = 5.0,
@@ -809,9 +823,23 @@ TEST(Stage3cWorkflowPromotionGate, ProducesMachineReadableDecisionArtifacts) {
     EXPECT_NE(pass_json.find("\"approved\":true"), std::string::npos);
     EXPECT_NE(pass_json.find("\"blockers\":[]"), std::string::npos);
 
+    const std::vector<WorkflowOutcomeItem> legacy_fail_path{
+        { .step_key = "Neutral", .outcome = "SUCCEEDED" },
+        { .step_key = "Grid", .outcome = "SUCCEEDED" },
+        { .step_key = "Unique", .outcome = "SUCCEEDED" },
+        { .step_key = "Done", .outcome = "SUCCEEDED" },
+    };
+    const std::vector<WorkflowOutcomeItem> workflow_fail_path{
+        { .step_key = "Neutral", .outcome = "FAILED" },
+        { .step_key = "Grid", .outcome = "FAILED" },
+        { .step_key = "Unique", .outcome = "FAILED" },
+        { .step_key = "Done", .outcome = "FAILED" },
+    };
+    const auto fail_parity = CompareLegacyAndWorkflowOutcomes(legacy_fail_path, workflow_fail_path);
+
     const WorkflowPromotionEvidence fail_evidence{
-        .parity_compared_steps = 100,
-        .parity_matched_steps = 95,
+        .parity_compared_steps = fail_parity.compared_steps,
+        .parity_matched_steps = fail_parity.matched_steps,
         .recovery_passed = false,
         .integrity_passed = true,
         .readiness_scan_p95_ms = 50.0,
@@ -820,7 +848,7 @@ TEST(Stage3cWorkflowPromotionGate, ProducesMachineReadableDecisionArtifacts) {
 
     const auto fail_decision = EvaluateWorkflowPromotionGate(fail_evidence);
     EXPECT_FALSE(fail_decision.approved);
-    EXPECT_GE(fail_decision.blockers.size(), 2u);
+    EXPECT_GE(fail_decision.blockers.size(), 3u);
 
     const auto fail_json = BuildWorkflowPromotionDecisionJson(fail_evidence, fail_decision);
     EXPECT_NE(fail_json.find("parity_below_99_percent"), std::string::npos);
@@ -882,6 +910,10 @@ TEST(Stage3cWorkflowPromotionGate, ProducesMachineReadableDecisionArtifacts) {
                    << ", readiness_scan_p95_ms=" << fail_evidence.readiness_scan_p95_ms
                    << ", readiness_scan_threshold_ms=" << fail_evidence.readiness_scan_threshold_ms
                    << ", blockers_count=" << fail_decision.blockers.size() << "\n";
+    detail_summary << "PassPathSampleSize(legacy|workflow)="
+                   << legacy_pass_path.size() << "|" << workflow_pass_path.size() << "\n";
+    detail_summary << "FailPathSampleSize(legacy|workflow)="
+                   << legacy_fail_path.size() << "|" << workflow_fail_path.size() << "\n";
     detail_summary << "FailBlockers=";
     for (size_t i = 0; i < fail_decision.blockers.size(); ++i) {
         if (i > 0) {
