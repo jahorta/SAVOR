@@ -166,6 +166,7 @@
     <ClInclude Include="Common\Events\EventPayloadDispatch.h" />
     <ClInclude Include="Common\Events\EventPayloadValidation.h" />
     <ClInclude Include="Common\Events\EventPayloadViews.h" />
+    <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
@@ -192,6 +193,7 @@
   <ItemGroup>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
+    <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />

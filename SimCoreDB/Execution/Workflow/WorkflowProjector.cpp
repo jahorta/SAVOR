@@ -4,6 +4,7 @@
 #include <ctime>
 #include <vector>
 
+#include "../../Common/Events/OutboxRelay.h"
 #include "../../UIRead/SqliteUiReadDb.h"
 
 namespace simcore::db::execution::workflow {
@@ -208,7 +209,11 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
     return true;
 }
 
-bool WorkflowProjector::ProjectFromOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out) {
+bool WorkflowProjector::ProjectFromOutbox(
+    const std::string& projector_name,
+    int max_batch_size,
+    std::string* error_out,
+    int max_attempts) {
     if (projector_name.empty()) {
         if (error_out) *error_out = "projector_name is required";
         return false;
@@ -217,60 +222,53 @@ bool WorkflowProjector::ProjectFromOutbox(const std::string& projector_name, int
         if (error_out) *error_out = "max_batch_size must be > 0";
         return false;
     }
+    if (max_attempts <= 0) {
+        if (error_out) *error_out = "max_attempts must be > 0";
+        return false;
+    }
 
     const auto checkpoint = GetCheckpoint(projector_name, error_out);
 
-    sqlite3_stmt* st = nullptr;
-    constexpr const char* kOutboxSql =
-        "SELECT outbox_id, aggregate_id "
-        "FROM exec_outbox_message "
-        "WHERE outbox_id > ?1 "
-        "AND context_name='Execution' "
-        "AND aggregate_kind='workflow_instance' "
-        "AND payload_ref_kind='workflow_event' "
-        "ORDER BY outbox_id ASC "
-        "LIMIT ?2;";
-    if (sqlite3_prepare_v2(db_, kOutboxSql, -1, &st, nullptr) != SQLITE_OK) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-    sqlite3_bind_int64(st, 1, checkpoint);
-    sqlite3_bind_int(st, 2, max_batch_size);
+    events::OutboxRelay relay({
+        .db = db_,
+        .outbox_table = "exec_outbox_message",
+        .context_name = "Execution",
+        .aggregate_kind = "workflow_instance",
+        .payload_ref_kind = "workflow_event",
+        .max_attempts = max_attempts,
+    });
 
-    std::vector<std::int64_t> workflow_instance_ids;
-    std::int64_t last_outbox_message_id = checkpoint;
-    while (sqlite3_step(st) == SQLITE_ROW) {
-        const auto outbox_message_id = sqlite3_column_int64(st, 0);
-        const unsigned char* aggregate_id_text = sqlite3_column_text(st, 1);
-        if (aggregate_id_text == nullptr) {
-            continue;
-        }
-
+    const auto project_workflow_instance = [this](const events::EventEnvelope& envelope, std::string* handler_error) {
         const auto workflow_instance_id = static_cast<std::int64_t>(
-            std::strtoll(reinterpret_cast<const char*>(aggregate_id_text), nullptr, 10));
+            std::strtoll(envelope.aggregate_id.c_str(), nullptr, 10));
         if (workflow_instance_id <= 0) {
-            continue;
-        }
-
-        if (workflow_instance_ids.empty() || workflow_instance_ids.back() != workflow_instance_id) {
-            workflow_instance_ids.push_back(workflow_instance_id);
-        }
-        last_outbox_message_id = outbox_message_id;
-    }
-    sqlite3_finalize(st);
-
-    for (const auto workflow_instance_id : workflow_instance_ids) {
-        if (!ProjectInstance(workflow_instance_id, error_out)) {
+            if (handler_error) *handler_error = "aggregate_id must parse to workflow_instance_id";
             return false;
         }
+
+        return ProjectInstance(workflow_instance_id, handler_error);
+    };
+
+    const std::vector<events::OutboxRelayDispatchBinding> bindings{
+        { { "Execution.WorkflowInstanceCreated", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepReady", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepMaterialized", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepCompleted", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepFailed", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceCompleted", 1 }, project_workflow_instance },
+    };
+
+    events::OutboxRelayResult relay_result{};
+    if (!relay.RelayBatch(checkpoint, max_batch_size, bindings, &relay_result, error_out)) {
+        return false;
     }
 
-    if (last_outbox_message_id > checkpoint) {
+    if (relay_result.last_scanned_outbox_id > checkpoint) {
         simcore::db::SqliteUiReadDb ui_read_db(db_);
         const bool upserted = ui_read_db.UpsertProjectionCheckpoint({
             projector_name,
             std::string{},
-            last_outbox_message_id,
+            relay_result.last_scanned_outbox_id,
             simcore::db::types::UtcNow(),
         });
 

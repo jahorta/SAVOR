@@ -1169,6 +1169,68 @@ VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 
     EXPECT_EQ(checkpoint_after_second, checkpoint_after_first);
 }
 
+TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorOutboxRelayFailureIncrementsAttemptsAndDeadLetters) {
+    using namespace simcore::db::migrations;
+    using namespace simcore::db::execution::workflow;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_outbox_message(
+    outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id
+)
+VALUES(
+    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked',1,'Execution','workflow_instance','999',unixepoch(),'workflow_event',9001
+);
+)SQL"));
+
+    WorkflowProjector projector(db_);
+    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT attempt_count, last_error, published_at_utc FROM exec_outbox_message WHERE outbox_id=5001;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 1);
+    ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
+    const std::string first_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
+    EXPECT_EQ(first_error.find("no projector handler"), 0u);
+    EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
+    sqlite3_finalize(st);
+
+    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT attempt_count, last_error FROM exec_outbox_message WHERE outbox_id=5001;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 2);
+    ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
+    const std::string dead_letter_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
+    EXPECT_EQ(dead_letter_error.find("dead-letter: no projector handler"), 0u);
+    sqlite3_finalize(st);
+
+    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT attempt_count FROM exec_outbox_message WHERE outbox_id=5001;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 2);
+    sqlite3_finalize(st);
+}
+
 TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
