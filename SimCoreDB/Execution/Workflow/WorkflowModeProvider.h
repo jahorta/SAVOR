@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "Execution/Workflow/WorkflowOrchestration.h"
+#include "WorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
 

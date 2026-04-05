@@ -1,4 +1,4 @@
-#include "Execution/Workflow/WorkflowProjector.h"
+#include "WorkflowProjector.h"
 
 namespace simcore::db::execution::workflow {
 

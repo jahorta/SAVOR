@@ -5,8 +5,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
-#include "Execution/Workflow/WorkflowOrchestration.h"
+#include "SeedProbeWorkflowDefinition.h"
+#include "WorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
 

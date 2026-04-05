@@ -4,8 +4,8 @@
 
 #include <sqlite3.h>
 
-#include "Execution/IExecutionDb.h"
-#include "Execution/Workflow/WorkflowOrchestration.h"
+#include "../IExecutionDb.h"
+#include "SqliteWorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
 

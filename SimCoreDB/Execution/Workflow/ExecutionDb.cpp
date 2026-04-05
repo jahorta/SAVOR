@@ -1,6 +1,5 @@
-#include "Execution/Workflow/ExecutionDb.h"
-
-#include "Execution/Workflow/SqliteWorkflowOrchestration.h"
+#include "ExecutionDb.h"
+#include "SqliteWorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
 

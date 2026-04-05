@@ -1,4 +1,4 @@
-#include "Execution/Workflow/WorkflowParityDiagnostics.h"
+#include "WorkflowParityDiagnostics.h"
 
 #include <unordered_map>
 

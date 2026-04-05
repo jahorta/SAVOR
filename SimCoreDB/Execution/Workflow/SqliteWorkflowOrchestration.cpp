@@ -1,9 +1,9 @@
-#include "Execution/Workflow/SqliteWorkflowOrchestration.h"
+#include "SqliteWorkflowOrchestration.h"
 
 #include <ctime>
 #include <sstream>
 
-#include "Common/Events/EventCatalog.h"
+#include "../../Common/Events/EventCatalog.h"
 
 namespace simcore::db::execution::workflow {
 

@@ -1,4 +1,4 @@
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
+#include "SeedProbeWorkflowDefinition.h"
 
 #include <queue>
 #include <unordered_map>

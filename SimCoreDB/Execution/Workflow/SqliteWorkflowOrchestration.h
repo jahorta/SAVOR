@@ -7,7 +7,7 @@
 
 #include <sqlite3.h>
 
-#include "Execution/Workflow/WorkflowOrchestration.h"
+#include "WorkflowOrchestration.h"
 
 namespace simcore::db::execution::workflow {
 
