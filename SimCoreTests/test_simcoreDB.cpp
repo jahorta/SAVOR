@@ -7,6 +7,9 @@
 #include <sqlite3.h>
 
 #include "Common/Migrations/MigrationRunner.h"
+#include "Common/Events/EventPayloadDispatch.h"
+#include "Common/Events/EventPayloadValidation.h"
+#include "Common/Events/EventTypeFormat.h"
 #include "SimCoreDB.h"
 #include "Execution/Workflow/ExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
@@ -1229,6 +1232,41 @@ VALUES(
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 2);
     sqlite3_finalize(st);
+}
+
+TEST(Stage3cEventContracts, CanonicalEventTypeFormatValidationAcceptsAndRejectsExpectedShapes) {
+    using namespace simcore::db::events;
+
+    std::string error;
+    EXPECT_TRUE(ValidateEventTypeFormat("Execution.WorkflowStepFailed.v1", 1, &error)) << error;
+    EXPECT_TRUE(ValidateEventTypeFormat("AnalysisSeedProbe.RunCompleted.v1", 1, &error)) << error;
+
+    EXPECT_FALSE(ValidateEventTypeFormat("Execution.WorkflowStepFailed", 1, &error));
+    EXPECT_FALSE(ValidateEventTypeFormat("Execution.WorkflowStepFailed.v2", 1, &error));
+    EXPECT_FALSE(ValidateEventTypeFormat("Execution.Workflow.StepFailed.v1", 1, &error));
+    EXPECT_FALSE(ValidateEventTypeFormat("Execution.WorkflowStepFailed.v1", 0, &error));
+}
+
+TEST(Stage3cEventContracts, PayloadDispatchAndValidationRejectVersionSuffixMismatches) {
+    using namespace simcore::db::events;
+
+    const auto exact = ResolvePayloadResolverContract("Execution.WorkflowStepFailed.v1", 1);
+    ASSERT_TRUE(exact.has_value());
+    EXPECT_EQ(*exact, PayloadResolverContract::ExecutionWorkflowJobV1);
+
+    const auto suffix_mismatch = ResolvePayloadResolverContract("Execution.WorkflowStepFailed.v2", 1);
+    EXPECT_FALSE(suffix_mismatch.has_value());
+
+    EventEnvelope envelope{};
+    envelope.event_type = "Execution.WorkflowStepFailed.v2";
+    envelope.event_version = 1;
+    envelope.context_name = "Execution";
+    envelope.payload_ref_kind = "workflow_event";
+    envelope.payload_ref_id = 42;
+
+    std::string error;
+    EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(envelope, &error));
+    EXPECT_EQ(error, "event_type must end with .v<event_version>");
 }
 
 TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {

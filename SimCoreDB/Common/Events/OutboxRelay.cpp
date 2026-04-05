@@ -4,6 +4,8 @@
 #include <chrono>
 #include <utility>
 
+#include "EventTypeFormat.h"
+
 namespace simcore::db::events {
 
 namespace {
@@ -38,7 +40,14 @@ std::function<bool(const EventEnvelope&, std::string* error_out)> OutboxRelay::R
     std::string_view event_type,
     int event_version,
     const std::vector<OutboxRelayDispatchBinding>& bindings) const {
+    if (!ValidateEventTypeFormat(event_type, event_version)) {
+        return {};
+    }
+
     for (const auto& binding : bindings) {
+        if (!ValidateEventTypeFormat(binding.key.event_type, binding.key.event_version)) {
+            continue;
+        }
         if (binding.key.event_type == event_type && binding.key.event_version == event_version) {
             return binding.handler;
         }
