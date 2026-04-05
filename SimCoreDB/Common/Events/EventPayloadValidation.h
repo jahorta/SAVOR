@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "EventEnvelope.h"
+#include "EventTypeFormat.h"
 
 namespace simcore::db::events {
 
@@ -18,6 +19,9 @@ inline bool ValidateV1PayloadRef(
     }
     if (envelope.event_type.empty()) {
         if (error_out) *error_out = "event_type is required";
+        return false;
+    }
+    if (!ValidateEventTypeFormat(envelope.event_type, envelope.event_version, error_out)) {
         return false;
     }
     if (envelope.context_name != expected_context_name) {

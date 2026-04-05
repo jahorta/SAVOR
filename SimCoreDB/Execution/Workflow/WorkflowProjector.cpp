@@ -250,12 +250,12 @@ bool WorkflowProjector::ProjectFromOutbox(
     };
 
     const std::vector<events::OutboxRelayDispatchBinding> bindings{
-        { { "Execution.WorkflowInstanceCreated", 1 }, project_workflow_instance },
-        { { "Execution.WorkflowStepReady", 1 }, project_workflow_instance },
-        { { "Execution.WorkflowStepMaterialized", 1 }, project_workflow_instance },
-        { { "Execution.WorkflowStepCompleted", 1 }, project_workflow_instance },
-        { { "Execution.WorkflowStepFailed", 1 }, project_workflow_instance },
-        { { "Execution.WorkflowInstanceCompleted", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceCreated.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepReady.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepMaterialized.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepCompleted.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowStepFailed.v1", 1 }, project_workflow_instance },
+        { { "Execution.WorkflowInstanceCompleted.v1", 1 }, project_workflow_instance },
     };
 
     events::OutboxRelayResult relay_result{};
