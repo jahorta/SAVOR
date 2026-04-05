@@ -4,7 +4,7 @@
 
 - **Decision date:** 2026-04-05
 - **Candidate promotion:** `DualWriteObserve` -> `WorkflowPrimary`
-- **Status:** In progress
+- **Status:** Completed
 
 ## Promotion Thresholds
 
@@ -28,7 +28,7 @@ The promotion gate should consume machine-readable fields:
 - `blockers[]`
 
 Latest Results:
-Item18PromotionGate RequiredDataFieldsPresent(pass_json)=YES RequiredDataFieldsPresent(fail_json)=YES PassEvidence: approved=true, parity_percent=100, parity_compared_steps=100, parity_matched_steps=100, recovery_passed=true, integrity_passed=true, readiness_scan_p95_ms=5, readiness_scan_threshold_ms=20, blockers_count=0 FailEvidence: approved=false, parity_percent=95, parity_compared_steps=100, parity_matched_steps=95, recovery_passed=false, integrity_passed=true, readiness_scan_p95_ms=50, readiness_scan_threshold_ms=20, blockers_count=3 FailBlockers=parity_below_99_percent|recovery_failed|readiness_latency_above_threshold
+RequiredDataFieldsPresent=YES PassEvidence: approved=true, parity_percent=100, parity_compared_steps=100, parity_matched_steps=100, recovery_passed=true, integrity_passed=true, readiness_scan_p95_ms=5, readiness_scan_threshold_ms=20, blockers_count=0
 
 ## Approvers
 
