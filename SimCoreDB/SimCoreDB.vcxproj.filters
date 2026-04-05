@@ -20,6 +20,14 @@
     <ClInclude Include="Common\Types\TypedIds.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Types\UtcTimestamp.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\IExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\ExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowEngine.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowProjector.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
@@ -28,6 +36,14 @@
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\ProgramDB\ProgramKindLegacyCodecShim.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
