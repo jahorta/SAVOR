@@ -193,6 +193,7 @@
     <ClInclude Include="UIRead\Projectors\BattleProjector.h" />
     <ClInclude Include="UIRead\Projectors\JobProjector.h" />
     <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" />
+    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" />
     <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
   <ItemGroup>
@@ -215,6 +216,7 @@
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\JobProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
   </ItemGroup>
   <ItemGroup>
