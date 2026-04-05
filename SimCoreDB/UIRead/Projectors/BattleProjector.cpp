@@ -141,7 +141,7 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
         "ab_outbox_message",
         "AnalysisBattle",
         "battle_set",
-        "battle_event",
+        "",
         battle_bindings,
         max_batch_size,
         max_attempts,

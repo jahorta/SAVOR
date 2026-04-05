@@ -79,7 +79,7 @@ bool SeedProbeProjector::ProjectFromOutbox(const std::string& projector_name, in
         .outbox_table = "sp_outbox_message",
         .context_name = "AnalysisSeedProbe",
         .aggregate_kind = "probe_run",
-        .payload_ref_kind = "seed_probe_event",
+        .payload_ref_kind = "",
         .max_attempts = max_attempts,
     });
 
