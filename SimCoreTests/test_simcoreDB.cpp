@@ -121,6 +121,27 @@ public:
     simcore::db::execution::jobs::IJobEventCommandService* JobCommandService() override {
         return &job_command_service;
     }
+    simcore::db::retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<simcore::db::retention::OutboxSubscriptionSnapshot>&,
+        simcore::db::types::UtcTimePoint,
+        const simcore::db::retention::OutboxRetentionPolicy&) const override {
+        return {};
+    }
+    bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<simcore::db::retention::OutboxSubscriptionSnapshot>&,
+        simcore::db::types::UtcTimePoint,
+        const simcore::db::retention::OutboxRetentionPolicy&,
+        int,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) override {
+        if (rows_deleted_out) {
+            *rows_deleted_out = 0;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
     std::optional<simcore::db::events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const simcore::db::events::EventEnvelope&) const override {
         return std::nullopt;
