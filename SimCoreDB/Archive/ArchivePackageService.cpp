@@ -329,6 +329,14 @@ bool ValidateChecksums(
     return true;
 }
 
+std::int64_t ToEpochMillis(types::UtcTimePoint value) {
+    return value.time_since_epoch().count();
+}
+
+types::UtcTimePoint FromEpochMillis(std::int64_t value) {
+    return types::UtcTimePoint(std::chrono::milliseconds(value));
+}
+
 std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& request, bool has_workflow_event, bool has_trigger, bool has_outbox) {
     const auto root = std::to_string(request.source_root_job_set_id);
     const std::string scoped_job_sets =
@@ -437,9 +445,13 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
 
 SqliteArchivePackageService::SqliteArchivePackageService(
     sqlite3* execution_db,
+    simcore::db::IExecutionDb* execution_retention_db,
+    simcore::db::IUiReadDb* ui_read_db,
     IArchiveDb* archive_db,
     DbConfigPaths config_paths)
     : execution_db_(execution_db)
+    , execution_retention_db_(execution_retention_db)
+    , ui_read_db_(ui_read_db)
     , archive_db_(archive_db)
     , config_paths_(std::move(config_paths)) {
 }
@@ -628,6 +640,491 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
     result.archive_package_id = archive_package_id;
     result.package_root = context.package_root;
     result.files = context.files;
+    return result;
+}
+
+std::vector<ArchiveCandidateRoot> SqliteArchivePackageService::ListArchiveCandidateRoots(
+    types::UtcTimePoint older_than_utc,
+    types::UtcTimePoint now_utc,
+    int max_candidates,
+    std::string* error_out) const {
+    std::vector<ArchiveCandidateRoot> candidates;
+    if (execution_db_ == nullptr) {
+        if (error_out != nullptr) *error_out = "execution db is null";
+        return candidates;
+    }
+    if (max_candidates <= 0) {
+        if (error_out != nullptr) *error_out = "max_candidates must be > 0";
+        return candidates;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "WITH RECURSIVE run_tree(root_job_set_id, job_set_id) AS ("
+        "  SELECT job_set_id, job_set_id "
+        "  FROM exec_job_set "
+        "  WHERE parent_job_set_id IS NULL "
+        "  UNION ALL "
+        "  SELECT t.root_job_set_id, c.job_set_id "
+        "  FROM exec_job_set c "
+        "  JOIN run_tree t ON c.parent_job_set_id=t.job_set_id"
+        "), run_jobs AS ("
+        "  SELECT t.root_job_set_id, j.job_id, j.state, j.claimed_by_token, j.lease_expires_at_utc, "
+        "         COALESCE(j.ended_at_utc, j.started_at_utc, j.queued_at_utc, 0) AS terminal_or_activity_utc, "
+        "         j.ended_at_utc "
+        "  FROM run_tree t "
+        "  JOIN exec_job j ON j.job_set_id=t.job_set_id"
+        "), run_stats AS ("
+        "  SELECT root_job_set_id, "
+        "         COUNT(job_id) AS total_jobs, "
+        "         SUM(CASE WHEN ended_at_utc IS NULL "
+        "                   AND state NOT IN ('COMPLETED','FAILED','CANCELED','SUCCEEDED','SUCCEEDED_WINNER','SUCCEEDED_DUPLICATE','SUPERSEDED') "
+        "                  THEN 1 ELSE 0 END) AS non_terminal_jobs, "
+        "         SUM(CASE WHEN claimed_by_token IS NOT NULL AND claimed_by_token<>'' "
+        "                   AND COALESCE(lease_expires_at_utc, 0) > ?1 "
+        "                  THEN 1 ELSE 0 END) AS active_leases, "
+        "         MAX(terminal_or_activity_utc) AS terminal_at_utc "
+        "  FROM run_jobs "
+        "  GROUP BY root_job_set_id"
+        ") "
+        "SELECT root_job_set_id, terminal_at_utc "
+        "FROM run_stats "
+        "WHERE total_jobs > 0 "
+        "  AND non_terminal_jobs = 0 "
+        "  AND active_leases = 0 "
+        "  AND terminal_at_utc > 0 "
+        "  AND terminal_at_utc < ?2 "
+        "ORDER BY terminal_at_utc ASC, root_job_set_id ASC "
+        "LIMIT ?3;";
+    if (sqlite3_prepare_v2(execution_db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+        return candidates;
+    }
+
+    sqlite3_bind_int64(st.st, 1, ToEpochMillis(now_utc));
+    sqlite3_bind_int64(st.st, 2, ToEpochMillis(older_than_utc));
+    sqlite3_bind_int(st.st, 3, max_candidates);
+    while (true) {
+        const int rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW) {
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+            candidates.clear();
+            return candidates;
+        }
+
+        ArchiveCandidateRoot candidate{};
+        candidate.root_job_set_id = sqlite3_column_int64(st.st, 0);
+        candidate.terminal_at_utc = FromEpochMillis(sqlite3_column_int64(st.st, 1));
+        candidates.push_back(candidate);
+    }
+
+    return candidates;
+}
+
+ArchiveBatchPreview SqliteArchivePackageService::PreviewArchiveBatch(
+    types::UtcTimePoint older_than_utc,
+    types::UtcTimePoint now_utc,
+    int max_candidates,
+    const retention::OutboxRetentionPolicy& outbox_policy,
+    std::string* error_out) const {
+    ArchiveBatchPreview preview{};
+    preview.candidates = ListArchiveCandidateRoots(older_than_utc, now_utc, max_candidates, error_out);
+    if (error_out != nullptr && !error_out->empty()) {
+        return preview;
+    }
+
+    if (ui_read_db_ == nullptr || execution_retention_db_ == nullptr) {
+        preview.blocking_reasons.push_back("missing UIRead/Execution retention db dependencies");
+        if (error_out != nullptr) *error_out = "retention preview dependencies are null";
+        return preview;
+    }
+
+    const auto ui_subscriptions = ui_read_db_->ListProjectionSubscriptions("Execution", "exec_outbox_message");
+    preview.ui_safe_floor_outbox_id = ui_read_db_->ComputeSafeFloorOutboxId("Execution", "exec_outbox_message");
+
+    std::vector<retention::OutboxSubscriptionSnapshot> snapshots;
+    snapshots.reserve(ui_subscriptions.size());
+    for (const auto& subscription : ui_subscriptions) {
+        retention::OutboxSubscriptionSnapshot snapshot{};
+        snapshot.projector_name = subscription.projector_name;
+        snapshot.last_outbox_id = subscription.last_outbox_id;
+        snapshot.updated_at_utc = subscription.updated_at_utc;
+        snapshot.status = subscription.status;
+        snapshot.last_error = subscription.last_error;
+        snapshot.required = true;
+        snapshots.push_back(std::move(snapshot));
+    }
+
+    preview.outbox_retention = execution_retention_db_->PreviewOutboxRetention(snapshots, now_utc, outbox_policy);
+    if (preview.ui_safe_floor_outbox_id.has_value()) {
+        if (preview.outbox_retention.safe_purge_floor_outbox_id.has_value()) {
+            preview.outbox_retention.safe_purge_floor_outbox_id = std::min(
+                preview.outbox_retention.safe_purge_floor_outbox_id.value(),
+                preview.ui_safe_floor_outbox_id.value());
+        }
+        else {
+            preview.outbox_retention.safe_purge_floor_outbox_id = preview.ui_safe_floor_outbox_id.value();
+        }
+    }
+
+    if (preview.outbox_retention.IsPurgeBlocked()) {
+        for (const auto& blocked : preview.outbox_retention.blocking_required_subscriptions) {
+            preview.blocking_reasons.push_back(
+                blocked.projector_name + " status=" + blocked.status + " blocks purge");
+        }
+    }
+    if (!preview.outbox_retention.safe_purge_floor_outbox_id.has_value()) {
+        preview.blocking_reasons.push_back("safe purge floor unavailable");
+    }
+
+    if (preview.outbox_retention.safe_purge_floor_outbox_id.has_value() && execution_db_ != nullptr) {
+        Statement st;
+        if (sqlite3_prepare_v2(
+                execution_db_,
+                "SELECT COUNT(1) FROM exec_outbox_message "
+                "WHERE published_at_utc IS NOT NULL AND outbox_id < ?1;",
+                -1,
+                &st.st,
+                nullptr)
+            == SQLITE_OK) {
+            sqlite3_bind_int64(st.st, 1, preview.outbox_retention.safe_purge_floor_outbox_id.value());
+            if (sqlite3_step(st.st) == SQLITE_ROW) {
+                preview.purgeable_published_outbox_rows = sqlite3_column_int64(st.st, 0);
+            }
+        }
+    }
+
+    return preview;
+}
+
+bool SqliteArchivePackageService::PurgePublishedOutboxRowsBeforeFloor(
+    std::int64_t safe_floor_outbox_id,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) const {
+    if (rows_deleted_out != nullptr) *rows_deleted_out = 0;
+    if (execution_db_ == nullptr) {
+        if (error_out != nullptr) *error_out = "execution db is null";
+        return false;
+    }
+    if (safe_floor_outbox_id <= 0 || max_rows <= 0) {
+        if (error_out != nullptr) *error_out = "safe_floor_outbox_id/max_rows must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            execution_db_,
+            "DELETE FROM exec_outbox_message "
+            "WHERE outbox_id IN ("
+            "  SELECT outbox_id FROM exec_outbox_message "
+            "  WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 "
+            "  ORDER BY outbox_id ASC LIMIT ?2"
+            ");",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(st.st, 1, safe_floor_outbox_id);
+    sqlite3_bind_int(st.st, 2, max_rows);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+        return false;
+    }
+
+    if (rows_deleted_out != nullptr) *rows_deleted_out = sqlite3_changes(execution_db_);
+    return true;
+}
+
+bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
+    std::int64_t root_job_set_id,
+    ArchiveSourcePurgeAction action,
+    std::int64_t archive_package_id,
+    int* job_sets_affected_out,
+    std::string* error_out) const {
+    if (job_sets_affected_out != nullptr) *job_sets_affected_out = 0;
+    if (execution_db_ == nullptr) {
+        if (error_out != nullptr) *error_out = "execution db is null";
+        return false;
+    }
+    if (root_job_set_id <= 0) {
+        if (error_out != nullptr) *error_out = "root_job_set_id must be > 0";
+        return false;
+    }
+    if (action == ArchiveSourcePurgeAction::None) {
+        return true;
+    }
+
+    Statement st;
+    if (action == ArchiveSourcePurgeAction::MarkArchived) {
+        if (sqlite3_prepare_v2(
+                execution_db_,
+                "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+                "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+                "  UNION ALL "
+                "  SELECT c.job_set_id FROM exec_job_set c "
+                "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+                ") "
+                "UPDATE exec_job_set "
+                "SET meta_note=CASE "
+                "  WHEN COALESCE(meta_note,'')='' THEN ?2 "
+                "  ELSE meta_note || ' | ' || ?2 END "
+                "WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+            return false;
+        }
+        const std::string marker = "ARCHIVED(package_id=" + std::to_string(archive_package_id) + ")";
+        sqlite3_bind_int64(st.st, 1, root_job_set_id);
+        sqlite3_bind_text(st.st, 2, marker.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    else if (action == ArchiveSourcePurgeAction::DeleteRows) {
+        char* err_msg = nullptr;
+        if (sqlite3_exec(execution_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, &err_msg) != SQLITE_OK) {
+            if (error_out != nullptr) *error_out = err_msg == nullptr ? "begin transaction failed" : err_msg;
+            sqlite3_free(err_msg);
+            return false;
+        }
+        sqlite3_free(err_msg);
+
+        bool ok = true;
+        const auto run_delete = [&](const char* sql) {
+            sqlite3_stmt* del = nullptr;
+            if (sqlite3_prepare_v2(execution_db_, sql, -1, &del, nullptr) != SQLITE_OK) {
+                return false;
+            }
+            sqlite3_bind_int64(del, 1, root_job_set_id);
+            const int rc = sqlite3_step(del);
+            sqlite3_finalize(del);
+            return rc == SQLITE_DONE;
+        };
+
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_event "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_edge "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_step "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_instance "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_jobs(job_id) AS ("
+            "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_job_event WHERE job_id IN (SELECT job_id FROM scoped_jobs);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_jobs(job_id) AS ("
+            "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_trigger "
+            "WHERE (scope_kind='job_set' AND scope_id IN (SELECT job_set_id FROM scoped_job_sets)) "
+            "   OR (scope_kind='job' AND scope_id IN (SELECT job_id FROM scoped_jobs));");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_jobs(job_id) AS ("
+            "  SELECT job_id FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_outbox_message "
+            "WHERE (aggregate_kind='job_set' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_set_id FROM scoped_job_sets)) "
+            "   OR (aggregate_kind='job' AND CAST(aggregate_id AS INTEGER) IN (SELECT job_id FROM scoped_jobs));");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            ") "
+            "DELETE FROM exec_job WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            ") "
+            "DELETE FROM exec_job_set WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets);");
+
+        if (!ok) {
+            sqlite3_exec(execution_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+            return false;
+        }
+        if (sqlite3_exec(execution_db_, "COMMIT;", nullptr, nullptr, &err_msg) != SQLITE_OK) {
+            if (error_out != nullptr) *error_out = err_msg == nullptr ? "commit transaction failed" : err_msg;
+            sqlite3_free(err_msg);
+            return false;
+        }
+        sqlite3_free(err_msg);
+        if (job_sets_affected_out != nullptr) {
+            *job_sets_affected_out = sqlite3_changes(execution_db_);
+        }
+        return true;
+    }
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(execution_db_);
+        return false;
+    }
+    if (job_sets_affected_out != nullptr) *job_sets_affected_out = sqlite3_changes(execution_db_);
+    return true;
+}
+
+ArchiveBatchResult SqliteArchivePackageService::ExecuteArchiveBatch(
+    types::UtcTimePoint older_than_utc,
+    types::UtcTimePoint now_utc,
+    int max_candidates,
+    int max_outbox_purge_rows,
+    const retention::OutboxRetentionPolicy& outbox_policy,
+    const ArchiveSourcePurgePolicy& source_purge_policy) {
+    ArchiveBatchResult result{};
+
+    std::string preview_error;
+    const auto preview = PreviewArchiveBatch(older_than_utc, now_utc, max_candidates, outbox_policy, &preview_error);
+    if (!preview_error.empty()) {
+        result.errors.push_back(preview_error);
+        return result;
+    }
+    result.candidates_considered = static_cast<int>(preview.candidates.size());
+
+    for (const auto& candidate : preview.candidates) {
+        CreateArchivePackageRequest request{};
+        request.source_root_job_set_id = candidate.root_job_set_id;
+        request.created_at_utc = now_utc;
+        const auto package_result = CreatePackage(request);
+        if (!package_result.success) {
+            result.errors.push_back(
+                "failed to archive root " + std::to_string(candidate.root_job_set_id) + ": "
+                + package_result.error.value_or("unknown error"));
+            continue;
+        }
+
+        ++result.packages_written;
+        result.archived_root_job_set_ids.push_back(candidate.root_job_set_id);
+
+        int source_rows = 0;
+        std::string source_error;
+        if (!ApplySourcePurgePolicyForRoot(
+                candidate.root_job_set_id,
+                source_purge_policy.source_action,
+                package_result.archive_package_id,
+                &source_rows,
+                &source_error)) {
+            result.errors.push_back(
+                "source purge policy failed for root " + std::to_string(candidate.root_job_set_id) + ": " + source_error);
+            continue;
+        }
+        result.source_job_sets_purged += source_rows;
+    }
+
+    if (max_outbox_purge_rows > 0 && preview.outbox_retention.safe_purge_floor_outbox_id.has_value()) {
+        int rows_deleted = 0;
+        std::string purge_error;
+        if (!PurgePublishedOutboxRowsBeforeFloor(
+                preview.outbox_retention.safe_purge_floor_outbox_id.value(),
+                max_outbox_purge_rows,
+                &rows_deleted,
+                &purge_error)) {
+            result.errors.push_back("outbox purge failed: " + purge_error);
+        }
+        result.outbox_rows_purged = rows_deleted;
+    }
+
+    if (execution_db_ != nullptr) {
+        Statement upsert_cursor;
+        if (sqlite3_prepare_v2(
+                execution_db_,
+                "INSERT INTO exec_archive_cursor(cursor_id,cursor_kind,last_scanned_at_utc,last_job_set_id) "
+                "VALUES(1, 'stage4.archive', ?1, ?2) "
+                "ON CONFLICT(cursor_id) DO UPDATE SET "
+                "cursor_kind=excluded.cursor_kind,last_scanned_at_utc=excluded.last_scanned_at_utc,last_job_set_id=excluded.last_job_set_id;",
+                -1,
+                &upsert_cursor.st,
+                nullptr)
+            == SQLITE_OK) {
+            sqlite3_bind_int64(upsert_cursor.st, 1, ToEpochMillis(now_utc));
+            sqlite3_bind_int64(
+                upsert_cursor.st,
+                2,
+                result.archived_root_job_set_ids.empty() ? 0 : result.archived_root_job_set_ids.back());
+            sqlite3_step(upsert_cursor.st);
+        }
+    }
+
+    result.success = result.errors.empty();
     return result;
 }
 
