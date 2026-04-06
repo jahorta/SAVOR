@@ -219,14 +219,12 @@ bool WorkflowProjector::ProjectFromOutbox(
     }
 
     simcore::db::SqliteUiReadDb ui_read_db(db_);
-    const auto legacy_checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-
     simcore::db::UiProjectionSubscription subscription_seed{
         .projector_name = projector_name,
         .source_context = std::string(kExecutionContext),
         .source_outbox_table = std::string(kExecutionOutboxTable),
-        .last_outbox_id = legacy_checkpoint.has_value() ? legacy_checkpoint->last_outbox_id : 0,
-        .last_event_id = legacy_checkpoint.has_value() ? legacy_checkpoint->last_event_id : std::string{},
+        .last_outbox_id = 0,
+        .last_event_id = std::string{},
         .updated_at_utc = simcore::db::types::UtcNow(),
         .status = "ACTIVE",
         .last_error = std::string{},
@@ -324,20 +322,6 @@ bool WorkflowProjector::ProjectFromOutbox(
             simcore::db::types::UtcNow());
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
-    }
-
-    if (relay_result.last_scanned_outbox_id > subscription->last_outbox_id) {
-        const bool upserted = ui_read_db.UpsertProjectionCheckpoint({
-            projector_name,
-            relay_result.last_scanned_event_id,
-            relay_result.last_scanned_outbox_id,
-            simcore::db::types::UtcNow(),
-        });
-
-        if (!upserted) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            return false;
-        }
     }
 
     return true;
