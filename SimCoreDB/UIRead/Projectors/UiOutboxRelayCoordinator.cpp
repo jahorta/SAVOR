@@ -17,7 +17,6 @@ bool UiOutboxRelayCoordinator::RelayWithConfig(
     const std::string& projector_name,
     const std::string& source_context,
     const std::string& source_outbox_table,
-    const std::string& legacy_checkpoint_name,
     const events::OutboxRelayConfig& config,
     const std::vector<events::OutboxRelayDispatchBinding>& bindings,
     int max_batch_size,
@@ -30,7 +29,6 @@ bool UiOutboxRelayCoordinator::RelayWithConfig(
         config,
         bindings,
         max_batch_size,
-        legacy_checkpoint_name,
         error_out);
 }
 
@@ -74,7 +72,6 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
         projector_name,
         "Execution",
         "exec_outbox_message",
-        projector_name + ".exec_outbox_message",
         {
             .db = db_,
             .outbox_table = "exec_outbox_message",
@@ -110,7 +107,6 @@ bool UiOutboxRelayCoordinator::RelayStateOutbox(
         projector_name,
         "State",
         "state_outbox_message",
-        projector_name + ".state_outbox_message",
         {
             .db = db_,
             .outbox_table = "state_outbox_message",
@@ -152,7 +148,6 @@ bool UiOutboxRelayCoordinator::RelaySeedProbeOutbox(
         projector_name,
         "AnalysisSeedProbe",
         "sp_outbox_message",
-        projector_name + ".sp_outbox_message",
         {
             .db = db_,
             .outbox_table = "sp_outbox_message",
@@ -194,7 +189,6 @@ bool UiOutboxRelayCoordinator::RelayAnalysisBattleOutbox(
         projector_name,
         "AnalysisBattle",
         "ab_outbox_message",
-        projector_name + ".ab_outbox_message",
         {
             .db = db_,
             .outbox_table = "ab_outbox_message",
@@ -232,7 +226,6 @@ bool UiOutboxRelayCoordinator::RelayAnalysisSpineOutbox(
         projector_name,
         "AnalysisSpine",
         "asp_outbox_message",
-        projector_name + ".asp_outbox_message",
         {
             .db = db_,
             .outbox_table = "asp_outbox_message",
@@ -273,7 +266,6 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
         projector_name,
         "Authoring",
         "au_outbox_message",
-        projector_name + ".au_outbox_message",
         {
             .db = db_,
             .outbox_table = "au_outbox_message",
@@ -313,7 +305,6 @@ bool UiOutboxRelayCoordinator::RelayArchiveOutbox(
         projector_name,
         "Archive",
         "ar_outbox_message",
-        projector_name + ".ar_outbox_message",
         {
             .db = db_,
             .outbox_table = "ar_outbox_message",
