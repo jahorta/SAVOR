@@ -732,7 +732,7 @@ retention::OutboxRetentionPreview SqliteArchiveDb::PreviewOutboxRetention(
     std::int64_t max_outbox_id = 0;
     Statement st;
     if (db_ != nullptr
-        && Prepare(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM ar_outbox_message;", &st)
+        && sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM ar_outbox_message;", -1, &st.st, nullptr) == SQLITE_OK
         && sqlite3_step(st.st) == SQLITE_ROW) {
         max_outbox_id = sqlite3_column_int64(st.st, 0);
     }
@@ -767,7 +767,7 @@ bool SqliteArchiveDb::PurgeOutboxThroughRetentionFloor(
     }
 
     Statement st;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "DELETE FROM ar_outbox_message "
             "WHERE outbox_id IN ("
@@ -775,7 +775,7 @@ bool SqliteArchiveDb::PurgeOutboxThroughRetentionFloor(
             "  WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 "
             "  ORDER BY outbox_id ASC LIMIT ?2"
             ");",
-            &st)) {
+            -1, &st.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
