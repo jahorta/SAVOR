@@ -54,6 +54,16 @@ Prepare contracts and schema so later phases can ship safely without changing co
 3. **Validation gates before phase exit**
    - New events pass schema checks.
    - Replay/backfill pass has zero unresolved payload rows.
+   - Both verification paths are required: `SimCoreTests` and `SimCoreDBValidation`.
+
+## Validation execution requirements
+
+1. **SimCoreTests**
+   - Run phase-0 schema/contract tests in `SimCoreTests`.
+2. **SimCoreDBValidation CLI**
+   - Run `SimCoreDBValidation --run phase0.event_contracts`.
+   - Run `SimCoreDBValidation --run phase0.replay_backfill`.
+   - Optional discovery: `SimCoreDBValidation --list`.
 
 ## Suggested SimCoreTests to add for phase exit readiness
 

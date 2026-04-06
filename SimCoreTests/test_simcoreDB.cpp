@@ -279,6 +279,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(TableExists(db_, "exec_workflow_step"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_edge"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_event"));
+    EXPECT_TRUE(TableExists(db_, "exec_workflow_input_event"));
 
     EXPECT_TRUE(TableExists(db_, "ui_workflow_instance"));
     EXPECT_TRUE(TableExists(db_, "ui_workflow_step"));
@@ -298,6 +299,10 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_instance_state_priority_ready"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_job_set"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_edge_instance_to"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_input_event_step_ts"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_input_event_instance_step"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_payload_ref"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_state_created"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_instance_state"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_alert_active"));
@@ -1502,6 +1507,36 @@ TEST(Stage3cEventContracts, PayloadDispatchAndValidationRejectVersionSuffixMisma
     EXPECT_EQ(error, "event_type must end with .v<event_version>");
 }
 
+TEST(Stage3cEventContracts, WorkflowInputEventsRouteToExecutionContractAndRequireWorkflowInputPayloadFamily) {
+    using namespace simcore::db::events;
+
+    constexpr std::array<std::string_view, 3> kWorkflowInputEvents{ {
+        "Execution.WorkflowStepInputRequested.v1",
+        "Execution.WorkflowStepInputFragmentReady.v1",
+        "Execution.WorkflowStepInputComplete.v1",
+    } };
+
+    for (const auto event_type : kWorkflowInputEvents) {
+        const auto contract = ResolvePayloadResolverContract(event_type, 1);
+        ASSERT_TRUE(contract.has_value()) << event_type;
+        EXPECT_EQ(*contract, PayloadResolverContract::ExecutionWorkflowJobV1) << event_type;
+
+        EventEnvelope valid{};
+        valid.event_type = std::string(event_type);
+        valid.event_version = 1;
+        valid.context_name = "Execution";
+        valid.aggregate_kind = "workflow_step";
+        valid.payload_ref_kind = "workflow_input_event";
+        valid.payload_ref_id = 123;
+        std::string error;
+        EXPECT_TRUE(ValidateExecutionWorkflowJobPayloadV1(valid, &error)) << event_type << ": " << error;
+
+        valid.payload_ref_kind = "workflow_event";
+        EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(valid, &error));
+        EXPECT_EQ(error, "payload_ref_kind must be workflow_input_event for Execution.WorkflowStepInput* event");
+    }
+}
+
 
 TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) {
     using namespace simcore::db::events;
@@ -1992,6 +2027,117 @@ VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, un
     invalid.payload_ref_kind = "workflow_event";
     invalid.payload_ref_id = 801;
     EXPECT_FALSE(execution_db.ResolveExecutionWorkflowJobPayload(invalid).has_value());
+}
+
+TEST_F(SqliteDbFixture, Stage0ExecutionPayloadResolverReadsWorkflowInputEventPayloads) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc
+)
+VALUES(9101, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'stage0-input', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(9102, 1, 'stage0-input', unixepoch()*1000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, created_at_utc, ready_at_utc
+)
+VALUES(9103, 9101, 'seedprobe.grid', 'seedprobe.grid', 'READY', 9102, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_input_event(
+    workflow_input_event_id, workflow_instance_id, workflow_step_id, event_kind, source_key, request_id, event_ts_utc
+)
+VALUES(9104, 9101, 9103, 'Execution.WorkflowStepInputFragmentReady.v1', 'state', 'req-9104', unixepoch()*1000);
+)SQL"));
+
+    ExecutionDb execution_db(db_);
+
+    const auto from_input_event = execution_db.ResolveExecutionWorkflowJobPayload(
+        "Execution.WorkflowStepInputFragmentReady.v1", 1, "workflow_input_event", 9104);
+    ASSERT_TRUE(from_input_event.has_value());
+    EXPECT_EQ(from_input_event->workflow_instance_id, 9101);
+    EXPECT_EQ(from_input_event->workflow_step_id, 9103);
+    EXPECT_EQ(from_input_event->job_set_id, 9102);
+    EXPECT_EQ(from_input_event->job_id, 0);
+
+    const auto legacy_from_workflow_event = execution_db.ResolveExecutionWorkflowJobPayload(
+        "Execution.WorkflowStepCompleted.v1", 1, "workflow_event", 9104);
+    EXPECT_FALSE(legacy_from_workflow_event.has_value());
+}
+
+TEST_F(SqliteDbFixture, Stage0ReplayBackfillValidationResolvesWorkflowAndWorkflowInputPayloadRefs) {
+    using namespace simcore::db::events;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc
+)
+VALUES(9201, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'stage0-replay', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(
+    workflow_step_id, workflow_instance_id, step_key, step_kind, state, created_at_utc, ready_at_utc
+)
+VALUES(9202, 9201, 'seedprobe.neutral', 'seedprobe.neutral', 'READY', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_event(workflow_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, message)
+VALUES(9203, 9201, 9202, 'Execution.WorkflowStepReady.v1', unixepoch()*1000, 'ready');
+INSERT INTO exec_workflow_input_event(workflow_input_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, source_key, request_id)
+VALUES(9204, 9201, 9202, 'Execution.WorkflowStepInputRequested.v1', unixepoch()*1000, 'state', 'req-9204');
+INSERT INTO exec_outbox_message(
+    outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id
+)
+VALUES
+    (9205,'evt-stage0-replay-1','Execution.WorkflowStepReady.v1',1,'Execution','workflow_step','9202','corr-9201','cause-9201',unixepoch()*1000,'workflow_event',9203),
+    (9206,'evt-stage0-replay-2','Execution.WorkflowStepInputRequested.v1',1,'Execution','workflow_step','9202','corr-9201','cause-9201',unixepoch()*1000,'workflow_input_event',9204);
+)SQL"));
+
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    int unresolved_count = 0;
+
+    OutboxRelay relay({
+        .db = db_,
+        .outbox_table = "exec_outbox_message",
+        .context_name = "Execution",
+    });
+
+    std::vector<OutboxRelayDispatchBinding> bindings;
+    bindings.push_back({
+        .key = { .event_type = "Execution.WorkflowStepReady.v1", .event_version = 1 },
+        .handler = [&](const EventEnvelope& envelope, std::string* handler_error) {
+            const auto payload = execution_db.ResolveExecutionWorkflowJobPayload(envelope);
+            if (!payload.has_value()) {
+                ++unresolved_count;
+                if (handler_error) *handler_error = "unresolved payload";
+                return false;
+            }
+            return true;
+        },
+    });
+    bindings.push_back({
+        .key = { .event_type = "Execution.WorkflowStepInputRequested.v1", .event_version = 1 },
+        .handler = [&](const EventEnvelope& envelope, std::string* handler_error) {
+            const auto payload = execution_db.ResolveExecutionWorkflowJobPayload(envelope);
+            if (!payload.has_value()) {
+                ++unresolved_count;
+                if (handler_error) *handler_error = "unresolved payload";
+                return false;
+            }
+            return true;
+        },
+    });
+
+    OutboxRelayResult result{};
+    ASSERT_TRUE(relay.RelayBatch(0, 10, bindings, &result, &err)) << err;
+    EXPECT_EQ(result.failure_count, 0);
+    EXPECT_EQ(unresolved_count, 0);
+    EXPECT_EQ(result.published_count, 2);
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThirtySix) {

@@ -56,6 +56,14 @@ Introduce step input aggregation as a first-class path with strict readiness and
 3. **Failure semantics**
    - Timeout retry exhaustion routes to blocked/failed flow for later terminal decision.
 
+## Validation execution requirements
+
+1. **SimCoreTests**
+   - Run phase-1 aggregation behavior and idempotency suites.
+2. **SimCoreDBValidation CLI**
+   - Add/run phase-1 validation entries in `SimCoreDBValidation`.
+   - Phase cannot exit until both test suites and CLI validations pass.
+
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **All-inputs-required gating test**

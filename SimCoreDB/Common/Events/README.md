@@ -2,7 +2,7 @@
 
 Shared event contracts for payload dispatch and typed payload resolver interfaces.
 
-- `EventCatalog.h`: canonical event names.
+- `EventCatalog.h`: canonical event names (including workflow lifecycle + workflow input orchestration events).
 - `EventEnvelope.h`: outbox envelope shape.
 - `EventPayloadViews.h`: event-specific typed payload view structs (with backward-compatible family aliases).
 - `EventPayloadDispatch.h`: dispatch keys (`event_type`, `event_version`) -> payload resolver contracts.

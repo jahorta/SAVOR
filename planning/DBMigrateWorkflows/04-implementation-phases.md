@@ -6,11 +6,13 @@
 - Add payload tables and resolvers for new event families.
 - Add/update event catalog entries.
 - Define migration scripts for any new execution workflow metadata.
+- Add/maintain `SimCoreDBValidation` CLI validations for phase-gate checks.
 
 ### Exit criteria
 
 - Event contracts documented and reviewed.
 - Backward compatibility checklist approved.
+- `SimCoreTests` coverage and `SimCoreDBValidation` phase-0 validations both pass.
 
 ## Phase 1 - Step input aggregation MVP
 
@@ -21,11 +23,13 @@
   - `step.input_complete`
 - Add timeout policy with **single retry** before terminal failure event emission.
 - Enforce strict all-required fragments.
+- Add phase-1 `SimCoreDBValidation` checks for aggregation gating and timeout/retry behavior.
 
 ### Exit criteria
 
 - One workflow step can gather from at least two sources (one sync + one async simulation).
 - Idempotent duplicate fragment handling verified.
+- `SimCoreTests` phase-1 suites and `SimCoreDBValidation` phase-1 checks both pass.
 
 ## Phase 2 - Adapter invocation chain
 
@@ -40,11 +44,13 @@
 - Result-mapping write path:
   - mapper returns typed payloads
   - context-owned writers perform durable writes
+- Add phase-2 `SimCoreDBValidation` checks for adapter invocation order and completion gate invariants.
 
 ### Exit criteria
 
 - One end-to-end workflow (2 steps) transitions successfully.
 - Failed-step semantics tested (FAILED terminal path).
+- `SimCoreTests` phase-2 suites and `SimCoreDBValidation` phase-2 checks both pass.
 
 ## Phase 3 - Pub/sub extraction and scaling
 
@@ -60,22 +66,26 @@
   3. fairness
 - Tune topic partitions and consumer groups.
 - Add lag/dead-letter operational dashboards.
+- Add phase-3 `SimCoreDBValidation` checks for replay robustness, dedupe isolation, and stream-separation behavior.
 
 ### Exit criteria
 
 - Can handle target throughput with p95 latency SLO.
 - Replay and dead-letter playbooks validated.
+- `SimCoreTests` phase-3 suites and `SimCoreDBValidation` phase-3 checks both pass.
 
 ## Phase 4 - Hardening
 
 - Recovery/reconciliation policy finalization.
 - Add replay-safe guards for all side-effect handlers.
 - Incident drills: delayed events, duplicated events, out-of-order events.
+- Add phase-4 `SimCoreDBValidation` recovery drill checks aligned with runbooks.
 
 ### Exit criteria
 
 - Runbook complete.
 - On-call checklist complete.
+- `SimCoreTests` recovery matrix and `SimCoreDBValidation` hardening checks both pass.
 
 ## Consistency checks (run each iteration)
 
