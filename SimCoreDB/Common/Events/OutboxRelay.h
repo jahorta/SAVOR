@@ -50,8 +50,27 @@ public:
         const std::vector<OutboxRelayDispatchBinding>& bindings,
         OutboxRelayResult* result_out,
         std::string* error_out) const;
+    bool RelayBatchFromCursor(
+        std::int64_t cursor_outbox_id,
+        int max_batch_size,
+        const std::vector<OutboxRelayDispatchBinding>& bindings,
+        OutboxRelayResult* result_out,
+        std::string* error_out) const;
 
 private:
+    enum class RelayMode {
+        ProducerOutbox,
+        SubscriptionCursor
+    };
+
+    bool RelayBatchInternal(
+        RelayMode mode,
+        std::int64_t after_outbox_id,
+        int max_batch_size,
+        const std::vector<OutboxRelayDispatchBinding>& bindings,
+        OutboxRelayResult* result_out,
+        std::string* error_out) const;
+
     std::function<bool(const EventEnvelope&, std::string* error_out)> ResolveHandler(
         std::string_view event_type,
         int event_version,
