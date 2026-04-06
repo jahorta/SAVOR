@@ -14,6 +14,38 @@ public:
         const std::string& projector_name) const override;
     bool UpsertProjectionCheckpoint(const UiProjectionCheckpoint& checkpoint) override;
 
+    std::optional<UiProjectionSubscription> GetProjectionSubscription(
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table) const override;
+    std::optional<UiProjectionSubscription> GetOrCreateProjectionSubscription(
+        const UiProjectionSubscription& subscription) override;
+    bool AdvanceProjectionSubscriptionCursor(
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table,
+        std::int64_t last_outbox_id,
+        const std::string& last_event_id,
+        types::UtcTimePoint updated_at_utc,
+        const std::optional<UiProjectionSubscriptionBatchAudit>& batch_audit) override;
+    bool SetProjectionSubscriptionError(
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table,
+        const std::string& last_error,
+        types::UtcTimePoint updated_at_utc) override;
+    bool PauseProjectionSubscription(
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table,
+        types::UtcTimePoint updated_at_utc,
+        const std::string& reason) override;
+    bool ResumeProjectionSubscription(
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table,
+        types::UtcTimePoint updated_at_utc) override;
+
 private:
     sqlite3* db_ = nullptr;
 };
