@@ -157,6 +157,7 @@
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Archive\ArchivePackageService.h" />
     <ClInclude Include="Archive\IArchiveDb.h" />
     <ClInclude Include="Archive\SqliteArchiveDb.h" />
     <ClInclude Include="Analysis\IAnalysisDb.h" />
@@ -206,6 +207,7 @@
     <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Archive\ArchivePackageService.cpp" />
     <ClCompile Include="Archive\SqliteArchiveDb.cpp" />
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
