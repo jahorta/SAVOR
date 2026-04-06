@@ -12,8 +12,7 @@ namespace simcore::db {
 namespace {
 
 struct Statement {
-    sqlite3_stmt* st = nullptr;
-
+    Statement() {}
     ~Statement() {
         if (st != nullptr) {
             sqlite3_finalize(st);
@@ -22,6 +21,8 @@ struct Statement {
 
     Statement(const Statement&) = delete;
     Statement& operator=(const Statement&) = delete;
+
+    sqlite3_stmt* st = nullptr;
 };
 
 bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
