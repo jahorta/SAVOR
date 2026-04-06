@@ -190,3 +190,20 @@ Define source outbox retention with subscriber awareness:
 - Depends on Stage 3/3d event catalog and projector baseline.
 - Can run in parallel with late Stage 4 archive hardening where practical.
 - Must complete before final Stage 5 signoff to avoid projection correctness risks during UIRead cutover.
+
+---
+
+## 3e.9 Migration Notes (Checkpoint Retirement)
+
+### Added migration
+- `SimCoreDB/migration/UIRead/202604051500_uiread_stage3f_projection_checkpoint_retire.sql`
+
+### What this migration does
+1. Runs under `BEGIN IMMEDIATE` to keep checkpoint-retirement changes atomic.
+2. Drops `ix_ui_projection_checkpoint_outbox` and then drops `ui_projection_checkpoint` after subscription cursor cutover.
+3. Includes validation query comments to verify:
+   - legacy checkpoint table/index are gone, and
+   - `ui_projection_subscription` is the only cursor-progress source.
+
+### Rollout guardrail
+- Apply only after projector runtime code no longer reads/writes `ui_projection_checkpoint`.
