@@ -324,6 +324,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowIntegrationMode.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.h" />
+    <ClInclude Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
     <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
@@ -443,6 +444,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.cpp" />
+    <ClCompile Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.cpp" />
     <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
     <ClCompile Include="Runner\Script\KeyRegistry.cpp" />

@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -17,6 +19,10 @@
 #include "SimCoreDB.h"
 #include "Analysis/SqliteAnalysisDb.h"
 #include "Archive/SqliteArchiveDb.h"
+#include "Archive/ArchivePackageService.h"
+#include "Archive/RehydrateExecutor.h"
+#include "UIRead/SqliteUiReadDb.h"
+#include "Runner/Parallel/SimCoreDB/ArchiveWorkflowCommands.h"
 #include "Execution/Workflow/ExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
@@ -357,7 +363,7 @@ INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step
 VALUES (3001,1001,2001,2002,unixepoch()),(3002,1001,2002,2003,unixepoch()),(3003,1001,2003,2004,unixepoch());
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
     ASSERT_NE(execution_db.WorkflowQueryService(), nullptr);
     ASSERT_NE(execution_db.WorkflowCommandService(), nullptr);
 
@@ -435,7 +441,7 @@ VALUES
   (2104, 1102, 'Grid', 'seedprobe.grid', 'READY', 9, unixepoch()-20, 0, 2, unixepoch());
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
     const auto ready_steps = execution_db.WorkflowQueryService()->ListReadySteps(10);
     ASSERT_EQ(ready_steps.size(), 2u);
     EXPECT_EQ(ready_steps[0].workflow_step_id, 2102);
@@ -1173,7 +1179,7 @@ INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key,
 VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 2, unixepoch());
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
     std::string cmd_error;
     ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepTerminal(
         { .workflow_step_id = 9401, .terminal_state = "COMPLETED", .requested_by = "projector-replay-test" },
@@ -1718,7 +1724,7 @@ VALUES
   (9923,9901,9913,9914,unixepoch());
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
     StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage3c-item15-test" });
 
     std::int64_t next_job_set_id = 12000;
@@ -1903,7 +1909,7 @@ INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_
 VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, unixepoch()*1000);
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
     auto* job_commands = execution_db.JobCommandService();
     ASSERT_NE(job_commands, nullptr);
 
@@ -1943,7 +1949,7 @@ INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_
 VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, unixepoch()*1000);
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
 
     const auto from_job_set = execution_db.ResolveExecutionWorkflowJobPayload(
         "Execution.JobSetCreated.v1", 1, "job_set", 701);
@@ -2302,4 +2308,208 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
     const auto payload_item = archive_db.ResolveArchivePayload(1, "archive_item", archive_item_id);
     ASSERT_TRUE(payload_item.has_value());
     EXPECT_EQ(payload_item->archive_item_id, archive_item_id);
+}
+
+TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsPackageCountsAndChecksumValidation) {
+    using namespace simcore::db;
+    using namespace simcore::db::migrations;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
+VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
+INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
+)SQL"));
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-archive-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    simcore::db::archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root });
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreatePackage({
+        .source_root_job_set_id = 100,
+        .created_at_utc = now,
+        .event_id = "stage4-package-1",
+        .correlation_id = "stage4-corr",
+        .causation_id = "stage4-cause",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+
+    simcore::db::archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto verify_pass = commands.PackageVerify({ .archive_package_id = package.archive_package_id });
+    EXPECT_TRUE(verify_pass.success);
+    EXPECT_GT(verify_pass.manifest_row_total, 0);
+    EXPECT_EQ(verify_pass.manifest_row_total, verify_pass.archive_item_row_total);
+
+    const auto jobs_file = package.package_root / "data" / "jobs.jsonl";
+    ASSERT_TRUE(std::filesystem::exists(jobs_file));
+    {
+        std::ofstream out(jobs_file, std::ios::out | std::ios::trunc);
+        out << "{\"job_id\":200}\n";
+    }
+
+    const auto verify_fail = commands.PackageVerify({ .archive_package_id = package.archive_package_id });
+    EXPECT_FALSE(verify_fail.success);
+    EXPECT_FALSE(verify_fail.blocking_reasons.empty());
+    EXPECT_NE(std::find_if(
+        verify_fail.blocking_reasons.begin(),
+        verify_fail.blocking_reasons.end(),
+        [](const std::string& r) { return r.find("checksum_mismatch") != std::string::npos; }),
+        verify_fail.blocking_reasons.end());
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsRehydrateNoCollisionAndRoundtripAndCleanup) {
+    using namespace simcore::db;
+    using namespace simcore::db::migrations;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
+VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
+INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
+)SQL"));
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-rehydrate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    simcore::db::archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root });
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto package = package_service.CreatePackage({
+        .source_root_job_set_id = 100,
+        .created_at_utc = now,
+        .event_id = "stage4-roundtrip-1",
+        .correlation_id = "stage4-roundtrip",
+        .causation_id = "stage4-roundtrip",
+    });
+    ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
+
+    ASSERT_TRUE(ExecSql(db_, "INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc) VALUES(201,100,'fp-live',1,'READY',3000);"));
+    ASSERT_TRUE(ExecSql(db_, "DELETE FROM exec_job_event WHERE job_id=200; DELETE FROM exec_job WHERE job_id=200; DELETE FROM exec_job_set WHERE job_set_id=100;"));
+
+    simcore::db::archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto rehydrate_summary = commands.RehydrateExecute({
+        .archive_package_id = package.archive_package_id,
+        .now_utc = now,
+        .target_namespace = "stage4",
+        .event_id_prefix = "stage4-rh",
+    });
+    ASSERT_TRUE(rehydrate_summary.success);
+    ASSERT_EQ(rehydrate_summary.request_ids.size(), 1u);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job WHERE fingerprint LIKE 'fp-200%';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(1, sqlite3_column_int(st, 0));
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT old_id, new_id FROM ar_rehydrate_map WHERE rehydrate_request_id=?1 AND entity_kind='job';", -1, &st, nullptr));
+    sqlite3_bind_int64(st, 1, rehydrate_summary.request_ids.front());
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    const auto old_id = sqlite3_column_int64(st, 0);
+    const auto new_id = sqlite3_column_int64(st, 1);
+    EXPECT_EQ(200, old_id);
+    EXPECT_NE(200, new_id);
+    sqlite3_finalize(st);
+
+    const auto cleanup = commands.RehydrateCleanup({ .rehydrate_request_id = rehydrate_summary.request_ids.front() });
+    EXPECT_TRUE(cleanup.success);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ar_rehydrate_request WHERE rehydrate_request_id=?1;", -1, &st, nullptr));
+    sqlite3_bind_int64(st, 1, rehydrate_summary.request_ids.front());
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(0, sqlite3_column_int(st, 0));
+    sqlite3_finalize(st);
+
+    std::filesystem::remove_all(temp_root);
+}
+
+TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsArchivePreviewRespectsSubscriberFloorSafety) {
+    using namespace simcore::db;
+    using namespace simcore::db::migrations;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
+VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
+INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id,publish_state)
+VALUES(10,'evt-10','Execution.JobQueued.v1',1,'Execution','job','200',1000,'job',200,'PUBLISHED'),
+      (20,'evt-20','Execution.JobCompleted.v1',1,'Execution','job','200',2000,'job',200,'PUBLISHED');
+INSERT INTO ui_projection_subscription(projector_name,source_context,source_outbox_table,last_outbox_id,last_event_id,updated_at_utc,status,last_error)
+VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'ACTIVE','');
+)SQL"));
+
+    const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-floor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(temp_root));
+
+    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    SqliteUiReadDb ui_read_db(db_);
+    SqliteArchiveDb archive_db(db_);
+    simcore::db::archive::SqliteArchivePackageService package_service(
+        db_,
+        &execution_db,
+        &ui_read_db,
+        &archive_db,
+        DbConfigPaths{ .archive_store_root = temp_root });
+    simcore::db::archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root);
+    ArchiveWorkflowCommands commands(db_, &archive_db, &package_service, &rehydrate_executor);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    const auto preview = commands.ArchivePreview({
+        .older_than_utc = types::UtcTimePoint(std::chrono::milliseconds(1712305000000)),
+        .now_utc = now,
+        .max_candidates = 10,
+        .outbox_policy = { .paused_or_error_block_threshold = std::chrono::hours(2), .block_when_no_active_subscriptions = true },
+    });
+
+    EXPECT_TRUE(preview.success);
+    EXPECT_EQ(preview.ui_safe_floor_outbox_id, 15);
+    ASSERT_TRUE(preview.retention_safe_floor_outbox_id.has_value());
+    EXPECT_EQ(preview.retention_safe_floor_outbox_id.value(), 15);
+
+    std::filesystem::remove_all(temp_root);
 }
