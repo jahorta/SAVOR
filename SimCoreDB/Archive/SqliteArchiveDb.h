@@ -15,6 +15,29 @@ class SqliteArchiveDb final : public IArchiveDb {
 public:
     explicit SqliteArchiveDb(sqlite3* db);
 
+    bool CreateArchivePackage(
+        const CreateArchivePackageCommand& command,
+        std::int64_t* archive_package_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool AddArchiveItem(
+        const AddArchiveItemCommand& command,
+        std::int64_t* archive_item_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RequestRehydrate(
+        const RequestRehydrateCommand& command,
+        std::int64_t* rehydrate_request_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CompleteRehydrate(
+        const CompleteRehydrateCommand& command,
+        std::string* error_out = nullptr) override;
+
+    bool FailRehydrate(
+        const FailRehydrateCommand& command,
+        std::string* error_out = nullptr) override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

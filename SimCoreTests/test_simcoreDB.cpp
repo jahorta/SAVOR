@@ -16,6 +16,7 @@
 #include "Common/Events/OutboxRelay.h"
 #include "SimCoreDB.h"
 #include "Analysis/SqliteAnalysisDb.h"
+#include "Archive/SqliteArchiveDb.h"
 #include "Execution/Workflow/ExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
@@ -2006,4 +2007,166 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
     const auto payload_36 = analysis_db.ResolveBattlePayload(1, "terminal_followup", terminal_followup_id);
     ASSERT_TRUE(payload_36.has_value());
     EXPECT_EQ(payload_36->terminal_followup_id, terminal_followup_id);
+}
+
+TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {
+    using namespace simcore::db;
+    using namespace simcore::db::analysis;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisSeedProbe, embedded_options, &err)) << err;
+
+    SqliteAnalysisDb analysis_db(db_);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db.CreateSeedProbeSet(
+        {
+            .name = "stage3d-probe-set",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "bp-default",
+            .segment_source_kind = "FILE",
+            .created_at_utc = now,
+            .event_id = "sp-event-23",
+            .correlation_id = "sp-corr-1",
+            .causation_id = "sp-cause-1",
+        },
+        &probe_set_id,
+        &err))
+        << err;
+    EXPECT_GT(probe_set_id, 0);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM sp_outbox_message WHERE event_type='AnalysisSeedProbe.SetCreated.v1';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 1);
+    sqlite3_finalize(st);
+
+    const auto payload = analysis_db.ResolveSeedProbePayload(1, "probe_set", probe_set_id);
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_EQ(payload->probe_set_id, probe_set_id);
+}
+
+TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEight) {
+    using namespace simcore::db;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
+
+    SqliteArchiveDb archive_db(db_);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+
+    std::int64_t archive_package_id = 0;
+    ASSERT_TRUE(archive_db.CreateArchivePackage(
+        {
+            .source_context = "Execution",
+            .source_root_job_set_id = 9001,
+            .created_at_utc = now,
+            .schema_version = 1,
+            .event_catalog_version = 1,
+            .time_range_start_utc = now,
+            .time_range_end_utc = now,
+            .manifest_path = "manifest.json",
+            .checksum_status = "PENDING",
+            .event_id = "ar-event-44",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-1",
+        },
+        &archive_package_id,
+        &err))
+        << err;
+    ASSERT_GT(archive_package_id, 0);
+
+    std::int64_t archive_item_id = 0;
+    ASSERT_TRUE(archive_db.AddArchiveItem(
+        {
+            .archive_package_id = archive_package_id,
+            .item_kind = "exec_job_event",
+            .item_count = 4,
+            .blob_path = std::string("jobs.jsonl"),
+            .checksum = std::string("abc123"),
+            .indexed_at_utc = now,
+            .event_id = "ar-event-45",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-2",
+        },
+        &archive_item_id,
+        &err))
+        << err;
+    ASSERT_GT(archive_item_id, 0);
+
+    std::int64_t rehydrate_request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "test",
+            .event_id = "ar-event-46",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-3",
+        },
+        &rehydrate_request_id,
+        &err))
+        << err;
+
+    ASSERT_TRUE(archive_db.CompleteRehydrate(
+        {
+            .rehydrate_request_id = rehydrate_request_id,
+            .status = "COMPLETED",
+            .completed_at_utc = now,
+            .entity_mappings = {
+                { .entity_kind = "job", .old_id = "12", .new_id = "1012" },
+            },
+            .event_id = "ar-event-47",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-4",
+        },
+        &err))
+        << err;
+
+    std::int64_t failed_request_id = 0;
+    ASSERT_TRUE(archive_db.RequestRehydrate(
+        {
+            .archive_package_id = archive_package_id,
+            .status = "REQUESTED",
+            .requested_at_utc = now,
+            .target_namespace = "test",
+            .event_id = "ar-event-46b",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-5",
+        },
+        &failed_request_id,
+        &err))
+        << err;
+    ASSERT_TRUE(archive_db.FailRehydrate(
+        {
+            .rehydrate_request_id = failed_request_id,
+            .status = "FAILED",
+            .completed_at_utc = now,
+            .error_text = "simulated failure",
+            .event_id = "ar-event-48",
+            .correlation_id = "ar-corr-1",
+            .causation_id = "ar-cause-6",
+        },
+        &err))
+        << err;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ar_outbox_message;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 5);
+    sqlite3_finalize(st);
+
+    const auto payload_package = archive_db.ResolveArchivePayload(1, "archive_package", archive_package_id);
+    ASSERT_TRUE(payload_package.has_value());
+    EXPECT_EQ(payload_package->archive_package_id, archive_package_id);
+
+    const auto payload_item = archive_db.ResolveArchivePayload(1, "archive_item", archive_item_id);
+    ASSERT_TRUE(payload_item.has_value());
+    EXPECT_EQ(payload_item->archive_item_id, archive_item_id);
 }

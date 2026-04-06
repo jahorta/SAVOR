@@ -22,6 +22,7 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 
 ### AnalysisSeedProbe
 Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteAnalysisDb::CreateSeedProbeSet` -> `AnalysisSeedProbe.SetCreated.v1`
 - `SqliteAnalysisDb::RequestSeedProbeRun` -> `AnalysisSeedProbe.RunRequested.v1`
 - `SqliteAnalysisDb::RecordSeedProbeNeutralSeed` -> `AnalysisSeedProbe.NeutralSeedRecorded.v1`
 - `SqliteAnalysisDb::RecordSeedProbeGridSeed` -> `AnalysisSeedProbe.GridSeedRecorded.v1`
@@ -57,8 +58,12 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 - `SqliteAuthoringDb::SaveTemplate` -> `Authoring.TemplateSaved.v1`
 
 ### Archive
-Deferred write points (schema complete; command services pending):
-- `ar_archive_package`, `ar_archive_item`, `ar_rehydrate_request`, `ar_rehydrate_map` writes should append to `ar_outbox_message` in the same transaction.
+Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteArchiveDb::CreateArchivePackage` -> `Archive.PackageCreated.v1`
+- `SqliteArchiveDb::AddArchiveItem` -> `Archive.PackageIndexed.v1`
+- `SqliteArchiveDb::RequestRehydrate` -> `Archive.RehydrateRequested.v1`
+- `SqliteArchiveDb::CompleteRehydrate` -> `Archive.RehydrateCompleted.v1`
+- `SqliteArchiveDb::FailRehydrate` -> `Archive.RehydrateFailed.v1`
 
 ## Catalog-to-code coverage (48 events)
 
@@ -86,7 +91,7 @@ Deferred write points (schema complete; command services pending):
 | 20 | `AnalysisSpine.StateRefRegistered.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineStateRefRegistered` resolve v1 payloads from `asp_state_ref`. |
 | 21 | `AnalysisSpine.LineageEdgeAdded.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineLineageEdgeAdded` resolve v1 payloads from `asp_lineage_edge`. |
 | 22 | `AnalysisSpine.ArtifactLinked.v1` | Implemented | `ResolveSpinePayload` + `ResolveSpineArtifactLinked` resolve v1 payloads from `asp_artifact_ref`. |
-| 23 | `AnalysisSeedProbe.SetCreated.v1` | Deferred | AnalysisSeedProbe command services pending; no transactional writer yet. |
+| 23 | `AnalysisSeedProbe.SetCreated.v1` | Implemented | `SqliteAnalysisDb::CreateSeedProbeSet` inserts `sp_probe_set` + outbox row atomically (`payload_ref_kind=probe_set`). |
 | 24 | `AnalysisSeedProbe.RunRequested.v1` | Implemented | `SqliteAnalysisDb::RequestSeedProbeRun` inserts `sp_probe_run` + outbox row atomically (`payload_ref_kind=probe_run`). |
 | 25 | `AnalysisSeedProbe.NeutralSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeNeutralSeed` inserts `sp_neutral_seed` + outbox row atomically (`payload_ref_kind=neutral_seed`). |
 | 26 | `AnalysisSeedProbe.GridSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeGridSeed` inserts `sp_grid_seed` + outbox row atomically (`payload_ref_kind=grid_seed`). |
@@ -107,12 +112,12 @@ Deferred write points (schema complete; command services pending):
 | 41 | `Authoring.PredicateSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SavePredicateSpec` inserts `au_predicate_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
 | 42 | `Authoring.SettingsSaved.v1` | Implemented | `SqliteAuthoringDb::SaveExplorerSettings` inserts `au_explorer_settings` + outbox row atomically (`payload_ref_kind=authoring_event`). |
 | 43 | `Authoring.TemplateSaved.v1` | Implemented | `SqliteAuthoringDb::SaveTemplate` inserts `au_template` + outbox row atomically (`payload_ref_kind=authoring_event`). |
-| 44 | `Archive.PackageCreated.v1` | Deferred | Archive command services are stage placeholder; outbox writer pending. |
-| 45 | `Archive.PackageIndexed.v1` | Deferred | Same as #44. |
-| 46 | `Archive.RehydrateRequested.v1` | Deferred | Same as #44. |
-| 47 | `Archive.RehydrateCompleted.v1` | Deferred | Same as #44. |
-| 48 | `Archive.RehydrateFailed.v1` | Deferred | Same as #44. |
+| 44 | `Archive.PackageCreated.v1` | Implemented | `SqliteArchiveDb::CreateArchivePackage` inserts `ar_archive_package` + outbox row atomically (`payload_ref_kind=archive_package`). |
+| 45 | `Archive.PackageIndexed.v1` | Implemented | `SqliteArchiveDb::AddArchiveItem` inserts `ar_archive_item` + outbox row atomically (`payload_ref_kind=archive_item`). |
+| 46 | `Archive.RehydrateRequested.v1` | Implemented | `SqliteArchiveDb::RequestRehydrate` inserts `ar_rehydrate_request` + outbox row atomically (`payload_ref_kind=rehydrate_request`). |
+| 47 | `Archive.RehydrateCompleted.v1` | Implemented | `SqliteArchiveDb::CompleteRehydrate` updates `ar_rehydrate_request`, inserts `ar_rehydrate_map` rows, and appends outbox atomically (`payload_ref_kind=rehydrate_request`). |
+| 48 | `Archive.RehydrateFailed.v1` | Implemented | `SqliteArchiveDb::FailRehydrate` updates `ar_rehydrate_request` with failure metadata + outbox row atomically (`payload_ref_kind=rehydrate_request`). |
 
 ## Next implementation increments
-1. Add transactional command services per non-Execution context and emit one event per domain write point in the same transaction.
-2. Promote this checklist to “all implemented” gate in CI once remaining bounded-context command services exist.
+1. Promote this checklist to “all implemented” gate in CI now that all catalog events have transactional emitters.
+2. Add cross-context integration tests that replay all outbox streams through UIRead projector checkpoints in one pass.
