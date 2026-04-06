@@ -23,6 +23,17 @@ public:
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
     jobs::IJobEventCommandService* JobCommandService() override;
+    retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const override;
+    bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const events::EventEnvelope& envelope) const override;
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(

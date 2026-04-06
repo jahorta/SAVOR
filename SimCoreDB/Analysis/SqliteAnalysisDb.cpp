@@ -1,5 +1,6 @@
 #include "SqliteAnalysisDb.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 
@@ -1822,6 +1823,102 @@ bool SqliteAnalysisDb::MarkOutboxPublishFailure(
     sqlite3_bind_int64(st.st, 1, table_outbox_id);
     sqlite3_bind_text(st.st, 2, last_error.data(), static_cast<int>(last_error.size()), SQLITE_TRANSIENT);
     return sqlite3_step(st.st) == SQLITE_DONE;
+}
+
+retention::OutboxRetentionPreview SqliteAnalysisDb::PreviewOutboxRetention(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy) const {
+    std::int64_t max_outbox_id = 0;
+    Statement st;
+    const auto mode = ResolveOutboxMode(db_);
+    if (mode == OutboxMode::AnalysisSpine) {
+        if (sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM asp_outbox_message;", -1, &st.st, nullptr)
+                == SQLITE_OK
+            && sqlite3_step(st.st) == SQLITE_ROW) {
+            max_outbox_id = sqlite3_column_int64(st.st, 0);
+        }
+    }
+    else if (mode == OutboxMode::SplitSeedProbeBattle) {
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT MAX(v) FROM ("
+                "SELECT COALESCE(MAX(outbox_id),0) AS v FROM sp_outbox_message "
+                "UNION ALL "
+                "SELECT COALESCE(MAX(outbox_id),0) AS v FROM ab_outbox_message"
+                ");",
+                -1,
+                &st.st,
+                nullptr)
+                == SQLITE_OK
+            && sqlite3_step(st.st) == SQLITE_ROW) {
+            max_outbox_id = sqlite3_column_int64(st.st, 0);
+        }
+    }
+    return retention::BuildOutboxRetentionPreview(max_outbox_id, subscriptions, now_utc, policy);
+}
+
+bool SqliteAnalysisDb::PurgeOutboxThroughRetentionFloor(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) {
+    if (rows_deleted_out) *rows_deleted_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (max_rows <= 0) {
+        if (error_out) *error_out = "max_rows must be > 0";
+        return false;
+    }
+
+    const auto preview = PreviewOutboxRetention(subscriptions, now_utc, policy);
+    if (preview.IsPurgeBlocked()) {
+        if (error_out) *error_out = "purge blocked by required paused/error subscriptions";
+        return false;
+    }
+    if (!preview.safe_purge_floor_outbox_id.has_value()) {
+        if (error_out) *error_out = "safe purge floor unavailable";
+        return false;
+    }
+
+    int deleted = 0;
+    const auto mode = ResolveOutboxMode(db_);
+    auto delete_from = [&](const char* table_name, int limit) -> bool {
+        Statement st;
+        std::string sql =
+            "DELETE FROM " + std::string(table_name)
+            + " WHERE outbox_id IN (SELECT outbox_id FROM " + std::string(table_name)
+            + " WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 ORDER BY outbox_id ASC LIMIT ?2);";
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(st.st, 1, preview.safe_purge_floor_outbox_id.value());
+        sqlite3_bind_int(st.st, 2, limit);
+        if (sqlite3_step(st.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        deleted += sqlite3_changes(db_);
+        return true;
+    };
+
+    if (mode == OutboxMode::AnalysisSpine) {
+        if (!delete_from("asp_outbox_message", max_rows)) return false;
+    }
+    else if (mode == OutboxMode::SplitSeedProbeBattle) {
+        const int sp_limit = std::max(1, max_rows / 2);
+        const int ab_limit = std::max(1, max_rows - sp_limit);
+        if (TableExists(db_, "sp_outbox_message") && !delete_from("sp_outbox_message", sp_limit)) return false;
+        if (TableExists(db_, "ab_outbox_message") && !delete_from("ab_outbox_message", ab_limit)) return false;
+    }
+
+    if (rows_deleted_out) *rows_deleted_out = deleted;
+    return true;
 }
 
 std::optional<SeedProbePayloadRecord> SqliteAnalysisDb::ResolveSeedProbePayload(

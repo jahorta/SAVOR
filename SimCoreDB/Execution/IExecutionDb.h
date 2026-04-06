@@ -2,10 +2,14 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "../Common/Events/EventEnvelope.h"
 #include "../Common/Events/EventPayloadViews.h"
+#include "../Common/Retention/OutboxRetention.h"
+#include "../Common/Types/UtcTimestamp.h"
 
 namespace simcore::db::execution::workflow {
 struct IWorkflowOrchestrationCommandService;
@@ -24,6 +28,20 @@ struct IExecutionDb {
     virtual execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() = 0;
     virtual execution::workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() = 0;
     virtual execution::jobs::IJobEventCommandService* JobCommandService() = 0;
+
+
+    virtual retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const = 0;
+
+    virtual bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     // Resolves execution workflow/job payload references to typed v1 view fields.
     virtual std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(

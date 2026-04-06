@@ -120,12 +120,24 @@ For each projector:
 
 Define source outbox retention with subscriber awareness:
 
-1. Compute global safe floor per source outbox:
-   - `safe_floor_outbox_id = MIN(last_outbox_id) across ACTIVE subscriptions for that source`.
-2. Purge/archive only rows strictly older than safe floor and older than retention horizon.
-3. If a subscription is `PAUSED`/`ERROR` beyond threshold:
-   - require operator action (resume/reset/decommission) before advancing purge window.
-4. Document forced-retention override for emergency disk pressure.
+1. Query subscription status directly from `ui_projection_subscription` for a (`source_context`, `source_outbox_table`) stream.
+2. Compute safe floor with a UIRead query helper:
+   - `safe_floor_outbox_id = MIN(last_outbox_id) WHERE status='ACTIVE'`.
+3. Generate a retention preview report per source module (Execution/State/Analysis/Authoring/Archive):
+   - active subscription rows,
+   - lag per subscription (`source_max_outbox_id - last_outbox_id`),
+   - computed safe purge floor.
+4. Enforce purge blocking policy:
+   - if any **required** subscription stays `PAUSED`/`ERROR` beyond threshold, purge/archive helpers must stop and return a block reason.
+5. Purge/archive rows strictly below the safe floor (and still subject to retention horizon/time policy).
+6. Keep forced-retention override as an explicit operator action for emergency disk pressure.
+
+### Operator workflow (actual)
+1. List subscriptions and safe floor from UIRead.
+2. Build source-context retention preview in the owning DB service.
+3. If preview reports blocking required subscriptions, resolve them first (resume/reset/decommission).
+4. Run bounded purge batches using the owning service helper.
+5. Re-run preview until target window is reached.
 
 ---
 

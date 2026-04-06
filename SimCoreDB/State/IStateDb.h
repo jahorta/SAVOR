@@ -8,6 +8,7 @@
 
 #include "../Common/Events/EventEnvelope.h"
 #include "../Common/Events/EventPayloadViews.h"
+#include "../Common/Retention/OutboxRetention.h"
 #include "../Common/Types/UtcTimestamp.h"
 
 namespace simcore::db {
@@ -103,6 +104,19 @@ struct IStateDb {
     virtual bool MarkOutboxPublishFailure(
         std::int64_t outbox_id,
         std::string_view last_error) = 0;
+
+    virtual retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const = 0;
+
+    virtual bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     // Resolves state/artifact event payload references for a specific event version.
     virtual std::optional<ArtifactPayloadRecord> ResolveArtifactPayload(

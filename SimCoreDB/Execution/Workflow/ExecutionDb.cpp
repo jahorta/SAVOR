@@ -102,6 +102,70 @@ jobs::IJobEventCommandService* ExecutionDb::JobCommandService() {
     return job_command_service_.get();
 }
 
+retention::OutboxRetentionPreview ExecutionDb::PreviewOutboxRetention(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy) const {
+    std::int64_t max_outbox_id = 0;
+    Statement st;
+    if (db_ != nullptr
+        && Prepare(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM exec_outbox_message;", &st)
+        && sqlite3_step(st.st) == SQLITE_ROW) {
+        max_outbox_id = sqlite3_column_int64(st.st, 0);
+    }
+    return retention::BuildOutboxRetentionPreview(max_outbox_id, subscriptions, now_utc, policy);
+}
+
+bool ExecutionDb::PurgeOutboxThroughRetentionFloor(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) {
+    if (rows_deleted_out) *rows_deleted_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (max_rows <= 0) {
+        if (error_out) *error_out = "max_rows must be > 0";
+        return false;
+    }
+
+    const auto preview = PreviewOutboxRetention(subscriptions, now_utc, policy);
+    if (preview.IsPurgeBlocked()) {
+        if (error_out) *error_out = "purge blocked by required paused/error subscriptions";
+        return false;
+    }
+    if (!preview.safe_purge_floor_outbox_id.has_value()) {
+        if (error_out) *error_out = "safe purge floor unavailable";
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(
+            db_,
+            "DELETE FROM exec_outbox_message "
+            "WHERE outbox_id IN ("
+            "  SELECT outbox_id FROM exec_outbox_message "
+            "  WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 "
+            "  ORDER BY outbox_id ASC LIMIT ?2"
+            ");",
+            &st)) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, preview.safe_purge_floor_outbox_id.value());
+    sqlite3_bind_int(st.st, 2, max_rows);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (rows_deleted_out) *rows_deleted_out = sqlite3_changes(db_);
+    return true;
+}
+
 std::optional<events::ExecutionWorkflowJobPayloadView> ExecutionDb::ResolveExecutionWorkflowJobPayload(
     const events::EventEnvelope& envelope) const {
     if (!events::ValidateExecutionWorkflowJobPayloadV1(envelope)) {

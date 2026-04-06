@@ -59,6 +59,7 @@ Directory structure:
 - For any source outbox rows considered for purge/archive, enforce Stage 3e subscriber safety floor:
   - only purge rows strictly below `MIN(last_outbox_id)` across active projector subscriptions for that source stream.
   - if any required subscription is paused/error beyond threshold, block purge and require operator action.
+  - use owning-module retention preview helpers to compute lag, active rows, and safe floor before each purge batch.
 
 ---
 
@@ -99,6 +100,16 @@ Provide commands/tools for:
 - full restore execution
 - restore cleanup
 - subscriber-safe purge preview (shows active subscription floors and would-purge ranges)
+
+### Operator runbook alignment (Stage 3e + Stage 4)
+1. Query UIRead subscriptions for the source stream and compute safe floor (`MIN(last_outbox_id)` over `ACTIVE`).
+2. Feed subscription snapshots into the owning service retention preview (Execution/State/Analysis/Authoring/Archive) to get:
+   - active subscriptions,
+   - lag per subscription,
+   - safe purge floor.
+3. If required subscriptions are stalled in `PAUSED`/`ERROR` beyond policy threshold, stop and remediate before purge.
+4. Execute purge in bounded batches through owning service helpers (published rows only, strictly below floor).
+5. Repeat preview + purge loop until archive retention target is reached.
 
 ---
 
