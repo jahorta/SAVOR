@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 #include <chrono>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include "../../Common/Events/OutboxRelay.h"
@@ -10,6 +12,9 @@
 namespace simcore::db::execution::workflow {
 
 namespace {
+
+constexpr std::string_view kExecutionContext = "Execution";
+constexpr std::string_view kExecutionOutboxTable = "exec_outbox_message";
 
 bool Exec(sqlite3* db, const char* sql, std::string* error_out) {
     char* err = nullptr;
@@ -25,21 +30,6 @@ bool Exec(sqlite3* db, const char* sql, std::string* error_out) {
 
 WorkflowProjector::WorkflowProjector(sqlite3* db)
     : db_(db) {
-}
-
-std::int64_t WorkflowProjector::GetCheckpoint(const std::string& projector_name, std::string* error_out) const {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return 0;
-    }
-
-    simcore::db::SqliteUiReadDb ui_read_db(db_);
-    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-    if (!checkpoint.has_value()) {
-        return 0;
-    }
-
-    return checkpoint->last_outbox_id;
 }
 
 bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::string* error_out) {
@@ -228,12 +218,30 @@ bool WorkflowProjector::ProjectFromOutbox(
         return false;
     }
 
-    const auto checkpoint = GetCheckpoint(projector_name, error_out);
+    simcore::db::SqliteUiReadDb ui_read_db(db_);
+    const auto legacy_checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
+
+    simcore::db::UiProjectionSubscription subscription_seed{
+        .projector_name = projector_name,
+        .source_context = std::string(kExecutionContext),
+        .source_outbox_table = std::string(kExecutionOutboxTable),
+        .last_outbox_id = legacy_checkpoint.has_value() ? legacy_checkpoint->last_outbox_id : 0,
+        .last_event_id = legacy_checkpoint.has_value() ? legacy_checkpoint->last_event_id : std::string{},
+        .updated_at_utc = simcore::db::types::UtcNow(),
+        .status = "ACTIVE",
+        .last_error = std::string{},
+    };
+
+    const auto subscription = ui_read_db.GetOrCreateProjectionSubscription(subscription_seed);
+    if (!subscription.has_value()) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
 
     events::OutboxRelay relay({
         .db = db_,
-        .outbox_table = "exec_outbox_message",
-        .context_name = "Execution",
+        .outbox_table = std::string(kExecutionOutboxTable),
+        .context_name = std::string(kExecutionContext),
         .aggregate_kind = "workflow_instance",
         .payload_ref_kind = "workflow_event",
         .max_attempts = max_attempts,
@@ -260,15 +268,68 @@ bool WorkflowProjector::ProjectFromOutbox(
     };
 
     events::OutboxRelayResult relay_result{};
-    if (!relay.RelayBatch(checkpoint, max_batch_size, bindings, &relay_result, error_out)) {
+    if (!relay.RelayBatchFromCursor(subscription->last_outbox_id, max_batch_size, bindings, &relay_result, error_out)) {
+        const auto relay_error = error_out == nullptr ? std::string{} : *error_out;
+        ui_read_db.SetProjectionSubscriptionError(
+            projector_name,
+            std::string(kExecutionContext),
+            std::string(kExecutionOutboxTable),
+            relay_error.empty() ? "relay execution failed" : relay_error,
+            simcore::db::types::UtcNow());
         return false;
     }
 
-    if (relay_result.last_scanned_outbox_id > checkpoint) {
-        simcore::db::SqliteUiReadDb ui_read_db(db_);
+    if (relay_result.failure_count > 0) {
+        const auto failure_text = "relay batch contained " + std::to_string(relay_result.failure_count) + " failing event(s)";
+        if (!ui_read_db.SetProjectionSubscriptionError(
+            projector_name,
+            std::string(kExecutionContext),
+            std::string(kExecutionOutboxTable),
+            failure_text,
+            simcore::db::types::UtcNow())) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        if (error_out) *error_out = failure_text;
+        return false;
+    }
+
+    std::optional<simcore::db::UiProjectionSubscriptionBatchAudit> batch_audit = std::nullopt;
+    if (relay_result.scanned_count > 0) {
+        batch_audit = simcore::db::UiProjectionSubscriptionBatchAudit{
+            .projector_name = projector_name,
+            .source_context = std::string(kExecutionContext),
+            .source_outbox_table = std::string(kExecutionOutboxTable),
+            .from_outbox_id = subscription->last_outbox_id,
+            .to_outbox_id = relay_result.last_scanned_outbox_id,
+            .processed_count = relay_result.published_count,
+            .failed_count = relay_result.failure_count,
+            .recorded_at_utc = simcore::db::types::UtcNow(),
+        };
+    }
+
+    if (!ui_read_db.AdvanceProjectionSubscriptionCursor(
+            projector_name,
+            std::string(kExecutionContext),
+            std::string(kExecutionOutboxTable),
+            relay_result.last_scanned_outbox_id,
+            relay_result.last_scanned_event_id,
+            simcore::db::types::UtcNow(),
+            batch_audit)) {
+        ui_read_db.SetProjectionSubscriptionError(
+            projector_name,
+            std::string(kExecutionContext),
+            std::string(kExecutionOutboxTable),
+            "failed to advance subscription cursor",
+            simcore::db::types::UtcNow());
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (relay_result.last_scanned_outbox_id > subscription->last_outbox_id) {
         const bool upserted = ui_read_db.UpsertProjectionCheckpoint({
             projector_name,
-            std::string{},
+            relay_result.last_scanned_event_id,
             relay_result.last_scanned_outbox_id,
             simcore::db::types::UtcNow(),
         });
