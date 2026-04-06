@@ -31,7 +31,10 @@ public:
 
 private:
     bool RelayWithConfig(
-        const std::string& checkpoint_name,
+        const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table,
+        const std::string& legacy_checkpoint_name,
         const events::OutboxRelayConfig& config,
         const std::vector<events::OutboxRelayDispatchBinding>& bindings,
         int max_batch_size,
