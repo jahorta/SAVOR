@@ -50,6 +50,8 @@ bool ArchiveCatalogProjector::ProjectFromOutbox(const std::string& projector_nam
     return RunProjectorRelay(
         db_,
         projector_name,
+        "Archive",
+        "ar_outbox_message",
         {
             .db = db_,
             .outbox_table = "ar_outbox_message",

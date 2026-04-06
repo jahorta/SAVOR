@@ -66,10 +66,11 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
         { { "AnalysisBattle.TerminalFollowupUpdated.v1", 1 }, project_all },
     };
 
-    const auto battle_checkpoint_name = projector_name + ".analysis_battle";
     if (!RunProjectorRelay(
         db_,
-        battle_checkpoint_name,
+        projector_name,
+        "AnalysisBattle",
+        "ab_outbox_message",
         {
             .db = db_,
             .outbox_table = "ab_outbox_message",
@@ -93,10 +94,11 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
         { { "Execution.JobRestored.v1", 1 }, project_all },
     };
 
-    const auto execution_checkpoint_name = projector_name + ".execution_rollup";
     return RunProjectorRelay(
         db_,
-        execution_checkpoint_name,
+        projector_name,
+        "Execution",
+        "exec_outbox_message",
         {
             .db = db_,
             .outbox_table = "exec_outbox_message",
