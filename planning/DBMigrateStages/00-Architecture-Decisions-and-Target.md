@@ -64,6 +64,17 @@ This document captures the finalized architecture decisions for the database spl
   - unique seed values
 - **Rule:** Seed probe output is durable analysis data, not execution-only log data.
 
+### D8. UI projection consumption model
+- **Decision:** Adopt a **per-projector subscription cursor** model for outbox consumption (pub-sub style), not a single shared consume marker.
+- **Rationale:**
+  - Prevents projector starvation/interference when multiple projectors consume the same source outbox stream.
+  - Preserves bounded-context separation while enabling independent projector deployment/replay.
+  - Improves recoverability by allowing one projector to rewind/replay without impacting others.
+- **Implications:**
+  - Introduce per-projector/per-source cursor tracking and projector health metadata.
+  - Treat source outbox rows as append-only integration logs for subscribers (subscriber progress is tracked outside producer contexts).
+  - Add retention/cleanup policy based on subscriber progress (or explicit TTL + rebuild guarantees).
+
 ---
 
 ## Target Bounded Contexts and Datastores
@@ -86,6 +97,8 @@ This document captures the finalized architecture decisions for the database spl
 - Event-driven integration via transactional outbox in each write context.
 - Outbox/event envelopes must include `event_id`, `event_type`, `event_version`, `context_name`, `correlation_id`, and `causation_id` to support idempotency and cross-context traceability.
 - Idempotent projectors only.
+- Projector progress must be tracked per projector/subscription, not by a single shared outbox-consumed marker.
+- Source outbox streams are authoritative ordered integration logs; subscriber state is managed separately from producer domain writes.
 - No cross-DB foreign keys assumed.
 - Strong auditability: every derivation should have event provenance.
 - Any data required for future reasoning should be in durable analysis tables.
@@ -99,8 +112,9 @@ This document captures the finalized architecture decisions for the database spl
 3. Workflow orchestration transition (codec decomposition + explicit workflow steps + trigger compatibility bridge).
 4. Workflow validation vertical slice (runner integration + dual-path parity + recovery validation).
 5. Outbox + event contracts + projector scaffolding.
-6. Archive/rehydration pipeline for execution data.
-7. UI Read model projections and SoaSimQt2 read cutover.
-8. Validation suite, backfill, and production hardening.
+6. Projector subscription-cursor migration (shared outbox consumer -> per-projector pub-sub cursors).
+7. Archive/rehydration pipeline for execution data.
+8. UI Read model projections and SoaSimQt2 read cutover.
+9. Validation suite, backfill, and production hardening.
 
-See stage documents `01`, `02`, `03b`, `03c`, `03`, `04`, and `05` for concrete tasks.
+See stage documents `01`, `02`, `03b`, `03c`, `03`, `03e`, `04`, and `05` for concrete tasks.

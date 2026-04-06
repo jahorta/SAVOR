@@ -50,12 +50,15 @@ Directory structure:
 5. Store package files in ArchiveStore root.
 6. Write `ar_archive_package` and `ar_archive_item` rows.
 7. Emit `Archive.PackageCreated.v1` and `Archive.PackageIndexed.v1`.
-8. Mark execution rows as archived or purge based on policy.
+8. Mark execution rows as archived or purge based on policy, with subscriber-aware safety checks for any projected outbox streams.
 
 ### Retention Policy v1
 - Eligible if root run is terminal and older than configured threshold.
 - Never archive jobs with active leases.
 - Optional immediate archive for oversized event payload runs.
+- For any source outbox rows considered for purge/archive, enforce Stage 3e subscriber safety floor:
+  - only purge rows strictly below `MIN(last_outbox_id)` across active projector subscriptions for that source stream.
+  - if any required subscription is paused/error beyond threshold, block purge and require operator action.
 
 ---
 
@@ -95,6 +98,7 @@ Provide commands/tools for:
 - rehydrate preview (counts only)
 - full restore execution
 - restore cleanup
+- subscriber-safe purge preview (shows active subscription floors and would-purge ranges)
 
 ---
 
@@ -105,3 +109,4 @@ Provide commands/tools for:
 - Rehydrate no-collision tests.
 - Rehydrate then claim-next-job smoke tests.
 - Roundtrip test: execute -> archive -> purge -> rehydrate -> query jobs/events.
+- Subscriber-safety retention test: purge candidate ranges never exceed active subscription floors.
