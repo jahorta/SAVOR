@@ -47,8 +47,14 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 - `SqliteStateDb::CreateTasVariant` -> `State.TasVariantCreated.v1`
 
 ### Authoring
-Deferred write points (schema complete; command services pending):
-- `au_*_spec`, `au_plan`, `au_predicate_spec`, `au_settings`, `au_template` writes should append to `au_outbox_message` in the same transaction.
+Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteAuthoringDb::SaveSeedProbeSpec` -> `Authoring.SeedProbeSpecSaved.v1`
+- `SqliteAuthoringDb::SaveTasSpec` -> `Authoring.TasSpecSaved.v1`
+- `SqliteAuthoringDb::SaveBattleRunSpec` -> `Authoring.BattleRunSpecSaved.v1`
+- `SqliteAuthoringDb::SavePlan` -> `Authoring.PlanSaved.v1`
+- `SqliteAuthoringDb::SavePredicateSpec` -> `Authoring.PredicateSpecSaved.v1`
+- `SqliteAuthoringDb::SaveExplorerSettings` -> `Authoring.SettingsSaved.v1`
+- `SqliteAuthoringDb::SaveTemplate` -> `Authoring.TemplateSaved.v1`
 
 ### Archive
 Deferred write points (schema complete; command services pending):
@@ -94,13 +100,13 @@ Deferred write points (schema complete; command services pending):
 | 34 | `AnalysisBattle.SelectionPoolCreated.v1` | Implemented | `SqliteAnalysisDb::CreateBattleSelectionPool` inserts `ab_selection_pool` + outbox row atomically (`payload_ref_kind=selection_pool`). |
 | 35 | `AnalysisBattle.SelectionDecisionRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordBattleSelectionDecision` inserts `ab_selection_decision` + outbox row atomically (`payload_ref_kind=selection_decision`). |
 | 36 | `AnalysisBattle.TerminalFollowupUpdated.v1` | Implemented | `SqliteAnalysisDb::UpsertBattleTerminalFollowup` upserts `ab_terminal_followup` + outbox row atomically (`payload_ref_kind=terminal_followup`). |
-| 37 | `Authoring.SeedProbeSpecSaved.v1` | Deferred | Authoring command services are stage placeholder; outbox writer pending. |
-| 38 | `Authoring.TasSpecSaved.v1` | Deferred | Same as #37. |
-| 39 | `Authoring.BattleRunSpecSaved.v1` | Deferred | Same as #37. |
-| 40 | `Authoring.PlanSaved.v1` | Deferred | Same as #37. |
-| 41 | `Authoring.PredicateSpecSaved.v1` | Deferred | Same as #37. |
-| 42 | `Authoring.SettingsSaved.v1` | Deferred | Same as #37. |
-| 43 | `Authoring.TemplateSaved.v1` | Deferred | Same as #37. |
+| 37 | `Authoring.SeedProbeSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveSeedProbeSpec` inserts `au_seed_probe_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
+| 38 | `Authoring.TasSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveTasSpec` inserts `au_tas_spec_base` + `au_tas_spec` and appends outbox atomically (`payload_ref_kind=authoring_event`). |
+| 39 | `Authoring.BattleRunSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SaveBattleRunSpec` inserts `au_battle_run_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
+| 40 | `Authoring.PlanSaved.v1` | Implemented | `SqliteAuthoringDb::SavePlan` inserts `au_battle_plan` + outbox row atomically (`payload_ref_kind=authoring_event`). |
+| 41 | `Authoring.PredicateSpecSaved.v1` | Implemented | `SqliteAuthoringDb::SavePredicateSpec` inserts `au_predicate_spec` + outbox row atomically (`payload_ref_kind=authoring_event`). |
+| 42 | `Authoring.SettingsSaved.v1` | Implemented | `SqliteAuthoringDb::SaveExplorerSettings` inserts `au_explorer_settings` + outbox row atomically (`payload_ref_kind=authoring_event`). |
+| 43 | `Authoring.TemplateSaved.v1` | Implemented | `SqliteAuthoringDb::SaveTemplate` inserts `au_template` + outbox row atomically (`payload_ref_kind=authoring_event`). |
 | 44 | `Archive.PackageCreated.v1` | Deferred | Archive command services are stage placeholder; outbox writer pending. |
 | 45 | `Archive.PackageIndexed.v1` | Deferred | Same as #44. |
 | 46 | `Archive.RehydrateRequested.v1` | Deferred | Same as #44. |
