@@ -46,6 +46,41 @@ public:
         std::int64_t* probe_result_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    bool CreateBattleSet(
+        const CreateBattleSetCommand& command,
+        std::int64_t* battle_set_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool AddBattleSeedCandidate(
+        const AddBattleSeedCandidateCommand& command,
+        std::int64_t* seed_candidate_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CreateBattleTurnWave(
+        const CreateBattleTurnWaveCommand& command,
+        std::int64_t* wave_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordBattleTurnJob(
+        const RecordBattleTurnJobCommand& command,
+        std::int64_t* turn_job_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool CreateBattleSelectionPool(
+        const CreateBattleSelectionPoolCommand& command,
+        std::int64_t* selection_pool_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RecordBattleSelectionDecision(
+        const RecordBattleSelectionDecisionCommand& command,
+        std::int64_t* selection_decision_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool UpsertBattleTerminalFollowup(
+        const UpsertBattleTerminalFollowupCommand& command,
+        std::int64_t* terminal_followup_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

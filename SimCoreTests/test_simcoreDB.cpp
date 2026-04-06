@@ -1,4 +1,5 @@
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -14,6 +15,7 @@
 #include "Common/Events/EventTypeFormat.h"
 #include "Common/Events/OutboxRelay.h"
 #include "SimCoreDB.h"
+#include "Analysis/SqliteAnalysisDb.h"
 #include "Execution/Workflow/ExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
@@ -1830,4 +1832,178 @@ VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, un
     invalid.payload_ref_kind = "workflow_event";
     invalid.payload_ref_id = 801;
     EXPECT_FALSE(execution_db.ResolveExecutionWorkflowJobPayload(invalid).has_value());
+}
+
+TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThirtySix) {
+    using namespace simcore::db;
+    using namespace simcore::db::analysis;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
+
+    SqliteAnalysisDb analysis_db(db_);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleSet(
+        {
+            .name = "stage3d-battle-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = "ACTIVE",
+            .created_at_utc = now,
+            .event_id = "ab-event-30",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-1",
+        },
+        &battle_set_id,
+        &err))
+        << err;
+    ASSERT_GT(battle_set_id, 0);
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db.AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .source_unique_seed_id = 444,
+            .seed_value = 555,
+            .source_kind = "SP_UNIQUE",
+            .candidate_status = "PENDING",
+            .created_at_utc = now,
+            .event_id = "ab-event-31",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-2",
+        },
+        &seed_candidate_id,
+        &err))
+        << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = "RUNNING",
+            .created_at_utc = now,
+            .event_id = "ab-event-32",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-3",
+        },
+        &wave_id,
+        &err))
+        << err;
+
+    std::int64_t turn_job_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 7001,
+            .plan_id = 9001,
+            .fake_attacks_this_turn = 2,
+            .fake_attacks_used_before = 1,
+            .job_state = "COMPLETED",
+            .has_results = true,
+            .battle_outcome = 1,
+            .recorded_at_utc = now,
+            .event_id = "ab-event-33",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-4",
+        },
+        &turn_job_id,
+        &err))
+        << err;
+
+    std::int64_t selection_pool_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleSelectionPool(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .pool_name = "pool-a",
+            .criterion_kind = "MAX_VI",
+            .created_at_utc = now,
+            .event_id = "ab-event-34",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-5",
+        },
+        &selection_pool_id,
+        &err))
+        << err;
+
+    std::int64_t selection_decision_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleSelectionDecision(
+        {
+            .selection_pool_id = selection_pool_id,
+            .turn_job_id = turn_job_id,
+            .decision_kind = "WINNER",
+            .decision_reason = std::string("best vi"),
+            .created_at_utc = now,
+            .event_id = "ab-event-35",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-6",
+        },
+        &selection_decision_id,
+        &err))
+        << err;
+
+    std::int64_t terminal_followup_id = 0;
+    ASSERT_TRUE(analysis_db.UpsertBattleTerminalFollowup(
+        {
+            .turn_job_id = turn_job_id,
+            .is_victory = true,
+            .manual_followup_status = "RECORDED",
+            .recorded_dtm_artifact_id = 777,
+            .note = std::string("stage3d"),
+            .updated_at_utc = now,
+            .event_id = "ab-event-36",
+            .correlation_id = "ab-corr-1",
+            .causation_id = "ab-cause-7",
+        },
+        &terminal_followup_id,
+        &err))
+        << err;
+    EXPECT_GT(terminal_followup_id, 0);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ab_outbox_message;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ab_outbox_message WHERE context_name='AnalysisBattle';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+
+    const auto payload_30 = analysis_db.ResolveBattlePayload(1, "battle_set", battle_set_id);
+    ASSERT_TRUE(payload_30.has_value());
+    EXPECT_EQ(payload_30->battle_set_id, battle_set_id);
+
+    const auto payload_31 = analysis_db.ResolveBattlePayload(1, "seed_candidate", seed_candidate_id);
+    ASSERT_TRUE(payload_31.has_value());
+    EXPECT_EQ(payload_31->battle_set_id, battle_set_id);
+    EXPECT_EQ(payload_31->seed_candidate_id, seed_candidate_id);
+
+    const auto payload_32 = analysis_db.ResolveBattlePayload(1, "turn_wave", wave_id);
+    ASSERT_TRUE(payload_32.has_value());
+    EXPECT_EQ(payload_32->wave_id, wave_id);
+
+    const auto payload_33 = analysis_db.ResolveBattlePayload(1, "turn_job", turn_job_id);
+    ASSERT_TRUE(payload_33.has_value());
+    EXPECT_EQ(payload_33->turn_job_id, turn_job_id);
+
+    const auto payload_34 = analysis_db.ResolveBattlePayload(1, "selection_pool", selection_pool_id);
+    ASSERT_TRUE(payload_34.has_value());
+    EXPECT_EQ(payload_34->selection_pool_id, selection_pool_id);
+
+    const auto payload_35 = analysis_db.ResolveBattlePayload(1, "selection_decision", selection_decision_id);
+    ASSERT_TRUE(payload_35.has_value());
+    EXPECT_EQ(payload_35->selection_decision_id, selection_decision_id);
+
+    const auto payload_36 = analysis_db.ResolveBattlePayload(1, "terminal_followup", terminal_followup_id);
+    ASSERT_TRUE(payload_36.has_value());
+    EXPECT_EQ(payload_36->terminal_followup_id, terminal_followup_id);
 }

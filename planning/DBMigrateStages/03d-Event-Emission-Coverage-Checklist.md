@@ -30,8 +30,14 @@ Implemented write points emitting outbox rows inside the same DB transaction:
 - `SqliteAnalysisDb::CompleteSeedProbeRun` -> `AnalysisSeedProbe.RunCompleted.v1`
 
 ### AnalysisBattle
-Deferred write points (schema complete; command services pending):
-- `ab_battle_set`, `ab_seed_candidate`, `ab_turn_wave`, `ab_turn_job`, `ab_selection_pool`, `ab_selection_decision`, `ab_terminal_followup` writes should append to `ab_outbox_message` in the same transaction.
+Implemented write points emitting outbox rows inside the same DB transaction:
+- `SqliteAnalysisDb::CreateBattleSet` -> `AnalysisBattle.BattleSetCreated.v1`
+- `SqliteAnalysisDb::AddBattleSeedCandidate` -> `AnalysisBattle.SeedCandidateAdded.v1`
+- `SqliteAnalysisDb::CreateBattleTurnWave` -> `AnalysisBattle.TurnWaveCreated.v1`
+- `SqliteAnalysisDb::RecordBattleTurnJob` -> `AnalysisBattle.TurnJobRecorded.v1`
+- `SqliteAnalysisDb::CreateBattleSelectionPool` -> `AnalysisBattle.SelectionPoolCreated.v1`
+- `SqliteAnalysisDb::RecordBattleSelectionDecision` -> `AnalysisBattle.SelectionDecisionRecorded.v1`
+- `SqliteAnalysisDb::UpsertBattleTerminalFollowup` -> `AnalysisBattle.TerminalFollowupUpdated.v1`
 
 ### State
 Implemented write points emitting outbox rows inside the same DB transaction:
@@ -81,13 +87,13 @@ Deferred write points (schema complete; command services pending):
 | 27 | `AnalysisSeedProbe.UniqueSeedRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeUniqueSeed` inserts `sp_unique_seed` + outbox row atomically (`payload_ref_kind=unique_seed`). |
 | 28 | `AnalysisSeedProbe.EncounterProjectionRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordSeedProbeEncounterProjection` inserts `sp_encounter_projection` + outbox row atomically (`payload_ref_kind=encounter_projection`). |
 | 29 | `AnalysisSeedProbe.RunCompleted.v1` | Implemented | `SqliteAnalysisDb::CompleteSeedProbeRun` inserts `sp_probe_result`, finalizes run status, and appends outbox atomically (`payload_ref_kind=probe_result`). |
-| 30 | `AnalysisBattle.BattleSetCreated.v1` | Deferred | AnalysisBattle command services pending; no transactional writer yet. |
-| 31 | `AnalysisBattle.SeedCandidateAdded.v1` | Deferred | Same as #30. |
-| 32 | `AnalysisBattle.TurnWaveCreated.v1` | Deferred | Same as #30. |
-| 33 | `AnalysisBattle.TurnJobRecorded.v1` | Deferred | Same as #30. |
-| 34 | `AnalysisBattle.SelectionPoolCreated.v1` | Deferred | Same as #30. |
-| 35 | `AnalysisBattle.SelectionDecisionRecorded.v1` | Deferred | Same as #30. |
-| 36 | `AnalysisBattle.TerminalFollowupUpdated.v1` | Deferred | Same as #30. |
+| 30 | `AnalysisBattle.BattleSetCreated.v1` | Implemented | `SqliteAnalysisDb::CreateBattleSet` inserts `ab_battle_set` + outbox row atomically (`payload_ref_kind=battle_set`). |
+| 31 | `AnalysisBattle.SeedCandidateAdded.v1` | Implemented | `SqliteAnalysisDb::AddBattleSeedCandidate` inserts `ab_seed_candidate` + outbox row atomically (`payload_ref_kind=seed_candidate`). |
+| 32 | `AnalysisBattle.TurnWaveCreated.v1` | Implemented | `SqliteAnalysisDb::CreateBattleTurnWave` inserts `ab_turn_wave` + outbox row atomically (`payload_ref_kind=turn_wave`). |
+| 33 | `AnalysisBattle.TurnJobRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordBattleTurnJob` inserts `ab_turn_job` + outbox row atomically (`payload_ref_kind=turn_job`). |
+| 34 | `AnalysisBattle.SelectionPoolCreated.v1` | Implemented | `SqliteAnalysisDb::CreateBattleSelectionPool` inserts `ab_selection_pool` + outbox row atomically (`payload_ref_kind=selection_pool`). |
+| 35 | `AnalysisBattle.SelectionDecisionRecorded.v1` | Implemented | `SqliteAnalysisDb::RecordBattleSelectionDecision` inserts `ab_selection_decision` + outbox row atomically (`payload_ref_kind=selection_decision`). |
+| 36 | `AnalysisBattle.TerminalFollowupUpdated.v1` | Implemented | `SqliteAnalysisDb::UpsertBattleTerminalFollowup` upserts `ab_terminal_followup` + outbox row atomically (`payload_ref_kind=terminal_followup`). |
 | 37 | `Authoring.SeedProbeSpecSaved.v1` | Deferred | Authoring command services are stage placeholder; outbox writer pending. |
 | 38 | `Authoring.TasSpecSaved.v1` | Deferred | Same as #37. |
 | 39 | `Authoring.BattleRunSpecSaved.v1` | Deferred | Same as #37. |
