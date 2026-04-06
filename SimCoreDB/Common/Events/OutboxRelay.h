@@ -33,6 +33,7 @@ struct OutboxRelayConfig {
 
 struct OutboxRelayResult {
     std::int64_t last_scanned_outbox_id = 0;
+    std::string last_scanned_event_id;
     int scanned_count = 0;
     int published_count = 0;
     int failure_count = 0;

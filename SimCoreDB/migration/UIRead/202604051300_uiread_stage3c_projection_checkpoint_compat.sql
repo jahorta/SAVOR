@@ -34,4 +34,15 @@ WHERE NOT EXISTS (
 
 DROP TABLE IF EXISTS ui_projector_checkpoint;
 
+CREATE TABLE IF NOT EXISTS ui_projection_handled_event (
+    projector_name TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    last_outbox_id INTEGER NOT NULL,
+    handled_at_utc INTEGER NOT NULL,
+    PRIMARY KEY (projector_name, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ui_projection_handled_event_outbox
+    ON ui_projection_handled_event(projector_name, last_outbox_id);
+
 COMMIT;

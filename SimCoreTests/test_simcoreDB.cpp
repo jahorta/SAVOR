@@ -27,6 +27,7 @@
 #include "Execution/Workflow/WorkflowParityStore.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
+#include "UIRead/Projectors/ProjectorContract.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowCoordinatorBridge.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
@@ -1242,6 +1243,69 @@ VALUES(
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int64(st, 0), kOccurredAtUtcEpochMillis);
     EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_INTEGER);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3cProjectorContractSkipsDuplicateEventIdsAndAdvancesCheckpoint) {
+    using namespace simcore::db::events;
+    using namespace simcore::db::migrations;
+    using namespace simcore::db::uiread::projectors;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_outbox_message(
+    outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id
+)
+VALUES(
+    7001,'evt-projector-contract-dedup','Execution.JobQueued.v1',1,'Execution','job','42',unixepoch()*1000,'job',42
+);
+INSERT INTO ui_projection_handled_event(projector_name,event_id,last_outbox_id,handled_at_utc)
+VALUES('ProjectorContract.exec','evt-projector-contract-dedup',6999,unixepoch()*1000);
+)SQL"));
+
+    int handler_calls = 0;
+    std::vector<OutboxRelayDispatchBinding> bindings;
+    bindings.push_back(OutboxRelayDispatchBinding{
+        .key = { .event_type = "Execution.JobQueued.v1", .event_version = 1 },
+        .handler = [&handler_calls](const EventEnvelope&, std::string*) {
+            handler_calls += 1;
+            return true;
+        },
+    });
+
+    ASSERT_TRUE(RunProjectorRelay(
+        db_,
+        "ProjectorContract.exec",
+        {
+            .db = db_,
+            .outbox_table = "exec_outbox_message",
+            .context_name = "Execution",
+            .aggregate_kind = "",
+            .payload_ref_kind = "",
+            .max_attempts = 5,
+        },
+        bindings,
+        100,
+        &err))
+        << err;
+
+    EXPECT_EQ(handler_calls, 0);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COALESCE(last_event_id, ''), last_outbox_id FROM ui_projection_checkpoint WHERE projector_name='ProjectorContract.exec';",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "evt-projector-contract-dedup");
+    EXPECT_EQ(sqlite3_column_int64(st, 1), 7001);
     sqlite3_finalize(st);
 }
 

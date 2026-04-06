@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS ui_archive_catalog (
     checksum_status TEXT NOT NULL
 );
 
+
+CREATE TABLE IF NOT EXISTS ui_projection_handled_event (
+    projector_name TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    last_outbox_id INTEGER NOT NULL,
+    handled_at_utc INTEGER NOT NULL,
+    PRIMARY KEY (projector_name, event_id)
+);
+
 CREATE TABLE IF NOT EXISTS ui_projection_checkpoint (
     projector_name TEXT PRIMARY KEY,
     last_event_id TEXT NULL,
@@ -156,5 +165,8 @@ CREATE INDEX IF NOT EXISTS ix_ui_battle_followup_status
 
 CREATE INDEX IF NOT EXISTS ix_ui_projection_checkpoint_outbox
     ON ui_projection_checkpoint(last_outbox_id);
+
+CREATE INDEX IF NOT EXISTS ix_ui_projection_handled_event_outbox
+    ON ui_projection_handled_event(projector_name, last_outbox_id);
 
 COMMIT;

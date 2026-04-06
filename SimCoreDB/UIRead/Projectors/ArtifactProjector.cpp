@@ -1,23 +1,11 @@
 #include "ArtifactProjector.h"
 
-#include "../../Common/Events/OutboxRelay.h"
-#include "../SqliteUiReadDb.h"
+#include "ProjectorContract.h"
 
 namespace simcore::db::uiread::projectors {
 
 ArtifactProjector::ArtifactProjector(sqlite3* db)
     : db_(db) {
-}
-
-std::int64_t ArtifactProjector::GetCheckpoint(const std::string& projector_name, std::string* error_out) const {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return 0;
-    }
-
-    simcore::db::SqliteUiReadDb ui_read_db(db_);
-    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-    return checkpoint.has_value() ? checkpoint->last_outbox_id : 0;
 }
 
 bool ArtifactProjector::ProjectAll(std::string* error_out) {
@@ -41,29 +29,9 @@ bool ArtifactProjector::ProjectAll(std::string* error_out) {
 }
 
 bool ArtifactProjector::ProjectFromOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out, int max_attempts) {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
-    if (max_batch_size <= 0) {
-        if (error_out) *error_out = "max_batch_size must be > 0";
-        return false;
-    }
-    if (max_attempts <= 0) {
-        if (error_out) *error_out = "max_attempts must be > 0";
-        return false;
-    }
-
-    const auto checkpoint = GetCheckpoint(projector_name, error_out);
-
-    events::OutboxRelay relay({
-        .db = db_,
-        .outbox_table = "state_outbox_message",
-        .context_name = "State",
-        .aggregate_kind = "artifact",
-        .payload_ref_kind = "artifact",
-        .max_attempts = max_attempts,
-    });
 
     const auto project_all = [this](const events::EventEnvelope&, std::string* handler_error) {
         return ProjectAll(handler_error);
@@ -73,25 +41,20 @@ bool ArtifactProjector::ProjectFromOutbox(const std::string& projector_name, int
         { { "State.ArtifactStored.v1", 1 }, project_all },
     };
 
-    events::OutboxRelayResult relay_result{};
-    if (!relay.RelayBatch(checkpoint, max_batch_size, bindings, &relay_result, error_out)) {
-        return false;
-    }
-
-    if (relay_result.last_scanned_outbox_id > checkpoint) {
-        simcore::db::SqliteUiReadDb ui_read_db(db_);
-        if (!ui_read_db.UpsertProjectionCheckpoint({
-            projector_name,
-            std::string{},
-            relay_result.last_scanned_outbox_id,
-            simcore::db::types::UtcNow(),
-        })) {
-            if (error_out) *error_out = sqlite3_errmsg(db_);
-            return false;
-        }
-    }
-
-    return true;
+    return RunProjectorRelay(
+        db_,
+        projector_name,
+        {
+            .db = db_,
+            .outbox_table = "state_outbox_message",
+            .context_name = "State",
+            .aggregate_kind = "artifact",
+            .payload_ref_kind = "artifact",
+            .max_attempts = max_attempts,
+        },
+        bindings,
+        max_batch_size,
+        error_out);
 }
 
 } // namespace simcore::db::uiread::projectors
