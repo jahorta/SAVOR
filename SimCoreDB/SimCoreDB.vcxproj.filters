@@ -7,6 +7,7 @@
   <ItemGroup>
     <ClInclude Include="Archive\ArchivePackageService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Archive\RehydrateExecutor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Archive\SqliteArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h"><Filter>Header Files</Filter></ClInclude>
@@ -57,6 +58,7 @@
   <ItemGroup>
     <ClCompile Include="Archive\ArchivePackageService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Archive\SqliteArchiveDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Archive\RehydrateExecutor.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>

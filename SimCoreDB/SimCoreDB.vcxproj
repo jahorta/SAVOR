@@ -159,6 +159,7 @@
   <ItemGroup>
     <ClInclude Include="Archive\ArchivePackageService.h" />
     <ClInclude Include="Archive\IArchiveDb.h" />
+    <ClInclude Include="Archive\RehydrateExecutor.h" />
     <ClInclude Include="Archive\SqliteArchiveDb.h" />
     <ClInclude Include="Analysis\IAnalysisDb.h" />
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
@@ -209,6 +210,7 @@
   <ItemGroup>
     <ClCompile Include="Archive\ArchivePackageService.cpp" />
     <ClCompile Include="Archive\SqliteArchiveDb.cpp" />
+    <ClCompile Include="Archive\RehydrateExecutor.cpp" />
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
