@@ -9,6 +9,7 @@
 #include "../Common/Events/EventEnvelope.h"
 #include "../Common/Events/EventPayloadViews.h"
 #include "../Common/Types/UtcTimestamp.h"
+#include "../Common/Retention/OutboxRetention.h"
 
 namespace simcore::db {
 
@@ -287,6 +288,19 @@ struct IAnalysisDb {
     virtual bool MarkOutboxPublishFailure(
         std::int64_t outbox_id,
         std::string_view last_error) = 0;
+
+    virtual retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const = 0;
+
+    virtual bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     // Seed-probe family payload resolver.
     virtual std::optional<SeedProbePayloadRecord> ResolveSeedProbePayload(

@@ -18,6 +18,12 @@ public:
         const std::string& projector_name,
         const std::string& source_context,
         const std::string& source_outbox_table) const override;
+    std::vector<UiProjectionSubscription> ListProjectionSubscriptions(
+        const std::string& source_context,
+        const std::string& source_outbox_table) const override;
+    std::optional<std::int64_t> ComputeSafeFloorOutboxId(
+        const std::string& source_context,
+        const std::string& source_outbox_table) const override;
     std::optional<UiProjectionSubscription> GetOrCreateProjectionSubscription(
         const UiProjectionSubscription& subscription) override;
     bool AdvanceProjectionSubscriptionCursor(

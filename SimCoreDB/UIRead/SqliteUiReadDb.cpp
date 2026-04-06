@@ -173,6 +173,90 @@ std::optional<UiProjectionSubscription> SqliteUiReadDb::GetProjectionSubscriptio
     return ReadSubscription(db_, projector_name, source_context, source_outbox_table);
 }
 
+std::vector<UiProjectionSubscription> SqliteUiReadDb::ListProjectionSubscriptions(
+    const std::string& source_context,
+    const std::string& source_outbox_table) const {
+    std::vector<UiProjectionSubscription> subscriptions;
+    if (source_context.empty() || source_outbox_table.empty()) {
+        return subscriptions;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT projector_name, source_context, source_outbox_table, "
+        "COALESCE(last_outbox_id, 0), COALESCE(last_event_id, ''), updated_at_utc, "
+        "COALESCE(status, 'ACTIVE'), COALESCE(last_error, '') "
+        "FROM ui_projection_subscription "
+        "WHERE source_context=?1 AND source_outbox_table=?2 "
+        "ORDER BY projector_name ASC;";
+
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return subscriptions;
+    }
+    sqlite3_bind_text(st, 1, source_context.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, source_outbox_table.c_str(), -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        UiProjectionSubscription subscription{};
+        const auto* projector_name_text = sqlite3_column_text(st, 0);
+        const auto* source_context_text = sqlite3_column_text(st, 1);
+        const auto* source_outbox_table_text = sqlite3_column_text(st, 2);
+        const auto* last_event_id_text = sqlite3_column_text(st, 4);
+        const auto* status_text = sqlite3_column_text(st, 6);
+        const auto* last_error_text = sqlite3_column_text(st, 7);
+        subscription.projector_name = projector_name_text == nullptr
+            ? std::string{}
+            : reinterpret_cast<const char*>(projector_name_text);
+        subscription.source_context = source_context_text == nullptr
+            ? std::string{}
+            : reinterpret_cast<const char*>(source_context_text);
+        subscription.source_outbox_table = source_outbox_table_text == nullptr
+            ? std::string{}
+            : reinterpret_cast<const char*>(source_outbox_table_text);
+        subscription.last_outbox_id = sqlite3_column_int64(st, 3);
+        subscription.last_event_id = last_event_id_text == nullptr
+            ? std::string{}
+            : reinterpret_cast<const char*>(last_event_id_text);
+        subscription.updated_at_utc = FromEpochMillis(sqlite3_column_int64(st, 5));
+        subscription.status = status_text == nullptr
+            ? std::string{ "ACTIVE" }
+            : reinterpret_cast<const char*>(status_text);
+        subscription.last_error = last_error_text == nullptr
+            ? std::string{}
+            : reinterpret_cast<const char*>(last_error_text);
+        subscriptions.push_back(std::move(subscription));
+    }
+
+    sqlite3_finalize(st);
+    return subscriptions;
+}
+
+std::optional<std::int64_t> SqliteUiReadDb::ComputeSafeFloorOutboxId(
+    const std::string& source_context,
+    const std::string& source_outbox_table) const {
+    if (source_context.empty() || source_outbox_table.empty()) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT MIN(last_outbox_id) "
+        "FROM ui_projection_subscription "
+        "WHERE source_context=?1 AND source_outbox_table=?2 AND status='ACTIVE';";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_text(st, 1, source_context.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, source_outbox_table.c_str(), -1, SQLITE_TRANSIENT);
+    std::optional<std::int64_t> safe_floor;
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
+        safe_floor = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    return safe_floor;
+}
+
 std::optional<UiProjectionSubscription> SqliteUiReadDb::GetOrCreateProjectionSubscription(
     const UiProjectionSubscription& subscription) {
     if (!IsSubscriptionKeyValid(

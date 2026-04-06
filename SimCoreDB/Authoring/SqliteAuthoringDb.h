@@ -57,6 +57,17 @@ public:
     bool MarkOutboxPublishFailure(
         std::int64_t outbox_id,
         std::string_view last_error) override;
+    retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const override;
+    bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) override;
 
     std::optional<AuthoringPayloadRecord> ResolveAuthoringPayload(
         const events::EventEnvelope& envelope) const override;

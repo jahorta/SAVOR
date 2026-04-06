@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "../Common/Types/UtcTimestamp.h"
 
@@ -51,6 +52,16 @@ struct IUiReadDb {
     // Gets a subscription row by exact composite key.
     virtual std::optional<UiProjectionSubscription> GetProjectionSubscription(
         const std::string& projector_name,
+        const std::string& source_context,
+        const std::string& source_outbox_table) const = 0;
+
+    // Lists subscriptions for a source stream across all projectors.
+    virtual std::vector<UiProjectionSubscription> ListProjectionSubscriptions(
+        const std::string& source_context,
+        const std::string& source_outbox_table) const = 0;
+
+    // Returns MIN(last_outbox_id) for ACTIVE subscriptions on a source stream.
+    virtual std::optional<std::int64_t> ComputeSafeFloorOutboxId(
         const std::string& source_context,
         const std::string& source_outbox_table) const = 0;
 

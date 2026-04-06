@@ -638,6 +638,77 @@ bool SqliteStateDb::MarkOutboxPublishFailure(
     return sqlite3_changes(db_) > 0;
 }
 
+retention::OutboxRetentionPreview SqliteStateDb::PreviewOutboxRetention(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy) const {
+    std::int64_t max_outbox_id = 0;
+    Statement st;
+    if (db_ != nullptr
+        && sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM state_outbox_message;", -1, &st.st, nullptr)
+            == SQLITE_OK
+        && sqlite3_step(st.st) == SQLITE_ROW) {
+        max_outbox_id = sqlite3_column_int64(st.st, 0);
+    }
+
+    return retention::BuildOutboxRetentionPreview(max_outbox_id, subscriptions, now_utc, policy);
+}
+
+bool SqliteStateDb::PurgeOutboxThroughRetentionFloor(
+    const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+    types::UtcTimePoint now_utc,
+    const retention::OutboxRetentionPolicy& policy,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) {
+    if (rows_deleted_out) *rows_deleted_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (max_rows <= 0) {
+        if (error_out) *error_out = "max_rows must be > 0";
+        return false;
+    }
+
+    const auto preview = PreviewOutboxRetention(subscriptions, now_utc, policy);
+    if (preview.IsPurgeBlocked()) {
+        if (error_out) *error_out = "purge blocked by required paused/error subscriptions";
+        return false;
+    }
+    if (!preview.safe_purge_floor_outbox_id.has_value()) {
+        if (error_out) *error_out = "safe purge floor unavailable";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "DELETE FROM state_outbox_message "
+            "WHERE outbox_id IN ("
+            "  SELECT outbox_id FROM state_outbox_message "
+            "  WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 "
+            "  ORDER BY outbox_id ASC LIMIT ?2"
+            ");",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(st.st, 1, preview.safe_purge_floor_outbox_id.value());
+    sqlite3_bind_int(st.st, 2, max_rows);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (rows_deleted_out) *rows_deleted_out = sqlite3_changes(db_);
+    return true;
+}
+
 std::optional<ArtifactPayloadRecord> SqliteStateDb::ResolveArtifactPayload(const events::EventEnvelope& envelope) const {
     if (!events::ValidateV1EnvelopeBasics(envelope)) {
         return std::nullopt;
