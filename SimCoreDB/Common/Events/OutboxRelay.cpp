@@ -122,6 +122,37 @@ bool OutboxRelay::RelayBatch(
     const std::vector<OutboxRelayDispatchBinding>& bindings,
     OutboxRelayResult* result_out,
     std::string* error_out) const {
+    return RelayBatchInternal(
+        RelayMode::ProducerOutbox,
+        after_outbox_id,
+        max_batch_size,
+        bindings,
+        result_out,
+        error_out);
+}
+
+bool OutboxRelay::RelayBatchFromCursor(
+    std::int64_t cursor_outbox_id,
+    int max_batch_size,
+    const std::vector<OutboxRelayDispatchBinding>& bindings,
+    OutboxRelayResult* result_out,
+    std::string* error_out) const {
+    return RelayBatchInternal(
+        RelayMode::SubscriptionCursor,
+        cursor_outbox_id,
+        max_batch_size,
+        bindings,
+        result_out,
+        error_out);
+}
+
+bool OutboxRelay::RelayBatchInternal(
+    RelayMode mode,
+    std::int64_t after_outbox_id,
+    int max_batch_size,
+    const std::vector<OutboxRelayDispatchBinding>& bindings,
+    OutboxRelayResult* result_out,
+    std::string* error_out) const {
     if (config_.db == nullptr) {
         if (error_out) *error_out = "OutboxRelay: db is required";
         return false;
@@ -144,11 +175,14 @@ bool OutboxRelay::RelayBatch(
         "correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,attempt_count "
         "FROM " + config_.outbox_table + " "
         "WHERE outbox_id > ?1 "
-        "AND published_at_utc IS NULL "
-        "AND attempt_count < ?2 "
-        "AND context_name=?3 ";
+        "AND context_name=?2 ";
 
-    int next_param_index = 4;
+    int next_param_index = 3;
+    if (mode == RelayMode::ProducerOutbox) {
+        sql += "AND published_at_utc IS NULL "
+               "AND attempt_count < ?3 ";
+        next_param_index = 4;
+    }
     if (!config_.aggregate_kind.empty()) {
         sql += "AND aggregate_kind=?" + std::to_string(next_param_index) + " ";
         next_param_index += 1;
@@ -167,10 +201,12 @@ bool OutboxRelay::RelayBatch(
     }
 
     sqlite3_bind_int64(st.st, 1, after_outbox_id);
-    sqlite3_bind_int(st.st, 2, std::max(config_.max_attempts, 1));
-    sqlite3_bind_text(st.st, 3, config_.context_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, config_.context_name.c_str(), -1, SQLITE_TRANSIENT);
+    if (mode == RelayMode::ProducerOutbox) {
+        sqlite3_bind_int(st.st, 3, std::max(config_.max_attempts, 1));
+    }
 
-    int next_bind_index = 4;
+    int next_bind_index = mode == RelayMode::ProducerOutbox ? 4 : 3;
     if (!config_.aggregate_kind.empty()) {
         sqlite3_bind_text(st.st, next_bind_index, config_.aggregate_kind.c_str(), -1, SQLITE_TRANSIENT);
         next_bind_index += 1;
@@ -218,6 +254,11 @@ bool OutboxRelay::RelayBatch(
 
         std::string handler_error;
         if (!ValidateEventPayloadRequiredFieldsV1(envelope, &handler_error)) {
+            if (mode == RelayMode::SubscriptionCursor) {
+                result.failure_count += 1;
+                continue;
+            }
+
             bool dead_lettered = false;
             if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
                 return false;
@@ -233,8 +274,10 @@ bool OutboxRelay::RelayBatch(
         auto handler = ResolveHandler(envelope.event_type, envelope.event_version, bindings);
         const bool handled = handler && handler(envelope, &handler_error);
         if (handled) {
-            if (!MarkPublished(outbox_id, error_out)) {
-                return false;
+            if (mode == RelayMode::ProducerOutbox) {
+                if (!MarkPublished(outbox_id, error_out)) {
+                    return false;
+                }
             }
             result.published_count += 1;
             continue;
@@ -246,14 +289,15 @@ bool OutboxRelay::RelayBatch(
             handler_error = "projector handler returned false";
         }
 
-        bool dead_lettered = false;
-        if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
-            return false;
-        }
-
         result.failure_count += 1;
-        if (dead_lettered) {
-            result.dead_lettered_count += 1;
+        if (mode == RelayMode::ProducerOutbox) {
+            bool dead_lettered = false;
+            if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
+                return false;
+            }
+            if (dead_lettered) {
+                result.dead_lettered_count += 1;
+            }
         }
     }
 
