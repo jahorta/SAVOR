@@ -516,6 +516,85 @@ SqliteAnalysisDb::SqliteAnalysisDb(sqlite3* db)
     , spine_row_resolver_(db_) {
 }
 
+bool SqliteAnalysisDb::CreateSeedProbeSet(
+    const CreateSeedProbeSetCommand& command,
+    std::int64_t* probe_set_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.name.empty()
+        || command.probe_flavor.empty()
+        || command.breakpoint_policy_name.empty()
+        || command.segment_source_kind.empty()
+        || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    if (!BeginImmediate(db_, error_out)) {
+        return false;
+    }
+
+    Statement insert_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO sp_probe_set(name,probe_flavor,breakpoint_policy_name,dungeon_segment_file_num,dungeon_segment_file_letter,dungeon_segment_code,segment_source_kind,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
+            -1,
+            &insert_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_text(insert_set.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_set.st, 2, command.probe_flavor.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_set.st, 3, command.breakpoint_policy_name.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.dungeon_segment_file_num.has_value()) sqlite3_bind_int64(insert_set.st, 4, command.dungeon_segment_file_num.value());
+    else sqlite3_bind_null(insert_set.st, 4);
+    if (command.dungeon_segment_file_letter.has_value()) sqlite3_bind_text(insert_set.st, 5, command.dungeon_segment_file_letter->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_set.st, 5);
+    if (command.dungeon_segment_code.has_value()) sqlite3_bind_text(insert_set.st, 6, command.dungeon_segment_code->c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(insert_set.st, 6);
+    sqlite3_bind_text(insert_set.st, 7, command.segment_source_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_set.st, 8, command.created_at_utc.time_since_epoch().count());
+    if (!StepDone(db_, insert_set.st, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    const auto probe_set_id = sqlite3_last_insert_rowid(db_);
+    if (!InsertSeedProbeOutboxEvent(
+            db_,
+            command.event_id,
+            "AnalysisSeedProbe.SetCreated.v1",
+            "probe_set",
+            std::to_string(probe_set_id),
+            command.correlation_id,
+            command.causation_id,
+            command.created_at_utc.time_since_epoch().count(),
+            "probe_set",
+            probe_set_id,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    if (probe_set_id_out) {
+        *probe_set_id_out = probe_set_id;
+    }
+    return true;
+}
+
 bool SqliteAnalysisDb::RequestSeedProbeRun(
     const RequestSeedProbeRunCommand& command,
     std::int64_t* probe_run_id_out,

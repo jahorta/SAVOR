@@ -16,6 +16,20 @@ using SeedProbePayloadRecord = events::AnalysisSeedProbePayloadView;
 using BattlePayloadRecord = events::AnalysisBattlePayloadView;
 using SpinePayloadRecord = events::AnalysisSpinePayloadView;
 
+struct CreateSeedProbeSetCommand {
+    std::string name;
+    std::string probe_flavor;
+    std::string breakpoint_policy_name;
+    std::optional<std::int64_t> dungeon_segment_file_num;
+    std::optional<std::string> dungeon_segment_file_letter;
+    std::optional<std::string> dungeon_segment_code;
+    std::string segment_source_kind;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
 struct RequestSeedProbeRunCommand {
     std::int64_t probe_set_id = 0;
     std::int64_t entry_savestate_id = 0;
@@ -191,6 +205,11 @@ struct UpsertBattleTerminalFollowupCommand {
 
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
+
+    virtual bool CreateSeedProbeSet(
+        const CreateSeedProbeSetCommand& command,
+        std::int64_t* probe_set_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     virtual bool RequestSeedProbeRun(
         const RequestSeedProbeRunCommand& command,
