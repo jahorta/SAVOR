@@ -21,6 +21,7 @@ enum class JobOutcomeStatus {
 };
 
 struct EventEnvelope {
+    std::int64_t outbox_id = 0;
     std::string event_id;
     std::string event_type;
     int event_version = 1;

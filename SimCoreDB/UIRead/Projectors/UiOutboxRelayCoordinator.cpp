@@ -5,56 +5,12 @@
 #include "BattleProjector.h"
 #include "JobProjector.h"
 #include "SeedProbeProjector.h"
-#include "../SqliteUiReadDb.h"
+#include "ProjectorContract.h"
 
 namespace simcore::db::uiread::projectors {
 
 UiOutboxRelayCoordinator::UiOutboxRelayCoordinator(sqlite3* db)
     : db_(db) {
-}
-
-bool UiOutboxRelayCoordinator::ValidateInputs(
-    const std::string& projector_name,
-    int max_batch_size,
-    std::string* error_out,
-    int max_attempts) const {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return false;
-    }
-    if (max_batch_size <= 0) {
-        if (error_out) *error_out = "max_batch_size must be > 0";
-        return false;
-    }
-    if (max_attempts <= 0) {
-        if (error_out) *error_out = "max_attempts must be > 0";
-        return false;
-    }
-    return true;
-}
-
-std::int64_t UiOutboxRelayCoordinator::GetCheckpoint(const std::string& projector_name) const {
-    simcore::db::SqliteUiReadDb ui_read_db(db_);
-    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-    return checkpoint.has_value() ? checkpoint->last_outbox_id : 0;
-}
-
-bool UiOutboxRelayCoordinator::UpsertCheckpoint(
-    const std::string& projector_name,
-    std::int64_t last_outbox_id,
-    std::string* error_out) const {
-    simcore::db::SqliteUiReadDb ui_read_db(db_);
-    if (!ui_read_db.UpsertProjectionCheckpoint({
-            projector_name,
-            std::string{},
-            last_outbox_id,
-            simcore::db::types::UtcNow(),
-        })) {
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    return true;
 }
 
 bool UiOutboxRelayCoordinator::RelayWithConfig(
@@ -63,19 +19,7 @@ bool UiOutboxRelayCoordinator::RelayWithConfig(
     const std::vector<events::OutboxRelayDispatchBinding>& bindings,
     int max_batch_size,
     std::string* error_out) const {
-    const auto checkpoint = GetCheckpoint(checkpoint_name);
-
-    events::OutboxRelay relay(config);
-    events::OutboxRelayResult relay_result{};
-    if (!relay.RelayBatch(checkpoint, max_batch_size, bindings, &relay_result, error_out)) {
-        return false;
-    }
-
-    if (relay_result.last_scanned_outbox_id > checkpoint) {
-        return UpsertCheckpoint(checkpoint_name, relay_result.last_scanned_outbox_id, error_out);
-    }
-
-    return true;
+    return RunProjectorRelay(db_, checkpoint_name, config, bindings, max_batch_size, error_out);
 }
 
 bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
@@ -83,7 +27,7 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -134,7 +78,7 @@ bool UiOutboxRelayCoordinator::RelayStateOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -167,7 +111,7 @@ bool UiOutboxRelayCoordinator::RelaySeedProbeOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -206,7 +150,7 @@ bool UiOutboxRelayCoordinator::RelayAnalysisBattleOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -245,7 +189,7 @@ bool UiOutboxRelayCoordinator::RelayAnalysisSpineOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -280,7 +224,7 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -318,7 +262,7 @@ bool UiOutboxRelayCoordinator::RelayArchiveOutbox(
     int max_batch_size,
     std::string* error_out,
     int max_attempts) {
-    if (!ValidateInputs(projector_name, max_batch_size, error_out, max_attempts)) {
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 

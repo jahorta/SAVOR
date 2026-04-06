@@ -199,6 +199,7 @@ bool OutboxRelay::RelayBatch(
         const auto payload_ref_id = sqlite3_column_int64(st.st, 11);
         const auto attempt_count = sqlite3_column_int(st.st, 12);
 
+        envelope.outbox_id = outbox_id;
         envelope.event_id = event_id == nullptr ? "" : reinterpret_cast<const char*>(event_id);
         envelope.event_type = event_type == nullptr ? "" : reinterpret_cast<const char*>(event_type);
         envelope.event_version = event_version;
@@ -212,6 +213,7 @@ bool OutboxRelay::RelayBatch(
         envelope.payload_ref_id = payload_ref_id;
 
         result.last_scanned_outbox_id = outbox_id;
+        result.last_scanned_event_id = envelope.event_id;
         result.scanned_count += 1;
 
         std::string handler_error;

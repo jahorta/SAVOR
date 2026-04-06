@@ -30,9 +30,6 @@ public:
     bool RelayArchiveOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out, int max_attempts = 5);
 
 private:
-    bool ValidateInputs(const std::string& projector_name, int max_batch_size, std::string* error_out, int max_attempts) const;
-    std::int64_t GetCheckpoint(const std::string& projector_name) const;
-    bool UpsertCheckpoint(const std::string& projector_name, std::int64_t last_outbox_id, std::string* error_out) const;
     bool RelayWithConfig(
         const std::string& checkpoint_name,
         const events::OutboxRelayConfig& config,

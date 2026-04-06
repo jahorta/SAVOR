@@ -48,6 +48,7 @@
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\BattleProjector.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\JobProjector.h" ><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="UIRead\Projectors\ProjectorContract.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" ><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
@@ -78,6 +79,7 @@
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\JobProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" ><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp"><Filter>Source Files</Filter></ClCompile>

@@ -2,70 +2,12 @@
 
 #include <vector>
 
-#include "../../Common/Events/OutboxRelay.h"
-#include "../SqliteUiReadDb.h"
+#include "ProjectorContract.h"
 
 namespace simcore::db::uiread::projectors {
 
-namespace {
-
-bool RunRelay(
-    sqlite3* db,
-    const std::string& checkpoint_name,
-    std::int64_t checkpoint,
-    const std::string& outbox_table,
-    const std::string& context_name,
-    const std::string& aggregate_kind,
-    const std::string& payload_ref_kind,
-    const std::vector<simcore::db::events::OutboxRelayDispatchBinding>& bindings,
-    int max_batch_size,
-    int max_attempts,
-    std::string* error_out) {
-    events::OutboxRelay relay({
-        .db = db,
-        .outbox_table = outbox_table,
-        .context_name = context_name,
-        .aggregate_kind = aggregate_kind,
-        .payload_ref_kind = payload_ref_kind,
-        .max_attempts = max_attempts,
-    });
-
-    events::OutboxRelayResult relay_result{};
-    if (!relay.RelayBatch(checkpoint, max_batch_size, bindings, &relay_result, error_out)) {
-        return false;
-    }
-
-    if (relay_result.last_scanned_outbox_id > checkpoint) {
-        simcore::db::SqliteUiReadDb ui_read_db(db);
-        if (!ui_read_db.UpsertProjectionCheckpoint({
-            checkpoint_name,
-            std::string{},
-            relay_result.last_scanned_outbox_id,
-            simcore::db::types::UtcNow(),
-        })) {
-            if (error_out) *error_out = sqlite3_errmsg(db);
-            return false;
-        }
-    }
-
-    return true;
-}
-
-} // namespace
-
 BattleProjector::BattleProjector(sqlite3* db)
     : db_(db) {
-}
-
-std::int64_t BattleProjector::GetCheckpoint(const std::string& projector_name, std::string* error_out) const {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return 0;
-    }
-
-    simcore::db::SqliteUiReadDb ui_read_db(db_);
-    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-    return checkpoint.has_value() ? checkpoint->last_outbox_id : 0;
 }
 
 bool BattleProjector::ProjectAll(std::string* error_out) {
@@ -106,16 +48,7 @@ bool BattleProjector::ProjectAll(std::string* error_out) {
 }
 
 bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out, int max_attempts) {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return false;
-    }
-    if (max_batch_size <= 0) {
-        if (error_out) *error_out = "max_batch_size must be > 0";
-        return false;
-    }
-    if (max_attempts <= 0) {
-        if (error_out) *error_out = "max_attempts must be > 0";
+    if (!ValidateProjectorContractInputs(projector_name, max_batch_size, max_attempts, error_out)) {
         return false;
     }
 
@@ -134,17 +67,19 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
     };
 
     const auto battle_checkpoint_name = projector_name + ".analysis_battle";
-    if (!RunRelay(
+    if (!RunProjectorRelay(
         db_,
         battle_checkpoint_name,
-        GetCheckpoint(battle_checkpoint_name, error_out),
-        "ab_outbox_message",
-        "AnalysisBattle",
-        "battle_set",
-        "",
+        {
+            .db = db_,
+            .outbox_table = "ab_outbox_message",
+            .context_name = "AnalysisBattle",
+            .aggregate_kind = "battle_set",
+            .payload_ref_kind = "",
+            .max_attempts = max_attempts,
+        },
         battle_bindings,
         max_batch_size,
-        max_attempts,
         error_out)) {
         return false;
     }
@@ -159,17 +94,19 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
     };
 
     const auto execution_checkpoint_name = projector_name + ".execution_rollup";
-    return RunRelay(
+    return RunProjectorRelay(
         db_,
         execution_checkpoint_name,
-        GetCheckpoint(execution_checkpoint_name, error_out),
-        "exec_outbox_message",
-        "Execution",
-        "",
-        "",
+        {
+            .db = db_,
+            .outbox_table = "exec_outbox_message",
+            .context_name = "Execution",
+            .aggregate_kind = "",
+            .payload_ref_kind = "",
+            .max_attempts = max_attempts,
+        },
         execution_bindings,
         max_batch_size,
-        max_attempts,
         error_out);
 }
 
