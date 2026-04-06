@@ -19,6 +19,12 @@ bool ArchiveCatalogProjector::ProjectAll(std::string* error_out) {
         "source_context=excluded.source_context,source_root_job_set_id=excluded.source_root_job_set_id,"
         "created_at_utc=excluded.created_at_utc,schema_version=excluded.schema_version,event_catalog_version=excluded.event_catalog_version,"
         "time_range_start_utc=excluded.time_range_start_utc,time_range_end_utc=excluded.time_range_end_utc,checksum_status=excluded.checksum_status;"
+        "INSERT INTO ui_archive_rehydrate_request(rehydrate_request_id,archive_package_id,status,target_namespace,requested_at_utc,completed_at_utc,error_text) "
+        "SELECT rehydrate_request_id,archive_package_id,status,target_namespace,requested_at_utc,completed_at_utc,error_text "
+        "FROM ar_rehydrate_request "
+        "ON CONFLICT(rehydrate_request_id) DO UPDATE SET "
+        "archive_package_id=excluded.archive_package_id,status=excluded.status,target_namespace=excluded.target_namespace,"
+        "requested_at_utc=excluded.requested_at_utc,completed_at_utc=excluded.completed_at_utc,error_text=excluded.error_text;"
         "COMMIT;";
     if (sqlite3_exec(db_, kSql, nullptr, nullptr, &err) != SQLITE_OK) {
         if (error_out) *error_out = err ? err : sqlite3_errmsg(db_);
@@ -57,7 +63,7 @@ bool ArchiveCatalogProjector::ProjectFromOutbox(const std::string& projector_nam
             .outbox_table = "ar_outbox_message",
             .context_name = "Archive",
             .aggregate_kind = "archive_package",
-            .payload_ref_kind = "archive_package",
+            .payload_ref_kind = "",
             .max_attempts = max_attempts,
         },
         bindings,
