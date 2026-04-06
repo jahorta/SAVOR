@@ -471,6 +471,9 @@
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\IniKV.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -795,6 +798,9 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">

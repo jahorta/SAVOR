@@ -24,6 +24,8 @@ Detailed staged implementation plan for the SOASim bounded-context database spli
   - Migration plan for per-projector subscription cursors (outbox pub-sub consumption without projector interference).
 - `04-Stage-Archive-and-Rehydrate.md`
   - JSONL+blob archive packaging and execution DB rehydration.
+- `04-Stage-Archive-and-Rehydrate-Runbook.md`
+  - Operator command usage and remediation matrix for Stage 4 incidents.
 - `05-Stage-UI-Cutover-and-Validation.md`
   - SoaSimQt2 cutover, backfill, validation, and fallback.
 
@@ -45,4 +47,5 @@ Recommended implementation sequence:
 6. `03d-Event-Emission-Coverage-Checklist.md`
 7. `03e-Stage-Projector-Subscription-Cursors.md`
 8. `04-Stage-Archive-and-Rehydrate.md`
+9. `04-Stage-Archive-and-Rehydrate-Runbook.md`
 9. `05-Stage-UI-Cutover-and-Validation.md`
