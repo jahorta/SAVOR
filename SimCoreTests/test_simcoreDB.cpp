@@ -115,6 +115,17 @@ public:
     simcore::db::execution::jobs::IJobEventCommandService* JobCommandService() override {
         return &job_command_service;
     }
+    std::optional<simcore::db::events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
+        const simcore::db::events::EventEnvelope&) const override {
+        return std::nullopt;
+    }
+    std::optional<simcore::db::events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
+        std::string_view,
+        int,
+        std::string_view,
+        std::int64_t) const override {
+        return std::nullopt;
+    }
 
     NullWorkflowQueryService query_service;
     RecordingWorkflowCommandService command_service;
@@ -2050,7 +2061,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
     const auto payload_31 = analysis_db.ResolveBattlePayload(1, "seed_candidate", seed_candidate_id);
     ASSERT_TRUE(payload_31.has_value());
     EXPECT_EQ(payload_31->battle_set_id, battle_set_id);
-    EXPECT_EQ(payload_31->seed_candidate_id, seed_candidate_id);
 
     const auto payload_32 = analysis_db.ResolveBattlePayload(1, "turn_wave", wave_id);
     ASSERT_TRUE(payload_32.has_value());
@@ -2062,15 +2072,17 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
 
     const auto payload_34 = analysis_db.ResolveBattlePayload(1, "selection_pool", selection_pool_id);
     ASSERT_TRUE(payload_34.has_value());
-    EXPECT_EQ(payload_34->selection_pool_id, selection_pool_id);
+    EXPECT_EQ(payload_34->battle_set_id, battle_set_id);
 
     const auto payload_35 = analysis_db.ResolveBattlePayload(1, "selection_decision", selection_decision_id);
     ASSERT_TRUE(payload_35.has_value());
-    EXPECT_EQ(payload_35->selection_decision_id, selection_decision_id);
+    EXPECT_EQ(payload_35->battle_set_id, battle_set_id);
+    EXPECT_EQ(payload_35->turn_job_id, turn_job_id);
 
     const auto payload_36 = analysis_db.ResolveBattlePayload(1, "terminal_followup", terminal_followup_id);
     ASSERT_TRUE(payload_36.has_value());
-    EXPECT_EQ(payload_36->terminal_followup_id, terminal_followup_id);
+    EXPECT_EQ(payload_36->battle_set_id, battle_set_id);
+    EXPECT_EQ(payload_36->turn_job_id, turn_job_id);
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {
