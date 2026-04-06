@@ -29,7 +29,6 @@ bool RunProjectorRelay(
     const events::OutboxRelayConfig& relay_config,
     const std::vector<events::OutboxRelayDispatchBinding>& bindings,
     int max_batch_size,
-    const std::string& legacy_checkpoint_name,
     std::string* error_out);
 
 bool RunProjectorRelay(

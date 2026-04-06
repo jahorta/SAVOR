@@ -144,7 +144,6 @@ bool RunProjectorRelay(
     const events::OutboxRelayConfig& relay_config,
     const std::vector<events::OutboxRelayDispatchBinding>& bindings,
     int max_batch_size,
-    const std::string& legacy_checkpoint_name,
     std::string* error_out) {
     if (projector_name.empty()) {
         if (error_out) *error_out = "projector_name is required";
@@ -259,15 +258,6 @@ bool RunProjectorRelay(
         return false;
     }
 
-    if (!legacy_checkpoint_name.empty()) {
-        return UpsertCheckpoint(
-            db,
-            legacy_checkpoint_name,
-            relay_result.last_scanned_outbox_id,
-            relay_result.last_scanned_event_id,
-            error_out);
-    }
-
     return true;
 }
 
@@ -286,7 +276,6 @@ bool RunProjectorRelay(
         relay_config,
         bindings,
         max_batch_size,
-        checkpoint_name,
         error_out);
 }
 
