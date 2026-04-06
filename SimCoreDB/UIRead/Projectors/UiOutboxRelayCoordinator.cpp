@@ -14,12 +14,24 @@ UiOutboxRelayCoordinator::UiOutboxRelayCoordinator(sqlite3* db)
 }
 
 bool UiOutboxRelayCoordinator::RelayWithConfig(
-    const std::string& checkpoint_name,
+    const std::string& projector_name,
+    const std::string& source_context,
+    const std::string& source_outbox_table,
+    const std::string& legacy_checkpoint_name,
     const events::OutboxRelayConfig& config,
     const std::vector<events::OutboxRelayDispatchBinding>& bindings,
     int max_batch_size,
     std::string* error_out) const {
-    return RunProjectorRelay(db_, checkpoint_name, config, bindings, max_batch_size, error_out);
+    return RunProjectorRelay(
+        db_,
+        projector_name,
+        source_context,
+        source_outbox_table,
+        config,
+        bindings,
+        max_batch_size,
+        legacy_checkpoint_name,
+        error_out);
 }
 
 bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
@@ -59,6 +71,9 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "Execution",
+        "exec_outbox_message",
         projector_name + ".exec_outbox_message",
         {
             .db = db_,
@@ -92,6 +107,9 @@ bool UiOutboxRelayCoordinator::RelayStateOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "State",
+        "state_outbox_message",
         projector_name + ".state_outbox_message",
         {
             .db = db_,
@@ -131,6 +149,9 @@ bool UiOutboxRelayCoordinator::RelaySeedProbeOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "AnalysisSeedProbe",
+        "sp_outbox_message",
         projector_name + ".sp_outbox_message",
         {
             .db = db_,
@@ -170,6 +191,9 @@ bool UiOutboxRelayCoordinator::RelayAnalysisBattleOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "AnalysisBattle",
+        "ab_outbox_message",
         projector_name + ".ab_outbox_message",
         {
             .db = db_,
@@ -205,6 +229,9 @@ bool UiOutboxRelayCoordinator::RelayAnalysisSpineOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "AnalysisSpine",
+        "asp_outbox_message",
         projector_name + ".asp_outbox_message",
         {
             .db = db_,
@@ -243,6 +270,9 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "Authoring",
+        "au_outbox_message",
         projector_name + ".au_outbox_message",
         {
             .db = db_,
@@ -280,6 +310,9 @@ bool UiOutboxRelayCoordinator::RelayArchiveOutbox(
     };
 
     return RelayWithConfig(
+        projector_name,
+        "Archive",
+        "ar_outbox_message",
         projector_name + ".ar_outbox_message",
         {
             .db = db_,
