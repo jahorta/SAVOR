@@ -36,8 +36,9 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
    - `ui_workflow_step`
    - `ui_workflow_edge`
    - `ui_workflow_alert`
-7. Projector checkpoints:
-   - `ui_projection_checkpoint`
+7. Projector subscription progress:
+   - `ui_projection_subscription` (authoritative after Stage 3e)
+   - `ui_projection_checkpoint` (compatibility during transition only)
 
 ---
 
@@ -51,6 +52,10 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
    - `UseNewExecutionWrites`
    - `UseArchivePipeline`
 5. Instrument screen-level query times.
+6. Add projector-subscription observability surfaces for ops:
+   - subscription status (`ACTIVE`/`PAUSED`/`ERROR`)
+   - last processed outbox cursor/event id per projector and source stream
+   - last error and recovery action guidance
 
 ---
 
@@ -90,6 +95,8 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 - No orphaned typed references after backfill.
 - `RECORDED` follow-up rows always have a DTM artifact reference.
 - Event replay into empty UIRead reproduces same counts as live UIRead.
+- Reset/replay of one projector subscription does not regress any other projector subscription cursor.
+- Multi-projector same-stream replay produces consistent read-model counts with no starvation.
 
 ## Performance gates
 - Job list query under target latency.
@@ -103,9 +110,9 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 
 1. Internal alpha: new DBs + read models enabled for dev workflows.
 2. Shadow mode: dual projection verification, old UI still primary.
-3. Controlled cutover: enable `UseNewUIRead` by default.
+3. Controlled cutover: enable `UseNewUIRead` by default and make subscription cursors the authoritative projector progress source.
 4. Full cutover: enable new write paths.
-5. Decommission old read paths and dead code.
+5. Decommission old read paths, legacy shared-checkpoint-only paths, and dead code.
 
 ---
 
@@ -114,7 +121,7 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 - Keep legacy `SoaSimQt` runnable until Stage 5 signoff.
 - Keep DB snapshots before irreversible migration steps.
 - Support toggling off new paths via feature flags.
-- If needed, re-run UIRead full rebuild from outbox history.
+- If needed, reset one or more projector subscriptions and re-run UIRead projection replay from source outbox history without impacting unrelated projector subscriptions.
 
 ---
 
