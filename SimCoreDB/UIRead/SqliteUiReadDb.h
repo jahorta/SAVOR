@@ -10,10 +10,6 @@ class SqliteUiReadDb final : public IUiReadDb {
 public:
     explicit SqliteUiReadDb(sqlite3* db);
 
-    std::optional<UiProjectionCheckpoint> GetProjectionCheckpoint(
-        const std::string& projector_name) const override;
-    bool UpsertProjectionCheckpoint(const UiProjectionCheckpoint& checkpoint) override;
-
     std::optional<UiProjectionSubscription> GetProjectionSubscription(
         const std::string& projector_name,
         const std::string& source_context,
