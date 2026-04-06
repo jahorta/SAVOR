@@ -16,6 +16,13 @@ SimCoreDB already has:
 
 These docs define how to evolve from current state to a robust hybrid architecture without a full rewrite.
 
+## Validation implementation note
+
+- Workflow-migration phases use two verification paths:
+  1. `SimCoreTests` (unit/integration coverage),
+  2. `SimCoreDBValidation` CLI executable (phase-gate operational validations and replay/backfill checks).
+- Phase docs below should include both paths in implementation and exit criteria.
+
 ## Documents
 
 1. `01-current-state-and-gap-analysis.md`

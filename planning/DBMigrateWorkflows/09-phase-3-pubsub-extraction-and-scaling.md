@@ -60,6 +60,14 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
 3. **Keep control-plane terminal source of truth**
    - Service split must not reintroduce ambiguity in terminal authority.
 
+## Validation execution requirements
+
+1. **SimCoreTests**
+   - Run phase-3 service-split, batching, and dedupe-isolation suites.
+2. **SimCoreDBValidation CLI**
+   - Add/run phase-3 validation entries in `SimCoreDBValidation` for replay, lag/dead-letter, and stream-separation checks.
+   - Phase cannot exit until both test suites and CLI validations pass.
+
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **Materialization/dispatch split integration test**

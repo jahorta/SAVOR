@@ -53,6 +53,14 @@ Finalize operational correctness, recovery behavior, and runbook readiness.
 3. **Replay-safe design**
    - Ensure all handlers remain idempotent under repeated replay.
 
+## Validation execution requirements
+
+1. **SimCoreTests**
+   - Run full phase-4 recovery matrix suites.
+2. **SimCoreDBValidation CLI**
+   - Add/run phase-4 hardening and recovery validations in `SimCoreDBValidation`.
+   - Phase cannot exit until both test suites and CLI validations pass.
+
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **Invariant-violation remediation test**

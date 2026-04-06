@@ -54,6 +54,14 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
 3. **Validation service usage**
    - Validate grouped workflow graph compatibility before enabling.
 
+## Validation execution requirements
+
+1. **SimCoreTests**
+   - Run phase-2 adapter-chain, completion-gate, and split-contract suites.
+2. **SimCoreDBValidation CLI**
+   - Add/run phase-2 validation entries in `SimCoreDBValidation` for adapter order and transition gating.
+   - Phase cannot exit until both test suites and CLI validations pass.
+
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **Adapter invocation order test**
