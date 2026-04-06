@@ -1155,7 +1155,7 @@ TEST(Stage3cCoordinatorReplacement, DisabledWorkflowModeSkipsWorkflowPersistence
     EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
 }
 
-TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorOutboxReplayUsesCheckpointAndIsIdempotent) {
+TEST_F(SqliteDbFixture, Stage3fWorkflowProjectorOutboxReplayUsesSubscriptionCursorAndIsIdempotent) {
     using namespace simcore::db::migrations;
     using namespace simcore::db::execution::workflow;
 
@@ -1181,12 +1181,47 @@ VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 
         << cmd_error;
 
     WorkflowProjector projector(db_);
-    EXPECT_EQ(projector.GetCheckpoint("WorkflowProjector", &err), 0);
-    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err)) << err;
-    const auto checkpoint_after_first = projector.GetCheckpoint("WorkflowProjector", &err);
-    EXPECT_GT(checkpoint_after_first, 0);
-
     sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) "
+        "FROM ui_projection_subscription "
+        "WHERE projector_name='WorkflowProjector' "
+        "AND source_context='Execution' "
+        "AND source_outbox_table='exec_outbox_message';",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 0);
+    sqlite3_finalize(st);
+
+    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err)) << err;
+
+    std::int64_t cursor_after_first = 0;
+    st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT last_outbox_id, COALESCE(last_event_id, ''), status, COALESCE(last_error, '') "
+        "FROM ui_projection_subscription "
+        "WHERE projector_name='WorkflowProjector' "
+        "AND source_context='Execution' "
+        "AND source_outbox_table='exec_outbox_message';",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    cursor_after_first = sqlite3_column_int64(st, 0);
+    EXPECT_GT(cursor_after_first, 0);
+    ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
+    EXPECT_FALSE(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 1))).empty());
+    ASSERT_NE(sqlite3_column_text(st, 2), nullptr);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 2))), "ACTIVE");
+    ASSERT_NE(sqlite3_column_text(st, 3), nullptr);
+    EXPECT_TRUE(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 3))).empty());
+    sqlite3_finalize(st);
+
+    st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
         "SELECT COUNT(1) FROM ui_workflow_step WHERE workflow_instance_id=9201;",
@@ -1198,8 +1233,20 @@ VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 
     sqlite3_finalize(st);
 
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err)) << err;
-    const auto checkpoint_after_second = projector.GetCheckpoint("WorkflowProjector", &err);
-    EXPECT_EQ(checkpoint_after_second, checkpoint_after_first);
+    st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT last_outbox_id "
+        "FROM ui_projection_subscription "
+        "WHERE projector_name='WorkflowProjector' "
+        "AND source_context='Execution' "
+        "AND source_outbox_table='exec_outbox_message';",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), cursor_after_first);
+    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3cOutboxRelayRoundTripsOccurredAtUtcEpochMilliseconds) {
@@ -1257,7 +1304,7 @@ VALUES(
     sqlite3_finalize(st);
 }
 
-TEST_F(SqliteDbFixture, Stage3cProjectorContractSkipsDuplicateEventIdsAndAdvancesCheckpoint) {
+TEST_F(SqliteDbFixture, Stage3fProjectionSubscriptionSkipsDuplicateEventIdsAndAdvancesCursor) {
     using namespace simcore::db::events;
     using namespace simcore::db::migrations;
     using namespace simcore::db::uiread::projectors;
@@ -1275,7 +1322,7 @@ VALUES(
     7001,'evt-projector-contract-dedup','Execution.JobQueued.v1',1,'Execution','job','42',unixepoch()*1000,'job',42
 );
 INSERT INTO ui_projection_handled_event(projector_name,event_id,last_outbox_id,handled_at_utc)
-VALUES('ProjectorContract.exec','evt-projector-contract-dedup',6999,unixepoch()*1000);
+VALUES('ProjectorSubscription.exec|Execution|exec_outbox_message','evt-projector-contract-dedup',6999,unixepoch()*1000);
 )SQL"));
 
     int handler_calls = 0;
@@ -1290,7 +1337,9 @@ VALUES('ProjectorContract.exec','evt-projector-contract-dedup',6999,unixepoch()*
 
     ASSERT_TRUE(RunProjectorRelay(
         db_,
-        "ProjectorContract.exec",
+        "ProjectorSubscription.exec",
+        "Execution",
+        "exec_outbox_message",
         {
             .db = db_,
             .outbox_table = "exec_outbox_message",
@@ -1309,7 +1358,11 @@ VALUES('ProjectorContract.exec','evt-projector-contract-dedup',6999,unixepoch()*
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT COALESCE(last_event_id, ''), last_outbox_id FROM ui_projection_checkpoint WHERE projector_name='ProjectorContract.exec';",
+        "SELECT COALESCE(last_event_id, ''), last_outbox_id, status, COALESCE(last_error, '') "
+        "FROM ui_projection_subscription "
+        "WHERE projector_name='ProjectorSubscription.exec' "
+        "AND source_context='Execution' "
+        "AND source_outbox_table='exec_outbox_message';",
         -1,
         &st,
         nullptr));
@@ -1317,6 +1370,10 @@ VALUES('ProjectorContract.exec','evt-projector-contract-dedup',6999,unixepoch()*
     ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "evt-projector-contract-dedup");
     EXPECT_EQ(sqlite3_column_int64(st, 1), 7001);
+    ASSERT_NE(sqlite3_column_text(st, 2), nullptr);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 2))), "ACTIVE");
+    ASSERT_NE(sqlite3_column_text(st, 3), nullptr);
+    EXPECT_TRUE(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 3))).empty());
     sqlite3_finalize(st);
 }
 
