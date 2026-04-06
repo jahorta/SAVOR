@@ -67,6 +67,8 @@ bool JobProjector::ProjectFromOutbox(const std::string& projector_name, int max_
     return RunProjectorRelay(
         db_,
         projector_name,
+        "Execution",
+        "exec_outbox_message",
         {
             .db = db_,
             .outbox_table = "exec_outbox_message",

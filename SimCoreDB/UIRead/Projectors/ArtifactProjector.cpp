@@ -44,6 +44,8 @@ bool ArtifactProjector::ProjectFromOutbox(const std::string& projector_name, int
     return RunProjectorRelay(
         db_,
         projector_name,
+        "State",
+        "state_outbox_message",
         {
             .db = db_,
             .outbox_table = "state_outbox_message",

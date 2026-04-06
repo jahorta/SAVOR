@@ -1,7 +1,6 @@
 #include "ProjectorContract.h"
 
 #include <optional>
-#include <string_view>
 
 #include "../SqliteUiReadDb.h"
 
@@ -72,26 +71,6 @@ bool MarkEventProcessed(
     return true;
 }
 
-bool UpsertCheckpoint(
-    sqlite3* db,
-    const std::string& checkpoint_name,
-    std::int64_t last_outbox_id,
-    std::string_view last_event_id,
-    std::string* error_out) {
-    simcore::db::SqliteUiReadDb ui_read_db(db);
-    if (!ui_read_db.UpsertProjectionCheckpoint({
-            checkpoint_name,
-            std::string(last_event_id),
-            last_outbox_id,
-            simcore::db::types::UtcNow(),
-        })) {
-        if (error_out) *error_out = sqlite3_errmsg(db);
-        return false;
-    }
-
-    return true;
-}
-
 std::string BuildSubscriptionProjectorIdentity(
     const std::string& projector_name,
     const std::string& source_context,
@@ -120,20 +99,6 @@ bool ValidateProjectorContractInputs(
     }
 
     return true;
-}
-
-std::int64_t GetProjectorCheckpoint(
-    sqlite3* db,
-    const std::string& projector_name,
-    std::string* error_out) {
-    if (projector_name.empty()) {
-        if (error_out) *error_out = "projector_name is required";
-        return 0;
-    }
-
-    simcore::db::SqliteUiReadDb ui_read_db(db);
-    const auto checkpoint = ui_read_db.GetProjectionCheckpoint(projector_name);
-    return checkpoint.has_value() ? checkpoint->last_outbox_id : 0;
 }
 
 bool RunProjectorRelay(
@@ -259,24 +224,6 @@ bool RunProjectorRelay(
     }
 
     return true;
-}
-
-bool RunProjectorRelay(
-    sqlite3* db,
-    const std::string& checkpoint_name,
-    const events::OutboxRelayConfig& relay_config,
-    const std::vector<events::OutboxRelayDispatchBinding>& bindings,
-    int max_batch_size,
-    std::string* error_out) {
-    return RunProjectorRelay(
-        db,
-        checkpoint_name,
-        relay_config.context_name,
-        relay_config.outbox_table,
-        relay_config,
-        bindings,
-        max_batch_size,
-        error_out);
 }
 
 } // namespace simcore::db::uiread::projectors

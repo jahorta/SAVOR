@@ -68,6 +68,8 @@ bool SeedProbeProjector::ProjectFromOutbox(const std::string& projector_name, in
     return RunProjectorRelay(
         db_,
         projector_name,
+        "AnalysisSeedProbe",
+        "sp_outbox_message",
         {
             .db = db_,
             .outbox_table = "sp_outbox_message",
