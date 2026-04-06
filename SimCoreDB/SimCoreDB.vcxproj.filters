@@ -5,6 +5,7 @@
     <Filter Include="Header Files"><UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier><Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions></Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Archive\ArchivePackageService.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Archive\SqliteArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
@@ -54,6 +55,7 @@
     <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Archive\ArchivePackageService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Archive\SqliteArchiveDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
