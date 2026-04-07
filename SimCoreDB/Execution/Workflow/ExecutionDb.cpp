@@ -142,7 +142,7 @@ std::optional<ExecutionJobRecord> ExecutionDb::GetJobRecord(std::int64_t job_id)
     Statement st;
     if (!Prepare(db_,
         "SELECT job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, "
-        "fingerprint, state "
+        "savestate_id, fingerprint, state "
         "FROM exec_job WHERE job_id=?1;",
         &st)) {
         return std::nullopt;
@@ -160,8 +160,11 @@ std::optional<ExecutionJobRecord> ExecutionDb::GetJobRecord(std::int64_t job_id)
     row.program_version = sqlite3_column_int(st.st, 3);
     row.program_ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
     row.program_ref_id = sqlite3_column_int64(st.st, 5);
-    row.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
-    row.state = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
+    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
+        row.savestate_id = sqlite3_column_int64(st.st, 6);
+    }
+    row.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
+    row.state = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 8));
     return row;
 }
 
@@ -254,8 +257,8 @@ bool ExecutionDb::EnqueueJob(
     const auto queued_at = command.queued_at_utc > 0 ? command.queued_at_utc : NowUtcMillis();
     Statement insert_job;
     if (!Prepare(db_,
-        "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL);",
+        "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL);",
         &insert_job)) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
@@ -266,9 +269,9 @@ bool ExecutionDb::EnqueueJob(
     sqlite3_bind_int(insert_job.st, 4, command.program_version);
     sqlite3_bind_text(insert_job.st, 5, command.program_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_job.st, 6, command.program_ref_id);
-    sqlite3_bind_text(insert_job.st, 7, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_job.st, 8, command.priority);
-    sqlite3_bind_text(insert_job.st, 9, command.state.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.savestate_id.has_value()) sqlite3_bind_int64(insert_job.st, 7, *command.savestate_id); else sqlite3_bind_null(insert_job.st, 7);
+    sqlite3_bind_text(insert_job.st, 8, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_job.st, 9, command.priority);
     sqlite3_bind_int(insert_job.st, 10, command.attempts);
     sqlite3_bind_int(insert_job.st, 11, command.max_attempts);
     sqlite3_bind_int64(insert_job.st, 12, queued_at);
