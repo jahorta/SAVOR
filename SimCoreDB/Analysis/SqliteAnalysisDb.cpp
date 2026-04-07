@@ -672,6 +672,169 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     return true;
 }
 
+bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
+    std::int64_t probe_set_id,
+    std::int64_t* probe_run_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (probe_set_id <= 0) {
+        if (error_out) *error_out = "probe_set_id must be > 0";
+        return false;
+    }
+    if (!BeginImmediate(db_, error_out)) {
+        return false;
+    }
+
+    const auto now = types::UtcNow().time_since_epoch().count();
+    Statement insert_run;
+    if (!Prepare(
+            db_,
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
+            &insert_run,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(insert_run.st, 1, probe_set_id);
+    sqlite3_bind_int64(insert_run.st, 2, 0); // runtime init will fail fast until caller hydrates this run with a concrete savestate
+    sqlite3_bind_int64(insert_run.st, 3, probe_set_id); // neutral queueing path binds spec to set id
+    sqlite3_bind_int(insert_run.st, 4, 1);
+    sqlite3_bind_text(insert_run.st, 5, "queued", -1, SQLITE_STATIC);
+    sqlite3_bind_int64(insert_run.st, 6, now);
+    if (!StepDone(db_, insert_run.st, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    const auto probe_run_id = sqlite3_last_insert_rowid(db_);
+    Statement insert_result;
+    if (!Prepare(
+            db_,
+            "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
+            "VALUES(?1,NULL,0,0,'pending',?2);",
+            &insert_result,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
+    sqlite3_bind_int64(insert_result.st, 2, now);
+    if (!StepDone(db_, insert_result.st, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (probe_run_id_out) {
+        *probe_run_id_out = probe_run_id;
+    }
+    return true;
+}
+
+std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64_t probe_run_id) const {
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (!Prepare(
+            db_,
+            "SELECT probe_run_id, seed_probe_spec_id, entry_savestate_id, codec_version, status "
+            "FROM sp_probe_run WHERE probe_run_id=?1 LIMIT 1;",
+            &st,
+            nullptr)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    SeedProbeRunSnapshot snapshot{};
+    snapshot.probe_run_id = sqlite3_column_int64(st.st, 0);
+    snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 1);
+    snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 2);
+    snapshot.codec_version = sqlite3_column_int(st.st, 3);
+    snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+    return snapshot;
+}
+
+bool SqliteAnalysisDb::SetSeedProbeRunNeutralSeed(
+    std::int64_t probe_run_id,
+    std::int64_t neutral_seed_value,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (probe_run_id <= 0) {
+        if (error_out) *error_out = "probe_run_id must be > 0";
+        return false;
+    }
+    if (!BeginImmediate(db_, error_out)) {
+        return false;
+    }
+    const auto now = types::UtcNow().time_since_epoch().count();
+
+    Statement get_result;
+    if (!Prepare(db_, "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1 LIMIT 1;", &get_result, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(get_result.st, 1, probe_run_id);
+    if (sqlite3_step(get_result.st) != SQLITE_ROW) {
+        Rollback(db_);
+        if (error_out) *error_out = "probe_run_id does not resolve to probe_result";
+        return false;
+    }
+    const auto probe_result_id = sqlite3_column_int64(get_result.st, 0);
+
+    Statement update_result;
+    if (!Prepare(
+            db_,
+            "UPDATE sp_probe_result SET neutral_seed_value=?2, result_status='completed', recorded_at_utc=?3 WHERE probe_result_id=?1;",
+            &update_result,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update_result.st, 1, probe_result_id);
+    sqlite3_bind_int64(update_result.st, 2, neutral_seed_value);
+    sqlite3_bind_int64(update_result.st, 3, now);
+    if (!StepDone(db_, update_result.st, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    Statement update_run;
+    if (!Prepare(
+            db_,
+            "UPDATE sp_probe_run SET status='completed', completed_at_utc=?2 WHERE probe_run_id=?1;",
+            &update_run,
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update_run.st, 1, probe_run_id);
+    sqlite3_bind_int64(update_run.st, 2, now);
+    if (!StepDone(db_, update_run.st, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
     const RecordSeedProbeNeutralSeedCommand& command,
     std::int64_t* neutral_seed_id_out,

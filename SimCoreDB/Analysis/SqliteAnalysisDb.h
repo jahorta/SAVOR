@@ -25,6 +25,16 @@ public:
         const RequestSeedProbeRunCommand& command,
         std::int64_t* probe_run_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool CreateSeedProbeRunForSet(
+        std::int64_t probe_set_id,
+        std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<SeedProbeRunSnapshot> GetSeedProbeRun(
+        std::int64_t probe_run_id) const override;
+    bool SetSeedProbeRunNeutralSeed(
+        std::int64_t probe_run_id,
+        std::int64_t neutral_seed_value,
+        std::string* error_out = nullptr) override;
 
     bool RecordSeedProbeNeutralSeed(
         const RecordSeedProbeNeutralSeedCommand& command,
