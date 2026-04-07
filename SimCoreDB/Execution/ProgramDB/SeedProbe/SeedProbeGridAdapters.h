@@ -109,4 +109,11 @@ private:
     ContextLookupFn lookup_context_{};
 };
 
+ProgramKindDescriptor BuildSeedProbeGridDescriptor(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db,
+    SeedProbeGridBlueprintConfig blueprint,
+    SeedProbeGridSpec grid,
+    SeedProbeGridResultMapper::ContextLookupFn lookup_context);
+
 } // namespace simcore::db::execution::programdb::seedprobe

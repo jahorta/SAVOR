@@ -11,6 +11,26 @@
 
 namespace simcore::db::execution::programdb::seedprobe {
 
+namespace {
+
+class GridToUniqueTransitionHandler final : public IWorkflowTransitionHandler {
+public:
+    WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        if (context.step_key != "Grid") {
+            decision.should_advance = false;
+            decision.blocked_reason = "unsupported_step_key";
+            return decision;
+        }
+
+        decision.should_advance = true;
+        decision.next_step_key = std::string("Unique");
+        return decision;
+    }
+};
+
+} // namespace
+
 SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid)
     : execution_db_(execution_db)
     , blueprint_(std::move(blueprint))
@@ -286,6 +306,23 @@ std::int64_t SeedProbeGridResultMapper::AxisXYId(const simcore::GCInputFrame& fr
         return static_cast<std::int64_t>((static_cast<std::uint16_t>(frame.trig_l) << 8) | frame.trig_r);
     }
     return 0;
+}
+
+ProgramKindDescriptor BuildSeedProbeGridDescriptor(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db,
+    SeedProbeGridBlueprintConfig blueprint,
+    SeedProbeGridSpec grid,
+    SeedProbeGridResultMapper::ContextLookupFn lookup_context) {
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = simcore::PK_SeedProbe;
+    descriptor.program_name = "SeedProbe";
+    descriptor.job_persistence = std::make_shared<SeedProbeGridJobPersistenceAdapter>(execution_db, std::move(blueprint), grid);
+    descriptor.runtime_init = std::make_shared<SeedProbeRuntimeInitAdapter>(execution_db, analysis_db);
+    descriptor.result_mapper = std::make_shared<SeedProbeGridResultMapper>(analysis_db, std::move(lookup_context));
+    descriptor.workflow_transition = std::make_shared<GridToUniqueTransitionHandler>();
+    descriptor.supports_workflow_orchestration = true;
+    return descriptor;
 }
 
 } // namespace simcore::db::execution::programdb::seedprobe

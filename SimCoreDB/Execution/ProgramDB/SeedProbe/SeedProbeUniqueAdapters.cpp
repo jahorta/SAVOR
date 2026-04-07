@@ -249,4 +249,29 @@ std::optional<ResultArtifactRef> SeedProbeUniqueResultMapper::MapPrimaryArtifact
     return std::nullopt;
 }
 
+ProgramKindDescriptor BuildSeedProbeUniqueDescriptor(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db,
+    SeedProbeGridBlueprintConfig blueprint,
+    UniqueIni unique_ini,
+    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate) {
+    if (!completion_gate) {
+        completion_gate = [](const WorkflowTransitionContext&) { return true; };
+    }
+
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = simcore::PK_SeedProbe;
+    descriptor.program_name = "SeedProbe";
+    descriptor.job_persistence = std::make_shared<SeedProbeUniqueJobPersistenceAdapter>(
+        execution_db,
+        analysis_db,
+        std::move(blueprint),
+        unique_ini);
+    descriptor.runtime_init = std::make_shared<SeedProbeUniqueRuntimeInitAdapter>(execution_db, analysis_db);
+    descriptor.result_mapper = std::make_shared<SeedProbeUniqueResultMapper>(execution_db, analysis_db);
+    descriptor.workflow_transition = std::make_shared<SeedProbeUniqueTransitionHandler>(std::move(completion_gate));
+    descriptor.supports_workflow_orchestration = true;
+    return descriptor;
+}
+
 } // namespace simcore::db::execution::programdb::seedprobe

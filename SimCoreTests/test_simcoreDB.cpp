@@ -34,6 +34,10 @@
 #include "Execution/Workflow/WorkflowParityStore.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowCoordinatorBridge.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
@@ -1040,6 +1044,57 @@ TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps
     const auto scheduled = adapter.MaterializeReadyStep({ .workflow_instance_id = 9, .workflow_step_id = 44, .step_key = "Grid", .step_kind = "seedprobe.grid", .priority = 10 });
     EXPECT_EQ(scheduled.job_set_id, 1234);
     EXPECT_EQ(scheduled.workflow_step_id, 44);
+}
+
+TEST(Stage3cSeedProbeProgramDB, BuildsPhaseSpecificDescriptors) {
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    auto neutral = BuildSeedProbeNeutralDescriptor(nullptr, nullptr);
+    auto grid = BuildSeedProbeGridDescriptor(
+        nullptr,
+        nullptr,
+        SeedProbeGridBlueprintConfig{},
+        SeedProbeGridSpec{},
+        [](std::int64_t) -> std::optional<GridResultContext> { return std::nullopt; });
+    auto unique = BuildSeedProbeUniqueDescriptor(nullptr, nullptr, SeedProbeGridBlueprintConfig{}, UniqueIni{});
+
+    EXPECT_NE(dynamic_cast<NeutralProbeJobPersistenceAdapter*>(neutral.job_persistence.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeGridJobPersistenceAdapter*>(grid.job_persistence.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeUniqueJobPersistenceAdapter*>(unique.job_persistence.get()), nullptr);
+
+    EXPECT_NE(dynamic_cast<RequiredSavestateRuntimeInitAdapter*>(neutral.runtime_init.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeRuntimeInitAdapter*>(grid.runtime_init.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeUniqueRuntimeInitAdapter*>(unique.runtime_init.get()), nullptr);
+
+    EXPECT_NE(dynamic_cast<NeutralSeedResultMapper*>(neutral.result_mapper.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeGridResultMapper*>(grid.result_mapper.get()), nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeUniqueResultMapper*>(unique.result_mapper.get()), nullptr);
+
+    EXPECT_NE(neutral.workflow_transition, nullptr);
+    EXPECT_NE(grid.workflow_transition, nullptr);
+    EXPECT_NE(unique.workflow_transition, nullptr);
+}
+
+TEST(Stage3cSeedProbeProgramDB, RegistryDispatchesAdaptersByWorkflowStepKind) {
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    ProgramKindRegistry registry;
+    SeedProbePhaseRegistrationConfig config{};
+    config.grid_context_lookup = [](std::int64_t) -> std::optional<GridResultContext> { return std::nullopt; };
+    RegisterSeedProbePhaseDescriptors(&registry, nullptr, nullptr, std::move(config));
+
+    const auto* neutral = registry.FindForStepKind("seedprobe.neutral");
+    ASSERT_NE(neutral, nullptr);
+    EXPECT_NE(dynamic_cast<NeutralProbeJobPersistenceAdapter*>(neutral->job_persistence.get()), nullptr);
+
+    const auto* grid = registry.FindForStepKind("seedprobe.grid");
+    ASSERT_NE(grid, nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeGridJobPersistenceAdapter*>(grid->job_persistence.get()), nullptr);
+
+    const auto* unique = registry.FindForStepKind("seedprobe.unique");
+    ASSERT_NE(unique, nullptr);
+    EXPECT_NE(dynamic_cast<SeedProbeUniqueJobPersistenceAdapter*>(unique->job_persistence.get()), nullptr);
 }
 
 TEST(Stage1StepInputAggregation, AllInputsRequiredGatingAndEventSequence) {

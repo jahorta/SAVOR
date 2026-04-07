@@ -62,4 +62,11 @@ private:
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
 };
 
+ProgramKindDescriptor BuildSeedProbeUniqueDescriptor(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db,
+    SeedProbeGridBlueprintConfig blueprint,
+    UniqueIni unique_ini,
+    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate = {});
+
 } // namespace simcore::db::execution::programdb::seedprobe
