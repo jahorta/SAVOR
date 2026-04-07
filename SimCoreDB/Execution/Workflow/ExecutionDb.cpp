@@ -29,6 +29,8 @@ std::int64_t CurrentUtcMs(sqlite3* db) {
         return 0;
     }
     return sqlite3_column_int64(st.st, 0);
+}
+
 bool Exec(sqlite3* db, const char* sql) {
     return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
