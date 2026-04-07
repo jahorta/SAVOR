@@ -1,6 +1,9 @@
 #include "SeedProbeWorkflowDefinition.h"
 
+#include <algorithm>
+#include <set>
 #include <queue>
+#include <sstream>
 #include <unordered_map>
 
 namespace simcore::db::execution::workflow {
@@ -8,10 +11,29 @@ namespace simcore::db::execution::workflow {
 WorkflowDefinition BuildSeedProbeChainDefinition() {
     WorkflowDefinition definition;
     definition.workflow_kind = "SEED_PROBE_CHAIN";
+    definition.initial_inputs = { "general.transition_savestate" };
     definition.steps = {
-        WorkflowStepDefinition{ .step_key = "Neutral", .step_kind = "seedprobe.neutral", .dependencies = {}, .max_attempts = 2 },
-        WorkflowStepDefinition{ .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .max_attempts = 2 },
-        WorkflowStepDefinition{ .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Neutral",
+            .step_kind = "seedprobe.neutral",
+            .dependencies = {},
+            .required_inputs = { "general.transition_savestate" },
+            .provided_outputs = { "seedprobe.neutral.seed_context" },
+            .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Grid",
+            .step_kind = "seedprobe.grid",
+            .dependencies = { "Neutral" },
+            .required_inputs = { "seedprobe.neutral.seed_context" },
+            .provided_outputs = { "seedprobe.grid.seed_evidence" },
+            .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Unique",
+            .step_kind = "seedprobe.unique",
+            .dependencies = { "Grid" },
+            .required_inputs = { "seedprobe.grid.seed_evidence" },
+            .provided_outputs = { "general.input_frame_list" },
+            .max_attempts = 2 },
         WorkflowStepDefinition{ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .max_attempts = 1 },
     };
     return definition;
@@ -40,11 +62,33 @@ bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::strin
         }
     }
 
+    const auto validate_keys = [&](const WorkflowStepDefinition& step, const std::vector<std::string>& keys, const char* field) -> bool {
+        std::set<std::string> seen;
+        for (const auto& key : keys) {
+            if (key.empty()) {
+                if (error_out) *error_out = std::string(field) + " contains empty key in step " + step.step_key;
+                return false;
+            }
+            if (!seen.emplace(key).second) {
+                if (error_out) *error_out = std::string("duplicate ") + field + " key '" + key + "' in step " + step.step_key;
+                return false;
+            }
+        }
+        return true;
+    };
+
+    {
+        WorkflowStepDefinition workflow_seed_step{};
+        workflow_seed_step.step_key = definition.workflow_kind;
+        if (!validate_keys(workflow_seed_step, definition.initial_inputs, "initial_inputs")) return false;
+    }
+
     std::vector<int> indegree(definition.steps.size(), 0);
     std::vector<std::vector<int>> adj(definition.steps.size());
-
     for (size_t i = 0; i < definition.steps.size(); ++i) {
         const auto& step = definition.steps[i];
+        if (!validate_keys(step, step.required_inputs, "required_inputs")) return false;
+        if (!validate_keys(step, step.provided_outputs, "provided_outputs")) return false;
         for (const auto& dep : step.dependencies) {
             const auto dep_it = index_by_key.find(dep);
             if (dep_it == index_by_key.end()) {
@@ -56,17 +100,44 @@ bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::strin
         }
     }
 
+    std::vector<std::set<std::string>> upstream_outputs(definition.steps.size());
     std::queue<int> q;
     for (size_t i = 0; i < indegree.size(); ++i) {
-        if (indegree[i] == 0) q.push(static_cast<int>(i));
+        if (indegree[i] == 0) {
+            q.push(static_cast<int>(i));
+            upstream_outputs[i].insert(definition.initial_inputs.begin(), definition.initial_inputs.end());
+        }
     }
 
+    std::vector<std::string> contract_errors;
     int visited = 0;
     while (!q.empty()) {
         const int node = q.front();
         q.pop();
         ++visited;
+
+        const auto& step = definition.steps[node];
+        std::vector<std::string> missing_inputs;
+        for (const auto& required_key : step.required_inputs) {
+            if (upstream_outputs[node].find(required_key) == upstream_outputs[node].end()) {
+                missing_inputs.push_back(required_key);
+            }
+        }
+        if (!missing_inputs.empty()) {
+            std::ostringstream oss;
+            oss << "step '" << step.step_key << "' missing required_inputs [";
+            for (size_t i = 0; i < missing_inputs.size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << missing_inputs[i];
+            }
+            oss << "]";
+            contract_errors.push_back(oss.str());
+        }
+
+        std::set<std::string> outputs_after_step = upstream_outputs[node];
+        outputs_after_step.insert(step.provided_outputs.begin(), step.provided_outputs.end());
         for (const int next : adj[node]) {
+            upstream_outputs[next].insert(outputs_after_step.begin(), outputs_after_step.end());
             if (--indegree[next] == 0) {
                 q.push(next);
             }
@@ -75,6 +146,17 @@ bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::strin
 
     if (visited != static_cast<int>(definition.steps.size())) {
         if (error_out) *error_out = "workflow graph contains cycle";
+        return false;
+    }
+
+    if (!contract_errors.empty()) {
+        std::ostringstream oss;
+        oss << "unsatisfied required_inputs: ";
+        for (size_t i = 0; i < contract_errors.size(); ++i) {
+            if (i > 0) oss << "; ";
+            oss << contract_errors[i];
+        }
+        if (error_out) *error_out = oss.str();
         return false;
     }
 
