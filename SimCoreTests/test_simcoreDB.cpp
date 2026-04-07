@@ -2602,7 +2602,42 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
         .target_namespace = "stage4",
         .event_id_prefix = "stage4-rh",
     });
-    ASSERT_TRUE(rehydrate_summary.success);
+    const auto join_messages = [](const std::vector<std::string>& values) {
+        std::ostringstream out;
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i > 0) out << " | ";
+            out << values[i];
+        }
+        return out.str();
+    };
+
+    std::string rehydrate_status;
+    std::string rehydrate_error_text;
+    {
+        sqlite3_stmt* status_st = nullptr;
+        ASSERT_EQ(
+            SQLITE_OK,
+            sqlite3_prepare_v2(
+                db_,
+                "SELECT status, COALESCE(error_text, '') FROM ar_rehydrate_request ORDER BY rehydrate_request_id DESC LIMIT 1;",
+                -1,
+                &status_st,
+                nullptr));
+        if (sqlite3_step(status_st) == SQLITE_ROW) {
+            const auto* status = reinterpret_cast<const char*>(sqlite3_column_text(status_st, 0));
+            const auto* err_text = reinterpret_cast<const char*>(sqlite3_column_text(status_st, 1));
+            if (status != nullptr) rehydrate_status = status;
+            if (err_text != nullptr) rehydrate_error_text = err_text;
+        }
+        sqlite3_finalize(status_st);
+    }
+
+    ASSERT_TRUE(rehydrate_summary.success)
+        << "RehydrateExecute failed"
+        << "\nsummary.errors=" << join_messages(rehydrate_summary.errors)
+        << "\nsummary.blocking_reasons=" << join_messages(rehydrate_summary.blocking_reasons)
+        << "\nlatest_request.status=" << rehydrate_status
+        << "\nlatest_request.error_text=" << rehydrate_error_text;
     ASSERT_EQ(rehydrate_summary.request_ids.size(), 1u);
 
     sqlite3_stmt* st = nullptr;
