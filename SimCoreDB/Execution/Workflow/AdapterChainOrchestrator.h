@@ -5,7 +5,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../ProgramDB/ProgramKindDescriptor.h"
@@ -43,25 +42,10 @@ private:
     std::unordered_map<std::string, int> mismatch_attempts_;
 };
 
-struct IResultPayloadWriter {
-    virtual ~IResultPayloadWriter() = default;
-    virtual bool Persist(const programdb::ResultMapPayload& payload, std::string* error_out) = 0;
-};
-
-class ResultPayloadWriterRegistry {
-public:
-    void Register(std::string result_kind, std::shared_ptr<IResultPayloadWriter> writer);
-    std::shared_ptr<IResultPayloadWriter> Find(std::string_view result_kind) const;
-
-private:
-    std::unordered_map<std::string, std::shared_ptr<IResultPayloadWriter>> writers_;
-};
-
 class AdapterChainOrchestrator {
 public:
     AdapterChainOrchestrator(
         const programdb::ProgramKindRegistry* registry,
-        ResultPayloadWriterRegistry* writers,
         StepCompletionGateService* completion_gate);
 
     std::optional<programdb::JobPersistenceRecord> OnInputComplete(std::string_view step_kind, std::int64_t domain_ref_id, AdapterChainTrace* trace = nullptr) const;
@@ -77,7 +61,6 @@ public:
 
 private:
     const programdb::ProgramKindRegistry* registry_ = nullptr;
-    ResultPayloadWriterRegistry* writers_ = nullptr;
     StepCompletionGateService* completion_gate_ = nullptr;
 };
 

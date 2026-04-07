@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -16,6 +17,8 @@
 #include "../ProcessWorker.h"
 #include "../TSQueue.h"
 #include "../../../../SimCoreDB/Execution/IExecutionDb.h"
+#include "../../../../SimCoreDB/Execution/ProgramDB/ProgramKindRegistry.h"
+#include "../../../../SimCoreDB/Execution/Workflow/AdapterChainOrchestrator.h"
 #include "../../../../SimCoreDB/Execution/Workflow/WorkflowOrchestration.h"
 #include "WorkflowCoordinatorBridge.h"
 #include "WorkflowIntegrationMode.h"
@@ -59,7 +62,9 @@ public:
         CoordinatorIntegrationConfig integration_cfg,
         WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
         BuildJobPayloadFn build_job_payload_fn = {},
-        ReadyStepPersistFn persist_materialization_fn = {});
+        ReadyStepPersistFn persist_materialization_fn = {},
+        const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
+        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr);
 
     ~DBWorkflowWorkerCoordinator();
 
@@ -93,6 +98,10 @@ private:
         std::atomic<bool> ready{ false };
         std::optional<uint64_t> in_flight_job_id;
     };
+    struct DispatchedJobContext {
+        WorkflowReadyStep step;
+        std::int64_t job_set_id = 0;
+    };
 
     void CoordinatorLoop();
     void DrainProgressLoop();
@@ -104,6 +113,18 @@ private:
     void PollReadyStepsFromDb();
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
     std::string ReadyDedupKey(std::int64_t workflow_step_id) const;
+    void EmitAdapterTraceEvent(
+        const WorkflowReadyStep& step,
+        const std::string& stage,
+        const std::string& status,
+        std::optional<std::int64_t> job_id,
+        std::optional<std::int64_t> job_set_id,
+        const std::optional<std::string>& message = std::nullopt) const;
+    void MarkDeterministicFailure(
+        const WorkflowReadyStep& step,
+        std::optional<std::int64_t> job_id,
+        std::optional<std::int64_t> job_set_id,
+        const std::string& reason) const;
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider_ = nullptr;
@@ -113,6 +134,10 @@ private:
     StepInputAggregationService input_aggregation_service_;
     BuildJobPayloadFn build_job_payload_fn_;
     ReadyStepPersistFn persist_materialization_fn_;
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
+    std::unique_ptr<simcore::db::execution::workflow::StepCompletionGateService> owned_step_completion_gate_;
+    simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate_ = nullptr;
+    std::unique_ptr<simcore::db::execution::workflow::AdapterChainOrchestrator> adapter_chain_orchestrator_;
     WorkflowCoordinatorBridge workflow_bridge_;
     ProgressCallback progress_callback_;
     ResultCallback result_callback_;
@@ -130,6 +155,7 @@ private:
     std::unordered_set<std::string> seen_ready_step_ids_;
     mutable std::mutex workers_mtx_;
     std::vector<std::unique_ptr<WorkerSlot>> workers_;
+    std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;
     size_t rr_worker_cursor_ = 0;
     TSQueue<simcore::PRProgress> progress_q_;
     TSQueue<simcore::PRResult> results_q_;
@@ -143,6 +169,9 @@ private:
     std::atomic<std::int64_t> input_timeout_count_{ 0 };
     std::atomic<std::int64_t> terminal_input_failure_count_{ 0 };
     std::atomic<std::int64_t> last_input_latency_ms_{ 0 };
+    std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
+    std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
+    std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };
 };
 
 } // namespace simcore::runner::parallel::simcoredb

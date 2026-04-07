@@ -42,27 +42,10 @@ StepCompletionGateDecision StepCompletionGateService::Evaluate(const StepComplet
     return decision;
 }
 
-void ResultPayloadWriterRegistry::Register(std::string result_kind, std::shared_ptr<IResultPayloadWriter> writer) {
-    if (result_kind.empty() || !writer) {
-        return;
-    }
-    writers_[std::move(result_kind)] = std::move(writer);
-}
-
-std::shared_ptr<IResultPayloadWriter> ResultPayloadWriterRegistry::Find(std::string_view result_kind) const {
-    const auto it = writers_.find(std::string(result_kind));
-    if (it == writers_.end()) {
-        return nullptr;
-    }
-    return it->second;
-}
-
 AdapterChainOrchestrator::AdapterChainOrchestrator(
     const programdb::ProgramKindRegistry* registry,
-    ResultPayloadWriterRegistry* writers,
     StepCompletionGateService* completion_gate)
     : registry_(registry)
-    , writers_(writers)
     , completion_gate_(completion_gate) {
 }
 
@@ -106,13 +89,11 @@ std::optional<programdb::ResultMapPayload> AdapterChainOrchestrator::OnJobTermin
 
     if (trace) trace->result_mapper_invoked = true;
     auto payload = descriptor->result_mapper->MapPrimaryResult(job_id, result_ini);
-    if (writers_ != nullptr) {
-        if (const auto writer = writers_->Find(payload.result_kind)) {
-            if (!writer->Persist(payload, error_out)) {
-                return std::nullopt;
-            }
-            if (trace) trace->result_writer_invoked = true;
+    if (descriptor->result_payload_writer != nullptr) {
+        if (!descriptor->result_payload_writer->Persist(payload, error_out)) {
+            return std::nullopt;
         }
+        if (trace) trace->result_writer_invoked = true;
     }
     return payload;
 }

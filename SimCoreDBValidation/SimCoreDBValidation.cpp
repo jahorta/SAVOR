@@ -476,6 +476,8 @@ ValidationResult ValidatePhase2AdapterChainShape() {
     descriptor.result_mapper = std::make_shared<ValidationMapper>();
     descriptor.workflow_transition = std::make_shared<ValidationTransition>();
     descriptor.supports_workflow_orchestration = true;
+    auto writer = std::make_shared<ValidationWriter>();
+    descriptor.result_payload_writer = writer;
 
     ProgramKindRegistry registry;
     if (!registry.Register(descriptor) || !registry.RegisterForStepKind("validation.step", descriptor)) {
@@ -483,11 +485,8 @@ ValidationResult ValidatePhase2AdapterChainShape() {
         return result;
     }
 
-    auto writer = std::make_shared<ValidationWriter>();
-    ResultPayloadWriterRegistry writers;
-    writers.Register("validation.result", writer);
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &writers, &gate);
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
 
     AdapterChainTrace trace{};
     simcore::PRResult pr{};
