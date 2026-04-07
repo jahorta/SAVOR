@@ -197,6 +197,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h" />
     <ClInclude Include="Execution\Workflow\WorkflowParityStore.h" />
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h" />
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SimCoreDB.h" />
     <ClInclude Include="State\IStateDb.h" />
@@ -235,6 +236,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowParityStore.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />

@@ -129,12 +129,26 @@ struct WorkflowMarkStepTerminalCommand {
     std::string requested_by;
 };
 
+struct WorkflowMarkStepBlockedCommand {
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::string> blocked_reason;
+    std::string requested_by;
+};
+
 struct WorkflowAppendStepInputEventCommand {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::string event_kind;
     std::optional<std::string> source_key;
     std::optional<std::string> request_id;
+    std::optional<std::string> message;
+    std::string requested_by;
+};
+
+struct WorkflowAppendLifecycleEventCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> workflow_step_id;
+    std::string event_kind;
     std::optional<std::string> message;
     std::string requested_by;
 };
@@ -162,7 +176,9 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
+    virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
     virtual bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) = 0;
+    virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
 };
 
 } // namespace simcore::db::execution::workflow

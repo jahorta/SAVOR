@@ -128,17 +128,6 @@ bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSign
 
     const bool published = workflow_bridge_.NotifyTerminal(signal);
     if (published) {
-        if (execution_db_ && execution_db_->WorkflowCommandService()) {
-            std::string error;
-            (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
-                {
-                    .workflow_step_id = signal.workflow_step_id,
-                    .terminal_state = signal.terminal_state,
-                    .requested_by = "workflow_terminal_bridge",
-                },
-                &error);
-        }
-
         std::lock_guard<std::mutex> lock(queue_mtx_);
         ++terminal_published_count_;
     }

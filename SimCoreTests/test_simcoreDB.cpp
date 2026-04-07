@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
+#include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
@@ -83,16 +85,30 @@ public:
         terminal_calls.push_back(command);
         return true;
     }
+    bool MarkStepBlocked(
+        const simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand& command,
+        std::string*) override {
+        blocked_calls.push_back(command);
+        return true;
+    }
     bool AppendStepInputEvent(
         const simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand& command,
         std::string*) override {
         input_events.push_back(command);
         return true;
     }
+    bool AppendLifecycleEvent(
+        const simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand& command,
+        std::string*) override {
+        lifecycle_events.push_back(command);
+        return true;
+    }
 
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepTerminalCommand> terminal_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;
     std::vector<simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand> input_events;
+    std::vector<simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand> lifecycle_events;
 };
 
 class NullWorkflowQueryService final : public simcore::db::execution::workflow::IWorkflowOrchestrationQueryService {
@@ -1431,9 +1447,73 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
 
     EXPECT_TRUE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_FALSE(coordinator.PublishTerminalJobSet(terminal));
-    ASSERT_EQ(execution_db.command_service.terminal_calls.size(), 1u);
-    EXPECT_EQ(execution_db.command_service.terminal_calls[0].workflow_step_id, 12);
-    EXPECT_EQ(execution_db.command_service.terminal_calls[0].terminal_state, "FAILED");
+    EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
+}
+
+namespace {
+class AlwaysAdvanceTransitionHandler final : public simcore::db::execution::programdb::IWorkflowTransitionHandler {
+public:
+    simcore::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
+        const simcore::db::execution::programdb::WorkflowTransitionContext&) const override {
+        return {
+            .should_advance = true,
+            .blocked_reason = std::nullopt,
+            .next_step_key = std::optional<std::string>("next"),
+        };
+    }
+};
+} // namespace
+
+TEST_F(SqliteDbFixture, Stage3cTerminalSubscriberProcessesTerminalJobEventsAsynchronously) {
+    using namespace simcore::db::execution::workflow;
+
+    const simcore::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = simcore::db::migrations::MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(simcore::db::migrations::ApplyContextMigrations(db_, simcore::db::migrations::MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
+VALUES(10, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(100, 1, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 10, 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'QUEUED', 0, 1, unixepoch()*1000);
+)SQL"));
+
+    simcore::db::execution::jobs::SqliteJobEventCommandService job_events(db_);
+    std::string job_error;
+    ASSERT_TRUE(job_events.AppendLifecycleEvent(
+        {
+            .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
+            .job_id = 1000,
+        },
+        &job_error)) << job_error;
+
+    simcore::db::execution::programdb::ProgramKindRegistry registry;
+    simcore::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "seedprobe.neutral";
+    descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
+    ResultPayloadWriterRegistry writer_registry;
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &writer_registry, &gate);
+
+    SqliteWorkflowOrchestrationCommandService command_service(db_);
+    WorkflowTerminalOutboxSubscriber subscriber(db_, &orchestrator, &command_service);
+    WorkflowTerminalOutboxSubscriberResult result{};
+    std::string sub_error;
+    ASSERT_TRUE(subscriber.ConsumeFromCursor(0, 32, &result, &sub_error)) << sub_error;
+    EXPECT_GE(result.handled_count, 1);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state, blocked_reason FROM exec_workflow_step WHERE workflow_step_id=100;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
+    sqlite3_finalize(st);
 }
 
 TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputEvents) {
@@ -2047,7 +2127,7 @@ TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
             ASSERT_TRUE(scheduled.has_value());
             EXPECT_EQ(execution_db.command_service.materialized_calls.size(), 1u);
             EXPECT_TRUE(published_terminal);
-            EXPECT_EQ(execution_db.command_service.terminal_calls.size(), 1u);
+            EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
         } else {
             EXPECT_FALSE(scheduled.has_value());
             EXPECT_TRUE(execution_db.command_service.materialized_calls.empty());

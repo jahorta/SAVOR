@@ -687,6 +687,81 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::MarkStepBlocked(
+    const WorkflowMarkStepBlockedCommand& command,
+    std::string* error_out) {
+    if (command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_step_id must be > 0";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_id FROM exec_workflow_step WHERE workflow_step_id=?1;",
+        &read,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_step_id);
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const auto workflow_instance_id = sqlite3_column_int64(read.st, 0);
+
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_step "
+        "SET blocked_reason=?2 "
+        "WHERE workflow_step_id=?1;",
+        &update,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, command.workflow_step_id);
+    if (command.blocked_reason.has_value()) {
+        sqlite3_bind_text(update.st, 2, command.blocked_reason->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(update.st, 2);
+    }
+
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "blocked_reason update precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (command.blocked_reason.has_value()) {
+        if (!EmitLifecycleEvent(
+            workflow_instance_id,
+            command.workflow_step_id,
+            "Execution.WorkflowStepBlocked.v1",
+            command.blocked_reason->c_str(),
+            error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::AppendStepInputEvent(
     const WorkflowAppendStepInputEventCommand& command,
     std::string* error_out) {
@@ -782,6 +857,40 @@ bool SqliteWorkflowOrchestrationCommandService::AppendStepInputEvent(
     sqlite3_bind_int64(outbox.st, 7, workflow_input_event_id);
     if (sqlite3_step(outbox.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::AppendLifecycleEvent(
+    const WorkflowAppendLifecycleEventCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+    if (command.event_kind.empty()) {
+        if (error_out) *error_out = "event_kind is required";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const char* message = command.message.has_value() ? command.message->c_str() : "";
+    if (!EmitLifecycleEvent(
+        command.workflow_instance_id,
+        command.workflow_step_id,
+        command.event_kind.c_str(),
+        message,
+        error_out)) {
         Exec(db_, "ROLLBACK;", nullptr);
         return false;
     }
