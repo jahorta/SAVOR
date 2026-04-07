@@ -12,6 +12,8 @@ struct WorkflowStepDefinition {
     std::string step_key;
     std::string step_kind;
     std::vector<std::string> dependencies;
+    std::vector<std::string> required_inputs;
+    std::vector<std::string> provided_outputs;
     std::optional<std::string> guard_kind;
     std::optional<std::string> guard_value;
     int max_attempts = 1;
@@ -19,6 +21,7 @@ struct WorkflowStepDefinition {
 
 struct WorkflowDefinition {
     std::string workflow_kind;
+    std::vector<std::string> initial_inputs;
     std::vector<WorkflowStepDefinition> steps;
 };
 

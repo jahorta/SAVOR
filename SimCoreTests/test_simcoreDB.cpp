@@ -500,6 +500,26 @@ TEST(Stage3cSeedProbeDefinition, ValidatesAndRejectsCycleDefinitions) {
     EXPECT_NE(err.find("cycle"), std::string::npos);
 }
 
+TEST(Stage3cSeedProbeDefinition, ValidatesStepContracts) {
+    using namespace simcore::db::execution::workflow;
+
+    auto definition = BuildSeedProbeChainDefinition();
+    std::string err;
+    EXPECT_TRUE(ValidateWorkflowDefinition(definition, &err)) << err;
+    ASSERT_EQ(definition.initial_inputs.size(), 1u);
+    EXPECT_EQ(definition.initial_inputs[0], "general.transition_savestate");
+    ASSERT_FALSE(definition.steps[0].required_inputs.empty());
+    EXPECT_EQ(definition.steps[0].required_inputs[0], "general.transition_savestate");
+    ASSERT_FALSE(definition.steps[2].provided_outputs.empty());
+    EXPECT_EQ(definition.steps[2].provided_outputs[0], "general.input_frame_list");
+
+    definition.steps[2].required_inputs.push_back("seedprobe.grid.extra_artifact");
+    EXPECT_FALSE(ValidateWorkflowDefinition(definition, &err));
+    EXPECT_NE(err.find("unsatisfied required_inputs"), std::string::npos);
+    EXPECT_NE(err.find("Unique"), std::string::npos);
+    EXPECT_NE(err.find("seedprobe.grid.extra_artifact"), std::string::npos);
+}
+
 TEST(Stage3cSeedProbeDefinition, RegistryRegistersDefaultsAndRejectsDuplicates) {
     using namespace simcore::db::execution::workflow;
 
@@ -513,6 +533,20 @@ TEST(Stage3cSeedProbeDefinition, RegistryRegistersDefaultsAndRejectsDuplicates) 
 
     EXPECT_FALSE(registry.RegisterSeedProbeDefaults(&err));
     EXPECT_NE(err.find("already registered"), std::string::npos);
+}
+
+TEST(Stage3cSeedProbeDefinition, RegistryRejectsInvalidContractDefinition) {
+    using namespace simcore::db::execution::workflow;
+
+    WorkflowDefinitionRegistry registry;
+    auto definition = BuildSeedProbeChainDefinition();
+    definition.steps[1].required_inputs.push_back("seedprobe.missing.contract");
+
+    std::string err;
+    EXPECT_FALSE(registry.RegisterDefinition(std::move(definition), &err));
+    EXPECT_NE(err.find("invalid workflow definition"), std::string::npos);
+    EXPECT_NE(err.find("seedprobe.missing.contract"), std::string::npos);
+    EXPECT_NE(err.find("Grid"), std::string::npos);
 }
 
 TEST(Stage3cWorkflowEngine, ResolveReadinessAndRecoveryTransitions) {
