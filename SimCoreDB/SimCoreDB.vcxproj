@@ -177,6 +177,7 @@
     <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
