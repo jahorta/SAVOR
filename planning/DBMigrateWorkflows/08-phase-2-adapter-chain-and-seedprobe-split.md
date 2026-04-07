@@ -12,6 +12,8 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
    - `input complete -> IJobPersistenceAdapter`
    - `job claimed -> IRuntimeInitAdapter`
    - `job terminal -> IResultMapper`
+     - mapper must first build **step-specific `ResultINI` from `PRResult`**.
+     - mapper must then consume that same `ResultINI` for step-specific terminal semantics (state decision, row writes, artifact resolution).
    - `step terminal -> IWorkflowTransitionHandler`
 
 2. **Completion-gate enforcement**
@@ -24,8 +26,9 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
    - Pass C: enforce per-descriptor contracts and remove shims.
 
 4. **Context-owned writer integration**
-   - `IResultMapper` returns typed payloads only.
-   - Context-owned writers persist payloads.
+   - `IResultMapper` must expose **`BuildResultIniFromPrResult`** and `MapPrimaryResult`.
+   - `ResultINI` generation and consumption are both workflow-step specific and must mirror legacy codec behavior boundaries.
+   - Context-owned writers persist payloads where split ownership is enabled; otherwise mapper-side DB writes remain step-scoped until writer replacement is complete.
 
 ## Modify
 
@@ -77,4 +80,6 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
    - Validate `SeedProbe.Neutral`, `SeedProbe.Grid`, `SeedProbe.Unique` descriptors independently satisfy declared inputs/outputs.
 
 5. **ResultMapper-to-writer contract test**
-   - Assert mapper returns typed payload and context-owned writer persists expected rows with provenance fields.
+   - Assert mapper builds step-specific `ResultINI` from `PRResult`, consumes that same `ResultINI`, and either:
+     - persists expected rows directly (legacy-compatible mode), or
+     - emits typed payload that context-owned writer persists with provenance fields.

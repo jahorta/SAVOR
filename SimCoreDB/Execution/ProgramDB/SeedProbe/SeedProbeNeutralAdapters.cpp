@@ -2,6 +2,8 @@
 
 #include "../../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
+#include "../../../../SimCore/Runner/Parallel/PRTypes.h"
+#include "../../../../SimCore/Runner/Script/KeyRegistry.h"
 #include "SeedProbeContracts.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
@@ -123,7 +125,7 @@ ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, 
         return payload;
     }
 
-    const auto job = execution_db_->GetJobRecord(job_id);
+    const auto job = execution_db_->GetJob(job_id);
     if (!job.has_value()) {
         return payload;
     }
@@ -138,6 +140,21 @@ ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, 
         payload.result_ref_id = probe_run->probe_run_id;
     }
     return payload;
+}
+
+std::string NeutralSeedResultMapper::BuildResultIniFromPrResult(std::int64_t /*job_id*/, const simcore::PRResult& result) const {
+    ResultsIni out{};
+    out.w_err = result.ps.w_err;
+    if (out.w_err == 0) {
+        result.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+    }
+    if (result.ps.ok) {
+        result.ps.ctx.get(simcore::keys::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(simcore::keys::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(simcore::keys::core::VI_LAST, out.vi_end);
+    }
+    IniDoc ini;
+    return out.append_section(ini).to_string_sorted();
 }
 
 std::optional<ResultArtifactRef> NeutralSeedResultMapper::MapPrimaryArtifact(std::int64_t) const {

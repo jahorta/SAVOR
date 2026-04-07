@@ -94,6 +94,7 @@ public:
 
     SeedProbeGridResultMapper(simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
 
+    std::string BuildResultIniFromPrResult(std::int64_t job_id, const simcore::PRResult& result) const override;
     ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const override;
     std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const override;
 

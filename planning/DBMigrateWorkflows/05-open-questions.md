@@ -24,7 +24,10 @@ This file is meant to be actively updated each iteration.
 9. **Claim heuristics**
    - Decision priority: savestate affinity first, then program/runtime affinity, then fairness.
 10. **Result mapping ownership**
-   - Decision: `IResultMapper` sends payloads to context-owned writers.
+   - Decision: `IResultMapper` is step-specific and must support legacy-like boundaries:
+     - build `ResultINI` from `PRResult`,
+     - consume that same `ResultINI` for terminal semantics,
+     - then persist via mapper-owned writes or context-owned writer depending on migration mode.
 11. **Dedupe persistence**
    - Decision: dedupe keys live in dedicated tables per service.
 12. **Step completion trigger**

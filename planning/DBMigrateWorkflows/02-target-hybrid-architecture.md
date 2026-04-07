@@ -72,7 +72,10 @@ Control plane invokes adapters in this order:
 ## 5. Result Mapping Pipeline
 
 - Subscribes to job terminal events.
-- `IResultMapper` converts raw execution output into typed payloads.
+- `IResultMapper` performs **two step-specific operations**:
+  1. build `ResultINI` from `PRResult` for the current workflow step/program descriptor,
+  2. consume that `ResultINI` to apply terminal semantics (state decisions, DB row writes, artifact resolution) for that same step.
+- This mirrors legacy `build_results_ini_from_prresult -> encode_results_into_db` boundaries, but now at step-descriptor granularity.
 - Context-owned writers persist mapped payloads into source-of-truth analysis/state stores.
 
 ## 6. Transition Service (can start in-process)
