@@ -20,6 +20,17 @@ bool Prepare(sqlite3* db, const char* sql, Statement* st) {
     return sqlite3_prepare_v2(db, sql, -1, &st->st, nullptr) == SQLITE_OK;
 }
 
+std::int64_t CurrentUtcMs(sqlite3* db) {
+    Statement st;
+    if (!Prepare(db, "SELECT CAST(unixepoch('now') * 1000 AS INTEGER);", &st)) {
+        return 0;
+    }
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowEventPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
     if (!Prepare(db,
@@ -124,6 +135,111 @@ IWorkflowOrchestrationCommandService* ExecutionDb::WorkflowCommandService() {
 
 jobs::IJobEventCommandService* ExecutionDb::JobCommandService() {
     return job_command_service_.get();
+}
+
+bool ExecutionDb::CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out, std::string* error_out) {
+    if (job_set_id_out) *job_set_id_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.program_kind <= 0 || command.purpose.empty()) {
+        if (error_out) *error_out = "program_kind and purpose are required";
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "INSERT INTO exec_job_set(parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
+        &st)) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (command.parent_job_set_id.has_value()) sqlite3_bind_int64(st.st, 1, *command.parent_job_set_id); else sqlite3_bind_null(st.st, 1);
+    sqlite3_bind_int(st.st, 2, command.program_kind);
+    sqlite3_bind_text(st.st, 3, command.purpose.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.created_by.has_value()) sqlite3_bind_text(st.st, 4, command.created_by->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 4);
+    sqlite3_bind_int64(st.st, 5, CurrentUtcMs(db_));
+    sqlite3_bind_int(st.st, 6, command.priority_boost);
+    if (command.expected_total.has_value()) sqlite3_bind_int(st.st, 7, *command.expected_total); else sqlite3_bind_null(st.st, 7);
+    if (command.domain_ref_kind.has_value()) sqlite3_bind_text(st.st, 8, command.domain_ref_kind->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 8);
+    if (command.domain_ref_id.has_value()) sqlite3_bind_int64(st.st, 9, *command.domain_ref_id); else sqlite3_bind_null(st.st, 9);
+    if (command.meta_note.has_value()) sqlite3_bind_text(st.st, 10, command.meta_note->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(st.st, 10);
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (job_set_id_out) *job_set_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
+}
+
+bool ExecutionDb::EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out, std::string* error_out) {
+    if (job_id_out) *job_id_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.job_set_id <= 0 || command.program_kind <= 0 || command.program_ref_kind.empty() || command.program_ref_id <= 0 || command.fingerprint.empty()) {
+        if (error_out) *error_out = "invalid enqueue command";
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'QUEUED',0,?9,?10);",
+        &st)) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(st.st, 1, command.job_set_id);
+    if (command.parent_job_id.has_value()) sqlite3_bind_int64(st.st, 2, *command.parent_job_id); else sqlite3_bind_null(st.st, 2);
+    sqlite3_bind_int(st.st, 3, command.program_kind);
+    sqlite3_bind_int(st.st, 4, command.program_version);
+    sqlite3_bind_text(st.st, 5, command.program_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 6, command.program_ref_id);
+    sqlite3_bind_text(st.st, 7, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 8, command.priority);
+    sqlite3_bind_int(st.st, 9, command.max_attempts);
+    sqlite3_bind_int64(st.st, 10, CurrentUtcMs(db_));
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (job_id_out) *job_id_out = sqlite3_last_insert_rowid(db_);
+    return true;
+}
+
+std::optional<ExecutionJobRecord> ExecutionDb::GetJob(std::int64_t job_id) const {
+    if (db_ == nullptr || job_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT job_id, job_set_id, program_ref_kind, program_ref_id "
+        "FROM exec_job WHERE job_id=?1;",
+        &st)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ExecutionJobRecord row{};
+    row.job_id = sqlite3_column_int64(st.st, 0);
+    row.job_set_id = sqlite3_column_int64(st.st, 1);
+    row.program_ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
+    row.program_ref_id = sqlite3_column_int64(st.st, 3);
+    return row;
 }
 
 retention::OutboxRetentionPreview ExecutionDb::PreviewOutboxRetention(

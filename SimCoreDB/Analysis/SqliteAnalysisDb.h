@@ -16,6 +16,8 @@ class SqliteAnalysisDb final : public simcore::db::IAnalysisDb {
 public:
     explicit SqliteAnalysisDb(sqlite3* db);
 
+    std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
+
     bool CreateSeedProbeSet(
         const CreateSeedProbeSetCommand& command,
         std::int64_t* probe_set_id_out = nullptr,
