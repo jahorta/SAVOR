@@ -251,6 +251,177 @@ VALUES
     return result;
 }
 
+ValidationResult ValidatePhase1AggregationGatingContracts(const std::filesystem::path& migration_root) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    ValidationResult result{ .name = "phase1.aggregation_gating" };
+    sqlite3* db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        result.message = "failed to open sqlite memory db";
+        if (db != nullptr) sqlite3_close(db);
+        return result;
+    }
+    auto close_db = [&]() { if (db != nullptr) sqlite3_close(db); db = nullptr; };
+
+    std::string err;
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    if (!ApplyContextMigrations(db, MigrationContext::Execution, options, &err)) {
+        result.message = "failed applying execution migrations: " + err;
+        close_db();
+        return result;
+    }
+    if (!ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(1301, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(1302, 1301, 'Neutral', 'seedprobe.neutral', 'READY', 1, 0, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL", &err)) {
+        result.message = "seed setup failed: " + err;
+        close_db();
+        return result;
+    }
+
+    ExecutionDb execution_db(db);
+    auto* commands = execution_db.WorkflowCommandService();
+    const auto append = [&](const char* kind, const std::optional<std::string>& source, const std::optional<std::string>& request_id) {
+        return commands && commands->AppendStepInputEvent(
+            {
+                .workflow_instance_id = 1301,
+                .workflow_step_id = 1302,
+                .event_kind = kind,
+                .source_key = source,
+                .request_id = request_id,
+                .message = std::optional<std::string>("phase1-validation"),
+                .requested_by = "SimCoreDBValidation",
+            },
+            &err);
+    };
+    if (!append("Execution.WorkflowStepInputRequested.v1", std::optional<std::string>("sync"), std::optional<std::string>("req-sync-1"))
+        || !append("Execution.WorkflowStepInputFragmentReady.v1", std::optional<std::string>("sync"), std::optional<std::string>("req-sync-1"))
+        || !append("Execution.WorkflowStepInputComplete.v1", std::nullopt, std::nullopt)) {
+        result.message = "append input events failed: " + err;
+        close_db();
+        return result;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='workflow_input_event' AND aggregate_kind='workflow_step' AND aggregate_id='1302';", -1, &st, nullptr) != SQLITE_OK) {
+        result.message = "failed preparing outbox validation query";
+        close_db();
+        return result;
+    }
+    if (sqlite3_step(st) != SQLITE_ROW) {
+        sqlite3_finalize(st);
+        result.message = "failed reading outbox validation row";
+        close_db();
+        return result;
+    }
+    const int outbox_rows = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    if (outbox_rows != 3) {
+        result.message = "expected 3 workflow_input_event outbox rows, got " + std::to_string(outbox_rows);
+        close_db();
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "aggregation gating contract rows emit expected workflow_step-scoped outbox payloads";
+    close_db();
+    return result;
+}
+
+ValidationResult ValidatePhase1TimeoutRetryPolicy(const std::filesystem::path& migration_root) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    ValidationResult result{ .name = "phase1.timeout_retry_once" };
+    sqlite3* db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        result.message = "failed to open sqlite memory db";
+        if (db != nullptr) sqlite3_close(db);
+        return result;
+    }
+    auto close_db = [&]() { if (db != nullptr) sqlite3_close(db); db = nullptr; };
+
+    std::string err;
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    if (!ApplyContextMigrations(db, MigrationContext::Execution, options, &err)) {
+        result.message = "failed applying execution migrations: " + err;
+        close_db();
+        return result;
+    }
+    if (!ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(1401, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL", &err)) {
+        result.message = "seed setup failed: " + err;
+        close_db();
+        return result;
+    }
+
+    ExecutionDb execution_db(db);
+    auto* commands = execution_db.WorkflowCommandService();
+    for (int retry = 0; retry < 2; ++retry) {
+        if (commands == nullptr || !commands->AppendStepInputEvent(
+                {
+                    .workflow_instance_id = 1401,
+                    .workflow_step_id = 1402,
+                    .event_kind = "Execution.WorkflowStepInputRequested.v1",
+                    .source_key = std::optional<std::string>("async"),
+                    .request_id = std::optional<std::string>("req-async-retry-" + std::to_string(retry)),
+                    .message = std::optional<std::string>("retry-on-timeout"),
+                    .requested_by = "SimCoreDBValidation",
+                },
+                &err)) {
+            result.message = "failed appending retry request event: " + err;
+            close_db();
+            return result;
+        }
+    }
+    if (commands == nullptr || !commands->MarkStepTerminal(
+            {
+                .workflow_step_id = 1402,
+                .terminal_state = "FAILED",
+                .requested_by = "SimCoreDBValidation-timeout",
+            },
+            &err)) {
+        result.message = "failed marking step terminal after retry exhaustion: " + err;
+        close_db();
+        return result;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=1402;", -1, &st, nullptr) != SQLITE_OK) {
+        result.message = "failed preparing terminal-state query";
+        close_db();
+        return result;
+    }
+    if (sqlite3_step(st) != SQLITE_ROW) {
+        sqlite3_finalize(st);
+        result.message = "missing step row after terminal mark";
+        close_db();
+        return result;
+    }
+    const auto* state_text = sqlite3_column_text(st, 0);
+    const std::string state = state_text ? reinterpret_cast<const char*>(state_text) : "";
+    sqlite3_finalize(st);
+    if (state != "FAILED") {
+        result.message = "expected FAILED terminal state after timeout retry exhaustion";
+        close_db();
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "single-retry timeout policy represented by two request events followed by failed terminal transition";
+    close_db();
+    return result;
+}
+
 void PrintUsage(const std::map<std::string, std::string>& validations) {
     std::cout << "SimCoreDBValidation - SimCoreDB workflow migration validation tool\n\n";
     std::cout << "Usage:\n";
@@ -268,6 +439,8 @@ int main(int argc, char** argv) {
     const std::map<std::string, std::string> validation_descriptions{
         { "phase0.event_contracts", "Validate Phase 0 workflow input event dispatch and payload-family contract checks." },
         { "phase0.replay_backfill", "Replay representative outbox rows and verify legacy/new payload refs resolve with zero unresolved rows." },
+        { "phase1.aggregation_gating", "Validate workflow_step-scoped workflow_input_event outbox rows for requested/fragment/complete aggregation flow." },
+        { "phase1.timeout_retry_once", "Validate timeout-retry-once policy shape (two input-request retries then FAILED terminal transition)." },
     };
 
     bool list_only = false;
@@ -319,12 +492,22 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase0ReplayBackfill(migration_root));
             return true;
         }
+        if (name == "phase1.aggregation_gating") {
+            results.push_back(ValidatePhase1AggregationGatingContracts(migration_root));
+            return true;
+        }
+        if (name == "phase1.timeout_retry_once") {
+            results.push_back(ValidatePhase1TimeoutRetryPolicy(migration_root));
+            return true;
+        }
         return false;
     };
 
     if (run_target == "all") {
         run_one("phase0.event_contracts");
         run_one("phase0.replay_backfill");
+        run_one("phase1.aggregation_gating");
+        run_one("phase1.timeout_retry_once");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);

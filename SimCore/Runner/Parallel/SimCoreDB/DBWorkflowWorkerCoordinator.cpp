@@ -21,6 +21,30 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     , worker_cfg_(std::move(worker_cfg))
     , integration_cfg_(integration_cfg)
     , workflow_scheduler_adapter_(std::move(workflow_schedule_fn))
+    , input_aggregation_service_(
+        StepInputAggregationConfig{},
+        [this](
+            const WorkflowReadyStep& step,
+            const std::string& event_kind,
+            const std::optional<std::string>& source_key,
+            const std::optional<std::string>& request_id,
+            const std::optional<std::string>& message) {
+            if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+                return;
+            }
+            std::string error;
+            (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
+                {
+                    .workflow_instance_id = step.workflow_instance_id,
+                    .workflow_step_id = step.workflow_step_id,
+                    .event_kind = event_kind,
+                    .source_key = source_key,
+                    .request_id = request_id,
+                    .message = message,
+                    .requested_by = "step_input_aggregation",
+                },
+                &error);
+        })
     , build_job_payload_fn_(std::move(build_job_payload_fn))
     , persist_materialization_fn_(std::move(persist_materialization_fn)) {
 }
@@ -210,6 +234,10 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     telemetry.ready_steps_enqueued = ready_steps_enqueued_.load();
     telemetry.last_ready_scan_latency_ms = last_ready_scan_latency_ms_.load();
     telemetry.max_ready_queue_depth = max_ready_queue_depth_.load();
+    telemetry.input_complete_count = input_complete_count_.load();
+    telemetry.input_timeout_count = input_timeout_count_.load();
+    telemetry.terminal_input_failure_count = terminal_input_failure_count_.load();
+    telemetry.last_input_latency_ms = last_input_latency_ms_.load();
     return telemetry;
 }
 
@@ -232,6 +260,37 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
 
         if (!integration_cfg_.workflow_enabled) {
             continue;
+        }
+
+        const auto aggregation = input_aggregation_service_.Evaluate(
+            step,
+            std::chrono::steady_clock::now(),
+            true);
+        if (!aggregation.input_complete) {
+            if (aggregation.timed_out) {
+                ++input_timeout_count_;
+            }
+            if (aggregation.terminal_failure_ready) {
+                ++terminal_input_failure_count_;
+                if (execution_db_ && execution_db_->WorkflowCommandService()) {
+                    std::string error;
+                    (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
+                        {
+                            .workflow_step_id = step.workflow_step_id,
+                            .terminal_state = "FAILED",
+                            .requested_by = "step_input_aggregation_timeout",
+                        },
+                        &error);
+                }
+                continue;
+            }
+            EnqueueReadyStep(step);
+            continue;
+        }
+
+        ++input_complete_count_;
+        if (aggregation.input_latency_ms.has_value()) {
+            last_input_latency_ms_.store(*aggregation.input_latency_ms);
         }
 
         const auto scheduled = workflow_scheduler_adapter_.MaterializeReadyStep(step);

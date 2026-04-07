@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -37,6 +38,7 @@
 #include "Runner/Parallel/SimCoreDB/WorkflowCoordinatorBridge.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
+#include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
 
 namespace {
 
@@ -76,9 +78,16 @@ public:
         terminal_calls.push_back(command);
         return true;
     }
+    bool AppendStepInputEvent(
+        const simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand& command,
+        std::string*) override {
+        input_events.push_back(command);
+        return true;
+    }
 
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepTerminalCommand> terminal_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand> input_events;
 };
 
 class NullWorkflowQueryService final : public simcore::db::execution::workflow::IWorkflowOrchestrationQueryService {
@@ -1033,6 +1042,95 @@ TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps
     EXPECT_EQ(scheduled.workflow_step_id, 44);
 }
 
+TEST(Stage1StepInputAggregation, AllInputsRequiredGatingAndEventSequence) {
+    using namespace simcore::runner::parallel::simcoredb;
+
+    std::vector<std::string> events;
+    StepInputAggregationService svc(
+        StepInputAggregationConfig{ .timeout = std::chrono::milliseconds(50), .max_timeout_retries = 1 },
+        [&](const WorkflowReadyStep&, const std::string& event_kind, const std::optional<std::string>&, const std::optional<std::string>&, const std::optional<std::string>&) {
+            events.push_back(event_kind);
+        });
+
+    const WorkflowReadyStep step{
+        .workflow_instance_id = 1,
+        .workflow_step_id = 10,
+        .step_key = "Neutral",
+        .step_kind = "seedprobe.neutral",
+        .priority = 1,
+    };
+    const auto t0 = std::chrono::steady_clock::time_point{};
+    const auto first = svc.Evaluate(step, t0, false);
+    EXPECT_FALSE(first.input_complete);
+
+    const auto second = svc.Evaluate(step, t0 + std::chrono::milliseconds(6), true);
+    EXPECT_TRUE(second.input_complete);
+    ASSERT_GE(events.size(), 4u);
+    EXPECT_EQ(events[0], "Execution.WorkflowStepInputRequested.v1");
+    EXPECT_EQ(events[1], "Execution.WorkflowStepInputRequested.v1");
+    EXPECT_EQ(events[2], "Execution.WorkflowStepInputFragmentReady.v1");
+    EXPECT_EQ(events.back(), "Execution.WorkflowStepInputComplete.v1");
+}
+
+TEST(Stage1StepInputAggregation, DuplicateFragmentIsIdempotentAndScopedByInstanceAndStepKey) {
+    using namespace simcore::runner::parallel::simcoredb;
+
+    int fragment_ready_count = 0;
+    StepInputAggregationService svc(
+        StepInputAggregationConfig{ .timeout = std::chrono::milliseconds(50), .max_timeout_retries = 1 },
+        [&](const WorkflowReadyStep&, const std::string& event_kind, const std::optional<std::string>&, const std::optional<std::string>&, const std::optional<std::string>&) {
+            if (event_kind == "Execution.WorkflowStepInputFragmentReady.v1") {
+                ++fragment_ready_count;
+            }
+        });
+
+    const auto t0 = std::chrono::steady_clock::time_point{};
+    const WorkflowReadyStep a{ .workflow_instance_id = 7, .workflow_step_id = 70, .step_key = "Grid", .step_kind = "seedprobe.grid", .priority = 1 };
+    const WorkflowReadyStep b{ .workflow_instance_id = 8, .workflow_step_id = 71, .step_key = "Grid", .step_kind = "seedprobe.grid", .priority = 1 };
+
+    (void)svc.Evaluate(a, t0, false);
+    EXPECT_TRUE(svc.SubmitFragment(a, "sync", std::nullopt, t0)); // duplicate sync should be idempotent
+    EXPECT_TRUE(svc.SubmitFragment(a, "sync", std::nullopt, t0));
+    (void)svc.Evaluate(b, t0, false);
+    EXPECT_TRUE(svc.SubmitFragment(b, "sync", std::nullopt, t0));
+    EXPECT_EQ(fragment_ready_count, 2);
+}
+
+TEST(Stage1StepInputAggregation, TimeoutRetriesOnceThenMarksTerminalFailureReady) {
+    using namespace simcore::runner::parallel::simcoredb;
+
+    int requested_count = 0;
+    StepInputAggregationService svc(
+        StepInputAggregationConfig{ .timeout = std::chrono::milliseconds(10), .max_timeout_retries = 1 },
+        [&](const WorkflowReadyStep&, const std::string& event_kind, const std::optional<std::string>&, const std::optional<std::string>&, const std::optional<std::string>&) {
+            if (event_kind == "Execution.WorkflowStepInputRequested.v1") {
+                ++requested_count;
+            }
+        });
+
+    const WorkflowReadyStep step{
+        .workflow_instance_id = 2,
+        .workflow_step_id = 20,
+        .step_key = "Unique",
+        .step_kind = "seedprobe.unique",
+        .priority = 1,
+    };
+    const auto t0 = std::chrono::steady_clock::time_point{};
+    const auto collecting = svc.Evaluate(step, t0, false);
+    EXPECT_FALSE(collecting.input_complete);
+
+    const auto after_first_timeout = svc.Evaluate(step, t0 + std::chrono::milliseconds(11), false);
+    EXPECT_FALSE(after_first_timeout.input_complete);
+    EXPECT_TRUE(after_first_timeout.timed_out);
+    EXPECT_FALSE(after_first_timeout.terminal_failure_ready);
+
+    const auto after_second_timeout = svc.Evaluate(step, t0 + std::chrono::milliseconds(22), false);
+    EXPECT_FALSE(after_second_timeout.input_complete);
+    EXPECT_TRUE(after_second_timeout.timed_out);
+    EXPECT_TRUE(after_second_timeout.terminal_failure_ready);
+    EXPECT_GE(requested_count, 4); // initial (2) + retry (2)
+}
+
 TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridge) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
@@ -1142,6 +1240,60 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     ASSERT_EQ(execution_db.command_service.terminal_calls.size(), 1u);
     EXPECT_EQ(execution_db.command_service.terminal_calls[0].workflow_step_id, 12);
     EXPECT_EQ(execution_db.command_service.terminal_calls[0].terminal_state, "FAILED");
+}
+
+TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputEvents) {
+    using namespace simcore::runner::parallel::simcoredb;
+    using namespace simcore::db::execution::workflow;
+
+    RecordingExecutionDb execution_db;
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage1-test" });
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        &mode_provider,
+        DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 0,
+            .controller_sleep_ms = 1,
+        },
+        CoordinatorIntegrationConfig{},
+        [](const WorkflowReadyStep& step) {
+            return ScheduledJobSet{
+                .job_set_id = 7000 + step.workflow_step_id,
+                .workflow_step_id = step.workflow_step_id,
+            };
+        });
+
+    coordinator.EnqueueReadyStep({
+        .workflow_instance_id = 101,
+        .workflow_step_id = 202,
+        .step_key = "Neutral",
+        .step_kind = "seedprobe.neutral",
+        .priority = 1,
+    });
+
+    coordinator.Start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    coordinator.Stop();
+
+    ASSERT_EQ(execution_db.command_service.materialized_calls.size(), 1u);
+    EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 202);
+    EXPECT_FALSE(execution_db.command_service.input_events.empty());
+    bool saw_requested = false;
+    bool saw_fragment = false;
+    bool saw_complete = false;
+    for (const auto& event : execution_db.command_service.input_events) {
+        if (event.event_kind == "Execution.WorkflowStepInputRequested.v1") saw_requested = true;
+        if (event.event_kind == "Execution.WorkflowStepInputFragmentReady.v1") saw_fragment = true;
+        if (event.event_kind == "Execution.WorkflowStepInputComplete.v1") saw_complete = true;
+    }
+    EXPECT_TRUE(saw_requested);
+    EXPECT_TRUE(saw_fragment);
+    EXPECT_TRUE(saw_complete);
+
+    const auto telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_GE(telemetry.input_complete_count, 1);
+    EXPECT_GE(telemetry.last_input_latency_ms, 0);
 }
 
 TEST(Stage3cCoordinatorReplacement, DisabledWorkflowModeSkipsWorkflowPersistencePath) {
