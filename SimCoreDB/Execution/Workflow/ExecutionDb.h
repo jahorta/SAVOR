@@ -23,6 +23,15 @@ public:
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
     jobs::IJobEventCommandService* JobCommandService() override;
+    std::optional<ExecutionJobRecord> GetJobRecord(std::int64_t job_id) const override;
+    bool CreateJobSet(
+        const CreateJobSetCommand& command,
+        std::int64_t* job_set_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool EnqueueJob(
+        const EnqueueJobCommand& command,
+        std::int64_t* job_id_out = nullptr,
+        std::string* error_out = nullptr) override;
     retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
         types::UtcTimePoint now_utc,
