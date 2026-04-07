@@ -518,6 +518,24 @@ SqliteAnalysisDb::SqliteAnalysisDb(sqlite3* db)
     , spine_row_resolver_(db_) {
 }
 
+std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const {
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (!Prepare(db_, "SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=?1;", &st, nullptr)) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    return sqlite3_column_int64(st.st, 0);
+}
+
 bool SqliteAnalysisDb::CreateSeedProbeSet(
     const CreateSeedProbeSetCommand& command,
     std::int64_t* probe_set_id_out,

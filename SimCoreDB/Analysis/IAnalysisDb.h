@@ -215,6 +215,8 @@ struct UpsertBattleTerminalFollowupCommand {
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
+    virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
+
     virtual bool CreateSeedProbeSet(
         const CreateSeedProbeSetCommand& command,
         std::int64_t* probe_set_id_out = nullptr,

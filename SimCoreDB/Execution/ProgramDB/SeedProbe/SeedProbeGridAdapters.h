@@ -1,0 +1,123 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "../ProgramKindDescriptor.h"
+#include "../../../Analysis/IAnalysisDb.h"
+#include "../../IExecutionDb.h"
+#include "../../../../SimCore/Runner/IPC/Wire.h"
+
+namespace simcore::db::execution::programdb::seedprobe {
+
+enum class SeedProbeWorkflowPhase : std::uint32_t {
+    Neutral = 1,
+    Grid = 2,
+    Unique = 3,
+};
+
+struct SeedProbeGridBlueprintConfig {
+    std::int64_t probe_id = 0;
+    std::int32_t program_version = 1;
+    std::uint32_t run_ms = 0;
+    std::uint32_t vi_stall_ms = 0;
+};
+
+struct SeedProbeGridSpec {
+    int samples_per_axis = 5;
+    std::uint8_t min_value = 0;
+    std::uint8_t max_value = 255;
+    bool cap_trigger_top = true;
+    bool ignore_trigger_minmax = false;
+};
+
+struct GridFanoutEntry {
+    std::int64_t domain_ref_id = 0;
+    simcore::GCInputFrame frame{};
+    std::string frame_hex;
+    JobPersistenceRecord persistence{};
+};
+
+class SeedProbeGridJobPersistenceAdapter final : public IJobPersistenceAdapter {
+public:
+    SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid);
+
+    JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const override;
+    std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
+
+    const std::vector<GridFanoutEntry>& Fanout() const;
+
+private:
+    static std::string FingerprintFor(const SeedProbeGridBlueprintConfig& blueprint, std::int64_t probe_run_id, const std::string& frame_hex, const char* family, std::int64_t grid_ref);
+    std::vector<GridFanoutEntry> BuildFanout() const;
+
+    simcore::db::IExecutionDb* execution_db_ = nullptr;
+    SeedProbeGridBlueprintConfig blueprint_{};
+    SeedProbeGridSpec grid_{};
+    std::vector<GridFanoutEntry> fanout_{};
+};
+
+struct RuntimeInitSeedProbeContext {
+    std::int64_t savestate_id = 0;
+    std::string bootstrap_profile;
+};
+
+class SeedProbeRuntimeInitAdapter final : public IRuntimeInitAdapter {
+public:
+    SeedProbeRuntimeInitAdapter(simcore::db::IExecutionDb* execution_db, const simcore::db::IAnalysisDb* analysis_db);
+
+    RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const override;
+
+private:
+    simcore::db::IExecutionDb* execution_db_ = nullptr;
+    const simcore::db::IAnalysisDb* analysis_db_ = nullptr;
+};
+
+struct GridResultContext {
+    SeedProbeWorkflowPhase phase = SeedProbeWorkflowPhase::Neutral;
+    std::int64_t probe_result_id = 0;
+    std::int64_t input_frame_id = 0;
+    std::int64_t neutral_seed = 0;
+    std::uint32_t observed_seed = 0;
+    std::string frame_hex;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+class SeedProbeGridResultMapper final : public IResultMapper {
+public:
+    using ContextLookupFn = std::function<std::optional<GridResultContext>(std::int64_t job_id)>;
+
+    SeedProbeGridResultMapper(simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
+
+    ResultMapPayload MapPrimaryResult(std::int64_t job_id) const override;
+    std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const override;
+
+    static bool ShouldRequeueOnFailure(SeedProbeWorkflowPhase phase);
+
+private:
+    static std::string EventId(std::int64_t job_id, const char* phase_label);
+    static std::optional<simcore::GCInputFrame> ParseFrame(const std::string& frame_hex);
+    static std::string FamilyLabel(std::uint8_t family);
+    static std::int64_t AxisXYId(const simcore::GCInputFrame& frame);
+
+    simcore::db::IAnalysisDb* analysis_db_ = nullptr;
+    ContextLookupFn lookup_context_{};
+};
+
+class SeedProbeUniqueTransitionHandler final : public IWorkflowTransitionHandler {
+public:
+    using CompletionGateFn = std::function<bool(const WorkflowTransitionContext& context)>;
+
+    explicit SeedProbeUniqueTransitionHandler(CompletionGateFn completion_gate);
+
+    WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override;
+
+private:
+    CompletionGateFn completion_gate_{};
+};
+
+} // namespace simcore::db::execution::programdb::seedprobe

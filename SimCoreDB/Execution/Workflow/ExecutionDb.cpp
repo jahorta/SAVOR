@@ -20,6 +20,15 @@ bool Prepare(sqlite3* db, const char* sql, Statement* st) {
     return sqlite3_prepare_v2(db, sql, -1, &st->st, nullptr) == SQLITE_OK;
 }
 
+std::int64_t CurrentUtcMs(sqlite3* db) {
+    Statement st;
+    if (!Prepare(db, "SELECT CAST(unixepoch('now') * 1000 AS INTEGER);", &st)) {
+        return 0;
+    }
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(st.st, 0);
 bool Exec(sqlite3* db, const char* sql) {
     return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
@@ -249,13 +258,12 @@ bool ExecutionDb::EnqueueJob(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.job_set_id <= 0 || command.program_kind <= 0 || command.program_version <= 0
-        || command.program_ref_kind.empty() || command.program_ref_id <= 0 || command.fingerprint.empty()) {
+    if (command.job_set_id <= 0 || command.program_kind <= 0 || command.program_ref_kind.empty() || command.program_ref_id <= 0 || command.fingerprint.empty()) {
         if (error_out) *error_out = "invalid enqueue command";
         return false;
     }
-    const auto queued_at = command.queued_at_utc > 0 ? command.queued_at_utc : NowUtcMillis();
-    Statement insert_job;
+
+    Statement st;
     if (!Prepare(db_,
         "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL);",
@@ -279,20 +287,34 @@ bool ExecutionDb::EnqueueJob(
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    const auto job_id = sqlite3_last_insert_rowid(db_);
-    if (job_id_out) *job_id_out = job_id;
 
-    if (job_command_service_) {
-        std::string ignored;
-        (void)job_command_service_->AppendLifecycleEvent(
-            {
-                .kind = jobs::JobLifecycleEventKind::JobQueued,
-                .job_id = job_id,
-                .requested_by = std::string("execution_db.enqueue_job"),
-            },
-            &ignored);
-    }
+    if (job_id_out) *job_id_out = sqlite3_last_insert_rowid(db_);
     return true;
+}
+
+std::optional<ExecutionJobRecord> ExecutionDb::GetJob(std::int64_t job_id) const {
+    if (db_ == nullptr || job_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT job_id, job_set_id, program_ref_kind, program_ref_id "
+        "FROM exec_job WHERE job_id=?1;",
+        &st)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ExecutionJobRecord row{};
+    row.job_id = sqlite3_column_int64(st.st, 0);
+    row.job_set_id = sqlite3_column_int64(st.st, 1);
+    row.program_ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
+    row.program_ref_id = sqlite3_column_int64(st.st, 3);
+    return row;
 }
 
 retention::OutboxRetentionPreview ExecutionDb::PreviewOutboxRetention(
