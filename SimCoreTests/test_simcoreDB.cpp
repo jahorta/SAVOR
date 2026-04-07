@@ -34,6 +34,7 @@
 #include "Execution/Workflow/WorkflowParityStore.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
+#include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
@@ -1095,6 +1096,144 @@ TEST(Stage3cSeedProbeProgramDB, RegistryDispatchesAdaptersByWorkflowStepKind) {
     const auto* unique = registry.FindForStepKind("seedprobe.unique");
     ASSERT_NE(unique, nullptr);
     EXPECT_NE(dynamic_cast<SeedProbeUniqueJobPersistenceAdapter*>(unique->job_persistence.get()), nullptr);
+}
+
+TEST(Stage3cSeedProbeProgramDB, UniqueTransitionBlocksWhenCompletionGateFails) {
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    SeedProbeUniqueTransitionHandler handler([](const auto&) { return false; });
+    const simcore::db::execution::programdb::WorkflowTransitionContext context{
+        .workflow_instance_id = 77,
+        .workflow_step_id = 501,
+        .job_set_id = 9001,
+        .workflow_kind = "SEED_PROBE_CHAIN",
+        .step_key = "Grid",
+    };
+
+    const auto decision = handler.EvaluateTransition(context);
+    EXPECT_FALSE(decision.should_advance);
+    EXPECT_EQ(decision.blocked_reason.value_or(""), "Grid completion gate not satisfied");
+    EXPECT_EQ(decision.next_step_key.value_or(""), "Unique");
+}
+
+TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::workflow;
+
+    class MockPersistence final : public IJobPersistenceAdapter {
+    public:
+        JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const override {
+            JobPersistenceRecord r{};
+            r.program_ref_kind = "mock";
+            r.program_ref_id = domain_ref_id;
+            return r;
+        }
+        std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override { return persisted.program_ref_id; }
+    };
+    class MockRuntime final : public IRuntimeInitAdapter {
+    public:
+        RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const override {
+            RuntimeInitRequest r{};
+            r.bootstrap_profile = "mock.runtime";
+            r.savestate_ref_kind = "savestate";
+            r.savestate_ref_id = job_id;
+            return r;
+        }
+    };
+    class MockMapper final : public IResultMapper {
+    public:
+        std::string BuildResultIniFromPrResult(std::int64_t, const simcore::PRResult&) const override {
+            return "[Mock.Results]\nok=1\n";
+        }
+        ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string&) const override {
+            return ResultMapPayload{ .result_kind = "mock.result", .result_ref_id = job_id };
+        }
+        std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t) const override { return std::nullopt; }
+    };
+    class MockTransition final : public IWorkflowTransitionHandler {
+    public:
+        WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext&) const override {
+            return WorkflowTransitionDecision{ .should_advance = true, .blocked_reason = std::nullopt, .next_step_key = std::optional<std::string>("Next") };
+        }
+    };
+    class MockWriter final : public IResultPayloadWriter {
+    public:
+        bool Persist(const ResultMapPayload& payload, std::string*) override {
+            persisted.push_back(payload.result_kind + ":" + std::to_string(payload.result_ref_id));
+            return true;
+        }
+        std::vector<std::string> persisted;
+    };
+
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 999;
+    descriptor.program_name = "MockProgram";
+    descriptor.job_persistence = std::make_shared<MockPersistence>();
+    descriptor.runtime_init = std::make_shared<MockRuntime>();
+    descriptor.result_mapper = std::make_shared<MockMapper>();
+    descriptor.workflow_transition = std::make_shared<MockTransition>();
+    descriptor.supports_workflow_orchestration = true;
+
+    ProgramKindRegistry registry;
+    ASSERT_TRUE(registry.Register(descriptor));
+    ASSERT_TRUE(registry.RegisterForStepKind("mock.step", descriptor));
+
+    auto writer = std::make_shared<MockWriter>();
+    ResultPayloadWriterRegistry writers;
+    writers.Register("mock.result", writer);
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &writers, &gate);
+
+    AdapterChainTrace trace{};
+    const auto persisted = orchestrator.OnInputComplete("mock.step", 77, &trace);
+    ASSERT_TRUE(persisted.has_value());
+    EXPECT_TRUE(trace.job_persistence_invoked);
+
+    const auto runtime = orchestrator.OnJobClaimed("mock.step", 88, &trace);
+    ASSERT_TRUE(runtime.has_value());
+    EXPECT_TRUE(trace.runtime_init_invoked);
+
+    simcore::PRResult pr{};
+    pr.job_id = 99;
+    const auto mapped = orchestrator.OnJobTerminal("mock.step", 99, pr, &trace, nullptr);
+    ASSERT_TRUE(mapped.has_value());
+    EXPECT_TRUE(trace.result_mapper_invoked);
+    EXPECT_TRUE(trace.result_writer_invoked);
+    ASSERT_EQ(writer->persisted.size(), 1u);
+    EXPECT_EQ(writer->persisted.front(), "mock.result:99");
+
+    const auto terminal = orchestrator.OnStepTerminal(
+        "mock.step",
+        WorkflowTransitionContext{ .workflow_instance_id = 1, .workflow_step_id = 2, .job_set_id = 3, .workflow_kind = "Mock", .step_key = "Step" },
+        StepCompletionSnapshot{ .workflow_step_id = 2, .job_set_id = 3, .expected_total = 1, .discovered_total = 1, .terminal_total = 1 },
+        &trace);
+    EXPECT_TRUE(terminal.gate.can_transition);
+    ASSERT_TRUE(terminal.transition.has_value());
+    EXPECT_TRUE(terminal.transition->should_advance);
+    EXPECT_TRUE(trace.transition_handler_invoked);
+}
+
+TEST(Stage2AdapterChain, CompletionGateMismatchThenTerminalFail) {
+    using namespace simcore::db::execution::workflow;
+
+    StepCompletionGateService gate;
+    const StepCompletionSnapshot snapshot{
+        .workflow_step_id = 500,
+        .job_set_id = 900,
+        .expected_total = 10,
+        .discovered_total = 9,
+        .terminal_total = 9,
+    };
+
+    const auto first = gate.Evaluate(snapshot);
+    EXPECT_FALSE(first.can_transition);
+    EXPECT_FALSE(first.terminal_fail);
+    EXPECT_EQ(first.blocked_reason.value_or(""), "STEP_BLOCKED_COUNT_MISMATCH");
+
+    const auto second = gate.Evaluate(snapshot);
+    EXPECT_FALSE(second.can_transition);
+    EXPECT_TRUE(second.terminal_fail);
+    EXPECT_EQ(second.blocked_reason.value_or(""), "STEP_BLOCKED_COUNT_MISMATCH_TERMINAL_FAIL");
 }
 
 TEST(Stage1StepInputAggregation, AllInputsRequiredGatingAndEventSequence) {

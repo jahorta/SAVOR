@@ -7,6 +7,8 @@
 
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Phases/RNGSeedDeltaMap.h"
+#include "../../../../SimCore/Runner/Parallel/PRTypes.h"
+#include "../../../../SimCore/Runner/Script/KeyRegistry.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
 
@@ -190,6 +192,21 @@ SeedProbeUniqueResultMapper::SeedProbeUniqueResultMapper(simcore::db::IExecution
     , analysis_db_(analysis_db) {
 }
 
+std::string SeedProbeUniqueResultMapper::BuildResultIniFromPrResult(std::int64_t /*job_id*/, const simcore::PRResult& result) const {
+    ResultsIni out{};
+    out.w_err = result.ps.w_err;
+    if (out.w_err == 0) {
+        result.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+    }
+    if (result.ps.ok) {
+        result.ps.ctx.get(simcore::keys::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(simcore::keys::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(simcore::keys::core::VI_LAST, out.vi_end);
+    }
+    IniDoc ini;
+    return out.append_section(ini).to_string_sorted();
+}
+
 ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     ResultMapPayload payload{};
     payload.result_kind = "analysisseedprobe.unique.unavailable";
@@ -212,6 +229,7 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     const bool seen = analysis_db_->HasSeedProbeUniqueSeedDelta(job->program_ref_id, observed_delta);
     if (seen) {
         payload.result_kind = "analysisseedprobe.unique.duplicate";
+        payload.result_ref_id = observed_delta;
         (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr);
         return payload;
     }

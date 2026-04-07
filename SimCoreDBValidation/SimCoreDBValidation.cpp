@@ -15,6 +15,9 @@
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/OutboxRelay.h"
 #include "Common/Migrations/MigrationRunner.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
+#include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/ExecutionDb.h"
 
 namespace {
@@ -422,6 +425,144 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     return result;
 }
 
+ValidationResult ValidatePhase2AdapterChainShape() {
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::workflow;
+
+    class ValidationPersistence final : public IJobPersistenceAdapter {
+    public:
+        JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const override {
+            return JobPersistenceRecord{ .program_ref_kind = "validation", .program_ref_id = domain_ref_id, .fingerprint = "fp", .program_version = 1 };
+        }
+        std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override { return persisted.program_ref_id; }
+    };
+    class ValidationRuntimeInit final : public IRuntimeInitAdapter {
+    public:
+        RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const override {
+            return RuntimeInitRequest{ .savestate_ref_kind = "savestate", .savestate_ref_id = job_id, .bootstrap_profile = "validation.runtime" };
+        }
+    };
+    class ValidationMapper final : public IResultMapper {
+    public:
+        std::string BuildResultIniFromPrResult(std::int64_t, const simcore::PRResult&) const override {
+            return "[Validation.Results]\nok=1\n";
+        }
+        ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string&) const override {
+            return ResultMapPayload{ .result_kind = "validation.result", .result_ref_id = job_id };
+        }
+        std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t) const override { return std::nullopt; }
+    };
+    class ValidationTransition final : public IWorkflowTransitionHandler {
+    public:
+        WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext&) const override {
+            return WorkflowTransitionDecision{ .should_advance = true, .blocked_reason = std::nullopt, .next_step_key = std::optional<std::string>("Unique") };
+        }
+    };
+    class ValidationWriter final : public IResultPayloadWriter {
+    public:
+        bool Persist(const ResultMapPayload& payload, std::string*) override {
+            writes.push_back(payload.result_kind + ":" + std::to_string(payload.result_ref_id));
+            return true;
+        }
+        std::vector<std::string> writes;
+    };
+
+    ValidationResult result{ .name = "phase2.adapter_chain_shape" };
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 321;
+    descriptor.program_name = "validation";
+    descriptor.job_persistence = std::make_shared<ValidationPersistence>();
+    descriptor.runtime_init = std::make_shared<ValidationRuntimeInit>();
+    descriptor.result_mapper = std::make_shared<ValidationMapper>();
+    descriptor.workflow_transition = std::make_shared<ValidationTransition>();
+    descriptor.supports_workflow_orchestration = true;
+
+    ProgramKindRegistry registry;
+    if (!registry.Register(descriptor) || !registry.RegisterForStepKind("validation.step", descriptor)) {
+        result.message = "failed to register validation descriptor";
+        return result;
+    }
+
+    auto writer = std::make_shared<ValidationWriter>();
+    ResultPayloadWriterRegistry writers;
+    writers.Register("validation.result", writer);
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &writers, &gate);
+
+    AdapterChainTrace trace{};
+    simcore::PRResult pr{};
+    pr.job_id = 3;
+    if (!orchestrator.OnInputComplete("validation.step", 1, &trace).has_value()
+        || !orchestrator.OnJobClaimed("validation.step", 2, &trace).has_value()
+        || !orchestrator.OnJobTerminal("validation.step", 3, pr, &trace, nullptr).has_value()) {
+        result.message = "adapter chain failed before transition stage";
+        return result;
+    }
+    const auto terminal = orchestrator.OnStepTerminal(
+        "validation.step",
+        WorkflowTransitionContext{ .workflow_instance_id = 1, .workflow_step_id = 11, .job_set_id = 12, .workflow_kind = "VALIDATION", .step_key = "Validation" },
+        StepCompletionSnapshot{ .workflow_step_id = 11, .job_set_id = 12, .expected_total = 1, .discovered_total = 1, .terminal_total = 1 },
+        &trace);
+    if (!terminal.gate.can_transition || !terminal.transition.has_value() || !terminal.transition->should_advance) {
+        result.message = "adapter chain did not reach transition-approve stage";
+        return result;
+    }
+    if (!trace.job_persistence_invoked || !trace.runtime_init_invoked || !trace.result_mapper_invoked || !trace.result_writer_invoked || !trace.transition_handler_invoked) {
+        result.message = "adapter invocation order/coverage did not execute all canonical stages";
+        return result;
+    }
+    if (writer->writes.size() != 1u) {
+        result.message = "context-owned writer did not persist mapped payload";
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "adapter chain executed through persistence/runtime/map/writer/transition stages";
+    return result;
+}
+
+ValidationResult ValidatePhase2CompletionGateMismatchPolicy() {
+    using namespace simcore::db::execution::workflow;
+
+    ValidationResult result{ .name = "phase2.completion_gate_mismatch" };
+    StepCompletionGateService gate;
+    const StepCompletionSnapshot mismatch{
+        .workflow_step_id = 20,
+        .job_set_id = 200,
+        .expected_total = 4,
+        .discovered_total = 3,
+        .terminal_total = 3,
+    };
+
+    const auto first = gate.Evaluate(mismatch);
+    const auto second = gate.Evaluate(mismatch);
+    if (first.can_transition || first.terminal_fail || first.blocked_reason.value_or("") != "STEP_BLOCKED_COUNT_MISMATCH") {
+        result.message = "first mismatch attempt should block with STEP_BLOCKED_COUNT_MISMATCH";
+        return result;
+    }
+    if (second.can_transition || !second.terminal_fail || second.blocked_reason.value_or("") != "STEP_BLOCKED_COUNT_MISMATCH_TERMINAL_FAIL") {
+        result.message = "second mismatch attempt should escalate to terminal fail fallback";
+        return result;
+    }
+
+    const StepCompletionSnapshot incomplete{
+        .workflow_step_id = 20,
+        .job_set_id = 201,
+        .expected_total = 3,
+        .discovered_total = 3,
+        .terminal_total = 2,
+    };
+    const auto incomplete_decision = gate.Evaluate(incomplete);
+    if (incomplete_decision.can_transition || incomplete_decision.blocked_reason.value_or("") != "STEP_BLOCKED_JOBS_NON_TERMINAL") {
+        result.message = "non-terminal job-set gate should block transition";
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "completion gate enforces mismatch reconcile/fail semantics and non-terminal blocking";
+    return result;
+}
+
 void PrintUsage(const std::map<std::string, std::string>& validations) {
     std::cout << "SimCoreDBValidation - SimCoreDB workflow migration validation tool\n\n";
     std::cout << "Usage:\n";
@@ -441,6 +582,8 @@ int main(int argc, char** argv) {
         { "phase0.replay_backfill", "Replay representative outbox rows and verify legacy/new payload refs resolve with zero unresolved rows." },
         { "phase1.aggregation_gating", "Validate workflow_step-scoped workflow_input_event outbox rows for requested/fragment/complete aggregation flow." },
         { "phase1.timeout_retry_once", "Validate timeout-retry-once policy shape (two input-request retries then FAILED terminal transition)." },
+        { "phase2.adapter_chain_shape", "Validate canonical adapter-chain members are present and invocable for seedprobe neutral step." },
+        { "phase2.completion_gate_mismatch", "Validate mismatch semantics block with STEP_BLOCKED_COUNT_MISMATCH then terminal-fail fallback reason." },
     };
 
     bool list_only = false;
@@ -500,6 +643,14 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase1TimeoutRetryPolicy(migration_root));
             return true;
         }
+        if (name == "phase2.adapter_chain_shape") {
+            results.push_back(ValidatePhase2AdapterChainShape());
+            return true;
+        }
+        if (name == "phase2.completion_gate_mismatch") {
+            results.push_back(ValidatePhase2CompletionGateMismatchPolicy());
+            return true;
+        }
         return false;
     };
 
@@ -508,6 +659,8 @@ int main(int argc, char** argv) {
         run_one("phase0.replay_backfill");
         run_one("phase1.aggregation_gating");
         run_one("phase1.timeout_retry_once");
+        run_one("phase2.adapter_chain_shape");
+        run_one("phase2.completion_gate_mismatch");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);

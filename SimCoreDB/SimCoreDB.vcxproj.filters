@@ -36,6 +36,7 @@
     <ClInclude Include="Execution\IExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\ExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowEngine.h"><Filter>Header Files</Filter></ClInclude>
@@ -73,6 +74,7 @@
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp"><Filter>Source Files</Filter></ClCompile>

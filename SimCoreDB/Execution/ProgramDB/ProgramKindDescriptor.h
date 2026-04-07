@@ -5,6 +5,10 @@
 #include <optional>
 #include <string>
 
+namespace simcore {
+struct PRResult;
+}
+
 namespace simcore::db::execution::programdb {
 
 struct JobPersistenceRecord {
@@ -57,6 +61,7 @@ struct IRuntimeInitAdapter {
 
 struct IResultMapper {
     virtual ~IResultMapper() = default;
+    virtual std::string BuildResultIniFromPrResult(std::int64_t job_id, const simcore::PRResult& result) const = 0;
     virtual ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const = 0;
     virtual std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const = 0;
 };

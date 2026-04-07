@@ -7,6 +7,8 @@
 
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Phases/RNGSeedDeltaMap.h"
+#include "../../../../SimCore/Runner/Parallel/PRTypes.h"
+#include "../../../../SimCore/Runner/Script/KeyRegistry.h"
 #include "../../../../SimCore/Utils/Hex.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
@@ -202,7 +204,22 @@ SeedProbeGridResultMapper::SeedProbeGridResultMapper(simcore::db::IAnalysisDb* a
     , lookup_context_(std::move(lookup_context)) {
 }
 
-ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& /*result_ini*/) const {
+std::string SeedProbeGridResultMapper::BuildResultIniFromPrResult(std::int64_t /*job_id*/, const simcore::PRResult& result) const {
+    ResultsIni out{};
+    out.w_err = result.ps.w_err;
+    if (out.w_err == 0) {
+        result.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+    }
+    if (result.ps.ok) {
+        result.ps.ctx.get(simcore::keys::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(simcore::keys::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(simcore::keys::core::VI_LAST, out.vi_end);
+    }
+    IniDoc ini;
+    return out.append_section(ini).to_string_sorted();
+}
+
+ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     ResultMapPayload payload{};
 
     if (analysis_db_ == nullptr || !lookup_context_) {
@@ -222,18 +239,18 @@ ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id
         return payload;
     }
 
-    const auto now = simcore::db::types::UtcNow();
-    const auto seed_delta = static_cast<std::int64_t>(
-        static_cast<std::int64_t>(context->observed_seed) - static_cast<std::int64_t>(context->neutral_seed));
+    const auto parsed_result = ResultsIni::from_section(IniDoc::parse(result_ini));
+    const auto observed_seed = static_cast<std::int64_t>(parsed_result.rng_seed);
+    const auto seed_delta = static_cast<std::int64_t>(observed_seed - static_cast<std::int64_t>(context->neutral_seed));
 
     if (context->phase == SeedProbeWorkflowPhase::Grid) {
         simcore::db::RecordSeedProbeGridSeedCommand cmd{};
         cmd.probe_result_id = context->probe_result_id;
         cmd.source_family = FamilyLabel(parsed->get_family());
         cmd.axis_xy_id = AxisXYId(*parsed);
-        cmd.seed_value = static_cast<std::int64_t>(context->observed_seed);
+        cmd.seed_value = observed_seed;
         cmd.seed_delta = seed_delta;
-        cmd.recorded_at_utc = now;
+        cmd.recorded_at_utc = simcore::db::types::UtcNow();
         cmd.event_id = EventId(job_id, "grid");
         cmd.correlation_id = context->correlation_id;
         cmd.causation_id = context->causation_id;

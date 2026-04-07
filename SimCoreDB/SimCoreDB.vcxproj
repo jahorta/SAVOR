@@ -188,6 +188,7 @@
     <ClInclude Include="Execution\IExecutionDb.h" />
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
     <ClInclude Include="Execution\Workflow\ExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h" />
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h" />
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowEngine.h" />
@@ -225,6 +226,7 @@
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
+    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp" />
