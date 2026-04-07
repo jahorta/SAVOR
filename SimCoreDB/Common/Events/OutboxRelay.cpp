@@ -179,10 +179,10 @@ bool OutboxRelay::RelayBatchInternal(
 
     int next_param_index = 3;
     if (mode == RelayMode::ProducerOutbox) {
-        sql += "AND published_at_utc IS NULL "
-               "AND attempt_count < ?3 ";
-        next_param_index = 4;
+        sql += "AND published_at_utc IS NULL ";
     }
+    sql += "AND attempt_count < ?3 ";
+    next_param_index = 4;
     if (!config_.aggregate_kind.empty()) {
         sql += "AND aggregate_kind=?" + std::to_string(next_param_index) + " ";
         next_param_index += 1;
@@ -202,11 +202,9 @@ bool OutboxRelay::RelayBatchInternal(
 
     sqlite3_bind_int64(st.st, 1, after_outbox_id);
     sqlite3_bind_text(st.st, 2, config_.context_name.c_str(), -1, SQLITE_TRANSIENT);
-    if (mode == RelayMode::ProducerOutbox) {
-        sqlite3_bind_int(st.st, 3, std::max(config_.max_attempts, 1));
-    }
+    sqlite3_bind_int(st.st, 3, std::max(config_.max_attempts, 1));
 
-    int next_bind_index = mode == RelayMode::ProducerOutbox ? 4 : 3;
+    int next_bind_index = 4;
     if (!config_.aggregate_kind.empty()) {
         sqlite3_bind_text(st.st, next_bind_index, config_.aggregate_kind.c_str(), -1, SQLITE_TRANSIENT);
         next_bind_index += 1;
@@ -254,19 +252,15 @@ bool OutboxRelay::RelayBatchInternal(
 
         std::string handler_error;
         if (!ValidateEventPayloadRequiredFieldsV1(envelope, &handler_error)) {
-            if (mode == RelayMode::SubscriptionCursor) {
-                result.failure_count += 1;
-                continue;
-            }
-
             bool dead_lettered = false;
             if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
                 return false;
             }
 
-            result.failure_count += 1;
             if (dead_lettered) {
                 result.dead_lettered_count += 1;
+            } else {
+                result.failure_count += 1;
             }
             continue;
         }
@@ -289,15 +283,14 @@ bool OutboxRelay::RelayBatchInternal(
             handler_error = "projector handler returned false";
         }
 
-        result.failure_count += 1;
-        if (mode == RelayMode::ProducerOutbox) {
-            bool dead_lettered = false;
-            if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
-                return false;
-            }
-            if (dead_lettered) {
-                result.dead_lettered_count += 1;
-            }
+        bool dead_lettered = false;
+        if (!MarkFailure(outbox_id, attempt_count, handler_error, &dead_lettered, error_out)) {
+            return false;
+        }
+        if (dead_lettered) {
+            result.dead_lettered_count += 1;
+        } else {
+            result.failure_count += 1;
         }
     }
 
