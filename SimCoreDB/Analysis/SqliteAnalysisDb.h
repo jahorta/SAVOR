@@ -17,6 +17,10 @@ public:
     explicit SqliteAnalysisDb(sqlite3* db);
 
     std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
+    std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const override;
+    std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const override;
+    std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const override;
+    bool HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, std::int64_t seed_delta) const override;
 
     bool CreateSeedProbeSet(
         const CreateSeedProbeSetCommand& command,

@@ -182,7 +182,7 @@ SeedProbeGridResultMapper::SeedProbeGridResultMapper(simcore::db::IAnalysisDb* a
     , lookup_context_(std::move(lookup_context)) {
 }
 
-ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id) const {
+ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& /*result_ini*/) const {
     ResultMapPayload payload{};
 
     if (analysis_db_ == nullptr || !lookup_context_) {
@@ -286,30 +286,6 @@ std::int64_t SeedProbeGridResultMapper::AxisXYId(const simcore::GCInputFrame& fr
         return static_cast<std::int64_t>((static_cast<std::uint16_t>(frame.trig_l) << 8) | frame.trig_r);
     }
     return 0;
-}
-
-SeedProbeUniqueTransitionHandler::SeedProbeUniqueTransitionHandler(CompletionGateFn completion_gate)
-    : completion_gate_(std::move(completion_gate)) {
-}
-
-WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(const WorkflowTransitionContext& context) const {
-    WorkflowTransitionDecision decision{};
-
-    if (context.step_key != "Grid") {
-        decision.should_advance = true;
-        return decision;
-    }
-
-    if (!completion_gate_ || !completion_gate_(context)) {
-        decision.should_advance = false;
-        decision.next_step_key = "Unique";
-        decision.blocked_reason = "Grid completion gate not satisfied";
-        return decision;
-    }
-
-    decision.should_advance = true;
-    decision.next_step_key = "Unique";
-    return decision;
 }
 
 } // namespace simcore::db::execution::programdb::seedprobe
