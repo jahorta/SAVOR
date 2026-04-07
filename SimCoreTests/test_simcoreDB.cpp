@@ -1423,7 +1423,7 @@ INSERT INTO exec_outbox_message(
     outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id
 )
 VALUES(
-    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked',1,'Execution','workflow_instance','999',unixepoch()*1000,'workflow_event',9001
+    5001,'evt-workflow-relay-missing-handler','Execution.WorkflowStepBlocked.v1',1,'Execution','workflow_instance','999',unixepoch()*1000,'workflow_event',9001
 );
 )SQL"));
 
@@ -1441,7 +1441,7 @@ VALUES(
     EXPECT_EQ(sqlite3_column_int(st, 0), 1);
     ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
     const std::string first_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
-    EXPECT_EQ(first_error.find("no projector handler"), 0u);
+    EXPECT_EQ(first_error.find("unsupported Execution event_type"), 0u);
     EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
     sqlite3_finalize(st);
 
@@ -1456,7 +1456,7 @@ VALUES(
     EXPECT_EQ(sqlite3_column_int(st, 0), 2);
     ASSERT_NE(sqlite3_column_text(st, 1), nullptr);
     const std::string dead_letter_error(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)));
-    EXPECT_EQ(dead_letter_error.find("dead-letter: no projector handler"), 0u);
+    EXPECT_EQ(dead_letter_error.find("dead-letter: unsupported Execution event_type"), 0u);
     sqlite3_finalize(st);
 
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
@@ -2465,7 +2465,7 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ar_outbox_message;", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 5);
+    EXPECT_EQ(sqlite3_column_int(st, 0), 6);
     sqlite3_finalize(st);
 
     const auto payload_package = archive_db.ResolveArchivePayload(1, "archive_package", archive_package_id);
@@ -2490,8 +2490,8 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsPackageCountsAndChecksumVal
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
-INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
-VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
 )SQL"));
 
@@ -2558,8 +2558,8 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsRehydrateNoCollisionAndRoun
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
-INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
-VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
 )SQL"));
 
@@ -2586,7 +2586,10 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     });
     ASSERT_TRUE(package.success) << package.error.value_or("unknown error");
 
-    ASSERT_TRUE(ExecSql(db_, "INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc) VALUES(201,100,'fp-live',1,'READY',3000);"));
+    ASSERT_TRUE(ExecSql(
+        db_,
+        "INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc) "
+        "VALUES(201,100,1,1,'workflow',101,'fp-live',0,'READY',0,1,3000);"));
     ASSERT_TRUE(ExecSql(db_, "DELETE FROM exec_job_event WHERE job_id=200; DELETE FROM exec_job WHERE job_id=200; DELETE FROM exec_job_set WHERE job_set_id=100;"));
 
     simcore::db::archive::SqliteRehydrateExecutor rehydrate_executor(db_, db_, &archive_db, temp_root);
@@ -2641,11 +2644,11 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsArchivePreviewRespectsSubsc
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
 INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
-INSERT INTO exec_job(job_id, job_set_id, fingerprint, program_kind, state, queued_at_utc, ended_at_utc)
-VALUES(200,100,'fp-200',1,'COMPLETED',1000,2000);
-INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id,publish_state)
-VALUES(10,'evt-10','Execution.JobQueued.v1',1,'Execution','job','200',1000,'job',200,'PUBLISHED'),
-      (20,'evt-20','Execution.JobCompleted.v1',1,'Execution','job','200',2000,'job',200,'PUBLISHED');
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
+INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc)
+VALUES(10,'evt-10','Execution.JobQueued.v1',1,'Execution','job','200',1000,'job',200,1100),
+      (20,'evt-20','Execution.JobCompleted.v1',1,'Execution','job','200',2000,'job',200,2100);
 INSERT INTO ui_projection_subscription(projector_name,source_context,source_outbox_table,last_outbox_id,last_event_id,updated_at_utc,status,last_error)
 VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'ACTIVE','');
 )SQL"));
