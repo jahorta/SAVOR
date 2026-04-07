@@ -142,6 +142,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="SimCoreDBValidation.cpp" />
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SimCoreDB\SimCoreDB.vcxproj">
