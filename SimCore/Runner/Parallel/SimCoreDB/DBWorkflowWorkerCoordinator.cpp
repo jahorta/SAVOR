@@ -4,6 +4,7 @@
 #include <sstream>
 #include <utility>
 
+#include "../../../../SimCoreDB/Execution/Jobs/JobEventOrchestration.h"
 #include "../../../../SimCoreDB/Execution/Workflow/WorkflowModeProvider.h"
 
 namespace simcore::runner::parallel::simcoredb {
@@ -15,7 +16,9 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     CoordinatorIntegrationConfig integration_cfg,
     WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
     BuildJobPayloadFn build_job_payload_fn,
-    ReadyStepPersistFn persist_materialization_fn)
+    ReadyStepPersistFn persist_materialization_fn,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
+    simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate)
     : execution_db_(execution_db)
     , mode_provider_(mode_provider)
     , worker_cfg_(std::move(worker_cfg))
@@ -46,7 +49,19 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
                 &error);
         })
     , build_job_payload_fn_(std::move(build_job_payload_fn))
-    , persist_materialization_fn_(std::move(persist_materialization_fn)) {
+    , persist_materialization_fn_(std::move(persist_materialization_fn))
+    , program_kind_registry_(program_kind_registry) {
+    if (step_completion_gate != nullptr) {
+        step_completion_gate_ = step_completion_gate;
+    } else {
+        owned_step_completion_gate_ = std::make_unique<simcore::db::execution::workflow::StepCompletionGateService>();
+        step_completion_gate_ = owned_step_completion_gate_.get();
+    }
+    if (program_kind_registry_ != nullptr) {
+        adapter_chain_orchestrator_ = std::make_unique<simcore::db::execution::workflow::AdapterChainOrchestrator>(
+            program_kind_registry_,
+            step_completion_gate_);
+    }
 }
 
 DBWorkflowWorkerCoordinator::~DBWorkflowWorkerCoordinator() {
@@ -147,6 +162,13 @@ void DBWorkflowWorkerCoordinator::EnqueueReadyStep(const WorkflowReadyStep& step
 std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowStep(const WorkflowReadyStep& step) {
     if (!integration_cfg_.workflow_enabled) {
         return std::nullopt;
+    }
+
+    if (adapter_chain_orchestrator_) {
+        simcore::db::execution::workflow::AdapterChainTrace trace{};
+        (void)adapter_chain_orchestrator_->OnInputComplete(step.step_kind, step.workflow_step_id, &trace);
+        ++adapter_input_complete_invocations_;
+        EmitAdapterTraceEvent(step, "OnInputComplete", "invoked", std::nullopt, std::nullopt);
     }
 
     const auto scheduled = workflow_scheduler_adapter_.MaterializeReadyStep(step);
@@ -282,6 +304,19 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             last_input_latency_ms_.store(*aggregation.input_latency_ms);
         }
 
+        if (adapter_chain_orchestrator_) {
+            simcore::db::execution::workflow::AdapterChainTrace trace{};
+            const auto persisted = adapter_chain_orchestrator_->OnInputComplete(step.step_kind, step.workflow_step_id, &trace);
+            ++adapter_input_complete_invocations_;
+            EmitAdapterTraceEvent(
+                step,
+                "OnInputComplete",
+                "invoked",
+                std::nullopt,
+                std::nullopt,
+                persisted.has_value() ? std::optional<std::string>("program_ref_id=" + std::to_string(persisted->program_ref_id)) : std::nullopt);
+        }
+
         const auto scheduled = workflow_scheduler_adapter_.MaterializeReadyStep(step);
         if (execution_db_ && execution_db_->WorkflowCommandService()) {
             std::string error;
@@ -301,9 +336,22 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         if (build_job_payload_fn_) {
             const auto payload = build_job_payload_fn_(step);
             if (payload.has_value()) {
+                std::uint64_t dispatched_job_id = static_cast<std::uint64_t>(scheduled.job_set_id > 0 ? scheduled.job_set_id : step.workflow_step_id);
+                if (adapter_chain_orchestrator_) {
+                    simcore::db::execution::workflow::AdapterChainTrace trace{};
+                    (void)adapter_chain_orchestrator_->OnJobClaimed(step.step_kind, static_cast<std::int64_t>(dispatched_job_id), &trace);
+                    ++adapter_job_claimed_invocations_;
+                    EmitAdapterTraceEvent(step, "OnJobClaimed", "invoked", static_cast<std::int64_t>(dispatched_job_id), scheduled.job_set_id);
+                }
                 const auto worker_idx = AcquireAvailableWorker();
                 if (worker_idx.has_value()) {
-                    (void)SendJobToWorker(*worker_idx, static_cast<uint64_t>(step.workflow_step_id), *payload);
+                    if (SendJobToWorker(*worker_idx, dispatched_job_id, *payload)) {
+                        std::lock_guard<std::mutex> worker_lock(workers_mtx_);
+                        dispatched_job_context_by_id_[dispatched_job_id] = DispatchedJobContext{
+                            .step = step,
+                            .job_set_id = scheduled.job_set_id,
+                        };
+                    }
                 }
             }
         }
@@ -328,6 +376,42 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
 void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
     simcore::PRResult result;
     while (results_q_.pop_wait(result)) {
+        std::optional<DispatchedJobContext> context;
+        {
+            std::lock_guard<std::mutex> lock(workers_mtx_);
+            const auto it = dispatched_job_context_by_id_.find(result.job_id);
+            if (it != dispatched_job_context_by_id_.end()) {
+                context = it->second;
+                dispatched_job_context_by_id_.erase(it);
+            }
+        }
+
+        if (context.has_value() && adapter_chain_orchestrator_) {
+            simcore::db::execution::workflow::AdapterChainTrace trace{};
+            std::string adapter_error;
+            const auto mapped = adapter_chain_orchestrator_->OnJobTerminal(
+                context->step.step_kind,
+                static_cast<std::int64_t>(result.job_id),
+                result,
+                &trace,
+                &adapter_error);
+            ++adapter_job_terminal_invocations_;
+            EmitAdapterTraceEvent(
+                context->step,
+                "OnJobTerminal",
+                mapped.has_value() ? "invoked" : "failed",
+                static_cast<std::int64_t>(result.job_id),
+                context->job_set_id,
+                adapter_error.empty() ? std::nullopt : std::optional<std::string>(adapter_error));
+            if (!mapped.has_value() && !adapter_error.empty()) {
+                MarkDeterministicFailure(
+                    context->step,
+                    static_cast<std::int64_t>(result.job_id),
+                    context->job_set_id,
+                    "ADAPTER_RESULT_PERSIST_FAILED:" + adapter_error);
+            }
+        }
+
         ReleaseWorkerByResult(result);
         if (result_callback_) {
             result_callback_(result);
@@ -401,6 +485,76 @@ void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const simcore::PRResult&
     slot.in_flight_job_id.reset();
     if (slot.worker) {
         slot.worker->release_slot();
+    }
+}
+
+void DBWorkflowWorkerCoordinator::EmitAdapterTraceEvent(
+    const WorkflowReadyStep& step,
+    const std::string& stage,
+    const std::string& status,
+    std::optional<std::int64_t> job_id,
+    std::optional<std::int64_t> job_set_id,
+    const std::optional<std::string>& message) const {
+    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+        return;
+    }
+    std::ostringstream detail;
+    detail << "stage=" << stage << ";status=" << status;
+    if (job_id.has_value()) detail << ";job_id=" << *job_id;
+    if (job_set_id.has_value()) detail << ";job_set_id=" << *job_set_id;
+    if (message.has_value()) detail << ";message=" << *message;
+
+    std::string error;
+    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.AdapterChainStage.v1",
+            .source_key = stage,
+            .request_id = std::nullopt,
+            .message = detail.str(),
+            .requested_by = "adapter_chain_orchestrator",
+        },
+        &error);
+}
+
+void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
+    const WorkflowReadyStep& step,
+    std::optional<std::int64_t> job_id,
+    std::optional<std::int64_t> job_set_id,
+    const std::string& reason) const {
+    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+        return;
+    }
+    std::string error;
+    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.AdapterChainFailure.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = reason,
+            .requested_by = "adapter_chain_orchestrator",
+        },
+        &error);
+    (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
+        {
+            .workflow_step_id = step.workflow_step_id,
+            .terminal_state = "FAILED",
+            .requested_by = "adapter_chain_orchestrator",
+        },
+        &error);
+    if (execution_db_->JobCommandService() != nullptr && job_id.has_value() && job_set_id.has_value()) {
+        (void)execution_db_->JobCommandService()->AppendLifecycleEvent(
+            {
+                .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobProgressed,
+                .job_set_id = *job_set_id,
+                .job_id = *job_id,
+                .message = reason,
+                .requested_by = "adapter_chain_orchestrator",
+            },
+            &error);
     }
 }
 

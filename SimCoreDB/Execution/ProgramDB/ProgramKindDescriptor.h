@@ -34,6 +34,11 @@ struct ResultMapPayload {
     std::int64_t result_ref_id = 0;
 };
 
+struct IResultPayloadWriter {
+    virtual ~IResultPayloadWriter() = default;
+    virtual bool Persist(const ResultMapPayload& payload, std::string* error_out) = 0;
+};
+
 struct WorkflowTransitionContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
@@ -78,6 +83,7 @@ struct ProgramKindDescriptor {
     std::shared_ptr<IJobPersistenceAdapter> job_persistence;
     std::shared_ptr<IRuntimeInitAdapter> runtime_init;
     std::shared_ptr<IResultMapper> result_mapper;
+    std::shared_ptr<IResultPayloadWriter> result_payload_writer;
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
 
     bool supports_workflow_orchestration = false;

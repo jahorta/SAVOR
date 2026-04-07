@@ -1223,16 +1223,15 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     descriptor.result_mapper = std::make_shared<MockMapper>();
     descriptor.workflow_transition = std::make_shared<MockTransition>();
     descriptor.supports_workflow_orchestration = true;
+    auto writer = std::make_shared<MockWriter>();
+    descriptor.result_payload_writer = writer;
 
     ProgramKindRegistry registry;
     ASSERT_TRUE(registry.Register(descriptor));
     ASSERT_TRUE(registry.RegisterForStepKind("mock.step", descriptor));
 
-    auto writer = std::make_shared<MockWriter>();
-    ResultPayloadWriterRegistry writers;
-    writers.Register("mock.result", writer);
     StepCompletionGateService gate;
-    AdapterChainOrchestrator orchestrator(&registry, &writers, &gate);
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
 
     AdapterChainTrace trace{};
     const auto persisted = orchestrator.OnInputComplete("mock.step", 77, &trace);
