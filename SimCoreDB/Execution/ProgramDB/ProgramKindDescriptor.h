@@ -57,7 +57,7 @@ struct IRuntimeInitAdapter {
 
 struct IResultMapper {
     virtual ~IResultMapper() = default;
-    virtual ResultMapPayload MapPrimaryResult(std::int64_t job_id) const = 0;
+    virtual ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const = 0;
     virtual std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const = 0;
 };
 

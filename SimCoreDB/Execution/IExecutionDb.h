@@ -22,13 +22,26 @@ struct IJobEventCommandService;
 
 namespace simcore::db {
 
+struct ExecutionJobRecord {
+    std::int64_t job_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int32_t program_kind = 0;
+    std::int32_t program_version = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
+    std::optional<std::int64_t> savestate_id;
+    std::string fingerprint;
+    std::string state;
+};
+
 struct CreateJobSetCommand {
     std::optional<std::int64_t> parent_job_set_id;
     std::int32_t program_kind = 0;
     std::string purpose;
     std::optional<std::string> created_by;
-    std::int32_t priority_boost = 0;
-    std::optional<std::int32_t> expected_total;
+    std::int64_t created_at_utc = 0;
+    int priority_boost = 0;
+    std::optional<int> expected_total;
     std::optional<std::string> domain_ref_kind;
     std::optional<std::int64_t> domain_ref_id;
     std::optional<std::string> meta_note;
@@ -51,6 +64,15 @@ struct ExecutionJobRecord {
     std::int64_t job_set_id = 0;
     std::string program_ref_kind;
     std::int64_t program_ref_id = 0;
+    std::int32_t program_version = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
+    std::string fingerprint;
+    int priority = 0;
+    std::string state = "QUEUED";
+    int attempts = 0;
+    int max_attempts = 1;
+    std::int64_t queued_at_utc = 0;
 };
 
 struct IExecutionDb {

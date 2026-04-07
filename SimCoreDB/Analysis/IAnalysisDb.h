@@ -53,6 +53,14 @@ struct RecordSeedProbeNeutralSeedCommand {
     std::string causation_id;
 };
 
+struct SeedProbeRunSnapshot {
+    std::int64_t probe_run_id = 0;
+    std::int64_t seed_probe_spec_id = 0;
+    std::int64_t entry_savestate_id = 0;
+    int codec_version = 0;
+    std::string status;
+};
+
 struct RecordSeedProbeGridSeedCommand {
     std::int64_t probe_result_id = 0;
     std::string source_family;
@@ -217,6 +225,19 @@ struct IAnalysisDb {
     virtual bool RequestSeedProbeRun(
         const RequestSeedProbeRunCommand& command,
         std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CreateSeedProbeRunForSet(
+        std::int64_t probe_set_id,
+        std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<SeedProbeRunSnapshot> GetSeedProbeRun(
+        std::int64_t probe_run_id) const = 0;
+
+    virtual bool SetSeedProbeRunNeutralSeed(
+        std::int64_t probe_run_id,
+        std::int64_t neutral_seed_value,
         std::string* error_out = nullptr) = 0;
 
     virtual bool RecordSeedProbeNeutralSeed(
