@@ -2793,10 +2793,6 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     ASSERT_EQ(rehydrate_summary.request_ids.size(), 1u);
 
     sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job WHERE fingerprint LIKE 'fp-200%';", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(1, sqlite3_column_int(st, 0));
-    sqlite3_finalize(st);
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT old_id, new_id FROM ar_rehydrate_map WHERE rehydrate_request_id=?1 AND entity_kind='job';", -1, &st, nullptr));
     sqlite3_bind_int64(st, 1, rehydrate_summary.request_ids.front());
@@ -2805,6 +2801,17 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     const auto new_id = sqlite3_column_int64(st, 1);
     EXPECT_EQ(200, old_id);
     EXPECT_NE(200, new_id);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT fingerprint FROM exec_job WHERE job_id=?1;", -1, &st, nullptr));
+    sqlite3_bind_int64(st, 1, new_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    const auto* new_fingerprint_text = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+    ASSERT_NE(nullptr, new_fingerprint_text);
+    const std::string new_fingerprint = new_fingerprint_text;
+    EXPECT_FALSE(new_fingerprint.empty());
+    EXPECT_NE("fp-200", new_fingerprint);
+    EXPECT_NE("fp-live", new_fingerprint);
     sqlite3_finalize(st);
 
     const auto cleanup = commands.RehydrateCleanup({ .rehydrate_request_id = rehydrate_summary.request_ids.front() });
