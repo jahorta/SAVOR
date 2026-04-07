@@ -387,7 +387,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     }
                     const auto next = AllocateId(spec.target_namespace, map_kind, old_id);
                     per_kind.emplace(old_id, next);
-                    InsertMap(archive_db_, request.rehydrate_request_id, map_kind, old_id, next, nullptr);
+                    if (!InsertMap(archive_db_, request.rehydrate_request_id, map_kind, old_id, next, &db_error)) {
+                        return 0;
+                    }
                     return next;
                 };
 
@@ -397,8 +399,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_id = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_id);
                     const auto old_parent = JsonExtractInt(execution_db_, line, "$.parent_job_set_id", &ok_parent);
                     if (!ok_id) continue;
-                    const auto new_id = map_id("job_set_id", old_id);
-                    const auto new_parent = ok_parent ? map_id("job_set_id", old_parent) : 0;
+                    const auto new_id = map_id("job_set", old_id);
+                    const auto new_parent = ok_parent ? map_id("job_set", old_parent) : 0;
+                    if (new_id == 0 || (ok_parent && new_parent == 0)) break;
 
                     Statement st;
                     if (!Prepare(execution_db_,
@@ -424,9 +427,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
                     const auto old_parent = JsonExtractInt(execution_db_, line, "$.parent_job_id", &ok_parent);
                     if (!ok_id || !ok_set) continue;
-                    const auto new_id = map_id("job_id", old_id);
-                    const auto new_set = map_id("job_set_id", old_set);
-                    const auto new_parent = ok_parent ? map_id("job_id", old_parent) : 0;
+                    const auto new_id = map_id("job", old_id);
+                    const auto new_set = map_id("job_set", old_set);
+                    const auto new_parent = ok_parent ? map_id("job", old_parent) : 0;
+                    if (new_id == 0 || new_set == 0 || (ok_parent && new_parent == 0)) break;
 
                     const auto base_fingerprint = JsonExtractText(execution_db_, line, "$.fingerprint", &ok_id);
                     const auto safe_fingerprint = Fnv1a64(spec.target_namespace + ":job:" + std::to_string(new_id) + ":" + base_fingerprint);
@@ -452,8 +456,9 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_event = JsonExtractInt(execution_db_, line, "$.job_event_id", &ok_event);
                     const auto old_job = JsonExtractInt(execution_db_, line, "$.job_id", &ok_job);
                     if (!ok_event || !ok_job) continue;
-                    const auto new_event = map_id("job_event_id", old_event);
-                    const auto new_job = map_id("job_id", old_job);
+                    const auto new_event = map_id("job_event", old_event);
+                    const auto new_job = map_id("job", old_job);
+                    if (new_event == 0 || new_job == 0) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_job_event(job_event_id,job_id,event_kind,event_ts_utc,message,artifact_id) "
@@ -470,9 +475,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     bool ok_root = false;
                     const auto old_root = JsonExtractInt(execution_db_, line, "$.root_scope_id", &ok_root);
                     if (!ok_id) continue;
-                    const auto new_id = map_id("workflow_instance_id", old_id);
+                    const auto new_id = map_id("workflow_instance", old_id);
                     const auto scope_kind = JsonExtractText(execution_db_, line, "$.root_scope_kind", &ok_id);
-                    const auto new_root = ok_root && scope_kind == "job_set" ? map_id("job_set_id", old_root) : old_root;
+                    const auto new_root = ok_root && scope_kind == "job_set" ? map_id("job_set", old_root) : old_root;
+                    if (new_id == 0 || (ok_root && scope_kind == "job_set" && new_root == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,input_ref_kind,input_ref_id,created_by,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
@@ -493,9 +499,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
                     const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
                     if (!ok_id || !ok_instance) continue;
-                    const auto new_id = map_id("workflow_step_id", old_id);
-                    const auto new_instance = map_id("workflow_instance_id", old_instance);
-                    const auto new_set = ok_set ? map_id("job_set_id", old_set) : 0;
+                    const auto new_id = map_id("workflow_step", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_set = ok_set ? map_id("job_set", old_set) : 0;
+                    if (new_id == 0 || new_instance == 0 || (ok_set && new_set == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,guard_kind,guard_value,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,blocked_reason,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
@@ -517,10 +524,11 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_from = JsonExtractInt(execution_db_, line, "$.from_step_id", &ok_from);
                     const auto old_to = JsonExtractInt(execution_db_, line, "$.to_step_id", &ok_to);
                     if (!ok_id || !ok_instance || !ok_from || !ok_to) continue;
-                    const auto new_id = map_id("workflow_edge_id", old_id);
-                    const auto new_instance = map_id("workflow_instance_id", old_instance);
-                    const auto new_from = map_id("workflow_step_id", old_from);
-                    const auto new_to = map_id("workflow_step_id", old_to);
+                    const auto new_id = map_id("workflow_edge", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_from = map_id("workflow_step", old_from);
+                    const auto new_to = map_id("workflow_step", old_to);
+                    if (new_id == 0 || new_instance == 0 || new_from == 0 || new_to == 0) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_edge(workflow_edge_id,workflow_instance_id,from_step_id,to_step_id,condition_kind,condition_value,created_at_utc) "
@@ -541,9 +549,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
                     const auto old_step = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_step);
                     if (!ok_id || !ok_instance) continue;
-                    const auto new_id = map_id("workflow_event_id", old_id);
-                    const auto new_instance = map_id("workflow_instance_id", old_instance);
-                    const auto new_step = ok_step ? map_id("workflow_step_id", old_step) : 0;
+                    const auto new_id = map_id("workflow_event", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_step = ok_step ? map_id("workflow_step", old_step) : 0;
+                    if (new_id == 0 || new_instance == 0 || (ok_step && new_step == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_workflow_event(workflow_event_id,workflow_instance_id,workflow_step_id,event_kind,event_ts_utc,message,detail_ref_kind,detail_ref_id) "
@@ -561,9 +570,10 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto old_id = JsonExtractInt(execution_db_, line, "$.trigger_id", &ok_id);
                     const auto old_scope_id = JsonExtractInt(execution_db_, line, "$.scope_id", &ok_scope);
                     if (!ok_id || !ok_scope) continue;
-                    const auto new_id = map_id("trigger_id", old_id);
+                    const auto new_id = map_id("trigger", old_id);
                     const auto scope_kind = JsonExtractText(execution_db_, line, "$.scope_kind", &ok_id);
-                    const auto new_scope_id = scope_kind == "job" ? map_id("job_id", old_scope_id) : map_id("job_set_id", old_scope_id);
+                    const auto new_scope_id = scope_kind == "job" ? map_id("job", old_scope_id) : map_id("job_set", old_scope_id);
+                    if (new_id == 0 || new_scope_id == 0) break;
                     Statement st;
                     if (!Prepare(execution_db_,
                             "INSERT INTO exec_trigger(trigger_id,scope_kind,scope_id,condition_kind,condition_value,action_kind,action_value,active,created_at_utc) "
