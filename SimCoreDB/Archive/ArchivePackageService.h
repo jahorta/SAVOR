@@ -31,7 +31,7 @@ struct CreateArchivePackageRequest {
     ArchivePackageRetentionPolicy retention_policy{};
     types::UtcTimePoint created_at_utc = types::UtcNow();
     std::string source_context = "Execution";
-    int schema_version = 1;
+    int schema_version = 0;
     int event_catalog_version = 1;
     std::string event_id;
     std::string correlation_id;

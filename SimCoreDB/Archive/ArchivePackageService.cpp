@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "../Common/Migrations/MigrationRunner.h"
+
 namespace simcore::db::archive {
 
 namespace {
@@ -468,6 +470,20 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         return result;
     }
 
+    int manifest_schema_version = request.schema_version;
+    if (manifest_schema_version <= 0) {
+        std::string schema_error;
+        const auto execution_schema = migrations::GetCurrentContextSchemaVersion(
+            execution_db_,
+            migrations::MigrationContext::Execution,
+            &schema_error);
+        if (!execution_schema.has_value()) {
+            result.error = "failed reading execution schema version: " + schema_error;
+            return result;
+        }
+        manifest_schema_version = *execution_schema;
+    }
+
     const auto epoch = request.created_at_utc.time_since_epoch().count();
     const auto package_name = "package-" + std::to_string(request.source_root_job_set_id) + "-" + std::to_string(epoch);
 
@@ -564,7 +580,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
              << "  \"created_at_utc\": " << request.created_at_utc.time_since_epoch().count() << ",\n"
              << "  \"time_range_start_utc\": " << min_time.time_since_epoch().count() << ",\n"
              << "  \"time_range_end_utc\": " << max_time.time_since_epoch().count() << ",\n"
-             << "  \"schema_version\": " << request.schema_version << ",\n"
+             << "  \"schema_version\": " << manifest_schema_version << ",\n"
              << "  \"event_catalog_version\": " << request.event_catalog_version << ",\n"
              << "  \"retention_policy\": {\n"
              << "    \"include_workflow_event\": " << (request.retention_policy.include_workflow_event ? "true" : "false") << ",\n"
@@ -599,7 +615,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
     create_command.source_context = request.source_context;
     create_command.source_root_job_set_id = request.source_root_job_set_id;
     create_command.created_at_utc = request.created_at_utc;
-    create_command.schema_version = request.schema_version;
+    create_command.schema_version = manifest_schema_version;
     create_command.event_catalog_version = request.event_catalog_version;
     create_command.time_range_start_utc = min_time;
     create_command.time_range_end_utc = max_time;
