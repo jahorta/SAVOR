@@ -317,6 +317,35 @@ std::optional<ExecutionJobRecord> ExecutionDb::GetJob(std::int64_t job_id) const
     return row;
 }
 
+bool ExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_set_id <= 0) {
+        if (error_out) *error_out = "job_set_id must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(
+            db_,
+            "UPDATE exec_job "
+            "SET state='SUPERSEDED', ended_at_utc=CAST(unixepoch('now') * 1000 AS INTEGER) "
+            "WHERE job_set_id=?1 AND state='QUEUED' AND job_id<>?2;",
+            &st)) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, job_set_id);
+    sqlite3_bind_int64(st.st, 2, except_job_id);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    return true;
+}
+
 retention::OutboxRetentionPreview ExecutionDb::PreviewOutboxRetention(
     const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
     types::UtcTimePoint now_utc,

@@ -179,6 +179,7 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
@@ -222,6 +223,7 @@
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />

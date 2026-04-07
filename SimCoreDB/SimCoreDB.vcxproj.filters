@@ -27,6 +27,7 @@
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Migrations\MigrationContext.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Common\Migrations\MigrationRunner.h"><Filter>Header Files</Filter></ClInclude>
@@ -70,6 +71,7 @@
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\ExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>

@@ -85,6 +85,7 @@ struct GridResultContext {
     std::string frame_hex;
     std::string correlation_id;
     std::string causation_id;
+    std::int64_t expected_delta = 0;
 };
 
 class SeedProbeGridResultMapper final : public IResultMapper {
@@ -93,7 +94,7 @@ public:
 
     SeedProbeGridResultMapper(simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
 
-    ResultMapPayload MapPrimaryResult(std::int64_t job_id) const override;
+    ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const override;
     std::optional<ResultArtifactRef> MapPrimaryArtifact(std::int64_t job_id) const override;
 
     static bool ShouldRequeueOnFailure(SeedProbeWorkflowPhase phase);
@@ -106,18 +107,6 @@ private:
 
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
     ContextLookupFn lookup_context_{};
-};
-
-class SeedProbeUniqueTransitionHandler final : public IWorkflowTransitionHandler {
-public:
-    using CompletionGateFn = std::function<bool(const WorkflowTransitionContext& context)>;
-
-    explicit SeedProbeUniqueTransitionHandler(CompletionGateFn completion_gate);
-
-    WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override;
-
-private:
-    CompletionGateFn completion_gate_{};
 };
 
 } // namespace simcore::db::execution::programdb::seedprobe

@@ -84,6 +84,7 @@ struct IExecutionDb {
     virtual bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) = 0;
     virtual bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) = 0;
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
+    virtual bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) = 0;
 
 
     virtual retention::OutboxRetentionPreview PreviewOutboxRetention(

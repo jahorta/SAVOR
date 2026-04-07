@@ -536,6 +536,88 @@ std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std:
     return sqlite3_column_int64(st.st, 0);
 }
 
+std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeResultId(std::int64_t probe_run_id) const {
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (!Prepare(db_, "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1;", &st, nullptr)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
+std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const {
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (!Prepare(db_, "SELECT neutral_seed_value FROM sp_probe_result WHERE probe_run_id=?1;", &st, nullptr)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW || sqlite3_column_type(st.st, 0) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
+std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::int64_t probe_run_id) const {
+    std::vector<SeedProbeGridSeedRow> rows;
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return rows;
+    }
+    Statement st;
+    if (!Prepare(
+            db_,
+            "SELECT g.probe_result_id,g.source_family,a.x,a.y,g.seed_value,g.seed_delta "
+            "FROM sp_grid_seed g "
+            "JOIN sp_axis_xy a ON a.axis_xy_id=g.axis_xy_id "
+            "JOIN sp_probe_result r ON r.probe_result_id=g.probe_result_id "
+            "WHERE r.probe_run_id=?1;",
+            &st,
+            nullptr)) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows.push_back(SeedProbeGridSeedRow{
+            .probe_result_id = sqlite3_column_int64(st.st, 0),
+            .source_family = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 1)),
+            .axis_x = sqlite3_column_int(st.st, 2),
+            .axis_y = sqlite3_column_int(st.st, 3),
+            .seed_value = sqlite3_column_int64(st.st, 4),
+            .seed_delta = sqlite3_column_int64(st.st, 5),
+            });
+    }
+    return rows;
+}
+
+bool SqliteAnalysisDb::HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, std::int64_t seed_delta) const {
+    if (db_ == nullptr || probe_run_id <= 0) {
+        return false;
+    }
+    Statement st;
+    if (!Prepare(
+            db_,
+            "SELECT 1 "
+            "FROM sp_unique_seed u "
+            "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
+            "WHERE r.probe_run_id=?1 AND u.seed_delta=?2 "
+            "LIMIT 1;",
+            &st,
+            nullptr)) {
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    sqlite3_bind_int64(st.st, 2, seed_delta);
+    return sqlite3_step(st.st) == SQLITE_ROW;
+}
+
 bool SqliteAnalysisDb::CreateSeedProbeSet(
     const CreateSeedProbeSetCommand& command,
     std::int64_t* probe_set_id_out,

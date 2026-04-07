@@ -73,6 +73,15 @@ struct RecordSeedProbeGridSeedCommand {
     std::string causation_id;
 };
 
+struct SeedProbeGridSeedRow {
+    std::int64_t probe_result_id = 0;
+    std::string source_family;
+    std::int32_t axis_x = 0;
+    std::int32_t axis_y = 0;
+    std::int64_t seed_value = 0;
+    std::int64_t seed_delta = 0;
+};
+
 struct RecordSeedProbeUniqueSeedCommand {
     std::int64_t probe_result_id = 0;
     std::int64_t input_frame_id = 0;
@@ -216,6 +225,10 @@ struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
     virtual std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const = 0;
+    virtual std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const = 0;
+    virtual std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const = 0;
+    virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
+    virtual bool HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, std::int64_t seed_delta) const = 0;
 
     virtual bool CreateSeedProbeSet(
         const CreateSeedProbeSetCommand& command,
