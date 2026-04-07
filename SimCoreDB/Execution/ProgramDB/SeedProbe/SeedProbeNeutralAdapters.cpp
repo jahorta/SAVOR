@@ -72,7 +72,6 @@ JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::i
                     .program_ref_id = persisted.program_ref_id,
                     .fingerprint = persisted.fingerprint,
                     .priority = 0,
-                    .state = "QUEUED",
                     .attempts = 0,
                     .max_attempts = 1,
                     .queued_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
