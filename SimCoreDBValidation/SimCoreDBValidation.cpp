@@ -63,6 +63,8 @@ std::filesystem::path ResolveMigrationRoot(std::optional<std::filesystem::path> 
     const std::vector<std::filesystem::path> candidates{
         std::filesystem::path("SimCoreDB") / "migration",
         std::filesystem::path("..") / "SimCoreDB" / "migration",
+        std::filesystem::path("..") / ".." / "SimCoreDB" / "migration",
+        std::filesystem::path("..") / ".." / ".." / "SimCoreDB" / "migration",
         std::filesystem::path("migration"),
     };
 
