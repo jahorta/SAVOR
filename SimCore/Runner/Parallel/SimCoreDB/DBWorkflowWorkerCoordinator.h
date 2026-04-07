@@ -20,6 +20,7 @@
 #include "WorkflowCoordinatorBridge.h"
 #include "WorkflowIntegrationMode.h"
 #include "WorkflowSchedulerAdapter.h"
+#include "StepInputAggregationService.h"
 
 namespace simcore::runner::parallel::simcoredb {
 
@@ -38,6 +39,10 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t ready_steps_enqueued = 0;
     std::int64_t last_ready_scan_latency_ms = 0;
     std::int64_t max_ready_queue_depth = 0;
+    std::int64_t input_complete_count = 0;
+    std::int64_t input_timeout_count = 0;
+    std::int64_t terminal_input_failure_count = 0;
+    std::int64_t last_input_latency_ms = 0;
 };
 
 class DBWorkflowWorkerCoordinator {
@@ -105,6 +110,7 @@ private:
     DBWorkflowWorkerCoordinatorConfig worker_cfg_{};
     CoordinatorIntegrationConfig integration_cfg_{};
     WorkflowSchedulerAdapter workflow_scheduler_adapter_;
+    StepInputAggregationService input_aggregation_service_;
     BuildJobPayloadFn build_job_payload_fn_;
     ReadyStepPersistFn persist_materialization_fn_;
     WorkflowCoordinatorBridge workflow_bridge_;
@@ -133,6 +139,10 @@ private:
     std::atomic<std::int64_t> ready_steps_enqueued_{ 0 };
     std::atomic<std::int64_t> last_ready_scan_latency_ms_{ 0 };
     std::atomic<std::int64_t> max_ready_queue_depth_{ 0 };
+    std::atomic<std::int64_t> input_complete_count_{ 0 };
+    std::atomic<std::int64_t> input_timeout_count_{ 0 };
+    std::atomic<std::int64_t> terminal_input_failure_count_{ 0 };
+    std::atomic<std::int64_t> last_input_latency_ms_{ 0 };
 };
 
 } // namespace simcore::runner::parallel::simcoredb

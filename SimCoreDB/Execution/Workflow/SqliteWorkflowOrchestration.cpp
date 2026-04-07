@@ -687,6 +687,112 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::AppendStepInputEvent(
+    const WorkflowAppendStepInputEventCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0 || command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id and workflow_step_id must be > 0";
+        return false;
+    }
+    if (command.event_kind.empty()) {
+        if (error_out) *error_out = "event_kind is required";
+        return false;
+    }
+
+    bool known = false;
+    for (const auto catalog_value : events::kWorkflowInputEventsV1) {
+        if (catalog_value == command.event_kind) {
+            known = true;
+            break;
+        }
+    }
+    if (!known) {
+        if (error_out) *error_out = std::string("unknown workflow input event kind: ") + command.event_kind;
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement workflow_input_event;
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_input_event("
+        "workflow_instance_id, workflow_step_id, event_kind, source_key, request_id, event_ts_utc, message"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+        &workflow_input_event,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const auto ts = NowUtc();
+    sqlite3_bind_int64(workflow_input_event.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(workflow_input_event.st, 2, command.workflow_step_id);
+    sqlite3_bind_text(workflow_input_event.st, 3, command.event_kind.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.source_key.has_value()) {
+        sqlite3_bind_text(workflow_input_event.st, 4, command.source_key->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(workflow_input_event.st, 4);
+    }
+    if (command.request_id.has_value()) {
+        sqlite3_bind_text(workflow_input_event.st, 5, command.request_id->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(workflow_input_event.st, 5);
+    }
+    sqlite3_bind_int64(workflow_input_event.st, 6, ts);
+    if (command.message.has_value()) {
+        sqlite3_bind_text(workflow_input_event.st, 7, command.message->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(workflow_input_event.st, 7);
+    }
+
+    if (sqlite3_step(workflow_input_event.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const auto workflow_input_event_id = sqlite3_last_insert_rowid(db_);
+    const auto step_aggregate_id = std::to_string(command.workflow_step_id);
+    const auto instance_aggregate_id = std::to_string(command.workflow_instance_id);
+    const auto correlation_id = "workflow-instance-" + instance_aggregate_id;
+    const auto causation_id = "workflow-step-" + step_aggregate_id;
+
+    Statement outbox;
+    if (!Prepare(db_,
+        "INSERT INTO exec_outbox_message("
+        "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+        "VALUES(?1, ?2, 1, 'Execution', 'workflow_step', ?3, ?4, ?5, ?6, 'workflow_input_event', ?7);",
+        &outbox,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    std::ostringstream event_id;
+    event_id << "workflow-input-" << command.workflow_step_id << "-" << workflow_input_event_id;
+    const auto event_id_value = event_id.str();
+    sqlite3_bind_text(outbox.st, 1, event_id_value.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 2, command.event_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 3, step_aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 4, correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 5, causation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(outbox.st, 6, ts);
+    sqlite3_bind_int64(outbox.st, 7, workflow_input_event_id);
+    if (sqlite3_step(outbox.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::EmitLifecycleEvent(
     std::int64_t workflow_instance_id,
     std::optional<std::int64_t> workflow_step_id,

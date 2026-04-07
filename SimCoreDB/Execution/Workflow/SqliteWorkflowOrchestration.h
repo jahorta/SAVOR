@@ -39,6 +39,7 @@ public:
     bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) override;
     bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override;
     bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
+    bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) override;
 
 private:
     bool EmitLifecycleEvent(
