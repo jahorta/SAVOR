@@ -1428,7 +1428,8 @@ VALUES(
 )SQL"));
 
     WorkflowProjector projector(db_);
-    ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2)) << err;
+    ASSERT_FALSE(projector.ProjectFromOutbox("WorkflowProjector", 100, &err, 2));
+    EXPECT_EQ(err, "relay batch contained 1 failing event(s)");
 
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
@@ -2489,7 +2490,7 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsPackageCountsAndChecksumVal
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES(100,1,'root',1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
@@ -2557,7 +2558,7 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsRehydrateNoCollisionAndRoun
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES(100,1,'root',1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
 INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, message) VALUES(300,200,'done',2000,'ok');
@@ -2643,7 +2644,7 @@ TEST_F(SqliteDbFixture, Stage4ArchiveOperatorCommandsArchivePreviewRespectsSubsc
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Archive, embedded_options, &err)) << err;
 
     ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, ended_at_utc) VALUES(100,1,'root',1000,2000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc) VALUES(100,1,'root',1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
 VALUES(200,100,1,1,'workflow',100,'fp-200',0,'COMPLETED',0,1,1000,2000);
 INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc)
