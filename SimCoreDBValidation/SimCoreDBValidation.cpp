@@ -46,7 +46,18 @@ bool ExecSql(sqlite3* db, const char* sql, std::string* error_out) {
 
 std::filesystem::path ResolveMigrationRoot(std::optional<std::filesystem::path> explicit_root) {
     if (explicit_root.has_value() && !explicit_root->empty()) {
-        return explicit_root.value();
+        auto provided = explicit_root.value();
+        if (std::filesystem::exists(provided / "Execution")) {
+            return provided;
+        }
+
+        // Accept Windows-style separators even when running on POSIX hosts.
+        std::string normalized = provided.generic_string();
+        std::replace(normalized.begin(), normalized.end(), '\\', '/');
+        provided = std::filesystem::path(normalized);
+        if (std::filesystem::exists(provided / "Execution")) {
+            return provided;
+        }
     }
 
     const std::vector<std::filesystem::path> candidates{
