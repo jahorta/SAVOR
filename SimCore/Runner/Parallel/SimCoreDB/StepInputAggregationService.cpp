@@ -96,9 +96,6 @@ StepInputAggregationStatus StepInputAggregationService::Evaluate(
             ctx.deadline = now + config_.timeout;
             ctx.async_fragment_simulated = false;
             for (const auto& source : ctx.required_inputs) {
-                if (ctx.ready_sources.find(source) != ctx.ready_sources.end()) {
-                    continue;
-                }
                 const auto request_id = key + ":" + source + ":retry" + std::to_string(ctx.timeout_retries);
                 ctx.pending_request_ids_by_source[source] = request_id;
                 if (emit_event_) {
