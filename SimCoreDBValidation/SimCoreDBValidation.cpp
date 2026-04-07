@@ -19,6 +19,7 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/ExecutionDb.h"
+#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 
 namespace {
 
@@ -563,11 +564,452 @@ ValidationResult ValidatePhase2CompletionGateMismatchPolicy() {
     return result;
 }
 
+ValidationResult ValidatePhase2SeedProbeSplitContractChecks() {
+    using namespace simcore::db::execution::workflow;
+
+    ValidationResult result{ .name = "phase2.seedprobe_split_contract" };
+    const auto definition = BuildSeedProbeChainDefinition();
+
+    std::string validation_error;
+    if (!ValidateWorkflowDefinition(definition, &validation_error)) {
+        result.message = "workflow-definition validator rejected seedprobe chain: " + validation_error;
+        return result;
+    }
+
+    const auto find_step = [&](std::string_view key) -> const WorkflowStepDefinition* {
+        for (const auto& step : definition.steps) {
+            if (step.step_key == key) {
+                return &step;
+            }
+        }
+        return nullptr;
+    };
+
+    const auto* neutral = find_step("Neutral");
+    const auto* grid = find_step("Grid");
+    const auto* unique = find_step("Unique");
+    if (neutral == nullptr || grid == nullptr || unique == nullptr) {
+        result.message = "seedprobe chain missing one or more expected split steps (Neutral/Grid/Unique)";
+        return result;
+    }
+
+    if (neutral->required_inputs.size() != 1u || neutral->required_inputs.front() != "general.transition_savestate") {
+        result.message = "neutral split contract must require general.transition_savestate";
+        return result;
+    }
+    if (grid->dependencies.size() != 1u || grid->dependencies.front() != "Neutral"
+        || grid->required_inputs.size() != 1u || grid->required_inputs.front() != "seedprobe.neutral.seed_context") {
+        result.message = "grid split contract must depend on Neutral and consume neutral seed_context";
+        return result;
+    }
+    if (unique->dependencies.size() != 1u || unique->dependencies.front() != "Grid"
+        || unique->required_inputs.size() != 1u || unique->required_inputs.front() != "seedprobe.grid.seed_evidence") {
+        result.message = "unique split contract must depend on Grid and consume grid seed_evidence";
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "workflow-definition validator confirms neutral/grid/unique split contracts and dependencies";
+    return result;
+}
+
+ValidationResult ValidatePhase2AdapterInvocationOrderFromDbRecords(const std::filesystem::path& migration_root) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    ValidationResult result{ .name = "phase2.adapter_invocation_db_lifecycle" };
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        result.message = "failed to open sqlite memory db";
+        if (db != nullptr) sqlite3_close(db);
+        return result;
+    }
+    auto close_db = [&]() { if (db != nullptr) sqlite3_close(db); db = nullptr; };
+
+    std::string err;
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    if (!ApplyContextMigrations(db, MigrationContext::Execution, options, &err)) {
+        result.message = "failed applying execution migrations: " + err;
+        close_db();
+        return result;
+    }
+
+    if (!ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(2501, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL", &err)) {
+        result.message = "seed setup failed: " + err;
+        close_db();
+        return result;
+    }
+
+    ExecutionDb execution_db(db);
+    auto* commands = execution_db.WorkflowCommandService();
+    if (commands == nullptr) {
+        result.message = "workflow command service unavailable";
+        close_db();
+        return result;
+    }
+
+    if (!commands->MarkStepMaterialized({ .workflow_step_id = 2502, .job_set_id = 8801, .requested_by = "SimCoreDBValidation" }, &err)
+        || !commands->AppendStepInputEvent({
+            .workflow_instance_id = 2501,
+            .workflow_step_id = 2502,
+            .event_kind = "Execution.WorkflowStepInputRequested.v1",
+            .source_key = std::optional<std::string>("savestate"),
+            .request_id = std::optional<std::string>("request-neutral"),
+            .message = std::optional<std::string>("request input"),
+            .requested_by = "SimCoreDBValidation",
+        }, &err)
+        || !commands->AppendStepInputEvent({
+            .workflow_instance_id = 2501,
+            .workflow_step_id = 2502,
+            .event_kind = "Execution.WorkflowStepInputComplete.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = std::optional<std::string>("input complete"),
+            .requested_by = "SimCoreDBValidation",
+        }, &err)
+        || !commands->MarkStepTerminal({ .workflow_step_id = 2502, .terminal_state = "COMPLETED", .requested_by = "SimCoreDBValidation" }, &err)) {
+        result.message = "lifecycle command sequence failed: " + err;
+        close_db();
+        return result;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT event_kind FROM exec_workflow_event WHERE workflow_step_id=2502 ORDER BY workflow_event_id;",
+            -1,
+            &st,
+            nullptr)
+        != SQLITE_OK) {
+        result.message = "failed preparing lifecycle events query";
+        close_db();
+        return result;
+    }
+    std::vector<std::string> lifecycle_events;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const auto* text = sqlite3_column_text(st, 0);
+        lifecycle_events.emplace_back(text ? reinterpret_cast<const char*>(text) : "");
+    }
+    sqlite3_finalize(st);
+
+    const std::vector<std::string> expected_lifecycle{
+        "Execution.WorkflowStepMaterialized.v1",
+        "Execution.WorkflowStepCompleted.v1",
+    };
+    if (lifecycle_events != expected_lifecycle) {
+        result.message = "unexpected lifecycle order in exec_workflow_event records";
+        close_db();
+        return result;
+    }
+
+    if (sqlite3_prepare_v2(db,
+            "SELECT event_kind FROM exec_workflow_input_event WHERE workflow_step_id=2502 ORDER BY workflow_input_event_id;",
+            -1,
+            &st,
+            nullptr)
+        != SQLITE_OK) {
+        result.message = "failed preparing workflow input event query";
+        close_db();
+        return result;
+    }
+    std::vector<std::string> input_events;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const auto* text = sqlite3_column_text(st, 0);
+        input_events.emplace_back(text ? reinterpret_cast<const char*>(text) : "");
+    }
+    sqlite3_finalize(st);
+
+    const std::vector<std::string> expected_input{
+        "Execution.WorkflowStepInputRequested.v1",
+        "Execution.WorkflowStepInputComplete.v1",
+    };
+    if (input_events != expected_input) {
+        result.message = "unexpected input event order in exec_workflow_input_event records";
+        close_db();
+        return result;
+    }
+
+    int lifecycle_outbox_count = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(1) FROM exec_outbox_message WHERE aggregate_kind='workflow_instance' AND payload_ref_kind='workflow_event';",
+            -1,
+            &st,
+            nullptr)
+        != SQLITE_OK
+        || sqlite3_step(st) != SQLITE_ROW) {
+        if (st != nullptr) sqlite3_finalize(st);
+        result.message = "failed validating lifecycle outbox rows";
+        close_db();
+        return result;
+    }
+    lifecycle_outbox_count = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    if (lifecycle_outbox_count != 2) {
+        result.message = "expected 2 lifecycle outbox rows, got " + std::to_string(lifecycle_outbox_count);
+        close_db();
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "db-backed lifecycle/input event records preserve canonical invocation order across boundaries";
+    close_db();
+    return result;
+}
+
+ValidationResult ValidatePhase2TwoStepTransitionSuccess(
+    const std::filesystem::path& migration_root,
+    const std::optional<std::filesystem::path>& savestate_path) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb::seedprobe;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    ValidationResult result{ .name = "phase2.transition_two_step_success" };
+    if (!savestate_path.has_value() || savestate_path->empty()) {
+        result.message = "savestate required: pass --savestate-file <path>";
+        return result;
+    }
+    if (!std::filesystem::exists(*savestate_path)) {
+        result.message = "savestate file does not exist: " + savestate_path->string();
+        return result;
+    }
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        result.message = "failed to open sqlite memory db";
+        if (db != nullptr) sqlite3_close(db);
+        return result;
+    }
+    auto close_db = [&]() { if (db != nullptr) sqlite3_close(db); db = nullptr; };
+
+    std::string err;
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    if (!ApplyContextMigrations(db, MigrationContext::Execution, options, &err)) {
+        result.message = "failed applying execution migrations: " + err;
+        close_db();
+        return result;
+    }
+
+    if (!ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc
+)
+VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'general.transition_savestate', 1, 'validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc)
+VALUES
+    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'general.transition_savestate', unixepoch()*1000, unixepoch()*1000),
+    (2603, 2601, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, 'seedprobe.neutral.seed_context', unixepoch()*1000, NULL);
+INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step_id, to_step_id, created_at_utc)
+VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
+)SQL", &err)) {
+        result.message = "seed setup failed: " + err;
+        close_db();
+        return result;
+    }
+
+    ExecutionDb execution_db(db);
+    auto* commands = execution_db.WorkflowCommandService();
+    auto* queries = execution_db.WorkflowQueryService();
+    if (commands == nullptr || queries == nullptr) {
+        result.message = "workflow services unavailable";
+        close_db();
+        return result;
+    }
+
+    NeutralToGridTransitionHandler transition;
+    const auto decision = transition.EvaluateTransition({
+        .workflow_instance_id = 2601,
+        .workflow_step_id = 2602,
+        .job_set_id = 9001,
+        .workflow_kind = "SEED_PROBE_CHAIN",
+        .step_key = "Neutral",
+    });
+    if (!decision.should_advance || decision.next_step_key.value_or("") != "Grid") {
+        result.message = "neutral transition handler did not approve advance to Grid";
+        close_db();
+        return result;
+    }
+
+    if (!commands->MarkStepMaterialized({ .workflow_step_id = 2602, .job_set_id = 9001, .requested_by = "SimCoreDBValidation" }, &err)
+        || !commands->AppendStepInputEvent({
+            .workflow_instance_id = 2601,
+            .workflow_step_id = 2602,
+            .event_kind = "Execution.WorkflowStepInputRequested.v1",
+            .source_key = std::optional<std::string>("savestate"),
+            .request_id = std::optional<std::string>(savestate_path->filename().string()),
+            .message = std::optional<std::string>("neutral input requested"),
+            .requested_by = "SimCoreDBValidation",
+        }, &err)
+        || !commands->AppendStepInputEvent({
+            .workflow_instance_id = 2601,
+            .workflow_step_id = 2602,
+            .event_kind = "Execution.WorkflowStepInputComplete.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = std::optional<std::string>("neutral input complete"),
+            .requested_by = "SimCoreDBValidation",
+        }, &err)
+        || !commands->MarkStepTerminal({ .workflow_step_id = 2602, .terminal_state = "COMPLETED", .requested_by = "SimCoreDBValidation" }, &err)) {
+        result.message = "failed executing neutral terminal path: " + err;
+        close_db();
+        return result;
+    }
+
+    if (!ExecSql(db,
+            "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch()*1000 WHERE workflow_step_id=2603 AND state='WAITING';",
+            &err)) {
+        result.message = "failed advancing Grid to READY: " + err;
+        close_db();
+        return result;
+    }
+
+    const auto graph = queries->GetWorkflowGraph(2601);
+    if (!graph.has_value()) {
+        result.message = "failed reading workflow graph snapshot";
+        close_db();
+        return result;
+    }
+
+    bool neutral_completed = false;
+    bool grid_ready = false;
+    for (const auto& step : graph->steps) {
+        if (step.step_key == "Neutral" && step.state == WorkflowStepState::Completed) {
+            neutral_completed = true;
+        }
+        if (step.step_key == "Grid" && step.state == WorkflowStepState::Ready) {
+            grid_ready = true;
+        }
+    }
+
+    if (!neutral_completed || !grid_ready) {
+        result.message = "expected Neutral COMPLETED and Grid READY after two-step transition";
+        close_db();
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "two-step success path validated (Neutral terminal -> Grid advanced READY) using workflow db records";
+    close_db();
+    return result;
+}
+
+ValidationResult ValidatePhase2FailedStepTerminalNoAdvance(const std::filesystem::path& migration_root) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    ValidationResult result{ .name = "phase2.failed_step_terminal_no_advance" };
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        result.message = "failed to open sqlite memory db";
+        if (db != nullptr) sqlite3_close(db);
+        return result;
+    }
+    auto close_db = [&]() { if (db != nullptr) sqlite3_close(db); db = nullptr; };
+
+    std::string err;
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    if (!ApplyContextMigrations(db, MigrationContext::Execution, options, &err)) {
+        result.message = "failed applying execution migrations: " + err;
+        close_db();
+        return result;
+    }
+
+    if (!ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(2701, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES
+    (2702, 2701, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000),
+    (2703, 2701, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, unixepoch()*1000, NULL);
+)SQL", &err)) {
+        result.message = "seed setup failed: " + err;
+        close_db();
+        return result;
+    }
+
+    ExecutionDb execution_db(db);
+    auto* commands = execution_db.WorkflowCommandService();
+    if (commands == nullptr) {
+        result.message = "workflow command service unavailable";
+        close_db();
+        return result;
+    }
+
+    if (!commands->MarkStepMaterialized({ .workflow_step_id = 2702, .job_set_id = 9101, .requested_by = "SimCoreDBValidation" }, &err)
+        || !commands->MarkStepTerminal({ .workflow_step_id = 2702, .terminal_state = "FAILED", .requested_by = "SimCoreDBValidation" }, &err)) {
+        result.message = "failed applying failed-step terminal semantics: " + err;
+        close_db();
+        return result;
+    }
+
+    if (commands->MarkStepMaterialized({ .workflow_step_id = 2703, .job_set_id = 9102, .requested_by = "SimCoreDBValidation" }, &err)) {
+        result.message = "invalid advance occurred: Grid materialized despite Neutral FAILED";
+        close_db();
+        return result;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT state FROM exec_workflow_step WHERE workflow_step_id=2702;",
+            -1,
+            &st,
+            nullptr)
+        != SQLITE_OK
+        || sqlite3_step(st) != SQLITE_ROW) {
+        if (st != nullptr) sqlite3_finalize(st);
+        result.message = "failed validating failed-step state";
+        close_db();
+        return result;
+    }
+    const auto* state_text = sqlite3_column_text(st, 0);
+    const std::string neutral_state = state_text ? reinterpret_cast<const char*>(state_text) : "";
+    sqlite3_finalize(st);
+    if (neutral_state != "FAILED") {
+        result.message = "expected Neutral step to remain FAILED";
+        close_db();
+        return result;
+    }
+
+    if (sqlite3_prepare_v2(db,
+            "SELECT state FROM exec_workflow_step WHERE workflow_step_id=2703;",
+            -1,
+            &st,
+            nullptr)
+        != SQLITE_OK
+        || sqlite3_step(st) != SQLITE_ROW) {
+        if (st != nullptr) sqlite3_finalize(st);
+        result.message = "failed validating downstream step state";
+        close_db();
+        return result;
+    }
+    const auto* grid_state_text = sqlite3_column_text(st, 0);
+    const std::string grid_state = grid_state_text ? reinterpret_cast<const char*>(grid_state_text) : "";
+    sqlite3_finalize(st);
+    if (grid_state != "WAITING") {
+        result.message = "downstream Grid step should remain WAITING after failed upstream terminal";
+        close_db();
+        return result;
+    }
+
+    result.passed = true;
+    result.message = "failed-step terminal semantics enforced: FAILED is terminal and no invalid advance occurred";
+    close_db();
+    return result;
+}
+
 void PrintUsage(const std::map<std::string, std::string>& validations) {
     std::cout << "SimCoreDBValidation - SimCoreDB workflow migration validation tool\n\n";
     std::cout << "Usage:\n";
     std::cout << "  SimCoreDBValidation --list\n";
-    std::cout << "  SimCoreDBValidation --run <validation-name|all> [--migration-root <path>]\n\n";
+    std::cout << "  SimCoreDBValidation --run <validation-name|all> [--migration-root <path>] [--savestate-file <path>]\n\n";
     std::cout << "Available validations:\n";
     for (const auto& [name, desc] : validations) {
         std::cout << "  - " << name << ": " << desc << "\n";
@@ -584,11 +1026,21 @@ int main(int argc, char** argv) {
         { "phase1.timeout_retry_once", "Validate timeout-retry-once policy shape (two input-request retries then FAILED terminal transition)." },
         { "phase2.adapter_chain_shape", "Validate canonical adapter-chain members are present and invocable for seedprobe neutral step." },
         { "phase2.completion_gate_mismatch", "Validate mismatch semantics block with STEP_BLOCKED_COUNT_MISMATCH then terminal-fail fallback reason." },
+        { "phase2.seedprobe_split_contract", "Validate SeedProbe split contract (Neutral/Grid/Unique) through workflow-definition validation." },
+        { "phase2.adapter_invocation_db_lifecycle", "Validate lifecycle/input invocation ordering using execution/workflow DB records and outbox rows." },
+        { "phase2.transition_two_step_success", "Validate two-step success path (Neutral terminal completion advances Grid to READY) with savestate input." },
+        { "phase2.failed_step_terminal_no_advance", "Validate FAILED terminal semantics and ensure no invalid downstream advance occurs." },
     };
 
     bool list_only = false;
     std::string run_target = "all";
     std::optional<std::filesystem::path> migration_root_override;
+    std::optional<std::filesystem::path> savestate_file;
+
+    if (argc <= 1) {
+        PrintUsage(validation_descriptions);
+        return 0;
+    }
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -608,6 +1060,13 @@ int main(int argc, char** argv) {
                 return 2;
             }
             migration_root_override = std::filesystem::path(argv[++i]);
+        } else if (arg == "--savestate-file") {
+            if (i + 1 >= argc) {
+                std::cerr << "missing value for --savestate-file\n";
+                PrintUsage(validation_descriptions);
+                return 2;
+            }
+            savestate_file = std::filesystem::path(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage(validation_descriptions);
             return 0;
@@ -651,6 +1110,22 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase2CompletionGateMismatchPolicy());
             return true;
         }
+        if (name == "phase2.seedprobe_split_contract") {
+            results.push_back(ValidatePhase2SeedProbeSplitContractChecks());
+            return true;
+        }
+        if (name == "phase2.adapter_invocation_db_lifecycle") {
+            results.push_back(ValidatePhase2AdapterInvocationOrderFromDbRecords(migration_root));
+            return true;
+        }
+        if (name == "phase2.transition_two_step_success") {
+            results.push_back(ValidatePhase2TwoStepTransitionSuccess(migration_root, savestate_file));
+            return true;
+        }
+        if (name == "phase2.failed_step_terminal_no_advance") {
+            results.push_back(ValidatePhase2FailedStepTerminalNoAdvance(migration_root));
+            return true;
+        }
         return false;
     };
 
@@ -661,6 +1136,10 @@ int main(int argc, char** argv) {
         run_one("phase1.timeout_retry_once");
         run_one("phase2.adapter_chain_shape");
         run_one("phase2.completion_gate_mismatch");
+        run_one("phase2.seedprobe_split_contract");
+        run_one("phase2.adapter_invocation_db_lifecycle");
+        run_one("phase2.transition_two_step_success");
+        run_one("phase2.failed_step_terminal_no_advance");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);
