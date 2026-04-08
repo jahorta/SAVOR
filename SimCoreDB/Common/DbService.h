@@ -13,7 +13,7 @@
 #include "../Authoring/IAuthoringDb.h"
 #include "../Authoring/SqliteAuthoringDb.h"
 #include "../Execution/IExecutionDb.h"
-#include "../Execution/Workflow/ExecutionDb.h"
+#include "../Execution/Workflow/SqliteExecutionDb.h"
 #include "../State/IStateDb.h"
 #include "../State/SqliteStateDb.h"
 #include "../UIRead/IUiReadDb.h"
@@ -64,7 +64,7 @@ private:
     sqlite3* ui_read_sqlite_ = nullptr;
     sqlite3* archive_sqlite_ = nullptr;
 
-    std::unique_ptr<simcore::db::execution::workflow::ExecutionDb> execution_db_;
+    std::unique_ptr<simcore::db::execution::workflow::SqliteExecutionDb> execution_db_;
     std::unique_ptr<simcore::db::state::SqliteStateDb> state_db_;
     std::unique_ptr<simcore::db::analysis::SqliteAnalysisDb> analysis_db_;
     std::unique_ptr<simcore::db::SqliteAuthoringDb> authoring_db_;

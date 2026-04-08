@@ -32,39 +32,9 @@ types::UtcTimePoint FromEpochMillis(std::int64_t value) {
     return types::UtcTimePoint{ std::chrono::milliseconds(value) };
 }
 
-bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
-    if (sqlite3_step(st) == SQLITE_DONE) {
-        return true;
-    }
-    if (error_out != nullptr) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-bool BeginImmediate(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out != nullptr) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-void Rollback(sqlite3* db) {
-    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-}
 
-bool Commit(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out != nullptr) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
 bool InsertAuthoringOutboxEvent(
     sqlite3* db,
@@ -99,7 +69,13 @@ bool InsertAuthoringOutboxEvent(
     sqlite3_bind_text(st.st, 5, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 6, occurred_at_utc);
     sqlite3_bind_int64(st.st, 7, payload_ref_id);
-    return StepDone(db, st.st, error_out);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
 }
 
 bool TryReadTemplatePayload(sqlite3* db, std::int64_t template_id, AuthoringPayloadRecord* out) {
@@ -237,7 +213,10 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -251,7 +230,7 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
             &insert_spec.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -271,8 +250,11 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
     sqlite3_bind_int(insert_spec.st, 13, command.auto_schedule_battle_run ? 1 : 0);
     sqlite3_bind_int64(insert_spec.st, 14, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_spec.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -287,12 +269,15 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
             ToEpochMillis(command.created_at_utc),
             seed_probe_spec_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -317,7 +302,10 @@ bool SqliteAuthoringDb::SaveTasSpec(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -331,7 +319,7 @@ bool SqliteAuthoringDb::SaveTasSpec(
             &insert_base.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -345,8 +333,11 @@ bool SqliteAuthoringDb::SaveTasSpec(
     sqlite3_bind_int(insert_base.st, 7, command.auto_queue_seeds ? 1 : 0);
     sqlite3_bind_int64(insert_base.st, 8, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_base.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_base.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -361,7 +352,7 @@ bool SqliteAuthoringDb::SaveTasSpec(
             &insert_spec.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -372,8 +363,11 @@ bool SqliteAuthoringDb::SaveTasSpec(
     sqlite3_bind_int64(insert_spec.st, 4, command.rtc_high);
     sqlite3_bind_int64(insert_spec.st, 5, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_spec.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -388,12 +382,15 @@ bool SqliteAuthoringDb::SaveTasSpec(
             ToEpochMillis(command.created_at_utc),
             tas_spec_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -420,7 +417,10 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -434,7 +434,7 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
             &insert_spec.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -450,8 +450,11 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
     sqlite3_bind_int(insert_spec.st, 9, command.max_fake_attacks);
     sqlite3_bind_int64(insert_spec.st, 10, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_spec.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -466,12 +469,15 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
             ToEpochMillis(command.created_at_utc),
             battle_run_spec_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -495,7 +501,10 @@ bool SqliteAuthoringDb::SavePlan(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -507,7 +516,7 @@ bool SqliteAuthoringDb::SavePlan(
             &insert_plan.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -517,8 +526,11 @@ bool SqliteAuthoringDb::SavePlan(
     sqlite3_bind_int(insert_plan.st, 3, command.num_turns);
     sqlite3_bind_int64(insert_plan.st, 4, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_plan.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_plan.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -533,12 +545,15 @@ bool SqliteAuthoringDb::SavePlan(
             ToEpochMillis(command.created_at_utc),
             plan_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -567,7 +582,10 @@ bool SqliteAuthoringDb::SavePredicateSpec(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -581,7 +599,7 @@ bool SqliteAuthoringDb::SavePredicateSpec(
             &insert_spec.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -606,8 +624,11 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     sqlite3_bind_int(insert_spec.st, 10, command.abort_on_fail ? 1 : 0);
     sqlite3_bind_int64(insert_spec.st, 11, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_spec.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -622,12 +643,15 @@ bool SqliteAuthoringDb::SavePredicateSpec(
             ToEpochMillis(command.created_at_utc),
             predicate_spec_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -651,7 +675,10 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -664,7 +691,7 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
             &insert_settings.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -681,8 +708,11 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
     }
     sqlite3_bind_int64(insert_settings.st, 5, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_settings.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_settings.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -697,12 +727,15 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
             ToEpochMillis(command.created_at_utc),
             explorer_settings_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -726,7 +759,10 @@ bool SqliteAuthoringDb::SaveTemplate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -740,7 +776,7 @@ bool SqliteAuthoringDb::SaveTemplate(
             &insert_template.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -758,8 +794,11 @@ bool SqliteAuthoringDb::SaveTemplate(
     else sqlite3_bind_null(insert_template.st, 6);
     sqlite3_bind_int64(insert_template.st, 7, ToEpochMillis(command.created_at_utc));
 
-    if (!StepDone(db_, insert_template.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_template.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -774,12 +813,15 @@ bool SqliteAuthoringDb::SaveTemplate(
             ToEpochMillis(command.created_at_utc),
             template_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 

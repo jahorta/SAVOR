@@ -187,7 +187,7 @@
     <ClInclude Include="Common\Types\UtcTimestamp.h" />
     <ClInclude Include="Execution\IExecutionDb.h" />
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
-    <ClInclude Include="Execution\Workflow\ExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h" />
     <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h" />
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h" />
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
@@ -226,7 +226,7 @@
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
-    <ClCompile Include="Execution\Workflow\ExecutionDb.cpp" />
+    <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />

@@ -24,39 +24,9 @@ struct Statement {
     sqlite3_stmt* st = nullptr;
 };
 
-bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
-    if (sqlite3_step(st) == SQLITE_DONE) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-bool BeginImmediate(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-void Rollback(sqlite3* db) {
-    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-}
 
-bool Commit(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
 bool InsertStateOutboxEvent(
     sqlite3* db,
@@ -95,7 +65,13 @@ bool InsertStateOutboxEvent(
     sqlite3_bind_int64(st.st, 7, occurred_at_utc);
     sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    return StepDone(db, st.st, error_out);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
 }
 
 std::optional<events::StateArtifactPayloadView> ResolveArtifactRef(sqlite3* db, std::int64_t artifact_id) {
@@ -219,7 +195,10 @@ bool SqliteStateDb::StoreArtifact(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -232,7 +211,7 @@ bool SqliteStateDb::StoreArtifact(
             &insert_artifact.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -245,8 +224,11 @@ bool SqliteStateDb::StoreArtifact(
     sqlite3_bind_text(insert_artifact.st, 6, command.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_artifact.st, 7, command.created_at_utc.time_since_epoch().count());
 
-    if (!StepDone(db_, insert_artifact.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_artifact.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -264,12 +246,15 @@ bool SqliteStateDb::StoreArtifact(
             "artifact",
             artifact_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -292,7 +277,10 @@ bool SqliteStateDb::CreateSavestate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -305,7 +293,7 @@ bool SqliteStateDb::CreateSavestate(
             &insert_savestate.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -320,8 +308,11 @@ bool SqliteStateDb::CreateSavestate(
     sqlite3_bind_int(insert_savestate.st, 4, command.is_complete ? 1 : 0);
     sqlite3_bind_int64(insert_savestate.st, 5, command.created_at_utc.time_since_epoch().count());
 
-    if (!StepDone(db_, insert_savestate.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_savestate.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -339,12 +330,15 @@ bool SqliteStateDb::CreateSavestate(
             "savestate",
             savestate_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -372,7 +366,10 @@ bool SqliteStateDb::DeriveSavestate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -385,7 +382,7 @@ bool SqliteStateDb::DeriveSavestate(
             &insert_derivation.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -397,8 +394,11 @@ bool SqliteStateDb::DeriveSavestate(
     sqlite3_bind_int64(insert_derivation.st, 5, command.source_context_id);
     sqlite3_bind_int64(insert_derivation.st, 6, command.created_at_utc.time_since_epoch().count());
 
-    if (!StepDone(db_, insert_derivation.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_derivation.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -416,12 +416,15 @@ bool SqliteStateDb::DeriveSavestate(
             "savestate_derivation",
             derivation_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -447,7 +450,10 @@ bool SqliteStateDb::CreateTasVariant(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -461,7 +467,7 @@ bool SqliteStateDb::CreateTasVariant(
             &insert_variant.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -483,8 +489,11 @@ bool SqliteStateDb::CreateTasVariant(
     else sqlite3_bind_null(insert_variant.st, 9);
     sqlite3_bind_int64(insert_variant.st, 10, command.created_at_utc.time_since_epoch().count());
 
-    if (!StepDone(db_, insert_variant.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_variant.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -502,12 +511,15 @@ bool SqliteStateDb::CreateTasVariant(
             "tas_variant",
             tas_variant_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 

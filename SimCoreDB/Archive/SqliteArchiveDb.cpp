@@ -25,39 +25,9 @@ struct Statement {
     sqlite3_stmt* st = nullptr;
 };
 
-bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
-    if (sqlite3_step(st) == SQLITE_DONE) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-bool BeginImmediate(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-void Rollback(sqlite3* db) {
-    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-}
 
-bool Commit(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
 bool InsertArchiveOutboxEvent(
     sqlite3* db,
@@ -96,7 +66,13 @@ bool InsertArchiveOutboxEvent(
     sqlite3_bind_int64(st.st, 7, occurred_at_utc);
     sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    return StepDone(db, st.st, error_out);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
 }
 
 std::optional<std::int64_t> PackageIdForRehydrateRequest(sqlite3* db, std::int64_t rehydrate_request_id) {
@@ -247,7 +223,10 @@ bool SqliteArchiveDb::CreateArchivePackage(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -260,7 +239,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
             &insert_package.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -274,8 +253,11 @@ bool SqliteArchiveDb::CreateArchivePackage(
     sqlite3_bind_int64(insert_package.st, 7, command.time_range_end_utc.time_since_epoch().count());
     sqlite3_bind_text(insert_package.st, 8, command.manifest_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(insert_package.st, 9, command.checksum_status.c_str(), -1, SQLITE_TRANSIENT);
-    if (!StepDone(db_, insert_package.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_package.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -292,12 +274,15 @@ bool SqliteArchiveDb::CreateArchivePackage(
             "archive_package",
             archive_package_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -320,7 +305,10 @@ bool SqliteArchiveDb::AddArchiveItem(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -333,7 +321,7 @@ bool SqliteArchiveDb::AddArchiveItem(
             &insert_item.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -345,8 +333,11 @@ bool SqliteArchiveDb::AddArchiveItem(
     else sqlite3_bind_null(insert_item.st, 4);
     if (command.checksum.has_value()) sqlite3_bind_text(insert_item.st, 5, command.checksum->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(insert_item.st, 5);
-    if (!StepDone(db_, insert_item.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_item.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -363,12 +354,15 @@ bool SqliteArchiveDb::AddArchiveItem(
             "archive_item",
             archive_item_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -394,7 +388,10 @@ bool SqliteArchiveDb::RequestRehydrate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -407,7 +404,7 @@ bool SqliteArchiveDb::RequestRehydrate(
             &insert_request.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -416,8 +413,11 @@ bool SqliteArchiveDb::RequestRehydrate(
     sqlite3_bind_text(insert_request.st, 2, command.status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_request.st, 3, command.requested_at_utc.time_since_epoch().count());
     sqlite3_bind_text(insert_request.st, 4, command.target_namespace.c_str(), -1, SQLITE_TRANSIENT);
-    if (!StepDone(db_, insert_request.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_request.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -434,12 +434,15 @@ bool SqliteArchiveDb::RequestRehydrate(
             "rehydrate_request",
             rehydrate_request_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -467,7 +470,10 @@ bool SqliteArchiveDb::CompleteRehydrate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -479,7 +485,7 @@ bool SqliteArchiveDb::CompleteRehydrate(
             &update_request.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -487,8 +493,11 @@ bool SqliteArchiveDb::CompleteRehydrate(
     sqlite3_bind_int64(update_request.st, 1, command.rehydrate_request_id);
     sqlite3_bind_text(update_request.st, 2, command.status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(update_request.st, 3, command.completed_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, update_request.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(update_request.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -500,7 +509,7 @@ bool SqliteArchiveDb::CompleteRehydrate(
             &insert_map.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -512,8 +521,11 @@ bool SqliteArchiveDb::CompleteRehydrate(
         sqlite3_bind_text(insert_map.st, 2, mapping.entity_kind.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(insert_map.st, 3, mapping.old_id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(insert_map.st, 4, mapping.new_id.c_str(), -1, SQLITE_TRANSIENT);
-        if (!StepDone(db_, insert_map.st, error_out)) {
-            Rollback(db_);
+        if (sqlite3_step(insert_map.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
             return false;
         }
     }
@@ -530,12 +542,15 @@ bool SqliteArchiveDb::CompleteRehydrate(
             "rehydrate_request",
             command.rehydrate_request_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     return true;
@@ -559,7 +574,10 @@ bool SqliteArchiveDb::FailRehydrate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -571,7 +589,7 @@ bool SqliteArchiveDb::FailRehydrate(
             &update_request.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -580,8 +598,11 @@ bool SqliteArchiveDb::FailRehydrate(
     sqlite3_bind_text(update_request.st, 2, command.status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(update_request.st, 3, command.completed_at_utc.time_since_epoch().count());
     sqlite3_bind_text(update_request.st, 4, command.error_text.c_str(), -1, SQLITE_TRANSIENT);
-    if (!StepDone(db_, update_request.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(update_request.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -597,12 +618,15 @@ bool SqliteArchiveDb::FailRehydrate(
             "rehydrate_request",
             command.rehydrate_request_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     return true;
@@ -781,7 +805,10 @@ bool SqliteArchiveDb::PurgeOutboxThroughRetentionFloor(
     }
     sqlite3_bind_int64(st.st, 1, preview.safe_purge_floor_outbox_id.value());
     sqlite3_bind_int(st.st, 2, max_rows);
-    if (!StepDone(db_, st.st, error_out)) {
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 

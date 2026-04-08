@@ -25,39 +25,9 @@ struct Statement {
     sqlite3_stmt* st = nullptr;
 };
 
-bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
-    if (sqlite3_step(st) == SQLITE_DONE) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-bool BeginImmediate(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
-void Rollback(sqlite3* db) {
-    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-}
 
-bool Commit(sqlite3* db, std::string* error_out) {
-    if (sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK) {
-        return true;
-    }
-    if (error_out) {
-        *error_out = sqlite3_errmsg(db);
-    }
-    return false;
-}
 
 enum class OutboxMode {
     None,
@@ -136,7 +106,13 @@ bool InsertSeedProbeOutboxEvent(
     sqlite3_bind_int64(st.st, 7, occurred_at_utc);
     sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    return StepDone(db, st.st, error_out);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
 }
 
 bool InsertBattleOutboxEvent(
@@ -176,7 +152,13 @@ bool InsertBattleOutboxEvent(
     sqlite3_bind_int64(st.st, 7, occurred_at_utc);
     sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    return StepDone(db, st.st, error_out);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+    return true;
 }
 
 std::optional<std::int64_t> ProbeRunIdForResult(sqlite3* db, std::int64_t probe_result_id) {
@@ -524,7 +506,13 @@ std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeRunSavestateId(std:
     }
 
     Statement st;
-    if (!Prepare(db_, "SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=?1;", &st, nullptr)) {
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT entry_savestate_id FROM sp_probe_run WHERE probe_run_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -541,7 +529,13 @@ std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeResultId(std::int64
         return std::nullopt;
     }
     Statement st;
-    if (!Prepare(db_, "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1;", &st, nullptr)) {
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
@@ -556,7 +550,13 @@ std::optional<std::int64_t> SqliteAnalysisDb::LookupSeedProbeNeutralSeed(std::in
         return std::nullopt;
     }
     Statement st;
-    if (!Prepare(db_, "SELECT neutral_seed_value FROM sp_probe_result WHERE probe_run_id=?1;", &st, nullptr)) {
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT neutral_seed_value FROM sp_probe_result WHERE probe_run_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
@@ -572,15 +572,17 @@ std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::
         return rows;
     }
     Statement st;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "SELECT g.probe_result_id,g.source_family,a.x,a.y,g.seed_value,g.seed_delta "
             "FROM sp_grid_seed g "
             "JOIN sp_axis_xy a ON a.axis_xy_id=g.axis_xy_id "
             "JOIN sp_probe_result r ON r.probe_result_id=g.probe_result_id "
             "WHERE r.probe_run_id=?1;",
-            &st,
-            nullptr)) {
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return rows;
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
@@ -602,15 +604,17 @@ bool SqliteAnalysisDb::HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, st
         return false;
     }
     Statement st;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "SELECT 1 "
             "FROM sp_unique_seed u "
             "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
             "WHERE r.probe_run_id=?1 AND u.seed_delta=?2 "
             "LIMIT 1;",
-            &st,
-            nullptr)) {
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return false;
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
@@ -635,7 +639,10 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -648,7 +655,7 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
             &insert_set.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -664,8 +671,11 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
     else sqlite3_bind_null(insert_set.st, 6);
     sqlite3_bind_text(insert_set.st, 7, command.segment_source_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_set.st, 8, command.created_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_set.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -682,12 +692,15 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
             "probe_set",
             probe_set_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -714,7 +727,10 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -727,7 +743,7 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
             &insert_run.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -738,8 +754,11 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     sqlite3_bind_int(insert_run.st, 4, command.codec_version);
     sqlite3_bind_text(insert_run.st, 5, command.status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_run.st, 6, command.requested_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_run.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -757,12 +776,15 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
             "probe_run",
             probe_run_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -784,19 +806,25 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
         if (error_out) *error_out = "probe_set_id must be > 0";
         return false;
     }
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
     const auto now = types::UtcNow().time_since_epoch().count();
     Statement insert_run;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,requested_at_utc,completed_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
-            &insert_run,
-            error_out)) {
-        Rollback(db_);
+            -1,
+            &insert_run.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(insert_run.st, 1, probe_set_id);
@@ -805,31 +833,43 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     sqlite3_bind_int(insert_run.st, 4, 1);
     sqlite3_bind_text(insert_run.st, 5, "queued", -1, SQLITE_STATIC);
     sqlite3_bind_int64(insert_run.st, 6, now);
-    if (!StepDone(db_, insert_run.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
     const auto probe_run_id = sqlite3_last_insert_rowid(db_);
     Statement insert_result;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
             "VALUES(?1,NULL,0,0,'pending',?2);",
-            &insert_result,
-            error_out)) {
-        Rollback(db_);
+            -1,
+            &insert_result.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
     sqlite3_bind_int64(insert_result.st, 2, now);
-    if (!StepDone(db_, insert_result.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     if (probe_run_id_out) {
@@ -843,12 +883,14 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
         return std::nullopt;
     }
     Statement st;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_run_id, seed_probe_spec_id, entry_savestate_id, codec_version, status "
             "FROM sp_probe_run WHERE probe_run_id=?1 LIMIT 1;",
-            &st,
-            nullptr)) {
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
     sqlite3_bind_int64(st.st, 1, probe_run_id);
@@ -877,59 +919,84 @@ bool SqliteAnalysisDb::SetSeedProbeRunNeutralSeed(
         if (error_out) *error_out = "probe_run_id must be > 0";
         return false;
     }
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
     const auto now = types::UtcNow().time_since_epoch().count();
 
     Statement get_result;
-    if (!Prepare(db_, "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1 LIMIT 1;", &get_result, error_out)) {
-        Rollback(db_);
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT probe_result_id FROM sp_probe_result WHERE probe_run_id=?1 LIMIT 1;",
+            -1,
+            &get_result.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(get_result.st, 1, probe_run_id);
     if (sqlite3_step(get_result.st) != SQLITE_ROW) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = "probe_run_id does not resolve to probe_result";
         return false;
     }
     const auto probe_result_id = sqlite3_column_int64(get_result.st, 0);
 
     Statement update_result;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "UPDATE sp_probe_result SET neutral_seed_value=?2, result_status='completed', recorded_at_utc=?3 WHERE probe_result_id=?1;",
-            &update_result,
-            error_out)) {
-        Rollback(db_);
+            -1,
+            &update_result.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(update_result.st, 1, probe_result_id);
     sqlite3_bind_int64(update_result.st, 2, neutral_seed_value);
     sqlite3_bind_int64(update_result.st, 3, now);
-    if (!StepDone(db_, update_result.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(update_result.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
     Statement update_run;
-    if (!Prepare(
+    if (sqlite3_prepare_v2(
             db_,
             "UPDATE sp_probe_run SET status='completed', completed_at_utc=?2 WHERE probe_run_id=?1;",
-            &update_run,
-            error_out)) {
-        Rollback(db_);
+            -1,
+            &update_run.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     sqlite3_bind_int64(update_run.st, 1, probe_run_id);
     sqlite3_bind_int64(update_run.st, 2, now);
-    if (!StepDone(db_, update_run.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(update_run.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
     return true;
@@ -954,7 +1021,10 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -967,7 +1037,7 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
             &insert_neutral.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -977,8 +1047,11 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
     sqlite3_bind_text(insert_neutral.st, 3, command.source_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_neutral.st, 4, command.recorded_at_utc.time_since_epoch().count());
 
-    if (!StepDone(db_, insert_neutral.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_neutral.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -995,12 +1068,15 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
             "neutral_seed",
             neutral_seed_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1029,7 +1105,10 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1042,7 +1121,7 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
             &insert_grid.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1053,8 +1132,11 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
     sqlite3_bind_int64(insert_grid.st, 4, command.seed_value);
     sqlite3_bind_int64(insert_grid.st, 5, command.seed_delta);
     sqlite3_bind_int64(insert_grid.st, 6, command.recorded_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_grid.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_grid.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1071,12 +1153,15 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
             "grid_seed",
             grid_seed_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1105,7 +1190,10 @@ bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1118,7 +1206,7 @@ bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
             &insert_unique.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1128,8 +1216,11 @@ bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
     sqlite3_bind_int64(insert_unique.st, 3, command.seed_value);
     sqlite3_bind_int64(insert_unique.st, 4, command.seed_delta);
     sqlite3_bind_int64(insert_unique.st, 5, command.recorded_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_unique.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_unique.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1146,12 +1237,15 @@ bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
             "unique_seed",
             unique_seed_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1174,7 +1268,10 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1187,7 +1284,7 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
             &insert_projection.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1204,8 +1301,11 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
     }
     sqlite3_bind_int(insert_projection.st, 7, command.movement_required ? 1 : 0);
     sqlite3_bind_int64(insert_projection.st, 8, command.recorded_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_projection.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_projection.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1222,12 +1322,15 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
             "encounter_projection",
             encounter_projection_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1250,7 +1353,10 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1263,7 +1369,7 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
             &insert_result.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1275,8 +1381,11 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
     sqlite3_bind_int(insert_result.st, 4, command.unique_count);
     sqlite3_bind_text(insert_result.st, 5, command.result_status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_result.st, 6, command.recorded_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_result.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1288,7 +1397,7 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
             &update_run.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1296,8 +1405,11 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
     sqlite3_bind_int64(update_run.st, 1, command.probe_run_id);
     sqlite3_bind_text(update_run.st, 2, command.run_status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(update_run.st, 3, command.completed_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, update_run.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(update_run.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1314,12 +1426,15 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
             "probe_result",
             probe_result_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1347,7 +1462,10 @@ bool SqliteAnalysisDb::CreateBattleSet(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1360,7 +1478,7 @@ bool SqliteAnalysisDb::CreateBattleSet(
             &insert_set.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1371,8 +1489,11 @@ bool SqliteAnalysisDb::CreateBattleSet(
     sqlite3_bind_int64(insert_set.st, 4, command.explorer_settings_id);
     sqlite3_bind_text(insert_set.st, 5, command.status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_set.st, 6, command.created_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_set.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1389,12 +1510,15 @@ bool SqliteAnalysisDb::CreateBattleSet(
             "battle_set",
             battle_set_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1420,7 +1544,10 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1433,7 +1560,7 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
             &insert_candidate.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1445,8 +1572,11 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     sqlite3_bind_text(insert_candidate.st, 4, command.source_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(insert_candidate.st, 5, command.candidate_status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_candidate.st, 6, command.created_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_candidate.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_candidate.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1463,12 +1593,15 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
             "seed_candidate",
             seed_candidate_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1494,7 +1627,10 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1507,7 +1643,7 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
             &insert_wave.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1523,8 +1659,11 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     sqlite3_bind_int64(insert_wave.st, 7, command.created_at_utc.time_since_epoch().count());
     if (command.completed_at_utc.has_value()) sqlite3_bind_int64(insert_wave.st, 8, command.completed_at_utc->time_since_epoch().count());
     else sqlite3_bind_null(insert_wave.st, 8);
-    if (!StepDone(db_, insert_wave.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_wave.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1541,12 +1680,15 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
             "turn_wave",
             wave_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1575,7 +1717,10 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1588,7 +1733,7 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
             &insert_job.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1628,8 +1773,11 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
     if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(insert_job.st, 20, command.recorded_at_utc->time_since_epoch().count());
     else sqlite3_bind_null(insert_job.st, 20);
 
-    if (!StepDone(db_, insert_job.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1649,12 +1797,15 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
             "turn_job",
             turn_job_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1680,7 +1831,10 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1693,7 +1847,7 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
             &insert_pool.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1703,8 +1857,11 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
     sqlite3_bind_text(insert_pool.st, 3, command.pool_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(insert_pool.st, 4, command.criterion_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_pool.st, 5, command.created_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_pool.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_pool.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1721,12 +1878,15 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
             "selection_pool",
             selection_pool_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1755,7 +1915,10 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1768,7 +1931,7 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
             &insert_decision.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1779,8 +1942,11 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
     if (command.decision_reason.has_value()) sqlite3_bind_text(insert_decision.st, 4, command.decision_reason->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(insert_decision.st, 4);
     sqlite3_bind_int64(insert_decision.st, 5, command.created_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, insert_decision.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(insert_decision.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1797,12 +1963,15 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
             "selection_decision",
             selection_decision_id,
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
@@ -1831,7 +2000,10 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
         return false;
     }
 
-    if (!BeginImmediate(db_, error_out)) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         return false;
     }
 
@@ -1852,7 +2024,7 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
             &upsert_followup.st,
             nullptr)
         != SQLITE_OK) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -1869,14 +2041,17 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
     if (command.note.has_value()) sqlite3_bind_text(upsert_followup.st, 7, command.note->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(upsert_followup.st, 7);
     sqlite3_bind_int64(upsert_followup.st, 8, command.updated_at_utc.time_since_epoch().count());
-    if (!StepDone(db_, upsert_followup.st, error_out)) {
-        Rollback(db_);
+    if (sqlite3_step(upsert_followup.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
     const auto terminal_followup_id = TerminalFollowupIdForTurnJob(db_, command.turn_job_id);
     if (!terminal_followup_id.has_value()) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = "turn_job terminal_followup_id could not be resolved";
         return false;
     }
@@ -1893,12 +2068,15 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
             "terminal_followup",
             terminal_followup_id.value(),
             error_out)) {
-        Rollback(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
-    if (!Commit(db_, error_out)) {
-        Rollback(db_);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 
