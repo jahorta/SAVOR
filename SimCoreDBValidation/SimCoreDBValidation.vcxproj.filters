@@ -10,6 +10,9 @@
     <ClCompile Include="SimCoreDBValidation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ValidationPhase3.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -48,6 +48,15 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t input_timeout_count = 0;
     std::int64_t terminal_input_failure_count = 0;
     std::int64_t last_input_latency_ms = 0;
+    std::int64_t materialization_count = 0;
+    std::int64_t last_materialization_latency_ms = 0;
+    std::int64_t max_materialization_latency_ms = 0;
+    std::int64_t stale_claim_count = 0;
+    std::int64_t dispatch_attempt_count = 0;
+    std::int64_t dispatch_miss_count = 0;
+    std::int64_t dispatch_miss_rate_basis_points = 0;
+    std::int64_t progress_batch_count = 0;
+    std::int64_t max_progress_batch_size = 0;
 };
 
 class DBWorkflowWorkerCoordinator {
@@ -91,6 +100,8 @@ public:
     size_t ActiveWorkerCount() const;
     void SetProgressCallback(ProgressCallback callback);
     void SetResultCallback(ResultCallback callback);
+    void EnqueueProgressForTest(const simcore::PRProgress& progress);
+    void EnqueueResultForTest(const simcore::PRResult& result);
 
     PRStatus SnapshotStatus() const;
     WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
@@ -179,6 +190,14 @@ private:
     std::atomic<std::int64_t> input_timeout_count_{ 0 };
     std::atomic<std::int64_t> terminal_input_failure_count_{ 0 };
     std::atomic<std::int64_t> last_input_latency_ms_{ 0 };
+    std::atomic<std::int64_t> materialization_count_{ 0 };
+    std::atomic<std::int64_t> last_materialization_latency_ms_{ 0 };
+    std::atomic<std::int64_t> max_materialization_latency_ms_{ 0 };
+    std::atomic<std::int64_t> stale_claim_count_{ 0 };
+    std::atomic<std::int64_t> dispatch_attempt_count_{ 0 };
+    std::atomic<std::int64_t> dispatch_miss_count_{ 0 };
+    std::atomic<std::int64_t> progress_batch_count_{ 0 };
+    std::atomic<std::int64_t> max_progress_batch_size_{ 0 };
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };

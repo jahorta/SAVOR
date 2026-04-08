@@ -260,6 +260,14 @@ void DBWorkflowWorkerCoordinator::SetResultCallback(ResultCallback callback) {
     result_callback_ = std::move(callback);
 }
 
+void DBWorkflowWorkerCoordinator::EnqueueProgressForTest(const simcore::PRProgress& progress) {
+    progress_q_.push(progress);
+}
+
+void DBWorkflowWorkerCoordinator::EnqueueResultForTest(const simcore::PRResult& result) {
+    results_q_.push(result);
+}
+
 PRStatus DBWorkflowWorkerCoordinator::SnapshotStatus() const {
     PRStatus status{};
     status.epoch = epoch_.load();
@@ -283,6 +291,18 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     telemetry.input_timeout_count = input_timeout_count_.load();
     telemetry.terminal_input_failure_count = terminal_input_failure_count_.load();
     telemetry.last_input_latency_ms = last_input_latency_ms_.load();
+    telemetry.materialization_count = materialization_count_.load();
+    telemetry.last_materialization_latency_ms = last_materialization_latency_ms_.load();
+    telemetry.max_materialization_latency_ms = max_materialization_latency_ms_.load();
+    telemetry.stale_claim_count = stale_claim_count_.load();
+    telemetry.dispatch_attempt_count = dispatch_attempt_count_.load();
+    telemetry.dispatch_miss_count = dispatch_miss_count_.load();
+    const auto attempts = telemetry.dispatch_attempt_count;
+    telemetry.dispatch_miss_rate_basis_points = attempts <= 0
+        ? 0
+        : static_cast<std::int64_t>((telemetry.dispatch_miss_count * 10000) / attempts);
+    telemetry.progress_batch_count = progress_batch_count_.load();
+    telemetry.max_progress_batch_size = max_progress_batch_size_.load();
     return telemetry;
 }
 
@@ -300,13 +320,19 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
-                (void)workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
+                ++dispatch_attempt_count_;
+                const bool dispatched = workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
                     worker.worker_idx,
                     worker.loaded_savestate_affinity_key,
                     std::chrono::steady_clock::now());
+                if (!dispatched) {
+                    ++dispatch_miss_count_;
+                }
             }
         }
-        (void)workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now());
+        stale_claim_count_.fetch_add(
+            static_cast<std::int64_t>(
+                workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now())));
 
         WorkflowReadyStep step;
         if (!TryDequeueReadyStep(&step)) {
@@ -363,18 +389,35 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
                 persisted.has_value() ? std::optional<std::string>("program_ref_id=" + std::to_string(persisted->program_ref_id)) : std::nullopt);
         }
 
+        const auto materialize_started = std::chrono::steady_clock::now();
         (void)workflow_materialization_service_.MaterializeWorkflowStep(step);
+        ++materialization_count_;
+        const auto materialization_latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - materialize_started).count();
+        last_materialization_latency_ms_.store(static_cast<std::int64_t>(materialization_latency_ms));
+        {
+            const auto prev_max = max_materialization_latency_ms_.load();
+            if (materialization_latency_ms > prev_max) {
+                max_materialization_latency_ms_.store(static_cast<std::int64_t>(materialization_latency_ms));
+            }
+        }
         (void)workflow_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
-                (void)workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
+                ++dispatch_attempt_count_;
+                const bool dispatched = workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
                     worker.worker_idx,
                     worker.loaded_savestate_affinity_key,
                     std::chrono::steady_clock::now());
+                if (!dispatched) {
+                    ++dispatch_miss_count_;
+                }
             }
         }
-        (void)workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now());
+        stale_claim_count_.fetch_add(
+            static_cast<std::int64_t>(
+                workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now())));
 
         {
             std::lock_guard<std::mutex> lock(queue_mtx_);
@@ -385,10 +428,26 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
+    constexpr std::size_t kMaxBatchSize = 64;
     simcore::PRProgress progress;
     while (progress_q_.pop_wait(progress)) {
+        std::vector<simcore::PRProgress> batch;
+        batch.reserve(kMaxBatchSize);
+        batch.push_back(progress);
+        simcore::PRProgress next;
+        while (batch.size() < kMaxBatchSize && progress_q_.try_pop(next)) {
+            batch.push_back(std::move(next));
+        }
+        ++progress_batch_count_;
+        const auto batch_size = static_cast<std::int64_t>(batch.size());
+        const auto prev_max = max_progress_batch_size_.load();
+        if (batch_size > prev_max) {
+            max_progress_batch_size_.store(batch_size);
+        }
         if (progress_callback_) {
-            progress_callback_(progress);
+            for (const auto& item : batch) {
+                progress_callback_(item);
+            }
         }
     }
 }
