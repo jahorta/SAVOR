@@ -158,7 +158,7 @@ jobs::IJobEventCommandService* SqliteExecutionDb::JobCommandService() {
     return job_command_service_.get();
 }
 
-std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJobRecord(std::int64_t job_id) const {
+std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {
     if (db_ == nullptr || job_id <= 0) {
         return std::nullopt;
     }
