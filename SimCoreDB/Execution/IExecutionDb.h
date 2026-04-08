@@ -42,6 +42,7 @@ struct EnqueueJobCommand {
     std::int32_t program_version = 1;
     std::string program_ref_kind;
     std::int64_t program_ref_id = 0;
+    std::optional<std::int64_t> savestate_id;
     std::string fingerprint;
     std::int32_t priority = 0;
     std::int32_t max_attempts = 1;
