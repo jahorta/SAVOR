@@ -1,10 +1,12 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1004,7 +1006,7 @@ void PrintUsage(const std::map<std::string, std::string>& validations) {
     std::cout << "SimCoreDBValidation - SimCoreDB workflow migration validation tool\n\n";
     std::cout << "Usage:\n";
     std::cout << "  SimCoreDBValidation --list\n";
-    std::cout << "  SimCoreDBValidation --run <validation-name|all> [--migration-root <path>] [--savestate-file <path>]\n\n";
+    std::cout << "  SimCoreDBValidation --run <validation-name|all> [--migration-root <path>] [--savestate-file <path>] [--phase3-default-rows-json <path>] [--phase3-jsonl-dir <path>]\n\n";
     std::cout << "Available validations:\n";
     for (const auto& [name, desc] : validations) {
         std::cout << "  - " << name << ": " << desc << "\n";
@@ -1035,6 +1037,8 @@ int main(int argc, char** argv) {
     std::string run_target = "all";
     std::optional<std::filesystem::path> migration_root_override;
     std::optional<std::filesystem::path> savestate_file;
+    std::optional<std::filesystem::path> phase3_default_rows_json_path;
+    std::optional<std::filesystem::path> phase3_jsonl_dir;
 
     if (argc <= 1) {
         PrintUsage(validation_descriptions);
@@ -1066,6 +1070,20 @@ int main(int argc, char** argv) {
                 return 2;
             }
             savestate_file = std::filesystem::path(argv[++i]);
+        } else if (arg == "--phase3-default-rows-json") {
+            if (i + 1 >= argc) {
+                std::cerr << "missing value for --phase3-default-rows-json\n";
+                PrintUsage(validation_descriptions);
+                return 2;
+            }
+            phase3_default_rows_json_path = std::filesystem::path(argv[++i]);
+        } else if (arg == "--phase3-jsonl-dir") {
+            if (i + 1 >= argc) {
+                std::cerr << "missing value for --phase3-jsonl-dir\n";
+                PrintUsage(validation_descriptions);
+                return 2;
+            }
+            phase3_jsonl_dir = std::filesystem::path(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage(validation_descriptions);
             return 0;
@@ -1082,6 +1100,19 @@ int main(int argc, char** argv) {
     }
 
     const auto migration_root = ResolveMigrationRoot(migration_root_override);
+    Phase3DbSeedOptions phase3_seed_options{};
+    phase3_seed_options.jsonl_folder = phase3_jsonl_dir;
+    phase3_seed_options.savestate_file = savestate_file;
+    if (phase3_default_rows_json_path.has_value()) {
+        std::ifstream in(phase3_default_rows_json_path.value());
+        if (!in) {
+            std::cerr << "failed to open --phase3-default-rows-json file: " << phase3_default_rows_json_path->string() << "\n";
+            return 2;
+        }
+        std::ostringstream content;
+        content << in.rdbuf();
+        phase3_seed_options.default_rows_json = content.str();
+    }
 
     std::vector<ValidationResult> results;
     const auto run_one = [&](const std::string& name) {
@@ -1126,7 +1157,7 @@ int main(int argc, char** argv) {
             return true;
         }
         if (name == "phase3.replay_robustness") {
-            results.push_back(ValidatePhase3ReplayRobustness(migration_root));
+            results.push_back(ValidatePhase3ReplayRobustness(migration_root, phase3_seed_options));
             return true;
         }
         if (name == "phase3.per_service_dedupe_isolation") {
