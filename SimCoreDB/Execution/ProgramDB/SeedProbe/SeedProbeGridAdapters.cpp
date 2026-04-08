@@ -66,7 +66,7 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
                 enqueue.fingerprint = FingerprintFor(blueprint_, probe_run_id, entry.frame_hex, "grid", entry.domain_ref_id);
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
-                enqueue.meta_note = "";
+                enqueue.input_ini = "";
                 std::int64_t ignored_job_id = 0;
                 (void)execution_db_->EnqueueJob(enqueue, &ignored_job_id, &error);
             }
