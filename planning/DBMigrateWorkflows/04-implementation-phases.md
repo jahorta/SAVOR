@@ -60,10 +60,16 @@
   - `WorkflowDispatchCoordinator`
 - Implement in-memory DB claimed-job staging with payload-map lifecycle:
   - claim -> materialize payload -> mark materialized -> dispatch from materialized subset
+- Clarify phase-3 ownership boundaries:
+  - workflow-step materialization uses `EncodeForQueueing(...)` (step/job-set creation),
+  - claimed-job payload materialization uses `BuildRuntimeInit(job_id)` (job runtime init),
+  - claim/materialize/dispatch decisions run in coordinator loop and are not step-local.
 - Implement claim-time selection heuristics in priority order:
   1. savestate affinity
   2. program/runtime affinity
   3. fairness
+- Dispatch loop behavior (resolved):
+  - on each coordinator round, iterate every open worker slot and request dispatch with that worker's loaded `savestate_id` hint.
 - Tune topic partitions and consumer groups.
 - Add lag/dead-letter operational dashboards.
 - Add phase-3 `SimCoreDBValidation` checks for replay robustness, dedupe isolation, and stream-separation behavior.

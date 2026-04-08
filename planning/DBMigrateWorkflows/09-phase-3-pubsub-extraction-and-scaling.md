@@ -18,12 +18,16 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
      2) materialize payload
      3) mark materialized
      4) dispatch from materialized subset
+   - Clarification:
+     - step/job-set materialization and queueing are separate from claimed-job payload materialization,
+     - payload materialization is per claimed `job_id` (`BuildRuntimeInit(job_id)` path).
 
 3. **Claim-selection policy implementation**
    - Priority order:
      1. savestate affinity
      2. program/runtime affinity
      3. fairness
+   - Claiming must be global across in-flight workflows (not restricted to the currently dequeued workflow step).
 
 4. **High-frequency event batching path**
    - Batch-publish progress events.
@@ -34,6 +38,7 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
 1. **Coordinator dataflow**
    - Worker coordinator claims from ExecutionDB directly.
    - No dependency on `job.queued` topic for claiming decisions.
+   - Coordinator loop dispatches per open worker slot and passes worker-loaded `savestate_id` as dispatch affinity hint.
 
 2. **Operational telemetry**
    - Add staged-job metrics:

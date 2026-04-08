@@ -474,6 +474,12 @@
     <ClInclude Include="Runner\Parallel\SimCoreDB\StepInputAggregationService.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowMaterializationService.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowDispatchCoordinator.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
@@ -804,6 +810,12 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\StepInputAggregationService.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowMaterializationService.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowDispatchCoordinator.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\ArchiveWorkflowCommands.cpp">
