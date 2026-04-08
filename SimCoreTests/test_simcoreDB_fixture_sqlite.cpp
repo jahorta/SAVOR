@@ -325,6 +325,13 @@ std::string TableCreateSql(sqlite3* db, const char* table_name) {
     return result;
 }
 
+bool ExecSql(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
 } // namespace
 
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
