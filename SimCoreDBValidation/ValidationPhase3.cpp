@@ -10,6 +10,7 @@
 #include "Common/Migrations/MigrationRunner.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowCoordinatorBridge.h"
+#include "Common/Types/UtcTimestamp.h"
 
 namespace {
 
@@ -100,7 +101,7 @@ INSERT INTO exec_outbox_message(
         return result;
     }
     OutboxRelayResult second{};
-    if (!relay.RelayBatchFromCursor(first.last_outbox_id, 8, bindings, &second, &err)) {
+    if (!relay.RelayBatchFromCursor(first.last_scanned_outbox_id, 8, bindings, &second, &err)) {
         result.message = "second replay pass failed: " + err;
         close_db();
         return result;
@@ -311,11 +312,11 @@ INSERT INTO exec_outbox_message(
             OutboxSubscriptionSnapshot{
                 .projector_name = "phase3-validation-subscriber",
                 .last_outbox_id = 0,
-                .updated_at_utc = simcore::db::types::UtcTimePoint::clock::now(),
+                .updated_at_utc = simcore::db::types::UtcNow(),
                 .status = "ACTIVE",
             },
         },
-        simcore::db::types::UtcTimePoint::clock::now(),
+        simcore::db::types::UtcNow(),
         OutboxRetentionPolicy{});
     if (preview.lag_per_subscription.empty() || preview.lag_per_subscription.front().lag_outbox_rows < 1) {
         result.message = "lag readiness expected at least one lagging outbox row";

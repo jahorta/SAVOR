@@ -20,6 +20,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreDB", "SimCoreDB\SimC
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreDBValidation", "SimCoreDBValidation\SimCoreDBValidation.vcxproj", "{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}"
 	ProjectSection(ProjectDependencies) = postProject
+		{673E613D-F810-4AEA-B4F6-40E80A21301A} = {673E613D-F810-4AEA-B4F6-40E80A21301A}
 		{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8} = {A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}
 	EndProjectSection
 EndProject
@@ -87,7 +88,7 @@ Global
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x64.Build.0 = Release|x64
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x86.ActiveCfg = Release|Win32
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x86.Build.0 = Release|Win32
-EndGlobalSection
+	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
