@@ -11,6 +11,8 @@
 
 #include <sqlite3.h>
 
+#include "ValidationPhase3.h"
+#include "ValidationResult.h"
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/OutboxRelay.h"
@@ -27,12 +29,6 @@ using simcore::db::events::EventEnvelope;
 using simcore::db::events::OutboxRelay;
 using simcore::db::events::OutboxRelayDispatchBinding;
 using simcore::db::events::OutboxRelayResult;
-
-struct ValidationResult {
-    std::string name;
-    bool passed = false;
-    std::string message;
-};
 
 bool ExecSql(sqlite3* db, const char* sql, std::string* error_out) {
     char* err = nullptr;
@@ -1029,6 +1025,10 @@ int main(int argc, char** argv) {
         { "phase2.adapter_invocation_db_lifecycle", "Validate lifecycle/input invocation ordering using execution/workflow DB records and outbox rows." },
         { "phase2.transition_two_step_success", "Validate two-step success path (Neutral terminal completion advances Grid to READY) with savestate input." },
         { "phase2.failed_step_terminal_no_advance", "Validate FAILED terminal semantics and ensure no invalid downstream advance occurs." },
+        { "phase3.replay_robustness", "Validate replay cursor robustness and seed phase-3 placeholder authoring/state rows required for materialization validation." },
+        { "phase3.per_service_dedupe_isolation", "Validate service-local terminal dedupe tables stay isolated across split services." },
+        { "phase3.progress_terminal_stream_separation", "Validate high-frequency progress/input traffic remains separated from terminal stream records." },
+        { "phase3.lag_dead_letter_readiness", "Validate dead-letter behavior and outbox lag preview readiness checks." },
     };
 
     bool list_only = false;
@@ -1125,6 +1125,22 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase2FailedStepTerminalNoAdvance(migration_root));
             return true;
         }
+        if (name == "phase3.replay_robustness") {
+            results.push_back(ValidatePhase3ReplayRobustness(migration_root));
+            return true;
+        }
+        if (name == "phase3.per_service_dedupe_isolation") {
+            results.push_back(ValidatePhase3PerServiceDedupeIsolation());
+            return true;
+        }
+        if (name == "phase3.progress_terminal_stream_separation") {
+            results.push_back(ValidatePhase3ProgressTerminalStreamSeparation(migration_root));
+            return true;
+        }
+        if (name == "phase3.lag_dead_letter_readiness") {
+            results.push_back(ValidatePhase3LagDeadLetterReadiness(migration_root));
+            return true;
+        }
         return false;
     };
 
@@ -1139,6 +1155,10 @@ int main(int argc, char** argv) {
         run_one("phase2.adapter_invocation_db_lifecycle");
         run_one("phase2.transition_two_step_success");
         run_one("phase2.failed_step_terminal_no_advance");
+        run_one("phase3.replay_robustness");
+        run_one("phase3.per_service_dedupe_isolation");
+        run_one("phase3.progress_terminal_stream_separation");
+        run_one("phase3.lag_dead_letter_readiness");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);

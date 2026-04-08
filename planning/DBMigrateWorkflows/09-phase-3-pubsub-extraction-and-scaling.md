@@ -73,6 +73,19 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
    - Add/run phase-3 validation entries in `SimCoreDBValidation` for replay, lag/dead-letter, and stream-separation checks.
    - Phase cannot exit until both test suites and CLI validations pass.
 
+## Exit evidence (required)
+
+Phase 3 exit requires all of the following validation names to pass with the stated criteria:
+
+1. `phase3.replay_robustness`
+   - Pass criteria: replay from cursor publishes expected rows exactly once after restart-style replay, and placeholder fixture rows for `au_seed_probe_spec`, `state_artifact`, and `state_savestate` are present for materialization validation setup.
+2. `phase3.per_service_dedupe_isolation`
+   - Pass criteria: dedupe in one service instance does not suppress first-seen terminal messages in another service instance.
+3. `phase3.progress_terminal_stream_separation`
+   - Pass criteria: high-frequency progress/input events remain in `exec_workflow_input_event` and terminal transitions remain in `exec_workflow_event`.
+4. `phase3.lag_dead_letter_readiness`
+   - Pass criteria: intentional relay failure produces dead-letter accounting and lag preview reports subscription lag.
+
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **Materialization/dispatch split integration test**

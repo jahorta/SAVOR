@@ -136,6 +136,8 @@
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_simcoreDB.cpp" />
+    <ClCompile Include="test_simcoreDB_fixture_sqlite.cpp" />
+    <ClCompile Include="test_simcoreDB_phase3_nonfixture.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
   </ItemGroup>
   <ItemGroup>
