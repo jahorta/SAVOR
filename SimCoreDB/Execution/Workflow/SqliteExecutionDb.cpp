@@ -1,4 +1,4 @@
-#include "ExecutionDb.h"
+#include "SqliteExecutionDb.h"
 
 #include "../../Common/Events/EventPayloadDispatch.h"
 #include "../../Common/Events/EventPayloadValidation.h"
@@ -16,13 +16,15 @@ struct Statement {
     }
 };
 
-bool Prepare(sqlite3* db, const char* sql, Statement* st) {
-    return sqlite3_prepare_v2(db, sql, -1, &st->st, nullptr) == SQLITE_OK;
-}
 
 std::int64_t CurrentUtcMs(sqlite3* db) {
     Statement st;
-    if (!Prepare(db, "SELECT CAST(unixepoch('now') * 1000 AS INTEGER);", &st)) {
+    if (sqlite3_prepare_v2(db,
+        "SELECT CAST(unixepoch('now') * 1000 AS INTEGER);",
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return 0;
     }
     if (sqlite3_step(st.st) != SQLITE_ROW) {
@@ -31,9 +33,6 @@ std::int64_t CurrentUtcMs(sqlite3* db) {
     return sqlite3_column_int64(st.st, 0);
 }
 
-bool Exec(sqlite3* db, const char* sql) {
-    return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
-}
 
 std::int64_t NowUtcMillis() {
     return types::UtcNow().time_since_epoch().count();
@@ -41,13 +40,16 @@ std::int64_t NowUtcMillis() {
 
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowEventPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
-    if (!Prepare(db,
+    if (sqlite3_prepare_v2(db,
         "SELECT e.workflow_instance_id, COALESCE(e.workflow_step_id, 0), "
         "COALESCE(s.job_set_id, 0) "
         "FROM exec_workflow_event e "
         "LEFT JOIN exec_workflow_step s ON s.workflow_step_id=e.workflow_step_id "
         "WHERE e.workflow_event_id=?1;",
-        &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -65,13 +67,16 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowEventPaylo
 
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowInputEventPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
-    if (!Prepare(db,
+    if (sqlite3_prepare_v2(db,
         "SELECT e.workflow_instance_id, e.workflow_step_id, "
         "COALESCE(s.job_set_id, 0) "
         "FROM exec_workflow_input_event e "
         "LEFT JOIN exec_workflow_step s ON s.workflow_step_id=e.workflow_step_id "
         "WHERE e.workflow_input_event_id=?1;",
-        &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -89,7 +94,12 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowInputEvent
 
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobSetPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
-    if (!Prepare(db, "SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1;", &st)) {
+    if (sqlite3_prepare_v2(db,
+        "SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1;",
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -105,11 +115,14 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobSetPayload(sqli
 
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
-    if (!Prepare(db,
+    if (sqlite3_prepare_v2(db,
         "SELECT job_id, job_set_id "
         "FROM exec_job "
         "WHERE job_id=?1;",
-        &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -126,36 +139,39 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobPayload(sqlite3
 
 } // namespace
 
-ExecutionDb::ExecutionDb(sqlite3* db)
+SqliteExecutionDb::SqliteExecutionDb(sqlite3* db)
     : db_(db)
     , query_service_(std::make_unique<SqliteWorkflowOrchestrationQueryService>(db_))
     , command_service_(std::make_unique<SqliteWorkflowOrchestrationCommandService>(db_))
     , job_command_service_(std::make_unique<jobs::SqliteJobEventCommandService>(db_)) {
 }
 
-IWorkflowOrchestrationQueryService* ExecutionDb::WorkflowQueryService() {
+IWorkflowOrchestrationQueryService* SqliteExecutionDb::WorkflowQueryService() {
     return query_service_.get();
 }
 
-IWorkflowOrchestrationCommandService* ExecutionDb::WorkflowCommandService() {
+IWorkflowOrchestrationCommandService* SqliteExecutionDb::WorkflowCommandService() {
     return command_service_.get();
 }
 
-jobs::IJobEventCommandService* ExecutionDb::JobCommandService() {
+jobs::IJobEventCommandService* SqliteExecutionDb::JobCommandService() {
     return job_command_service_.get();
 }
 
-std::optional<ExecutionJobRecord> ExecutionDb::GetJobRecord(std::int64_t job_id) const {
+std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJobRecord(std::int64_t job_id) const {
     if (db_ == nullptr || job_id <= 0) {
         return std::nullopt;
     }
 
     Statement st;
-    if (!Prepare(db_,
+    if (sqlite3_prepare_v2(db_,
         "SELECT job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, "
         "savestate_id, fingerprint, state "
         "FROM exec_job WHERE job_id=?1;",
-        &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
 
@@ -179,7 +195,7 @@ std::optional<ExecutionJobRecord> ExecutionDb::GetJobRecord(std::int64_t job_id)
     return row;
 }
 
-bool ExecutionDb::CreateJobSet(
+bool SqliteExecutionDb::CreateJobSet(
     const CreateJobSetCommand& command,
     std::int64_t* job_set_id_out,
     std::string* error_out) {
@@ -196,18 +212,21 @@ bool ExecutionDb::CreateJobSet(
         return false;
     }
 
-    if (!Exec(db_, "BEGIN IMMEDIATE;")) {
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    const auto rollback = [&]() { (void)Exec(db_, "ROLLBACK;"); };
+    const auto rollback = [&]() { (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); };
 
     const auto now = command.created_at_utc > 0 ? command.created_at_utc : NowUtcMillis();
     Statement insert_set;
-    if (!Prepare(db_,
+    if (sqlite3_prepare_v2(db_,
         "INSERT INTO exec_job_set(parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
-        &insert_set)) {
+        -1,
+        &insert_set.st,
+        nullptr)
+        != SQLITE_OK) {
         rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
@@ -229,7 +248,7 @@ bool ExecutionDb::CreateJobSet(
     }
     const auto job_set_id = sqlite3_last_insert_rowid(db_);
 
-    if (!Exec(db_, "COMMIT;")) {
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         rollback();
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
@@ -252,7 +271,7 @@ bool ExecutionDb::CreateJobSet(
     return true;
 }
 
-bool ExecutionDb::EnqueueJob(
+bool SqliteExecutionDb::EnqueueJob(
     const EnqueueJobCommand& command,
     std::int64_t* job_id_out,
     std::string* error_out) {
@@ -265,11 +284,15 @@ bool ExecutionDb::EnqueueJob(
         return false;
     }
 
-    Statement st;
-    if (!Prepare(db_,
+    const auto queued_at_utc = CurrentUtcMs(db_);
+    Statement insert_job;
+    if (sqlite3_prepare_v2(db_,
         "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
         "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL);",
-        &insert_job)) {
+        -1,
+        &insert_job.st,
+        nullptr)
+        != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -284,7 +307,7 @@ bool ExecutionDb::EnqueueJob(
     sqlite3_bind_int(insert_job.st, 9, command.priority);
     sqlite3_bind_int(insert_job.st, 10, command.attempts);
     sqlite3_bind_int(insert_job.st, 11, command.max_attempts);
-    sqlite3_bind_int64(insert_job.st, 12, queued_at);
+    sqlite3_bind_int64(insert_job.st, 12, queued_at_utc);
     if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
@@ -294,16 +317,19 @@ bool ExecutionDb::EnqueueJob(
     return true;
 }
 
-std::optional<ExecutionJobRecord> ExecutionDb::GetJob(std::int64_t job_id) const {
+std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {
     if (db_ == nullptr || job_id <= 0) {
         return std::nullopt;
     }
 
     Statement st;
-    if (!Prepare(db_,
+    if (sqlite3_prepare_v2(db_,
         "SELECT job_id, job_set_id, program_ref_kind, program_ref_id "
         "FROM exec_job WHERE job_id=?1;",
-        &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         return std::nullopt;
     }
     sqlite3_bind_int64(st.st, 1, job_id);
@@ -319,7 +345,7 @@ std::optional<ExecutionJobRecord> ExecutionDb::GetJob(std::int64_t job_id) const
     return row;
 }
 
-bool ExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
+bool SqliteExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
         return false;
@@ -330,12 +356,14 @@ bool ExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t
     }
 
     Statement st;
-    if (!Prepare(
-            db_,
-            "UPDATE exec_job "
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
             "SET state='SUPERSEDED', ended_at_utc=CAST(unixepoch('now') * 1000 AS INTEGER) "
             "WHERE job_set_id=?1 AND state='QUEUED' AND job_id<>?2;",
-            &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -348,21 +376,21 @@ bool ExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t
     return true;
 }
 
-retention::OutboxRetentionPreview ExecutionDb::PreviewOutboxRetention(
+retention::OutboxRetentionPreview SqliteExecutionDb::PreviewOutboxRetention(
     const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
     types::UtcTimePoint now_utc,
     const retention::OutboxRetentionPolicy& policy) const {
     std::int64_t max_outbox_id = 0;
     Statement st;
     if (db_ != nullptr
-        && Prepare(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM exec_outbox_message;", &st)
+        && sqlite3_prepare_v2(db_, "SELECT COALESCE(MAX(outbox_id), 0) FROM exec_outbox_message;", -1, &st.st, nullptr) == SQLITE_OK
         && sqlite3_step(st.st) == SQLITE_ROW) {
         max_outbox_id = sqlite3_column_int64(st.st, 0);
     }
     return retention::BuildOutboxRetentionPreview(max_outbox_id, subscriptions, now_utc, policy);
 }
 
-bool ExecutionDb::PurgeOutboxThroughRetentionFloor(
+bool SqliteExecutionDb::PurgeOutboxThroughRetentionFloor(
     const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
     types::UtcTimePoint now_utc,
     const retention::OutboxRetentionPolicy& policy,
@@ -390,15 +418,17 @@ bool ExecutionDb::PurgeOutboxThroughRetentionFloor(
     }
 
     Statement st;
-    if (!Prepare(
-            db_,
-            "DELETE FROM exec_outbox_message "
+    if (sqlite3_prepare_v2(db_,
+        "DELETE FROM exec_outbox_message "
             "WHERE outbox_id IN ("
             "  SELECT outbox_id FROM exec_outbox_message "
             "  WHERE published_at_utc IS NOT NULL AND outbox_id < ?1 "
             "  ORDER BY outbox_id ASC LIMIT ?2"
             ");",
-            &st)) {
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -412,7 +442,7 @@ bool ExecutionDb::PurgeOutboxThroughRetentionFloor(
     return true;
 }
 
-std::optional<events::ExecutionWorkflowJobPayloadView> ExecutionDb::ResolveExecutionWorkflowJobPayload(
+std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::ResolveExecutionWorkflowJobPayload(
     const events::EventEnvelope& envelope) const {
     if (!events::ValidateExecutionWorkflowJobPayloadV1(envelope)) {
         return std::nullopt;
@@ -424,7 +454,7 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ExecutionDb::ResolveExecu
         envelope.payload_ref_id);
 }
 
-std::optional<events::ExecutionWorkflowJobPayloadView> ExecutionDb::ResolveExecutionWorkflowJobPayload(
+std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::ResolveExecutionWorkflowJobPayload(
     std::string_view event_type,
     int event_version,
     std::string_view payload_ref_kind,

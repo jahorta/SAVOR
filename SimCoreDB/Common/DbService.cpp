@@ -89,7 +89,7 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed applying Archive migrations: " + (error_out ? *error_out : std::string{}));
     }
 
-    execution_db_ = std::make_unique<simcore::db::execution::workflow::ExecutionDb>(execution_sqlite_);
+    execution_db_ = std::make_unique<simcore::db::execution::workflow::SqliteExecutionDb>(execution_sqlite_);
     state_db_ = std::make_unique<simcore::db::state::SqliteStateDb>(state_sqlite_);
     analysis_db_ = std::make_unique<simcore::db::analysis::SqliteAnalysisDb>(analysis_sqlite_);
     authoring_db_ = std::make_unique<simcore::db::SqliteAuthoringDb>(authoring_sqlite_);

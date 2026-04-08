@@ -16,9 +16,9 @@ namespace simcore::db::execution::workflow {
 class SqliteWorkflowOrchestrationQueryService;
 class SqliteWorkflowOrchestrationCommandService;
 
-class ExecutionDb final : public simcore::db::IExecutionDb {
+class SqliteExecutionDb final : public simcore::db::IExecutionDb {
 public:
-    explicit ExecutionDb(sqlite3* db);
+    explicit SqliteExecutionDb(sqlite3* db);
 
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;

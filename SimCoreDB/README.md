@@ -16,7 +16,7 @@ Database-layer scaffolding for SOASim bounded contexts.
   - workflow mode provider contracts for dual-path runtime selection,
   - event catalog constants including workflow lifecycle events.
 - Stage 3c vertical-slice runtime baseline:
-  - concrete `ExecutionDb` composition root for `IExecutionDb` workflow services,
+  - concrete `SqliteExecutionDb` composition root for `IExecutionDb` workflow services,
   - sqlite-backed workflow query/command services with command precondition checks,
   - lifecycle event emission to `exec_workflow_event` + transactional outbox writes,
   - SeedProbe (`SEED_PROBE_CHAIN`) workflow definition registry + graph validation,
