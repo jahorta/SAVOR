@@ -2275,7 +2275,7 @@ TEST(Stage3cCoordinatorTelemetry, CapturesReadinessScanLatencyAndQueueDepth) {
     EXPECT_GE(telemetry.last_ready_scan_latency_ms, 0);
 }
 
-TEST_F(SqliteDbFixture, Stage3cEndToEndDualPathSeedProbeWithRestartMidRun) {
+TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     using namespace simcore::db::migrations;
     using namespace simcore::db::execution::workflow;
     using namespace simcore::runner::parallel::simcoredb;
@@ -2329,8 +2329,17 @@ VALUES
         },
         schedule);
 
-    std::vector<WorkflowOutcomeItem> legacy_outcomes;
-    legacy_outcomes.push_back({ .step_key = "Neutral", .outcome = "COMPLETED" });
+    auto insert_completed_job = [&](std::int64_t job_id, std::int64_t job_set_id, const char* fingerprint) {
+        const std::string sql =
+            "INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc) VALUES("
+            + std::to_string(job_id)
+            + ","
+            + std::to_string(job_set_id)
+            + ",1,1,'seedprobe',1,'"
+            + fingerprint
+            + "',10,'COMPLETED',1,2,unixepoch(),unixepoch());";
+        ASSERT_TRUE(ExecSql(db_, sql.c_str()));
+    };
 
     const auto neutral = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 9901,
@@ -2348,7 +2357,6 @@ VALUES
     }));
 
     ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9912;"));
-    legacy_outcomes.push_back({ .step_key = "Grid", .outcome = "COMPLETED" });
 
     const auto grid = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 9901,
@@ -2371,12 +2379,7 @@ VALUES
         },
         schedule);
 
-    ASSERT_TRUE(ExecSql(db_, (std::string(
-        "INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc) "
-        "VALUES(13001,")
-        + std::to_string(grid->job_set_id)
-        + ",1,1,'seedprobe',1,'item15-grid',10,'COMPLETED',1,2,unixepoch(),unixepoch());")
-        .c_str()));
+    insert_completed_job(13001, grid->job_set_id, "item15-grid");
 
     WorkflowRecoveryService recovery(db_);
     WorkflowRecoveryResult recovery_result{};
@@ -2384,7 +2387,6 @@ VALUES
     EXPECT_EQ(recovery_result.completed_steps, 1);
 
     ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9913;"));
-    legacy_outcomes.push_back({ .step_key = "Unique", .outcome = "COMPLETED" });
     const auto unique = after_restart.MaterializeWorkflowStep({
         .workflow_instance_id = 9901,
         .workflow_step_id = 9913,
@@ -2407,7 +2409,6 @@ VALUES
     }));
 
     ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9914;"));
-    legacy_outcomes.push_back({ .step_key = "Done", .outcome = "COMPLETED" });
     const auto done = after_restart.MaterializeWorkflowStep({
         .workflow_instance_id = 9901,
         .workflow_step_id = 9914,
@@ -2422,6 +2423,14 @@ VALUES
         .job_set_id = done->job_set_id,
         .terminal_state = "COMPLETED",
     }));
+
+    insert_completed_job(13000, neutral->job_set_id, "item15-neutral");
+    insert_completed_job(13002, unique->job_set_id, "item15-unique");
+    insert_completed_job(13003, done->job_set_id, "item15-done");
+
+    WorkflowRecoveryResult final_recovery_result{};
+    ASSERT_TRUE(recovery.ReconcileInFlightInstances(&final_recovery_result, &err)) << err;
+    EXPECT_EQ(final_recovery_result.completed_steps, 3);
 
     ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_instance SET state='COMPLETED', completed_at_utc=unixepoch() WHERE workflow_instance_id=9901;"));
 
@@ -2452,10 +2461,7 @@ VALUES
         { .step_key = "Unique", .outcome = "COMPLETED" },
         { .step_key = "Done", .outcome = "COMPLETED" },
     };
-    const auto parity_report = CompareLegacyAndWorkflowOutcomes(legacy_outcomes, workflow_outcomes);
-    EXPECT_EQ(parity_report.compared_steps, 4);
-    EXPECT_EQ(parity_report.matched_steps, 4);
-    EXPECT_TRUE(parity_report.mismatches.empty());
+    EXPECT_EQ(workflow_outcomes.size(), 4);
 
     WorkflowProjector projector(db_);
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 1000, &err)) << err;
