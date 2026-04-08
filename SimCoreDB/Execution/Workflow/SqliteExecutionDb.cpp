@@ -234,7 +234,7 @@ bool SqliteExecutionDb::CreateJobSet(
     if (command.parent_job_set_id.has_value()) sqlite3_bind_int64(insert_set.st, 1, *command.parent_job_set_id); else sqlite3_bind_null(insert_set.st, 1);
     sqlite3_bind_int(insert_set.st, 2, command.program_kind);
     sqlite3_bind_text(insert_set.st, 3, command.purpose.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_set.st, 4, command.created_by.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_set.st, 4, command.created_by.value().c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_set.st, 5, now);
     sqlite3_bind_int(insert_set.st, 6, command.priority_boost);
     if (command.expected_total.has_value()) sqlite3_bind_int(insert_set.st, 7, *command.expected_total); else sqlite3_bind_null(insert_set.st, 7);
@@ -305,7 +305,7 @@ bool SqliteExecutionDb::EnqueueJob(
     if (command.savestate_id.has_value()) sqlite3_bind_int64(insert_job.st, 7, *command.savestate_id); else sqlite3_bind_null(insert_job.st, 7);
     sqlite3_bind_text(insert_job.st, 8, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_job.st, 9, command.priority);
-    sqlite3_bind_int(insert_job.st, 10, command.attempts);
+    sqlite3_bind_int(insert_job.st, 10, 0);
     sqlite3_bind_int(insert_job.st, 11, command.max_attempts);
     sqlite3_bind_int64(insert_job.st, 12, queued_at_utc);
     if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
