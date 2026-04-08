@@ -33,6 +33,10 @@
 
 ## Phase 2 - Adapter invocation chain
 
+- **Status:** Completed
+- **Completion date:** 2026-04-08
+- **Verification mode:** Manual verification (`SimCoreTests` + `SimCoreDBValidation` phase-2 checks passed)
+
 - Wire adapter lifecycle:
   1. input complete -> `IJobPersistenceAdapter`
   2. job claimed -> `IRuntimeInitAdapter`

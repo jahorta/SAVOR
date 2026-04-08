@@ -23,6 +23,11 @@ These docs define how to evolve from current state to a robust hybrid architectu
   2. `SimCoreDBValidation` CLI executable (phase-gate operational validations and replay/backfill checks).
 - Phase docs below should include both paths in implementation and exit criteria.
 
+## Current phase status
+
+- **Phase 2 (Adapter invocation chain + Seed Probe split):** Completed on 2026-04-08 via manual verification (`SimCoreTests` and `SimCoreDBValidation` phase-2 checks passed).
+- **Phase 3 (Pub/sub extraction and scaling):** In progress.
+
 ## Documents
 
 1. `01-current-state-and-gap-analysis.md`
