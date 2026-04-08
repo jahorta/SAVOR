@@ -38,6 +38,7 @@ struct GridFanoutEntry {
     std::int64_t domain_ref_id = 0;
     simcore::GCInputFrame frame{};
     std::string frame_hex;
+    std::string family;
     JobPersistenceRecord persistence{};
 };
 

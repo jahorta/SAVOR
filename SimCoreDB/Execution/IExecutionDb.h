@@ -45,6 +45,7 @@ struct EnqueueJobCommand {
     std::string fingerprint;
     std::int32_t priority = 0;
     std::int32_t max_attempts = 1;
+    std::string input_ini;
 };
 
 struct ExecutionJobRecord {
