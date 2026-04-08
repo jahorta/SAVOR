@@ -93,7 +93,7 @@ JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std
         grid.entries.push_back(entry);
     }
 
-    const auto planned = simcore::PlanJCTComboSamples(
+    auto planned = simcore::PlanJCTComboSamples(
         grid,
         static_cast<std::uint32_t>(std::max(unique_ini_.combo_attempts_per_target, 1)),
         static_cast<std::uint32_t>(std::max(unique_ini_.combo_sampler_tries, 1)));
@@ -116,7 +116,7 @@ JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std
         return persisted;
     }
 
-    for (const auto& sample : planned.samples) {
+    for (auto& sample : planned.samples) {
         std::int64_t child_job_set_id = 0;
         const auto child_expected = static_cast<int>(sample.frames.size());
         if (!execution_db_->CreateJobSet(
@@ -136,8 +136,8 @@ JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std
             continue;
         }
 
-        for (const auto& frame : sample.frames) {
-            const auto frame_hex = frame.to_frame_hex();
+        for (auto& frame : sample.frames) {
+            auto frame_hex = frame.to_frame_hex();
             simcore::db::EnqueueJobCommand enqueue{};
             enqueue.job_set_id = child_job_set_id;
             enqueue.program_kind = 3;

@@ -144,7 +144,7 @@ std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout() c
     collection.reserve(grid_.samples_per_axis * grid_.samples_per_axis);
 
     // Build out main grid
-    collection.emplace_back(simcore::build_grid_main(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
+    collection.append_range(simcore::build_grid_main(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
     for (simcore::GCInputFrame& frame : collection) {
         auto frame_hex = frame.to_frame_hex();
         const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
@@ -166,7 +166,7 @@ std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout() c
 
     // Build out cstick grid
     collection.clear();
-    collection.emplace_back(simcore::build_grid_cstick(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
+    collection.append_range(simcore::build_grid_cstick(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
     for (simcore::GCInputFrame& frame : collection) {
         auto frame_hex = frame.to_frame_hex();
         const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
@@ -188,7 +188,7 @@ std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout() c
 
     //Build out trigger grid
     collection.clear();
-    collection.emplace_back(simcore::build_grid_trig(
+    collection.append_range(simcore::build_grid_trig(
         grid_.samples_per_axis,
         grid_.ignore_trigger_minmax ? 0 : grid_.min_value,
         grid_.ignore_trigger_minmax ? 255 : grid_.max_value,

@@ -9,6 +9,7 @@
 #include "../../../../SimCore/Utils/Hex.h"
 #include "../../../../SimCore/Utils/IniDoc.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
+#include "../../../../SimCore/Runner/Script/PhaseScriptVM.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
 
@@ -211,25 +212,6 @@ static inline std::string fingerprint_for(int64_t probe_id, const std::string& f
     oss << "PK=3;PV=1;probe_id=" << probe_id
         << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
     return oss.str();
-}
-
-static inline std::string serialize_frame_hex(const simcore::GCInputFrame& frame) {
-    return frame.to_frame_hex();
-}
-
-static inline simcore::db::DbResult<simcore::GCInputFrame> parse_frame_hex(const std::string& frame_hex) {
-    if (frame_hex.empty()) {
-        return simcore::db::DbResult<simcore::GCInputFrame>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "frame_hex missing" });
-    }
-
-    auto bytes = hex_to_bytes(frame_hex);
-    simcore::GCInputFrame frame{};
-    if (bytes.size() != sizeof(simcore::GCInputFrame)) {
-        return simcore::db::DbResult<simcore::GCInputFrame>::Err({ simcore::db::DbErrorKind::InvalidArgument, 0, "frame_hex wrong size" });
-    }
-
-    std::memcpy(&frame, bytes.data(), sizeof(simcore::GCInputFrame));
-    return simcore::db::DbResult<simcore::GCInputFrame>::Ok(frame);
 }
 
 } // namespace simcore::db::execution::programdb::seedprobe

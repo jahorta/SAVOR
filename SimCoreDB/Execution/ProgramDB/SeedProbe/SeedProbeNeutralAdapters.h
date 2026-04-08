@@ -3,7 +3,7 @@
 #include <memory>
 
 #include "../../IExecutionDb.h"
-#include "../../../../Analysis/IAnalysisDb.h"
+#include "../../../Analysis/IAnalysisDb.h"
 #include "../ProgramKindDescriptor.h"
 
 namespace simcore::db::execution::programdb::seedprobe {

@@ -318,34 +318,6 @@ bool SqliteExecutionDb::EnqueueJob(
     return true;
 }
 
-std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {
-    if (db_ == nullptr || job_id <= 0) {
-        return std::nullopt;
-    }
-
-    Statement st;
-    if (sqlite3_prepare_v2(db_,
-        "SELECT job_id, job_set_id, program_ref_kind, program_ref_id "
-        "FROM exec_job WHERE job_id=?1;",
-        -1,
-        &st.st,
-        nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(st.st, 1, job_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    ExecutionJobRecord row{};
-    row.job_id = sqlite3_column_int64(st.st, 0);
-    row.job_set_id = sqlite3_column_int64(st.st, 1);
-    row.program_ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
-    row.program_ref_id = sqlite3_column_int64(st.st, 3);
-    return row;
-}
-
 bool SqliteExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";

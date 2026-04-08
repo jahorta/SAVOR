@@ -18,7 +18,7 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
-#include "Execution/Workflow/ExecutionDb.h"
+#include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 
 namespace {
@@ -186,7 +186,7 @@ VALUES
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
 
     const auto legacy_payload = execution_db.ResolveExecutionWorkflowJobPayload(
         "Execution.WorkflowStepReady.v1", 1, "workflow_event", 303);
@@ -287,7 +287,7 @@ VALUES(1302, 1301, 'Neutral', 'seedprobe.neutral', 'READY', 1, 0, 2, unixepoch()
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
     auto* commands = execution_db.WorkflowCommandService();
     const auto append = [&](const char* kind, const std::optional<std::string>& source, const std::optional<std::string>& request_id) {
         return commands && commands->AppendStepInputEvent(
@@ -368,7 +368,7 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
     auto* commands = execution_db.WorkflowCommandService();
     for (int retry = 0; retry < 2; ++retry) {
         if (commands == nullptr || !commands->AppendStepInputEvent(
@@ -646,7 +646,7 @@ VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*10
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
     auto* commands = execution_db.WorkflowCommandService();
     if (commands == nullptr) {
         result.message = "workflow command service unavailable";
@@ -812,7 +812,7 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
     auto* commands = execution_db.WorkflowCommandService();
     auto* queries = execution_db.WorkflowQueryService();
     if (commands == nullptr || queries == nullptr) {
@@ -934,7 +934,7 @@ VALUES
         return result;
     }
 
-    ExecutionDb execution_db(db);
+    SqliteExecutionDb execution_db(db);
     auto* commands = execution_db.WorkflowCommandService();
     if (commands == nullptr) {
         result.message = "workflow command service unavailable";
