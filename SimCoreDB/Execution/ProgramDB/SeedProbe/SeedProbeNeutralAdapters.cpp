@@ -1,6 +1,6 @@
 #include "SeedProbeNeutralAdapters.h"
 
-#include "../../../../Common/Types/UtcTimestamp.h"
+#include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
@@ -17,7 +17,7 @@ constexpr const char* kNeutralBootstrapProfile = "seedprobe.neutral.required_sav
 constexpr const char* kNeutralResultKind = "seedprobe.neutral_seed";
 
 std::string BuildNeutralFingerprint(std::int64_t probe_id) {
-    return fingerprint_for(probe_id, serialize_frame_hex(simcore::GCInputFrame{}), 0, 0);
+    return fingerprint_for(probe_id, simcore::GCInputFrame{}.to_frame_hex(), 0, 0);
 }
 
 } // namespace
@@ -74,9 +74,7 @@ JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::i
                     .program_ref_id = persisted.program_ref_id,
                     .fingerprint = persisted.fingerprint,
                     .priority = 0,
-                    .attempts = 0,
                     .max_attempts = 1,
-                    .queued_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
                 },
                 nullptr,
                 &error);
@@ -103,7 +101,7 @@ RuntimeInitRequest RequiredSavestateRuntimeInitAdapter::BuildRuntimeInit(std::in
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
         return request;
     }
-    const auto job = execution_db_->GetJobRecord(job_id);
+    const auto job = execution_db_->GetJob(job_id);
     if (!job.has_value()) {
         return request;
     }

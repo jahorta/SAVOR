@@ -25,7 +25,7 @@
 #include "Archive/RehydrateExecutor.h"
 #include "UIRead/SqliteUiReadDb.h"
 #include "Runner/Parallel/SimCoreDB/ArchiveWorkflowCommands.h"
-#include "Execution/Workflow/ExecutionDb.h"
+#include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowEngine.h"
@@ -419,7 +419,7 @@ INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step
 VALUES (3001,1001,2001,2002,unixepoch()),(3002,1001,2002,2003,unixepoch()),(3003,1001,2003,2004,unixepoch());
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     ASSERT_NE(execution_db.WorkflowQueryService(), nullptr);
     ASSERT_NE(execution_db.WorkflowCommandService(), nullptr);
 
@@ -497,7 +497,7 @@ VALUES
   (2104, 1102, 'Grid', 'seedprobe.grid', 'READY', 9, unixepoch()-20, 0, 2, unixepoch());
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     const auto ready_steps = execution_db.WorkflowQueryService()->ListReadySteps(10);
     ASSERT_EQ(ready_steps.size(), 2u);
     EXPECT_EQ(ready_steps[0].workflow_step_id, 2102);
@@ -1664,7 +1664,7 @@ INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key,
 VALUES(9401, 9201, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 9301, 10, 1, 2, unixepoch());
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     std::string cmd_error;
     ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepTerminal(
         { .workflow_step_id = 9401, .terminal_state = "COMPLETED", .requested_by = "projector-replay-test" },
@@ -2240,7 +2240,7 @@ VALUES
   (9923,9901,9913,9914,unixepoch());
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage3c-item15-test" });
 
     std::int64_t next_job_set_id = 12000;
@@ -2425,7 +2425,7 @@ INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_
 VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, unixepoch()*1000);
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     auto* job_commands = execution_db.JobCommandService();
     ASSERT_NE(job_commands, nullptr);
 
@@ -2465,7 +2465,7 @@ INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_
 VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, unixepoch()*1000);
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
 
     const auto from_job_set = execution_db.ResolveExecutionWorkflowJobPayload(
         "Execution.JobSetCreated.v1", 1, "job_set", 701);
@@ -2514,7 +2514,7 @@ INSERT INTO exec_workflow_input_event(
 VALUES(9104, 9101, 9103, 'Execution.WorkflowStepInputFragmentReady.v1', 'state', 'req-9104', unixepoch()*1000);
 )SQL"));
 
-    ExecutionDb execution_db(db_);
+    SqliteExecutionDb execution_db(db_);
 
     const auto from_input_event = execution_db.ResolveExecutionWorkflowJobPayload(
         "Execution.WorkflowStepInputFragmentReady.v1", 1, "workflow_input_event", 9104);
@@ -2558,7 +2558,7 @@ VALUES
     (9206,'evt-stage0-replay-2','Execution.WorkflowStepInputRequested.v1',1,'Execution','workflow_step','9202','corr-9201','cause-9201',unixepoch()*1000,'workflow_input_event',9204);
 )SQL"));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     int unresolved_count = 0;
 
     OutboxRelay relay({
@@ -2958,7 +2958,7 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-archive-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     ASSERT_TRUE(std::filesystem::create_directories(temp_root));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     SqliteUiReadDb ui_read_db(db_);
     SqliteArchiveDb archive_db(db_);
     simcore::db::archive::SqliteArchivePackageService package_service(
@@ -3026,7 +3026,7 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-rehydrate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     ASSERT_TRUE(std::filesystem::create_directories(temp_root));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     SqliteUiReadDb ui_read_db(db_);
     SqliteArchiveDb archive_db(db_);
     simcore::db::archive::SqliteArchivePackageService package_service(
@@ -3158,7 +3158,7 @@ VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'A
     const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-floor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     ASSERT_TRUE(std::filesystem::create_directories(temp_root));
 
-    simcore::db::execution::workflow::ExecutionDb execution_db(db_);
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     SqliteUiReadDb ui_read_db(db_);
     SqliteArchiveDb archive_db(db_);
     simcore::db::archive::SqliteArchivePackageService package_service(
