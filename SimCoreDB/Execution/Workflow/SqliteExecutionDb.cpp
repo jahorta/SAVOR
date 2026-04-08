@@ -287,8 +287,8 @@ bool SqliteExecutionDb::EnqueueJob(
     const auto queued_at_utc = CurrentUtcMs(db_);
     Statement insert_job;
     if (sqlite3_prepare_v2(db_,
-        "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL);",
+        "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text,input_ini) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL,?);",
         -1,
         &insert_job.st,
         nullptr)
@@ -308,6 +308,7 @@ bool SqliteExecutionDb::EnqueueJob(
     sqlite3_bind_int(insert_job.st, 10, 0);
     sqlite3_bind_int(insert_job.st, 11, command.max_attempts);
     sqlite3_bind_int64(insert_job.st, 12, queued_at_utc);
+    sqlite3_bind_text(insert_job.st, 13, command.input_ini.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
