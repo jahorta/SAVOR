@@ -24,6 +24,8 @@
 #include "WorkflowIntegrationMode.h"
 #include "WorkflowSchedulerAdapter.h"
 #include "StepInputAggregationService.h"
+#include "WorkflowDispatchCoordinator.h"
+#include "WorkflowMaterializationService.h"
 
 namespace simcore::runner::parallel::simcoredb {
 
@@ -51,7 +53,8 @@ struct WorkflowCoordinatorTelemetry {
 class DBWorkflowWorkerCoordinator {
 public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
-    using BuildJobPayloadFn = std::function<std::optional<simcore::PSJob>(const WorkflowReadyStep&)>;
+    using BuildJobPayloadFn = WorkflowMaterializationService::BuildJobPayloadFn;
+    using ClaimJobsFn = WorkflowMaterializationService::ClaimJobsFn;
     using ProgressCallback = std::function<void(const simcore::PRProgress&)>;
     using ResultCallback = std::function<void(const simcore::PRResult&)>;
 
@@ -61,6 +64,7 @@ public:
         DBWorkflowWorkerCoordinatorConfig worker_cfg,
         CoordinatorIntegrationConfig integration_cfg,
         WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
+        ClaimJobsFn claim_jobs_fn = {},
         BuildJobPayloadFn build_job_payload_fn = {},
         ReadyStepPersistFn persist_materialization_fn = {},
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
@@ -97,6 +101,11 @@ private:
         std::unique_ptr<simcore::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
         std::optional<uint64_t> in_flight_job_id;
+        std::optional<std::string> loaded_savestate_affinity_key;
+    };
+    struct DispatchableWorkerInfo {
+        size_t worker_idx = 0;
+        std::optional<std::string> loaded_savestate_affinity_key;
     };
     struct DispatchedJobContext {
         WorkflowReadyStep step;
@@ -108,7 +117,7 @@ private:
     void DrainResultsLoop();
     bool StartWorkerSlot(size_t worker_idx);
     void StopWorkerSlot(WorkerSlot& slot);
-    std::optional<size_t> AcquireAvailableWorker();
+    std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
     void ReleaseWorkerByResult(const simcore::PRResult& result);
     void PollReadyStepsFromDb();
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
@@ -132,8 +141,9 @@ private:
     CoordinatorIntegrationConfig integration_cfg_{};
     WorkflowSchedulerAdapter workflow_scheduler_adapter_;
     StepInputAggregationService input_aggregation_service_;
-    BuildJobPayloadFn build_job_payload_fn_;
     ReadyStepPersistFn persist_materialization_fn_;
+    WorkflowMaterializationService workflow_materialization_service_;
+    WorkflowDispatchCoordinator workflow_dispatch_coordinator_;
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
     std::unique_ptr<simcore::db::execution::workflow::StepCompletionGateService> owned_step_completion_gate_;
     simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate_ = nullptr;

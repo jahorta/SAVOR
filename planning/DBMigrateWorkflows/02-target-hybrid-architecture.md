@@ -64,10 +64,15 @@ Control plane invokes adapters in this order:
 - Pre-warm only for claimed jobs (not all queued jobs), and maintain a claimed-job staging queue/cache for fast handoff to workers.
 - Claimed-job staging pipeline (resolved):
   1. claim job
-  2. `WorkflowMaterializationService` materializes worker payload
-  3. mark materialization complete in claimed-job store
+  2. `WorkflowMaterializationService` materializes claimed-job payload (`BuildRuntimeInit(job_id)`)
+  3. mark payload materialization complete in claimed-job store
   4. `WorkflowDispatchCoordinator` dispatches from **materialized claimed-job subset** only
+- Step materialization vs job materialization (resolved):
+  - step materialization path uses `IJobPersistenceAdapter::EncodeForQueueing(...)` to enqueue required job(s),
+  - job claiming is coordinator-loop-owned and global (not limited to the currently processed workflow step),
+  - payload materialization is per claimed job.
 - Claimed-job matching priority (resolved): **savestate affinity first**, then **program/runtime affinity**, then **fairness**.
+- Dispatch targeting detail (resolved): coordinator iterates all open worker slots each loop and passes worker-loaded `savestate_id` hint into dispatch selection.
 
 ## 5. Result Mapping Pipeline
 

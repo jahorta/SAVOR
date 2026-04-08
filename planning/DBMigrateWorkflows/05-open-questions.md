@@ -40,6 +40,12 @@ This file is meant to be actively updated each iteration.
    - Decision: DB-query contracts only; event-snapshot evidence deferred.
 16. **Recovery test baseline**
    - Decision: adopt minimum 5-scenario recovery matrix (power loss, duplicate terminal replay, partial writer failure, completion mismatch, missing decision-result replay).
+17. **Step materialization vs payload materialization boundary**
+   - Decision: workflow-step materialization enqueues jobs via `EncodeForQueueing(...)`; claimed-job payload materialization is a separate stage via `BuildRuntimeInit(job_id)`.
+18. **Worker-aware dispatch targeting**
+   - Decision: coordinator dispatches per open worker slot and passes worker-loaded `savestate_id` affinity hint into dispatch selection.
+19. **Claim scope**
+   - Decision: claiming is global across in-flight workflows and not restricted to the currently dequeued workflow step.
 
 ## Priority A (blockers)
 
