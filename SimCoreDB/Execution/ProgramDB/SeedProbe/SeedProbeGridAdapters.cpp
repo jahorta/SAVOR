@@ -66,7 +66,7 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
                 enqueue.fingerprint = FingerprintFor(blueprint_, probe_run_id, entry.frame_hex, "grid", entry.domain_ref_id);
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
-                enqueue.input_ini = "";
+                enqueue.meta_note = "";
                 std::int64_t ignored_job_id = 0;
                 (void)execution_db_->EnqueueJob(enqueue, &ignored_job_id, &error);
             }
@@ -135,36 +135,84 @@ std::string SeedProbeGridJobPersistenceAdapter::FingerprintFor(
 
 std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout() const {
     std::vector<GridFanoutEntry> entries;
+    InputPlan collection{};
 
-    const auto append_family = [this, &entries](const std::vector<simcore::GCInputFrame>& frames, const char* family) {
-        for (const auto& frame : frames) {
-            const auto frame_hex = frame.to_frame_hex();
-            const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
+    // Reserve storage for all entries
+    entries.reserve(grid_.samples_per_axis * grid_.samples_per_axis * 3);
 
-            JobPersistenceRecord record{};
-            record.program_ref_kind = "sp_probe_run";
-            record.program_ref_id = blueprint_.probe_id;
-            record.program_version = blueprint_.program_version;
-            record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, family, next_ref);
+    // Reserve storage for each family
+    collection.reserve(grid_.samples_per_axis * grid_.samples_per_axis);
 
-            entries.push_back(GridFanoutEntry{
-                .domain_ref_id = next_ref,
-                .frame = frame,
-                .frame_hex = frame_hex,
-                .persistence = std::move(record),
-                });
-        }
-    };
+    // Build out main grid
+    collection.emplace_back(simcore::build_grid_main(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
+    for (simcore::GCInputFrame& frame : collection) {
+        auto frame_hex = frame.to_frame_hex();
+        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
 
-    append_family(simcore::build_grid_main(grid_.samples_per_axis, grid_.min_value, grid_.max_value), "main");
-    append_family(simcore::build_grid_cstick(grid_.samples_per_axis, grid_.min_value, grid_.max_value), "cstick");
-    append_family(
-        simcore::build_grid_trig(
-            grid_.samples_per_axis,
-            grid_.ignore_trigger_minmax ? 0 : grid_.min_value,
-            grid_.ignore_trigger_minmax ? 255 : grid_.max_value,
-            grid_.cap_trigger_top),
-        "trigger");
+        JobPersistenceRecord record{};
+        record.program_ref_kind = "sp_probe_run";
+        record.program_ref_id = blueprint_.probe_id;
+        record.program_version = blueprint_.program_version;
+        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "main", next_ref);
+
+        entries.push_back(GridFanoutEntry{
+            .domain_ref_id = next_ref,
+            .frame = frame,
+            .frame_hex = frame_hex,
+            .family = "main",
+            .persistence = std::move(record)
+            });
+    }
+
+    // Build out cstick grid
+    collection.clear();
+    collection.emplace_back(simcore::build_grid_cstick(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
+    for (simcore::GCInputFrame& frame : collection) {
+        auto frame_hex = frame.to_frame_hex();
+        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
+
+        JobPersistenceRecord record{};
+        record.program_ref_kind = "sp_probe_run";
+        record.program_ref_id = blueprint_.probe_id;
+        record.program_version = blueprint_.program_version;
+        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "cstick", next_ref);
+
+        entries.push_back(GridFanoutEntry{
+            .domain_ref_id = next_ref,
+            .frame = frame,
+            .frame_hex = frame_hex,
+            .family = "cstick",
+            .persistence = std::move(record)
+            });
+    }
+
+    //Build out trigger grid
+    collection.clear();
+    collection.emplace_back(simcore::build_grid_trig(
+        grid_.samples_per_axis,
+        grid_.ignore_trigger_minmax ? 0 : grid_.min_value,
+        grid_.ignore_trigger_minmax ? 255 : grid_.max_value,
+        grid_.cap_trigger_top));
+    for (simcore::GCInputFrame& frame : collection) {
+        auto frame_hex = frame.to_frame_hex();
+        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
+
+        JobPersistenceRecord record{};
+        record.program_ref_kind = "sp_probe_run";
+        record.program_ref_id = blueprint_.probe_id;
+        record.program_version = blueprint_.program_version;
+        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "trigger", next_ref);
+
+        entries.push_back(GridFanoutEntry{
+            .domain_ref_id = next_ref,
+            .frame = frame,
+            .frame_hex = frame_hex,
+            .family = "trigger",
+            .persistence = std::move(record)
+            });
+    }
+    
+
 
     return entries;
 }
