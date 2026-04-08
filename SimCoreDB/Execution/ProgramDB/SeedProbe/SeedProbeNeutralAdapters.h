@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "../../../IExecutionDb.h"
+#include "../../IExecutionDb.h"
 #include "../../../../Analysis/IAnalysisDb.h"
 #include "../ProgramKindDescriptor.h"
 

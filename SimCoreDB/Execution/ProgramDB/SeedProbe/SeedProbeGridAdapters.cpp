@@ -10,6 +10,7 @@
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
 #include "../../../../SimCore/Utils/Hex.h"
+#include "SeedProbeContracts.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
 
