@@ -149,6 +149,9 @@
     <ProjectReference Include="..\SimCoreDB\SimCoreDB.vcxproj">
       <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SimCore\SimCore.vcxproj">
+      <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
