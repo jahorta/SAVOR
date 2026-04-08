@@ -1,5 +1,14 @@
 # 08 - Phase 2 Detailed Plan: Adapter Chain and Seed Probe Split
 
+## Completion status
+
+- **Status:** Completed
+- **Completion date:** 2026-04-08
+- **Verification mode:** Manual verification
+- **Completion gate confirmation:** Phase-2 validation execution completed with both required paths passing:
+  - `SimCoreTests` phase-2 checks (adapter invocation order, completion gate, Seed Probe split contracts) passed.
+  - `SimCoreDBValidation` phase-2 checks (adapter invocation order and completion-gate invariants) passed.
+
 ## Phase intent
 
 Wire the full adapter chain and split Seed Probe into granular descriptor-based steps.
