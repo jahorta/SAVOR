@@ -90,6 +90,18 @@ struct IStateDb {
         std::int64_t* tas_variant_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    // Materializes an artifact to a directory using "<sha256><file_ext>" from state_artifact.
+    virtual std::optional<std::string> MaterializeArtifactToDirectory(
+        std::int64_t artifact_id,
+        std::string_view output_directory,
+        std::string* error_out = nullptr) const = 0;
+
+    // Materializes an artifact to an explicit destination path.
+    virtual std::optional<std::string> MaterializeArtifactToPath(
+        std::int64_t artifact_id,
+        std::string_view output_path,
+        std::string* error_out = nullptr) const = 0;
+
     // Reads unpublished outbox rows in ascending outbox cursor order.
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

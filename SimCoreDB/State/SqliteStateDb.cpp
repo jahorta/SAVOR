@@ -1,6 +1,8 @@
 #include "SqliteStateDb.h"
 
 #include <chrono>
+#include <exception>
+#include <filesystem>
 #include <string>
 
 #include "../Common/Events/EventPayloadDispatch.h"
@@ -23,6 +25,95 @@ struct Statement {
 
     sqlite3_stmt* st = nullptr;
 };
+
+struct ArtifactMaterializationRecord {
+    std::string sha256;
+    std::string file_ext;
+    std::string source_path;
+};
+
+std::string NormalizeFileExt(std::string file_ext) {
+    if (file_ext.empty()) return file_ext;
+    if (file_ext.front() == '.') return file_ext;
+    return "." + file_ext;
+}
+
+std::optional<ArtifactMaterializationRecord> LoadArtifactMaterializationRecord(
+    sqlite3* db,
+    std::int64_t artifact_id,
+    std::string* error_out) {
+    if (db == nullptr || artifact_id <= 0) {
+        if (error_out) *error_out = "invalid db handle or artifact_id";
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT sha256,file_ext,filename FROM state_artifact WHERE artifact_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, artifact_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "artifact_id not found";
+        return std::nullopt;
+    }
+
+    ArtifactMaterializationRecord record{};
+    const auto* sha256 = sqlite3_column_text(st.st, 0);
+    const auto* file_ext = sqlite3_column_text(st.st, 1);
+    const auto* filename = sqlite3_column_text(st.st, 2);
+    record.sha256 = sha256 == nullptr ? "" : reinterpret_cast<const char*>(sha256);
+    record.file_ext = file_ext == nullptr ? "" : reinterpret_cast<const char*>(file_ext);
+    record.source_path = filename == nullptr ? "" : reinterpret_cast<const char*>(filename);
+    if (record.sha256.empty() || record.file_ext.empty() || record.source_path.empty()) {
+        if (error_out) *error_out = "artifact row is missing required sha256/file_ext/filename fields";
+        return std::nullopt;
+    }
+
+    return record;
+}
+
+std::optional<std::string> CopyArtifactFromRecord(
+    const ArtifactMaterializationRecord& record,
+    const std::filesystem::path& destination_path,
+    std::string* error_out) {
+    try {
+        if (destination_path.empty()) {
+            if (error_out) *error_out = "destination path is empty";
+            return std::nullopt;
+        }
+
+        const std::filesystem::path source_path(record.source_path);
+        if (!std::filesystem::exists(source_path)) {
+            if (error_out) *error_out = "artifact source file does not exist: " + source_path.string();
+            return std::nullopt;
+        }
+        if (!std::filesystem::is_regular_file(source_path)) {
+            if (error_out) *error_out = "artifact source path is not a regular file: " + source_path.string();
+            return std::nullopt;
+        }
+
+        const auto parent = destination_path.parent_path();
+        if (!parent.empty()) {
+            std::filesystem::create_directories(parent);
+        }
+        std::filesystem::copy_file(
+            source_path,
+            destination_path,
+            std::filesystem::copy_options::overwrite_existing);
+        return destination_path.string();
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = ex.what();
+        return std::nullopt;
+    }
+}
 
 
 
@@ -527,6 +618,53 @@ bool SqliteStateDb::CreateTasVariant(
         *tas_variant_id_out = tas_variant_id;
     }
     return true;
+}
+
+std::optional<std::string> SqliteStateDb::MaterializeArtifactToDirectory(
+    std::int64_t artifact_id,
+    std::string_view output_directory,
+    std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return std::nullopt;
+    }
+    if (artifact_id <= 0 || output_directory.empty()) {
+        if (error_out) *error_out = "artifact_id and output_directory are required";
+        return std::nullopt;
+    }
+
+    auto record = LoadArtifactMaterializationRecord(db_, artifact_id, error_out);
+    if (!record.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto output_filename = record->sha256 + NormalizeFileExt(record->file_ext);
+    const auto destination_path = std::filesystem::path(output_directory) / output_filename;
+    return CopyArtifactFromRecord(record.value(), destination_path, error_out);
+}
+
+std::optional<std::string> SqliteStateDb::MaterializeArtifactToPath(
+    std::int64_t artifact_id,
+    std::string_view output_path,
+    std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return std::nullopt;
+    }
+    if (artifact_id <= 0 || output_path.empty()) {
+        if (error_out) *error_out = "artifact_id and output_path are required";
+        return std::nullopt;
+    }
+
+    auto record = LoadArtifactMaterializationRecord(db_, artifact_id, error_out);
+    if (!record.has_value()) {
+        return std::nullopt;
+    }
+
+    return CopyArtifactFromRecord(
+        record.value(),
+        std::filesystem::path(output_path),
+        error_out);
 }
 
 std::vector<events::EventEnvelope> SqliteStateDb::ReadUnpublishedOutboxBatch(

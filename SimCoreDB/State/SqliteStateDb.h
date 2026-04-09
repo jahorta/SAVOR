@@ -36,6 +36,16 @@ public:
         std::int64_t* tas_variant_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    std::optional<std::string> MaterializeArtifactToDirectory(
+        std::int64_t artifact_id,
+        std::string_view output_directory,
+        std::string* error_out = nullptr) const override;
+
+    std::optional<std::string> MaterializeArtifactToPath(
+        std::int64_t artifact_id,
+        std::string_view output_path,
+        std::string* error_out = nullptr) const override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;
