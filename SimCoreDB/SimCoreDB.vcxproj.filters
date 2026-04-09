@@ -28,15 +28,36 @@
     <Filter Include="Programs\SeedProbe">
       <UniqueIdentifier>{744dfdbb-bcbb-4ed7-8766-99b4dfa4decf}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Ui">
-      <UniqueIdentifier>{b0046c58-3b5e-4a40-bbf7-a31489645c14}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Events">
       <UniqueIdentifier>{eaea1d7f-82da-49fe-bf80-63b3b74e5ba4}</UniqueIdentifier>
     </Filter>
     <Filter Include="Entrypoint">
       <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Migrations">
+      <UniqueIdentifier>{cd992ffd-1da2-4d5b-b7e8-967e77e0dd27}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\Analysis">
+      <UniqueIdentifier>{eb160d29-ed31-48d3-8264-d9b153c63041}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\Archive">
+      <UniqueIdentifier>{55b74105-788a-4f0f-a2f7-f9083086e9f2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\Authoring">
+      <UniqueIdentifier>{b36b0ccc-87f3-4abc-909c-524c7f3da8b5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\Execution">
+      <UniqueIdentifier>{c78cfee6-adaa-4fee-8a39-4d5358c29ba4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\State">
+      <UniqueIdentifier>{b9691115-4c37-42d7-bf86-e468c4fdb802}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Migrations\UiRead">
+      <UniqueIdentifier>{75653fa7-d2a1-4c4b-b8e8-a70d59a73f11}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="UiRead">
+      <UniqueIdentifier>{b0046c58-3b5e-4a40-bbf7-a31489645c14}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -167,13 +188,13 @@
       <Filter>Analysis</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h">
-      <Filter>Ui</Filter>
+      <Filter>UiRead</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h">
-      <Filter>Ui</Filter>
+      <Filter>UiRead</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\SqliteUiReadDb.h">
-      <Filter>Ui</Filter>
+      <Filter>UiRead</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h">
       <Filter>State</Filter>
@@ -301,10 +322,10 @@
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp">
-      <Filter>Ui</Filter>
+      <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp">
-      <Filter>Ui</Filter>
+      <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp">
       <Filter>Workflows</Filter>
@@ -324,5 +345,62 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="update_generated_migrations_command.txt" />
+    <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
+    <None Include="migration\Archive\202604051000_archive_stage2_schema.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
+    <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
+    <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql">
+      <Filter>Migrations\Archive</Filter>
+    </None>
+    <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202604071000_execution_phase0b_job_savestate.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202604081030_execution_phase0c_job_details_ini.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\State\202604051000_state_stage2_schema.sql">
+      <Filter>Migrations\State</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051400_uiread_stage3e_projection_subscription.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051500_uiread_stage3f_projection_checkpoint_retire.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
   </ItemGroup>
 </Project>

@@ -254,6 +254,25 @@
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />
+    <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
+    <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
+    <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
+    <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
+    <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />
+    <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
+    <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
+    <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
+    <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
+    <None Include="migration\Execution\202604071000_execution_phase0b_job_savestate.sql" />
+    <None Include="migration\Execution\202604081030_execution_phase0c_job_details_ini.sql" />
+    <None Include="migration\State\202604051000_state_stage2_schema.sql" />
+    <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
+    <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
+    <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql" />
+    <None Include="migration\UIRead\202604051400_uiread_stage3e_projection_subscription.sql" />
+    <None Include="migration\UIRead\202604051500_uiread_stage3f_projection_checkpoint_retire.sql" />
+    <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
