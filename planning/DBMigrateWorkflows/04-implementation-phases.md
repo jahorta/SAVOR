@@ -58,6 +58,10 @@
 
 ## Phase 3 - Pub/sub extraction and scaling
 
+- **Status:** Completed
+- **Completion date:** 2026-04-09
+- **Verification mode:** Manual validation (`SimCoreTests` phase-3 suites + `SimCoreDBValidation` phase-3 checks passed)
+
 - Move input providers and completion/transition handlers to independent subscribers where valuable.
 - Split coordinator responsibilities into:
   - `WorkflowMaterializationService`
