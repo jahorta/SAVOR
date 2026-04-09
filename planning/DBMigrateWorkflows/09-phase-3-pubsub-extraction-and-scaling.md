@@ -1,5 +1,9 @@
 # 09 - Phase 3 Detailed Plan: Pub/Sub Extraction and Scaling
 
+- **Status:** Completed
+- **Completion date:** 2026-04-09
+- **Verification mode:** Manual validation (`SimCoreTests` phase-3 suites + `SimCoreDBValidation` phase-3 checks passed)
+
 ## Phase intent
 
 Split coordinator responsibilities and harden event-driven throughput/operability.
