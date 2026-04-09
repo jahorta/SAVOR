@@ -117,6 +117,20 @@ struct WorkflowResumeInstanceCommand {
     std::string requested_by;
 };
 
+struct WorkflowPauseInstanceCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::string reason;
+    std::string failure_code;
+    std::string requested_by;
+};
+
+struct WorkflowTerminalFailInstanceCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::string failure_code;
+    std::string failure_message;
+    std::string requested_by;
+};
+
 struct WorkflowMarkStepMaterializedCommand {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
@@ -174,6 +188,8 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) = 0;
     virtual bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) = 0;
     virtual bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) = 0;
+    virtual bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) = 0;
+    virtual bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;

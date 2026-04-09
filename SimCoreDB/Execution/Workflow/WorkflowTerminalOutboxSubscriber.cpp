@@ -71,7 +71,8 @@ WorkflowTerminalOutboxSubscriber::WorkflowTerminalOutboxSubscriber(
     IWorkflowOrchestrationCommandService* command_service)
     : db_(db)
     , orchestrator_(orchestrator)
-    , command_service_(command_service) {
+    , command_service_(command_service)
+    , recovery_service_(db) {
 }
 
 bool WorkflowTerminalOutboxSubscriber::ConsumeFromCursor(
@@ -222,40 +223,76 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                 return false;
             }
 
-            if (!command_service_->AppendLifecycleEvent(
-                {
-                    .workflow_instance_id = snapshot.workflow_instance_id,
-                    .workflow_step_id = snapshot.workflow_step_id,
-                    .event_kind = "Execution.WorkflowTransitionBlocked.v1",
-                    .message = terminal.gate.blocked_reason,
-                    .requested_by = "workflow_terminal_subscriber",
-                },
-                &command_error)) {
+            if (!command_service_->PauseWorkflowInstance(
+                    {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
+                        .reason = *terminal.gate.blocked_reason,
+                        .failure_code = "WORKFLOW_INVARIANT_VIOLATION",
+                        .requested_by = "workflow_terminal_subscriber",
+                    },
+                    &command_error)) {
                 if (error_out) *error_out = command_error;
                 return false;
             }
 
-            if (terminal.gate.terminal_fail) {
-                if (!command_service_->MarkStepTerminal(
+            WorkflowInvariantRemediationDecision decision{};
+            if (!recovery_service_.PlanInvariantRemediation(
                     {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
                         .workflow_step_id = snapshot.workflow_step_id,
-                        .terminal_state = "FAILED",
-                        .requested_by = "workflow_terminal_subscriber",
                     },
+                    &decision,
                     &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
+
+            if (decision.can_reopen) {
+                if (!command_service_->ResumeWorkflowInstance(
+                        {
+                            .workflow_instance_id = snapshot.workflow_instance_id,
+                            .requested_by = "workflow_terminal_subscriber",
+                        },
+                        &command_error)) {
                     if (error_out) *error_out = command_error;
                     return false;
+                }
+
+                if (!command_service_->AppendLifecycleEvent(
+                        {
+                            .workflow_instance_id = snapshot.workflow_instance_id,
+                            .workflow_step_id = snapshot.workflow_step_id,
+                            .event_kind = "Execution.WorkflowRemediationReopened.v1",
+                            .message = decision.reason,
+                            .requested_by = "workflow_terminal_subscriber",
+                        },
+                        &command_error)) {
+                    if (error_out) *error_out = command_error;
+                    return false;
+                }
+
+                if (allow_reconcile_retry) {
+                    StepTerminalContextSnapshot reconciled{};
+                    if (!LoadStepTerminalSnapshotForStep(snapshot.workflow_step_id, &reconciled, error_out)) {
+                        return false;
+                    }
+                    return HandleStepTerminalSnapshot(reconciled, false, error_out);
                 }
                 return true;
             }
 
-            if (allow_reconcile_retry) {
-                StepTerminalContextSnapshot reconciled{};
-                if (!LoadStepTerminalSnapshotForStep(snapshot.workflow_step_id, &reconciled, error_out)) {
-                    return false;
-                }
-                return HandleStepTerminalSnapshot(reconciled, false, error_out);
+            if (!command_service_->TerminalFailWorkflowInstance(
+                    {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
+                        .failure_code = decision.failure_code,
+                        .failure_message = decision.failure_message,
+                        .requested_by = "workflow_terminal_subscriber",
+                    },
+                    &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
             }
+            return true;
         }
         return true;
     }

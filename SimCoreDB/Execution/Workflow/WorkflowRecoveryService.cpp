@@ -171,4 +171,71 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
     return true;
 }
 
+bool WorkflowRecoveryService::PlanInvariantRemediation(
+    const WorkflowInvariantRemediationCommand& command,
+    WorkflowInvariantRemediationDecision* decision_out,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0 || command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id and workflow_step_id must be > 0";
+        return false;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT "
+        "COALESCE(js.expected_total, 0), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('DONE','FAILED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
+        "FROM exec_workflow_step s "
+        "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
+        "WHERE s.workflow_instance_id=?1 AND s.workflow_step_id=?2 "
+        "LIMIT 1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(st, 2, command.workflow_step_id);
+
+    if (sqlite3_step(st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found for remediation planning";
+        sqlite3_finalize(st);
+        return false;
+    }
+
+    const int expected_total = sqlite3_column_int(st, 0);
+    const int discovered_total = sqlite3_column_int(st, 1);
+    const int terminal_total = sqlite3_column_int(st, 2);
+    const int failed_total = sqlite3_column_int(st, 3);
+    sqlite3_finalize(st);
+
+    WorkflowInvariantRemediationDecision decision{};
+    if (discovered_total > 0
+        && terminal_total == discovered_total
+        && (expected_total == 0 || discovered_total == expected_total)) {
+        std::ostringstream reason;
+        reason << "repair_reopen expected=" << expected_total
+               << " discovered=" << discovered_total
+               << " terminal=" << terminal_total
+               << " failed=" << failed_total;
+        decision.can_reopen = true;
+        decision.reason = reason.str();
+    } else {
+        std::ostringstream detail;
+        detail << "repair_terminal_fail expected=" << expected_total
+               << " discovered=" << discovered_total
+               << " terminal=" << terminal_total
+               << " failed=" << failed_total;
+        decision.can_reopen = false;
+        decision.failure_code = "WORKFLOW_INVARIANT_UNRECOVERABLE";
+        decision.failure_message = detail.str();
+    }
+
+    if (decision_out != nullptr) {
+        *decision_out = decision;
+    }
+    return true;
+}
+
 } // namespace simcore::db::execution::workflow
