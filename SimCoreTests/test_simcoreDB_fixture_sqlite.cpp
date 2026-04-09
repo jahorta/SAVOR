@@ -332,6 +332,18 @@ bool ExecSql(sqlite3* db, const char* sql) {
     return rc == SQLITE_OK;
 }
 
+class AlwaysAdvanceTransitionHandler final : public simcore::db::execution::programdb::IWorkflowTransitionHandler {
+public:
+    simcore::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
+        const simcore::db::execution::programdb::WorkflowTransitionContext&) const override {
+        return {
+            .should_advance = true,
+            .blocked_reason = std::nullopt,
+            .next_step_key = std::optional<std::string>("next"),
+        };
+    }
+};
+
 } // namespace
 
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
