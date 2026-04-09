@@ -115,9 +115,10 @@ bool ExportCurrentDbSchemas(
         const auto sql_path = schema_root / (db_path.stem().string() + ".sql");
         const std::string command =
             "sqlite3 " + ShellQuote(db_path) + " \".schema\" > " + ShellQuote(sql_path);
-        if (std::system(command.c_str()) != 0) {
+        auto exit_code = std::system(command.c_str());
+        if (exit_code != 0) {
             if (error_out != nullptr) {
-                *error_out = "schema export command failed for " + db_path.string() + ": " + command;
+                *error_out = std::format("schema export command failed for {}: {}: exit code {}", db_path.string(), command, exit_code).c_str();
             }
             return false;
         }
