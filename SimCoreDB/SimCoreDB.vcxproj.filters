@@ -1,103 +1,326 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files"><UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier><Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions></Filter>
-    <Filter Include="Header Files"><UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier><Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions></Filter>
+    <Filter Include="Common">
+      <UniqueIdentifier>{151b6af7-a902-4f6e-a5f4-e54bb4903f89}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Workflows">
+      <UniqueIdentifier>{690925d3-1926-4415-8a03-69922c7899d4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archive">
+      <UniqueIdentifier>{1edd3470-b14e-4654-9ef3-090c8d13ca2b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Authoring">
+      <UniqueIdentifier>{8bc7fa1d-ffb9-45e0-95b2-4949966398e7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="State">
+      <UniqueIdentifier>{ff2c908a-8948-4ba8-b357-a1312075e7d0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Analysis">
+      <UniqueIdentifier>{52880b1b-e471-40b3-9769-6928e8b2d61c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Execution">
+      <UniqueIdentifier>{aa9eae48-eeab-4331-9a74-6ac32ba85160}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Programs">
+      <UniqueIdentifier>{7c60d4cf-214f-4c5e-ac39-588d30e9fcb6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Programs\SeedProbe">
+      <UniqueIdentifier>{744dfdbb-bcbb-4ed7-8766-99b4dfa4decf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ui">
+      <UniqueIdentifier>{b0046c58-3b5e-4a40-bbf7-a31489645c14}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Events">
+      <UniqueIdentifier>{eaea1d7f-82da-49fe-bf80-63b3b74e5ba4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Entrypoint">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Archive\ArchivePackageService.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Archive\IArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Archive\RehydrateExecutor.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Archive\SqliteArchiveDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Analysis\IAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Analysis\SqliteAnalysisDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Authoring\IAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Authoring\SqliteAuthoringDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\DbConfigPaths.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\DbService.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventEnvelope.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventCatalog.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventPayloadDispatch.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventPayloadValidation.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventPayloadViews.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\EventPayloadResolvers.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Events\OutboxRelay.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Migrations\MigrationContext.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Migrations\MigrationRunner.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Types\TypedIds.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Common\Types\UtcTimestamp.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\IExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Jobs\JobEventOrchestration.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowEngine.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowParityStore.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowProjector.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="SimCoreDB.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="State\IStateDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="State\SqliteStateDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\IUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\BattleProjector.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\JobProjector.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\ProjectorContract.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" ><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="UIRead\SqliteUiReadDb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Common\Types\TypedIds.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Types\UtcTimestamp.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\OutboxRelay.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\DbService.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\DbConfigPaths.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowProjector.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowParityStore.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowEngine.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Archive\SqliteArchiveDb.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
+    <ClInclude Include="Archive\IArchiveDb.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
+    <ClInclude Include="Archive\ArchivePackageService.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\IAuthoringDb.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\SqliteAuthoringDb.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="State\SqliteStateDb.h">
+      <Filter>State</Filter>
+    </ClInclude>
+    <ClInclude Include="State\IStateDb.h">
+      <Filter>State</Filter>
+    </ClInclude>
+    <ClInclude Include="Archive\RehydrateExecutor.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
+    <ClInclude Include="Analysis\SqliteAnalysisDb.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="Analysis\IAnalysisDb.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\ProjectorContract.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\IExecutionDb.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\JobProjector.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Jobs\JobEventOrchestration.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h">
+      <Filter>Programs</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.h">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\BattleProjector.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h">
+      <Filter>Ui</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\IUiReadDb.h">
+      <Filter>Ui</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\SqliteUiReadDb.h">
+      <Filter>Ui</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\Projectors\ArtifactProjector.h">
+      <Filter>State</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Migrations\MigrationRunner.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Migrations\MigrationContext.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventCatalog.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventEnvelope.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadDispatch.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadResolvers.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadValidation.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Events\EventPayloadViews.h">
+      <Filter>Events</Filter>
+    </ClInclude>
+    <ClInclude Include="SimCoreDB.h">
+      <Filter>Entrypoint</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Archive\ArchivePackageService.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Archive\SqliteArchiveDb.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Archive\RehydrateExecutor.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Common\Migrations\MigrationContext.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Common\Migrations\MigrationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Common\Events\OutboxRelay.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Common\DbService.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Analysis\SqliteAnalysisDb.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Authoring\SqliteAuthoringDb.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowParityStore.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="SimCoreDB.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="State\SqliteStateDb.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\JobProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" ><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="UIRead\SqliteUiReadDb.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Common\Events\OutboxRelay.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\DbService.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowParityStore.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp">
+      <Filter>Archive</Filter>
+    </ClCompile>
+    <ClCompile Include="Archive\ArchivePackageService.cpp">
+      <Filter>Archive</Filter>
+    </ClCompile>
+    <ClCompile Include="Archive\SqliteArchiveDb.cpp">
+      <Filter>Archive</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\SqliteAuthoringDb.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="State\SqliteStateDb.cpp">
+      <Filter>State</Filter>
+    </ClCompile>
+    <ClCompile Include="Archive\RehydrateExecutor.cpp">
+      <Filter>Archive</Filter>
+    </ClCompile>
+    <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="Analysis\SqliteAnalysisDb.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\JobProjector.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp">
+      <Filter>Programs\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp">
+      <Filter>State</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\BattleProjector.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp">
+      <Filter>Ui</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\SqliteUiReadDb.cpp">
+      <Filter>Ui</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Migrations\MigrationRunner.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Migrations\MigrationContext.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="SimCoreDB.cpp">
+      <Filter>Entrypoint</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="update_generated_migrations_command.txt" />
