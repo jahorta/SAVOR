@@ -15,6 +15,7 @@
 
 #include "Common/Migrations/MigrationRunner.h"
 #include "Common/DbService.h"
+#include "Common/DbConfigPaths.h"
 #include "Common/Events/EventCatalog.h"
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
@@ -60,7 +61,7 @@ protected:
         ASSERT_TRUE(std::filesystem::create_directories(temp_root_));
 
         const auto shared_db_path = temp_root_ / "simcoredb_test.sqlite";
-        simcore::db::core::DbConfigPaths config_paths{};
+        simcore::db::DbConfigPaths config_paths{};
         config_paths.execution_db_path = shared_db_path;
         config_paths.state_db_path = shared_db_path;
         config_paths.analysis_db_path = shared_db_path;
