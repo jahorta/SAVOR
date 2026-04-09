@@ -14,6 +14,7 @@
 #include <sqlite3.h>
 
 #include "ValidationPhase3.h"
+#include "ValidationPhase4.h"
 #include "ValidationResult.h"
 #include "Common/Migrations/MigrationRunner.h"
 #include "Common/Events/EventPayloadDispatch.h"
@@ -1032,6 +1033,11 @@ int main(int argc, char** argv) {
         { "phase3.per_service_dedupe_isolation", "Validate service-local terminal dedupe tables stay isolated across split services." },
         { "phase3.progress_terminal_stream_separation", "Validate high-frequency progress/input traffic remains separated from terminal stream records." },
         { "phase3.lag_dead_letter_readiness", "Validate dead-letter behavior and outbox lag preview readiness checks." },
+        { "phase4.invariant_violation_remediation_sequence", "Validate remediation ordering for invariant-violation recovery before queue resume." },
+        { "phase4.power_loss_during_claimed_job_materialization", "Validate restart rerun semantics after power loss during claimed-job materialization." },
+        { "phase4.duplicate_terminal_replay", "Validate duplicate terminal replay dedupe applies terminal transition exactly once." },
+        { "phase4.partial_writer_failure_recovery", "Validate partial writer failures rollback to consistent pre-write state." },
+        { "phase4.missing_decision_result_restart_rerun", "Validate restart rerun flow when decision-result is missing." },
     };
 
     bool list_only = false;
@@ -1179,6 +1185,26 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase3LagDeadLetterReadiness(migration_root));
             return true;
         }
+        if (name == "phase4.invariant_violation_remediation_sequence") {
+            results.push_back(ValidatePhase4InvariantViolationRemediationSequence());
+            return true;
+        }
+        if (name == "phase4.power_loss_during_claimed_job_materialization") {
+            results.push_back(ValidatePhase4PowerLossDuringClaimedJobMaterialization());
+            return true;
+        }
+        if (name == "phase4.duplicate_terminal_replay") {
+            results.push_back(ValidatePhase4DuplicateTerminalReplay());
+            return true;
+        }
+        if (name == "phase4.partial_writer_failure_recovery") {
+            results.push_back(ValidatePhase4PartialWriterFailureRecovery());
+            return true;
+        }
+        if (name == "phase4.missing_decision_result_restart_rerun") {
+            results.push_back(ValidatePhase4MissingDecisionResultRestartRerun());
+            return true;
+        }
         return false;
     };
 
@@ -1197,6 +1223,11 @@ int main(int argc, char** argv) {
         run_one("phase3.per_service_dedupe_isolation");
         run_one("phase3.progress_terminal_stream_separation");
         run_one("phase3.lag_dead_letter_readiness");
+        run_one("phase4.invariant_violation_remediation_sequence");
+        run_one("phase4.power_loss_during_claimed_job_materialization");
+        run_one("phase4.duplicate_terminal_replay");
+        run_one("phase4.partial_writer_failure_recovery");
+        run_one("phase4.missing_decision_result_restart_rerun");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);

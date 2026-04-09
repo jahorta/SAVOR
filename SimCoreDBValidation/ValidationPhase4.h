@@ -1,0 +1,9 @@
+#pragma once
+
+#include "ValidationResult.h"
+
+ValidationResult ValidatePhase4InvariantViolationRemediationSequence();
+ValidationResult ValidatePhase4PowerLossDuringClaimedJobMaterialization();
+ValidationResult ValidatePhase4DuplicateTerminalReplay();
+ValidationResult ValidatePhase4PartialWriterFailureRecovery();
+ValidationResult ValidatePhase4MissingDecisionResultRestartRerun();

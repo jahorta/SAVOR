@@ -17,6 +17,11 @@ Command-line validation tool for DB-migrate workflow phase gates.
   - `SimCoreDBValidation --run phase3.per_service_dedupe_isolation`
   - `SimCoreDBValidation --run phase3.progress_terminal_stream_separation`
   - `SimCoreDBValidation --run phase3.lag_dead_letter_readiness`
+  - `SimCoreDBValidation --run phase4.invariant_violation_remediation_sequence`
+  - `SimCoreDBValidation --run phase4.power_loss_during_claimed_job_materialization`
+  - `SimCoreDBValidation --run phase4.duplicate_terminal_replay`
+  - `SimCoreDBValidation --run phase4.partial_writer_failure_recovery`
+  - `SimCoreDBValidation --run phase4.missing_decision_result_restart_rerun`
 - Override migration root (filesystem migration mode):
   - `SimCoreDBValidation --run all --migration-root <path-to-SimCoreDB/migration>`
 - Override phase-3 default seed rows JSON and/or provide additional JSONL row folder:
@@ -49,3 +54,16 @@ Command-line validation tool for DB-migrate workflow phase gates.
   - Verifies high-frequency progress/input events are persisted in `exec_workflow_input_event` while terminal state is persisted in `exec_workflow_event`.
 - `phase3.lag_dead_letter_readiness`
   - Verifies outbox relay dead-letter behavior and confirms lag-preview telemetry can detect lagging subscriptions.
+
+## Phase 4 validations
+
+- `phase4.invariant_violation_remediation_sequence`
+  - Pass criteria: remediation ordering reaches detection, isolation, reconciliation, and queue-resume stages without gaps.
+- `phase4.power_loss_during_claimed_job_materialization`
+  - Pass criteria: restart path detects incomplete claimed-job materialization and reruns to a committed state.
+- `phase4.duplicate_terminal_replay`
+  - Pass criteria: replaying duplicate terminal events applies terminal transition exactly once.
+- `phase4.partial_writer_failure_recovery`
+  - Pass criteria: partial writer failure records rollback intent and returns persisted state to pre-write consistency.
+- `phase4.missing_decision_result_restart_rerun`
+  - Pass criteria: restart detects missing decision-result output and schedules/runs rerun until decision result exists.
