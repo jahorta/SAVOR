@@ -37,6 +37,8 @@ public:
     bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) override;
     bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) override;
     bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) override;
+    bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) override;
+    bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) override;
     bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override;
     bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;

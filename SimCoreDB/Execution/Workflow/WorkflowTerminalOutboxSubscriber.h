@@ -8,6 +8,7 @@
 
 #include "AdapterChainOrchestrator.h"
 #include "WorkflowOrchestration.h"
+#include "WorkflowRecoveryService.h"
 #include "../../Common/Events/EventEnvelope.h"
 
 namespace simcore::db::execution::workflow {
@@ -53,6 +54,7 @@ private:
     sqlite3* db_ = nullptr;
     const AdapterChainOrchestrator* orchestrator_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;
+    mutable WorkflowRecoveryService recovery_service_;
 };
 
 } // namespace simcore::db::execution::workflow

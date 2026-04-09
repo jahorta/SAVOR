@@ -506,6 +506,137 @@ bool SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::PauseWorkflowInstance(
+    const WorkflowPauseInstanceCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const std::string failure_code = command.failure_code.empty()
+        ? "WORKFLOW_INVARIANT_VIOLATION"
+        : command.failure_code;
+    const std::string reason = command.reason.empty()
+        ? "workflow_paused_for_invariant_violation"
+        : command.reason;
+
+    Statement st;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_instance "
+        "SET state='FAILED', failure_code=?2, failure_text=?3, completed_at_utc=NULL "
+        "WHERE workflow_instance_id=?1 AND state='RUNNING';",
+        &st,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(st.st, 2, failure_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 3, reason.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "pause precondition failed (instance must be RUNNING)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowInvariantViolation.v1",
+            reason.c_str(),
+            error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::TerminalFailWorkflowInstance(
+    const WorkflowTerminalFailInstanceCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+    if (command.failure_code.empty()) {
+        if (error_out) *error_out = "failure_code is required";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_instance "
+        "SET state='FAILED', failure_code=?2, failure_text=?3, completed_at_utc=?4 "
+        "WHERE workflow_instance_id=?1 AND state IN ('PENDING','RUNNING','FAILED');",
+        &st,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const auto now = NowUtc();
+    sqlite3_bind_int64(st.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(st.st, 2, command.failure_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 3, command.failure_message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 4, now);
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "terminal fail precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowRemediationTerminalFailed.v1",
+            command.failure_message.c_str(),
+            error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowInstanceCompleted.v1",
+            "terminal_failed",
+            error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
     const WorkflowMarkStepMaterializedCommand& command,
     std::string* error_out) {
