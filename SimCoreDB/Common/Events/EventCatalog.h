@@ -5,7 +5,7 @@
 
 namespace simcore::db::events {
 
-inline constexpr std::array<std::string_view, 58> kEventCatalogV1{ {
+inline constexpr std::array<std::string_view, 59> kEventCatalogV1{ {
     "Execution.JobSetCreated.v1",
     "Execution.JobQueued.v1",
     "Execution.JobClaimed.v1",
@@ -24,6 +24,7 @@ inline constexpr std::array<std::string_view, 58> kEventCatalogV1{ {
     "Execution.WorkflowTransitionAdvanced.v1",
     "Execution.WorkflowTransitionBlocked.v1",
     "Execution.WorkflowInvariantViolation.v1",
+    "Execution.WorkflowRemediationRepairExecuted.v1",
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowRemediationTerminalFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
@@ -66,7 +67,7 @@ inline constexpr std::array<std::string_view, 58> kEventCatalogV1{ {
     "Archive.RehydrateFailed.v1",
 } };
 
-inline constexpr std::array<std::string_view, 13> kWorkflowExecutionEventsV1{ {
+inline constexpr std::array<std::string_view, 14> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowInstanceCreated.v1",
     "Execution.WorkflowStepReady.v1",
     "Execution.WorkflowStepMaterialized.v1",
@@ -77,6 +78,7 @@ inline constexpr std::array<std::string_view, 13> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowTransitionAdvanced.v1",
     "Execution.WorkflowTransitionBlocked.v1",
     "Execution.WorkflowInvariantViolation.v1",
+    "Execution.WorkflowRemediationRepairExecuted.v1",
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowRemediationTerminalFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",

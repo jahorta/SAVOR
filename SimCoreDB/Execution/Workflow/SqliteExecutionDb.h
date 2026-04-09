@@ -15,10 +15,18 @@ namespace simcore::db::execution::workflow {
 
 class SqliteWorkflowOrchestrationQueryService;
 class SqliteWorkflowOrchestrationCommandService;
+struct WorkflowInvariantRemediationCommand;
 
 class SqliteExecutionDb final : public simcore::db::IExecutionDb {
 public:
     explicit SqliteExecutionDb(sqlite3* db);
+    bool ValidationExecuteSql(std::string_view sql, std::string* error_out = nullptr) const;
+    bool ValidationQueryInt(std::string_view sql, std::int64_t* value_out, std::string* error_out = nullptr) const;
+    bool ValidationQueryText(std::string_view sql, std::string* value_out, std::string* error_out = nullptr) const;
+    bool ValidationExecuteInvariantRemediation(
+        const WorkflowInvariantRemediationCommand& command,
+        bool* reopened_out,
+        std::string* error_out = nullptr);
 
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;

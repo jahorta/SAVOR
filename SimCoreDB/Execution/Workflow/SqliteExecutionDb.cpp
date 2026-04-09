@@ -3,6 +3,7 @@
 #include "../../Common/Events/EventPayloadDispatch.h"
 #include "../../Common/Events/EventPayloadValidation.h"
 #include "SqliteWorkflowOrchestration.h"
+#include "WorkflowRecoveryService.h"
 
 namespace simcore::db::execution::workflow {
 namespace {
@@ -144,6 +145,75 @@ SqliteExecutionDb::SqliteExecutionDb(sqlite3* db)
     , query_service_(std::make_unique<SqliteWorkflowOrchestrationQueryService>(db_))
     , command_service_(std::make_unique<SqliteWorkflowOrchestrationCommandService>(db_))
     , job_command_service_(std::make_unique<jobs::SqliteJobEventCommandService>(db_)) {
+}
+
+bool SqliteExecutionDb::ValidationExecuteSql(std::string_view sql, std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    char* sqlite_err = nullptr;
+    const int rc = sqlite3_exec(db_, std::string(sql).c_str(), nullptr, nullptr, &sqlite_err);
+    if (rc != SQLITE_OK) {
+        if (error_out) *error_out = sqlite_err ? sqlite_err : sqlite3_errmsg(db_);
+        sqlite3_free(sqlite_err);
+        return false;
+    }
+    sqlite3_free(sqlite_err);
+    return true;
+}
+
+bool SqliteExecutionDb::ValidationQueryInt(std::string_view sql, std::int64_t* value_out, std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (value_out == nullptr) {
+        if (error_out) *error_out = "value_out is required";
+        return false;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(db_, std::string(sql).c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "query returned no row";
+        return false;
+    }
+    *value_out = sqlite3_column_int64(st.st, 0);
+    return true;
+}
+
+bool SqliteExecutionDb::ValidationQueryText(std::string_view sql, std::string* value_out, std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (value_out == nullptr) {
+        if (error_out) *error_out = "value_out is required";
+        return false;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(db_, std::string(sql).c_str(), -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "query returned no row";
+        return false;
+    }
+    const auto* text = sqlite3_column_text(st.st, 0);
+    *value_out = text ? reinterpret_cast<const char*>(text) : "";
+    return true;
+}
+
+bool SqliteExecutionDb::ValidationExecuteInvariantRemediation(
+    const WorkflowInvariantRemediationCommand& command,
+    bool* reopened_out,
+    std::string* error_out) {
+    WorkflowRecoveryService recovery(db_);
+    return recovery.ExecuteInvariantRemediation(command, command_service_.get(), reopened_out, error_out);
 }
 
 IWorkflowOrchestrationQueryService* SqliteExecutionDb::WorkflowQueryService() {

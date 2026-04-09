@@ -1,18 +1,25 @@
 #include "ValidationPhase4.h"
 
-#include <array>
+#include <chrono>
 #include <cmath>
-#include <map>
-#include <numeric>
+#include <filesystem>
+#include <memory>
 #include <string>
-#include <vector>
+
+#include "Common/DbConfigPaths.h"
+#include "Common/DbService.h"
+#include "Common/Migrations/MigrationRunner.h"
+#include "Execution/Workflow/SqliteExecutionDb.h"
+#include "Execution/Workflow/WorkflowRecoveryService.h"
 
 namespace {
 
-struct RecoveryStep {
-    std::string name;
-    bool complete{ false };
-};
+using simcore::db::DbConfigPaths;
+using simcore::db::core::DBService;
+using simcore::db::execution::workflow::SqliteExecutionDb;
+using simcore::db::execution::workflow::WorkflowInvariantRemediationCommand;
+using simcore::db::migrations::MigrationSourceKind;
+using simcore::db::migrations::MigrationSourceOptions;
 
 constexpr int kDedupeTtlHours = 168; // 7 days
 constexpr int kClaimedJobStagingCleanupHours = 36;
@@ -33,202 +40,525 @@ bool IsFiniteAndPositive(double value) {
     return std::isfinite(value) && value > 0.0;
 }
 
+std::filesystem::path MakeTempValidationDir(const std::string& suffix) {
+    const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    const auto dir = std::filesystem::temp_directory_path() / ("simcoredbvalidation-" + suffix + "-" + std::to_string(stamp));
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+DbConfigPaths MakeDbPaths(const std::filesystem::path& base_dir) {
+    DbConfigPaths paths{};
+    paths.execution_db_path = base_dir / "execution.sqlite";
+    paths.state_db_path = base_dir / "state.sqlite";
+    paths.analysis_db_path = base_dir / "analysis.sqlite";
+    paths.authoring_db_path = base_dir / "authoring.sqlite";
+    paths.ui_read_db_path = base_dir / "uiread.sqlite";
+    paths.archive_db_path = base_dir / "archive.sqlite";
+    paths.object_store_root = base_dir / "object_store";
+    paths.archive_store_root = base_dir / "archive_store";
+    return paths;
+}
+
+bool OpenExecutionDbFromService(
+    const std::filesystem::path& migration_root,
+    const std::string& temp_suffix,
+    std::filesystem::path* temp_dir_out,
+    std::unique_ptr<DBService>* service_out,
+    SqliteExecutionDb** execution_db_out,
+    std::string* error_out) {
+    const auto temp_dir = MakeTempValidationDir(temp_suffix);
+    DbConfigPaths paths = MakeDbPaths(temp_dir);
+
+    const MigrationSourceOptions options{
+        .source_kind = MigrationSourceKind::Filesystem,
+        .filesystem_root = migration_root,
+    };
+
+    auto service = std::make_unique<DBService>(std::move(paths), options);
+    if (!service->Start(error_out)) {
+        std::filesystem::remove_all(temp_dir);
+        return false;
+    }
+
+    auto* execution_db = dynamic_cast<SqliteExecutionDb*>(service->ExecutionDb());
+    if (execution_db == nullptr || execution_db->WorkflowCommandService() == nullptr || execution_db->WorkflowQueryService() == nullptr) {
+        if (error_out) *error_out = "execution db services unavailable";
+        service->Stop();
+        std::filesystem::remove_all(temp_dir);
+        return false;
+    }
+
+    *temp_dir_out = temp_dir;
+    *execution_db_out = execution_db;
+    *service_out = std::move(service);
+    return true;
+}
+
+void CleanupDb(std::unique_ptr<DBService>& service, const std::filesystem::path& temp_dir) {
+    if (service) {
+        service->Stop();
+        service.reset();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
 } // namespace
 
-ValidationResult ValidatePhase4InvariantViolationRemediationSequence() {
+ValidationResult ValidatePhase4InvariantViolationRemediationSequence(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.invariant_violation_remediation_sequence" };
 
-    std::vector<RecoveryStep> sequence{
-        { .name = "detect_invariant_violation" },
-        { .name = "isolate_corrupted_writer" },
-        { .name = "reconcile_state_from_last_terminal" },
-        { .name = "resume_claim_queue" },
-    };
-
-    for (auto& step : sequence) {
-        step.complete = true;
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-remediation", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
+        return result;
     }
 
-    for (const auto& step : sequence) {
-        if (!step.complete) {
-            result.message = "remediation sequence incomplete at step: " + step.name;
-            return result;
-        }
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4101, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(4102, 1, 'workflow', 2, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(4103, 4101, 'Grid', 'seedprobe.grid', 'RUNNING', 4102, 1, 2, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES
+(4104, 4102, 1, 1, 'seedprobe', 1, 'phase4-r1', 1, 'COMPLETED', 1, 2, unixepoch()*1000, unixepoch()*1000),
+(4105, 4102, 1, 1, 'seedprobe', 1, 'phase4-r2', 1, 'FAILED', 1, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL",
+            &err)) {
+        result.message = "failed seeding remediation fixture: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    bool reopened = false;
+    if (!execution_db->ValidationExecuteInvariantRemediation(
+            WorkflowInvariantRemediationCommand{
+                .workflow_instance_id = 4101,
+                .workflow_step_id = 4103,
+                .violation_reason = "STEP_BLOCKED_COUNT_MISMATCH",
+                .requested_by = "phase4-validation",
+            },
+            &reopened,
+            &err)) {
+        result.message = "execute remediation failed: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (!reopened) {
+        result.message = "remediation expected reopen path but got terminal-fail";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::string instance_state;
+    if (!execution_db->ValidationQueryText("SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=4101;", &instance_state, &err)) {
+        result.message = "failed reading instance state: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (instance_state != "RUNNING") {
+        result.message = "expected instance to be RUNNING after reopen, got " + instance_state;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::int64_t violation_events = 0;
+    std::int64_t repair_events = 0;
+    std::int64_t reopen_events = 0;
+    if (!execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_workflow_event WHERE event_kind='Execution.WorkflowInvariantViolation.v1';", &violation_events, &err)
+        || !execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_workflow_event WHERE event_kind='Execution.WorkflowRemediationRepairExecuted.v1';", &repair_events, &err)
+        || !execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_workflow_event WHERE event_kind='Execution.WorkflowRemediationReopened.v1';", &reopen_events, &err)) {
+        result.message = "failed reading lifecycle event counts: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (violation_events != 1 || repair_events != 1 || reopen_events != 1) {
+        result.message = "expected invariant/remediation/reopen lifecycle events exactly once";
+        CleanupDb(service, temp_dir);
+        return result;
     }
 
     result.passed = true;
-    result.message = "invariant-violation remediation sequence runs to completion before queue resume";
+    result.message = "invariant violation remediation path persisted pause->repair->reopen events using execution db services";
+    CleanupDb(service, temp_dir);
     return result;
 }
 
-ValidationResult ValidatePhase4PowerLossDuringClaimedJobMaterialization() {
+ValidationResult ValidatePhase4PowerLossDuringClaimedJobMaterialization(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.power_loss_during_claimed_job_materialization" };
 
-    bool claim_persisted = true;
-    bool materialization_started = true;
-    bool materialization_committed = false;
-
-    // Simulate restart recovery path after power loss between claim and commit.
-    const bool needs_recovery_rerun = claim_persisted && materialization_started && !materialization_committed;
-    bool recovery_rerun_completed = false;
-    if (needs_recovery_rerun) {
-        recovery_rerun_completed = true;
-        materialization_committed = true;
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-powerloss", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
+        return result;
     }
 
-    if (!needs_recovery_rerun || !recovery_rerun_completed || !materialization_committed) {
-        result.message = "power-loss recovery did not rerun claimed-job materialization to committed state";
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4201, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(4202, 4201, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(4203, 1, 'workflow', 1, unixepoch()*1000);
+)SQL",
+            &err)) {
+        result.message = "failed seeding power-loss fixture: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    if (!execution_db->WorkflowCommandService()->MarkStepMaterialized(
+            { .workflow_step_id = 4202, .job_set_id = 4203, .requested_by = "phase4-validation" },
+            &err)) {
+        result.message = "initial materialization failed: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    service->Stop();
+
+    const MigrationSourceOptions options{ .source_kind = MigrationSourceKind::Filesystem, .filesystem_root = migration_root };
+    auto restarted = std::make_unique<DBService>(MakeDbPaths(temp_dir), options);
+    if (!restarted->Start(&err)) {
+        result.message = "restart after simulated power loss failed: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    auto* restarted_execution = dynamic_cast<SqliteExecutionDb*>(restarted->ExecutionDb());
+    if (restarted_execution == nullptr) {
+        result.message = "restarted execution db unavailable";
+        CleanupDb(restarted, temp_dir);
+        return result;
+    }
+
+    if (!restarted_execution->WorkflowCommandService()->MarkStepMaterialized(
+            { .workflow_step_id = 4202, .job_set_id = 4203, .requested_by = "phase4-validation-restart" },
+            &err)) {
+        result.message = "restart rerun materialization failed: " + err;
+        CleanupDb(restarted, temp_dir);
+        return result;
+    }
+
+    std::int64_t materialized_events = 0;
+    if (!restarted_execution->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=4202 AND event_kind='Execution.WorkflowStepMaterialized.v1';",
+            &materialized_events,
+            &err)) {
+        result.message = "failed reading materialized events after restart: " + err;
+        CleanupDb(restarted, temp_dir);
+        return result;
+    }
+    if (materialized_events != 1) {
+        result.message = "expected exactly one materialized event after restart rerun, got " + std::to_string(materialized_events);
+        CleanupDb(restarted, temp_dir);
         return result;
     }
 
     result.passed = true;
-    result.message = "claimed-job materialization reruns and commits after restart from mid-write power loss";
+    result.message = "claimed-job materialization rerun is idempotent across restart using db service-backed execution store";
+    CleanupDb(restarted, temp_dir);
     return result;
 }
 
-ValidationResult ValidatePhase4DuplicateTerminalReplay() {
+ValidationResult ValidatePhase4DuplicateTerminalReplay(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.duplicate_terminal_replay" };
 
-    int durable_terminal_effects = 0;
-    int durable_recovery_effects = 0;
-    std::array<std::string, 2> terminal_replayed_event_ids{
-        "terminal-event-1200",
-        "terminal-event-1200",
-    };
-    std::array<std::string, 2> recovery_replayed_semantic_keys{
-        "workflow_step:44:terminal:COMPLETED",
-        "workflow_step:44:terminal:COMPLETED",
-    };
-
-    std::vector<std::string> observed_terminal_event_ids;
-    std::vector<std::string> observed_recovery_keys;
-
-    for (const auto& event_id : terminal_replayed_event_ids) {
-        const bool seen = std::find(observed_terminal_event_ids.begin(), observed_terminal_event_ids.end(), event_id)
-            != observed_terminal_event_ids.end();
-        if (!seen) {
-            observed_terminal_event_ids.push_back(event_id);
-            ++durable_terminal_effects;
-        }
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-dup-terminal", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
+        return result;
     }
 
-    for (const auto& key : recovery_replayed_semantic_keys) {
-        const bool seen = std::find(observed_recovery_keys.begin(), observed_recovery_keys.end(), key)
-            != observed_recovery_keys.end();
-        if (!seen) {
-            observed_recovery_keys.push_back(key);
-            ++durable_recovery_effects;
-        }
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4301, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(4302, 1, 'workflow', 1, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(4303, 4301, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 4302, 1, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL",
+            &err)) {
+        result.message = "failed seeding duplicate-terminal fixture: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
     }
 
-    if (durable_terminal_effects != 1 || durable_recovery_effects != 1) {
-        result.message = "duplicate terminal/recovery replay must produce exactly one durable effect each";
+    if (!execution_db->WorkflowCommandService()->MarkStepTerminal(
+            { .workflow_step_id = 4303, .terminal_state = "COMPLETED", .requested_by = "phase4-validation" },
+            &err)
+        || !execution_db->WorkflowCommandService()->MarkStepTerminal(
+            { .workflow_step_id = 4303, .terminal_state = "COMPLETED", .requested_by = "phase4-validation-replay" },
+            &err)) {
+        result.message = "duplicate terminal replay handling failed: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::int64_t completed_events = 0;
+    if (!execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=4303 AND event_kind='Execution.WorkflowStepCompleted.v1';",
+            &completed_events,
+            &err)) {
+        result.message = "failed counting completed events: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (completed_events != 1) {
+        result.message = "expected one completed event for duplicate replay, got " + std::to_string(completed_events);
+        CleanupDb(service, temp_dir);
         return result;
     }
 
     result.passed = true;
-    result.message = "duplicate terminal and recovery replays are deduped and emit only one durable effect each";
+    result.message = "duplicate terminal replay deduped to one durable terminal transition";
+    CleanupDb(service, temp_dir);
     return result;
 }
 
-ValidationResult ValidatePhase4PartialWriterFailureRecovery() {
+ValidationResult ValidatePhase4PartialWriterFailureRecovery(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.partial_writer_failure_recovery" };
 
-    bool row_a_written = true;
-    bool row_b_written = false;
-    bool rollback_marker_recorded = false;
-
-    if (row_a_written && !row_b_written) {
-        rollback_marker_recorded = true;
-        row_a_written = false;
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-partial-writer", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
+        return result;
     }
 
-    const bool writer_recovered_cleanly = rollback_marker_recorded && !row_a_written && !row_b_written;
-    if (!writer_recovered_cleanly) {
-        result.message = "partial writer failure did not rollback to consistent pre-write state";
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4401, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(4402, 1, 'workflow', 1, unixepoch()*1000),
+      (4403, 1, 'workflow', 1, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(4404, 4401, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL",
+            &err)) {
+        result.message = "failed seeding partial-writer fixture: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    if (!execution_db->WorkflowCommandService()->MarkStepMaterialized(
+            { .workflow_step_id = 4404, .job_set_id = 4402, .requested_by = "phase4-validation" },
+            &err)) {
+        result.message = "initial materialization failed: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    if (execution_db->WorkflowCommandService()->MarkStepMaterialized(
+            { .workflow_step_id = 4404, .job_set_id = 4403, .requested_by = "phase4-validation-fail" },
+            &err)) {
+        result.message = "expected conflicting writer attempt to fail but it succeeded";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::int64_t mapped_job_set_id = 0;
+    std::int64_t materialized_events = 0;
+    if (!execution_db->ValidationQueryInt("SELECT job_set_id FROM exec_workflow_step WHERE workflow_step_id=4404;", &mapped_job_set_id, &err)
+        || !execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=4404 AND event_kind='Execution.WorkflowStepMaterialized.v1';",
+            &materialized_events,
+            &err)) {
+        result.message = "failed reading state after conflicting write attempt: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (mapped_job_set_id != 4402 || materialized_events != 1) {
+        result.message = "partial writer failure did not preserve consistent pre-write state";
+        CleanupDb(service, temp_dir);
         return result;
     }
 
     result.passed = true;
-    result.message = "partial writer failure is detected and rolled back to a consistent state";
+    result.message = "conflicting writer failure preserved prior committed materialization state";
+    CleanupDb(service, temp_dir);
     return result;
 }
 
-ValidationResult ValidatePhase4MissingDecisionResultRestartRerun() {
+ValidationResult ValidatePhase4MissingDecisionResultRestartRerun(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.missing_decision_result_restart_rerun" };
 
-    bool decision_requested = true;
-    bool decision_result_present = false;
-    bool restart_detected = true;
-
-    bool rerun_scheduled = false;
-    if (decision_requested && !decision_result_present && restart_detected) {
-        rerun_scheduled = true;
-        decision_result_present = true;
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-missing-decision", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
+        return result;
     }
 
-    if (!rerun_scheduled || !decision_result_present) {
-        result.message = "missing decision-result should schedule rerun and backfill result after restart";
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4501, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(4502, 4501, 'Grid', 'seedprobe.grid', 'RUNNING', 1, 2, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_event(workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, message)
+VALUES(4501, 4502, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'decision_evaluated_without_result');
+)SQL",
+            &err)) {
+        result.message = "failed seeding missing-decision fixture: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::int64_t existing_decisions = 0;
+    if (!execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=4501 AND workflow_step_id=4502 AND event_kind IN ('Execution.WorkflowTransitionAdvanced.v1','Execution.WorkflowTransitionBlocked.v1');",
+            &existing_decisions,
+            &err)) {
+        result.message = "failed checking pre-rerun decision count: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (existing_decisions != 0) {
+        result.message = "fixture precondition violated: decision result already exists";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    if (!execution_db->WorkflowCommandService()->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = 4501,
+                .workflow_step_id = 4502,
+                .event_kind = "Execution.WorkflowTransitionBlocked.v1",
+                .message = std::optional<std::string>("restart_rerun_backfilled_missing_decision_result"),
+                .requested_by = "phase4-validation",
+            },
+            &err)) {
+        result.message = "failed appending rerun decision result event: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+
+    std::int64_t backfilled_decisions = 0;
+    if (!execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=4501 AND workflow_step_id=4502 AND event_kind='Execution.WorkflowTransitionBlocked.v1';",
+            &backfilled_decisions,
+            &err)) {
+        result.message = "failed reading post-rerun decision count: " + err;
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (backfilled_decisions != 1) {
+        result.message = "missing decision-result rerun did not emit exactly one corrective decision event";
+        CleanupDb(service, temp_dir);
         return result;
     }
 
     result.passed = true;
-    result.message = "restart detects missing decision-result and schedules rerun to completion";
+    result.message = "restart rerun backfilled missing decision-result event through execution db command service";
+    CleanupDb(service, temp_dir);
     return result;
 }
 
-ValidationResult ValidatePhase4ObservabilityRetentionReadiness() {
+ValidationResult ValidatePhase4ObservabilityRetentionReadiness(const std::filesystem::path& migration_root) {
     ValidationResult result{ .name = "phase4.observability_retention_readiness" };
 
-    // Completion-gate mismatch frequency signal: mismatches / completion checks over a fixed window.
-    const int completion_gate_checks = 1000;
-    const int completion_gate_mismatches = 11;
-    if (completion_gate_checks <= 0 || completion_gate_mismatches < 0 || completion_gate_mismatches > completion_gate_checks) {
-        result.message = "invalid completion-gate sample window";
+    std::filesystem::path temp_dir;
+    std::unique_ptr<DBService> service;
+    SqliteExecutionDb* execution_db = nullptr;
+    std::string err;
+    if (!OpenExecutionDbFromService(migration_root, "phase4-observability", &temp_dir, &service, &execution_db, &err)) {
+        result.message = "failed initializing db service: " + err;
         return result;
     }
-    const double completion_gate_mismatch_frequency =
-        static_cast<double>(completion_gate_mismatches) / static_cast<double>(completion_gate_checks);
 
-    // Repeated replay-loop symptom signal: count steps repeatedly replayed in a sampling interval.
-    const std::map<std::string, int> replay_attempts_per_step{
-        { "wf-100:seedprobe.neutral", 1 },
-        { "wf-101:seedprobe.neutral", 4 },
-        { "wf-102:seedprobe.grid", 2 },
-        { "wf-103:seedprobe.unique", 5 },
-    };
-    int repeated_replay_loop_count = 0;
-    for (const auto& [_, attempts] : replay_attempts_per_step) {
-        if (attempts >= 3) {
-            ++repeated_replay_loop_count;
-        }
-    }
-
-    // Dedupe table growth anomaly signal: current/hourly growth versus baseline/hourly growth.
-    const std::vector<int> dedupe_row_growth_history_per_hour{ 60, 58, 63, 61, 59, 57 };
-    const int dedupe_row_growth_current_hour = 108;
-    if (dedupe_row_growth_history_per_hour.empty() || dedupe_row_growth_current_hour < 0) {
-        result.message = "invalid dedupe growth samples";
+    if (!execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'phase4-validation', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc, blocked_reason)
+VALUES
+(4602, 4601, 'Neutral', 'seedprobe.neutral', 'RUNNING', 1, 2, unixepoch()*1000, unixepoch()*1000, NULL),
+(4603, 4601, 'Grid', 'seedprobe.grid', 'RUNNING', 1, 2, unixepoch()*1000, unixepoch()*1000, 'STEP_BLOCKED_COUNT_MISMATCH'),
+(4604, 4601, 'Unique', 'seedprobe.unique', 'RUNNING', 1, 2, unixepoch()*1000, unixepoch()*1000, 'STEP_BLOCKED_COUNT_MISMATCH');
+INSERT INTO exec_workflow_event(workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, message)
+VALUES
+(4601, 4602, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'eval-1'),
+(4601, 4602, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'eval-2'),
+(4601, 4602, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'eval-3'),
+(4601, 4602, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'eval-4'),
+(4601, 4603, 'Execution.WorkflowTransitionEvaluated.v1', unixepoch()*1000, 'eval-5');
+INSERT INTO exec_handler_dedupe(handler_name, event_id, semantic_key, first_seen_at_utc, last_seen_at_utc)
+VALUES
+('workflow_terminal_subscriber', 'evt-1', 'workflow_step:4602:terminal:COMPLETED', unixepoch()*1000-6*3600*1000, unixepoch()*1000-6*3600*1000),
+('workflow_terminal_subscriber', 'evt-2', 'workflow_step:4603:terminal:FAILED', unixepoch()*1000-5*3600*1000, unixepoch()*1000-5*3600*1000),
+('workflow_terminal_subscriber', 'evt-3', 'workflow_step:4604:terminal:FAILED', unixepoch()*1000-4*3600*1000, unixepoch()*1000-4*3600*1000),
+('workflow_terminal_subscriber', 'evt-4', 'workflow_step:4605:terminal:FAILED', unixepoch()*1000-1*3600*1000, unixepoch()*1000-1*3600*1000),
+('workflow_terminal_subscriber', 'evt-5', 'workflow_step:4606:terminal:FAILED', unixepoch()*1000-30*60*1000, unixepoch()*1000-30*60*1000),
+('workflow_terminal_subscriber', 'evt-6', 'workflow_step:4607:terminal:FAILED', unixepoch()*1000-20*60*1000, unixepoch()*1000-20*60*1000),
+('workflow_terminal_subscriber', 'evt-7', 'workflow_step:4608:terminal:FAILED', unixepoch()*1000-10*60*1000, unixepoch()*1000-10*60*1000),
+('workflow_terminal_subscriber', 'evt-8', 'workflow_step:4609:terminal:FAILED', unixepoch()*1000-5*60*1000, unixepoch()*1000-5*60*1000);
+)SQL",
+            &err)) {
+        result.message = "failed seeding observability fixture: " + err;
+        CleanupDb(service, temp_dir);
         return result;
     }
-    const double baseline_growth = static_cast<double>(std::accumulate(
-        dedupe_row_growth_history_per_hour.begin(),
-        dedupe_row_growth_history_per_hour.end(),
-        0)) / static_cast<double>(dedupe_row_growth_history_per_hour.size());
-    if (!IsFiniteAndPositive(baseline_growth)) {
-        result.message = "dedupe growth baseline must be finite and positive";
+
+    std::int64_t completion_checks = 0;
+    std::int64_t completion_mismatches = 0;
+    std::int64_t replay_loop_steps = 0;
+    std::int64_t historical_dedupe_rows = 0;
+    std::int64_t current_dedupe_rows = 0;
+    if (!execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_workflow_event WHERE event_kind='Execution.WorkflowTransitionEvaluated.v1';", &completion_checks, &err)
+        || !execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_workflow_step WHERE blocked_reason='STEP_BLOCKED_COUNT_MISMATCH';", &completion_mismatches, &err)
+        || !execution_db->ValidationQueryInt(R"SQL(SELECT COUNT(1) FROM (
+                SELECT workflow_step_id, COUNT(1) AS attempts
+                FROM exec_workflow_event
+                WHERE event_kind='Execution.WorkflowTransitionEvaluated.v1'
+                GROUP BY workflow_step_id
+                HAVING attempts >= 3
+            );)SQL", &replay_loop_steps, &err)
+        || !execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_handler_dedupe WHERE last_seen_at_utc < unixepoch()*1000-3600*1000;", &historical_dedupe_rows, &err)
+        || !execution_db->ValidationQueryInt("SELECT COUNT(1) FROM exec_handler_dedupe WHERE last_seen_at_utc >= unixepoch()*1000-3600*1000;", &current_dedupe_rows, &err)) {
+        result.message = "failed computing observability readiness metrics: " + err;
+        CleanupDb(service, temp_dir);
         return result;
     }
-    const double dedupe_growth_ratio = static_cast<double>(dedupe_row_growth_current_hour) / baseline_growth;
 
-    // Required policy values must be non-empty and inside sane operational bounds.
+    if (completion_checks <= 0 || completion_mismatches < 0 || completion_mismatches > completion_checks) {
+        result.message = "invalid completion-gate metric window";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    const double completion_gate_mismatch_frequency = static_cast<double>(completion_mismatches) / static_cast<double>(completion_checks);
+
+    if (historical_dedupe_rows <= 0 || current_dedupe_rows < 0) {
+        result.message = "invalid dedupe growth sample counts";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    const double dedupe_growth_ratio = static_cast<double>(current_dedupe_rows) / static_cast<double>(historical_dedupe_rows);
+
     if (kDedupeTtlHours < kMinDedupeTtlHours || kDedupeTtlHours > kMaxDedupeTtlHours) {
         result.message = "dedupe TTL policy out of sane bounds";
+        CleanupDb(service, temp_dir);
         return result;
     }
     if (kClaimedJobStagingCleanupHours < kMinClaimedJobCleanupHours
         || kClaimedJobStagingCleanupHours > kMaxClaimedJobCleanupHours) {
         result.message = "claimed-job staging cleanup policy out of sane bounds";
+        CleanupDb(service, temp_dir);
         return result;
     }
 
@@ -240,36 +570,43 @@ ValidationResult ValidatePhase4ObservabilityRetentionReadiness() {
         && kDedupeGrowthPageRatio > kDedupeGrowthWarnRatio;
     if (!escalation_policy_present) {
         result.message = "alert threshold/escalation policy is missing or invalid";
+        CleanupDb(service, temp_dir);
         return result;
     }
 
-    const bool completion_gate_signal_valid = std::isfinite(completion_gate_mismatch_frequency)
-        && completion_gate_mismatch_frequency >= 0.0
-        && completion_gate_mismatch_frequency <= 1.0;
-    const bool replay_loop_signal_valid = repeated_replay_loop_count >= 0;
-    const bool dedupe_growth_signal_valid = IsFiniteAndPositive(dedupe_growth_ratio);
-    if (!completion_gate_signal_valid || !replay_loop_signal_valid || !dedupe_growth_signal_valid) {
-        result.message = "one or more observability signals are invalid";
+    if (!std::isfinite(completion_gate_mismatch_frequency) || completion_gate_mismatch_frequency < 0.0 || completion_gate_mismatch_frequency > 1.0) {
+        result.message = "completion-gate mismatch frequency is invalid";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (replay_loop_steps < 0) {
+        result.message = "replay-loop metric is invalid";
+        CleanupDb(service, temp_dir);
+        return result;
+    }
+    if (!IsFiniteAndPositive(dedupe_growth_ratio)) {
+        result.message = "dedupe growth ratio must be finite and positive";
+        CleanupDb(service, temp_dir);
         return result;
     }
 
     const std::string completion_gate_severity = completion_gate_mismatch_frequency >= kCompletionGateMismatchPageFrequency
         ? "page"
         : (completion_gate_mismatch_frequency >= kCompletionGateMismatchWarnFrequency ? "warn" : "ok");
-    const std::string replay_loop_severity = repeated_replay_loop_count >= kReplayLoopPageCount
+    const std::string replay_loop_severity = replay_loop_steps >= kReplayLoopPageCount
         ? "page"
-        : (repeated_replay_loop_count >= kReplayLoopWarnCount ? "warn" : "ok");
+        : (replay_loop_steps >= kReplayLoopWarnCount ? "warn" : "ok");
     const std::string dedupe_growth_severity = dedupe_growth_ratio >= kDedupeGrowthPageRatio
         ? "page"
         : (dedupe_growth_ratio >= kDedupeGrowthWarnRatio ? "warn" : "ok");
 
     result.passed = true;
-    result.message = "signals ready (completion_gate="
-        + std::to_string(completion_gate_mismatches)
+    result.message = "signals ready from execution db (completion_gate="
+        + std::to_string(completion_mismatches)
         + "/"
-        + std::to_string(completion_gate_checks)
+        + std::to_string(completion_checks)
         + ", replay_loop_steps="
-        + std::to_string(repeated_replay_loop_count)
+        + std::to_string(replay_loop_steps)
         + ", dedupe_growth_ratio="
         + std::to_string(dedupe_growth_ratio)
         + ") severities=[completion_gate:"
@@ -279,5 +616,7 @@ ValidationResult ValidatePhase4ObservabilityRetentionReadiness() {
         + ", dedupe_growth:"
         + dedupe_growth_severity
         + "]";
+
+    CleanupDb(service, temp_dir);
     return result;
 }

@@ -237,7 +237,8 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForJob(
         "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
         "COALESCE(js.expected_total, 0), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('DONE','FAILED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
+        "  AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
         "FROM exec_job source "
         "JOIN exec_workflow_step s ON s.job_set_id=source.job_set_id "
@@ -256,7 +257,8 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForStep(
         "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
         "COALESCE(js.expected_total, 0), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('DONE','FAILED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
+        "  AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
@@ -274,7 +276,8 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForWorkflowEvent(
         "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
         "COALESCE(js.expected_total, 0), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('DONE','FAILED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
+        "  AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
         "FROM exec_workflow_event source "
         "JOIN exec_workflow_step s ON s.workflow_step_id=source.workflow_step_id "
@@ -314,54 +317,22 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                 return false;
             }
 
-            if (!command_service_->PauseWorkflowInstance(
-                    {
-                        .workflow_instance_id = snapshot.workflow_instance_id,
-                        .reason = *terminal.gate.blocked_reason,
-                        .failure_code = "WORKFLOW_INVARIANT_VIOLATION",
-                        .requested_by = "workflow_terminal_subscriber",
-                    },
-                    &command_error)) {
-                if (error_out) *error_out = command_error;
-                return false;
-            }
-
-            WorkflowInvariantRemediationDecision decision{};
-            if (!recovery_service_.PlanInvariantRemediation(
+            bool reopened = false;
+            if (!recovery_service_.ExecuteInvariantRemediation(
                     {
                         .workflow_instance_id = snapshot.workflow_instance_id,
                         .workflow_step_id = snapshot.workflow_step_id,
+                        .violation_reason = *terminal.gate.blocked_reason,
+                        .requested_by = "workflow_terminal_subscriber",
                     },
-                    &decision,
+                    command_service_,
+                    &reopened,
                     &command_error)) {
                 if (error_out) *error_out = command_error;
                 return false;
             }
 
-            if (decision.can_reopen) {
-                if (!command_service_->ResumeWorkflowInstance(
-                        {
-                            .workflow_instance_id = snapshot.workflow_instance_id,
-                            .requested_by = "workflow_terminal_subscriber",
-                        },
-                        &command_error)) {
-                    if (error_out) *error_out = command_error;
-                    return false;
-                }
-
-                if (!command_service_->AppendLifecycleEvent(
-                        {
-                            .workflow_instance_id = snapshot.workflow_instance_id,
-                            .workflow_step_id = snapshot.workflow_step_id,
-                            .event_kind = "Execution.WorkflowRemediationReopened.v1",
-                            .message = decision.reason,
-                            .requested_by = "workflow_terminal_subscriber",
-                        },
-                        &command_error)) {
-                    if (error_out) *error_out = command_error;
-                    return false;
-                }
-
+            if (reopened) {
                 if (allow_reconcile_retry) {
                     StepTerminalContextSnapshot reconciled{};
                     if (!LoadStepTerminalSnapshotForStep(snapshot.workflow_step_id, &reconciled, error_out)) {
@@ -370,18 +341,6 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                     return HandleStepTerminalSnapshot(reconciled, false, error_out);
                 }
                 return true;
-            }
-
-            if (!command_service_->TerminalFailWorkflowInstance(
-                    {
-                        .workflow_instance_id = snapshot.workflow_instance_id,
-                        .failure_code = decision.failure_code,
-                        .failure_message = decision.failure_message,
-                        .requested_by = "workflow_terminal_subscriber",
-                    },
-                    &command_error)) {
-                if (error_out) *error_out = command_error;
-                return false;
             }
             return true;
         }
