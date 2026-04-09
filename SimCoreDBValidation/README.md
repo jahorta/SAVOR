@@ -19,6 +19,11 @@ Command-line validation tool for DB-migrate workflow phase gates.
   - `SimCoreDBValidation --run phase3.lag_dead_letter_readiness`
 - Override migration root (filesystem migration mode):
   - `SimCoreDBValidation --run all --migration-root <path-to-SimCoreDB/migration>`
+- Override phase-3 default seed rows JSON and/or provide additional JSONL row folder:
+  - `SimCoreDBValidation --run phase3.replay_robustness --phase3-default-rows-json <path-to-default-rows.json>`
+  - `SimCoreDBValidation --run phase3.replay_robustness --phase3-jsonl-dir <path-to-jsonl-folder>`
+  - `SimCoreDBValidation --run phase3.replay_robustness --savestate-file <path-to-file.sav>`
+  - JSONL files are mapped by filename stem to table name (for example, `exec_outbox_message.jsonl` -> `exec_outbox_message`).
 
 ## Phase 0 validations
 
@@ -37,7 +42,7 @@ Command-line validation tool for DB-migrate workflow phase gates.
 ## Phase 3 validations
 
 - `phase3.replay_robustness`
-  - Applies Execution/Authoring/State migrations, seeds placeholder materialization prerequisites (`au_seed_probe_spec`, `state_artifact`, `state_savestate`), validates `.sav`-shaped fixture handling, and checks replay cursor robustness across restart-like replays.
+  - Applies Execution/Authoring/State migrations through `DbPreparer`, optionally inserts `--savestate-file` into `state_artifact`/`state_savestate` first and uses that savestate id to override subsequent seeded `*savestate_id` columns, seeds placeholder materialization prerequisites from a JSON object (`au_seed_probe_spec`, `state_artifact`, `state_savestate`, `exec_outbox_message`), optionally applies additional per-table JSONL rows from a folder, validates `.sav`-shaped fixture handling, and checks replay cursor robustness across restart-like replays.
 - `phase3.per_service_dedupe_isolation`
   - Verifies dedupe keys are isolated per service instance so one service’s dedupe decisions do not suppress another’s.
 - `phase3.progress_terminal_stream_separation`
