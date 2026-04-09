@@ -146,6 +146,7 @@
     <ClCompile Include="ExecSql.h" />
     <ClCompile Include="SimCoreDBValidation.cpp" />
     <ClCompile Include="ValidationPhase3.cpp" />
+    <ClCompile Include="ValidationPhase4.cpp" />
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
@@ -160,6 +161,7 @@
     <ClInclude Include="DbJSONL.h" />
     <ClInclude Include="DbPreparer.h" />
     <ClInclude Include="ExportCurrentDbSchemas.h" />
+    <ClInclude Include="ValidationPhase4.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".db_schema_cur\analysis.sql" />

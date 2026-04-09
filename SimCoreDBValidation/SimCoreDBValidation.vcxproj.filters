@@ -19,6 +19,9 @@
     <ClCompile Include="ValidationPhase3.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ValidationPhase4.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -41,6 +44,9 @@
     </ClInclude>
     <ClInclude Include="ExportCurrentDbSchemas.h">
       <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="ValidationPhase4.h">
+      <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
