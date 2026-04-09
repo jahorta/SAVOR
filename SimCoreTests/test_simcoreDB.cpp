@@ -106,6 +106,8 @@ public:
     bool SkipStep(const simcore::db::execution::workflow::WorkflowSkipStepCommand&, std::string*) override { return true; }
     bool CancelWorkflowInstance(const simcore::db::execution::workflow::WorkflowCancelInstanceCommand&, std::string*) override { return true; }
     bool ResumeWorkflowInstance(const simcore::db::execution::workflow::WorkflowResumeInstanceCommand&, std::string*) override { return true; }
+    bool PauseWorkflowInstance(const simcore::db::execution::workflow::WorkflowPauseInstanceCommand&, std::string*) override { return true; }
+    bool TerminalFailWorkflowInstance(const simcore::db::execution::workflow::WorkflowTerminalFailInstanceCommand&, std::string*) override { return true; }
 
     bool MarkStepMaterialized(
         const simcore::db::execution::workflow::WorkflowMarkStepMaterializedCommand& command,
