@@ -23,7 +23,6 @@ struct SaveSeedProbeSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool clear_result_winners = false;
     int samples_per_axis = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;

@@ -1,19 +1,28 @@
+CREATE TABLE au_seed_probe_grid_spec (
+    seed_probe_grid_spec_id INTEGER PRIMARY KEY,
+    samples_per_axis INTEGER NOT NULL,
+    min_value INTEGER NOT NULL,
+    max_value INTEGER NOT NULL,
+    cap_trigger_top INTEGER NOT NULL CHECK(cap_trigger_top IN (0, 1)),
+    ignore_trigger_min_max INTEGER NOT NULL CHECK(ignore_trigger_min_max IN (0, 1))
+);
+CREATE TABLE au_seed_probe_unique_spec (
+    seed_probe_unique_spec_id INTEGER PRIMARY KEY,
+    combo_attempts_per_target INTEGER NOT NULL,
+    combo_sampler_tries INTEGER NOT NULL
+);
 CREATE TABLE au_seed_probe_spec (
     seed_probe_spec_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     priority INTEGER NOT NULL,
     run_ms INTEGER NOT NULL,
     vi_stall_ms INTEGER NOT NULL,
-    clear_result_winners INTEGER NOT NULL CHECK(clear_result_winners IN (0, 1)),
-    samples_per_axis INTEGER NOT NULL,
-    min_value INTEGER NOT NULL,
-    max_value INTEGER NOT NULL,
-    cap_trigger_top INTEGER NOT NULL CHECK(cap_trigger_top IN (0, 1)),
-    ignore_trigger_minmax INTEGER NOT NULL CHECK(ignore_trigger_minmax IN (0, 1)),
-    combo_attempts_per_target INTEGER NOT NULL,
-    combo_sampler_tries INTEGER NOT NULL,
+    grid_spec_id INTEGER NOT NULL,
+    unique_spec_id INTEGER NOT NULL,
     auto_schedule_battle_run INTEGER NOT NULL CHECK(auto_schedule_battle_run IN (0, 1)),
     created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(grid_spec_id) REFERENCES au_seed_probe_grid_spec(seed_probe_grid_spec_id),
+    FOREIGN KEY(unique_spec_id) REFERENCES au_seed_probe_unique_spec(seed_probe_unique_spec_id),
     CONSTRAINT uq_au_seed_probe_spec_name UNIQUE (name)
 );
 CREATE TABLE au_tas_spec_base (

@@ -221,11 +221,70 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
     }
 
     Statement insert_spec;
+    Statement insert_grid;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_seed_probe_grid_spec("
+            "samples_per_axis,min_value,max_value,cap_trigger_top,ignore_trigger_min_max) "
+            "VALUES(?1,?2,?3,?4,?5);",
+            -1,
+            &insert_grid.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int(insert_grid.st, 1, command.samples_per_axis);
+    sqlite3_bind_int64(insert_grid.st, 2, command.min_value);
+    sqlite3_bind_int64(insert_grid.st, 3, command.max_value);
+    sqlite3_bind_int(insert_grid.st, 4, command.cap_trigger_top ? 1 : 0);
+    sqlite3_bind_int(insert_grid.st, 5, command.ignore_trigger_minmax ? 1 : 0);
+
+    if (sqlite3_step(insert_grid.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto grid_spec_id = sqlite3_last_insert_rowid(db_);
+
+    Statement insert_unique;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_seed_probe_unique_spec("
+            "combo_attempts_per_target,combo_sampler_tries) "
+            "VALUES(?1,?2);",
+            -1,
+            &insert_unique.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int(insert_unique.st, 1, command.combo_attempts_per_target);
+    sqlite3_bind_int(insert_unique.st, 2, command.combo_sampler_tries);
+
+    if (sqlite3_step(insert_unique.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto unique_spec_id = sqlite3_last_insert_rowid(db_);
+
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_seed_probe_spec("
-            "name,priority,run_ms,vi_stall_ms,clear_result_winners,samples_per_axis,min_value,max_value,cap_trigger_top,ignore_trigger_minmax,combo_attempts_per_target,combo_sampler_tries,auto_schedule_battle_run,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);",
+            "name,priority,run_ms,vi_stall_ms,grid_spec_id,unique_spec_id,auto_schedule_battle_run,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
             -1,
             &insert_spec.st,
             nullptr)
@@ -239,16 +298,10 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
     sqlite3_bind_int(insert_spec.st, 2, command.priority);
     sqlite3_bind_int64(insert_spec.st, 3, command.run_ms);
     sqlite3_bind_int64(insert_spec.st, 4, command.vi_stall_ms);
-    sqlite3_bind_int(insert_spec.st, 5, command.clear_result_winners ? 1 : 0);
-    sqlite3_bind_int(insert_spec.st, 6, command.samples_per_axis);
-    sqlite3_bind_int64(insert_spec.st, 7, command.min_value);
-    sqlite3_bind_int64(insert_spec.st, 8, command.max_value);
-    sqlite3_bind_int(insert_spec.st, 9, command.cap_trigger_top ? 1 : 0);
-    sqlite3_bind_int(insert_spec.st, 10, command.ignore_trigger_minmax ? 1 : 0);
-    sqlite3_bind_int(insert_spec.st, 11, command.combo_attempts_per_target);
-    sqlite3_bind_int(insert_spec.st, 12, command.combo_sampler_tries);
-    sqlite3_bind_int(insert_spec.st, 13, command.auto_schedule_battle_run ? 1 : 0);
-    sqlite3_bind_int64(insert_spec.st, 14, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(insert_spec.st, 5, grid_spec_id);
+    sqlite3_bind_int64(insert_spec.st, 6, unique_spec_id);
+    sqlite3_bind_int(insert_spec.st, 7, command.auto_schedule_battle_run ? 1 : 0);
+    sqlite3_bind_int64(insert_spec.st, 8, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
