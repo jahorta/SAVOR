@@ -1038,6 +1038,7 @@ int main(int argc, char** argv) {
         { "phase4.duplicate_terminal_replay", "Validate duplicate terminal replay dedupe applies terminal transition exactly once." },
         { "phase4.partial_writer_failure_recovery", "Validate partial writer failures rollback to consistent pre-write state." },
         { "phase4.missing_decision_result_restart_rerun", "Validate restart rerun flow when decision-result is missing." },
+        { "phase4.observability_retention_readiness", "Validate observability signal computation plus dedupe/cleanup retention policy bounds and escalation thresholds." },
     };
 
     bool list_only = false;
@@ -1205,6 +1206,10 @@ int main(int argc, char** argv) {
             results.push_back(ValidatePhase4MissingDecisionResultRestartRerun());
             return true;
         }
+        if (name == "phase4.observability_retention_readiness") {
+            results.push_back(ValidatePhase4ObservabilityRetentionReadiness());
+            return true;
+        }
         return false;
     };
 
@@ -1228,6 +1233,7 @@ int main(int argc, char** argv) {
         run_one("phase4.duplicate_terminal_replay");
         run_one("phase4.partial_writer_failure_recovery");
         run_one("phase4.missing_decision_result_restart_rerun");
+        run_one("phase4.observability_retention_readiness");
     } else if (!run_one(run_target)) {
         std::cerr << "unknown validation: " << run_target << "\n";
         PrintUsage(validation_descriptions);
