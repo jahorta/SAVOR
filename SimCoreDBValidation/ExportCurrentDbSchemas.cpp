@@ -11,8 +11,19 @@
 namespace {
 
 std::string ShellQuote(const std::filesystem::path& value) {
-    std::string quoted = "'";
     const std::string text = value.string();
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (const char ch : text) {
+        if (ch == '"') {
+            quoted += "\"\"";
+        } else {
+            quoted += ch;
+        }
+    }
+    quoted += "\"";
+#else
+    std::string quoted = "'";
     for (const char ch : text) {
         if (ch == '\'') {
             quoted += "'\"'\"'";
@@ -21,6 +32,7 @@ std::string ShellQuote(const std::filesystem::path& value) {
         }
     }
     quoted += "'";
+#endif
     return quoted;
 }
 
