@@ -31,9 +31,10 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
     {
       "seed_probe_spec_id": 1,
       "name": "default",
-      "priority: 0,
+      "priority": 0,
       "run_ms": 10000,
       "vi_stall_ms": 2000,
+      "clear_result_winners": 1,
       "samples_per_axis": 20,
       "min_value": 47,
       "max_value": 207,
@@ -42,7 +43,6 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
       "combo_attempts_per_target": 200,
       "combo_sampler_tries": 8,
       "auto_schedule_battle_run": 0,
-      "created_by": "validation",
       "created_at_utc": 1743465600000
     }
   ],
@@ -51,9 +51,10 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
       "artifact_id": 101,
       "sha256": "phase3-placeholder-sha256",
       "size_bytes": 1024,
+      "compression_kind": 0,
       "artifact_kind": "SAV",
       "filename": "placeholder_phase3.sav",
-      "created_by": "validation",
+      "file_ext": ".sav",
       "created_at_utc": 1743465600000
     }
   ],
@@ -62,7 +63,7 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
       "savestate_id": 201,
       "artifact_id": 101,
       "savestate_type": "TRANSITION",
-      "created_by": "validation",
+      "is_complete": 1,
       "created_at_utc": 1743465600000
     }
   ],

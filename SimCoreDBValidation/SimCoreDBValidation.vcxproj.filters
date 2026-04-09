@@ -8,6 +8,9 @@
     <Filter Include="Utils">
       <UniqueIdentifier>{a98a053d-c15d-4c65-9138-12ebc674abe3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Cur_Migrations">
+      <UniqueIdentifier>{a291be31-e8f6-4b35-81ec-61df32761f46}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SimCoreDBValidation.cpp">
@@ -39,5 +42,25 @@
     <ClInclude Include="ExportCurrentDbSchemas.h">
       <Filter>Utils</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include=".db_schema_cur\ui_read.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
+    <None Include=".db_schema_cur\analysis.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
+    <None Include=".db_schema_cur\archive.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
+    <None Include=".db_schema_cur\authoring.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
+    <None Include=".db_schema_cur\execution.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
+    <None Include=".db_schema_cur\state.sql">
+      <Filter>Cur_Migrations</Filter>
+    </None>
   </ItemGroup>
 </Project>
