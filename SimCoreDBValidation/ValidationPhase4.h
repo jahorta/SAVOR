@@ -7,3 +7,4 @@ ValidationResult ValidatePhase4PowerLossDuringClaimedJobMaterialization();
 ValidationResult ValidatePhase4DuplicateTerminalReplay();
 ValidationResult ValidatePhase4PartialWriterFailureRecovery();
 ValidationResult ValidatePhase4MissingDecisionResultRestartRerun();
+ValidationResult ValidatePhase4ObservabilityRetentionReadiness();

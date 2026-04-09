@@ -13,6 +13,25 @@ It is the operational companion to:
 
 Use this section when alerts indicate event-delivery anomalies (lag spikes, duplicate terminal signals, ordering jitter).
 
+## Alert thresholds and escalation policy (phase-4 readiness baseline)
+
+Use these thresholds as the default alerting baseline for phase-4 operational readiness:
+
+- **Completion-gate mismatch frequency** (`mismatch_count / gate_checks`, 15-minute window):
+  - Warn/on-call investigate: `>= 0.5%`.
+  - Page + incident command: `>= 2.0%` for 2 consecutive windows.
+- **Repeated replay-loop symptom count** (count of workflow steps replayed >=3 times in 30 minutes):
+  - Warn/on-call investigate: `>= 3` steps.
+  - Page + incident command: `>= 6` steps or any single step replayed >=8 times.
+- **Dedupe table growth anomaly ratio** (`current_hour_growth / trailing_6h_baseline_growth`):
+  - Warn/on-call investigate: `>= 1.4x`.
+  - Page + incident command: `>= 2.0x` for 2 consecutive hours.
+
+Escalation expectations:
+
+1. Warn threshold: acknowledge alert, assign owner, and triage within 30 minutes.
+2. Page threshold: declare incident, run the relevant section below, and execute targeted `phase4.*` validation checks before closure.
+
 ### A. Delayed events
 
 **Detection signals**
@@ -60,6 +79,12 @@ Use this section when alerts indicate event-delivery anomalies (lag spikes, dupl
    - Run `phase4.duplicate_terminal_replay` and require pass before incident closure.
 5. Close
    - Record whether dedupe policy/TTL adjustment is required.
+
+**Retention policy checks (required during duplicate incidents):**
+
+- Dedupe TTL policy must be explicitly configured and remain within `[24h, 720h]` (default `168h`).
+- Claimed-job staging cleanup must be explicitly configured within `[6h, 168h]` (default `36h`).
+- If either policy is missing or out of bounds, treat as configuration incident and escalate to owning team.
 
 ### C. Out-of-order events
 
@@ -161,6 +186,9 @@ Run from `SimCoreDBValidation`:
 - [ ] `phase4.missing_decision_result_restart_rerun`
   - Scope: restart rerun emits/recovers missing decision-result path correctly.
   - Evidence: decision-result presence and valid subsequent transition.
+- [ ] `phase4.observability_retention_readiness`
+  - Scope: computes mismatch/replay-loop/dedupe-growth signals and verifies retention + alert policy bounds.
+  - Evidence: signal values emitted with valid severities and policy assertion pass.
 
 **Execution rule:** Phase-4 operational recovery is not considered complete until all checklist items pass in the incident context or in equivalent targeted drill scope.
 

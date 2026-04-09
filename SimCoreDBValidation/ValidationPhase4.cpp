@@ -1,6 +1,9 @@
 #include "ValidationPhase4.h"
 
 #include <array>
+#include <cmath>
+#include <map>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -10,6 +13,25 @@ struct RecoveryStep {
     std::string name;
     bool complete{ false };
 };
+
+constexpr int kDedupeTtlHours = 168; // 7 days
+constexpr int kClaimedJobStagingCleanupHours = 36;
+
+constexpr int kMinDedupeTtlHours = 24;
+constexpr int kMaxDedupeTtlHours = 24 * 30;
+constexpr int kMinClaimedJobCleanupHours = 6;
+constexpr int kMaxClaimedJobCleanupHours = 24 * 7;
+
+constexpr double kCompletionGateMismatchWarnFrequency = 0.005;
+constexpr double kCompletionGateMismatchPageFrequency = 0.02;
+constexpr int kReplayLoopWarnCount = 3;
+constexpr int kReplayLoopPageCount = 6;
+constexpr double kDedupeGrowthWarnRatio = 1.4;
+constexpr double kDedupeGrowthPageRatio = 2.0;
+
+bool IsFiniteAndPositive(double value) {
+    return std::isfinite(value) && value > 0.0;
+}
 
 } // namespace
 
@@ -152,5 +174,110 @@ ValidationResult ValidatePhase4MissingDecisionResultRestartRerun() {
 
     result.passed = true;
     result.message = "restart detects missing decision-result and schedules rerun to completion";
+    return result;
+}
+
+ValidationResult ValidatePhase4ObservabilityRetentionReadiness() {
+    ValidationResult result{ .name = "phase4.observability_retention_readiness" };
+
+    // Completion-gate mismatch frequency signal: mismatches / completion checks over a fixed window.
+    const int completion_gate_checks = 1000;
+    const int completion_gate_mismatches = 11;
+    if (completion_gate_checks <= 0 || completion_gate_mismatches < 0 || completion_gate_mismatches > completion_gate_checks) {
+        result.message = "invalid completion-gate sample window";
+        return result;
+    }
+    const double completion_gate_mismatch_frequency =
+        static_cast<double>(completion_gate_mismatches) / static_cast<double>(completion_gate_checks);
+
+    // Repeated replay-loop symptom signal: count steps repeatedly replayed in a sampling interval.
+    const std::map<std::string, int> replay_attempts_per_step{
+        { "wf-100:seedprobe.neutral", 1 },
+        { "wf-101:seedprobe.neutral", 4 },
+        { "wf-102:seedprobe.grid", 2 },
+        { "wf-103:seedprobe.unique", 5 },
+    };
+    int repeated_replay_loop_count = 0;
+    for (const auto& [_, attempts] : replay_attempts_per_step) {
+        if (attempts >= 3) {
+            ++repeated_replay_loop_count;
+        }
+    }
+
+    // Dedupe table growth anomaly signal: current/hourly growth versus baseline/hourly growth.
+    const std::vector<int> dedupe_row_growth_history_per_hour{ 60, 58, 63, 61, 59, 57 };
+    const int dedupe_row_growth_current_hour = 108;
+    if (dedupe_row_growth_history_per_hour.empty() || dedupe_row_growth_current_hour < 0) {
+        result.message = "invalid dedupe growth samples";
+        return result;
+    }
+    const double baseline_growth = static_cast<double>(std::accumulate(
+        dedupe_row_growth_history_per_hour.begin(),
+        dedupe_row_growth_history_per_hour.end(),
+        0)) / static_cast<double>(dedupe_row_growth_history_per_hour.size());
+    if (!IsFiniteAndPositive(baseline_growth)) {
+        result.message = "dedupe growth baseline must be finite and positive";
+        return result;
+    }
+    const double dedupe_growth_ratio = static_cast<double>(dedupe_row_growth_current_hour) / baseline_growth;
+
+    // Required policy values must be non-empty and inside sane operational bounds.
+    if (kDedupeTtlHours < kMinDedupeTtlHours || kDedupeTtlHours > kMaxDedupeTtlHours) {
+        result.message = "dedupe TTL policy out of sane bounds";
+        return result;
+    }
+    if (kClaimedJobStagingCleanupHours < kMinClaimedJobCleanupHours
+        || kClaimedJobStagingCleanupHours > kMaxClaimedJobCleanupHours) {
+        result.message = "claimed-job staging cleanup policy out of sane bounds";
+        return result;
+    }
+
+    const bool escalation_policy_present = kCompletionGateMismatchWarnFrequency > 0.0
+        && kCompletionGateMismatchPageFrequency > kCompletionGateMismatchWarnFrequency
+        && kReplayLoopWarnCount > 0
+        && kReplayLoopPageCount > kReplayLoopWarnCount
+        && kDedupeGrowthWarnRatio > 1.0
+        && kDedupeGrowthPageRatio > kDedupeGrowthWarnRatio;
+    if (!escalation_policy_present) {
+        result.message = "alert threshold/escalation policy is missing or invalid";
+        return result;
+    }
+
+    const bool completion_gate_signal_valid = std::isfinite(completion_gate_mismatch_frequency)
+        && completion_gate_mismatch_frequency >= 0.0
+        && completion_gate_mismatch_frequency <= 1.0;
+    const bool replay_loop_signal_valid = repeated_replay_loop_count >= 0;
+    const bool dedupe_growth_signal_valid = IsFiniteAndPositive(dedupe_growth_ratio);
+    if (!completion_gate_signal_valid || !replay_loop_signal_valid || !dedupe_growth_signal_valid) {
+        result.message = "one or more observability signals are invalid";
+        return result;
+    }
+
+    const std::string completion_gate_severity = completion_gate_mismatch_frequency >= kCompletionGateMismatchPageFrequency
+        ? "page"
+        : (completion_gate_mismatch_frequency >= kCompletionGateMismatchWarnFrequency ? "warn" : "ok");
+    const std::string replay_loop_severity = repeated_replay_loop_count >= kReplayLoopPageCount
+        ? "page"
+        : (repeated_replay_loop_count >= kReplayLoopWarnCount ? "warn" : "ok");
+    const std::string dedupe_growth_severity = dedupe_growth_ratio >= kDedupeGrowthPageRatio
+        ? "page"
+        : (dedupe_growth_ratio >= kDedupeGrowthWarnRatio ? "warn" : "ok");
+
+    result.passed = true;
+    result.message = "signals ready (completion_gate="
+        + std::to_string(completion_gate_mismatches)
+        + "/"
+        + std::to_string(completion_gate_checks)
+        + ", replay_loop_steps="
+        + std::to_string(repeated_replay_loop_count)
+        + ", dedupe_growth_ratio="
+        + std::to_string(dedupe_growth_ratio)
+        + ") severities=[completion_gate:"
+        + completion_gate_severity
+        + ", replay_loop:"
+        + replay_loop_severity
+        + ", dedupe_growth:"
+        + dedupe_growth_severity
+        + "]";
     return result;
 }

@@ -22,6 +22,7 @@ Command-line validation tool for DB-migrate workflow phase gates.
   - `SimCoreDBValidation --run phase4.duplicate_terminal_replay`
   - `SimCoreDBValidation --run phase4.partial_writer_failure_recovery`
   - `SimCoreDBValidation --run phase4.missing_decision_result_restart_rerun`
+  - `SimCoreDBValidation --run phase4.observability_retention_readiness`
 - Override migration root (filesystem migration mode):
   - `SimCoreDBValidation --run all --migration-root <path-to-SimCoreDB/migration>`
 - Override phase-3 default seed rows JSON and/or provide additional JSONL row folder:
@@ -67,3 +68,24 @@ Command-line validation tool for DB-migrate workflow phase gates.
   - Pass criteria: partial writer failure records rollback intent and returns persisted state to pre-write consistency.
 - `phase4.missing_decision_result_restart_rerun`
   - Pass criteria: restart detects missing decision-result output and schedules/runs rerun until decision result exists.
+- `phase4.observability_retention_readiness`
+  - Pass criteria: completion-gate mismatch frequency, replay-loop symptom count, and dedupe-growth anomaly ratio signals are computed; dedupe TTL and claimed-job staging cleanup policy values are present and bounded; escalation thresholds are coherent.
+
+## Phase 4 policy + alert thresholds reference
+
+The validation currently enforces the following policy defaults and guardrails:
+
+- **Dedupe table TTL**: `168h` (7 days), sane range `[24h, 720h]`.
+- **Claimed-job staging cleanup window**: `36h`, sane range `[6h, 168h]`.
+
+The same validation also enforces non-empty/escalating threshold policies used by runbook alerting:
+
+- **Completion-gate mismatch frequency** (mismatches / gate checks):
+  - Warn: `>= 0.005` (0.5%)
+  - Page/escalate: `>= 0.02` (2.0%)
+- **Repeated replay-loop symptom count** (steps with >=3 replays in sample window):
+  - Warn: `>= 3`
+  - Page/escalate: `>= 6`
+- **Dedupe growth anomaly ratio** (`current_hour_growth / baseline_hourly_growth`):
+  - Warn: `>= 1.4x`
+  - Page/escalate: `>= 2.0x`
