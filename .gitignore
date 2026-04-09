@@ -41,3 +41,4 @@
 /SimCoreDB/x64/Debug
 /SimCoreDB/Common/Migrations/GeneratedMigrations.h
 /SimCoreDBValidation/x64/Debug
+/SimCoreDBValidation/.db_val
