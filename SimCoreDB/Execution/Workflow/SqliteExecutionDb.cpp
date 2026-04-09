@@ -147,6 +147,7 @@ SqliteExecutionDb::SqliteExecutionDb(sqlite3* db)
     , job_command_service_(std::make_unique<jobs::SqliteJobEventCommandService>(db_)) {
 }
 
+
 bool SqliteExecutionDb::ValidationExecuteSql(std::string_view sql, std::string* error_out) const {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
