@@ -53,7 +53,7 @@ inline OutboxRetentionPreview BuildOutboxRetentionPreview(
     for (const auto& sub : subscriptions) {
         OutboxSubscriptionLag lag{};
         lag.subscription = sub;
-        lag.lag_outbox_rows = std::max<std::int64_t>(0, source_max_outbox_id - sub.last_outbox_id);
+        lag.lag_outbox_rows = (std::max<std::int64_t>)(0, source_max_outbox_id - sub.last_outbox_id);
         preview.lag_per_subscription.push_back(std::move(lag));
 
         if (sub.status == "ACTIVE") {
@@ -62,7 +62,7 @@ inline OutboxRetentionPreview BuildOutboxRetentionPreview(
                 preview.safe_purge_floor_outbox_id = sub.last_outbox_id;
             }
             else {
-                preview.safe_purge_floor_outbox_id = std::min(
+                preview.safe_purge_floor_outbox_id = (std::min)(
                     preview.safe_purge_floor_outbox_id.value(),
                     sub.last_outbox_id);
             }
