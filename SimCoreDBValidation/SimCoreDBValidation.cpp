@@ -1187,27 +1187,27 @@ int main(int argc, char** argv) {
             return true;
         }
         if (name == "phase4.invariant_violation_remediation_sequence") {
-            results.push_back(ValidatePhase4InvariantViolationRemediationSequence());
+            results.push_back(ValidatePhase4InvariantViolationRemediationSequence(migration_root));
             return true;
         }
         if (name == "phase4.power_loss_during_claimed_job_materialization") {
-            results.push_back(ValidatePhase4PowerLossDuringClaimedJobMaterialization());
+            results.push_back(ValidatePhase4PowerLossDuringClaimedJobMaterialization(migration_root));
             return true;
         }
         if (name == "phase4.duplicate_terminal_replay") {
-            results.push_back(ValidatePhase4DuplicateTerminalReplay());
+            results.push_back(ValidatePhase4DuplicateTerminalReplay(migration_root));
             return true;
         }
         if (name == "phase4.partial_writer_failure_recovery") {
-            results.push_back(ValidatePhase4PartialWriterFailureRecovery());
+            results.push_back(ValidatePhase4PartialWriterFailureRecovery(migration_root));
             return true;
         }
         if (name == "phase4.missing_decision_result_restart_rerun") {
-            results.push_back(ValidatePhase4MissingDecisionResultRestartRerun());
+            results.push_back(ValidatePhase4MissingDecisionResultRestartRerun(migration_root));
             return true;
         }
         if (name == "phase4.observability_retention_readiness") {
-            results.push_back(ValidatePhase4ObservabilityRetentionReadiness());
+            results.push_back(ValidatePhase4ObservabilityRetentionReadiness(migration_root));
             return true;
         }
         return false;

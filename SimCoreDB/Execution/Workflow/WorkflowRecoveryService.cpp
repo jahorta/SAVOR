@@ -1,4 +1,5 @@
 #include "WorkflowRecoveryService.h"
+#include "WorkflowOrchestration.h"
 
 #include <chrono>
 #include <sstream>
@@ -275,7 +276,8 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
         "SELECT "
         "COALESCE(js.expected_total, 0), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('DONE','FAILED')), "
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
+        "  AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
         "FROM exec_workflow_step s "
         "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
@@ -325,6 +327,122 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
     if (decision_out != nullptr) {
         *decision_out = decision;
     }
+    return true;
+}
+
+bool WorkflowRecoveryService::ExecuteInvariantRemediation(
+    const WorkflowInvariantRemediationCommand& command,
+    IWorkflowOrchestrationCommandService* command_service,
+    bool* reopened_out,
+    std::string* error_out) {
+    if (reopened_out != nullptr) {
+        *reopened_out = false;
+    }
+    if (command_service == nullptr) {
+        if (error_out) *error_out = "command service is required";
+        return false;
+    }
+
+    const std::string violation_reason = command.violation_reason.empty()
+        ? "WORKFLOW_INVARIANT_VIOLATION"
+        : command.violation_reason;
+    const std::string requested_by = command.requested_by.empty()
+        ? "workflow_recovery_service"
+        : command.requested_by;
+
+    std::string command_error;
+    if (!command_service->PauseWorkflowInstance(
+            {
+                .workflow_instance_id = command.workflow_instance_id,
+                .reason = violation_reason,
+                .failure_code = "WORKFLOW_INVARIANT_VIOLATION",
+                .requested_by = requested_by,
+            },
+            &command_error)) {
+        Statement state;
+        if (!Prepare(
+                db_,
+                "SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=?1;",
+                &state,
+                error_out)) {
+            return false;
+        }
+        sqlite3_bind_int64(state.st, 1, command.workflow_instance_id);
+        if (sqlite3_step(state.st) != SQLITE_ROW) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+        const unsigned char* state_text = sqlite3_column_text(state.st, 0);
+        const std::string instance_state = state_text ? reinterpret_cast<const char*>(state_text) : "";
+        if (instance_state != "FAILED") {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+    }
+
+    WorkflowInvariantRemediationDecision decision{};
+    if (!PlanInvariantRemediation(command, &decision, error_out)) {
+        return false;
+    }
+
+    const std::optional<std::string> repair_message = decision.can_reopen
+        ? std::optional<std::string>(decision.reason)
+        : std::optional<std::string>(decision.failure_message);
+    if (!command_service->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = command.workflow_instance_id,
+                .workflow_step_id = command.workflow_step_id,
+                .event_kind = "Execution.WorkflowRemediationRepairExecuted.v1",
+                .message = repair_message,
+                .requested_by = requested_by,
+            },
+            &command_error)) {
+        if (error_out) *error_out = command_error;
+        return false;
+    }
+
+    if (decision.can_reopen) {
+        if (!command_service->ResumeWorkflowInstance(
+                {
+                    .workflow_instance_id = command.workflow_instance_id,
+                    .requested_by = requested_by,
+                },
+                &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (!command_service->AppendLifecycleEvent(
+                {
+                    .workflow_instance_id = command.workflow_instance_id,
+                    .workflow_step_id = command.workflow_step_id,
+                    .event_kind = "Execution.WorkflowRemediationReopened.v1",
+                    .message = std::optional<std::string>(decision.reason),
+                    .requested_by = requested_by,
+                },
+                &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (reopened_out != nullptr) {
+            *reopened_out = true;
+        }
+        return true;
+    }
+
+    if (!command_service->TerminalFailWorkflowInstance(
+            {
+                .workflow_instance_id = command.workflow_instance_id,
+                .failure_code = decision.failure_code,
+                .failure_message = decision.failure_message,
+                .requested_by = requested_by,
+            },
+            &command_error)) {
+        if (error_out) *error_out = command_error;
+        return false;
+    }
+
     return true;
 }
 

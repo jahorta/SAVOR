@@ -7,6 +7,8 @@
 
 namespace simcore::db::execution::workflow {
 
+struct IWorkflowOrchestrationCommandService;
+
 struct WorkflowRecoveryResult {
     int completed_steps = 0;
     int failed_steps = 0;
@@ -15,6 +17,8 @@ struct WorkflowRecoveryResult {
 struct WorkflowInvariantRemediationCommand {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
+    std::string violation_reason;
+    std::string requested_by;
 };
 
 struct WorkflowInvariantRemediationDecision {
@@ -37,6 +41,11 @@ public:
     bool PlanInvariantRemediation(
         const WorkflowInvariantRemediationCommand& command,
         WorkflowInvariantRemediationDecision* decision_out,
+        std::string* error_out);
+    bool ExecuteInvariantRemediation(
+        const WorkflowInvariantRemediationCommand& command,
+        IWorkflowOrchestrationCommandService* command_service,
+        bool* reopened_out,
         std::string* error_out);
 
 private:
