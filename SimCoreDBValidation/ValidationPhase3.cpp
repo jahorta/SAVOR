@@ -27,6 +27,23 @@ using simcore::db::events::OutboxRelayDispatchBinding;
 using simcore::db::events::OutboxRelayResult;
 
 constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
+  "au_seed_probe_grid_spec": [
+    {
+      "seed_probe_grid_spec_id": 1,
+      "samples_per_axis": 20,
+      "min_value": 47,
+      "max_value": 207,
+      "cap_trigger_top": 1,
+      "ignore_trigger_min_max": 1
+    }
+  ],
+  "au_seed_probe_unique_spec": [
+    {
+      "seed_probe_unique_spec_id": 1,
+      "combo_attempts_per_target": 200,
+      "combo_sampler_tries": 8
+    }
+  ],
   "au_seed_probe_spec": [
     {
       "seed_probe_spec_id": 1,
@@ -34,14 +51,8 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
       "priority": 0,
       "run_ms": 10000,
       "vi_stall_ms": 2000,
-      "clear_result_winners": 1,
-      "samples_per_axis": 20,
-      "min_value": 47,
-      "max_value": 207,
-      "cap_trigger_top": 1,
-      "ignore_trigger_minmax": 1,
-      "combo_attempts_per_target": 200,
-      "combo_sampler_tries": 8,
+      "grid_spec_id": 1,
+      "unique_spec_id": 1,
       "auto_schedule_battle_run": 0,
       "created_at_utc": 1743465600000
     }

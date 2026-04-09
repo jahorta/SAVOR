@@ -48,7 +48,7 @@ Command-line validation tool for DB-migrate workflow phase gates.
 ## Phase 3 validations
 
 - `phase3.replay_robustness`
-  - Applies Execution/Authoring/State migrations through `DbPreparer`, optionally inserts `--savestate-file` into `state_artifact`/`state_savestate` first and uses that savestate id to override subsequent seeded `*savestate_id` columns, seeds placeholder materialization prerequisites from a JSON object (`au_seed_probe_spec`, `state_artifact`, `state_savestate`, `exec_outbox_message`), optionally applies additional per-table JSONL rows from a folder, validates `.sav`-shaped fixture handling, and checks replay cursor robustness across restart-like replays.
+  - Applies Execution/Authoring/State migrations through `DbPreparer`, optionally inserts `--savestate-file` into `state_artifact`/`state_savestate` first and uses that savestate id to override subsequent seeded `*savestate_id` columns, seeds placeholder materialization prerequisites from a JSON object (`au_seed_probe_grid_spec`, `au_seed_probe_unique_spec`, `au_seed_probe_spec`, `state_artifact`, `state_savestate`, `exec_outbox_message`), optionally applies additional per-table JSONL rows from a folder, validates `.sav`-shaped fixture handling, and checks replay cursor robustness across restart-like replays.
 - `phase3.per_service_dedupe_isolation`
   - Verifies dedupe keys are isolated per service instance so one service’s dedupe decisions do not suppress another’s.
 - `phase3.progress_terminal_stream_separation`
