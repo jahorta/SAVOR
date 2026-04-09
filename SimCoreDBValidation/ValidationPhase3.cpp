@@ -30,12 +30,20 @@ constexpr const char* kDefaultPhase3SeedRowsJson = R"JSON({
   "au_seed_probe_spec": [
     {
       "seed_probe_spec_id": 1,
-      "name": "phase3-placeholder-seedprobe-spec",
-      "base_dtm_artifact_id": 101,
-      "notes": "TODO: replace with real fixture payload",
+      "name": "default",
+      "priority: 0,
+      "run_ms": 10000,
+      "vi_stall_ms": 2000,
+      "samples_per_axis": 20,
+      "min_value": 47,
+      "max_value": 207,
+      "cap_trigger_top": 1,
+      "ignore_trigger_minmax": 1,
+      "combo_attempts_per_target": 200,
+      "combo_sampler_tries": 8,
+      "auto_schedule_battle_run": 0,
       "created_by": "validation",
-      "created_at_utc": 1743465600000,
-      "updated_at_utc": 1743465600000
+      "created_at_utc": 1743465600000
     }
   ],
   "state_artifact": [
