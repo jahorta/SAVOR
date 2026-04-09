@@ -174,6 +174,12 @@
     }
 
     bool DbPreparer::InsertJsonObjectRow(const std::string& table_name, const std::string& row_json, std::string* error_out) const {
+        if (savestate_override_id_.has_value() && table_name == "state_savestate") {
+            // A savestate file override pre-seeds the authoritative row; skip any
+            // additional fixture rows to avoid overriding/replacing that id.
+            return true;
+        }
+
         std::vector<std::string> keys;
         if (!CollectObjectKeys(db_, row_json, &keys, error_out)) {
             return false;
@@ -247,5 +253,3 @@
         }
         return column_name.compare(column_name.size() - std::char_traits<char>::length(suffix), std::char_traits<char>::length(suffix), suffix) == 0;
     }
-
-
