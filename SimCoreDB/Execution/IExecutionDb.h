@@ -90,6 +90,12 @@ struct IExecutionDb {
         int* rows_deleted_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool PurgeWorkflowHandlerDedupeOlderThan(
+        std::int64_t last_seen_at_utc_exclusive,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
     // Resolves execution workflow/job payload references to typed v1 view fields.
     virtual std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const events::EventEnvelope& envelope) const = 0;

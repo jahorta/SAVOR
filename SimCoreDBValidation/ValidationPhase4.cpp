@@ -67,27 +67,45 @@ ValidationResult ValidatePhase4PowerLossDuringClaimedJobMaterialization() {
 ValidationResult ValidatePhase4DuplicateTerminalReplay() {
     ValidationResult result{ .name = "phase4.duplicate_terminal_replay" };
 
-    int terminal_apply_count = 0;
-    bool terminal_seen = false;
+    int durable_terminal_effects = 0;
+    int durable_recovery_effects = 0;
+    std::array<std::string, 2> terminal_replayed_event_ids{
+        "terminal-event-1200",
+        "terminal-event-1200",
+    };
+    std::array<std::string, 2> recovery_replayed_semantic_keys{
+        "workflow_step:44:terminal:COMPLETED",
+        "workflow_step:44:terminal:COMPLETED",
+    };
 
-    const std::array<std::string, 2> replayed_events{ "terminal.completed", "terminal.completed" };
-    for (const auto& event_kind : replayed_events) {
-        if (event_kind == "terminal.completed") {
-            if (terminal_seen) {
-                continue;
-            }
-            terminal_seen = true;
-            ++terminal_apply_count;
+    std::vector<std::string> observed_terminal_event_ids;
+    std::vector<std::string> observed_recovery_keys;
+
+    for (const auto& event_id : terminal_replayed_event_ids) {
+        const bool seen = std::find(observed_terminal_event_ids.begin(), observed_terminal_event_ids.end(), event_id)
+            != observed_terminal_event_ids.end();
+        if (!seen) {
+            observed_terminal_event_ids.push_back(event_id);
+            ++durable_terminal_effects;
         }
     }
 
-    if (terminal_apply_count != 1) {
-        result.message = "duplicate terminal replay must be deduped to one terminal apply";
+    for (const auto& key : recovery_replayed_semantic_keys) {
+        const bool seen = std::find(observed_recovery_keys.begin(), observed_recovery_keys.end(), key)
+            != observed_recovery_keys.end();
+        if (!seen) {
+            observed_recovery_keys.push_back(key);
+            ++durable_recovery_effects;
+        }
+    }
+
+    if (durable_terminal_effects != 1 || durable_recovery_effects != 1) {
+        result.message = "duplicate terminal/recovery replay must produce exactly one durable effect each";
         return result;
     }
 
     result.passed = true;
-    result.message = "duplicate terminal replays are deduped and do not re-apply terminal transition";
+    result.message = "duplicate terminal and recovery replays are deduped and emit only one durable effect each";
     return result;
 }
 
