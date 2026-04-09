@@ -50,6 +50,8 @@ These docs define how to evolve from current state to a robust hybrid architectu
    - Detailed add/modify/remove plan for Phase 3.
 10. `10-phase-4-hardening-and-recovery.md`
    - Detailed add/modify/remove plan for Phase 4.
+11. `11-phase-4-runbook-and-oncall-checklist.md`
+   - Incident/runbook execution checklist and phase-4 exit criteria reference for on-call operations.
 
 ## Iteration workflow
 
