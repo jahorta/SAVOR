@@ -415,6 +415,49 @@ bool SqliteExecutionDb::PurgeOutboxThroughRetentionFloor(
     return true;
 }
 
+bool SqliteExecutionDb::PurgeWorkflowHandlerDedupeOlderThan(
+    std::int64_t last_seen_at_utc_exclusive,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) {
+    if (rows_deleted_out) *rows_deleted_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (last_seen_at_utc_exclusive <= 0) {
+        if (error_out) *error_out = "last_seen_at_utc_exclusive must be > 0";
+        return false;
+    }
+    if (max_rows <= 0) {
+        if (error_out) *error_out = "max_rows must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+            "DELETE FROM exec_handler_dedupe WHERE dedupe_id IN ("
+            "SELECT dedupe_id FROM exec_handler_dedupe "
+            "WHERE last_seen_at_utc < ?1 "
+            "ORDER BY last_seen_at_utc ASC, dedupe_id ASC "
+            "LIMIT ?2);",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, last_seen_at_utc_exclusive);
+    sqlite3_bind_int(st.st, 2, max_rows);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (rows_deleted_out) *rows_deleted_out = sqlite3_changes(db_);
+    return true;
+}
+
 std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::ResolveExecutionWorkflowJobPayload(
     const events::EventEnvelope& envelope) const {
     if (!events::ValidateExecutionWorkflowJobPayloadV1(envelope)) {

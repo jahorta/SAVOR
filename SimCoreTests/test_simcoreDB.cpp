@@ -229,6 +229,19 @@ public:
         }
         return true;
     }
+    bool PurgeWorkflowHandlerDedupeOlderThan(
+        std::int64_t,
+        int,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) override {
+        if (rows_deleted_out) {
+            *rows_deleted_out = 0;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
     std::optional<simcore::db::events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const simcore::db::events::EventEnvelope&) const override {
         return std::nullopt;

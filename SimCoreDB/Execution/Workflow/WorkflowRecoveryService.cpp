@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <sstream>
+#include <string_view>
 
 namespace simcore::db::execution::workflow {
 
@@ -17,10 +18,76 @@ bool Exec(sqlite3* db, const char* sql, std::string* error_out) {
     return true;
 }
 
+struct Statement {
+    sqlite3_stmt* st = nullptr;
+    ~Statement() {
+        if (st != nullptr) {
+            sqlite3_finalize(st);
+        }
+    }
+};
+
+bool Prepare(sqlite3* db, const char* sql, Statement* stmt, std::string* error_out) {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt->st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    return true;
+}
+
 std::int64_t NowUtc() {
     const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now());
     return now.time_since_epoch().count();
+}
+
+bool TryRecordHandlerDedupeSemantic(
+    sqlite3* db,
+    std::string_view handler_name,
+    std::string_view semantic_key,
+    std::int64_t ts_utc,
+    bool* inserted_out,
+    std::string* error_out) {
+    Statement insert;
+    if (!Prepare(
+            db,
+            "INSERT OR IGNORE INTO exec_handler_dedupe(handler_name, event_id, semantic_key, first_seen_at_utc, last_seen_at_utc) "
+            "VALUES(?1, NULL, ?2, ?3, ?3);",
+            &insert,
+            error_out)) {
+        return false;
+    }
+    sqlite3_bind_text(insert.st, 1, handler_name.data(), static_cast<int>(handler_name.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 2, semantic_key.data(), static_cast<int>(semantic_key.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 3, ts_utc);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    const bool inserted = sqlite3_changes(db) == 1;
+    if (!inserted) {
+        Statement update;
+        if (!Prepare(
+                db,
+                "UPDATE exec_handler_dedupe SET last_seen_at_utc=?3 WHERE handler_name=?1 AND semantic_key=?2;",
+                &update,
+                error_out)) {
+            return false;
+        }
+        sqlite3_bind_text(update.st, 1, handler_name.data(), static_cast<int>(handler_name.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(update.st, 2, semantic_key.data(), static_cast<int>(semantic_key.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(update.st, 3, ts_utc);
+        if (sqlite3_step(update.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+    }
+
+    if (inserted_out != nullptr) {
+        *inserted_out = inserted;
+    }
+    return true;
 }
 
 } // namespace
@@ -77,6 +144,29 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
             message = "recovery_reconciled_failed";
             ++local.failed_steps;
         } else {
+            continue;
+        }
+
+        std::ostringstream semantic_key_builder;
+        semantic_key_builder << "workflow_step:" << workflow_step_id << ":terminal:" << next_step_state;
+        bool inserted = false;
+        if (!TryRecordHandlerDedupeSemantic(
+                db_,
+                "workflow_recovery_reconcile",
+                semantic_key_builder.str(),
+                operation_ts,
+                &inserted,
+                error_out)) {
+            sqlite3_finalize(st);
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        if (!inserted) {
+            if (terminal_state == "COMPLETED") {
+                --local.completed_steps;
+            } else if (terminal_state == "FAILED") {
+                --local.failed_steps;
+            }
             continue;
         }
 
@@ -234,6 +324,51 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
 
     if (decision_out != nullptr) {
         *decision_out = decision;
+    }
+    return true;
+}
+
+bool WorkflowRecoveryService::PurgeHandlerDedupeOlderThan(
+    std::int64_t last_seen_at_utc_exclusive,
+    int max_rows,
+    int* rows_deleted_out,
+    std::string* error_out) {
+    if (rows_deleted_out != nullptr) {
+        *rows_deleted_out = 0;
+    }
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (last_seen_at_utc_exclusive <= 0) {
+        if (error_out) *error_out = "last_seen_at_utc_exclusive must be > 0";
+        return false;
+    }
+    if (max_rows <= 0) {
+        if (error_out) *error_out = "max_rows must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(
+            db_,
+            "DELETE FROM exec_handler_dedupe WHERE dedupe_id IN ("
+            "SELECT dedupe_id FROM exec_handler_dedupe "
+            "WHERE last_seen_at_utc < ?1 "
+            "ORDER BY last_seen_at_utc ASC, dedupe_id ASC "
+            "LIMIT ?2);",
+            &st,
+            error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, last_seen_at_utc_exclusive);
+    sqlite3_bind_int(st.st, 2, max_rows);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (rows_deleted_out != nullptr) {
+        *rows_deleted_out = sqlite3_changes(db_);
     }
     return true;
 }

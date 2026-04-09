@@ -29,6 +29,11 @@ public:
     explicit WorkflowRecoveryService(sqlite3* db);
 
     bool ReconcileInFlightInstances(WorkflowRecoveryResult* result_out, std::string* error_out);
+    bool PurgeHandlerDedupeOlderThan(
+        std::int64_t last_seen_at_utc_exclusive,
+        int max_rows,
+        int* rows_deleted_out,
+        std::string* error_out);
     bool PlanInvariantRemediation(
         const WorkflowInvariantRemediationCommand& command,
         WorkflowInvariantRemediationDecision* decision_out,

@@ -1,7 +1,9 @@
 #include "WorkflowTerminalOutboxSubscriber.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <optional>
+#include <string_view>
 
 #include "../../Common/Events/OutboxRelay.h"
 
@@ -23,6 +25,75 @@ bool Prepare(sqlite3* db, const char* sql, Statement* out, std::string* error_ou
         return false;
     }
     return true;
+}
+
+std::int64_t NowUtc() {
+    const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now());
+    return now.time_since_epoch().count();
+}
+
+bool TryRecordHandlerDedupeEvent(
+    sqlite3* db,
+    std::string_view handler_name,
+    std::string_view event_id,
+    bool* inserted_out,
+    std::string* error_out) {
+    Statement st;
+    if (!Prepare(
+            db,
+            "INSERT OR IGNORE INTO exec_handler_dedupe(handler_name, event_id, semantic_key, first_seen_at_utc, last_seen_at_utc) "
+            "VALUES(?1, ?2, NULL, ?3, ?3);",
+            &st,
+            error_out)) {
+        return false;
+    }
+
+    const auto now_utc = NowUtc();
+    sqlite3_bind_text(st.st, 1, handler_name.data(), static_cast<int>(handler_name.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 3, now_utc);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    const bool inserted = sqlite3_changes(db) == 1;
+    if (!inserted) {
+        Statement update;
+        if (!Prepare(
+                db,
+                "UPDATE exec_handler_dedupe SET last_seen_at_utc=?3 WHERE handler_name=?1 AND event_id=?2;",
+                &update,
+                error_out)) {
+            return false;
+        }
+        sqlite3_bind_text(update.st, 1, handler_name.data(), static_cast<int>(handler_name.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(update.st, 2, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(update.st, 3, now_utc);
+        if (sqlite3_step(update.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+    }
+    if (inserted_out != nullptr) {
+        *inserted_out = inserted;
+    }
+    return true;
+}
+
+void DeleteHandlerDedupeEvent(sqlite3* db, std::string_view handler_name, std::string_view event_id) {
+    Statement cleanup;
+    if (!Prepare(
+            db,
+            "DELETE FROM exec_handler_dedupe WHERE handler_name=?1 AND event_id=?2;",
+            &cleanup,
+            nullptr)) {
+        return;
+    }
+    sqlite3_bind_text(cleanup.st, 1, handler_name.data(), static_cast<int>(handler_name.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(cleanup.st, 2, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
+    sqlite3_step(cleanup.st);
 }
 
 bool LoadStepTerminalSnapshot(
@@ -121,21 +192,41 @@ bool WorkflowTerminalOutboxSubscriber::ConsumeFromCursor(
 }
 
 bool WorkflowTerminalOutboxSubscriber::HandleTerminalEvent(const events::EventEnvelope& envelope, std::string* error_out) const {
+    bool inserted = false;
+    if (!TryRecordHandlerDedupeEvent(
+            db_,
+            "workflow_terminal_outbox_subscriber",
+            envelope.event_id,
+            &inserted,
+            error_out)) {
+        return false;
+    }
+    if (!inserted) {
+        return true;
+    }
+
     StepTerminalContextSnapshot snapshot{};
     if (envelope.event_type == "Execution.JobCompleted.v1") {
         if (!LoadStepTerminalSnapshotForJob(envelope.payload_ref_id, &snapshot, error_out)) {
+            DeleteHandlerDedupeEvent(db_, "workflow_terminal_outbox_subscriber", envelope.event_id);
             return false;
         }
     } else if (envelope.event_type == "Execution.WorkflowStepCompleted.v1"
         || envelope.event_type == "Execution.WorkflowStepFailed.v1") {
         if (!LoadStepTerminalSnapshotForWorkflowEvent(envelope.payload_ref_id, &snapshot, error_out)) {
+            DeleteHandlerDedupeEvent(db_, "workflow_terminal_outbox_subscriber", envelope.event_id);
             return false;
         }
     } else {
         return true;
     }
 
-    return HandleStepTerminalSnapshot(snapshot, true, error_out);
+    if (!HandleStepTerminalSnapshot(snapshot, true, error_out)) {
+        DeleteHandlerDedupeEvent(db_, "workflow_terminal_outbox_subscriber", envelope.event_id);
+        return false;
+    }
+
+    return true;
 }
 
 bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForJob(
