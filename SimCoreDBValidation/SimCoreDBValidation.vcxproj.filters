@@ -25,12 +25,18 @@
     <ClCompile Include="ExecSql.h">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="ExportCurrentDbSchemas.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DbPreparer.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="DbJSONL.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="ExportCurrentDbSchemas.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

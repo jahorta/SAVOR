@@ -15,15 +15,16 @@
 
 #include "ValidationPhase3.h"
 #include "ValidationResult.h"
+#include "Common/Migrations/MigrationRunner.h"
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
 #include "Common/Events/OutboxRelay.h"
-#include "Common/Migrations/MigrationRunner.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
+#include "ExportCurrentDbSchemas.h"
 
 namespace {
 
@@ -1100,6 +1101,12 @@ int main(int argc, char** argv) {
     }
 
     const auto migration_root = ResolveMigrationRoot(migration_root_override);
+    std::string schema_export_error;
+    if (!ExportCurrentDbSchemas(migration_root, &schema_export_error)) {
+        std::cerr << "failed exporting current db schemas: " << schema_export_error << "\n";
+        return 1;
+    }
+
     Phase3DbSeedOptions phase3_seed_options{};
     phase3_seed_options.jsonl_folder = phase3_jsonl_dir;
     phase3_seed_options.savestate_file = savestate_file;
