@@ -141,6 +141,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="DbPreparer.cpp" />
+    <ClCompile Include="ExecSql.h" />
     <ClCompile Include="SimCoreDBValidation.cpp" />
     <ClCompile Include="ValidationPhase3.cpp" />
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
@@ -152,6 +154,10 @@
     <ProjectReference Include="..\SimCore\SimCore.vcxproj">
       <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DbJSONL.h" />
+    <ClInclude Include="DbPreparer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
