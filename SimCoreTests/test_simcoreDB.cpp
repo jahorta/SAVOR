@@ -52,6 +52,7 @@
 
 #include "common/RecordingExecutionDb.h"
 #include "common/SqliteDbFixture.h"
+#include "common/simcoredb_helpers.h"
 
 namespace {
 
@@ -74,17 +75,6 @@ namespace {
 
 }
 
-
-namespace {
-
-bool ExecSql(sqlite3* db, const char* sql) {
-    char* err = nullptr;
-    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
-    if (err) sqlite3_free(err);
-    return rc == SQLITE_OK;
-}
-
-} // namespace
 
 TEST(Stage3cSeedProbeDefinition, ValidatesAndRejectsCycleDefinitions) {
     using namespace simcore::db::execution::workflow;
