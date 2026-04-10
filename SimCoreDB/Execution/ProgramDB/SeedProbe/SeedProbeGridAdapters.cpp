@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "../../Execution/Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Phases/RNGSeedDeltaMap.h"
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
