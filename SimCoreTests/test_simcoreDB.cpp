@@ -57,6 +57,7 @@
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
+
 TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
     namespace fs = std::filesystem;
     using namespace simcore::db::migrations;
@@ -376,6 +377,7 @@ TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps
     EXPECT_EQ(scheduled.workflow_step_id, 44);
 }
 
+
 TEST(Stage3cSeedProbeProgramDB, BuildsPhaseSpecificDescriptors) {
     using namespace simcore::db::execution::programdb::seedprobe;
 
@@ -674,6 +676,7 @@ TEST(Stage1StepInputAggregation, TimeoutRetriesOnceThenMarksTerminalFailureReady
     EXPECT_TRUE(after_second_timeout.terminal_failure_ready);
     EXPECT_GE(requested_count, 4); // initial (2) + retry (2)
 }
+
 
 TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridge) {
     using namespace simcore::runner::parallel::simcoredb;
