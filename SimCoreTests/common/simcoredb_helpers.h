@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -137,6 +138,24 @@ inline simcore::db::DbConfigPaths MakePhase4DbPaths(const std::filesystem::path&
     paths.object_store_root = base_dir / "object_store";
     paths.archive_store_root = base_dir / "archive_store";
     return paths;
+}
+
+inline std::filesystem::path ResolveMigrationRootForTests() {
+    const std::vector<std::filesystem::path> candidates{
+        std::filesystem::path("SimCoreDB") / "migration",
+        std::filesystem::path("..") / "SimCoreDB" / "migration",
+        std::filesystem::path("..") / ".." / "SimCoreDB" / "migration",
+        std::filesystem::path("..") / ".." / ".." / "SimCoreDB" / "migration",
+        std::filesystem::path("migration"),
+    };
+
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::exists(candidate / "Execution")) {
+            return candidate;
+        }
+    }
+
+    return candidates.front();
 }
 
 inline bool OpenPhase4ExecutionDb(
