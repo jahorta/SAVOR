@@ -51,6 +51,7 @@
 #include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
 
 #include "common/RecordingExecutionDb.h"
+#include "common/AlwaysAdvanceTransitionHandler.h"
 #include "common/SqliteDbFixture.h"
 #include "common/simcoredb_helpers.h"
 
@@ -764,20 +765,6 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     EXPECT_FALSE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
 }
-
-namespace {
-class AlwaysAdvanceTransitionHandler final : public simcore::db::execution::programdb::IWorkflowTransitionHandler {
-public:
-    simcore::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
-        const simcore::db::execution::programdb::WorkflowTransitionContext&) const override {
-        return {
-            .should_advance = true,
-            .blocked_reason = std::nullopt,
-            .next_step_key = std::optional<std::string>("next"),
-        };
-    }
-};
-} // namespace
 
 TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputEvents) {
     using namespace simcore::runner::parallel::simcoredb;

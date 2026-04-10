@@ -50,6 +50,7 @@
 #include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
 
 #include "common/RecordingExecutionDb.h"
+#include "common/AlwaysAdvanceTransitionHandler.h"
 #include "common/SqliteDbFixture.h"
 #include "common/simcoredb_helpers.h"
 
