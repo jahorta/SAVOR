@@ -149,10 +149,12 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h" />
     <ClInclude Include="common\NullJobEventCommandService.h" />
     <ClInclude Include="common\NullWorkflowQueryService.h" />
     <ClInclude Include="common\RecordingExecutionDb.h" />
     <ClInclude Include="common\RecordingWorkflowCommandService.h" />
+    <ClInclude Include="common\simcoredb_helpers.h" />
     <ClInclude Include="common\SqliteDbFixture.h" />
     <ClInclude Include="scoped_wrapper.h" />
     <ClInclude Include="seh_guard.h" />

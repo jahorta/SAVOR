@@ -35,6 +35,12 @@
     <ClInclude Include="common\RecordingWorkflowCommandService.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="common\simcoredb_helpers.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h">
+      <Filter>common</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="common">
