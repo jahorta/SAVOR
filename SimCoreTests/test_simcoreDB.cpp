@@ -56,20 +56,22 @@
 namespace {
 
 
-TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
-    namespace fs = std::filesystem;
-    using namespace simcore::db::migrations;
+    TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
+        namespace fs = std::filesystem;
+        using namespace simcore::db::migrations;
 
-    const auto root = fs::weakly_canonical(fs::path("../../SimCoreDB/migration"));
-    const MigrationSourceOptions filesystem_options{
-        .source_kind = MigrationSourceKind::Filesystem,
-        .filesystem_root = root,
-    };
+        const auto root = fs::weakly_canonical(fs::path("../../SimCoreDB/migration"));
+        const MigrationSourceOptions filesystem_options{
+            .source_kind = MigrationSourceKind::Filesystem,
+            .filesystem_root = root,
+        };
 
-    for (const auto context : ListAllMigrationContexts()) {
-        const auto entries = LoadContextMigrations(context, filesystem_options);
-        ASSERT_FALSE(entries.empty()) << "Expected at least one migration in context " << ToString(context);
+        for (const auto context : ListAllMigrationContexts()) {
+            const auto entries = LoadContextMigrations(context, filesystem_options);
+            ASSERT_FALSE(entries.empty()) << "Expected at least one migration in context " << ToString(context);
+        }
     }
+
 }
 
 
