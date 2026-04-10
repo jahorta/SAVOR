@@ -228,7 +228,11 @@ struct IAnalysisDb {
     virtual std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const = 0;
     virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
-    virtual bool HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, std::int64_t seed_delta) const = 0;
+    virtual bool EnsureSeedProbeUniqueSeedDelta(
+        const RecordSeedProbeUniqueSeedCommand& command,
+        bool* inserted_out = nullptr,
+        std::int64_t* unique_seed_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
 
     virtual bool CreateSeedProbeSet(
         const CreateSeedProbeSetCommand& command,

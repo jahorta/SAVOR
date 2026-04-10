@@ -599,27 +599,133 @@ std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::
     return rows;
 }
 
-bool SqliteAnalysisDb::HasSeedProbeUniqueSeedDelta(std::int64_t probe_run_id, std::int64_t seed_delta) const {
-    if (db_ == nullptr || probe_run_id <= 0) {
+bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
+    const RecordSeedProbeUniqueSeedCommand& command,
+    bool* inserted_out,
+    std::int64_t* unique_seed_id_out,
+    std::string* error_out) {
+    if (inserted_out) {
+        *inserted_out = false;
+    }
+    if (unique_seed_id_out) {
+        *unique_seed_id_out = 0;
+    }
+
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
         return false;
     }
-    Statement st;
+    if (command.probe_result_id <= 0 || command.input_frame_id <= 0 || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+
+    Statement existing;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT 1 "
-            "FROM sp_unique_seed u "
-            "JOIN sp_probe_result r ON r.probe_result_id=u.probe_result_id "
-            "WHERE r.probe_run_id=?1 AND u.seed_delta=?2 "
+            "SELECT unique_seed_id "
+            "FROM sp_unique_seed "
+            "WHERE probe_result_id=?1 AND seed_delta=?2 "
             "LIMIT 1;",
             -1,
-            &st.st,
+            &existing.st,
             nullptr)
         != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    sqlite3_bind_int64(st.st, 1, probe_run_id);
-    sqlite3_bind_int64(st.st, 2, seed_delta);
-    return sqlite3_step(st.st) == SQLITE_ROW;
+
+    sqlite3_bind_int64(existing.st, 1, command.probe_result_id);
+    sqlite3_bind_int64(existing.st, 2, command.seed_delta);
+    if (sqlite3_step(existing.st) == SQLITE_ROW) {
+        if (unique_seed_id_out) {
+            *unique_seed_id_out = sqlite3_column_int64(existing.st, 0);
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) {
+                *error_out = sqlite3_errmsg(db_);
+            }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        return true;
+    }
+
+    Statement insert_unique;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO sp_unique_seed(probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5);",
+            -1,
+            &insert_unique.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(insert_unique.st, 1, command.probe_result_id);
+    sqlite3_bind_int64(insert_unique.st, 2, command.input_frame_id);
+    sqlite3_bind_int64(insert_unique.st, 3, command.seed_value);
+    sqlite3_bind_int64(insert_unique.st, 4, command.seed_delta);
+    sqlite3_bind_int64(insert_unique.st, 5, command.recorded_at_utc.time_since_epoch().count());
+    if (sqlite3_step(insert_unique.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto unique_seed_id = sqlite3_last_insert_rowid(db_);
+    if (inserted_out) {
+        *inserted_out = true;
+    }
+    if (unique_seed_id_out) {
+        *unique_seed_id_out = unique_seed_id;
+    }
+
+    const auto probe_run_id = ProbeRunIdForResult(db_, command.probe_result_id);
+    if (!probe_run_id.has_value()) {
+        if (error_out) *error_out = "probe_result_id does not resolve to probe_run";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (!InsertSeedProbeOutboxEvent(
+            db_,
+            command.event_id,
+            "AnalysisSeedProbe.UniqueSeedRecorded.v1",
+            "probe_run",
+            std::to_string(probe_run_id.value()),
+            command.correlation_id,
+            command.causation_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            "unique_seed",
+            unique_seed_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    return true;
 }
 
 bool SqliteAnalysisDb::CreateSeedProbeSet(
@@ -1175,84 +1281,8 @@ bool SqliteAnalysisDb::RecordSeedProbeUniqueSeed(
     const RecordSeedProbeUniqueSeedCommand& command,
     std::int64_t* unique_seed_id_out,
     std::string* error_out) {
-    if (db_ == nullptr) {
-        if (error_out) *error_out = "database handle is null";
-        return false;
-    }
-    if (command.probe_result_id <= 0 || command.input_frame_id <= 0 || command.event_id.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
-        return false;
-    }
-
-    const auto probe_run_id = ProbeRunIdForResult(db_, command.probe_result_id);
-    if (!probe_run_id.has_value()) {
-        if (error_out) *error_out = "probe_result_id does not resolve to probe_run";
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        return false;
-    }
-
-    Statement insert_unique;
-    if (sqlite3_prepare_v2(
-            db_,
-            "INSERT INTO sp_unique_seed(probe_result_id,input_frame_id,seed_value,seed_delta,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5);",
-            -1,
-            &insert_unique.st,
-            nullptr)
-        != SQLITE_OK) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return false;
-    }
-
-    sqlite3_bind_int64(insert_unique.st, 1, command.probe_result_id);
-    sqlite3_bind_int64(insert_unique.st, 2, command.input_frame_id);
-    sqlite3_bind_int64(insert_unique.st, 3, command.seed_value);
-    sqlite3_bind_int64(insert_unique.st, 4, command.seed_delta);
-    sqlite3_bind_int64(insert_unique.st, 5, command.recorded_at_utc.time_since_epoch().count());
-    if (sqlite3_step(insert_unique.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    const auto unique_seed_id = sqlite3_last_insert_rowid(db_);
-    if (!InsertSeedProbeOutboxEvent(
-            db_,
-            command.event_id,
-            "AnalysisSeedProbe.UniqueSeedRecorded.v1",
-            "probe_run",
-            std::to_string(probe_run_id.value()),
-            command.correlation_id,
-            command.causation_id,
-            command.recorded_at_utc.time_since_epoch().count(),
-            "unique_seed",
-            unique_seed_id,
-            error_out)) {
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db_);
-        }
-        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        return false;
-    }
-
-    if (unique_seed_id_out) {
-        *unique_seed_id_out = unique_seed_id;
-    }
-    return true;
+    bool inserted = false;
+    return EnsureSeedProbeUniqueSeedDelta(command, &inserted, unique_seed_id_out, error_out) && inserted;
 }
 
 bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
