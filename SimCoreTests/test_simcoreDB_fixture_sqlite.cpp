@@ -54,6 +54,7 @@
 #include "common/SqliteDbFixture.h"
 #include "common/simcoredb_helpers.h"
 
+namespace simcoreDB {
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
     using namespace simcore::db::migrations;
 
@@ -1871,4 +1872,6 @@ VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'A
     EXPECT_EQ(preview.retention_safe_floor_outbox_id.value(), 15);
 
     std::filesystem::remove_all(temp_root);
+}
+
 }

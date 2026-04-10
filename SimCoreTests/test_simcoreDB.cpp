@@ -55,6 +55,7 @@
 #include "common/SqliteDbFixture.h"
 #include "common/simcoredb_helpers.h"
 
+namespace simcoreDB {
 TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerContext) {
     namespace fs = std::filesystem;
     using namespace simcore::db::migrations;
@@ -1138,4 +1139,6 @@ TEST(Stage3cCoordinatorTelemetry, CapturesReadinessScanLatencyAndQueueDepth) {
     EXPECT_GE(telemetry.max_ready_queue_depth, 0);
     EXPECT_GE(telemetry.ready_scan_count, 0);
     EXPECT_GE(telemetry.last_ready_scan_latency_ms, 0);
+}
+
 }
