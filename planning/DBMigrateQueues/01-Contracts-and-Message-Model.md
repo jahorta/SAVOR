@@ -20,7 +20,7 @@ Suggested fields:
 - `command_name`
 - `submitted_at_utc`
 - `idempotency_key` (required for side-effecting commands)
-- `payload` (typed command object)
+- `payload` (typed command object; no untyped blobs)
 
 ## Query Envelope (logical)
 Suggested fields:
@@ -29,7 +29,7 @@ Suggested fields:
 - `context`
 - `query_name`
 - `submitted_at_utc`
-- `payload` (typed query object)
+- `payload` (typed query object; no untyped blobs)
 
 ## Command Result Model
 - `state`: `success | canceled | failed`
@@ -70,6 +70,7 @@ Starter pattern:
 Guidance:
 - Include `code` + human-readable `message` in error payloads.
 - Keep codes stable even if message text changes.
+- Optional provider-specific DB error codes may be included as structured metadata (no stack traces in payload).
 
 
 ## Initial v1 Error Code Baseline (Decision)
