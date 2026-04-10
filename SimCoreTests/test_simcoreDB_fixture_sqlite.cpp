@@ -575,7 +575,7 @@ VALUES(10, 1, 'workflow', unixepoch()*1000, 1);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(100, 1, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 10, 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
-VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'QUEUED', 0, 1, unixepoch()*1000);
+VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000);
 )SQL"));
 
     simcore::db::execution::jobs::SqliteJobEventCommandService job_events(db_);
@@ -584,6 +584,7 @@ VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'QUEUED', 0, 1, unixepoc
         {
             .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
             .job_id = 1000,
+            .terminal_state = std::string("SUCCEEDED"),
         },
         &job_error)) << job_error;
 
@@ -1122,7 +1123,7 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobClaimed, .job_id = 601, .claimed_by_token = std::string("worker-1"), .lease_expires_at_utc = 2000000 }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobLeaseRenewed, .job_id = 601, .lease_expires_at_utc = 3000000 }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 601, .message = std::string("50%") }, &err)) << err;
-    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 601 }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 601, .terminal_state = std::string("SUCCEEDED") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobEventArchived, .job_id = 601, .message = std::string("archived") }, &err)) << err;
     ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobRestored, .job_id = 601, .message = std::string("restored") }, &err)) << err;
 
@@ -1136,6 +1137,30 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 7);
     sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceRejectsJobCompletedWithoutTerminalState) {
+    using namespace simcore::db::execution::jobs;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1501, 1, 'stage3d', unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1601, 1501, 1, 1, 'seed_probe', 10, 'fp-stage3d-1601', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    auto* job_commands = execution_db.JobCommandService();
+    ASSERT_NE(job_commands, nullptr);
+
+    EXPECT_FALSE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 1601 }, &err));
+    EXPECT_NE(err.find("terminal_state must be set for JobCompleted"), std::string::npos);
 }
 
 TEST_F(SqliteDbFixture, Stage3dExecutionPayloadResolverReadsJobSetAndJobPayloads) {

@@ -51,6 +51,7 @@
 #include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
 
 #include "common/RecordingExecutionDb.h"
+#include "common/MapperExecutionDb.h"
 #include "common/AlwaysAdvanceTransitionHandler.h"
 #include "common/SqliteDbFixture.h"
 #include "common/simcoredb_helpers.h"
@@ -538,6 +539,28 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     ASSERT_TRUE(terminal.transition.has_value());
     EXPECT_TRUE(terminal.transition->should_advance);
     EXPECT_TRUE(trace.transition_handler_invoked);
+}
+
+TEST(Stage3cResultMapper, SeedProbeMapPrimaryResultMarksTerminalJobStateFromErrors) {
+    using namespace simcore::db::execution::jobs;
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    MapperExecutionDb execution_db;
+    NeutralSeedResultMapper mapper(&execution_db, nullptr);
+
+    (void)mapper.MapPrimaryResult(701, "[SeedProbe.Results]\nw_err=0\ndw_err=0\n");
+    (void)mapper.MapPrimaryResult(702, "[SeedProbe.Results]\nw_err=1\ndw_err=0\n");
+
+    ASSERT_EQ(execution_db.job_events.calls.size(), 2u);
+    EXPECT_EQ(execution_db.job_events.calls[0].kind, JobLifecycleEventKind::JobCompleted);
+    EXPECT_EQ(execution_db.job_events.calls[0].job_id, 701);
+    ASSERT_TRUE(execution_db.job_events.calls[0].terminal_state.has_value());
+    EXPECT_EQ(*execution_db.job_events.calls[0].terminal_state, "SUCCEEDED");
+
+    EXPECT_EQ(execution_db.job_events.calls[1].kind, JobLifecycleEventKind::JobCompleted);
+    EXPECT_EQ(execution_db.job_events.calls[1].job_id, 702);
+    ASSERT_TRUE(execution_db.job_events.calls[1].terminal_state.has_value());
+    EXPECT_EQ(*execution_db.job_events.calls[1].terminal_state, "FAILED");
 }
 
 TEST(Stage2AdapterChain, CompletionGateMismatchThenTerminalFail) {

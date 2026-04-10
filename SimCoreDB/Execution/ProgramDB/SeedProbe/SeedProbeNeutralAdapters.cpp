@@ -20,6 +20,26 @@ std::string BuildNeutralFingerprint(std::int64_t probe_id) {
     return fingerprint_for(probe_id, simcore::GCInputFrame{}.to_frame_hex(), 0, 0);
 }
 
+void ApplyTerminalJobStateFromResults(
+    simcore::db::IExecutionDb* execution_db,
+    std::int64_t job_id,
+    const ResultsIni& parsed) {
+    if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
+        return;
+    }
+
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    std::string ignored_error;
+    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+        {
+            .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
+            .job_id = job_id,
+            .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
+            .requested_by = "seedprobe_result_mapper",
+        },
+        &ignored_error);
+}
+
 } // namespace
 
 NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
@@ -118,6 +138,8 @@ RuntimeInitRequest RequiredSavestateRuntimeInitAdapter::BuildRuntimeInit(std::in
 ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     ResultMapPayload payload{};
     payload.result_kind = kNeutralResultKind;
+    const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
+    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed);
 
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
         return payload;
@@ -132,7 +154,6 @@ ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, 
         return payload;
     }
 
-    const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
     std::string error;
     if (analysis_db_->SetSeedProbeRunNeutralSeed(probe_run->probe_run_id, parsed.rng_seed, &error)) {
         payload.result_ref_id = probe_run->probe_run_id;

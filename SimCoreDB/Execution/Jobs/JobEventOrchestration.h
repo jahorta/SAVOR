@@ -29,6 +29,7 @@ struct JobLifecycleEventCommand {
     std::optional<std::int64_t> artifact_id;
     std::optional<std::string> claimed_by_token;
     std::optional<std::int64_t> lease_expires_at_utc;
+    std::optional<std::string> terminal_state;
     std::optional<std::string> requested_by;
     std::optional<std::string> causation_id;
 };
