@@ -1,6 +1,7 @@
 #include "SeedProbeUniqueAdapters.h"
 
 #include <algorithm>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -13,21 +14,42 @@
 namespace simcore::db::execution::programdb::seedprobe {
 namespace {
 
-void ApplyTerminalJobStateFromResults(
+std::optional<std::int64_t> ParseExpectedDeltaFromFingerprint(const std::string& fingerprint) {
+    constexpr const char* token = ";expected_delta=";
+    const auto pos = fingerprint.find(token);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    const std::size_t begin = pos + std::char_traits<char>::length(token);
+    std::size_t end = fingerprint.find(';', begin);
+    if (end == std::string::npos) {
+        end = fingerprint.size();
+    }
+
+    const auto segment = fingerprint.substr(begin, end - begin);
+    try {
+        return std::stoll(segment);
+    }
+    catch (...) {
+        return std::nullopt;
+    }
+}
+
+void ApplyTerminalJobState(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t job_id,
-    const ResultsIni& parsed) {
+    const std::optional<std::string>& terminal_state) {
     if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
         return;
     }
 
-    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
     std::string ignored_error;
     (void)execution_db->JobCommandService()->AppendLifecycleEvent(
         {
             .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
             .job_id = job_id,
-            .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
+            .terminal_state = terminal_state,
             .requested_by = "seedprobe_result_mapper",
         },
         &ignored_error);
@@ -232,36 +254,40 @@ std::string SeedProbeUniqueResultMapper::BuildResultIniFromPrResult(std::int64_t
 
 ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
-    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed);
 
     ResultMapPayload payload{};
     payload.result_kind = "analysisseedprobe.unique.unavailable";
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
         return payload;
     }
     const auto job = execution_db_->GetJob(job_id);
     if (!job.has_value() || job->program_ref_kind != "sp_probe_run") {
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
         return payload;
     }
 
     const auto neutral_seed = analysis_db_->LookupSeedProbeNeutralSeed(job->program_ref_id);
     if (!neutral_seed.has_value()) {
         payload.result_kind = "analysisseedprobe.unique.missing_neutral";
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
         return payload;
     }
-    const auto observed_delta = static_cast<std::int64_t>(parsed.rng_seed) - *neutral_seed;
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    if (failed) {
+        payload.result_kind = "analysisseedprobe.unique.failure";
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        return payload;
+    }
 
-    const bool seen = analysis_db_->HasSeedProbeUniqueSeedDelta(job->program_ref_id, observed_delta);
-    if (seen) {
-        payload.result_kind = "analysisseedprobe.unique.duplicate";
-        payload.result_ref_id = observed_delta;
-        (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr);
-        return payload;
-    }
+    const auto observed_delta = static_cast<std::int64_t>(parsed.rng_seed) - *neutral_seed;
+    const auto expected_delta = ParseExpectedDeltaFromFingerprint(job->fingerprint);
+    const bool matched_expected_delta = expected_delta.has_value() && observed_delta == *expected_delta;
 
     const auto probe_result_id = analysis_db_->LookupSeedProbeResultId(job->program_ref_id);
     if (!probe_result_id.has_value()) {
         payload.result_kind = "analysisseedprobe.unique.missing_probe_result";
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
         return payload;
     }
 
@@ -275,16 +301,28 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     cmd.correlation_id = "seedprobe-run-" + std::to_string(job->program_ref_id);
     cmd.causation_id = "job-" + std::to_string(job_id);
 
+    bool inserted = false;
     std::int64_t unique_seed_id = 0;
     std::string error;
-    if (!analysis_db_->RecordSeedProbeUniqueSeed(cmd, &unique_seed_id, &error)) {
+    if (!analysis_db_->EnsureSeedProbeUniqueSeedDelta(cmd, &inserted, &unique_seed_id, &error)) {
         payload.result_kind = "analysisseedprobe.unique.error";
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
         return payload;
     }
 
-    payload.result_kind = "analysisseedprobe.unique.winner";
-    payload.result_ref_id = unique_seed_id;
-    (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr);
+    if (inserted) {
+        payload.result_kind = "analysisseedprobe.unique.winner";
+        payload.result_ref_id = unique_seed_id;
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUCCEEDED_WINNER"));
+    } else {
+        payload.result_kind = "analysisseedprobe.unique.superseded";
+        payload.result_ref_id = unique_seed_id;
+        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUPERSEDED"));
+    }
+
+    if (matched_expected_delta) {
+        (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr);
+    }
     return payload;
 }
 
