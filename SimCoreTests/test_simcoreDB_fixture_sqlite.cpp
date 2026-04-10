@@ -51,6 +51,7 @@
 
 #include "common/RecordingExecutionDb.h"
 #include "common/SqliteDbFixture.h"
+#include "common/simcoredb_helpers.h"
 
 namespace {
 
