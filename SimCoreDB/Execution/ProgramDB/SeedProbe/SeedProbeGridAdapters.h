@@ -93,7 +93,7 @@ class SeedProbeGridResultMapper final : public IResultMapper {
 public:
     using ContextLookupFn = std::function<std::optional<GridResultContext>(std::int64_t job_id)>;
 
-    SeedProbeGridResultMapper(simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
+    SeedProbeGridResultMapper(simcore::db::IExecutionDb* execution_db, simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
 
     std::string BuildResultIniFromPrResult(std::int64_t job_id, const simcore::PRResult& result) const override;
     ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const override;
@@ -107,6 +107,7 @@ private:
     static std::string FamilyLabel(std::uint8_t family);
     static std::int64_t AxisXYId(const simcore::GCInputFrame& frame);
 
+    simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
     ContextLookupFn lookup_context_{};
 };

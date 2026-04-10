@@ -11,6 +11,29 @@
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
+namespace {
+
+void ApplyTerminalJobStateFromResults(
+    simcore::db::IExecutionDb* execution_db,
+    std::int64_t job_id,
+    const ResultsIni& parsed) {
+    if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
+        return;
+    }
+
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    std::string ignored_error;
+    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+        {
+            .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
+            .job_id = job_id,
+            .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
+            .requested_by = "seedprobe_result_mapper",
+        },
+        &ignored_error);
+}
+
+} // namespace
 
 SeedProbeUniqueTransitionHandler::SeedProbeUniqueTransitionHandler(CompletionGateFn completion_gate)
     : completion_gate_(std::move(completion_gate)) {
@@ -208,6 +231,9 @@ std::string SeedProbeUniqueResultMapper::BuildResultIniFromPrResult(std::int64_t
 }
 
 ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
+    const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
+    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed);
+
     ResultMapPayload payload{};
     payload.result_kind = "analysisseedprobe.unique.unavailable";
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
@@ -218,7 +244,6 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
         return payload;
     }
 
-    const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
     const auto neutral_seed = analysis_db_->LookupSeedProbeNeutralSeed(job->program_ref_id);
     if (!neutral_seed.has_value()) {
         payload.result_kind = "analysisseedprobe.unique.missing_neutral";

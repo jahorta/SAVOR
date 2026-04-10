@@ -92,7 +92,11 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
         state = "RUNNING";
         break;
     case JobLifecycleEventKind::JobCompleted:
-        state = "DONE";
+        if (!command.terminal_state.has_value() || command.terminal_state->empty()) {
+            if (error_out) *error_out = "terminal_state must be set for JobCompleted";
+            return false;
+        }
+        state = command.terminal_state->c_str();
         ended = now;
         break;
     case JobLifecycleEventKind::JobEventArchived:

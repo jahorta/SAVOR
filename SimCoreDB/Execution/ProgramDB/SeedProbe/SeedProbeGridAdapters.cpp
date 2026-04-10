@@ -32,6 +32,26 @@ public:
     }
 };
 
+void ApplyTerminalJobStateFromResults(
+    simcore::db::IExecutionDb* execution_db,
+    std::int64_t job_id,
+    const ResultsIni& parsed) {
+    if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
+        return;
+    }
+
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    std::string ignored_error;
+    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+        {
+            .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
+            .job_id = job_id,
+            .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
+            .requested_by = "seedprobe_result_mapper",
+        },
+        &ignored_error);
+}
+
 } // namespace
 
 SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid)
@@ -249,8 +269,9 @@ RuntimeInitRequest SeedProbeRuntimeInitAdapter::BuildRuntimeInit(std::int64_t jo
     return request;
 }
 
-SeedProbeGridResultMapper::SeedProbeGridResultMapper(simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context)
-    : analysis_db_(analysis_db)
+SeedProbeGridResultMapper::SeedProbeGridResultMapper(simcore::db::IExecutionDb* execution_db, simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context)
+    : execution_db_(execution_db)
+    , analysis_db_(analysis_db)
     , lookup_context_(std::move(lookup_context)) {
 }
 
@@ -271,6 +292,8 @@ std::string SeedProbeGridResultMapper::BuildResultIniFromPrResult(std::int64_t /
 
 ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     ResultMapPayload payload{};
+    const auto parsed_result = ResultsIni::from_section(IniDoc::parse(result_ini));
+    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed_result);
 
     if (analysis_db_ == nullptr || !lookup_context_) {
         payload.result_kind = "analysisseedprobe.unavailable";
@@ -289,7 +312,6 @@ ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id
         return payload;
     }
 
-    const auto parsed_result = ResultsIni::from_section(IniDoc::parse(result_ini));
     const auto observed_seed = static_cast<std::int64_t>(parsed_result.rng_seed);
     const auto seed_delta = static_cast<std::int64_t>(observed_seed - static_cast<std::int64_t>(context->neutral_seed));
 
@@ -386,7 +408,7 @@ ProgramKindDescriptor BuildSeedProbeGridDescriptor(
     descriptor.program_name = "SeedProbe";
     descriptor.job_persistence = std::make_shared<SeedProbeGridJobPersistenceAdapter>(execution_db, std::move(blueprint), grid);
     descriptor.runtime_init = std::make_shared<SeedProbeRuntimeInitAdapter>(execution_db, analysis_db);
-    descriptor.result_mapper = std::make_shared<SeedProbeGridResultMapper>(analysis_db, std::move(lookup_context));
+    descriptor.result_mapper = std::make_shared<SeedProbeGridResultMapper>(execution_db, analysis_db, std::move(lookup_context));
     descriptor.workflow_transition = std::make_shared<GridToUniqueTransitionHandler>();
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
