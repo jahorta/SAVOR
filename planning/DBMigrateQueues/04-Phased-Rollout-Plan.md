@@ -93,6 +93,7 @@ A context is phase-complete only when all are true:
 1. Pre-production migration follows fix-forward iteration (no rollback plan).
 2. Context/domain teams own their own queues/workers and context behavior.
 3. Phase boundaries are scope-based.
+4. Phase 0 planning/contracts decisions finalized on 2026-04-10 (see `05-Phase-0-Implementation-Plan.md` decision register).
 
 ## Open Questions
 - None currently.
@@ -103,4 +104,3 @@ A context is phase-complete only when all are true:
 - Phase 2: `07-Phase-2-Implementation-Plan.md`
 - Phase 3: `08-Phase-3-Implementation-Plan.md`
 - Phase 4: `09-Phase-4-Implementation-Plan.md`
-
