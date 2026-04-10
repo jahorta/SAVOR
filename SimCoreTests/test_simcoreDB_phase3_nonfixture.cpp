@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <fstream>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -9,6 +10,7 @@
 
 #include "Common/Events/OutboxRelay.h"
 #include "Common/Migrations/MigrationRunner.h"
+#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/WorkflowModeProvider.h"
@@ -16,9 +18,246 @@
 #include "Runner/Parallel/SimCoreDB/WorkflowDispatchCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowMaterializationService.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
+#include "../SimCoreDBValidation/DbPreparer.h"
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
+    TEST(Stage3Phase2Contracts, SeedProbeSplitContractIncludesNeutralGridUniqueDependenciesAndInputs) {
+        using namespace simcore::db::execution::workflow;
+
+        const auto definition = BuildSeedProbeChainDefinition();
+        std::string validation_error;
+        ASSERT_TRUE(ValidateWorkflowDefinition(definition, &validation_error)) << validation_error;
+
+        const auto find_step = [&](std::string_view key) -> const WorkflowStepDefinition* {
+            for (const auto& step : definition.steps) {
+                if (step.step_key == key) {
+                    return &step;
+                }
+            }
+            return nullptr;
+        };
+
+        const auto* neutral = find_step("Neutral");
+        const auto* grid = find_step("Grid");
+        const auto* unique = find_step("Unique");
+        ASSERT_NE(neutral, nullptr);
+        ASSERT_NE(grid, nullptr);
+        ASSERT_NE(unique, nullptr);
+
+        ASSERT_EQ(neutral->required_inputs.size(), 1u);
+        EXPECT_EQ(neutral->required_inputs.front(), "general.transition_savestate");
+
+        ASSERT_EQ(grid->dependencies.size(), 1u);
+        EXPECT_EQ(grid->dependencies.front(), "Neutral");
+        ASSERT_EQ(grid->required_inputs.size(), 1u);
+        EXPECT_EQ(grid->required_inputs.front(), "seedprobe.neutral.seed_context");
+
+        ASSERT_EQ(unique->dependencies.size(), 1u);
+        EXPECT_EQ(unique->dependencies.front(), "Grid");
+        ASSERT_EQ(unique->required_inputs.size(), 1u);
+        EXPECT_EQ(unique->required_inputs.front(), "seedprobe.grid.seed_evidence");
+    }
+
+    TEST(Stage3Phase2Contracts, DbLifecyclePreservesCanonicalEventOrderingAndOutboxContracts) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, embedded_options, &err)) << err;
+
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(2501, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto* commands = execution_db.WorkflowCommandService();
+        ASSERT_NE(commands, nullptr);
+
+        ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2502, .job_set_id = 8801, .requested_by = "SimCoreTests" }, &err)) << err;
+        ASSERT_TRUE(commands->AppendStepInputEvent({
+            .workflow_instance_id = 2501,
+            .workflow_step_id = 2502,
+            .event_kind = "Execution.WorkflowStepInputRequested.v1",
+            .source_key = std::optional<std::string>("savestate"),
+            .request_id = std::optional<std::string>("request-neutral"),
+            .message = std::optional<std::string>("request input"),
+            .requested_by = "SimCoreTests",
+        }, &err)) << err;
+        ASSERT_TRUE(commands->AppendStepInputEvent({
+            .workflow_instance_id = 2501,
+            .workflow_step_id = 2502,
+            .event_kind = "Execution.WorkflowStepInputComplete.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = std::optional<std::string>("input complete"),
+            .requested_by = "SimCoreTests",
+        }, &err)) << err;
+        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2502, .terminal_state = "COMPLETED", .requested_by = "SimCoreTests" }, &err)) << err;
+
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db,
+            "SELECT event_kind FROM exec_workflow_event WHERE workflow_step_id=2502 ORDER BY workflow_event_id;",
+            -1, &st, nullptr));
+        std::vector<std::string> lifecycle_events;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const auto* text = sqlite3_column_text(st, 0);
+            lifecycle_events.emplace_back(text != nullptr ? reinterpret_cast<const char*>(text) : "");
+        }
+        sqlite3_finalize(st);
+        EXPECT_EQ(lifecycle_events, (std::vector<std::string>{
+            "Execution.WorkflowStepMaterialized.v1",
+            "Execution.WorkflowStepCompleted.v1",
+            }));
+
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db,
+            "SELECT event_kind FROM exec_workflow_input_event WHERE workflow_step_id=2502 ORDER BY workflow_input_event_id;",
+            -1, &st, nullptr));
+        std::vector<std::string> input_events;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const auto* text = sqlite3_column_text(st, 0);
+            input_events.emplace_back(text != nullptr ? reinterpret_cast<const char*>(text) : "");
+        }
+        sqlite3_finalize(st);
+        EXPECT_EQ(input_events, (std::vector<std::string>{
+            "Execution.WorkflowStepInputRequested.v1",
+            "Execution.WorkflowStepInputComplete.v1",
+            }));
+
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            db,
+            "SELECT COUNT(1) FROM exec_outbox_message WHERE aggregate_kind='workflow_instance' AND payload_ref_kind='workflow_event';",
+            -1,
+            &st,
+            nullptr));
+        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+        EXPECT_EQ(sqlite3_column_int(st, 0), 2);
+        sqlite3_finalize(st);
+
+        sqlite3_close(db);
+    }
+
+    TEST(Stage3Phase2Contracts, FailedTerminalStepDoesNotAllowInvalidDownstreamAdvance) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, embedded_options, &err)) << err;
+
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(2701, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES
+    (2702, 2701, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000),
+    (2703, 2701, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, unixepoch()*1000, NULL);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto* commands = execution_db.WorkflowCommandService();
+        ASSERT_NE(commands, nullptr);
+        ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2702, .job_set_id = 9101, .requested_by = "SimCoreTests" }, &err)) << err;
+        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2702, .terminal_state = "FAILED", .requested_by = "SimCoreTests" }, &err)) << err;
+
+        EXPECT_FALSE(commands->MarkStepMaterialized({ .workflow_step_id = 2703, .job_set_id = 9102, .requested_by = "SimCoreTests" }, &err));
+
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=2702;", -1, &st, nullptr));
+        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+        ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
+        EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "FAILED");
+        sqlite3_finalize(st);
+        sqlite3_close(db);
+    }
+
+    TEST(Stage3Phase2Contracts, TransitionTwoStepSuccessUsesSavestateSignalAndAdvancesGridToReady) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        const auto temp_dir = MakeTempPhase4Dir("phase2-two-step-savestate");
+        const auto savestate_path = temp_dir / "input_transition.sav";
+        {
+            std::ofstream out(savestate_path, std::ios::binary);
+            out << "dummy-savestate";
+        }
+        ASSERT_TRUE(std::filesystem::exists(savestate_path));
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, embedded_options, &err)) << err;
+
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc
+)
+VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'general.transition_savestate', 1, 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc)
+VALUES
+    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'general.transition_savestate', unixepoch()*1000, unixepoch()*1000),
+    (2603, 2601, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, 'seedprobe.neutral.seed_context', unixepoch()*1000, NULL);
+INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step_id, to_step_id, created_at_utc)
+VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto* commands = execution_db.WorkflowCommandService();
+        auto* queries = execution_db.WorkflowQueryService();
+        ASSERT_NE(commands, nullptr);
+        ASSERT_NE(queries, nullptr);
+
+        ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2602, .job_set_id = 9001, .requested_by = "SimCoreTests" }, &err)) << err;
+        ASSERT_TRUE(commands->AppendStepInputEvent({
+            .workflow_instance_id = 2601,
+            .workflow_step_id = 2602,
+            .event_kind = "Execution.WorkflowStepInputRequested.v1",
+            .source_key = std::optional<std::string>("savestate"),
+            .request_id = std::optional<std::string>(savestate_path.filename().string()),
+            .message = std::optional<std::string>("neutral input requested"),
+            .requested_by = "SimCoreTests",
+        }, &err)) << err;
+        ASSERT_TRUE(commands->AppendStepInputEvent({
+            .workflow_instance_id = 2601,
+            .workflow_step_id = 2602,
+            .event_kind = "Execution.WorkflowStepInputComplete.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = std::optional<std::string>("neutral input complete"),
+            .requested_by = "SimCoreTests",
+        }, &err)) << err;
+        ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2602, .terminal_state = "COMPLETED", .requested_by = "SimCoreTests" }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch()*1000 WHERE workflow_step_id=2603 AND state='WAITING';"));
+
+        const auto graph = queries->GetWorkflowGraph(2601);
+        ASSERT_TRUE(graph.has_value());
+        bool neutral_completed = false;
+        bool grid_ready = false;
+        for (const auto& step : graph->steps) {
+            if (step.step_key == "Neutral" && step.state == WorkflowStepState::Completed) {
+                neutral_completed = true;
+            }
+            if (step.step_key == "Grid" && step.state == WorkflowStepState::Ready) {
+                grid_ready = true;
+            }
+        }
+        EXPECT_TRUE(neutral_completed);
+        EXPECT_TRUE(grid_ready);
+
+        sqlite3_close(db);
+        std::error_code ec;
+        std::filesystem::remove_all(temp_dir, ec);
+    }
+
     TEST(Stage3Phase3Telemetry, CapturesMaterializationAndDispatchCounters) {
         using namespace simcore::runner::parallel::simcoredb;
         using namespace simcore::db::execution::workflow;
@@ -327,6 +566,80 @@ INSERT INTO exec_outbox_message(
         EXPECT_EQ(second.published_count, 0);
         EXPECT_EQ(handled, 1);
         sqlite3_close(db);
+    }
+
+    TEST(Stage3Phase3Replay, ReplayRobustnessSupportsSavestateOverrideAndJsonlFixtureSeeding) {
+        using namespace simcore::db::events;
+
+        const auto migration_root = ResolveMigrationRootForTests();
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+
+        DbPreparer preparer(db, migration_root);
+        std::string err;
+        ASSERT_TRUE(preparer.InitializeRequiredMigrations(&err)) << err;
+
+        const auto temp_dir = MakeTempPhase4Dir("phase3-robustness-jsonl");
+        const auto savestate_path = temp_dir / "fixture_phase3.sav";
+        {
+            std::ofstream sav(savestate_path, std::ios::binary);
+            sav << "savestate-bytes";
+        }
+        ASSERT_TRUE(preparer.SeedSavestateArtifactAndOverride(savestate_path, &err)) << err;
+
+        const std::string default_rows_json = R"JSON({
+  "state_artifact": [
+    {
+      "artifact_id": 101,
+      "sha256": "phase3-placeholder-sha256",
+      "size_bytes": 1,
+      "compression_kind": 0,
+      "filename": "placeholder_phase3.sav",
+      "file_ext": ".sav",
+      "artifact_kind": "SAV"
+    }
+  ]
+})JSON";
+        ASSERT_TRUE(preparer.SeedRowsFromJsonObject(default_rows_json, &err)) << err;
+
+        const auto jsonl_dir = temp_dir / "jsonl";
+        std::filesystem::create_directories(jsonl_dir);
+        {
+            std::ofstream out(jsonl_dir / "exec_outbox_message.jsonl");
+            out << R"JSON({"outbox_id":3901,"event_id":"evt-p3-r1","event_type":"Execution.WorkflowStepReady.v1","event_version":1,"context_name":"Execution","aggregate_kind":"workflow_step","aggregate_id":"901","correlation_id":"corr-p3","causation_id":"cause-p3","occurred_at_utc":1712304000000,"payload_ref_kind":"workflow_event","payload_ref_id":1})JSON"
+                << "\n";
+        }
+        ASSERT_TRUE(preparer.SeedRowsFromJsonlDirectory(jsonl_dir, &err)) << err;
+
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, "SELECT filename FROM state_artifact WHERE artifact_id=101;", -1, &st, nullptr));
+        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+        ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
+        const std::string filename = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+        sqlite3_finalize(st);
+        EXPECT_EQ(std::filesystem::path(filename).extension().string(), ".sav");
+
+        OutboxRelay relay({
+            .db = db,
+            .outbox_table = "exec_outbox_message",
+            .context_name = "Execution",
+        });
+        int handled = 0;
+        std::vector<OutboxRelayDispatchBinding> bindings{ {
+            .key = { .event_type = "Execution.WorkflowStepReady.v1", .event_version = 1 },
+            .handler = [&](const EventEnvelope&, std::string*) { ++handled; return true; },
+        } };
+        OutboxRelayResult first{};
+        ASSERT_TRUE(relay.RelayBatchFromCursor(0, 8, bindings, &first, &err)) << err;
+        OutboxRelayResult second{};
+        ASSERT_TRUE(relay.RelayBatchFromCursor(first.last_scanned_outbox_id, 8, bindings, &second, &err)) << err;
+        EXPECT_EQ(first.published_count, 1);
+        EXPECT_EQ(second.published_count, 0);
+        EXPECT_EQ(handled, 1);
+
+        sqlite3_close(db);
+        std::error_code ec;
+        std::filesystem::remove_all(temp_dir, ec);
     }
 
     TEST(Stage3Phase3Relay, DeadLetterAndLagPreviewReadinessSignals) {
