@@ -868,7 +868,7 @@ TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMat
 
         mutable std::atomic<int> scan_count{ 0 };
         std::atomic<bool> ready_enabled{ false };
-        std::atomic<bool> ready_consumed{ false };
+        mutable std::atomic<bool> ready_consumed{ false };
         WorkflowReadyStepRecord ready_step{};
     };
 
