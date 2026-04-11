@@ -974,23 +974,42 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
 
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
-VALUES(9901, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'stage3c-e2e', unixepoch(), unixepoch());
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, ready_at_utc, created_at_utc)
-VALUES
-  (9911,9901,'Neutral','seedprobe.neutral','READY',10,0,2,unixepoch(),unixepoch()),
-  (9912,9901,'Grid','seedprobe.grid','WAITING',8,0,2,NULL,unixepoch()),
-  (9913,9901,'Unique','seedprobe.unique','WAITING',7,0,2,NULL,unixepoch()),
-  (9914,9901,'Done','seedprobe.done','WAITING',1,0,1,NULL,unixepoch());
-INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step_id, to_step_id, created_at_utc)
-VALUES
-  (9921,9901,9911,9912,unixepoch()),
-  (9922,9901,9912,9913,unixepoch()),
-  (9923,9901,9913,9914,unixepoch());
-)SQL"));
-
     simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
+    WorkflowDefinitionRegistry registry;
+    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
+    WorkflowInstanceBuilder builder(&registry);
+
+    std::int64_t workflow_instance_id = 0;
+    ASSERT_TRUE(builder.CreateWorkflowInstance(
+        {
+            .workflow_kind = "SEED_PROBE_CHAIN",
+            .root_scope_kind = "manual",
+            .created_by = "stage3c-e2e",
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+            .available_inputs = { "general.transition_savestate" },
+        },
+        execution_db.WorkflowCommandService(),
+        &workflow_instance_id,
+        &err))
+        << err;
+    ASSERT_GT(workflow_instance_id, 0);
+
+    const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    std::unordered_map<std::string, std::int64_t> step_ids_by_key;
+    for (const auto& step : graph->steps) {
+        step_ids_by_key.emplace(step.step_key, step.workflow_step_id);
+    }
+    ASSERT_TRUE(step_ids_by_key.count("Neutral"));
+    ASSERT_TRUE(step_ids_by_key.count("Grid"));
+    ASSERT_TRUE(step_ids_by_key.count("Unique"));
+    ASSERT_TRUE(step_ids_by_key.count("Done"));
+
+    const auto neutral_step_id = step_ids_by_key.at("Neutral");
+    const auto grid_step_id = step_ids_by_key.at("Grid");
+    const auto unique_step_id = step_ids_by_key.at("Unique");
+    const auto done_step_id = step_ids_by_key.at("Done");
+
     StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage3c-item15-test" });
 
     std::int64_t next_job_set_id = 12000;
@@ -1012,6 +1031,7 @@ VALUES
         &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
+            .controller_sleep_ms = 1,
         },
         CoordinatorIntegrationConfig{
 
@@ -1030,26 +1050,45 @@ VALUES
         ASSERT_TRUE(ExecSql(db_, sql.c_str()));
     };
 
-    const auto neutral = coordinator.MaterializeWorkflowStep({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9911,
-        .step_key = "Neutral",
-        .step_kind = "seedprobe.neutral",
-        .priority = 10,
+    int workflow_created_callbacks = 0;
+    coordinator.SetWorkflowCreatedCallback([&](const WorkflowCreatedSignal& signal) {
+        ++workflow_created_callbacks;
+        EXPECT_EQ(signal.workflow_instance_id, workflow_instance_id);
     });
-    ASSERT_TRUE(neutral.has_value());
+
+    auto query_job_set_for_step = [&](std::int64_t workflow_step_id) -> std::int64_t {
+        sqlite3_stmt* stmt = nullptr;
+        const std::string sql = "SELECT COALESCE(job_set_id,0) FROM exec_workflow_step WHERE workflow_step_id=" + std::to_string(workflow_step_id) + ";";
+        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr));
+        EXPECT_EQ(SQLITE_ROW, sqlite3_step(stmt));
+        const auto value = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+        return value;
+    };
+
+    coordinator.Start();
+    const auto first_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while ((workflow_created_callbacks == 0 || query_job_set_for_step(neutral_step_id) == 0)
+        && std::chrono::steady_clock::now() < first_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    coordinator.Stop();
+
+    EXPECT_EQ(workflow_created_callbacks, 1);
+    const std::int64_t neutral_job_set_id = query_job_set_for_step(neutral_step_id);
+    ASSERT_GT(neutral_job_set_id, 0);
     EXPECT_TRUE(coordinator.PublishTerminalJobSet({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9911,
-        .job_set_id = neutral->job_set_id,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = neutral_step_id,
+        .job_set_id = neutral_job_set_id,
         .terminal_state = "COMPLETED",
     }));
 
-    ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9912;"));
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(grid_step_id) + ";").c_str()));
 
     const auto grid = coordinator.MaterializeWorkflowStep({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9912,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = grid_step_id,
         .step_key = "Grid",
         .step_kind = "seedprobe.grid",
         .priority = 8,
@@ -1075,45 +1114,45 @@ VALUES
     ASSERT_TRUE(recovery.ReconcileInFlightInstances(&recovery_result, &err)) << err;
     EXPECT_EQ(recovery_result.completed_steps, 1);
 
-    ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9913;"));
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(unique_step_id) + ";").c_str()));
     const auto unique = after_restart.MaterializeWorkflowStep({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9913,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = unique_step_id,
         .step_key = "Unique",
         .step_kind = "seedprobe.unique",
         .priority = 7,
     });
     ASSERT_TRUE(unique.has_value());
     EXPECT_TRUE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9913,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = unique_step_id,
         .job_set_id = unique->job_set_id,
         .terminal_state = "COMPLETED",
     }));
     EXPECT_FALSE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9913,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = unique_step_id,
         .job_set_id = unique->job_set_id,
         .terminal_state = "COMPLETED",
     }));
 
-    ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=9914;"));
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch() WHERE workflow_step_id=" + std::to_string(done_step_id) + ";").c_str()));
     const auto done = after_restart.MaterializeWorkflowStep({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9914,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = done_step_id,
         .step_key = "Done",
         .step_kind = "seedprobe.done",
         .priority = 1,
     });
     ASSERT_TRUE(done.has_value());
     EXPECT_TRUE(after_restart.PublishTerminalJobSet({
-        .workflow_instance_id = 9901,
-        .workflow_step_id = 9914,
+        .workflow_instance_id = workflow_instance_id,
+        .workflow_step_id = done_step_id,
         .job_set_id = done->job_set_id,
         .terminal_state = "COMPLETED",
     }));
 
-    insert_completed_job(13000, neutral->job_set_id, "item15-neutral");
+    insert_completed_job(13000, neutral_job_set_id, "item15-neutral");
     insert_completed_job(13002, unique->job_set_id, "item15-unique");
     insert_completed_job(13003, done->job_set_id, "item15-done");
 
@@ -1121,12 +1160,12 @@ VALUES
     ASSERT_TRUE(recovery.ReconcileInFlightInstances(&final_recovery_result, &err)) << err;
     EXPECT_EQ(final_recovery_result.completed_steps, 3);
 
-    ASSERT_TRUE(ExecSql(db_, "UPDATE exec_workflow_instance SET state='COMPLETED', completed_at_utc=unixepoch() WHERE workflow_instance_id=9901;"));
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE exec_workflow_instance SET state='COMPLETED', completed_at_utc=unixepoch() WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + ";").c_str()));
 
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id=9901 AND state='COMPLETED';",
+        ("SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + " AND state='COMPLETED';").c_str(),
         -1,
         &st,
         nullptr));
@@ -1136,7 +1175,7 @@ VALUES
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=9901 AND event_kind='Execution.WorkflowStepMaterialized.v1';",
+        ("SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + " AND event_kind='Execution.WorkflowStepMaterialized.v1';").c_str(),
         -1,
         &st,
         nullptr));
@@ -1156,7 +1195,7 @@ VALUES
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 1000, &err)) << err;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=9901;",
+        ("SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=" + std::to_string(workflow_instance_id) + ";").c_str(),
         -1,
         &st,
         nullptr));
