@@ -95,8 +95,11 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="common\ByteUtils.h" />
+    <ClInclude Include="Model\IndexEntry.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
+    <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\NJCMParser.h" />
