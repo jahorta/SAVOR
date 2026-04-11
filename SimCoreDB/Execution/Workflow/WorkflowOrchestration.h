@@ -167,6 +167,29 @@ struct WorkflowAppendLifecycleEventCommand {
     std::string requested_by;
 };
 
+struct WorkflowCreateStepSpec {
+    std::string step_key;
+    std::string step_kind;
+    std::vector<std::string> dependencies;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+    int priority = 0;
+    int max_attempts = 1;
+    std::optional<std::string> input_ref_kind;
+};
+
+struct WorkflowCreateInstanceCommand {
+    std::string workflow_kind;
+    std::string root_scope_kind;
+    std::optional<std::int64_t> root_scope_id;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
+    std::string created_by;
+    std::int64_t created_at_utc = 0;
+    std::vector<std::string> available_inputs;
+    std::vector<WorkflowCreateStepSpec> steps;
+};
+
 struct IWorkflowOrchestrationQueryService {
     virtual ~IWorkflowOrchestrationQueryService() = default;
 
@@ -184,6 +207,10 @@ struct IWorkflowOrchestrationQueryService {
 struct IWorkflowOrchestrationCommandService {
     virtual ~IWorkflowOrchestrationCommandService() = default;
 
+    virtual bool CreateWorkflowInstance(
+        const WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out,
+        std::string* error_out) = 0;
     virtual bool RetryFailedStep(const WorkflowRetryStepCommand& command, std::string* error_out) = 0;
     virtual bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) = 0;
     virtual bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) = 0;

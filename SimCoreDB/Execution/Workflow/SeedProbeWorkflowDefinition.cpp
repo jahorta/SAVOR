@@ -17,7 +17,7 @@ WorkflowDefinition BuildSeedProbeChainDefinition() {
             .step_key = "Neutral",
             .step_kind = "seedprobe.neutral",
             .dependencies = {},
-            .required_inputs = { "general.transition_savestate_id" },
+            .required_inputs = { "sp_probe_run.probe_run_id" },
             .provided_outputs = { "seedprobe.neutral.seed_context" },
             .max_attempts = 2 },
         WorkflowStepDefinition{

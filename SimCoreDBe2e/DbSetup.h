@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Authoring/IAuthoringDb.h"
+#include "Analysis/IAnalysisDb.h"
 #include "Common/DbConfigPaths.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "State/IStateDb.h"
@@ -27,6 +28,7 @@ bool SeedAuthoringSpec(
     std::string* error_out);
 
 bool SeedExecutionWorkflow(
+    simcore::db::IAnalysisDb* analysis_db,
     simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,

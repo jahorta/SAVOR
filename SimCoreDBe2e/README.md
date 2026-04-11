@@ -35,6 +35,7 @@ Optional:
   - starts DB contexts through `DBService`,
   - seeds a starting savestate in StateDB,
   - seeds seedprobe spec rows in AuthoringDB,
-  - seeds a minimal execution workflow instance referencing those records,
+  - creates `sp_probe_set` + `sp_probe_run` rows in AnalysisDB,
+  - builds/validates the `SEED_PROBE_CHAIN` workflow from definition and creates an execution workflow instance via API,
   - runs `DBWorkflowWorkerCoordinator` with one worker,
   - polls UiReadDB subscription state while coordinator loop is active.

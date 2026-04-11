@@ -3,6 +3,8 @@
 #include <chrono>
 
 #include "Common/Types/UtcTimestamp.h"
+#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
+#include "Execution/Workflow/WorkflowInstanceBuilder.h"
 
 namespace simcore::e2e {
 
@@ -111,22 +113,74 @@ bool SeedAuthoringSpec(
 }
 
 bool SeedExecutionWorkflow(
+    simcore::db::IAnalysisDb* analysis_db,
     simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
     std::string* error_out) {
-    if (execution_db == nullptr) {
-        if (error_out) *error_out = "execution db unavailable";
+    if (analysis_db == nullptr || execution_db == nullptr) {
+        if (error_out) *error_out = "analysis/execution db unavailable";
         return false;
     }
 
-    const std::string sql =
-        "INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc) "
-        "VALUES(9101, 'SEED_PROBE_CHAIN', 'RUNNING', 'authoring.seed_probe_spec', " + std::to_string(seed_probe_spec_id) + ", 'general.transition_savestate', " + std::to_string(savestate_id) + ", 'simcoredbe2e', unixepoch()*1000, unixepoch()*1000);"
-        "INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc) "
-        "VALUES(9102, 9101, 'Neutral', 'seedprobe.neutral', 'READY', 1, 0, 2, 'general.transition_savestate', unixepoch()*1000, unixepoch()*1000);";
+    std::int64_t probe_set_id = 0;
+    if (!analysis_db->CreateSeedProbeSet(
+            {
+                .name = "SimCoreDBe2e probe set",
+                .probe_flavor = "seedprobe",
+                .breakpoint_policy_name = "default",
+                .segment_source_kind = "manual",
+                .created_at_utc = UtcNow(),
+                .event_id = "simcoredbe2e.analysis.probe_set",
+                .correlation_id = "simcoredbe2e.seedprobe",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &probe_set_id,
+            error_out)) {
+        return false;
+    }
 
-    return execution_db->ValidationExecuteSql(sql, error_out);
+    std::int64_t probe_run_id = 0;
+    if (!analysis_db->RequestSeedProbeRun(
+            {
+                .probe_set_id = probe_set_id,
+                .entry_savestate_id = savestate_id,
+                .seed_probe_spec_id = seed_probe_spec_id,
+                .codec_version = 1,
+                .status = "queued",
+                .requested_at_utc = UtcNow(),
+                .event_id = "simcoredbe2e.analysis.probe_run",
+                .correlation_id = "simcoredbe2e.seedprobe",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &probe_run_id,
+            error_out)) {
+        return false;
+    }
+
+    simcore::db::execution::workflow::WorkflowDefinitionRegistry registry;
+    if (!registry.RegisterSeedProbeDefaults(error_out)) {
+        return false;
+    }
+    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry);
+    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    if (!builder.BuildCreateCommand(
+            {
+                .workflow_kind = "SEED_PROBE_CHAIN",
+                .root_scope_kind = "run",
+                .root_scope_id = probe_run_id,
+                .input_ref_kind = std::string("sp_probe_run"),
+                .input_ref_id = probe_run_id,
+                .created_by = "simcoredbe2e",
+                .created_at_utc = UtcNow().time_since_epoch().count(),
+                .available_inputs = { "sp_probe_run.probe_run_id" },
+            },
+            &command,
+            error_out)) {
+        return false;
+    }
+
+    return execution_db->CreateWorkflowInstance(command, nullptr, error_out);
 }
 
 } // namespace simcore::e2e
