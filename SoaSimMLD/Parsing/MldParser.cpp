@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iostream>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -179,11 +180,13 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
 } // namespace
 
 ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
+    std::cout << "[SoaSimMLD] Step 1/5: Starting parse (" << mldBytes.size() << " bytes).\n";
     ParseResult result{};
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = mldBytes;
     if (soasim::compression::aklz::isAklz(mldBytes)) {
+        std::cout << "[SoaSimMLD] Step 2/5: Input is AKLZ-compressed, decompressing...\n";
         auto decodedResult = soasim::compression::aklz::decompress(mldBytes);
         if (!decodedResult.ok()) {
             result.diagnostics.push_back(ParseDiagnostic{
@@ -195,6 +198,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
         decoded = std::move(decodedResult.bytes);
         payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
+    }
+    else {
+        std::cout << "[SoaSimMLD] Step 2/5: Input is not AKLZ-compressed.\n";
     }
 
     if (payload.empty()) {
@@ -253,6 +259,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
     std::vector<model::IndexEntry> entries{};
     entries.reserve(entryCount);
+    std::cout << "[SoaSimMLD] Step 3/5: Reading index entries (" << entryCount << " total)...\n";
 
     for (std::size_t i = 0; i < entryCount; ++i) {
         const std::size_t entryOffset = entryTableOffset + (i * entrySize);
@@ -277,6 +284,8 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
         entries.push_back(std::move(*entryOpt));
     }
+
+    std::cout << "[SoaSimMLD] Step 4/5: Decoding entry payloads/chunks...\n";
 
     std::unordered_set<std::uint32_t> uniqueGroundAddresses{};
     std::unordered_set<std::uint32_t> uniqueObjectAddresses{};
@@ -518,6 +527,10 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .message = "No GRND records decoded. This likely means container layout assumptions still need refinement.",
         });
     }
+
+    std::cout << "[SoaSimMLD] Step 5/5: Parse complete. Entries=" << entries.size()
+              << ", GRND=" << result.world.grndSurfaces.size()
+              << ", NJCM=" << result.njcmChunks.size() << ".\n";
 
     return result;
 }
