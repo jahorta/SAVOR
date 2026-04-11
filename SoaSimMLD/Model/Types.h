@@ -20,6 +20,7 @@ struct Quat {
 
 struct Transform {
     Vec3 position{};
+    Vec3 rotationRaw{};
     Quat rotation{};
     Vec3 scale{ 1.0f, 1.0f, 1.0f };
 };
