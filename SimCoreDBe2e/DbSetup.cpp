@@ -163,7 +163,8 @@ bool SeedExecutionWorkflow(
     if (!registry.RegisterSeedProbeDefaults(error_out)) {
         return false;
     }
-    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry);
+    simcore::db::execution::workflow::WorkflowInstanceValidator validator;
+    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry, &validator);
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
     if (!builder.BuildCreateCommand(
             {
