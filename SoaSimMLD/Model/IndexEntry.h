@@ -86,7 +86,21 @@ using IndexEntryWarningSink = std::function<void(const std::string&)>;
     if (posX.has_value() && posY.has_value() && posZ.has_value()) {
         transform.position = coordinateMapper(Vec3{ *posX, *posY, *posZ });
     }
+
+    const auto rotX = common::readF32AtBE(bytes, entryOffset + 0x50);
+    const auto rotY = common::readF32AtBE(bytes, entryOffset + 0x54);
+    const auto rotZ = common::readF32AtBE(bytes, entryOffset + 0x58);
+    // Add rotation to entry.transform here
+
+    const auto sclX = common::readF32AtBE(bytes, entryOffset + 0x5C);
+    const auto sclY = common::readF32AtBE(bytes, entryOffset + 0x60);
+    const auto sclZ = common::readF32AtBE(bytes, entryOffset + 0x64);
+    if (sclX.has_value() && sclY.has_value() && sclZ.has_value()) {
+        transform.scale = Vec3{ *sclX, *sclY, *sclZ };
+    }
+
     entry.transform = transform;
+
     entry.fxnName = readFxnString(bytes, entryOffset + 0x24);
 
     const std::string indexPrefix = "entry[" + std::to_string(tableIndex) + "]";
