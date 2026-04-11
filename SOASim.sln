@@ -31,6 +31,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreDBe2e", "SimCoreDBe2
 		{41DB0E12-AB09-4BC8-9647-1D8713A6A73E} = {41DB0E12-AB09-4BC8-9647-1D8713A6A73E}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimMLD", "SoaSimMLD\SoaSimMLD.vcxproj", "{C44D37F8-61F5-4A1C-B983-16D79FBC9954}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -39,6 +41,14 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Debug|x64.ActiveCfg = Debug|x64
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Debug|x64.Build.0 = Debug|x64
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Debug|x86.ActiveCfg = Debug|Win32
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Debug|x86.Build.0 = Debug|Win32
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Release|x64.ActiveCfg = Release|x64
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Release|x64.Build.0 = Release|x64
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Release|x86.ActiveCfg = Release|Win32
+		{C44D37F8-61F5-4A1C-B983-16D79FBC9954}.Release|x86.Build.0 = Release|Win32
 		{673E613D-F810-4AEA-B4F6-40E80A21301A}.Debug|x64.ActiveCfg = Debug|x64
 		{673E613D-F810-4AEA-B4F6-40E80A21301A}.Debug|x64.Build.0 = Debug|x64
 		{673E613D-F810-4AEA-B4F6-40E80A21301A}.Debug|x86.ActiveCfg = Debug|Win32
