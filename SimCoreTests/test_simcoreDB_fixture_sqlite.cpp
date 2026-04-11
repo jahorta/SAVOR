@@ -136,6 +136,67 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_NE(instance_table_sql.find("CHECK(root_scope_kind IN ('job_set','run','manual'))"), std::string::npos);
 }
 
+TEST_F(SqliteDbFixture, Stage5WorkflowInstantiationApiBuildsAndPersistsDefinitionGraph) {
+    using namespace simcore::db::execution::workflow;
+
+    SqliteExecutionDb execution_db(db_);
+    std::int64_t workflow_instance_id = 0;
+    std::string error;
+
+    EXPECT_FALSE(execution_db.CreateWorkflowInstanceFromDefinition(
+        {
+            .workflow_kind = "SEED_PROBE_CHAIN",
+            .root_scope_kind = "run",
+            .root_scope_id = 9001,
+            .input_ref_kind = std::string("sp_probe_run"),
+            .input_ref_id = 9001,
+            .created_by = "sqlite-fixture",
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+            .available_inputs = {},
+        },
+        &workflow_instance_id,
+        &error));
+    EXPECT_NE(error.find("missing required workflow input"), std::string::npos);
+
+    error.clear();
+    EXPECT_TRUE(execution_db.CreateWorkflowInstanceFromDefinition(
+        {
+            .workflow_kind = "SEED_PROBE_CHAIN",
+            .root_scope_kind = "run",
+            .root_scope_id = 9001,
+            .input_ref_kind = std::string("sp_probe_run"),
+            .input_ref_id = 9001,
+            .created_by = "sqlite-fixture",
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+            .available_inputs = { "general.transition_savestate" },
+        },
+        &workflow_instance_id,
+        &error))
+        << error;
+    EXPECT_GT(workflow_instance_id, 0);
+
+    auto count_rows = [this](const char* sql) {
+        sqlite3_stmt* stmt = nullptr;
+        EXPECT_EQ(sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr), SQLITE_OK);
+        EXPECT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+        const auto value = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+        return value;
+    };
+
+    const auto step_count = count_rows("SELECT COUNT(1) FROM exec_workflow_step;");
+    const auto edge_count = count_rows("SELECT COUNT(1) FROM exec_workflow_edge;");
+    const auto ready_count = count_rows("SELECT COUNT(1) FROM exec_workflow_step WHERE state='READY' AND ready_at_utc IS NOT NULL;");
+    const auto lifecycle_count = count_rows("SELECT COUNT(1) FROM exec_workflow_event;");
+    const auto outbox_count = count_rows("SELECT COUNT(1) FROM exec_outbox_message WHERE event_type IN ('Execution.WorkflowInstanceCreated.v1','Execution.WorkflowStepReady.v1');");
+
+    EXPECT_EQ(step_count, 4);
+    EXPECT_EQ(edge_count, 3);
+    EXPECT_EQ(ready_count, 1);
+    EXPECT_EQ(lifecycle_count, 2);
+    EXPECT_EQ(outbox_count, 2);
+}
+
 TEST_F(SqliteDbFixture, Stage3cReadinessGuardRequiresStage3bWorkflowSchemaVersion) {
     using namespace simcore::db::migrations;
 

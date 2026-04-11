@@ -16,6 +16,7 @@ namespace simcore::db::execution::workflow {
 class SqliteWorkflowOrchestrationQueryService;
 class SqliteWorkflowOrchestrationCommandService;
 struct WorkflowInvariantRemediationCommand;
+struct WorkflowDefinitionInstantiationInput;
 
 class SqliteExecutionDb final : public simcore::db::IExecutionDb {
 public:
@@ -33,6 +34,10 @@ public:
     jobs::IJobEventCommandService* JobCommandService() override;
     bool CreateWorkflowInstance(
         const WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateWorkflowInstanceFromDefinition(
+        const WorkflowDefinitionInstantiationInput& input,
         std::int64_t* workflow_instance_id_out = nullptr,
         std::string* error_out = nullptr) override;
     bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override;

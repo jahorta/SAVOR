@@ -3,6 +3,7 @@
 #include "../../Common/Events/EventPayloadDispatch.h"
 #include "../../Common/Events/EventPayloadValidation.h"
 #include "SqliteWorkflowOrchestration.h"
+#include "WorkflowInstanceBuilder.h"
 #include "WorkflowRecoveryService.h"
 
 namespace simcore::db::execution::workflow {
@@ -238,6 +239,24 @@ bool SqliteExecutionDb::CreateWorkflowInstance(
         return false;
     }
     return command_service_->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
+bool SqliteExecutionDb::CreateWorkflowInstanceFromDefinition(
+    const WorkflowDefinitionInstantiationInput& input,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    WorkflowDefinitionRegistry registry;
+    if (!registry.RegisterSeedProbeDefaults(error_out)) {
+        return false;
+    }
+
+    WorkflowInstanceBuilder builder(&registry);
+    WorkflowCreateInstanceCommand command{};
+    if (!builder.BuildCreateCommand(input, &command, error_out)) {
+        return false;
+    }
+
+    return CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
 std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {

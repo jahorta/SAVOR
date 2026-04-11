@@ -119,6 +119,10 @@ void DBWorkflowWorkerCoordinator::Start() {
     }
 
     stop_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(queue_mtx_);
+        seen_workflow_instance_ids_.clear();
+    }
 
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
@@ -681,6 +685,16 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
     constexpr std::size_t kReadyStepScanLimit = 2048;
     const auto ready_steps = execution_db_->WorkflowQueryService()->ListReadySteps(kReadyStepScanLimit);
     for (const auto& step : ready_steps) {
+        bool announce_created = false;
+        {
+            std::lock_guard<std::mutex> lock(queue_mtx_);
+            announce_created = seen_workflow_instance_ids_.emplace(step.workflow_instance_id).second;
+        }
+        if (announce_created) {
+            (void)PublishWorkflowCreated(WorkflowCreatedSignal{
+                .workflow_instance_id = step.workflow_instance_id,
+            });
+        }
         EnqueueReadyStep(WorkflowReadyStep{
             .workflow_instance_id = step.workflow_instance_id,
             .workflow_step_id = step.workflow_step_id,

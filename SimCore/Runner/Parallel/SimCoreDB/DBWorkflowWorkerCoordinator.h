@@ -177,6 +177,7 @@ private:
     std::condition_variable queue_cv_;
     std::deque<WorkflowReadyStep> ready_queue_;
     std::unordered_set<std::string> seen_ready_step_ids_;
+    std::unordered_set<std::int64_t> seen_workflow_instance_ids_;
     mutable std::mutex workers_mtx_;
     std::vector<std::unique_ptr<WorkerSlot>> workers_;
     std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;

@@ -843,7 +843,7 @@ TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputE
     EXPECT_GE(telemetry.last_input_latency_ms, 0);
 }
 
-TEST(Stage1CoordinatorIntegration, WorkflowCreatedSignalWakesCoordinatorAndTriggersImmediateReadyScan) {
+TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMaterializesStep) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
@@ -916,11 +916,9 @@ TEST(Stage1CoordinatorIntegration, WorkflowCreatedSignalWakesCoordinatorAndTrigg
         .priority = 4,
     });
 
-    EXPECT_TRUE(coordinator.PublishWorkflowCreated({ .workflow_instance_id = 999 }));
-    EXPECT_FALSE(coordinator.PublishWorkflowCreated({ .workflow_instance_id = 999 }));
-
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-    while (execution_db.command_service.materialized_calls.empty() && std::chrono::steady_clock::now() < deadline) {
+    while ((execution_db.command_service.materialized_calls.empty() || workflow_created_callbacks == 0)
+        && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     coordinator.Stop();
