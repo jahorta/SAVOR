@@ -101,6 +101,7 @@
     <ClInclude Include="SctModel.h" />
     <ClInclude Include="SctParser.h" />
     <ClInclude Include="SctParseProbe.h" />
+    <ClInclude Include="SctOpcodeMetadata.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp" />

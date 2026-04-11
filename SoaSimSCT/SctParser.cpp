@@ -1,4 +1,5 @@
 #include "SctParser.h"
+#include "SctOpcodeMetadata.h"
 
 #include "../Compression/Aklz.h"
 
@@ -125,50 +126,74 @@ struct DecodedInstruction {
     decoded.inst.decodeOk = opcode <= kMaxOpcodeProbe;
     decoded.inst.sizeBytes = 4;
 
-    // This is intentionally conservative and only supports a tiny "known" set.
-    // All offsets are interpreted as section-relative word offsets from the next instruction.
-    if (opcode == 0 || opcode == 10 || opcode == 3) {
-        if (offset + 8u > sectionBytes.size()) {
-            diagnostics.push_back({"Control-flow instruction missing payload word.", offset});
+    if (opcode < kSalsaOpcodeParamPatterns.size()) {
+        const auto& paramPattern = kSalsaOpcodeParamPatterns[opcode];
+        std::uint32_t totalParamWords = paramPattern.paramCount;
+
+        if (paramPattern.loopStartParam >= 0 && paramPattern.loopEndParam >= paramPattern.loopStartParam
+            && paramPattern.iterationCountParam >= 0
+            && static_cast<std::size_t>(paramPattern.iterationCountParam) < paramPattern.paramCount) {
+            const auto iterParamOffset = offset + 4u + (static_cast<std::uint32_t>(paramPattern.iterationCountParam) * 4u);
+            if (iterParamOffset + 4u <= sectionBytes.size()) {
+                const auto iterations = readU32(sectionBytes, iterParamOffset, chosenEndian);
+                const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
+                if (iterations > 1u) {
+                    totalParamWords += (iterations - 1u) * loopWidth;
+                }
+            }
+        }
+
+        const auto totalSizeBytes = 4u + (totalParamWords * 4u);
+        if (offset + totalSizeBytes > sectionBytes.size()) {
+            diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
             decoded.blockTerminator = true;
             return decoded;
         }
 
-        const auto rawArg = readU32(sectionBytes, offset + 4u, chosenEndian);
-        decoded.inst.operands.push_back(rawArg);
-        decoded.inst.sizeBytes = 8;
+        decoded.inst.sizeBytes = totalSizeBytes;
+        decoded.inst.operands.reserve(totalParamWords);
+        for (std::uint32_t i = 0; i < totalParamWords; ++i) {
+            const auto paramWord = readU32(sectionBytes, offset + 4u + (i * 4u), chosenEndian);
+            decoded.inst.operands.push_back(paramWord);
+            if (i < 64u && ((paramPattern.scptAnalyzeMask >> i) & 1ull) != 0ull) {
+                decoded.inst.scptAnalyzeOperandIndexes.push_back(static_cast<std::uint8_t>(i));
+            }
+        }
 
-        if (opcode == 3) {
-            decoded.isSwitch = true;
+        if (opcode == 0 || opcode == 10 || opcode == 3) {
             decoded.blockTerminator = true;
 
-            const auto caseCount = rawArg & 0xffu;
-            const auto tableStart = offset + decoded.inst.sizeBytes;
-            for (std::uint32_t i = 0; i < caseCount; ++i) {
-                const auto caseEntryOffset = tableStart + (i * 4u);
-                if (caseEntryOffset + 4u > sectionBytes.size()) {
-                    diagnostics.push_back({"Switch table truncated.", offset});
-                    break;
+            if (opcode == 3) {
+                decoded.isSwitch = true;
+                const auto nextOffsetBase = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes);
+                if (paramPattern.switchJumpParam >= 0 && paramPattern.loopStartParam >= 0
+                    && paramPattern.loopEndParam >= paramPattern.loopStartParam) {
+                    const auto loopWidth = static_cast<std::size_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
+                    const auto start = static_cast<std::size_t>(paramPattern.switchJumpParam);
+                    for (std::size_t i = start; i < decoded.inst.operands.size(); i += loopWidth) {
+                        const auto rel = static_cast<std::int32_t>(decoded.inst.operands[i]);
+                        const auto jumpTarget = nextOffsetBase + rel;
+                        if (jumpTarget >= 0) {
+                            decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
+                        }
+                    }
                 }
-                const auto rel = static_cast<std::int32_t>(readU32(sectionBytes, caseEntryOffset, chosenEndian));
-                const auto nextOffset = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes) + rel;
-                if (nextOffset >= 0) {
-                    decoded.successors.push_back(static_cast<std::uint32_t>(nextOffset));
+            } else {
+                const auto jumpParam = paramPattern.jumpParam;
+                if (jumpParam >= 0 && static_cast<std::size_t>(jumpParam) < decoded.inst.operands.size()) {
+                    const auto rel = static_cast<std::int32_t>(decoded.inst.operands[static_cast<std::size_t>(jumpParam)]);
+                    const auto jumpTarget = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes) + rel;
+                    if (jumpTarget >= 0) {
+                        decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
+                    }
+                } else {
+                    diagnostics.push_back({"Control-flow instruction missing jump parameter metadata.", offset});
+                }
+
+                if (opcode == 0) {
+                    decoded.successors.push_back(offset + decoded.inst.sizeBytes);
                 }
             }
-            decoded.inst.sizeBytes += caseCount * 4u;
-        } else {
-            const auto rel = static_cast<std::int32_t>(rawArg);
-            const auto jumpTarget = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes) + rel;
-            if (jumpTarget >= 0) {
-                decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
-            }
-
-            if (opcode == 0) {
-                decoded.successors.push_back(offset + decoded.inst.sizeBytes);
-            }
-
-            decoded.blockTerminator = true;
         }
     }
 
