@@ -94,8 +94,28 @@ void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, con
         (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
 }
 
+[[nodiscard]] std::optional<std::uint32_t> readU32AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    if (offset + 4 > bytes.size()) {
+        return std::nullopt;
+    }
+    return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
+        (static_cast<std::uint32_t>(bytes[offset + 1]) << 16) |
+        (static_cast<std::uint32_t>(bytes[offset + 2]) << 8) |
+        static_cast<std::uint32_t>(bytes[offset + 3]);
+}
+
 [[nodiscard]] std::optional<float> readF32At(std::span<const std::uint8_t> bytes, const std::size_t offset) {
     const auto bits = readU32At(bytes, offset);
+    if (!bits.has_value()) {
+        return std::nullopt;
+    }
+    float out = 0.0F;
+    std::memcpy(&out, &(*bits), sizeof(out));
+    return out;
+}
+
+[[nodiscard]] std::optional<float> readF32AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    const auto bits = readU32AtBE(bytes, offset);
     if (!bits.has_value()) {
         return std::nullopt;
     }
@@ -110,7 +130,7 @@ void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, con
     const std::string& label) {
     std::vector<std::uint32_t> out{};
     const std::size_t offset = static_cast<std::size_t>(pointer);
-    const auto countOpt = readU32At(bytes, offset);
+    const auto countOpt = readU32AtBE(bytes, offset);
     if (!countOpt.has_value()) {
         diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Warning,
@@ -140,7 +160,7 @@ void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, con
 
     out.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        const auto value = readU32At(bytes, offset + 4 + (i * 4));
+        const auto value = readU32AtBE(bytes, offset + 4 + (i * 4));
         if (!value.has_value()) {
             break;
         }
@@ -175,8 +195,8 @@ void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, con
     list->pointer = pointer;
     list->values = readU32List(bytes, pointer, diagnostics, label);
     list->valid = !list->values.empty() || pointer == 0 ||
-        (readU32At(bytes, static_cast<std::size_t>(pointer)).has_value() &&
-            readU32At(bytes, static_cast<std::size_t>(pointer)).value_or(0U) == 0U);
+        (readU32AtBE(bytes, static_cast<std::size_t>(pointer)).has_value() &&
+            readU32AtBE(bytes, static_cast<std::size_t>(pointer)).value_or(0U) == 0U);
     return list;
 }
 
@@ -310,11 +330,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         return result;
     }
 
-    const auto nmldCountOpt = readU32At(payload, 0x00);
-    const auto ptrNmldTableOpt = readU32At(payload, 0x04);
-    const auto ptrFxnParamsOpt = readU32At(payload, 0x08);
-    const auto ptrRealDataOpt = readU32At(payload, 0x0C);
-    const auto ptrTextureTableOpt = readU32At(payload, 0x10);
+    const auto nmldCountOpt = readU32AtBE(payload, 0x00);
+    const auto ptrNmldTableOpt = readU32AtBE(payload, 0x04);
+    const auto ptrFxnParamsOpt = readU32AtBE(payload, 0x08);
+    const auto ptrRealDataOpt = readU32AtBE(payload, 0x0C);
+    const auto ptrTextureTableOpt = readU32AtBE(payload, 0x10);
     if (!nmldCountOpt.has_value() || !ptrNmldTableOpt.has_value() || !ptrFxnParamsOpt.has_value() ||
         !ptrRealDataOpt.has_value() || !ptrTextureTableOpt.has_value()) {
         result.diagnostics.push_back(ParseDiagnostic{
@@ -351,15 +371,15 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
     for (std::size_t i = 0; i < nmldCount; ++i) {
         const std::size_t entryOffset = entryTableOffset + (i * entrySize);
-        const auto entryId = readU32At(payload, entryOffset + 0x00);
-        const auto tblId = readU32At(payload, entryOffset + 0x04);
-        const auto ptrGroundLinks = readU32At(payload, entryOffset + 0x08);
-        const auto ptrParamList2 = readU32At(payload, entryOffset + 0x0C);
-        const auto ptrFunctionParameters = readU32At(payload, entryOffset + 0x10);
-        const auto ptrObjects = readU32At(payload, entryOffset + 0x14);
-        const auto ptrGrounds = readU32At(payload, entryOffset + 0x18);
-        const auto ptrMotions = readU32At(payload, entryOffset + 0x1C);
-        const auto ptrTextures = readU32At(payload, entryOffset + 0x20);
+        const auto entryId = readU32AtBE(payload, entryOffset + 0x00);
+        const auto tblId = readU32AtBE(payload, entryOffset + 0x04);
+        const auto ptrGroundLinks = readU32AtBE(payload, entryOffset + 0x08);
+        const auto ptrParamList2 = readU32AtBE(payload, entryOffset + 0x0C);
+        const auto ptrFunctionParameters = readU32AtBE(payload, entryOffset + 0x10);
+        const auto ptrObjects = readU32AtBE(payload, entryOffset + 0x14);
+        const auto ptrGrounds = readU32AtBE(payload, entryOffset + 0x18);
+        const auto ptrMotions = readU32AtBE(payload, entryOffset + 0x1C);
+        const auto ptrTextures = readU32AtBE(payload, entryOffset + 0x20);
         if (!entryId.has_value() || !tblId.has_value() || !ptrGroundLinks.has_value() || !ptrParamList2.has_value() ||
             !ptrFunctionParameters.has_value() || !ptrObjects.has_value() || !ptrGrounds.has_value() ||
             !ptrMotions.has_value() || !ptrTextures.has_value()) {
@@ -377,9 +397,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         entry.texturesPointer = *ptrTextures;
 
         model::Transform transform{};
-        const auto posX = readF32At(payload, entryOffset + 0x44);
-        const auto posY = readF32At(payload, entryOffset + 0x48);
-        const auto posZ = readF32At(payload, entryOffset + 0x4C);
+        const auto posX = readF32AtBE(payload, entryOffset + 0x44);
+        const auto posY = readF32AtBE(payload, entryOffset + 0x48);
+        const auto posZ = readF32AtBE(payload, entryOffset + 0x4C);
         if (posX.has_value() && posY.has_value() && posZ.has_value()) {
             transform.position = applyCoordinates(Vec3{ *posX, *posY, *posZ }, options.coordinates);
         }
