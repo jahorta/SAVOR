@@ -23,9 +23,15 @@
     <ClInclude Include="SctParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctParseProbe.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SctParseProbe.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>
