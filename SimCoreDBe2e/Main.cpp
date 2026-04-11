@@ -3,10 +3,14 @@
 #include <string>
 
 #include "Cli.h"
+#include "Common/DbService.h"
+#include "DbSetup.h"
 #include "SeedProbeRealWorkerScenario.h"
 
 int main(int argc, char** argv) {
     using namespace simcore::e2e;
+    using namespace simcore::db::core;
+    using namespace simcore::db::migrations;
 
     CliOptions options{};
     std::string parse_error;
@@ -16,7 +20,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const std::map<std::string, bool (*)(const CliOptions&, const char*, std::string*)> scenarios{
+    const std::map<std::string, bool (*)(const CliOptions&, const char*, DBService*, std::string*)> scenarios{
         { "seedprobe_real_worker_smoke", &RunSeedProbeRealWorkerSmoke },
     };
 
@@ -29,12 +33,29 @@ int main(int argc, char** argv) {
     std::cout << "Running scenario '" << options.scenario << "' timeout=" << options.timeout_ms
               << "ms poll=" << options.poll_ms << "ms\n";
 
+    const auto migration_root = ResolveMigrationRoot(options.migration_root);
+    const auto db_paths = BuildDbPaths(options);
+    DBService service(
+        db_paths,
+        MigrationSourceOptions{
+            .source_kind = MigrationSourceKind::Filesystem,
+            .filesystem_root = migration_root,
+        });
+
+    std::string db_error;
+    if (!service.Start(&db_error)) {
+        std::cerr << "[FAIL] starting DBService - " << db_error << "\n";
+        return 1;
+    }
+
     std::string scenario_error;
-    if (!it->second(options, argv[0], &scenario_error)) {
+    if (!it->second(options, argv[0], &service, &scenario_error)) {
+        service.Stop();
         std::cerr << "[FAIL] " << options.scenario << " - " << scenario_error << "\n";
         return 1;
     }
 
+    service.Stop();
     std::cout << "[PASS] " << options.scenario << "\n";
     return 0;
 }
