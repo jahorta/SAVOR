@@ -1,5 +1,7 @@
 #include "MldBinaryReader.h"
 
+#include "../common/ByteUtils.h"
+
 #include <cstring>
 
 namespace soasim::mld::parsing {
@@ -39,12 +41,13 @@ std::optional<std::uint32_t> MldBinaryReader::readU32LE() {
         return std::nullopt;
     }
 
-    const std::uint32_t value = static_cast<std::uint32_t>(bytes_[position_]) |
-        (static_cast<std::uint32_t>(bytes_[position_ + 1]) << 8) |
-        (static_cast<std::uint32_t>(bytes_[position_ + 2]) << 16) |
-        (static_cast<std::uint32_t>(bytes_[position_ + 3]) << 24);
+    const auto value = common::readU32AtLE(bytes_, position_);
+    if (!value.has_value()) {
+        return std::nullopt;
+    }
+
     position_ += 4;
-    return value;
+    return *value;
 }
 
 std::optional<std::uint32_t> MldBinaryReader::readU32BE() {
@@ -52,12 +55,13 @@ std::optional<std::uint32_t> MldBinaryReader::readU32BE() {
         return std::nullopt;
     }
 
-    const std::uint32_t value = (static_cast<std::uint32_t>(bytes_[position_]) << 24) |
-        (static_cast<std::uint32_t>(bytes_[position_ + 1]) << 16) |
-        (static_cast<std::uint32_t>(bytes_[position_ + 2]) << 8) |
-        static_cast<std::uint32_t>(bytes_[position_ + 3]);
+    const auto value = common::readU32AtBE(bytes_, position_);
+    if (!value.has_value()) {
+        return std::nullopt;
+    }
+
     position_ += 4;
-    return value;
+    return *value;
 }
 
 std::optional<float> MldBinaryReader::readF32LE() {
