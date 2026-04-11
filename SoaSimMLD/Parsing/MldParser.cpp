@@ -10,6 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace soasim::mld::parsing {
 
@@ -277,6 +278,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         entries.push_back(std::move(*entryOpt));
     }
 
+    std::unordered_set<std::uint32_t> uniqueGroundAddresses{};
+    std::unordered_set<std::uint32_t> uniqueObjectAddresses{};
+    std::unordered_set<std::uint32_t> uniqueMotionAddresses{};
+    std::unordered_map<std::uint32_t, const model::IndexEntry*> groundAddressOwners{};
+
     for (const auto& entry : entries) {
         addHistogram(histogram, options, entry.fxnName);
 
@@ -320,106 +326,133 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 ", motions=" + std::to_string(entry.motionAddresses->values.size()),
         });
 
-        for (const auto groundAddress : entry.groundAddresses->values) {
-            if (groundAddress == 0U) {
-                continue;
-            }
-            GrndSurface surface{};
-            surface.id = groundAddress;
-            surface.transform = entry.transform;
-            surface.linkedGrndIds.reserve(entry.groundLinks->values.size());
-            for (const auto link : entry.groundLinks->values) {
-                surface.linkedGrndIds.push_back(link);
-            }
-            result.world.grndSurfaces.push_back(std::move(surface));
-        }
-
         for (const auto objectAddress : entry.objectAddresses->values) {
             if (objectAddress == 0U) {
                 continue;
             }
-            const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
-            const auto relNjcm = common::readU32AtLE(payload, objectOffset + 0x00);
-            const auto objectSizeField = common::readU32AtLE(payload, objectOffset + 0x04);
-            const auto relNjtl = common::readU32AtLE(payload, objectOffset + 0x08);
-            if (!relNjcm.has_value() || !objectSizeField.has_value() || !relNjtl.has_value()) {
-                continue;
-            }
-            if (*objectSizeField < 16) {
-                continue;
-            }
-
-            const std::size_t objectPayloadSize = static_cast<std::size_t>(*objectSizeField - 16U);
-            const std::size_t startRel = (*relNjtl != 0U) ? static_cast<std::size_t>(*relNjtl) : static_cast<std::size_t>(*relNjcm);
-            const std::size_t startAbs = objectOffset + startRel;
-            if (startAbs >= payload.size() || startAbs + objectPayloadSize > payload.size()) {
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = "Object payload out of bounds @ 0x" + std::to_string(objectOffset),
-                });
-                continue;
-            }
-
-            parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize), startAbs, chunkTypeCounts, result.njcmChunks);
+            uniqueObjectAddresses.insert(objectAddress);
         }
 
         for (const auto groundAddress : entry.groundAddresses->values) {
             if (groundAddress == 0U) {
                 continue;
             }
-            const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
-            if (grndOffset + 8 > payload.size()) {
+            if (uniqueGroundAddresses.insert(groundAddress).second) {
+                groundAddressOwners.emplace(groundAddress, &entry);
+            }
+        }
+
+        for (const auto motionAddress : entry.motionAddresses->values) {
+            if (motionAddress == 0U) {
                 continue;
             }
-            if (common::readU32AtLE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
-                MldBinaryReader chunkReader(payload.subspan(grndOffset + 8));
-                const auto grndId = chunkReader.readU32LE();
-                const auto vertexCount = chunkReader.readU32LE();
-                const auto indexCount = chunkReader.readU32LE();
-                if (!grndId.has_value() || !vertexCount.has_value() || !indexCount.has_value()) {
-                    continue;
-                }
-                GrndSurface surface{};
-                surface.id = *grndId;
-                surface.transform = entry.transform;
-                surface.linkedGrndIds.reserve(entry.groundLinks->values.size());
-                for (const auto link : entry.groundLinks->values) {
-                    surface.linkedGrndIds.push_back(link);
-                }
-
-                const std::size_t vtxCount = static_cast<std::size_t>(*vertexCount);
-                const std::size_t idxCount = static_cast<std::size_t>(*indexCount);
-                surface.mesh.vertices.reserve(vtxCount);
-                surface.mesh.indices.reserve(idxCount);
-                for (std::size_t vi = 0; vi < vtxCount; ++vi) {
-                    Vec3 p{};
-                    if (!readVec3(chunkReader, p)) {
-                        break;
-                    }
-                    MeshVertex v{};
-                    v.position = applyCoordinates(p, options.coordinates);
-                    surface.mesh.vertices.push_back(v);
-                }
-                for (std::size_t ii = 0; ii < idxCount; ++ii) {
-                    const auto idx = chunkReader.readU32LE();
-                    if (!idx.has_value()) {
-                        break;
-                    }
-                    surface.mesh.indices.push_back(*idx);
-                }
-                if (options.coordinates.reverseTriangleWinding && surface.mesh.indices.size() >= 3) {
-                    for (std::size_t ii = 0; ii + 2 < surface.mesh.indices.size(); ii += 3) {
-                        std::swap(surface.mesh.indices[ii + 1], surface.mesh.indices[ii + 2]);
-                    }
-                }
-                result.world.grndSurfaces.push_back(std::move(surface));
-            }
+            uniqueMotionAddresses.insert(motionAddress);
         }
 
         if (static_cast<std::size_t>(entry.texturesPointer) < payload.size()) {
             ++chunkTypeCounts[makeTag('N', 'J', 'T', 'L')];
         }
     }
+
+    for (const auto groundAddress : uniqueGroundAddresses) {
+        GrndSurface surface{};
+        surface.id = groundAddress;
+        if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
+            const auto* owner = ownerIt->second;
+            surface.transform = owner->transform;
+            surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
+            for (const auto link : owner->groundLinks->values) {
+                surface.linkedGrndIds.push_back(link);
+            }
+        }
+        result.world.grndSurfaces.push_back(std::move(surface));
+    }
+
+    for (const auto objectAddress : uniqueObjectAddresses) {
+        const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
+        const auto relNjcm = common::readU32AtLE(payload, objectOffset + 0x00);
+        const auto objectSizeField = common::readU32AtLE(payload, objectOffset + 0x04);
+        const auto relNjtl = common::readU32AtLE(payload, objectOffset + 0x08);
+        if (!relNjcm.has_value() || !objectSizeField.has_value() || !relNjtl.has_value()) {
+            continue;
+        }
+        if (*objectSizeField < 16) {
+            continue;
+        }
+
+        const std::size_t objectPayloadSize = static_cast<std::size_t>(*objectSizeField - 16U);
+        const std::size_t startRel = (*relNjtl != 0U) ? static_cast<std::size_t>(*relNjtl) : static_cast<std::size_t>(*relNjcm);
+        const std::size_t startAbs = objectOffset + startRel;
+        if (startAbs >= payload.size() || startAbs + objectPayloadSize > payload.size()) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = ParseDiagnostic::Severity::Warning,
+                .message = "Object payload out of bounds @ 0x" + std::to_string(objectOffset),
+            });
+            continue;
+        }
+
+        parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize), startAbs, chunkTypeCounts, result.njcmChunks);
+    }
+
+    for (const auto groundAddress : uniqueGroundAddresses) {
+        const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
+        if (grndOffset + 8 > payload.size()) {
+            continue;
+        }
+        if (common::readU32AtLE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
+            MldBinaryReader chunkReader(payload.subspan(grndOffset + 8));
+            const auto grndId = chunkReader.readU32LE();
+            const auto vertexCount = chunkReader.readU32LE();
+            const auto indexCount = chunkReader.readU32LE();
+            if (!grndId.has_value() || !vertexCount.has_value() || !indexCount.has_value()) {
+                continue;
+            }
+            GrndSurface surface{};
+            surface.id = *grndId;
+            if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
+                const auto* owner = ownerIt->second;
+                surface.transform = owner->transform;
+                surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
+                for (const auto link : owner->groundLinks->values) {
+                    surface.linkedGrndIds.push_back(link);
+                }
+            }
+
+            const std::size_t vtxCount = static_cast<std::size_t>(*vertexCount);
+            const std::size_t idxCount = static_cast<std::size_t>(*indexCount);
+            surface.mesh.vertices.reserve(vtxCount);
+            surface.mesh.indices.reserve(idxCount);
+            for (std::size_t vi = 0; vi < vtxCount; ++vi) {
+                Vec3 p{};
+                if (!readVec3(chunkReader, p)) {
+                    break;
+                }
+                MeshVertex v{};
+                v.position = applyCoordinates(p, options.coordinates);
+                surface.mesh.vertices.push_back(v);
+            }
+            for (std::size_t ii = 0; ii < idxCount; ++ii) {
+                const auto idx = chunkReader.readU32LE();
+                if (!idx.has_value()) {
+                    break;
+                }
+                surface.mesh.indices.push_back(*idx);
+            }
+            if (options.coordinates.reverseTriangleWinding && surface.mesh.indices.size() >= 3) {
+                for (std::size_t ii = 0; ii + 2 < surface.mesh.indices.size(); ii += 3) {
+                    std::swap(surface.mesh.indices[ii + 1], surface.mesh.indices[ii + 2]);
+                }
+            }
+            result.world.grndSurfaces.push_back(std::move(surface));
+        }
+    }
+
+    result.diagnostics.push_back(ParseDiagnostic{
+        .severity = ParseDiagnostic::Severity::Info,
+        .message = "Unique chunk address counts: grounds=" + std::to_string(uniqueGroundAddresses.size()) +
+            ", objects=" + std::to_string(uniqueObjectAddresses.size()) +
+            ", motions=" + std::to_string(uniqueMotionAddresses.size()),
+    });
 
     for (const auto& njcm : result.njcmChunks) {
         result.diagnostics.push_back(ParseDiagnostic{
