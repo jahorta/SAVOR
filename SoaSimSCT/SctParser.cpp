@@ -140,6 +140,45 @@ struct DecodedInstruction {
     return 0;
 }
 
+[[nodiscard]] bool isScptCompareCode(std::uint32_t value) {
+    switch (value) {
+    case 0x00000000:
+    case 0x00000001:
+    case 0x00000002:
+    case 0x00000003:
+    case 0x00000004:
+    case 0x00000005:
+    case 0x00000006:
+    case 0x00000007:
+    case 0x00000008:
+    case 0x00000009:
+    case 0x0000000a:
+    case 0x00000010:
+    case 0x00000011:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] bool isScptArithmeticCode(std::uint32_t value) {
+    switch (value) {
+    case 0x0000000b:
+    case 0x0000000c:
+    case 0x0000000d:
+    case 0x0000000e:
+    case 0x0000000f:
+    case 0x00000012:
+    case 0x00000013:
+    case 0x00000014:
+    case 0x00000015:
+    case 0x00000016:
+        return true;
+    default:
+        return false;
+    }
+}
+
 [[nodiscard]] std::uint32_t consumeScptParameterWords(
     std::span<const std::uint8_t> sectionBytes,
     std::uint32_t wordOffset,
@@ -159,25 +198,58 @@ struct DecodedInstruction {
 
     std::uint32_t consumedWords = 0;
     std::uint32_t cursor = wordOffset;
+
+    // Mirror SALSA's _SCPT_analyze stack-driven loop semantics.
+    // In Python this starts as `stack_index = 0`, `max_index = 18` and bails
+    // if stack_index >= max_index before processing the current word.
+    std::int32_t stackIndex = 0;
+    constexpr std::int32_t kScptMaxIndex = 18;
+
     while (cursor + 4u <= sectionBytes.size()) {
         const auto currentWord = readU32(sectionBytes, cursor, endian);
+
+        if (stackIndex >= kScptMaxIndex) {
+            diagnostics.push_back({"SCPT parameter decode stopped at stack overflow threshold.", instructionOffset});
+            break;
+        }
+
         ++consumedWords;
 
         if (currentWord == kScptStopCode) {
             return consumedWords;
         }
 
-        if (scptInputActionPrefix(currentWord) == 0x04000000) {
-            if (cursor + 8u > sectionBytes.size()) {
-                diagnostics.push_back({"SCPT float literal payload exceeds section bounds.", instructionOffset});
-                return consumedWords;
+        if (isScptCompareCode(currentWord)) {
+            --stackIndex;
+            if (currentWord == 0x0000000a) {
+                ++stackIndex;
             }
-            ++consumedWords;
-            cursor += 8u;
+            cursor += 4u;
             continue;
         }
 
-        cursor += 4u;
+        if (isScptArithmeticCode(currentWord)) {
+            --stackIndex;
+            cursor += 4u;
+            continue;
+        }
+
+        const auto action = scptInputActionPrefix(currentWord);
+        if (action != 0x50000000u) {
+            if (action == 0x04000000u) {
+                if (cursor + 8u > sectionBytes.size()) {
+                    diagnostics.push_back({"SCPT float literal payload exceeds section bounds.", instructionOffset});
+                    return consumedWords;
+                }
+                ++consumedWords;
+                cursor += 8u;
+            } else {
+                cursor += 4u;
+            }
+        } else {
+            cursor += 4u;
+        }
+        ++stackIndex;
     }
 
     diagnostics.push_back({"SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
