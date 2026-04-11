@@ -120,6 +120,7 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
     output.reserve(sz.decompressedSize);
 
     std::array<std::uint8_t, kWindowSize> window{};
+    std::array<bool, kWindowSize> windowValid{};
     std::uint32_t windowWritePos = 0;
 
     FlagReader reader(input, kHeaderSize);
@@ -137,6 +138,7 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
             }
             output.push_back(value);
             window[windowWritePos] = value;
+            windowValid[windowWritePos] = true;
             windowWritePos = (windowWritePos + 1u) & kWindowMask;
             continue;
         }
@@ -152,9 +154,18 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
         offset = (kWindowSize + offset - kWindowStart) & kWindowMask;
 
         for (std::uint32_t i = 0; i < length && output.size() < sz.decompressedSize; ++i) {
-            const auto value = window[(offset + i) & kWindowMask];
+            const auto sourceIndex = (offset + i) & kWindowMask;
+
+            std::uint8_t value = 0;
+            if (windowValid[sourceIndex]) {
+                value = window[sourceIndex];
+            } else if (output.size() > kWindowSize) {
+                return { .error = AklzError::TruncatedBackReference };
+            }
+
             output.push_back(value);
             window[windowWritePos] = value;
+            windowValid[windowWritePos] = true;
             windowWritePos = (windowWritePos + 1u) & kWindowMask;
         }
     }
