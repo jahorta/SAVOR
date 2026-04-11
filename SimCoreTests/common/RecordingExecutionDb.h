@@ -12,7 +12,7 @@
 #include "common/NullWorkflowQueryService.h"
 #include "common/RecordingWorkflowCommandService.h"
 
-class RecordingExecutionDb final : public simcore::db::IExecutionDb {
+class RecordingExecutionDb : public simcore::db::IExecutionDb {
 public:
     simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override {
         return &query_service;
