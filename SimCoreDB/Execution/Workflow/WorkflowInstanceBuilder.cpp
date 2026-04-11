@@ -64,4 +64,22 @@ bool WorkflowInstanceBuilder::BuildCreateCommand(
     return true;
 }
 
+bool WorkflowInstanceBuilder::CreateWorkflowInstance(
+    const WorkflowDefinitionInstantiationInput& input,
+    IWorkflowOrchestrationCommandService* command_service,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) const {
+    if (command_service == nullptr) {
+        if (error_out) *error_out = "workflow command service unavailable";
+        return false;
+    }
+
+    WorkflowCreateInstanceCommand command{};
+    if (!BuildCreateCommand(input, &command, error_out)) {
+        return false;
+    }
+
+    return command_service->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
 } // namespace simcore::db::execution::workflow

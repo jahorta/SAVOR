@@ -32,6 +32,7 @@
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowEngine.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
+#include "Execution/Workflow/WorkflowInstanceBuilder.h"
 #include "Execution/Workflow/WorkflowModeProvider.h"
 #include "Execution/Workflow/WorkflowParityDiagnostics.h"
 #include "Execution/Workflow/WorkflowParityStore.h"
@@ -136,14 +137,17 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_NE(instance_table_sql.find("CHECK(root_scope_kind IN ('job_set','run','manual'))"), std::string::npos);
 }
 
-TEST_F(SqliteDbFixture, Stage5WorkflowInstantiationApiBuildsAndPersistsDefinitionGraph) {
+TEST_F(SqliteDbFixture, Stage5WorkflowInstanceBuilderCreatesAndPersistsDefinitionGraph) {
     using namespace simcore::db::execution::workflow;
 
     SqliteExecutionDb execution_db(db_);
+    WorkflowDefinitionRegistry registry;
+    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
+    WorkflowInstanceBuilder builder(&registry);
     std::int64_t workflow_instance_id = 0;
     std::string error;
 
-    EXPECT_FALSE(execution_db.CreateWorkflowInstanceFromDefinition(
+    EXPECT_FALSE(builder.CreateWorkflowInstance(
         {
             .workflow_kind = "SEED_PROBE_CHAIN",
             .root_scope_kind = "run",
@@ -154,12 +158,13 @@ TEST_F(SqliteDbFixture, Stage5WorkflowInstantiationApiBuildsAndPersistsDefinitio
             .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
             .available_inputs = {},
         },
+        execution_db.WorkflowCommandService(),
         &workflow_instance_id,
         &error));
     EXPECT_NE(error.find("missing required workflow input"), std::string::npos);
 
     error.clear();
-    EXPECT_TRUE(execution_db.CreateWorkflowInstanceFromDefinition(
+    EXPECT_TRUE(builder.CreateWorkflowInstance(
         {
             .workflow_kind = "SEED_PROBE_CHAIN",
             .root_scope_kind = "run",
@@ -170,6 +175,7 @@ TEST_F(SqliteDbFixture, Stage5WorkflowInstantiationApiBuildsAndPersistsDefinitio
             .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
             .available_inputs = { "general.transition_savestate" },
         },
+        execution_db.WorkflowCommandService(),
         &workflow_instance_id,
         &error))
         << error;
