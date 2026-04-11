@@ -106,6 +106,11 @@
     <ClCompile Include="SctParser.cpp" />
     <ClCompile Include="SctParseProbe.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Compression\Compression.vcxproj">
+      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
