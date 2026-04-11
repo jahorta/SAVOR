@@ -46,7 +46,7 @@ namespace simcoreDB {
         ASSERT_NE(unique, nullptr);
 
         ASSERT_EQ(neutral->required_inputs.size(), 1u);
-        EXPECT_EQ(neutral->required_inputs.front(), "general.transition_savestate");
+        EXPECT_EQ(neutral->required_inputs.front(), "sp_probe_run.probe_run_id");
 
         ASSERT_EQ(grid->dependencies.size(), 1u);
         EXPECT_EQ(grid->dependencies.front(), "Neutral");
@@ -201,10 +201,10 @@ VALUES
 INSERT INTO exec_workflow_instance(
     workflow_instance_id, workflow_kind, state, root_scope_kind, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc
 )
-VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'general.transition_savestate', 1, 'test', unixepoch()*1000, unixepoch()*1000);
+VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'sp_probe_run.probe_run_id', 1, 'test', unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc)
 VALUES
-    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'general.transition_savestate', unixepoch()*1000, unixepoch()*1000),
+    (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'sp_probe_run.probe_run_id', unixepoch()*1000, unixepoch()*1000),
     (2603, 2601, 'Grid', 'seedprobe.grid', 'WAITING', 0, 2, 'seedprobe.neutral.seed_context', unixepoch()*1000, NULL);
 INSERT INTO exec_workflow_edge(workflow_edge_id, workflow_instance_id, from_step_id, to_step_id, created_at_utc)
 VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
