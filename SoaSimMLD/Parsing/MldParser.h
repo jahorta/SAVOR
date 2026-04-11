@@ -57,4 +57,6 @@ public:
         const ParseOptions& options = {}) const;
 };
 
+[[nodiscard]] std::string formatParseSummary(const ParseResult& parseResult);
+
 } // namespace soasim::mld::parsing

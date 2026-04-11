@@ -137,9 +137,9 @@ int main(int argc, char** argv) {
         if (extension == ".mld") {
             auto parsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
             const auto outPath = outputDir / (entry.path().stem().string() + ".mld.txt");
-            //std::string summary = soasim::mld::parsing(outPath, parsed);
-            //std::ofstream out(outPath, std::ios::binary);
-            //out << summary.c_str();
+            std::string summary = soasim::mld::parsing::formatParseSummary(parsed);
+            std::ofstream out(outPath, std::ios::binary);
+            out << summary.c_str();
             ++filesProcessed;
             continue;
         }

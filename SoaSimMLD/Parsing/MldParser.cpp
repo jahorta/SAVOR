@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <sstream>
 #include <unordered_map>
 
 namespace soasim::mld::parsing {
@@ -388,6 +389,67 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     }
 
     return result;
+}
+
+std::string formatParseSummary(const ParseResult& parseResult) {
+    std::ostringstream out;
+    out << "grndSurfaces=" << parseResult.world.grndSurfaces.size() << '\n';
+    out << "collisions=" << parseResult.world.collisions.size() << '\n';
+    out << "triggers=" << parseResult.world.triggers.size() << '\n';
+    out << "unknownEntries=" << parseResult.world.unknownEntries.size() << '\n';
+    out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
+    out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
+    out << "njcmChunks=" << parseResult.njcmChunks.size() << '\n';
+
+    if (!parseResult.chunkTypeHistogram.empty()) {
+        out << "chunkTypes:" << '\n';
+        for (const auto& [tag, count] : parseResult.chunkTypeHistogram) {
+            out << "  - " << tag << ": " << count << '\n';
+        }
+    }
+
+    if (!parseResult.fxnHistogram.empty()) {
+        out << "fxnHistogram:" << '\n';
+        for (const auto& [fxn, count] : parseResult.fxnHistogram) {
+            out << "  - 0x" << std::hex << fxn << std::dec << ": " << count << '\n';
+        }
+    }
+
+    if (!parseResult.njcmChunks.empty()) {
+        out << "njcm:" << '\n';
+        for (const auto& chunk : parseResult.njcmChunks) {
+            out << "  - offset=" << chunk.chunkOffset
+                << " bytes=" << chunk.chunkDataSize
+                << " score=" << chunk.score
+                << " objects=" << chunk.objectCount
+                << " attaches=" << chunk.attachCount
+                << " verts=" << chunk.decodedVertexCount
+                << " triEst=" << chunk.decodedTriangleCount
+                << " pof0=" << (chunk.usedPof0Fixup ? "yes" : "no")
+                << '\n';
+        }
+    }
+
+    if (!parseResult.diagnostics.empty()) {
+        out << "diagnostics:" << '\n';
+        for (const auto& diagnostic : parseResult.diagnostics) {
+            const char* severity = "info";
+            switch (diagnostic.severity) {
+            case ParseDiagnostic::Severity::Info:
+                severity = "info";
+                break;
+            case ParseDiagnostic::Severity::Warning:
+                severity = "warning";
+                break;
+            case ParseDiagnostic::Severity::Error:
+                severity = "error";
+                break;
+            }
+            out << "  - [" << severity << "] " << diagnostic.message << '\n';
+        }
+    }
+
+    return out.str();
 }
 
 } // namespace soasim::mld::parsing
