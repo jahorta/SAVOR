@@ -79,6 +79,7 @@ void writeSctReport(const std::filesystem::path& outPath, const soasim::sct::Sct
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cout << "[SoaSimFileParsing] Step 1/4: Initializing parser run...\n";
     const std::filesystem::path source_file = __FILE__;
     const std::filesystem::path source_dir = source_file.parent_path();
 
@@ -88,6 +89,7 @@ int main(int argc, char** argv) {
 
     std::filesystem::create_directories(outputDir);
     std::filesystem::create_directories(decompressedDir);
+    std::cout << "[SoaSimFileParsing] Step 2/4: Prepared directories.\n";
 
     if (!std::filesystem::exists(inputDir) || !std::filesystem::is_directory(inputDir)) {
         std::cerr << "Input directory not found: " << inputDir << "\n";
@@ -96,6 +98,7 @@ int main(int argc, char** argv) {
 
     soasim::sct::SctParser sctParser{};
     soasim::mld::parsing::MldParser mldParser{};
+    std::cout << "[SoaSimFileParsing] Step 3/4: Parsing input files...\n";
 
     std::size_t filesProcessed = 0;
 
@@ -125,6 +128,7 @@ int main(int argc, char** argv) {
         }
 
         if (extension == ".sct") {
+            std::cout << "[SoaSimFileParsing]   - Parsing SCT: " << entry.path().filename().string() << "\n";
             auto parsed = sctParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entry.path().string());
             const auto outPath = outputDir / (entry.path().stem().string() + ".sct.txt");
             std::string summary = soasim::sct::formatParseSummary(parsed);
@@ -135,6 +139,7 @@ int main(int argc, char** argv) {
         }
 
         if (extension == ".mld") {
+            std::cout << "[SoaSimFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
             auto parsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
             const auto outPath = outputDir / (entry.path().stem().string() + ".mld.txt");
             std::string summary = soasim::mld::parsing::formatParseSummary(parsed);
@@ -145,6 +150,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "[SoaSimFileParsing] Step 4/4: Finalizing summary.\n";
     std::cout << "SoaSimFileParsing finished.\nFilesProcessed=" << filesProcessed
               << "\ninputDir=" << inputDir.string()
               << "\noutputDir=" << outputDir.string() << "\n";

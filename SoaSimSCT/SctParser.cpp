@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <iostream>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -483,12 +484,14 @@ SctParseResult SctParser::parseFile(const std::string& sourcePath) const {
 }
 
 SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) const {
+    std::cout << "[SoaSimSCT] Step 1/5: Starting parse (" << bytes.size() << " bytes).\n";
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = bytes;
     if (soasim::compression::aklz::isAklz(bytes)) {
+        std::cout << "[SoaSimSCT] Step 2/5: Input is AKLZ-compressed, decompressing...\n";
         auto decodedResult = soasim::compression::aklz::decompress(bytes);
         if (!decodedResult.ok()) {
             result.diagnostics.push_back({
@@ -500,6 +503,9 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
 
         decoded = std::move(decodedResult.bytes);
         payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
+    }
+    else {
+        std::cout << "[SoaSimSCT] Step 2/5: Input is not AKLZ-compressed.\n";
     }
 
     if (payload.empty()) {
@@ -528,6 +534,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
 
     std::vector<SectionRow> rows;
     rows.reserve(sectionCount);
+    std::cout << "[SoaSimSCT] Step 3/5: Reading section index (" << sectionCount << " sections)...\n";
 
     for (std::uint32_t i = 0; i < sectionCount; ++i) {
         const auto rowOffset = kHeaderSize + (static_cast<std::size_t>(i) * kIndexEntrySize);
@@ -543,6 +550,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     const auto dataSize = static_cast<std::uint32_t>(payload.size() - dataStart);
     const auto dataBytes = payload.subspan(dataStart);
 
+    std::cout << "[SoaSimSCT] Step 4/5: Walking section instructions...\n";
     for (std::uint32_t i = 0; i < rows.size(); ++i) {
         const auto sectionStart = rows[i].start;
         const auto sectionEnd = (i + 1u < rows.size()) ? rows[i + 1u].start : dataSize;
@@ -685,6 +693,9 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     }
 
     result.parseOk = true;
+    std::cout << "[SoaSimSCT] Step 5/5: Parse complete. ParsedSections="
+              << result.file.sections.size()
+              << ", diagnostics=" << result.diagnostics.size() << ".\n";
     result.diagnostics.push_back(
         {"Initial SCT parser pass completed (index + control-flow-guided section walk with placeholder opcode semantics).", 0});
     return result;
