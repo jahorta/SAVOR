@@ -459,18 +459,6 @@ A clean scene breakdown is:
 - **Unknown layer**: magenta debug markers or boxes for unsupported `fxn`
 - **Overlay layer**: route preview, selected node highlight, search annotations
 
-## Flowcharts
-
-The following images should be committed next to this document once generated externally.
-
-### Parsing pipeline
-
-![MLD Parsing Pipeline](mld_pipeline_flow.jpg)
-
-### Viewer layering
-
-![Viewer layer relationships](scene_graph_relationships.jpg)
-
 ## Implementation phases
 
 ## Phase 1: Minimum viewer path
