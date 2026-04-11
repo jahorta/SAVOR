@@ -1,56 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
-    <Filter Include="Header Files\Model">
+    <Filter Include="Model">
       <UniqueIdentifier>{0CF71CFD-60F2-4989-BB4E-AF57D8670F11}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\Parsing">
+    <Filter Include="Parsing">
       <UniqueIdentifier>{9BDF24C8-35A2-4A22-A95A-1672D4F8D22C}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
-    </Filter>
-    <Filter Include="Source Files\Parsing">
-      <UniqueIdentifier>{D0D52786-266A-46AA-8B59-D7CA318B6A44}</UniqueIdentifier>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Model\SearchWorldModel.h">
-      <Filter>Header Files\Model</Filter>
+      <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\Types.h">
-      <Filter>Header Files\Model</Filter>
+      <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\WorldModel.h">
-      <Filter>Header Files\Model</Filter>
+      <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\EntryHandlers.h">
-      <Filter>Header Files\Parsing</Filter>
+      <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
-      <Filter>Header Files\Parsing</Filter>
+      <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldParser.h">
-      <Filter>Header Files\Parsing</Filter>
+      <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="SoaSimMLD.h">
-      <Filter>Header Files</Filter>
+      <Filter>EntryPoint</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="SoaSimMLD.cpp">
+      <Filter>EntryPoint</Filter>
+    </ClCompile>
     <ClCompile Include="Parsing\MldBinaryReader.cpp">
-      <Filter>Source Files\Parsing</Filter>
+      <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">
-      <Filter>Source Files\Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="SoaSimMLD.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Parsing</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

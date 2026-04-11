@@ -1,29 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
-    <Filter Include="Source Files">
+    <Filter Include="Entry Point">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
     </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{aea6f113-81c7-418e-ac15-e8fdcdbfe668}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="SoaSimSCT.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="SctModel.h">
-      <Filter>Header Files</Filter>
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SoaSimSCT.h">
+      <Filter>Entry Point</Filter>
     </ClInclude>
     <ClInclude Include="SctParser.h">
-      <Filter>Header Files</Filter>
+      <Filter>Parser</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
