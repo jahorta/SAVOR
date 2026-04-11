@@ -57,6 +57,7 @@ struct SctSection {
     SctSectionId id;
     std::uint32_t startOffset = 0;
     std::uint32_t endOffset = 0;
+    bool isStringSection = false;
     std::vector<SctInstruction> instructions;
     std::vector<SctBasicBlock> blocks;
     std::vector<SctUnknownRegion> unknownRegions;
