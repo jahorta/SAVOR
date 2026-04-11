@@ -5,6 +5,7 @@
 #include "../common/ByteUtils.h"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -13,6 +14,26 @@
 #include <string>
 
 namespace soasim::mld::model {
+
+[[nodiscard]] inline Quat eulerRadiansToQuaternionXYZ(const Vec3& euler) {
+    const float halfX = euler.x * 0.5F;
+    const float halfY = euler.y * 0.5F;
+    const float halfZ = euler.z * 0.5F;
+
+    const float sx = std::sin(halfX);
+    const float cx = std::cos(halfX);
+    const float sy = std::sin(halfY);
+    const float cy = std::cos(halfY);
+    const float sz = std::sin(halfZ);
+    const float cz = std::cos(halfZ);
+
+    return Quat{
+        .x = (sx * cy * cz) - (cx * sy * sz),
+        .y = (cx * sy * cz) + (sx * cy * sz),
+        .z = (cx * cy * sz) - (sx * sy * cz),
+        .w = (cx * cy * cz) + (sx * sy * sz),
+    };
+}
 
 struct IndexEntry {
     std::size_t tableIndex = 0;
@@ -90,7 +111,10 @@ using IndexEntryWarningSink = std::function<void(const std::string&)>;
     const auto rotX = common::readF32AtBE(bytes, entryOffset + 0x50);
     const auto rotY = common::readF32AtBE(bytes, entryOffset + 0x54);
     const auto rotZ = common::readF32AtBE(bytes, entryOffset + 0x58);
-    // Add rotation to entry.transform here
+    if (rotX.has_value() && rotY.has_value() && rotZ.has_value()) {
+        transform.rotationRaw = Vec3{ *rotX, *rotY, *rotZ };
+        transform.rotation = eulerRadiansToQuaternionXYZ(transform.rotationRaw);
+    }
 
     const auto sclX = common::readF32AtBE(bytes, entryOffset + 0x5C);
     const auto sclY = common::readF32AtBE(bytes, entryOffset + 0x60);
