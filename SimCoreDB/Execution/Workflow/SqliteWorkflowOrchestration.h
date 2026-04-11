@@ -33,6 +33,10 @@ class SqliteWorkflowOrchestrationCommandService final : public IWorkflowOrchestr
 public:
     explicit SqliteWorkflowOrchestrationCommandService(sqlite3* db);
 
+    bool CreateWorkflowInstance(
+        const WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out,
+        std::string* error_out) override;
     bool RetryFailedStep(const WorkflowRetryStepCommand& command, std::string* error_out) override;
     bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) override;
     bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) override;

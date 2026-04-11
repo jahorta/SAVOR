@@ -229,6 +229,17 @@ jobs::IJobEventCommandService* SqliteExecutionDb::JobCommandService() {
     return job_command_service_.get();
 }
 
+bool SqliteExecutionDb::CreateWorkflowInstance(
+    const WorkflowCreateInstanceCommand& command,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (command_service_ == nullptr) {
+        if (error_out) *error_out = "workflow command service unavailable";
+        return false;
+    }
+    return command_service_->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
 std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id) const {
     if (db_ == nullptr || job_id <= 0) {
         return std::nullopt;

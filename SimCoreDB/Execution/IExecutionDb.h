@@ -14,6 +14,7 @@
 namespace simcore::db::execution::workflow {
 struct IWorkflowOrchestrationCommandService;
 struct IWorkflowOrchestrationQueryService;
+struct WorkflowCreateInstanceCommand;
 }
 
 namespace simcore::db::execution::jobs {
@@ -71,6 +72,10 @@ struct IExecutionDb {
     virtual execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() = 0;
     virtual execution::workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() = 0;
     virtual execution::jobs::IJobEventCommandService* JobCommandService() = 0;
+    virtual bool CreateWorkflowInstance(
+        const execution::workflow::WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
     virtual bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) = 0;
     virtual bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) = 0;
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;

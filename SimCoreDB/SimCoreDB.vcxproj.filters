@@ -109,6 +109,12 @@
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowInstanceBuilder.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowInstanceValidator.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Archive\SqliteArchiveDb.h">
       <Filter>Archive</Filter>
     </ClInclude>
@@ -265,6 +271,12 @@
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowInstanceBuilder.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowInstanceValidator.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp">

@@ -31,6 +31,10 @@ public:
     IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
     IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
     jobs::IJobEventCommandService* JobCommandService() override;
+    bool CreateWorkflowInstance(
+        const WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out = nullptr,
+        std::string* error_out = nullptr) override;
     bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override;
     bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;

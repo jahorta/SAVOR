@@ -68,7 +68,7 @@ bool RunSeedProbeRealWorkerSmoke(const CliOptions& options, const char* argv0, s
         return false;
     }
 
-    if (!SeedExecutionWorkflow(execution_db, savestate_id, seed_probe_spec_id, &err)) {
+    if (!SeedExecutionWorkflow(service.AnalysisDb(), execution_db, savestate_id, seed_probe_spec_id, &err)) {
         if (error_out) *error_out = "failed seeding execution workflow rows: " + err;
         stop_service();
         return false;
@@ -97,14 +97,6 @@ bool RunSeedProbeRealWorkerSmoke(const CliOptions& options, const char* argv0, s
         schedule);
 
     coordinator.Start();
-    coordinator.EnqueueReadyStep({
-        .workflow_instance_id = 9101,
-        .workflow_step_id = 9102,
-        .step_key = "Neutral",
-        .step_kind = "seedprobe.neutral",
-        .priority = 1,
-    });
-
     auto* ui_read_db = service.UiReadDb();
     if (ui_read_db == nullptr) {
         coordinator.Stop();
