@@ -20,6 +20,7 @@ constexpr std::size_t kIndexEntrySize = 0x14;
 constexpr std::size_t kIndexNameOffset = 4;
 constexpr std::size_t kIndexNameMaxLen = 0x10;
 constexpr std::uint32_t kMaxOpcodeProbe = 265;
+constexpr std::uint32_t kScptStopCode = 0x0000001d;
 
 enum class Endian {
     Big,
@@ -79,6 +80,76 @@ struct DecodedInstruction {
     return offset < sectionSize && (offset % 4u == 0u);
 }
 
+[[nodiscard]] bool isScptNoLoopValue(std::uint32_t value) {
+    return value == 0x7f7fffff || value == 0x00800000 || value == 0x7fffffff || value == kScptStopCode;
+}
+
+[[nodiscard]] std::uint32_t scptInputActionPrefix(std::uint32_t value) {
+    if (value >= 0x50000000) {
+        return 0x50000000;
+    }
+    if (value >= 0x40000000) {
+        return 0x40000000;
+    }
+    if (value >= 0x20000000) {
+        return 0x20000000;
+    }
+    if (value >= 0x10000000) {
+        return 0x10000000;
+    }
+    if (value >= 0x08000000) {
+        return 0x08000000;
+    }
+    if (value >= 0x04000000) {
+        return 0x04000000;
+    }
+    return 0;
+}
+
+[[nodiscard]] std::uint32_t consumeScptParameterWords(
+    std::span<const std::uint8_t> sectionBytes,
+    std::uint32_t wordOffset,
+    Endian endian,
+    std::uint32_t instructionOffset,
+    std::vector<SctDiagnostic>& diagnostics) {
+
+    if (wordOffset + 4u > sectionBytes.size()) {
+        diagnostics.push_back({"SCPT parameter decode failed: out-of-bounds read.", instructionOffset});
+        return 0;
+    }
+
+    const auto firstWord = readU32(sectionBytes, wordOffset, endian);
+    if (isScptNoLoopValue(firstWord)) {
+        return 1;
+    }
+
+    std::uint32_t consumedWords = 0;
+    std::uint32_t cursor = wordOffset;
+    while (cursor + 4u <= sectionBytes.size()) {
+        const auto currentWord = readU32(sectionBytes, cursor, endian);
+        ++consumedWords;
+
+        if (currentWord == kScptStopCode) {
+            return consumedWords;
+        }
+
+        if (scptInputActionPrefix(currentWord) == 0x04000000) {
+            if (cursor + 8u > sectionBytes.size()) {
+                diagnostics.push_back({"SCPT float literal payload exceeds section bounds.", instructionOffset});
+                return consumedWords;
+            }
+            ++consumedWords;
+            cursor += 8u;
+            continue;
+        }
+
+        cursor += 4u;
+    }
+
+    diagnostics.push_back({"SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
+    return consumedWords;
+}
+
 [[nodiscard]] std::uint32_t clampToSection(std::uint32_t raw, std::uint32_t sectionSize) {
     if (sectionSize == 0) {
         return 0;
@@ -128,37 +199,65 @@ struct DecodedInstruction {
 
     if (opcode < kSalsaOpcodeParamPatterns.size()) {
         const auto& paramPattern = kSalsaOpcodeParamPatterns[opcode];
-        std::uint32_t totalParamWords = paramPattern.paramCount;
+        std::uint32_t totalParamSlots = paramPattern.paramCount;
+        std::uint32_t consumedOperandWords = 0;
+        std::uint32_t iterations = 0;
+
+        auto consumeParamSlot = [&](std::uint32_t paramIndex) -> bool {
+            const auto paramWordOffset = offset + 4u + (consumedOperandWords * 4u);
+            if (paramWordOffset + 4u > sectionBytes.size()) {
+                diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
+                return false;
+            }
+
+            const bool isScptParam = paramIndex < 64u && ((paramPattern.scptAnalyzeMask >> paramIndex) & 1ull) != 0ull;
+            std::uint32_t wordsForParam = 1;
+            if (isScptParam) {
+                wordsForParam = consumeScptParameterWords(sectionBytes, paramWordOffset, chosenEndian, offset, diagnostics);
+                if (wordsForParam == 0) {
+                    return false;
+                }
+                decoded.inst.scptAnalyzeOperandIndexes.push_back(static_cast<std::uint8_t>(paramIndex));
+            }
+
+            if (paramPattern.iterationCountParam >= 0
+                && paramIndex == static_cast<std::uint32_t>(paramPattern.iterationCountParam)) {
+                iterations = readU32(sectionBytes, paramWordOffset, chosenEndian);
+            }
+
+            for (std::uint32_t i = 0; i < wordsForParam; ++i) {
+                const auto operandOffset = paramWordOffset + (i * 4u);
+                if (operandOffset + 4u > sectionBytes.size()) {
+                    diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
+                    return false;
+                }
+                decoded.inst.operands.push_back(readU32(sectionBytes, operandOffset, chosenEndian));
+            }
+
+            consumedOperandWords += wordsForParam;
+            return true;
+        };
+
+        for (std::uint32_t paramIndex = 0; paramIndex < paramPattern.paramCount; ++paramIndex) {
+            if (!consumeParamSlot(paramIndex)) {
+                decoded.blockTerminator = true;
+                return decoded;
+            }
+        }
 
         if (paramPattern.loopStartParam >= 0 && paramPattern.loopEndParam >= paramPattern.loopStartParam
-            && paramPattern.iterationCountParam >= 0
-            && static_cast<std::size_t>(paramPattern.iterationCountParam) < paramPattern.paramCount) {
-            const auto iterParamOffset = offset + 4u + (static_cast<std::uint32_t>(paramPattern.iterationCountParam) * 4u);
-            if (iterParamOffset + 4u <= sectionBytes.size()) {
-                const auto iterations = readU32(sectionBytes, iterParamOffset, chosenEndian);
-                const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
-                if (iterations > 1u) {
-                    totalParamWords += (iterations - 1u) * loopWidth;
+            && paramPattern.iterationCountParam >= 0 && iterations > 1u) {
+            const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
+            totalParamSlots += (iterations - 1u) * loopWidth;
+            for (std::uint32_t paramIndex = paramPattern.paramCount; paramIndex < totalParamSlots; ++paramIndex) {
+                if (!consumeParamSlot(paramIndex)) {
+                    decoded.blockTerminator = true;
+                    return decoded;
                 }
             }
         }
 
-        const auto totalSizeBytes = 4u + (totalParamWords * 4u);
-        if (offset + totalSizeBytes > sectionBytes.size()) {
-            diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
-            decoded.blockTerminator = true;
-            return decoded;
-        }
-
-        decoded.inst.sizeBytes = totalSizeBytes;
-        decoded.inst.operands.reserve(totalParamWords);
-        for (std::uint32_t i = 0; i < totalParamWords; ++i) {
-            const auto paramWord = readU32(sectionBytes, offset + 4u + (i * 4u), chosenEndian);
-            decoded.inst.operands.push_back(paramWord);
-            if (i < 64u && ((paramPattern.scptAnalyzeMask >> i) & 1ull) != 0ull) {
-                decoded.inst.scptAnalyzeOperandIndexes.push_back(static_cast<std::uint8_t>(i));
-            }
-        }
+        decoded.inst.sizeBytes = 4u + (consumedOperandWords * 4u);
 
         if (opcode == 0 || opcode == 10 || opcode == 3) {
             decoded.blockTerminator = true;
