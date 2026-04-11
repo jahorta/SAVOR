@@ -321,6 +321,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         });
 
         for (const auto groundAddress : entry.groundAddresses->values) {
+            if (groundAddress == 0U) {
+                continue;
+            }
             GrndSurface surface{};
             surface.id = groundAddress;
             surface.transform = entry.transform;
@@ -332,6 +335,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
 
         for (const auto objectAddress : entry.objectAddresses->values) {
+            if (objectAddress == 0U) {
+                continue;
+            }
             const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
             const auto relNjcm = common::readU32AtLE(payload, objectOffset + 0x00);
             const auto objectSizeField = common::readU32AtLE(payload, objectOffset + 0x04);
@@ -358,6 +364,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
 
         for (const auto groundAddress : entry.groundAddresses->values) {
+            if (groundAddress == 0U) {
+                continue;
+            }
             const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
             if (grndOffset + 8 > payload.size()) {
                 continue;
