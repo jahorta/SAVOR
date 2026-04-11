@@ -95,7 +95,7 @@ bool SeedAuthoringSpec(
             .priority = 1,
             .run_ms = 10000,
             .vi_stall_ms = 2000,
-            .samples_per_axis = 5,
+            .samples_per_axis = kSeedProbeSamplesPerAxis,
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,
@@ -117,6 +117,7 @@ bool SeedExecutionWorkflow(
     simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
+    std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (analysis_db == nullptr || execution_db == nullptr) {
         if (error_out) *error_out = "analysis/execution db unavailable";
@@ -180,7 +181,7 @@ bool SeedExecutionWorkflow(
         return false;
     }
 
-    return execution_db->CreateWorkflowInstance(command, nullptr, error_out);
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
 } // namespace simcore::e2e
