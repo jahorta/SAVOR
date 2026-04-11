@@ -146,16 +146,13 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
                 const auto pofSpan = bytes.subspan(dataStart, chunkSize);
-                auto fixed = pendingNjcm->data;
-                const auto deltas = decodePof0Deltas(pofSpan);
-                applyPof0Fixups(fixed, deltas,
-                    static_cast<std::uint32_t>(pendingNjcm->chunkStart),
-                    true);
-                auto summary = analyzeNjcmChunk(std::span<const std::uint8_t>(fixed.data(), fixed.size()),
+                auto summary = analyzeNjcmChunk(
+                    std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
                     pendingNjcm->chunkStart,
                     pendingNjcm->chunkDataSize,
                     pendingNjcm->chunkSizeLittleEndian,
-                    true);
+                    true,
+                    pofSpan);
                 njcmChunks.push_back(summary);
                 pendingNjcm.reset();
             }
