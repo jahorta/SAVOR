@@ -96,8 +96,11 @@ void writeMldReport(const std::filesystem::path& outPath, const soasim::mld::par
 } // namespace
 
 int main(int argc, char** argv) {
-    const std::filesystem::path inputDir = argc > 1 ? argv[1] : std::filesystem::path("SoaSimFileParsing/inputs");
-    const std::filesystem::path outputDir = argc > 2 ? argv[2] : std::filesystem::path("SoaSimFileParsing/parsed");
+    const std::filesystem::path source_file = __FILE__;
+    const std::filesystem::path source_dir = source_file.parent_path();
+
+    const std::filesystem::path inputDir = argc > 1 ? argv[1] : std::filesystem::path(source_dir / "inputs");
+    const std::filesystem::path outputDir = argc > 2 ? argv[2] : std::filesystem::path(source_dir / "parsed");
 
     std::filesystem::create_directories(outputDir);
 
