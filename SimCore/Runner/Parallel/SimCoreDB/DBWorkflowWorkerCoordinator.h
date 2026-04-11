@@ -57,6 +57,7 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t dispatch_miss_rate_basis_points = 0;
     std::int64_t progress_batch_count = 0;
     std::int64_t max_progress_batch_size = 0;
+    std::int64_t workflow_created_signal_count = 0;
 };
 
 class DBWorkflowWorkerCoordinator {
@@ -89,9 +90,11 @@ public:
 
     void SetWorkflowMaterializationCallback(WorkflowCoordinatorBridge::MaterializationCallback callback);
     void SetWorkflowTerminalCallback(WorkflowCoordinatorBridge::TerminalCallback callback);
+    void SetWorkflowCreatedCallback(WorkflowCoordinatorBridge::WorkflowCreatedCallback callback);
 
     // External path for terminal notifications coming from job/job_set execution.
     bool PublishTerminalJobSet(const TerminalJobSetSignal& signal);
+    bool PublishWorkflowCreated(const WorkflowCreatedSignal& signal);
 
     // Manual injection hook for tests or explicit push-based materialization pipelines.
     void EnqueueReadyStep(const WorkflowReadyStep& step);
@@ -198,6 +201,7 @@ private:
     std::atomic<std::int64_t> dispatch_miss_count_{ 0 };
     std::atomic<std::int64_t> progress_batch_count_{ 0 };
     std::atomic<std::int64_t> max_progress_batch_size_{ 0 };
+    std::atomic<std::int64_t> workflow_created_signal_count_{ 0 };
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };
