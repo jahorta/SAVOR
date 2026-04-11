@@ -30,7 +30,10 @@ public:
     [[nodiscard]] std::optional<std::uint16_t> readU16BE();
     [[nodiscard]] std::optional<std::uint32_t> readU32LE();
     [[nodiscard]] std::optional<std::uint32_t> readU32BE();
+    [[nodiscard]] std::optional<float> readF32LE();
     [[nodiscard]] std::optional<std::span<const std::uint8_t>> readBytes(std::size_t count);
+    [[nodiscard]] bool seek(std::size_t offset);
+    [[nodiscard]] std::size_t remaining() const;
 
 private:
     std::span<const std::uint8_t> bytes_{};

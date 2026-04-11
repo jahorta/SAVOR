@@ -26,6 +26,9 @@
     <ClInclude Include="SctParseProbe.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctOpcodeMetadata.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">

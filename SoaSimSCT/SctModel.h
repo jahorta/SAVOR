@@ -15,6 +15,7 @@ struct SctInstruction {
     std::uint32_t offset = 0;
     std::uint16_t opcode = 0;
     std::vector<std::uint32_t> operands;
+    std::vector<std::uint8_t> scptAnalyzeOperandIndexes;
     std::uint32_t sizeBytes = 0;
     bool decodeOk = false;
 };

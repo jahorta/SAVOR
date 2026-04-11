@@ -44,6 +44,7 @@ struct ParseResult {
     model::SearchWorldModel searchWorld{};
     std::vector<ParseDiagnostic> diagnostics{};
     std::vector<std::pair<std::uint32_t, std::size_t>> fxnHistogram{};
+    std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
 };
 
 class MldParser {
