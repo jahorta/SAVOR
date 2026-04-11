@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NJCMParser.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
 
@@ -45,6 +46,7 @@ struct ParseResult {
     std::vector<ParseDiagnostic> diagnostics{};
     std::vector<std::pair<std::uint32_t, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
+    std::vector<NjcmChunkSummary> njcmChunks{};
 };
 
 class MldParser {
