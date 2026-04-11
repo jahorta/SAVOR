@@ -169,9 +169,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cout << "SoaSimFileParsing finished. filesProcessed=" << filesProcessed
-              << " inputDir=" << inputDir.string()
-              << " outputDir=" << outputDir.string() << "\n";
+    std::cout << "SoaSimFileParsing finished.\nFilesProcessed=" << filesProcessed
+              << "\ninputDir=" << inputDir.string()
+              << "\noutputDir=" << outputDir.string() << "\n";
 
     return 0;
 }
