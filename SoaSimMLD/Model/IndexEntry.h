@@ -141,9 +141,6 @@ inline void removeZeroAddresses(U32List& list) {
     entry.objectAddresses = makeU32List(bytes, *ptrObjects, indexPrefix + ".objects", warningSink);
     entry.groundAddresses = makeU32List(bytes, *ptrGrounds, indexPrefix + ".grounds", warningSink);
     entry.motionAddresses = makeU32List(bytes, *ptrMotions, indexPrefix + ".motions", warningSink);
-    removeZeroAddresses(*entry.objectAddresses);
-    removeZeroAddresses(*entry.groundAddresses);
-    removeZeroAddresses(*entry.motionAddresses);
 
     return entry;
 }

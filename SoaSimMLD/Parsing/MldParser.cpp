@@ -214,12 +214,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         return result;
     }
 
-    const auto nmldCountOpt = common::readU32AtBE(payload, 0x00);
-    const auto ptrNmldTableOpt = common::readU32AtBE(payload, 0x04);
+    const auto entryCountOpt = common::readU32AtBE(payload, 0x00);
+    const auto ptrIndexOpt = common::readU32AtBE(payload, 0x04);
     const auto ptrFxnParamsOpt = common::readU32AtBE(payload, 0x08);
     const auto ptrRealDataOpt = common::readU32AtBE(payload, 0x0C);
     const auto ptrTextureTableOpt = common::readU32AtBE(payload, 0x10);
-    if (!nmldCountOpt.has_value() || !ptrNmldTableOpt.has_value() || !ptrFxnParamsOpt.has_value() ||
+    if (!entryCountOpt.has_value() || !ptrIndexOpt.has_value() || !ptrFxnParamsOpt.has_value() ||
         !ptrRealDataOpt.has_value() || !ptrTextureTableOpt.has_value()) {
         result.diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Error,
@@ -229,13 +229,13 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     }
 
     constexpr std::size_t entrySize = 0x68;
-    const std::size_t nmldCount = static_cast<std::size_t>(*nmldCountOpt);
-    const std::size_t entryTableOffset = static_cast<std::size_t>(*ptrNmldTableOpt);
-    const std::size_t entryTableEnd = entryTableOffset + (nmldCount * entrySize);
+    const std::size_t entryCount = static_cast<std::size_t>(*entryCountOpt);
+    const std::size_t entryTableOffset = static_cast<std::size_t>(*ptrIndexOpt);
+    const std::size_t entryTableEnd = entryTableOffset + (entryCount * entrySize);
     if (entryTableOffset >= payload.size() || entryTableEnd > payload.size()) {
         result.diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Error,
-            .message = "MLD entry table is out of bounds (count=" + std::to_string(nmldCount) +
+            .message = "MLD entry table is out of bounds (count=" + std::to_string(entryCount) +
                 ", ptr=" + std::to_string(entryTableOffset) + ").",
         });
         return result;
@@ -243,7 +243,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
     result.diagnostics.push_back(ParseDiagnostic{
         .severity = ParseDiagnostic::Severity::Info,
-        .message = "Index-based parse: entries=" + std::to_string(nmldCount) +
+        .message = "Index-based parse: entries=" + std::to_string(entryCount) +
             ", entryTable=0x" + std::to_string(entryTableOffset) +
             ", fxnParams=0x" + std::to_string(static_cast<std::size_t>(*ptrFxnParamsOpt)) +
             ", realData=0x" + std::to_string(static_cast<std::size_t>(*ptrRealDataOpt)) +
@@ -251,9 +251,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     });
 
     std::vector<model::IndexEntry> entries{};
-    entries.reserve(nmldCount);
+    entries.reserve(entryCount);
 
-    for (std::size_t i = 0; i < nmldCount; ++i) {
+    for (std::size_t i = 0; i < entryCount; ++i) {
         const std::size_t entryOffset = entryTableOffset + (i * entrySize);
 
         const auto entryOpt = model::parseIndexEntry(payload, i, entryOffset,
