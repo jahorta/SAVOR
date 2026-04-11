@@ -181,6 +181,10 @@ void DBWorkflowWorkerCoordinator::SetWorkflowTerminalCallback(WorkflowCoordinato
     workflow_bridge_.SetTerminalCallback(std::move(callback));
 }
 
+void DBWorkflowWorkerCoordinator::SetWorkflowCreatedCallback(WorkflowCoordinatorBridge::WorkflowCreatedCallback callback) {
+    workflow_bridge_.SetWorkflowCreatedCallback(std::move(callback));
+}
+
 bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSignal& signal) {
     if (!integration_cfg_.workflow_enabled) {
         return false;
@@ -190,6 +194,19 @@ bool DBWorkflowWorkerCoordinator::PublishTerminalJobSet(const TerminalJobSetSign
     if (published) {
         std::lock_guard<std::mutex> lock(queue_mtx_);
         ++terminal_published_count_;
+    }
+    return published;
+}
+
+bool DBWorkflowWorkerCoordinator::PublishWorkflowCreated(const WorkflowCreatedSignal& signal) {
+    if (!integration_cfg_.workflow_enabled) {
+        return false;
+    }
+
+    const bool published = workflow_bridge_.NotifyWorkflowCreated(signal);
+    if (published) {
+        ++workflow_created_signal_count_;
+        queue_cv_.notify_one();
     }
     return published;
 }
@@ -303,6 +320,7 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
         : static_cast<std::int64_t>((telemetry.dispatch_miss_count * 10000) / attempts);
     telemetry.progress_batch_count = progress_batch_count_.load();
     telemetry.max_progress_batch_size = max_progress_batch_size_.load();
+    telemetry.workflow_created_signal_count = workflow_created_signal_count_.load();
     return telemetry;
 }
 
