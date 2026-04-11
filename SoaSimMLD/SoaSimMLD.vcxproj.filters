@@ -7,12 +7,24 @@
     <Filter Include="Parsing">
       <UniqueIdentifier>{9BDF24C8-35A2-4A22-A95A-1672D4F8D22C}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Common">
+      <UniqueIdentifier>{2E95A34E-04F6-4FBA-9236-2B0E9C40B1A2}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EntryPoint">
       <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="common\ByteUtils.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\IndexEntry.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\U32List.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="Model\SearchWorldModel.h">
       <Filter>Model</Filter>
     </ClInclude>

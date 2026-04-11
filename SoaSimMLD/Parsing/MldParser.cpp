@@ -1,12 +1,12 @@
 #include "MldParser.h"
 
 #include "../../Compression/Aklz.h"
-#include "../Model/IndexedEntry.h"
+#include "../Model/IndexEntry.h"
+#include "../common/ByteUtils.h"
 #include "MldBinaryReader.h"
 
 #include <algorithm>
 #include <array>
-#include <cstring>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -82,122 +82,6 @@ void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, con
         return;
     }
     ++histogram[fxn];
-}
-
-[[nodiscard]] std::optional<std::uint32_t> readU32At(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 4 > bytes.size()) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
-        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
-        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
-}
-
-[[nodiscard]] std::optional<std::uint32_t> readU32AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 4 > bytes.size()) {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
-        (static_cast<std::uint32_t>(bytes[offset + 1]) << 16) |
-        (static_cast<std::uint32_t>(bytes[offset + 2]) << 8) |
-        static_cast<std::uint32_t>(bytes[offset + 3]);
-}
-
-[[nodiscard]] std::optional<float> readF32At(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    const auto bits = readU32At(bytes, offset);
-    if (!bits.has_value()) {
-        return std::nullopt;
-    }
-    float out = 0.0F;
-    std::memcpy(&out, &(*bits), sizeof(out));
-    return out;
-}
-
-[[nodiscard]] std::optional<float> readF32AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    const auto bits = readU32AtBE(bytes, offset);
-    if (!bits.has_value()) {
-        return std::nullopt;
-    }
-    float out = 0.0F;
-    std::memcpy(&out, &(*bits), sizeof(out));
-    return out;
-}
-
-[[nodiscard]] std::vector<std::uint32_t> readU32List(std::span<const std::uint8_t> bytes,
-    const std::uint32_t pointer,
-    std::vector<ParseDiagnostic>& diagnostics,
-    const std::string& label) {
-    std::vector<std::uint32_t> out{};
-    const std::size_t offset = static_cast<std::size_t>(pointer);
-    const auto countOpt = readU32AtBE(bytes, offset);
-    if (!countOpt.has_value()) {
-        diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Warning,
-            .message = label + " pointer out of bounds: " + std::to_string(pointer),
-        });
-        return out;
-    }
-
-    const std::size_t count = static_cast<std::size_t>(*countOpt);
-    constexpr std::size_t hardCap = 1U << 16;
-    if (count > hardCap) {
-        diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Warning,
-            .message = label + " list count suspiciously large (" + std::to_string(count) + "); ignoring list.",
-        });
-        return out;
-    }
-
-    if (offset + 4 + (count * 4) > bytes.size()) {
-        diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Warning,
-            .message = label + " list overruns file bounds (ptr=" + std::to_string(pointer) +
-                ", count=" + std::to_string(count) + ")",
-        });
-        return out;
-    }
-
-    out.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto value = readU32AtBE(bytes, offset + 4 + (i * 4));
-        if (!value.has_value()) {
-            break;
-        }
-        out.push_back(*value);
-    }
-    return out;
-}
-
-[[nodiscard]] std::string readFxnString(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    constexpr std::size_t fxnLen = 0x14;
-    std::string out{};
-    if (offset + fxnLen > bytes.size()) {
-        return out;
-    }
-    out.reserve(fxnLen);
-    for (std::size_t i = 0; i < fxnLen; ++i) {
-        const char c = static_cast<char>(bytes[offset + i]);
-        if (c == '\0') {
-            break;
-        }
-        const unsigned char uc = static_cast<unsigned char>(c);
-        out.push_back((uc >= 32U && uc <= 126U) ? c : '?');
-    }
-    return out;
-}
-
-[[nodiscard]] std::unique_ptr<model::U32List> makeU32List(std::span<const std::uint8_t> bytes,
-    const std::uint32_t pointer,
-    std::vector<ParseDiagnostic>& diagnostics,
-    const std::string& label) {
-    auto list = std::make_unique<model::U32List>();
-    list->pointer = pointer;
-    list->values = readU32List(bytes, pointer, diagnostics, label);
-    list->valid = !list->values.empty() || pointer == 0 ||
-        (readU32AtBE(bytes, static_cast<std::size_t>(pointer)).has_value() &&
-            readU32AtBE(bytes, static_cast<std::size_t>(pointer)).value_or(0U) == 0U);
-    return list;
 }
 
 void parseNjChunkStream(std::span<const std::uint8_t> bytes,
@@ -330,11 +214,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         return result;
     }
 
-    const auto nmldCountOpt = readU32AtBE(payload, 0x00);
-    const auto ptrNmldTableOpt = readU32AtBE(payload, 0x04);
-    const auto ptrFxnParamsOpt = readU32AtBE(payload, 0x08);
-    const auto ptrRealDataOpt = readU32AtBE(payload, 0x0C);
-    const auto ptrTextureTableOpt = readU32AtBE(payload, 0x10);
+    const auto nmldCountOpt = common::readU32AtBE(payload, 0x00);
+    const auto ptrNmldTableOpt = common::readU32AtBE(payload, 0x04);
+    const auto ptrFxnParamsOpt = common::readU32AtBE(payload, 0x08);
+    const auto ptrRealDataOpt = common::readU32AtBE(payload, 0x0C);
+    const auto ptrTextureTableOpt = common::readU32AtBE(payload, 0x10);
     if (!nmldCountOpt.has_value() || !ptrNmldTableOpt.has_value() || !ptrFxnParamsOpt.has_value() ||
         !ptrRealDataOpt.has_value() || !ptrTextureTableOpt.has_value()) {
         result.diagnostics.push_back(ParseDiagnostic{
@@ -366,23 +250,23 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", textureTable=0x" + std::to_string(static_cast<std::size_t>(*ptrTextureTableOpt)),
     });
 
-    std::vector<model::IndexedEntry> entries{};
+    std::vector<model::IndexEntry> entries{};
     entries.reserve(nmldCount);
 
     for (std::size_t i = 0; i < nmldCount; ++i) {
         const std::size_t entryOffset = entryTableOffset + (i * entrySize);
-        const auto entryId = readU32AtBE(payload, entryOffset + 0x00);
-        const auto tblId = readU32AtBE(payload, entryOffset + 0x04);
-        const auto ptrGroundLinks = readU32AtBE(payload, entryOffset + 0x08);
-        const auto ptrParamList2 = readU32AtBE(payload, entryOffset + 0x0C);
-        const auto ptrFunctionParameters = readU32AtBE(payload, entryOffset + 0x10);
-        const auto ptrObjects = readU32AtBE(payload, entryOffset + 0x14);
-        const auto ptrGrounds = readU32AtBE(payload, entryOffset + 0x18);
-        const auto ptrMotions = readU32AtBE(payload, entryOffset + 0x1C);
-        const auto ptrTextures = readU32AtBE(payload, entryOffset + 0x20);
-        if (!entryId.has_value() || !tblId.has_value() || !ptrGroundLinks.has_value() || !ptrParamList2.has_value() ||
-            !ptrFunctionParameters.has_value() || !ptrObjects.has_value() || !ptrGrounds.has_value() ||
-            !ptrMotions.has_value() || !ptrTextures.has_value()) {
+
+        const auto entryOpt = model::parseIndexEntry(payload, i, entryOffset,
+            [&](const Vec3& value) {
+                return applyCoordinates(value, options.coordinates);
+            },
+            [&](const std::string& message) {
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = message,
+                });
+            });
+        if (!entryOpt.has_value()) {
             result.diagnostics.push_back(ParseDiagnostic{
                 .severity = ParseDiagnostic::Severity::Warning,
                 .message = "Entry " + std::to_string(i) + " malformed or truncated.",
@@ -390,35 +274,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             continue;
         }
 
-        model::IndexedEntry entry{};
-        entry.tableIndex = i;
-        entry.entryId = *entryId;
-        entry.tblId = *tblId;
-        entry.texturesPointer = *ptrTextures;
-
-        model::Transform transform{};
-        const auto posX = readF32AtBE(payload, entryOffset + 0x44);
-        const auto posY = readF32AtBE(payload, entryOffset + 0x48);
-        const auto posZ = readF32AtBE(payload, entryOffset + 0x4C);
-        if (posX.has_value() && posY.has_value() && posZ.has_value()) {
-            transform.position = applyCoordinates(Vec3{ *posX, *posY, *posZ }, options.coordinates);
-        }
-        entry.transform = transform;
-        entry.fxnName = readFxnString(payload, entryOffset + 0x24);
-
-        entry.groundLinks = makeU32List(payload, *ptrGroundLinks, result.diagnostics,
-            "entry[" + std::to_string(i) + "].groundLinks");
-        entry.paramList2 = makeU32List(payload, *ptrParamList2, result.diagnostics,
-            "entry[" + std::to_string(i) + "].paramList2");
-        entry.functionParameters = makeU32List(payload, *ptrFunctionParameters, result.diagnostics,
-            "entry[" + std::to_string(i) + "].functionParameters");
-        entry.objectAddresses = makeU32List(payload, *ptrObjects, result.diagnostics,
-            "entry[" + std::to_string(i) + "].objects");
-        entry.groundAddresses = makeU32List(payload, *ptrGrounds, result.diagnostics,
-            "entry[" + std::to_string(i) + "].grounds");
-        entry.motionAddresses = makeU32List(payload, *ptrMotions, result.diagnostics,
-            "entry[" + std::to_string(i) + "].motions");
-        entries.push_back(std::move(entry));
+        entries.push_back(std::move(*entryOpt));
     }
 
     for (const auto& entry : entries) {
@@ -477,9 +333,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
         for (const auto objectAddress : entry.objectAddresses->values) {
             const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
-            const auto relNjcm = readU32At(payload, objectOffset + 0x00);
-            const auto objectSizeField = readU32At(payload, objectOffset + 0x04);
-            const auto relNjtl = readU32At(payload, objectOffset + 0x08);
+            const auto relNjcm = common::readU32AtLE(payload, objectOffset + 0x00);
+            const auto objectSizeField = common::readU32AtLE(payload, objectOffset + 0x04);
+            const auto relNjtl = common::readU32AtLE(payload, objectOffset + 0x08);
             if (!relNjcm.has_value() || !objectSizeField.has_value() || !relNjtl.has_value()) {
                 continue;
             }
@@ -506,7 +362,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             if (grndOffset + 8 > payload.size()) {
                 continue;
             }
-            if (readU32At(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
+            if (common::readU32AtLE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
                 MldBinaryReader chunkReader(payload.subspan(grndOffset + 8));
                 const auto grndId = chunkReader.readU32LE();
                 const auto vertexCount = chunkReader.readU32LE();
