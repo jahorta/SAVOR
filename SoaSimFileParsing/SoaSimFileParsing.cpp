@@ -74,35 +74,7 @@ void writeSctReport(const std::filesystem::path& outPath, const soasim::sct::Sct
     }
 }
 
-void writeMldReport(const std::filesystem::path& outPath, const soasim::mld::parsing::ParseResult& result) {
-    std::ofstream out(outPath, std::ios::binary);
-    out << "world.grndSurfaces=" << result.world.grndSurfaces.size() << "\n";
-    out << "world.collisions=" << result.world.collisions.size() << "\n";
-    out << "world.triggers=" << result.world.triggers.size() << "\n";
-    out << "world.unknownEntries=" << result.world.unknownEntries.size() << "\n";
-    out << "search.surfaces=" << result.searchWorld.surfaces.size() << "\n";
-    out << "search.regions=" << result.searchWorld.regions.size() << "\n";
 
-    if (!result.fxnHistogram.empty()) {
-        out << "\n[fxnHistogram]\n";
-        for (const auto& [fxn, count] : result.fxnHistogram) {
-            out << "- fxn=" << fxn << " count=" << count << "\n";
-        }
-    }
-
-    if (!result.diagnostics.empty()) {
-        out << "\n[diagnostics]\n";
-        for (const auto& diagnostic : result.diagnostics) {
-            const char* severity = "Info";
-            if (diagnostic.severity == soasim::mld::parsing::ParseDiagnostic::Severity::Warning) {
-                severity = "Warning";
-            } else if (diagnostic.severity == soasim::mld::parsing::ParseDiagnostic::Severity::Error) {
-                severity = "Error";
-            }
-            out << "- [" << severity << "] " << diagnostic.message << "\n";
-        }
-    }
-}
 
 } // namespace
 
@@ -155,7 +127,9 @@ int main(int argc, char** argv) {
         if (extension == ".sct") {
             auto parsed = sctParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entry.path().string());
             const auto outPath = outputDir / (entry.path().stem().string() + ".sct.txt");
-            writeSctReport(outPath, parsed);
+            std::string summary = soasim::sct::formatParseSummary(parsed);
+            std::ofstream out(outPath, std::ios::binary);
+            out << summary.c_str();
             ++filesProcessed;
             continue;
         }
@@ -163,7 +137,9 @@ int main(int argc, char** argv) {
         if (extension == ".mld") {
             auto parsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
             const auto outPath = outputDir / (entry.path().stem().string() + ".mld.txt");
-            writeMldReport(outPath, parsed);
+            //std::string summary = soasim::mld::parsing(outPath, parsed);
+            //std::ofstream out(outPath, std::ios::binary);
+            //out << summary.c_str();
             ++filesProcessed;
             continue;
         }
