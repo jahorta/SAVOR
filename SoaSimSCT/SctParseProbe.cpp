@@ -28,6 +28,8 @@ std::string formatParseSummary(const SctParseResult& parseResult) {
     if (!parseResult.diagnostics.empty()) {
         out << "diagnostics:" << '\n';
         for (const auto& diagnostic : parseResult.diagnostics) {
+            if (!diagnostic.section.empty())
+                out << diagnostic.section;
             out << "  - @" << diagnostic.offset << ": " << diagnostic.message << '\n';
         }
     }

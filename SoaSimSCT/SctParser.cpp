@@ -526,10 +526,16 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                     break;
                 }
 
-                auto decoded = decodeInstruction(sectionBytes, cursor, indexEndian, result.diagnostics);
+                std::vector<SctDiagnostic> inst_diagnostics{};
+                auto decoded = decodeInstruction(sectionBytes, cursor, indexEndian, inst_diagnostics);
                 if (decoded.inst.sizeBytes == 0) {
                     break;
                 }
+                for (auto& diag : inst_diagnostics) {
+                    diag.section = section.id.name;
+                }
+                
+                result.diagnostics.insert(result.diagnostics.end(), inst_diagnostics.begin(), inst_diagnostics.end());
 
                 instructionByOffset[cursor] = section.instructions.size();
                 visited.insert(cursor);

@@ -73,6 +73,7 @@ struct SctFile {
 struct SctDiagnostic {
     std::string message;
     std::uint32_t offset = 0;
+    std::string section = {};
 };
 
 struct SctParseResult {
