@@ -113,14 +113,13 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
     constexpr std::uint32_t kWindowSize = 1u << 12u;
     constexpr std::uint32_t kWindowMask = kWindowSize - 1u;
     constexpr std::uint32_t kLengthMask = (1u << 4u) - 1u;
-    constexpr std::uint32_t kMinLength = 2u;
-    constexpr std::uint32_t kWindowStart = 2u;
+    constexpr std::uint32_t kMinLength = 3u;
+    constexpr std::uint32_t kWindowStart = 0u;
 
     std::vector<std::uint8_t> output;
     output.reserve(sz.decompressedSize);
 
-    std::array<std::uint8_t, kWindowSize> window{};
-    std::array<bool, kWindowSize> windowValid{};
+    std::array<std::uint8_t, kWindowSize> window{0};
     std::uint32_t windowWritePos = 0;
 
     FlagReader reader(input, kHeaderSize);
@@ -138,7 +137,6 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
             }
             output.push_back(value);
             window[windowWritePos] = value;
-            windowValid[windowWritePos] = true;
             windowWritePos = (windowWritePos + 1u) & kWindowMask;
             continue;
         }
@@ -156,16 +154,10 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
         for (std::uint32_t i = 0; i < length && output.size() < sz.decompressedSize; ++i) {
             const auto sourceIndex = (offset + i) & kWindowMask;
 
-            std::uint8_t value = 0;
-            if (windowValid[sourceIndex]) {
-                value = window[sourceIndex];
-            } else if (output.size() > kWindowSize) {
-                return { .error = AklzError::TruncatedBackReference };
-            }
+            std::uint8_t value = window[sourceIndex];
 
             output.push_back(value);
             window[windowWritePos] = value;
-            windowValid[windowWritePos] = true;
             windowWritePos = (windowWritePos + 1u) & kWindowMask;
         }
     }
