@@ -31,6 +31,11 @@ public:
         const WorkflowDefinitionInstantiationInput& input,
         WorkflowCreateInstanceCommand* command_out,
         std::string* error_out) const;
+    bool CreateWorkflowInstance(
+        const WorkflowDefinitionInstantiationInput& input,
+        IWorkflowOrchestrationCommandService* command_service,
+        std::int64_t* workflow_instance_id_out,
+        std::string* error_out) const;
 
 private:
     const WorkflowDefinitionRegistry* registry_ = nullptr;
