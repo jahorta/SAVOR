@@ -31,6 +31,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreDBe2e", "SimCoreDBe2
 		{41DB0E12-AB09-4BC8-9647-1D8713A6A73E} = {41DB0E12-AB09-4BC8-9647-1D8713A6A73E}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimSCT", "SoaSimSCT\SoaSimSCT.vcxproj", "{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -103,6 +105,14 @@ Global
 		{B214E6BB-5188-481B-93F5-31B0B6E31495}.Release|x64.Build.0 = Release|x64
 		{B214E6BB-5188-481B-93F5-31B0B6E31495}.Release|x86.ActiveCfg = Release|Win32
 		{B214E6BB-5188-481B-93F5-31B0B6E31495}.Release|x86.Build.0 = Release|Win32
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Debug|x64.ActiveCfg = Debug|x64
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Debug|x64.Build.0 = Debug|x64
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Debug|x86.ActiveCfg = Debug|Win32
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Debug|x86.Build.0 = Debug|Win32
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Release|x64.ActiveCfg = Release|x64
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Release|x64.Build.0 = Release|x64
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Release|x86.ActiveCfg = Release|Win32
+		{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
