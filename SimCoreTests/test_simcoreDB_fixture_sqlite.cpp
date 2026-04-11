@@ -143,7 +143,7 @@ TEST_F(SqliteDbFixture, Stage5WorkflowInstanceBuilderCreatesAndPersistsDefinitio
     SqliteExecutionDb execution_db(db_);
     WorkflowDefinitionRegistry registry;
     ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
-    WorkflowInstanceBuilder builder(&registry);
+    WorkflowInstanceBuilder builder(&registry, nullptr);
     std::int64_t workflow_instance_id = 0;
     std::string error;
 
@@ -977,7 +977,7 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     WorkflowDefinitionRegistry registry;
     ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
-    WorkflowInstanceBuilder builder(&registry);
+    WorkflowInstanceBuilder builder(&registry, nullptr);
 
     std::int64_t workflow_instance_id = 0;
     ASSERT_TRUE(builder.CreateWorkflowInstance(

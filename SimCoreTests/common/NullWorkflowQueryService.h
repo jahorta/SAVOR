@@ -7,7 +7,7 @@
 
 #include "Execution/Workflow/SqliteExecutionDb.h"
 
-class NullWorkflowQueryService final : public simcore::db::execution::workflow::IWorkflowOrchestrationQueryService {
+class NullWorkflowQueryService : public simcore::db::execution::workflow::IWorkflowOrchestrationQueryService {
 public:
     std::vector<simcore::db::execution::workflow::WorkflowInstanceRecord> ListWorkflowInstances(
         simcore::db::execution::workflow::WorkflowInstanceState,
