@@ -1,41 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    <Filter Include="Scenarios">
+      <UniqueIdentifier>{a32f19a8-a1cd-4f09-8d6e-d7aa560881d8}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files">
+    <Filter Include="Helpers">
       <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;inl;inc;ipp</Extensions>
     </Filter>
+    <Filter Include="Entry Point">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Imports">
+      <UniqueIdentifier>{b59694c3-2582-4286-8617-946e7d181cf5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Cli.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DbSetup.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Main.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Entry Point</Filter>
     </ClCompile>
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Scenarios</Filter>
+    </ClCompile>
+    <ClCompile Include="DbSetup.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="Cli.cpp">
+      <Filter>Helpers</Filter>
     </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <Filter>Source Files</Filter>
+      <Filter>Imports</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Cli.h">
-      <Filter>Header Files</Filter>
+      <Filter>Helpers</Filter>
     </ClInclude>
     <ClInclude Include="DbSetup.h">
-      <Filter>Header Files</Filter>
+      <Filter>Helpers</Filter>
     </ClInclude>
     <ClInclude Include="SeedProbeRealWorkerScenario.h">
-      <Filter>Header Files</Filter>
+      <Filter>Scenarios</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
