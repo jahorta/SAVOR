@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -839,6 +841,96 @@ TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputE
     const auto telemetry = coordinator.SnapshotTelemetry();
     EXPECT_GE(telemetry.input_complete_count, 1);
     EXPECT_GE(telemetry.last_input_latency_ms, 0);
+}
+
+TEST(Stage1CoordinatorIntegration, WorkflowCreatedSignalWakesCoordinatorAndTriggersImmediateReadyScan) {
+    using namespace simcore::runner::parallel::simcoredb;
+    using namespace simcore::db::execution::workflow;
+
+    class SignalQueryService final : public NullWorkflowQueryService {
+    public:
+        std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t) const override {
+            ++scan_count;
+            if (!ready_enabled.load()) {
+                return {};
+            }
+            if (ready_consumed.exchange(true)) {
+                return {};
+            }
+            return { ready_step };
+        }
+
+        void EnableReadyStep(const WorkflowReadyStepRecord& step) {
+            ready_step = step;
+            ready_consumed.store(false);
+            ready_enabled.store(true);
+        }
+
+        mutable std::atomic<int> scan_count{ 0 };
+        std::atomic<bool> ready_enabled{ false };
+        std::atomic<bool> ready_consumed{ false };
+        WorkflowReadyStepRecord ready_step{};
+    };
+
+    class SignalExecutionDb final : public RecordingExecutionDb {
+    public:
+        simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override {
+            return &signal_query_service;
+        }
+
+        SignalQueryService signal_query_service;
+    };
+
+    SignalExecutionDb execution_db;
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "workflow-created-signal-test" });
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        &mode_provider,
+        DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 0,
+            .controller_sleep_ms = 1,
+        },
+        CoordinatorIntegrationConfig{},
+        [](const WorkflowReadyStep& step) {
+            return ScheduledJobSet{
+                .job_set_id = 8100 + step.workflow_step_id,
+                .workflow_step_id = step.workflow_step_id,
+            };
+        });
+
+    int workflow_created_callbacks = 0;
+    coordinator.SetWorkflowCreatedCallback([&](const WorkflowCreatedSignal& signal) {
+        ++workflow_created_callbacks;
+        EXPECT_EQ(signal.workflow_instance_id, 999);
+    });
+
+    coordinator.Start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    execution_db.signal_query_service.EnableReadyStep({
+        .workflow_instance_id = 999,
+        .workflow_step_id = 333,
+        .step_key = "Grid",
+        .step_kind = "seedprobe.grid",
+        .priority = 4,
+    });
+
+    EXPECT_TRUE(coordinator.PublishWorkflowCreated({ .workflow_instance_id = 999 }));
+    EXPECT_FALSE(coordinator.PublishWorkflowCreated({ .workflow_instance_id = 999 }));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (execution_db.command_service.materialized_calls.empty() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    coordinator.Stop();
+
+    ASSERT_FALSE(execution_db.command_service.materialized_calls.empty());
+    EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 333);
+    EXPECT_EQ(workflow_created_callbacks, 1);
+    const auto telemetry = coordinator.SnapshotTelemetry();
+    EXPECT_EQ(telemetry.workflow_created_signal_count, 1);
+    EXPECT_GT(execution_db.signal_query_service.scan_count.load(), 0);
 }
 
 TEST(Stage3cCoordinatorReplacement, DisabledWorkflowModeSkipsWorkflowPersistencePath) {
