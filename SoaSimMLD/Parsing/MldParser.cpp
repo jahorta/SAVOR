@@ -77,11 +77,11 @@ constexpr std::uint32_t makeTag(const char a, const char b, const char c, const 
     return true;
 }
 
-void addHistogram(std::unordered_map<std::uint32_t, std::size_t>& histogram, const ParseOptions& options, std::uint32_t fxn) {
+void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const ParseOptions& options, const std::string& fxnName) {
     if (!options.emitFxnHistogram) {
         return;
     }
-    ++histogram[fxn];
+    ++histogram[fxnName];
 }
 
 void parseNjChunkStream(std::span<const std::uint8_t> bytes,
@@ -204,7 +204,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         return result;
     }
 
-    std::unordered_map<std::uint32_t, std::size_t> histogram{};
+    std::unordered_map<std::string, std::size_t> histogram{};
     std::unordered_map<std::uint32_t, std::size_t> chunkTypeCounts{};
     if (payload.size() < 0x14) {
         result.diagnostics.push_back(ParseDiagnostic{
@@ -278,7 +278,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     }
 
     for (const auto& entry : entries) {
-        addHistogram(histogram, options, entry.tblId);
+        addHistogram(histogram, options, entry.fxnName);
 
         if ((entry.tblId & 0xF0000000U) == 0x10000000U) {
             model::CollisionVolume collision{};
@@ -509,7 +509,7 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     if (!parseResult.fxnHistogram.empty()) {
         out << "fxnHistogram:" << '\n';
         for (const auto& [fxn, count] : parseResult.fxnHistogram) {
-            out << "  - 0x" << std::hex << fxn << std::dec << ": " << count << '\n';
+            out << "  - " << fxn << ": " << count << '\n';
         }
     }
 
