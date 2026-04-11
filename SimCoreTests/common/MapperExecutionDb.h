@@ -12,6 +12,9 @@ public:
     simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override { return nullptr; }
     simcore::db::execution::workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() override { return nullptr; }
     simcore::db::execution::jobs::IJobEventCommandService* JobCommandService() override { return &job_events; }
+    bool CreateWorkflowInstance(const simcore::db::execution::workflow::WorkflowCreateInstanceCommand&, std::int64_t*, std::string*) override {
+        return false;
+    }
     bool CreateJobSet(const simcore::db::CreateJobSetCommand&, std::int64_t*, std::string*) override { return false; }
     bool EnqueueJob(const simcore::db::EnqueueJobCommand&, std::int64_t*, std::string*) override { return false; }
     std::optional<simcore::db::ExecutionJobRecord> GetJob(std::int64_t) const override { return std::nullopt; }
@@ -38,4 +41,3 @@ public:
 
     RecordingJobEventCommandService job_events;
 };
-

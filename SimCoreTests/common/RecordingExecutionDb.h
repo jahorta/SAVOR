@@ -23,6 +23,12 @@ public:
     simcore::db::execution::jobs::IJobEventCommandService* JobCommandService() override {
         return &job_command_service;
     }
+    bool CreateWorkflowInstance(
+        const simcore::db::execution::workflow::WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out = nullptr,
+        std::string* error_out = nullptr) override {
+        return command_service.CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+    }
     bool CreateJobSet(const simcore::db::CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override {
         (void)command;
         const auto job_set_id = ++next_job_set_id_;

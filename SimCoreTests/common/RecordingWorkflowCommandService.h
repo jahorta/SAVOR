@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -7,6 +8,20 @@
 
 class RecordingWorkflowCommandService final : public simcore::db::execution::workflow::IWorkflowOrchestrationCommandService {
 public:
+    bool CreateWorkflowInstance(
+        const simcore::db::execution::workflow::WorkflowCreateInstanceCommand& command,
+        std::int64_t* workflow_instance_id_out,
+        std::string* error_out) override {
+        create_workflow_instance_calls.push_back(command);
+        const auto workflow_instance_id = ++next_workflow_instance_id_;
+        if (workflow_instance_id_out) {
+            *workflow_instance_id_out = workflow_instance_id;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
     bool RetryFailedStep(const simcore::db::execution::workflow::WorkflowRetryStepCommand&, std::string*) override { return true; }
     bool SkipStep(const simcore::db::execution::workflow::WorkflowSkipStepCommand&, std::string*) override { return true; }
     bool CancelWorkflowInstance(const simcore::db::execution::workflow::WorkflowCancelInstanceCommand&, std::string*) override { return true; }
@@ -51,4 +66,8 @@ public:
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;
     std::vector<simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand> input_events;
     std::vector<simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand> lifecycle_events;
+    std::vector<simcore::db::execution::workflow::WorkflowCreateInstanceCommand> create_workflow_instance_calls;
+
+private:
+    std::int64_t next_workflow_instance_id_ = 100;
 };
