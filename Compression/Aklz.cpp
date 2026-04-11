@@ -114,7 +114,9 @@ AklzDecodeResult decompress(std::span<const std::uint8_t> input, std::uint32_t m
     constexpr std::uint32_t kWindowMask = kWindowSize - 1u;
     constexpr std::uint32_t kLengthMask = (1u << 4u) - 1u;
     constexpr std::uint32_t kMinLength = 3u;
-    constexpr std::uint32_t kWindowStart = 0u;
+    // AKLZ uses an LZSS-style 4 KiB ring buffer with a logical start position at 0xFEE.
+    // Offsets encoded in back-references are relative to that start.
+    constexpr std::uint32_t kWindowStart = 0xFEEu;
 
     std::vector<std::uint8_t> output;
     output.reserve(sz.decompressedSize);
