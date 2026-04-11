@@ -257,7 +257,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     for (std::size_t i = 0; i < entryCount; ++i) {
         const std::size_t entryOffset = entryTableOffset + (i * entrySize);
 
-        const auto entryOpt = model::parseIndexEntry(payload, i, entryOffset,
+        auto entryOpt = model::parseIndexEntry(payload, i, entryOffset,
             [&](const Vec3& value) {
                 return applyCoordinates(value, options.coordinates);
             },
