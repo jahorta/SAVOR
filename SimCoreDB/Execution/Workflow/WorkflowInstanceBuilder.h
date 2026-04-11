@@ -25,7 +25,7 @@ class WorkflowInstanceBuilder {
 public:
     WorkflowInstanceBuilder(
         const WorkflowDefinitionRegistry* registry,
-        const WorkflowInstanceValidator* validator = nullptr);
+        const WorkflowInstanceValidator* validator);
 
     bool BuildCreateCommand(
         const WorkflowDefinitionInstantiationInput& input,
