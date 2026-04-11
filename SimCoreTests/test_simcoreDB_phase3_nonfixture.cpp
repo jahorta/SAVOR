@@ -18,7 +18,7 @@
 #include "Runner/Parallel/SimCoreDB/WorkflowDispatchCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowMaterializationService.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
-#include "../SimCoreDBValidation/DbPreparer.h"
+#include "common/DbPreparer.h"
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {

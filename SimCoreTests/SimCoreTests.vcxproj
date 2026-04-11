@@ -125,7 +125,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\SimCoreDBValidation\DbPreparer.cpp" />
+    <ClCompile Include="common\DbPreparer.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
