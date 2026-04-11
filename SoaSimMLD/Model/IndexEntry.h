@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <algorithm>
+#include <utility>
 
 namespace soasim::mld::model {
 
@@ -142,7 +143,7 @@ inline void removeZeroAddresses(U32List& list) {
     entry.groundAddresses = makeU32List(bytes, *ptrGrounds, indexPrefix + ".grounds", warningSink);
     entry.motionAddresses = makeU32List(bytes, *ptrMotions, indexPrefix + ".motions", warningSink);
 
-    return entry;
+    return std::move(entry);
 }
 
 
