@@ -84,6 +84,40 @@ struct DecodedInstruction {
     return value == 0x7f7fffff || value == 0x00800000 || value == 0x7fffffff || value == kScptStopCode;
 }
 
+[[nodiscard]] bool isStringSection(std::span<const std::uint8_t> sectionBytes, Endian baseEndian) {
+    if (sectionBytes.size() < 12u) {
+        return false;
+    }
+
+    const auto otherEndian = baseEndian == Endian::Big ? Endian::Little : Endian::Big;
+    const auto firstWordBase = readU32(sectionBytes, 0, baseEndian);
+    const auto firstWordOther = readU32(sectionBytes, 0, otherEndian);
+
+    Endian chosenEndian = baseEndian;
+    if (firstWordBase != 0x00000009u) {
+        if (firstWordOther != 0x00000009u) {
+            return false;
+        }
+        chosenEndian = otherEndian;
+    }
+
+    std::uint32_t cursor = 0;
+    while (cursor + 4u <= sectionBytes.size()) {
+        const auto currentWord = readU32(sectionBytes, cursor, chosenEndian);
+        if (currentWord == kScptStopCode) {
+            break;
+        }
+        cursor += 4u;
+    }
+
+    if (cursor + 8u > sectionBytes.size()) {
+        return false;
+    }
+
+    const auto nextWord = readU32(sectionBytes, cursor + 4u, chosenEndian);
+    return nextWord > kMaxOpcodeProbe;
+}
+
 [[nodiscard]] std::uint32_t scptInputActionPrefix(std::uint32_t value) {
     if (value >= 0x50000000) {
         return 0x50000000;
@@ -454,6 +488,14 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
 
         const auto sectionBytes = dataBytes.subspan(sectionStart, sectionEnd - sectionStart);
         if (sectionBytes.empty()) {
+            result.file.sections.push_back(std::move(section));
+            continue;
+        }
+
+        if (isStringSection(sectionBytes, indexEndian)) {
+            section.isStringSection = true;
+            section.heuristicEvidence.notes.push_back(
+                "Detected string section from SALSA-style pattern (9 ... 0x1d followed by non-opcode payload); skipped decode.");
             result.file.sections.push_back(std::move(section));
             continue;
         }

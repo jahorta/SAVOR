@@ -19,6 +19,7 @@ std::string formatParseSummary(const SctParseResult& parseResult) {
 
     for (const auto& section : parseResult.file.sections) {
         out << "- [" << section.id.index << "] " << section.id.name
+            << " isStringSection=" << (section.isStringSection ? "true" : "false")
             << " instructions=" << section.instructions.size()
             << " blocks=" << section.blocks.size()
             << " unknownRegions=" << section.unknownRegions.size() << '\n';
