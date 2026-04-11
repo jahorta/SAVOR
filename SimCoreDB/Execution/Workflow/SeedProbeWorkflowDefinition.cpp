@@ -11,13 +11,13 @@ namespace simcore::db::execution::workflow {
 WorkflowDefinition BuildSeedProbeChainDefinition() {
     WorkflowDefinition definition;
     definition.workflow_kind = "SEED_PROBE_CHAIN";
-    definition.initial_inputs = { "general.transition_savestate" };
+    definition.initial_inputs = { "sp_probe_run.probe_run_id"};
     definition.steps = {
         WorkflowStepDefinition{
             .step_key = "Neutral",
             .step_kind = "seedprobe.neutral",
             .dependencies = {},
-            .required_inputs = { "general.transition_savestate" },
+            .required_inputs = { "general.transition_savestate_id" },
             .provided_outputs = { "seedprobe.neutral.seed_context" },
             .max_attempts = 2 },
         WorkflowStepDefinition{
@@ -34,7 +34,6 @@ WorkflowDefinition BuildSeedProbeChainDefinition() {
             .required_inputs = { "seedprobe.grid.seed_evidence" },
             .provided_outputs = { "general.input_frame_list" },
             .max_attempts = 2 },
-        WorkflowStepDefinition{ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .max_attempts = 1 },
     };
     return definition;
 }

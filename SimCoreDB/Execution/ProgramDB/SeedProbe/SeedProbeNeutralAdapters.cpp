@@ -55,19 +55,8 @@ JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::i
     persisted.program_ref_kind = kProgramRefKind;
     persisted.program_version = kProgramVersion;
     persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id);
-
-    std::int64_t probe_run_id = 0;
-    if (analysis_db_ != nullptr) {
-        std::string analysis_error;
-        if (analysis_db_->CreateSeedProbeRunForSet(domain_ref_id, &probe_run_id, &analysis_error)) {
-            persisted.program_ref_id = probe_run_id;
-            persisted.fingerprint = BuildNeutralFingerprint(probe_run_id);
-        } else {
-            persisted.program_ref_id = domain_ref_id;
-        }
-    } else {
-        persisted.program_ref_id = domain_ref_id;
-    }
+    persisted.program_ref_id = domain_ref_id;
+    std::int64_t probe_run_id = domain_ref_id;
 
     if (execution_db_ != nullptr) {
         std::string error;
