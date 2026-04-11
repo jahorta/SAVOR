@@ -145,6 +145,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <None Include="decompressed_inputs\.gitkeep" />
     <None Include="inputs\.gitkeep" />
     <None Include="parsed\.gitkeep" />
   </ItemGroup>
