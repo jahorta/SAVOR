@@ -25,6 +25,9 @@
     <ClInclude Include="Parsing\EntryHandlers.h">
       <Filter>Parsing</Filter>
     </ClInclude>
+    <ClInclude Include="Parsing\NJCMParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
       <Filter>Parsing</Filter>
     </ClInclude>
@@ -40,6 +43,9 @@
       <Filter>EntryPoint</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldBinaryReader.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMParser.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">

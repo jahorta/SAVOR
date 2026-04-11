@@ -122,17 +122,39 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     constexpr std::uint32_t tagNmdm = makeTag('N', 'M', 'D', 'M');
     constexpr std::uint32_t tagNcam = makeTag('N', 'C', 'A', 'M');
 
+    struct PendingNjcm {
+        std::size_t chunkStart = 0;
+        std::size_t chunkDataSize = 0;
+        bool chunkSizeLittleEndian = true;
+        std::vector<std::uint8_t> data{};
+    };
+    std::optional<PendingNjcm> pendingNjcm{};
+
     while (reader.remaining() >= 8) {
         const std::size_t chunkStart = reader.position();
         const auto tag = reader.readU32LE();
-        const auto chunkSize = reader.readU32LE();
-        if (!tag.has_value() || !chunkSize.has_value()) {
+        const auto chunkSizeLe = reader.readU32LE();
+        if (!tag.has_value() || !chunkSizeLe.has_value()) {
             break;
         }
         ++chunkTypeCounts[*tag];
 
         const std::size_t dataStart = reader.position();
-        const std::size_t dataEnd = dataStart + static_cast<std::size_t>(*chunkSize);
+        std::size_t chunkSize = static_cast<std::size_t>(*chunkSizeLe);
+        bool chunkSizeLittleEndian = true;
+        std::size_t dataEnd = dataStart + chunkSize;
+        if (dataEnd > reader.size()) {
+            const std::uint32_t sizeBe = ((*chunkSizeLe & 0x000000FFU) << 24) |
+                ((*chunkSizeLe & 0x0000FF00U) << 8) |
+                ((*chunkSizeLe & 0x00FF0000U) >> 8) |
+                ((*chunkSizeLe & 0xFF000000U) >> 24);
+            const std::size_t beEnd = dataStart + static_cast<std::size_t>(sizeBe);
+            if (beEnd <= reader.size()) {
+                chunkSize = static_cast<std::size_t>(sizeBe);
+                dataEnd = beEnd;
+                chunkSizeLittleEndian = false;
+            }
+        }
         if (dataEnd > reader.size()) {
             result.diagnostics.push_back(ParseDiagnostic{
                 .severity = ParseDiagnostic::Severity::Error,
@@ -142,7 +164,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
 
         if (*tag == tagGrnd) {
-            MldBinaryReader chunkReader(payload.subspan(dataStart, *chunkSize));
+            MldBinaryReader chunkReader(payload.subspan(dataStart, chunkSize));
             const auto grndId = chunkReader.readU32LE();
             const auto vertexCount = chunkReader.readU32LE();
             const auto indexCount = chunkReader.readU32LE();
@@ -199,7 +221,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 result.world.grndSurfaces.push_back(std::move(surface));
             }
         } else if (*tag == tagGobj) {
-            MldBinaryReader chunkReader(payload.subspan(dataStart, *chunkSize));
+            MldBinaryReader chunkReader(payload.subspan(dataStart, chunkSize));
             const auto entryId = chunkReader.readU32LE();
             const auto fxn = chunkReader.readU32LE();
             if (!entryId.has_value() || !fxn.has_value()) {
@@ -254,14 +276,31 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 }
             }
         } else if (*tag == tagNjcm) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Info,
-                .message = "NJCM chunk encountered at offset " + std::to_string(chunkStart) +
-                    "; decode is deferred until chunk structure is mirrored from SoAMLDs reference.",
-            });
+            PendingNjcm state{};
+            state.chunkStart = chunkStart;
+            state.chunkDataSize = chunkSize;
+            state.chunkSizeLittleEndian = chunkSizeLittleEndian;
+            state.data.assign(payload.begin() + static_cast<std::ptrdiff_t>(dataStart),
+                payload.begin() + static_cast<std::ptrdiff_t>(dataEnd));
+            pendingNjcm = std::move(state);
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
             // Known Ninja chunk families for MLD content. Keep counted for diagnostics;
             // decode for these tags can be added incrementally.
+            if (*tag == tagPof0 && pendingNjcm.has_value()) {
+                const auto pofSpan = payload.subspan(dataStart, chunkSize);
+                auto fixed = pendingNjcm->data;
+                const auto deltas = decodePof0Deltas(pofSpan);
+                applyPof0Fixups(fixed, deltas,
+                    static_cast<std::uint32_t>(pendingNjcm->chunkStart),
+                    true);
+                auto summary = analyzeNjcmChunk(std::span<const std::uint8_t>(fixed.data(), fixed.size()),
+                    pendingNjcm->chunkStart,
+                    pendingNjcm->chunkDataSize,
+                    pendingNjcm->chunkSizeLittleEndian,
+                    true);
+                result.njcmChunks.push_back(summary);
+                pendingNjcm.reset();
+            }
         } else {
             ++unknownChunkCount;
         }
@@ -269,6 +308,36 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         if (!reader.seek(dataEnd)) {
             break;
         }
+    }
+
+    if (pendingNjcm.has_value()) {
+        auto summary = analyzeNjcmChunk(
+            std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
+            pendingNjcm->chunkStart,
+            pendingNjcm->chunkDataSize,
+            pendingNjcm->chunkSizeLittleEndian,
+            false);
+        result.njcmChunks.push_back(summary);
+        pendingNjcm.reset();
+    }
+
+    for (const auto& njcm : result.njcmChunks) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "NJCM decode summary @ " + std::to_string(njcm.chunkOffset) +
+                ": size=" + std::to_string(njcm.chunkDataSize) +
+                ", sizeEndian=" + std::string(njcm.chunkSizeLittleEndian ? "LE" : "BE") +
+                ", payloadEndian=" + std::string(njcm.payloadLittleEndian ? "LE" : "BE") +
+                ", imageBase=" + std::to_string(njcm.imageBase) +
+                ", pof0=" + std::string(njcm.usedPof0Fixup ? "yes" : "no") +
+                ", objects=" + std::to_string(njcm.objectCount) +
+                ", attaches=" + std::to_string(njcm.attachCount) +
+                ", vchunks=" + std::to_string(njcm.vertexChunkCount) +
+                ", pchunks=" + std::to_string(njcm.polyChunkCount) +
+                ", verts=" + std::to_string(njcm.decodedVertexCount) +
+                ", triEst=" + std::to_string(njcm.decodedTriangleCount) +
+                ", score=" + std::to_string(njcm.score),
+        });
     }
 
     result.searchWorld.surfaces.reserve(result.world.grndSurfaces.size());
@@ -306,6 +375,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", collisions=" + std::to_string(result.world.collisions.size()) +
             ", triggers=" + std::to_string(result.world.triggers.size()) +
             ", unknownEntries=" + std::to_string(result.world.unknownEntries.size()) +
+            ", njcmChunks=" + std::to_string(result.njcmChunks.size()) +
             ", unknownChunks=" + std::to_string(unknownChunkCount) +
             ", chunkTypes=" + std::to_string(result.chunkTypeHistogram.size()),
     });
