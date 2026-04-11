@@ -35,8 +35,7 @@ bool RunSeedProbeRealWorkerSmoke(const CliOptions& options, const char* argv0, s
     DBService service(
         db_paths,
         MigrationSourceOptions{
-            .source_kind = MigrationSourceKind::Filesystem,
-            .filesystem_root = migration_root,
+            .source_kind = MigrationSourceKind::Embedded,
         });
 
     std::string err;
