@@ -34,6 +34,7 @@ void applyPof0Fixups(std::vector<std::uint8_t>& target,
     std::size_t chunkOffset,
     std::size_t chunkDataSize,
     bool chunkSizeLittleEndian,
-    bool usedPof0Fixup);
+    bool usedPof0Fixup,
+    std::span<const std::uint8_t> pof0Data = {});
 
 } // namespace soasim::mld::parsing

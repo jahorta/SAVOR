@@ -241,7 +241,8 @@ NjcmChunkSummary analyzeNjcmChunk(std::span<const std::uint8_t> njcmData,
     const std::size_t chunkOffset,
     const std::size_t chunkDataSize,
     const bool chunkSizeLittleEndian,
-    const bool usedPof0Fixup) {
+    const bool usedPof0Fixup,
+    std::span<const std::uint8_t> pof0Data) {
     NjcmChunkSummary best{};
     best.chunkOffset = chunkOffset;
     best.chunkDataSize = chunkDataSize;
@@ -255,9 +256,18 @@ NjcmChunkSummary analyzeNjcmChunk(std::span<const std::uint8_t> njcmData,
         static_cast<std::uint32_t>(chunkOffset + 8U),
     };
 
+    const std::vector<std::size_t> deltas = pof0Data.empty() ? std::vector<std::size_t>{} : decodePof0Deltas(pof0Data);
+
     for (const bool payloadLe : endianModes) {
         for (const auto imageBase : imageBases) {
-            const auto metrics = scoreNjcmCandidate(njcmData, payloadLe, imageBase);
+            std::vector<std::uint8_t> candidateData(njcmData.begin(), njcmData.end());
+            if (!deltas.empty()) {
+                applyPof0Fixups(candidateData, deltas, imageBase, payloadLe);
+            }
+
+            const auto metrics = scoreNjcmCandidate(std::span<const std::uint8_t>(candidateData.data(), candidateData.size()),
+                payloadLe,
+                0U);
             if (metrics.score < best.score) {
                 continue;
             }
