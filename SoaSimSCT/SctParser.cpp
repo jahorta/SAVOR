@@ -1,5 +1,7 @@
 #include "SctParser.h"
 
+#include "../Compression/Aklz.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -254,21 +256,37 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
 
-    if (bytes.empty()) {
+    std::vector<std::uint8_t> decoded;
+    std::span<const std::uint8_t> payload = bytes;
+    if (soasim::compression::aklz::isAklz(bytes)) {
+        auto decodedResult = soasim::compression::aklz::decompress(bytes);
+        if (!decodedResult.ok()) {
+            result.diagnostics.push_back({
+                "AKLZ decompression failed: " + std::string(soasim::compression::aklz::errorToString(decodedResult.error)),
+                0
+            });
+            return result;
+        }
+
+        decoded = std::move(decodedResult.bytes);
+        payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
+    }
+
+    if (payload.empty()) {
         result.diagnostics.push_back({"SCT parse skipped: input byte buffer is empty.", 0});
         return result;
     }
 
-    if (bytes.size() < kHeaderSize) {
+    if (payload.size() < kHeaderSize) {
         result.diagnostics.push_back({"SCT parse failed: file too small for header and index count.", 0});
         return result;
     }
 
-    const auto indexEndian = detectIndexEndian(bytes);
-    const auto sectionCount = readU32(bytes, 8, indexEndian);
+    const auto indexEndian = detectIndexEndian(payload);
+    const auto sectionCount = readU32(payload, 8, indexEndian);
     const std::size_t indexSize = static_cast<std::size_t>(sectionCount) * kIndexEntrySize;
 
-    if (kHeaderSize + indexSize > bytes.size()) {
+    if (kHeaderSize + indexSize > payload.size()) {
         result.diagnostics.push_back({"SCT parse failed: index table exceeds file bounds.", 8});
         return result;
     }
@@ -283,8 +301,8 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
 
     for (std::uint32_t i = 0; i < sectionCount; ++i) {
         const auto rowOffset = kHeaderSize + (static_cast<std::size_t>(i) * kIndexEntrySize);
-        const auto start = readU32(bytes, rowOffset, indexEndian);
-        auto name = readIndexName(bytes, rowOffset + kIndexNameOffset);
+        const auto start = readU32(payload, rowOffset, indexEndian);
+        auto name = readIndexName(payload, rowOffset + kIndexNameOffset);
         if (name.empty()) {
             name = "section_" + std::to_string(i);
         }
@@ -292,8 +310,8 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     }
 
     const auto dataStart = static_cast<std::uint32_t>(kHeaderSize + indexSize);
-    const auto dataSize = static_cast<std::uint32_t>(bytes.size() - dataStart);
-    const auto dataBytes = bytes.subspan(dataStart);
+    const auto dataSize = static_cast<std::uint32_t>(payload.size() - dataStart);
+    const auto dataBytes = payload.subspan(dataStart);
 
     for (std::uint32_t i = 0; i < rows.size(); ++i) {
         const auto sectionStart = rows[i].start;

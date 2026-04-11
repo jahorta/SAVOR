@@ -36,6 +36,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimFileParsing", "SoaSim
 	EndProjectSection
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SimCoreDBSchemaExport", "SimCoreDBSchemaExport\SimCoreDBValidation.vcxproj", "{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Compression", "Compression\Compression.vcxproj", "{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -132,6 +134,14 @@ Global
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x64.Build.0 = Release|x64
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x86.ActiveCfg = Release|Win32
 		{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}.Release|x86.Build.0 = Release|Win32
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x64.ActiveCfg = Debug|x64
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x64.Build.0 = Debug|x64
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x86.ActiveCfg = Debug|Win32
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Debug|x86.Build.0 = Debug|Win32
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x64.ActiveCfg = Release|x64
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x64.Build.0 = Release|x64
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x86.ActiveCfg = Release|Win32
+		{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
