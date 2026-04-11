@@ -1,5 +1,7 @@
 #include "MldBinaryReader.h"
 
+#include <cstring>
+
 namespace soasim::mld::parsing {
 
 std::optional<std::uint8_t> MldBinaryReader::readU8() {
@@ -58,6 +60,17 @@ std::optional<std::uint32_t> MldBinaryReader::readU32BE() {
     return value;
 }
 
+std::optional<float> MldBinaryReader::readF32LE() {
+    const auto bits = readU32LE();
+    if (!bits.has_value()) {
+        return std::nullopt;
+    }
+
+    float value = 0.0f;
+    std::memcpy(&value, &(*bits), sizeof(float));
+    return value;
+}
+
 std::optional<std::span<const std::uint8_t>> MldBinaryReader::readBytes(std::size_t count) {
     if (!canRead(count)) {
         return std::nullopt;
@@ -66,6 +79,19 @@ std::optional<std::span<const std::uint8_t>> MldBinaryReader::readBytes(std::siz
     const std::span<const std::uint8_t> range = bytes_.subspan(position_, count);
     position_ += count;
     return range;
+}
+
+bool MldBinaryReader::seek(std::size_t offset) {
+    if (offset > bytes_.size()) {
+        return false;
+    }
+
+    position_ = offset;
+    return true;
+}
+
+std::size_t MldBinaryReader::remaining() const {
+    return bytes_.size() - position_;
 }
 
 } // namespace soasim::mld::parsing
