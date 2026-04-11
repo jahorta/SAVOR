@@ -399,11 +399,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         if (grndOffset + 8 > payload.size()) {
             continue;
         }
-        if (common::readU32AtLE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
+        if (common::readU32AtBE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
             MldBinaryReader chunkReader(payload.subspan(grndOffset + 8));
-            const auto grndId = chunkReader.readU32LE();
-            const auto vertexCount = chunkReader.readU32LE();
-            const auto indexCount = chunkReader.readU32LE();
+            const auto grndId = chunkReader.readU32BE();
+            const auto vertexCount = chunkReader.readU32BE();
+            const auto indexCount = chunkReader.readU32BE();
             if (!grndId.has_value() || !vertexCount.has_value() || !indexCount.has_value()) {
                 continue;
             }
@@ -432,7 +432,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 surface.mesh.vertices.push_back(v);
             }
             for (std::size_t ii = 0; ii < idxCount; ++ii) {
-                const auto idx = chunkReader.readU32LE();
+                const auto idx = chunkReader.readU32BE();
                 if (!idx.has_value()) {
                     break;
                 }
