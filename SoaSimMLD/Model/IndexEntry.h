@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <algorithm>
 
 namespace soasim::mld::model {
 
@@ -32,6 +33,12 @@ struct IndexEntry {
 
 using IndexEntryCoordinateMapper = std::function<Vec3(const Vec3&)>;
 using IndexEntryWarningSink = std::function<void(const std::string&)>;
+
+inline void removeZeroAddresses(U32List& list) {
+    list.values.erase(
+        std::remove(list.values.begin(), list.values.end(), 0U),
+        list.values.end());
+}
 
 [[nodiscard]] inline std::string readFxnString(std::span<const std::uint8_t> bytes, const std::size_t offset) {
     constexpr std::size_t fxnLen = 0x14;
@@ -110,6 +117,9 @@ using IndexEntryWarningSink = std::function<void(const std::string&)>;
     entry.objectAddresses = makeU32List(bytes, *ptrObjects, indexPrefix + ".objects", warningSink);
     entry.groundAddresses = makeU32List(bytes, *ptrGrounds, indexPrefix + ".grounds", warningSink);
     entry.motionAddresses = makeU32List(bytes, *ptrMotions, indexPrefix + ".motions", warningSink);
+    removeZeroAddresses(*entry.objectAddresses);
+    removeZeroAddresses(*entry.groundAddresses);
+    removeZeroAddresses(*entry.motionAddresses);
 
     return entry;
 }
