@@ -321,9 +321,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 ", groundLinks=" + std::to_string(entry.groundLinks->values.size()) +
                 ", params2=" + std::to_string(entry.paramList2->values.size()) +
                 ", functionParams=" + std::to_string(entry.functionParameters->values.size()) +
-                ", objects=" + std::to_string(entry.objectAddresses->values.size()) +
-                ", grounds=" + std::to_string(entry.groundAddresses->values.size()) +
-                ", motions=" + std::to_string(entry.motionAddresses->values.size()),
+                ", objects=" + std::to_string(entry.objectCount) +
+                ", grounds=" + std::to_string(entry.groundCount) +
+                ", motions=" + std::to_string(entry.motionCount),
         });
 
         for (const auto objectAddress : entry.objectAddresses->values) {

@@ -50,16 +50,21 @@ struct IndexEntry {
     std::unique_ptr<U32List> objectAddresses{};
     std::unique_ptr<U32List> groundAddresses{};
     std::unique_ptr<U32List> motionAddresses{};
+    std::size_t objectCount = 0;
+    std::size_t groundCount = 0;
+    std::size_t motionCount = 0;
     std::uint32_t texturesPointer = 0;
 };
 
 using IndexEntryCoordinateMapper = std::function<Vec3(const Vec3&)>;
 using IndexEntryWarningSink = std::function<void(const std::string&)>;
 
-inline void removeZeroAddresses(U32List& list) {
-    list.values.erase(
-        std::remove(list.values.begin(), list.values.end(), 0U),
-        list.values.end());
+inline void countNotZero(U32List& list, std::size_t& count) {
+    count = 0;
+    for (auto item : list.values) {
+        if (item == 0u) continue;
+        count++;
+    }
 }
 
 [[nodiscard]] inline std::string readFxnString(std::span<const std::uint8_t> bytes, const std::size_t offset) {
@@ -142,6 +147,9 @@ inline void removeZeroAddresses(U32List& list) {
     entry.objectAddresses = makeU32List(bytes, *ptrObjects, indexPrefix + ".objects", warningSink);
     entry.groundAddresses = makeU32List(bytes, *ptrGrounds, indexPrefix + ".grounds", warningSink);
     entry.motionAddresses = makeU32List(bytes, *ptrMotions, indexPrefix + ".motions", warningSink);
+    countNotZero(*entry.objectAddresses.get(), entry.objectCount);
+    countNotZero(*entry.groundAddresses.get(), entry.groundCount);
+    countNotZero(*entry.motionAddresses.get(), entry.motionCount);
 
     return std::move(entry);
 }
