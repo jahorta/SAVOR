@@ -1,5 +1,6 @@
 #include "../SoaSimMLD/SoaSimMLD.h"
 #include "../SoaSimSCT/SoaSimSCT.h"
+#include "../Compression/Aklz.h"
 
 #include <algorithm>
 #include <cctype>
@@ -28,6 +29,16 @@ std::vector<std::uint8_t> readAllBytes(const std::filesystem::path& path) {
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
     in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     return bytes;
+}
+
+bool writeAllBytes(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return false;
+    }
+
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return out.good();
 }
 
 std::string toLowerCopy(std::string value) {
@@ -101,8 +112,10 @@ int main(int argc, char** argv) {
 
     const std::filesystem::path inputDir = argc > 1 ? argv[1] : std::filesystem::path(source_dir / "inputs");
     const std::filesystem::path outputDir = argc > 2 ? argv[2] : std::filesystem::path(source_dir / "parsed");
+    const std::filesystem::path decompressedDir = source_dir / "decompressed_inputs";
 
     std::filesystem::create_directories(outputDir);
+    std::filesystem::create_directories(decompressedDir);
 
     if (!std::filesystem::exists(inputDir) || !std::filesystem::is_directory(inputDir)) {
         std::cerr << "Input directory not found: " << inputDir << "\n";
@@ -123,6 +136,20 @@ int main(int argc, char** argv) {
         const auto bytes = readAllBytes(entry.path());
         if (bytes.empty()) {
             continue;
+        }
+
+        const bool isSupportedExtension = extension == ".sct" || extension == ".mld";
+        if (isSupportedExtension && soasim::compression::aklz::isAklz(bytes)) {
+            auto decodedResult = soasim::compression::aklz::decompress(bytes);
+            if (!decodedResult.ok()) {
+                std::cerr << "AKLZ decompression failed for " << entry.path().string()
+                          << ": " << soasim::compression::aklz::errorToString(decodedResult.error) << "\n";
+            } else {
+                const auto decompressedPath = decompressedDir / entry.path().filename();
+                if (!writeAllBytes(decompressedPath, std::span<const std::uint8_t>(decodedResult.bytes.data(), decodedResult.bytes.size()))) {
+                    std::cerr << "Failed to write decompressed file: " << decompressedPath.string() << "\n";
+                }
+            }
         }
 
         if (extension == ".sct") {
