@@ -465,42 +465,11 @@ The following images should be committed next to this document once generated ex
 
 ### Parsing pipeline
 
-![MLD parsing pipeline](mld_pipeline_flow.jpg)
-
-```mermaid
-flowchart TD
-    A[Dolphin disc extraction] --> B[Raw MLD bytes]
-    B --> C[AKLZ detect/decompress]
-    C --> D[MLD container parser]
-    D --> E[GRND parser]
-    D --> F[Entry parser by fxn]
-    D --> G[Ninja chunk parser when needed]
-    E --> H[WorldModel]
-    F --> H
-    G --> H
-    H --> I[Qt adapter]
-    I --> J[Qt 3D viewer scene]
-```
+<img source="./mld_pipeline_flow.jpg" alt="MLD Parsing Pipeline" />
 
 ### Viewer layering
 
 ![Viewer layer relationships](scene_graph_relationships.jpg)
-
-```mermaid
-flowchart LR
-    A[WorldModel] --> B[Ground layer]
-    A --> C[Link layer]
-    A --> D[Collision layer]
-    A --> E[Trigger layer]
-    A --> F[Unknown layer]
-    B --> G[Qt scene root]
-    C --> G
-    D --> G
-    E --> G
-    F --> G
-    G --> H[Selection / inspection]
-    G --> I[Route overlays]
-```
 
 ## Implementation phases
 
