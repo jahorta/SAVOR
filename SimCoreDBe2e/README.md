@@ -24,7 +24,7 @@ SimCoreDBe2e \
 Optional:
 
 - `--migration-root <path-to-SimCoreDB/migration>`
-- `--workspace-root <path>`
+- `--workspace-root <path>` (when omitted, uses `${TMP}/simcoredbe2e-default` and deletes that folder at startup)
 - `--worker-dir-root <path>`
 
 `SimCoreWorker.exe` is resolved from the same output directory as `SimCoreDBe2e`.

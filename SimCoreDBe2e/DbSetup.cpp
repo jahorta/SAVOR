@@ -1,7 +1,5 @@
 #include "DbSetup.h"
 
-#include <chrono>
-
 #include "Common/Types/UtcTimestamp.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowInstanceBuilder.h"
@@ -11,11 +9,14 @@ namespace simcore::e2e {
 using simcore::db::types::UtcNow;
 
 simcore::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
-    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / ("simcoredbe2e-" + std::to_string(stamp)));
+    const bool using_default_workspace = !options.workspace_root.has_value();
+    const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default");
 
     std::error_code ec;
+    if (using_default_workspace && std::filesystem::exists(root)) {
+        std::filesystem::remove_all(root, ec);
+    }
+
     std::filesystem::create_directories(root, ec);
     std::filesystem::create_directories(root / "object_store", ec);
     std::filesystem::create_directories(root / "archive_store", ec);
