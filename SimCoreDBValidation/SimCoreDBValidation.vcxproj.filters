@@ -13,40 +13,19 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SimCoreDBValidation.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ValidationPhase3.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ValidationPhase4.cpp">
+    <ClCompile Include="SimCoreDBSchemaExport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DbPreparer.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="ExecSql.h">
-      <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="ExportCurrentDbSchemas.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="DbPreparer.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="DbJSONL.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="ExportCurrentDbSchemas.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="ValidationPhase4.h">
-      <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
