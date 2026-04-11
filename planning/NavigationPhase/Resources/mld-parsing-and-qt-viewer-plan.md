@@ -465,7 +465,7 @@ The following images should be committed next to this document once generated ex
 
 ### Parsing pipeline
 
-![MLD Parsing Pipeline](mld_pipeline_flow.jpg =120x)
+![MLD Parsing Pipeline](mld_pipeline_flow.jpg)
 
 ### Viewer layering
 
