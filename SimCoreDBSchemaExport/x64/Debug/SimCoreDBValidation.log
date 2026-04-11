@@ -1,0 +1,19 @@
+﻿  Scanning sources for module dependencies...
+  DbPreparer.cpp
+  ExportCurrentDbSchemas.cpp
+  SimCoreDBValidation.cpp
+  ValidationPhase3.cpp
+  ValidationPhase4.cpp
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(29,48): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+  (compiling source file 'SimCoreDBValidation.cpp')
+  
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(57,59): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+  (compiling source file 'SimCoreDBValidation.cpp')
+  
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(58,53): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+  (compiling source file 'SimCoreDBValidation.cpp')
+  
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(102,38): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+  (compiling source file 'SimCoreDBValidation.cpp')
+  
+  SimCoreDBValidation.vcxproj -> C:\Users\jahor\source\repos\jahorta\SOASim\bin\x64\Debug\SimCoreDBValidation.exe

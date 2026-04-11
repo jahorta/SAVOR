@@ -13,9 +13,6 @@
 
 #include <sqlite3.h>
 
-#include "ValidationPhase3.h"
-#include "ValidationPhase4.h"
-#include "ValidationResult.h"
 #include "Common/Migrations/MigrationRunner.h"
 #include "Common/Events/EventPayloadDispatch.h"
 #include "Common/Events/EventPayloadValidation.h"
@@ -106,6 +103,8 @@ int main(int argc, char** argv) {
         std::cerr << "failed exporting current db schemas: " << schema_export_error << "\n";
         return 1;
     }
+
+    std::cout << "\nDB Schemas Updated Successfully from: " << migration_root << "\n";
 
     return 0;
 }

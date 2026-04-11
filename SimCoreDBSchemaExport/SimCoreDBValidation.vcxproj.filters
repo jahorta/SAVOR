@@ -13,15 +13,20 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="SimCoreDBSchemaExport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\SimCoreDBSchemaExport\ExportCurrentDbSchemas.cpp">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="ExportCurrentDbSchemas.cpp">
+      <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="..\SimCoreDBSchemaExport\SimCoreDBSchemaExport.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ExportCurrentDbSchemas.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include=".db_schema_cur\ui_read.sql">
@@ -42,10 +47,5 @@
     <None Include=".db_schema_cur\state.sql">
       <Filter>Cur_Migrations</Filter>
     </None>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="..\SimCoreDBSchemaExport\ExportCurrentDbSchemas.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>

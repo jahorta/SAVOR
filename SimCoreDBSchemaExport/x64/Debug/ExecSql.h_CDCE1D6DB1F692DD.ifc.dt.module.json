@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "x64\\Debug\\ExecSql.obj",
+            "outputs": [
+                "x64\\Debug\\ExecSql.h_CDCE1D6DB1F692DD.ifc.dt.module.json",
+                "x64\\Debug\\ExecSql.h_CDCE1D6DB1F692DD.ifc.dt.d.json",
+                "x64\\Debug\\ExecSql.h.ifc"
+            ],
+            "provides": [
+                {
+                    "logical-name": "C:\\Users\\jahor\\source\\repos\\jahorta\\SOASim\\SimCoreDBValidation\\ExecSql.h",
+                    "source-path": "c:\\users\\jahor\\source\\repos\\jahorta\\soasim\\simcoredbvalidation\\execsql.h",
+                    "lookup-method": "absolute"
+                }
+            ],
+            "requires": []
+        }
+    ]
+}

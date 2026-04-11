@@ -22,7 +22,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{55E6CF1C-E6C8-4891-A27A-9B6B06DDE6F2}</ProjectGuid>
-    <RootNamespace>SimCoreDBSchemaExport</RootNamespace>
+    <RootNamespace>SimCoreDBValidation</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <ProjectName>SimCoreDBSchemaExport</ProjectName>
   </PropertyGroup>
@@ -142,8 +142,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\SimCoreDBSchemaExport\ExportCurrentDbSchemas.cpp" />
-    <ClCompile Include="..\SimCoreDBSchemaExport\SimCoreDBSchemaExport.cpp" />
+    <ClCompile Include="ExportCurrentDbSchemas.cpp" />
+    <ClCompile Include="SimCoreDBSchemaExport.cpp" />
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
@@ -155,15 +155,15 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ExportCurrentDbSchemas.h" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include=".db_schema_cur\analysis.sql" />
     <None Include=".db_schema_cur\archive.sql" />
     <None Include=".db_schema_cur\authoring.sql" />
     <None Include=".db_schema_cur\execution.sql" />
     <None Include=".db_schema_cur\state.sql" />
     <None Include=".db_schema_cur\ui_read.sql" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="..\SimCoreDBSchemaExport\ExportCurrentDbSchemas.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
