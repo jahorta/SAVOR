@@ -95,9 +95,9 @@ TEST(Stage3cSeedProbeDefinition, ValidatesStepContracts) {
     std::string err;
     EXPECT_TRUE(ValidateWorkflowDefinition(definition, &err)) << err;
     ASSERT_EQ(definition.initial_inputs.size(), 1u);
-    EXPECT_EQ(definition.initial_inputs[0], "general.transition_savestate");
+    EXPECT_EQ(definition.initial_inputs[0], "sp_probe_run.probe_run_id");
     ASSERT_FALSE(definition.steps[0].required_inputs.empty());
-    EXPECT_EQ(definition.steps[0].required_inputs[0], "general.transition_savestate");
+    EXPECT_EQ(definition.steps[0].required_inputs[0], "sp_probe_run.probe_run_id");
     ASSERT_FALSE(definition.steps[2].provided_outputs.empty());
     EXPECT_EQ(definition.steps[2].provided_outputs[0], "general.input_frame_list");
 

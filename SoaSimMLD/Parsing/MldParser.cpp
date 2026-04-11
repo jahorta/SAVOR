@@ -370,9 +370,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
     for (const auto objectAddress : uniqueObjectAddresses) {
         const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
-        const auto relNjcm = common::readU32AtLE(payload, objectOffset + 0x00);
-        const auto objectSizeField = common::readU32AtLE(payload, objectOffset + 0x04);
-        const auto relNjtl = common::readU32AtLE(payload, objectOffset + 0x08);
+        const auto relNjcm = common::readU32AtBE(payload, objectOffset + 0x00);
+        const auto objectSizeField = common::readU32AtBE(payload, objectOffset + 0x04);
+        const auto relNjtl = common::readU32AtBE(payload, objectOffset + 0x08);
         if (!relNjcm.has_value() || !objectSizeField.has_value() || !relNjtl.has_value()) {
             continue;
         }
