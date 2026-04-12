@@ -32,7 +32,14 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
 
         const LayerKind layer = static_cast<LayerKind>(item->data(0, kLayerRole).toInt());
         const int leafIndex = item->data(0, kLeafIndexRole).toInt();
-        const bool checked = item->checkState(0) == Qt::Checked;
+        const Qt::CheckState state = item->checkState(0);
+
+        if (leafIndex < 0 && state == Qt::PartiallyChecked) {
+            updateTriStateChecks();
+            return;
+        }
+
+        const bool checked = state == Qt::Checked;
 
         if (layer == LayerKind::All && leafIndex < 0) {
             emit allToggled(checked);
