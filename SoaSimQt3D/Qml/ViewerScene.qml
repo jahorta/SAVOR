@@ -166,12 +166,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.collisionMeshes
+            model: root.collisionMeshes.length
             delegate: Model {
-                visible: root.showCollisions && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.collisionMeshes.length)
+                    ? root.collisionMeshes[index]
+                    : ({})
+
+                visible: root.showCollisions && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     opacity: 0.65
                 }
