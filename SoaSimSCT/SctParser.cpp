@@ -640,6 +640,10 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                     }
                 }
 
+                if (!decoded.successors.empty()) {
+                    break;
+                }
+
                 const auto nextCursor = cursor + decoded.inst.sizeBytes;
                 if (decoded.blockTerminator) {
                     break;
