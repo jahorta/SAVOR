@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QString>
+#include <QQuickWidget>
 
 #include <memory>
 #include <optional>

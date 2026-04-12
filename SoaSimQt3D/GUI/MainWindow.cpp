@@ -11,7 +11,6 @@
 #include <QQuickItem>
 #include <QPlainTextEdit>
 #include <QQmlError>
-#include <QQuickWidget>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QUrl>
@@ -87,10 +86,8 @@ void MainWindow::buildUi() {
     quickView_->setResizeMode(QQuickWidget::SizeRootObjectToView);
     quickView_->rootContext()->setContextProperty("viewerWindow", this);
     connect(quickView_, &QQuickWidget::statusChanged, this, &MainWindow::handleQuickViewStatusChanged);
-    quickView_->setSource(QUrl(QStringLiteral("qrc:/qml/ViewerScene.qml")));
+    quickView_->setSource(QUrl(QStringLiteral("qrc:/qml/Qml/ViewerScene.qml")));
     setCentralWidget(quickView_);
-
-    syncLayerPropertiesToQml();
 
     setWindowTitle("SoaSimQt3D - Quick 3D Viewer");
     resize(1280, 820);
