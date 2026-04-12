@@ -35,16 +35,10 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="GUI\MainWindow.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\RuntimeSceneConverter.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\StaticMeshGeometry.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\VisibilityTreeWidget.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="Scene\BasicQtSceneBuilder.h">
@@ -61,5 +55,12 @@
     <QtRcc Include="SoaSimQt3D.qrc">
       <Filter>Resources</Filter>
     </QtRcc>
+  </ItemGroup>
+  <ItemGroup>
+    <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\VisibilityTreeWidget.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Qml\ViewerScene.qml" />
   </ItemGroup>
 </Project>
