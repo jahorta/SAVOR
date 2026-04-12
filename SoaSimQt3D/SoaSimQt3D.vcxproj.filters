@@ -61,6 +61,8 @@
     <QtMoc Include="GUI\VisibilityTreeWidget.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="Qml\ViewerScene.qml" />
+    <None Include="Qml\ViewerScene.qml">
+      <Filter>Resources</Filter>
+    </None>
   </ItemGroup>
 </Project>
