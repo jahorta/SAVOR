@@ -37,12 +37,12 @@
   </ImportGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="QtSettings">
     <QtInstall>6.10.2_msvc2022_64</QtInstall>
-    <QtModules>core;gui;widgets</QtModules>
+    <QtModules>core;gui;widgets;quick;quick3d;qml;quickwidgets</QtModules>
     <QtBuildConfig>debug</QtBuildConfig>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="QtSettings">
     <QtInstall>6.10.2_msvc2022_64</QtInstall>
-    <QtModules>core;gui;widgets</QtModules>
+    <QtModules>core;gui;widgets;quick;quick3d;qml;quickwidgets</QtModules>
     <QtBuildConfig>release</QtBuildConfig>
   </PropertyGroup>
   <Target Name="QtMsBuildNotFound" BeforeTargets="CustomBuild;ClCompile" Condition="!Exists('$(QtMsBuild)\qt.targets') or !Exists('$(QtMsBuild)\qt.props')">
@@ -113,12 +113,19 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="GUI\MainWindow.cpp" />
+    <ClCompile Include="GUI\RuntimeSceneConverter.cpp" />
+    <ClCompile Include="GUI\StaticMeshGeometry.cpp" />
     <ClCompile Include="Scene\BasicQtSceneBuilder.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\MainWindow.h" />
+    <ClInclude Include="GUI\RuntimeSceneConverter.h" />
+    <ClInclude Include="GUI\StaticMeshGeometry.h" />
     <ClInclude Include="Scene\BasicQtSceneBuilder.h" />
     <ClInclude Include="Scene\IQtSceneBuilder.h" />
     <ClInclude Include="Scene\QtSceneData.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SoaSimQt3D.qrc" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SoaSimMLD\SoaSimMLD.vcxproj">
