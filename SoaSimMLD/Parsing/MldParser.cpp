@@ -562,6 +562,9 @@ std::string formatParseSummary(const ParseResult& parseResult) {
             out << "  - offset=" << chunk.chunkOffset
                 << " bytes=" << chunk.chunkDataSize
                 << " score=" << chunk.score
+                << " payloadEndian=" << (chunk.payloadLittleEndian ? "LE" : "BE")
+                << " sizeEndian=" << (chunk.chunkSizeLittleEndian ? "LE" : "BE")
+                << " imageBase=" << chunk.imageBase
                 << " objects=" << chunk.objectCount
                 << " attaches=" << chunk.attachCount
                 << " verts=" << chunk.decodedVertexCount
