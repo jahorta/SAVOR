@@ -12,6 +12,7 @@
 #include <QQmlContext>
 #include <QQmlError>
 #include <QQuickItem>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QToolBar>
@@ -29,6 +30,7 @@ MainWindow::MainWindow(const scene::IQtSceneBuilder& sceneBuilder, QWidget* pare
     , sceneBuilder_(sceneBuilder) {
     buildUi();
     statusBar()->showMessage("Ready. Open an MLD file to render.");
+    tryLoadLastMldOnStartup();
 }
 
 void MainWindow::buildUi() {
@@ -148,7 +150,7 @@ void MainWindow::syncLayerPropertiesToQml() {
 void MainWindow::chooseAndLoadMldFile() {
     const QString path = QFileDialog::getOpenFileName(this,
         "Open MLD",
-        QString(),
+        readLastMldPath(),
         "Skies MLD Files (*.mld *.MLD);;All Files (*.*)");
     if (path.isEmpty()) {
         return;
@@ -200,8 +202,41 @@ bool MainWindow::loadMldFile(const QString& path) {
     applyRuntimeScene(std::move(runtimeScene));
 
     const QFileInfo info(path);
+    storeLastMldPath(path);
     statusBar()->showMessage(QString("Loaded %1").arg(info.fileName()));
     return true;
+}
+
+void MainWindow::tryLoadLastMldOnStartup() {
+    const QString lastPath = readLastMldPath();
+    if (lastPath.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo fileInfo(lastPath);
+    if (!fileInfo.exists()) {
+        appendDiagnosticLine(QString("Startup: saved MLD file not found: %1").arg(lastPath));
+        return;
+    }
+
+    if (!loadMldFile(lastPath)) {
+        appendDiagnosticLine(QString("Startup: failed to load saved MLD file: %1").arg(lastPath));
+    }
+}
+
+QString MainWindow::readLastMldPath() const {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    const QString path = settings.value(kLastMldPathKey).toString();
+    settings.endGroup();
+    return path;
+}
+
+void MainWindow::storeLastMldPath(const QString& path) const {
+    QSettings settings;
+    settings.beginGroup(kSettingsGroup);
+    settings.setValue(kLastMldPathKey, path);
+    settings.endGroup();
 }
 
 void MainWindow::applyRuntimeScene(RuntimeSceneData data) {

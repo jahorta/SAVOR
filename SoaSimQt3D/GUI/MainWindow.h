@@ -32,7 +32,13 @@ public slots:
 
 
 private:
+    static constexpr const char* kSettingsGroup = "MainWindow";
+    static constexpr const char* kLastMldPathKey = "LastMldPath";
+
     void buildUi();
+    void tryLoadLastMldOnStartup();
+    QString readLastMldPath() const;
+    void storeLastMldPath(const QString& path) const;
     void syncLayerPropertiesToQml();
     void handleQuickViewStatusChanged(QQuickWidget::Status status);
     void chooseAndLoadMldFile();
