@@ -1,6 +1,7 @@
 #include "RuntimeSceneConverter.h"
 
 #include <QColor>
+#include <QQuaternion>
 #include <QVariantMap>
 
 #include <algorithm>
@@ -80,6 +81,19 @@ std::unique_ptr<StaticMeshGeometry> createLineGeometry(const std::vector<PackedV
     return geom;
 }
 
+PackedVertex transformVertex(const scene::SceneVertex& source, const soasim::mld::model::Transform& transform) {
+    const QVector3D localPos(source.px * transform.scale.x,
+        source.py * transform.scale.y,
+        source.pz * transform.scale.z);
+    const QQuaternion rotation(transform.rotation.w,
+        transform.rotation.x,
+        transform.rotation.y,
+        transform.rotation.z);
+    const QVector3D worldPos = rotation.rotatedVector(localPos) + QVector3D(transform.position.x, transform.position.y, transform.position.z);
+    const QVector3D worldNrm = rotation.rotatedVector(QVector3D(source.nx, source.ny, source.nz)).normalized();
+    return makeVertex(worldPos.x(), worldPos.y(), worldPos.z(), worldNrm.x(), worldNrm.y(), worldNrm.z());
+}
+
 } // namespace
 
 RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::ParseResult& parse,
@@ -103,6 +117,7 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
     };
 
     std::unordered_map<std::uint32_t, QVector3D> grndCenters{};
+    std::unordered_map<std::uint32_t, std::vector<const scene::NjcmSceneNode*>> njcmByObjectAddress{};
 
     for (const auto& node : scene.grounds) {
         std::vector<PackedVertex> vertices{};
@@ -121,6 +136,10 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
         out.geometries.push_back(std::move(geom));
 
         grndCenters[node.grndId] = centroidFromVertices(node.mesh.vertices);
+    }
+
+    for (const auto& node : scene.njcmObjects) {
+        njcmByObjectAddress[node.objectAddress].push_back(&node);
     }
 
     std::set<std::pair<std::uint32_t, std::uint32_t>> linkDedup{};
@@ -158,42 +177,96 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
     }
 
     for (const auto& collision : parse.world.collisions) {
-        const QVector3D center(collision.transform.position.x,
-            collision.transform.position.y,
-            collision.transform.position.z);
-        const auto vertices = cubeVertices(center, kMarkerSize * 0.6f);
-        const auto indices = cubeIndices();
+        bool emittedAny = false;
+        for (const auto objectAddress : collision.objectAddresses) {
+            const auto it = njcmByObjectAddress.find(objectAddress);
+            if (it == njcmByObjectAddress.end()) {
+                continue;
+            }
+            for (const auto* meshNode : it->second) {
+                std::vector<PackedVertex> vertices{};
+                vertices.reserve(meshNode->mesh.vertices.size());
+                for (const auto& vtx : meshNode->mesh.vertices) {
+                    const auto worldVtx = transformVertex(vtx, collision.transform);
+                    vertices.push_back(worldVtx);
+                    updateBounds(worldVtx.px, worldVtx.py, worldVtx.pz);
+                }
+                auto geom = createTriangleGeometry(vertices, meshNode->mesh.indices);
+                QVariantMap map{};
+                map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
+                map.insert("color", QColor(QStringLiteral("#4EA7C8")));
+                map.insert("label", QString("Collision_%1_obj_%2").arg(collision.sourceEntryId).arg(objectAddress));
+                out.collisions.push_back(map);
+                out.geometries.push_back(std::move(geom));
+                emittedAny = true;
+            }
+        }
+        if (!emittedAny) {
+            const QVector3D center(collision.transform.position.x,
+                collision.transform.position.y,
+                collision.transform.position.z);
+            const auto vertices = cubeVertices(center, kMarkerSize * 0.6f);
+            const auto indices = cubeIndices();
 
-        auto geom = createTriangleGeometry(vertices, indices);
-        QVariantMap map{};
-        map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
-        map.insert("color", QColor(QStringLiteral("#4EA7C8")));
-        map.insert("label", QString("Collision_%1").arg(collision.sourceEntryId));
-        out.collisions.push_back(map);
-        out.geometries.push_back(std::move(geom));
-
-        updateBounds(center.x(), center.y(), center.z());
+            auto geom = createTriangleGeometry(vertices, indices);
+            QVariantMap map{};
+            map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
+            map.insert("color", QColor(QStringLiteral("#4EA7C8")));
+            map.insert("label", QString("Collision_%1").arg(collision.sourceEntryId));
+            out.collisions.push_back(map);
+            out.geometries.push_back(std::move(geom));
+            updateBounds(center.x(), center.y(), center.z());
+        }
     }
 
     for (const auto& trigger : parse.world.triggers) {
-        const QVector3D center(trigger.transform.position.x,
-            trigger.transform.position.y,
-            trigger.transform.position.z);
-        const auto vertices = cubeVertices(center, kMarkerSize * 0.5f);
-        const auto indices = cubeIndices();
+        bool emittedAny = false;
+        for (const auto objectAddress : trigger.objectAddresses) {
+            const auto it = njcmByObjectAddress.find(objectAddress);
+            if (it == njcmByObjectAddress.end()) {
+                continue;
+            }
+            for (const auto* meshNode : it->second) {
+                std::vector<PackedVertex> vertices{};
+                vertices.reserve(meshNode->mesh.vertices.size());
+                for (const auto& vtx : meshNode->mesh.vertices) {
+                    const auto worldVtx = transformVertex(vtx, trigger.transform);
+                    vertices.push_back(worldVtx);
+                    updateBounds(worldVtx.px, worldVtx.py, worldVtx.pz);
+                }
+                auto geom = createTriangleGeometry(vertices, meshNode->mesh.indices);
+                QVariantMap map{};
+                map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
+                map.insert("color", QColor(QStringLiteral("#E06666")));
+                map.insert("label", QString("Trigger_%1_%2_tbl_%3_obj_%4")
+                    .arg(trigger.sourceEntryId)
+                    .arg(QString::fromStdString(trigger.fxnName))
+                    .arg(trigger.tblId)
+                    .arg(objectAddress));
+                out.triggers.push_back(map);
+                out.geometries.push_back(std::move(geom));
+                emittedAny = true;
+            }
+        }
+        if (!emittedAny) {
+            const QVector3D center(trigger.transform.position.x,
+                trigger.transform.position.y,
+                trigger.transform.position.z);
+            const auto vertices = cubeVertices(center, kMarkerSize * 0.5f);
+            const auto indices = cubeIndices();
 
-        auto geom = createTriangleGeometry(vertices, indices);
-        QVariantMap map{};
-        map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
-        map.insert("color", QColor(QStringLiteral("#E06666")));
-        map.insert("label", QString("Trigger_%1_%2_tbl_%3")
-            .arg(trigger.sourceEntryId)
-            .arg(QString::fromStdString(trigger.fxnName))
-            .arg(trigger.tblId));
-        out.triggers.push_back(map);
-        out.geometries.push_back(std::move(geom));
-
-        updateBounds(center.x(), center.y(), center.z());
+            auto geom = createTriangleGeometry(vertices, indices);
+            QVariantMap map{};
+            map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
+            map.insert("color", QColor(QStringLiteral("#E06666")));
+            map.insert("label", QString("Trigger_%1_%2_tbl_%3")
+                .arg(trigger.sourceEntryId)
+                .arg(QString::fromStdString(trigger.fxnName))
+                .arg(trigger.tblId));
+            out.triggers.push_back(map);
+            out.geometries.push_back(std::move(geom));
+            updateBounds(center.x(), center.y(), center.z());
+        }
     }
 
     for (const auto& unknown : parse.world.unknownEntries) {

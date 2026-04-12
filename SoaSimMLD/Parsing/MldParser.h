@@ -42,6 +42,12 @@ struct ParseOptions {
     NjcmParsePolicy njcmPolicy{};
 };
 
+struct DecodedObjectChunkRange {
+    std::uint32_t objectAddress = 0;
+    std::size_t decodedChunkBegin = 0;
+    std::size_t decodedChunkEnd = 0;
+};
+
 struct ParseResult {
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
@@ -50,6 +56,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<NjcmChunkSummary> njcmChunks{};
     std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
+    std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
 };
 
 class MldParser {

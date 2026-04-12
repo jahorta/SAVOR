@@ -42,12 +42,17 @@ void appendGrndGeometry(const ParseResult& parseResult, model::GeometryBuildResu
 }
 
 void appendNjcmGeometry(const ParseResult& parseResult, model::GeometryBuildResult& out) {
-    for (const auto& chunk : parseResult.decodedNjcmChunks) {
-        for (const auto& attach : chunk.attaches) {
+    for (const auto& objectRange : parseResult.decodedObjectChunkRanges) {
+        for (std::size_t chunkIdx = objectRange.decodedChunkBegin;
+            chunkIdx < objectRange.decodedChunkEnd && chunkIdx < parseResult.decodedNjcmChunks.size();
+            ++chunkIdx) {
+            const auto& chunk = parseResult.decodedNjcmChunks[chunkIdx];
+            for (const auto& attach : chunk.attaches) {
             model::GeometryObject obj{};
             obj.sourceKind = model::GeometrySourceKind::Njcm;
-            obj.sourceId = static_cast<std::uint32_t>(attach.offset & 0xFFFFFFFFU);
-            obj.label = "NJCM_attach_" + std::to_string(attach.offset);
+            obj.sourceId = objectRange.objectAddress;
+            obj.label = "NJCM_obj_" + std::to_string(objectRange.objectAddress) +
+                "_attach_" + std::to_string(attach.offset);
 
             obj.mesh.vertices.reserve(attach.semanticVertices.size());
             for (const auto& vtx : attach.semanticVertices) {
@@ -71,6 +76,7 @@ void appendNjcmGeometry(const ParseResult& parseResult, model::GeometryBuildResu
                     " has vertex count metadata but no semantic vertices decoded.");
             }
             out.objects.push_back(std::move(obj));
+            }
         }
     }
 }

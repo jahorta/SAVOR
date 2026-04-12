@@ -114,6 +114,7 @@ public:
         model::CollisionVolume collision{};
         collision.sourceEntryId = entry.sourceEntryId;
         collision.transform = entry.transform;
+        collision.objectAddresses = entry.objectAddresses;
         out.collisions.push_back(std::move(collision));
     }
 };
@@ -133,6 +134,7 @@ public:
         trigger.fxnName = std::string(entry.fxnName);
         trigger.tblId = entry.tblId;
         trigger.transform = entry.transform;
+        trigger.objectAddresses = entry.objectAddresses;
         out.triggers.push_back(std::move(trigger));
     }
 };
@@ -366,11 +368,20 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         const auto normalizedFxnName = normalizeFxnName(entry.fxnName);
 
         const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
+        std::vector<std::uint32_t> objectAddresses{};
+        objectAddresses.reserve(entry.objectAddresses->values.size());
+        for (const auto objectAddress : entry.objectAddresses->values) {
+            if (objectAddress == 0U) {
+                continue;
+            }
+            objectAddresses.push_back(objectAddress);
+        }
         RawEntry rawEntry{
             .sourceEntryId = entry.entryId,
             .fxnName = entry.fxnName,
             .tblId = entry.tblId,
             .transform = entry.transform,
+            .objectAddresses = std::move(objectAddresses),
             .payload = std::span<const std::uint8_t>(payload.data() + static_cast<std::ptrdiff_t>(entryOffset), entrySize),
         };
 
@@ -486,12 +497,19 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             continue;
         }
 
+        const auto decodedChunkBegin = result.decodedNjcmChunks.size();
         parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize),
             startAbs,
             chunkTypeCounts,
             result.njcmChunks,
             result.decodedNjcmChunks,
             options);
+        const auto decodedChunkEnd = result.decodedNjcmChunks.size();
+        result.decodedObjectChunkRanges.push_back(DecodedObjectChunkRange{
+            .objectAddress = objectAddress,
+            .decodedChunkBegin = decodedChunkBegin,
+            .decodedChunkEnd = decodedChunkEnd,
+        });
     }
 
     for (const auto groundAddress : uniqueGroundAddresses) {
