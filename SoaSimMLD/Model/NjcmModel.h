@@ -13,6 +13,7 @@ struct NjVertexChunkRecord {
     std::size_t offset = 0;
     std::uint8_t type = 0;
     std::uint16_t sizeWords32 = 0;
+    std::uint16_t indexOffset = 0;
     std::uint16_t vertexCount = 0;
 };
 
