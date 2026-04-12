@@ -82,13 +82,13 @@ void MainWindow::buildUi() {
 
     connect(visibilityWidget_, &VisibilityTreeWidget::allToggled, this, [this](const bool visible) {
         setAllVisibility(visible);
-    });
+    }, Qt::QueuedConnection);
     connect(visibilityWidget_, &VisibilityTreeWidget::layerToggled, this, [this](const int layer, const bool visible) {
         setLayerVisibility(static_cast<VisibilityTreeWidget::LayerKind>(layer), visible);
-    });
+    }, Qt::QueuedConnection);
     connect(visibilityWidget_, &VisibilityTreeWidget::leafToggled, this, [this](const int layer, const int index, const bool visible) {
         setLeafVisibility(static_cast<VisibilityTreeWidget::LayerKind>(layer), index, visible);
-    });
+    }, Qt::QueuedConnection);
 
     diagnosticsView_ = new QPlainTextEdit(this);
     diagnosticsView_->setReadOnly(true);
