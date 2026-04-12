@@ -130,7 +130,7 @@ Item {
             position: root.orbitCenter
             Model {
                 source: "#Sphere"
-                scale: Qt.vector3d(root.orbitDistance * 0.008, root.orbitDistance * 0.008, root.orbitDistance * 0.008)
+                scale: Qt.vector3d(root.orbitDistance * 0.00015, root.orbitDistance * 0.00015, root.orbitDistance * 0.00015)
                 materials: DefaultMaterial {
                     diffuseColor: "#FFD54A"
                     lighting: DefaultMaterial.NoLighting
