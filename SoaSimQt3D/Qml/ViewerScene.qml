@@ -139,12 +139,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.groundMeshes
+            model: root.groundMeshes.length
             delegate: Model {
-                visible: root.showGrounds && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.groundMeshes.length)
+                    ? root.groundMeshes[index]
+                    : ({})
+
+                visible: root.showGrounds && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     lighting: DefaultMaterial.NoLighting
                     opacity: 0.5
@@ -153,12 +157,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.linkMeshes
+            model: root.linkMeshes.length
             delegate: Model {
-                visible: root.showLinks && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.linkMeshes.length)
+                    ? root.linkMeshes[index]
+                    : ({})
+
+                visible: root.showLinks && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     lighting: DefaultMaterial.NoLighting
                 }
@@ -166,12 +174,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.collisionMeshes
+            model: root.collisionMeshes.length
             delegate: Model {
-                visible: root.showCollisions && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.collisionMeshes.length)
+                    ? root.collisionMeshes[index]
+                    : ({})
+
+                visible: root.showCollisions && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     opacity: 0.65
                 }
@@ -179,12 +191,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.triggerMeshes
+            model: root.triggerMeshes.length
             delegate: Model {
-                visible: root.showTriggers && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.triggerMeshes.length)
+                    ? root.triggerMeshes[index]
+                    : ({})
+
+                visible: root.showTriggers && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     opacity: 0.7
                 }
@@ -192,12 +208,16 @@ Item {
         }
 
         Repeater3D {
-            model: root.unknownMeshes
+            model: root.unknownMeshes.length
             delegate: Model {
-                visible: root.showUnknowns && (modelData.visible !== false)
-                geometry: modelData.geometry
+                property var mesh: (index >= 0 && index < root.unknownMeshes.length)
+                    ? root.unknownMeshes[index]
+                    : ({})
+
+                visible: root.showUnknowns && (mesh.visible !== false)
+                geometry: mesh.geometry
                 materials: DefaultMaterial {
-                    diffuseColor: modelData.color
+                    diffuseColor: mesh.color
                     cullMode: Material.NoCulling
                     opacity: 0.7
                 }

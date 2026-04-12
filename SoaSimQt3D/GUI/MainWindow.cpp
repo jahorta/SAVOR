@@ -8,6 +8,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QMenu>
+#include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QQmlContext>
 #include <QQmlError>
@@ -18,6 +20,7 @@
 #include <QToolBar>
 #include <QUrl>
 #include <QVariantMap>
+#include <QStringList>
 
 #include <cstdint>
 #include <span>
@@ -39,6 +42,15 @@ void MainWindow::buildUi() {
     connect(openAction, &QAction::triggered, this, &MainWindow::chooseAndLoadMldFile);
 
     auto* viewToolbar = addToolBar("Layers");
+    auto* debugMenu = menuBar()->addMenu("Debug");
+    visibilityDebugAction_ = debugMenu->addAction("Visibility Snapshot Logging");
+    visibilityDebugAction_->setCheckable(true);
+    visibilityDebugAction_->setChecked(false);
+    connect(visibilityDebugAction_, &QAction::toggled, this, [this](const bool checked) {
+        visibilityDebugEnabled_ = checked;
+        appendDiagnosticLine(QString("Debug visibility snapshot logging %1").arg(checked ? "ENABLED" : "DISABLED"));
+    });
+
     groundsAction_ = viewToolbar->addAction("Ground");
     groundsAction_->setCheckable(true);
     groundsAction_->setChecked(true);
@@ -295,6 +307,10 @@ void MainWindow::applyMeshesToQml() {
         return;
     }
 
+    if (visibilityDebugEnabled_) {
+        logVisibilitySnapshot(QStringLiteral("applyMeshesToQml before root property update"));
+    }
+
     QObject* root = quickView_->rootObject();
     root->setProperty("groundMeshes", groundMeshes_);
     root->setProperty("linkMeshes", linkMeshes_);
@@ -385,7 +401,43 @@ void MainWindow::setLeafVisibility(const VisibilityTreeWidget::LayerKind layer, 
     QVariantMap map = meshes->at(index).toMap();
     map.insert("visible", visible);
     (*meshes)[index] = map;
+
+    if (visibilityDebugEnabled_) {
+        logVisibilitySnapshot(QString("setLeafVisibility layer=%1 index=%2 visible=%3")
+            .arg(static_cast<int>(layer))
+            .arg(index)
+            .arg(visible ? "true" : "false"));
+    }
+
     applyMeshesToQml();
+}
+
+void MainWindow::logVisibilitySnapshot(const QString& reason) {
+    auto summarizeLayer = [](const QString& name, const QVariantList& meshes) {
+        int falseCount = 0;
+        QStringList falseLabels{};
+        for (int i = 0; i < meshes.size(); ++i) {
+            const QVariantMap map = meshes.at(i).toMap();
+            if (!map.value("visible", true).toBool()) {
+                ++falseCount;
+                const QString label = map.value("label").toString();
+                falseLabels.push_back(QString("%1[%2]").arg(label.isEmpty() ? QStringLiteral("(unnamed)") : label).arg(i));
+            }
+        }
+
+        return QString("%1 total=%2 hidden=%3 hiddenItems=%4")
+            .arg(name)
+            .arg(meshes.size())
+            .arg(falseCount)
+            .arg(falseLabels.isEmpty() ? QStringLiteral("none") : falseLabels.join(QStringLiteral(", ")));
+    };
+
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(reason));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Grounds"), groundMeshes_)));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Links"), linkMeshes_)));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Collisions"), collisionMeshes_)));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Triggers"), triggerMeshes_)));
+    appendDiagnosticLine(QString("[VisibilityDebug] %1").arg(summarizeLayer(QStringLiteral("Unknowns"), unknownMeshes_)));
 }
 
 void MainWindow::setActionCheckedNoSignal(QAction* action, const bool checked) {

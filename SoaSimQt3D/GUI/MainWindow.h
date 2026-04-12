@@ -50,6 +50,7 @@ private:
     QVariantList* meshesForLayer(VisibilityTreeWidget::LayerKind layer);
     void setLeafVisibility(VisibilityTreeWidget::LayerKind layer, int index, bool visible);
     void setActionCheckedNoSignal(QAction* action, bool checked);
+    void logVisibilitySnapshot(const QString& reason);
 
     const scene::IQtSceneBuilder& sceneBuilder_;
 
@@ -61,7 +62,9 @@ private:
     QAction* collisionsAction_ = nullptr;
     QAction* triggersAction_ = nullptr;
     QAction* unknownsAction_ = nullptr;
+    QAction* visibilityDebugAction_ = nullptr;
     bool updatingVisibilityTree_ = false;
+    bool visibilityDebugEnabled_ = false;
 
     bool showGrounds_ = true;
     bool showLinks_ = true;
