@@ -23,7 +23,7 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
     tree_->setUniformRowHeights(true);
     tree_->setRootIsDecorated(true);
 
-    connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
+    connect(tree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int column) {
         if (item == nullptr || column != 0 || updating_) {
             return;
         }
