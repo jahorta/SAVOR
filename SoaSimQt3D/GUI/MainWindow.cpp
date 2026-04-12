@@ -8,17 +8,18 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
-#include <QQuickItem>
 #include <QPlainTextEdit>
+#include <QQmlContext>
 #include <QQmlError>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QUrl>
-#include <QQmlContext>
+#include <QVariantMap>
 
-#include <utility>
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace soasim::qt3d::gui {
 
@@ -35,44 +36,55 @@ void MainWindow::buildUi() {
     connect(openAction, &QAction::triggered, this, &MainWindow::chooseAndLoadMldFile);
 
     auto* viewToolbar = addToolBar("Layers");
-    auto* groundsAction = viewToolbar->addAction("Ground");
-    groundsAction->setCheckable(true);
-    groundsAction->setChecked(true);
-    connect(groundsAction, &QAction::toggled, this, [this](const bool checked) {
-        showGrounds_ = checked;
-        syncLayerPropertiesToQml();
+    groundsAction_ = viewToolbar->addAction("Ground");
+    groundsAction_->setCheckable(true);
+    groundsAction_->setChecked(true);
+    connect(groundsAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::Grounds, checked);
     });
 
-    auto* linksAction = viewToolbar->addAction("Links");
-    linksAction->setCheckable(true);
-    linksAction->setChecked(true);
-    connect(linksAction, &QAction::toggled, this, [this](const bool checked) {
-        showLinks_ = checked;
-        syncLayerPropertiesToQml();
+    linksAction_ = viewToolbar->addAction("Links");
+    linksAction_->setCheckable(true);
+    linksAction_->setChecked(true);
+    connect(linksAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::Links, checked);
     });
 
-    auto* triggerAction = viewToolbar->addAction("Triggers");
-    triggerAction->setCheckable(true);
-    triggerAction->setChecked(true);
-    connect(triggerAction, &QAction::toggled, this, [this](const bool checked) {
-        showTriggers_ = checked;
-        syncLayerPropertiesToQml();
+    triggersAction_ = viewToolbar->addAction("Triggers");
+    triggersAction_->setCheckable(true);
+    triggersAction_->setChecked(true);
+    connect(triggersAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::Triggers, checked);
     });
 
-    auto* collisionAction = viewToolbar->addAction("Collision");
-    collisionAction->setCheckable(true);
-    collisionAction->setChecked(true);
-    connect(collisionAction, &QAction::toggled, this, [this](const bool checked) {
-        showCollisions_ = checked;
-        syncLayerPropertiesToQml();
+    collisionsAction_ = viewToolbar->addAction("Collision");
+    collisionsAction_->setCheckable(true);
+    collisionsAction_->setChecked(true);
+    connect(collisionsAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::Collisions, checked);
     });
 
-    auto* unknownAction = viewToolbar->addAction("Unknown");
-    unknownAction->setCheckable(true);
-    unknownAction->setChecked(true);
-    connect(unknownAction, &QAction::toggled, this, [this](const bool checked) {
-        showUnknowns_ = checked;
-        syncLayerPropertiesToQml();
+    unknownsAction_ = viewToolbar->addAction("Unknown");
+    unknownsAction_->setCheckable(true);
+    unknownsAction_->setChecked(true);
+    connect(unknownsAction_, &QAction::toggled, this, [this](const bool checked) {
+        setLayerVisibility(VisibilityTreeWidget::LayerKind::Unknowns, checked);
+    });
+
+    visibilityWidget_ = new VisibilityTreeWidget(this);
+    auto* visibilityDock = new QDockWidget("Parsing Controls", this);
+    visibilityDock->setWidget(visibilityWidget_);
+    visibilityDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::RightDockWidgetArea, visibilityDock);
+
+    connect(visibilityWidget_, &VisibilityTreeWidget::allToggled, this, [this](const bool visible) {
+        setAllVisibility(visible);
+    });
+    connect(visibilityWidget_, &VisibilityTreeWidget::layerToggled, this, [this](const int layer, const bool visible) {
+        setLayerVisibility(static_cast<VisibilityTreeWidget::LayerKind>(layer), visible);
+    });
+    connect(visibilityWidget_, &VisibilityTreeWidget::leafToggled, this, [this](const int layer, const int index, const bool visible) {
+        setLeafVisibility(static_cast<VisibilityTreeWidget::LayerKind>(layer), index, visible);
     });
 
     diagnosticsView_ = new QPlainTextEdit(this);
@@ -199,31 +211,153 @@ void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
     }
 
     appendDiagnosticLine(QString("Assigning objects to layers."));
+    groundMeshes_ = std::move(data.grounds);
+    linkMeshes_ = std::move(data.links);
+    collisionMeshes_ = std::move(data.collisions);
+    triggerMeshes_ = std::move(data.triggers);
+    unknownMeshes_ = std::move(data.unknowns);
+
+    auto applyDefaultVisibility = [](QVariantList& list) {
+        for (int i = 0; i < list.size(); ++i) {
+            QVariantMap map = list.at(i).toMap();
+            if (!map.contains("visible")) {
+                map.insert("visible", true);
+            }
+            list[i] = map;
+        }
+    };
+    applyDefaultVisibility(groundMeshes_);
+    applyDefaultVisibility(linkMeshes_);
+    applyDefaultVisibility(collisionMeshes_);
+    applyDefaultVisibility(triggerMeshes_);
+    applyDefaultVisibility(unknownMeshes_);
+
+    setAllVisibility(true);
+
     QObject* root = quickView_->rootObject();
-    root->setProperty("groundMeshes", data.grounds);
-    root->setProperty("linkMeshes", data.links);
-    root->setProperty("collisionMeshes", data.collisions);
-    root->setProperty("triggerMeshes", data.triggers);
-    root->setProperty("unknownMeshes", data.unknowns);
     root->setProperty("cameraTarget", QVariant::fromValue(data.center));
     root->setProperty("cameraDistance", data.extent * 1.75f);
-
-    syncLayerPropertiesToQml();
 
     for (const auto& line : data.diagnostics) {
         appendDiagnosticLine(QString::fromStdString(line));
     }
 
     statusBar()->showMessage(QString("Scene updated: Grounds=%1, Links=%2, Collisions=%3, Triggers=%4, Unknown=%5")
-        .arg(static_cast<int>(data.grounds.size()))
-        .arg(static_cast<int>(data.links.size()))
-        .arg(static_cast<int>(data.collisions.size()))
-        .arg(static_cast<int>(data.triggers.size()))
-        .arg(static_cast<int>(data.unknowns.size())));
+        .arg(static_cast<int>(groundMeshes_.size()))
+        .arg(static_cast<int>(linkMeshes_.size()))
+        .arg(static_cast<int>(collisionMeshes_.size()))
+        .arg(static_cast<int>(triggerMeshes_.size()))
+        .arg(static_cast<int>(unknownMeshes_.size())));
 }
 
 void MainWindow::appendDiagnosticLine(const QString& line) {
     diagnosticsView_->appendPlainText(line);
+}
+
+void MainWindow::applyMeshesToQml() {
+    if (quickView_ == nullptr || quickView_->rootObject() == nullptr) {
+        return;
+    }
+
+    QObject* root = quickView_->rootObject();
+    root->setProperty("groundMeshes", groundMeshes_);
+    root->setProperty("linkMeshes", linkMeshes_);
+    root->setProperty("collisionMeshes", collisionMeshes_);
+    root->setProperty("triggerMeshes", triggerMeshes_);
+    root->setProperty("unknownMeshes", unknownMeshes_);
+
+    auto hasVisible = [](const QVariantList& meshes) {
+        for (const auto& entry : meshes) {
+            if (entry.toMap().value("visible", true).toBool()) {
+                return true;
+            }
+        }
+        return false;
+    };
+    showGrounds_ = hasVisible(groundMeshes_);
+    showLinks_ = hasVisible(linkMeshes_);
+    showCollisions_ = hasVisible(collisionMeshes_);
+    showTriggers_ = hasVisible(triggerMeshes_);
+    showUnknowns_ = hasVisible(unknownMeshes_);
+
+    setActionCheckedNoSignal(groundsAction_, showGrounds_);
+    setActionCheckedNoSignal(linksAction_, showLinks_);
+    setActionCheckedNoSignal(collisionsAction_, showCollisions_);
+    setActionCheckedNoSignal(triggersAction_, showTriggers_);
+    setActionCheckedNoSignal(unknownsAction_, showUnknowns_);
+
+    syncLayerPropertiesToQml();
+}
+
+void MainWindow::setLayerVisibility(const VisibilityTreeWidget::LayerKind layer, const bool visible) {
+    QVariantList* meshes = meshesForLayer(layer);
+    if (meshes == nullptr) {
+        return;
+    }
+
+    for (int i = 0; i < meshes->size(); ++i) {
+        QVariantMap map = meshes->at(i).toMap();
+        map.insert("visible", visible);
+        (*meshes)[i] = map;
+    }
+
+    visibilityWidget_->setLayers(groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, unknownMeshes_);
+    applyMeshesToQml();
+}
+
+void MainWindow::setAllVisibility(const bool visible) {
+    auto setMeshes = [visible](QVariantList& meshes) {
+        for (int i = 0; i < meshes.size(); ++i) {
+            QVariantMap map = meshes.at(i).toMap();
+            map.insert("visible", visible);
+            meshes[i] = map;
+        }
+    };
+    setMeshes(groundMeshes_);
+    setMeshes(linkMeshes_);
+    setMeshes(collisionMeshes_);
+    setMeshes(triggerMeshes_);
+    setMeshes(unknownMeshes_);
+
+    visibilityWidget_->setLayers(groundMeshes_, linkMeshes_, collisionMeshes_, triggerMeshes_, unknownMeshes_);
+    applyMeshesToQml();
+}
+
+QVariantList* MainWindow::meshesForLayer(const VisibilityTreeWidget::LayerKind layer) {
+    switch (layer) {
+    case VisibilityTreeWidget::LayerKind::Grounds:
+        return &groundMeshes_;
+    case VisibilityTreeWidget::LayerKind::Links:
+        return &linkMeshes_;
+    case VisibilityTreeWidget::LayerKind::Collisions:
+        return &collisionMeshes_;
+    case VisibilityTreeWidget::LayerKind::Triggers:
+        return &triggerMeshes_;
+    case VisibilityTreeWidget::LayerKind::Unknowns:
+        return &unknownMeshes_;
+    default:
+        return nullptr;
+    }
+}
+
+void MainWindow::setLeafVisibility(const VisibilityTreeWidget::LayerKind layer, const int index, const bool visible) {
+    QVariantList* meshes = meshesForLayer(layer);
+    if (meshes == nullptr || index < 0 || index >= meshes->size()) {
+        return;
+    }
+
+    QVariantMap map = meshes->at(index).toMap();
+    map.insert("visible", visible);
+    (*meshes)[index] = map;
+    applyMeshesToQml();
+}
+
+void MainWindow::setActionCheckedNoSignal(QAction* action, const bool checked) {
+    if (action == nullptr) {
+        return;
+    }
+    const QSignalBlocker blocker(action);
+    action->setChecked(checked);
 }
 
 } // namespace soasim::qt3d::gui

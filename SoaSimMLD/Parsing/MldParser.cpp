@@ -113,6 +113,8 @@ public:
     void parse(const RawEntry& entry, model::WorldModel& out) const override {
         model::CollisionVolume collision{};
         collision.sourceEntryId = entry.sourceEntryId;
+        collision.fxnName = std::string(entry.fxnName);
+        collision.tblId = entry.tblId;
         collision.transform = entry.transform;
         collision.objectAddresses = entry.objectAddresses;
         out.collisions.push_back(std::move(collision));
@@ -381,9 +383,19 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .fxnName = entry.fxnName,
             .tblId = entry.tblId,
             .transform = entry.transform,
-            .objectAddresses = std::move(objectAddresses),
+            .objectAddresses = objectAddresses,
             .payload = std::span<const std::uint8_t>(payload.data() + static_cast<std::ptrdiff_t>(entryOffset), entrySize),
         };
+        result.rawEntries.push_back(ParsedRawEntry{
+            .sourceEntryId = entry.entryId,
+            .fxnName = entry.fxnName,
+            .tblId = entry.tblId,
+            .transform = entry.transform,
+            .objectAddresses = objectAddresses,
+            .payload = std::vector<std::uint8_t>(
+                payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
+                payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize)),
+        });
 
         bool classified = false;
         bool classifiedAsTrigger = false;

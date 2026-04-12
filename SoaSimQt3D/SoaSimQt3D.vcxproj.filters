@@ -24,6 +24,9 @@
     <ClCompile Include="GUI\StaticMeshGeometry.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\VisibilityTreeWidget.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="Scene\BasicQtSceneBuilder.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
@@ -39,6 +42,9 @@
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\StaticMeshGeometry.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\VisibilityTreeWidget.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="Scene\BasicQtSceneBuilder.h">
