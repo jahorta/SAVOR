@@ -9,8 +9,6 @@ namespace soasim::qt3d::gui {
 namespace {
 
 constexpr int kLayerRole = Qt::UserRole + 1;
-constexpr int kLeafIndexRole = Qt::UserRole + 2;
-
 } // namespace
 
 VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
@@ -30,8 +28,19 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
             return;
         }
 
-        const LayerKind layer = static_cast<LayerKind>(item->data(0, kLayerRole).toInt());
-        const int leafIndex = item->data(0, kLeafIndexRole).toInt();
+        const bool isLeaf = item->childCount() == 0;
+        QTreeWidgetItem* layerItem = item;
+        int leafIndex = -1;
+        if (isLeaf) {
+            layerItem = item->parent();
+            if (layerItem != nullptr) {
+                leafIndex = layerItem->indexOfChild(item);
+            }
+        }
+
+        const LayerKind layer = static_cast<LayerKind>((layerItem != nullptr)
+                ? layerItem->data(0, kLayerRole).toInt()
+                : static_cast<int>(LayerKind::All));
         const Qt::CheckState state = item->checkState(0);
 
         if (state == Qt::PartiallyChecked) {
@@ -81,26 +90,25 @@ void VisibilityTreeWidget::rebuildTree() {
 
     tree_->clear();
 
-    auto makeNode = [](const QString& text, const LayerKind layer, const int leafIndex) {
+    auto makeNode = [](const QString& text, const LayerKind layer) {
         auto* item = new QTreeWidgetItem(QStringList(text));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(0, Qt::Checked);
         item->setData(0, kLayerRole, static_cast<int>(layer));
-        item->setData(0, kLeafIndexRole, leafIndex);
         return item;
     };
 
-    allItem_ = makeNode(QStringLiteral("All"), LayerKind::All, -1);
+    allItem_ = makeNode(QStringLiteral("All"), LayerKind::All);
     tree_->addTopLevelItem(allItem_);
 
     auto buildLayer = [&](const LayerKind layer, const QVariantList& meshes, QTreeWidgetItem*& outItem) {
-        outItem = makeNode(layerLabel(layer), layer, -1);
+        outItem = makeNode(layerLabel(layer), layer);
         allItem_->addChild(outItem);
 
         for (int i = 0; i < meshes.size(); ++i) {
             const QVariantMap mesh = meshes.at(i).toMap();
             const QString label = mesh.value("label").toString();
-            auto* leaf = makeNode(label.isEmpty() ? QStringLiteral("(unnamed)") : label, layer, i);
+            auto* leaf = makeNode(label.isEmpty() ? QStringLiteral("(unnamed)") : label, layer);
             leaf->setCheckState(0, mesh.value("visible", true).toBool() ? Qt::Checked : Qt::Unchecked);
             outItem->addChild(leaf);
         }
