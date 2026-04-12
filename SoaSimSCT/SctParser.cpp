@@ -418,17 +418,19 @@ struct DecodedInstruction {
     return decoded;
 }
 
-void fillUnknownRegions(const std::set<std::uint32_t>& visitedOffsets, std::span<const std::uint8_t> sectionBytes, SctSection& section) {
+void fillUnknownRegions(
+    std::unordered_map<std::uint32_t, std::uint32_t> visitedRegions, std::span<const std::uint8_t> sectionBytes, SctSection& section) 
+{
     std::uint32_t cursor = 0;
     while (cursor < sectionBytes.size()) {
-        const bool visited = visitedOffsets.contains(cursor);
+        const bool visited = visitedRegions.contains(cursor);
         if (visited) {
-            cursor += 4;
+            cursor += visitedRegions[cursor];
             continue;
         }
 
         const auto start = cursor;
-        while (cursor < sectionBytes.size() && !visitedOffsets.contains(cursor)) {
+        while (cursor < sectionBytes.size() && !visitedRegions.contains(cursor)) {
             cursor += 4;
         }
 
@@ -577,7 +579,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         // Control-flow guided pass starting at section offset 0.
         std::deque<std::uint32_t> worklist;
         std::set<std::uint32_t> enqueued;
-        std::set<std::uint32_t> visited;
+        std::unordered_map<std::uint32_t, std::uint32_t> visited;
         std::unordered_map<std::uint32_t, std::size_t> instructionByOffset;
 
         worklist.push_back(0);
@@ -612,7 +614,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                 result.diagnostics.insert(result.diagnostics.end(), inst_diagnostics.begin(), inst_diagnostics.end());
 
                 instructionByOffset[cursor] = section.instructions.size();
-                visited.insert(cursor);
+                visited.insert(cursor, decoded.inst.sizeBytes);
                 section.instructions.push_back(decoded.inst);
                 block.instructionOffsets.push_back(cursor);
 
