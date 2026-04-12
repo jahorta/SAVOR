@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <iostream>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -98,6 +99,33 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
         normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
     return normalized;
+}
+
+[[nodiscard]] std::string toHex(const std::uint32_t value) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::uppercase << value;
+    return oss.str();
+}
+
+[[nodiscard]] std::string formatPolyTypeHistogram(const std::unordered_map<std::uint8_t, std::size_t>& counts) {
+    if (counts.empty()) {
+        return "{}";
+    }
+    std::vector<std::pair<std::uint8_t, std::size_t>> ordered(counts.begin(), counts.end());
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    std::ostringstream out;
+    out << "{";
+    for (std::size_t ii = 0; ii < ordered.size(); ++ii) {
+        if (ii != 0) {
+            out << ", ";
+        }
+        out << static_cast<unsigned>(ordered[ii].first) << ":" << ordered[ii].second;
+    }
+    out << "}";
+    return out.str();
 }
 
 class CollisionEntryHandler final : public EntryHandler {
@@ -609,6 +637,123 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 ": parseOk=" + std::string(decoded.parseSucceeded ? "yes" : "no") +
                 ", fallback=" + std::string(decoded.parsedWithHeuristicFallback ? "yes" : "no") +
                 ", diagnostics=" + std::to_string(decoded.diagnostics.size()),
+        });
+
+        std::size_t decodedAttachTriangles = 0;
+        std::size_t decodedAttachVertices = 0;
+        std::size_t emptySemanticPolyChunks = 0;
+        std::size_t nonEmptySemanticPolyChunks = 0;
+        std::size_t outOfRangeIndexCount = 0;
+        std::size_t totalSemanticIndexCount = 0;
+        std::size_t highestSemanticIndex = 0;
+        bool sawAnyIndex = false;
+        std::unordered_map<std::uint8_t, std::size_t> polyTypeCounts{};
+        std::unordered_map<std::uint8_t, std::size_t> polyTypeWithTriangles{};
+
+        for (std::size_t attachIdx = 0; attachIdx < decoded.attaches.size(); ++attachIdx) {
+            const auto& attach = decoded.attaches[attachIdx];
+            decodedAttachTriangles += attach.decodedTriangleCount;
+            decodedAttachVertices += attach.semanticVertices.size();
+
+            for (const auto& poly : attach.semanticPolygons) {
+                ++polyTypeCounts[poly.type];
+                if (poly.indices.empty()) {
+                    ++emptySemanticPolyChunks;
+                } else {
+                    ++nonEmptySemanticPolyChunks;
+                    ++polyTypeWithTriangles[poly.type];
+                }
+
+                for (const auto idx : poly.indices) {
+                    sawAnyIndex = true;
+                    ++totalSemanticIndexCount;
+                    highestSemanticIndex = std::max(highestSemanticIndex, static_cast<std::size_t>(idx));
+                    if (idx >= attach.semanticVertices.size()) {
+                        ++outOfRangeIndexCount;
+                    }
+                }
+            }
+
+            if (attach.decodedTriangleCount == 0 && !attach.polyChunks.empty()) {
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = "NJCM attach @ " + std::to_string(attach.offset) +
+                        " emitted zero triangles despite polyChunks=" + std::to_string(attach.polyChunks.size()) +
+                        " and semanticVertices=" + std::to_string(attach.semanticVertices.size()),
+                });
+            }
+        }
+
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "NJCM semantic summary @ " + std::to_string(decoded.chunkOffset) +
+                ": attachVerts=" + std::to_string(decodedAttachVertices) +
+                ", attachTriEst=" + std::to_string(decodedAttachTriangles) +
+                ", polyChunksWithTriangles=" + std::to_string(nonEmptySemanticPolyChunks) +
+                ", polyChunksEmpty=" + std::to_string(emptySemanticPolyChunks) +
+                ", semanticIndices=" + std::to_string(totalSemanticIndexCount) +
+                ", polyTypes=" + formatPolyTypeHistogram(polyTypeCounts) +
+                ", polyTypesWithTriangles=" + formatPolyTypeHistogram(polyTypeWithTriangles),
+        });
+
+        if (sawAnyIndex) {
+            const auto severity = (outOfRangeIndexCount > 0) ? ParseDiagnostic::Severity::Warning : ParseDiagnostic::Severity::Info;
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = severity,
+                .message = "NJCM semantic index bounds @ " + std::to_string(decoded.chunkOffset) +
+                    ": outOfRangeIndices=" + std::to_string(outOfRangeIndexCount) +
+                    ", highestIndex=" + std::to_string(highestSemanticIndex),
+            });
+        }
+    }
+
+    for (const auto& objectRange : result.decodedObjectChunkRanges) {
+        std::size_t objectAttachCount = 0;
+        std::size_t objectVertices = 0;
+        std::size_t objectTriangles = 0;
+        std::size_t objectEmptyPolyChunks = 0;
+        std::size_t objectNonEmptyPolyChunks = 0;
+        std::size_t objectOutOfRangeIndices = 0;
+        std::unordered_map<std::uint8_t, std::size_t> objectPolyTypes{};
+
+        for (std::size_t chunkIdx = objectRange.decodedChunkBegin;
+            chunkIdx < objectRange.decodedChunkEnd && chunkIdx < result.decodedNjcmChunks.size();
+            ++chunkIdx) {
+            const auto& decoded = result.decodedNjcmChunks[chunkIdx];
+            objectAttachCount += decoded.attaches.size();
+            for (const auto& attach : decoded.attaches) {
+                objectVertices += attach.semanticVertices.size();
+                objectTriangles += attach.decodedTriangleCount;
+                for (const auto& poly : attach.semanticPolygons) {
+                    ++objectPolyTypes[poly.type];
+                    if (poly.indices.empty()) {
+                        ++objectEmptyPolyChunks;
+                    } else {
+                        ++objectNonEmptyPolyChunks;
+                    }
+                    for (const auto idx : poly.indices) {
+                        if (idx >= attach.semanticVertices.size()) {
+                            ++objectOutOfRangeIndices;
+                        }
+                    }
+                }
+            }
+        }
+
+        const auto severity = (objectOutOfRangeIndices > 0 || (objectTriangles == 0 && objectAttachCount > 0))
+            ? ParseDiagnostic::Severity::Warning
+            : ParseDiagnostic::Severity::Info;
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = severity,
+            .message = "NJCM object summary " + toHex(objectRange.objectAddress) +
+                ": chunks=" + std::to_string(objectRange.decodedChunkEnd - objectRange.decodedChunkBegin) +
+                ", attaches=" + std::to_string(objectAttachCount) +
+                ", verts=" + std::to_string(objectVertices) +
+                ", triEst=" + std::to_string(objectTriangles) +
+                ", polyChunksWithTriangles=" + std::to_string(objectNonEmptyPolyChunks) +
+                ", polyChunksEmpty=" + std::to_string(objectEmptyPolyChunks) +
+                ", outOfRangeIndices=" + std::to_string(objectOutOfRangeIndices) +
+                ", polyTypes=" + formatPolyTypeHistogram(objectPolyTypes),
         });
     }
 
