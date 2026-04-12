@@ -417,6 +417,17 @@ This should be determined from the C# parser or by visual comparison with known 
 
 ## Qt viewer integration
 
+### Decision record (2026-04-12)
+
+The SOASim implementation decision is now locked to **Qt Quick 3D** for the first viewer implementation pass.
+
+- Primary scene technology: **Qt Quick 3D**
+- Preferred camera interaction: **OrbitCameraController** (mouse orbit/pan/zoom workflow)
+- Integration strategy with existing widget shell: embed the Quick 3D scene in the Qt Widgets host for incremental adoption
+- Architectural guardrail: parser and world model remain renderer-agnostic; only the Qt adapter is renderer-specific
+
+Qt3D remains acceptable only as a temporary compatibility bridge if needed for migration work, but it is not the target path for new feature development in this NavigationPhase viewer track.
+
 ## Recommended rendering path
 
 For the first implementation, the cleaner path is:

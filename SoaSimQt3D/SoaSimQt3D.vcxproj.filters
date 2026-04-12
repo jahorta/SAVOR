@@ -10,9 +10,18 @@
     <Filter Include="Main">
       <UniqueIdentifier>{A177F4AB-4F53-4253-95BB-00E896CECC80}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Resources">
+      <UniqueIdentifier>{8B238353-08D8-4F73-B5E5-9D3B6BFDFB1D}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\MainWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\RuntimeSceneConverter.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\StaticMeshGeometry.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="Scene\BasicQtSceneBuilder.cpp">
@@ -26,6 +35,12 @@
     <ClInclude Include="GUI\MainWindow.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\RuntimeSceneConverter.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\StaticMeshGeometry.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="Scene\BasicQtSceneBuilder.h">
       <Filter>Scene</Filter>
     </ClInclude>
@@ -35,5 +50,10 @@
     <ClInclude Include="Scene\QtSceneData.h">
       <Filter>Scene</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SoaSimQt3D.qrc">
+      <Filter>Resources</Filter>
+    </QtRcc>
   </ItemGroup>
 </Project>
