@@ -23,7 +23,7 @@ Item {
         anchors.fill: parent
 
         environment: SceneEnvironment {
-            clearColor: "#20252d"
+            clearColor: "#050505"
             backgroundMode: SceneEnvironment.Color
         }
 
