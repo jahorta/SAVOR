@@ -353,6 +353,17 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", realData=0x" + std::to_string(static_cast<std::size_t>(*ptrRealDataOpt)) +
             ", textureTable=0x" + std::to_string(static_cast<std::size_t>(*ptrTextureTableOpt)),
     });
+    if (!options.filterEntryIdList.empty()) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Entry filter enabled by ID list (" + std::to_string(options.filterEntryIdList.size()) + " IDs).",
+        });
+    } else if (!options.filterFxnName.empty()) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Entry filter enabled by fxnName=\"" + options.filterFxnName + "\".",
+        });
+    }
 
     std::vector<model::IndexEntry> entries{};
     entries.reserve(entryCount);
@@ -392,10 +403,24 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         std::make_unique<CollisionEntryHandler>(),
         std::make_unique<TriggerEntryHandler>(),
     };
+    const bool useEntryIdFilter = !options.filterEntryIdList.empty();
+    std::unordered_set<std::uint32_t> selectedEntryIds{};
+    if (useEntryIdFilter) {
+        selectedEntryIds.insert(options.filterEntryIdList.begin(), options.filterEntryIdList.end());
+    }
+    const std::string normalizedFilterFxn = useEntryIdFilter ? std::string{} : normalizeFxnName(options.filterFxnName);
+    const bool useFxnFilter = !useEntryIdFilter && !normalizedFilterFxn.empty();
 
     for (const auto& entry : entries) {
-        addHistogram(histogram, options, entry.fxnName);
         const auto normalizedFxnName = normalizeFxnName(entry.fxnName);
+        const bool selected = useEntryIdFilter
+            ? (selectedEntryIds.find(entry.entryId) != selectedEntryIds.end())
+            : (!useFxnFilter || normalizedFxnName == normalizedFilterFxn);
+        if (!selected) {
+            continue;
+        }
+
+        addHistogram(histogram, options, entry.fxnName);
 
         const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
         std::vector<std::uint32_t> objectAddresses{};
