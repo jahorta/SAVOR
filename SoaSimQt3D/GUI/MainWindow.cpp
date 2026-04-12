@@ -10,12 +10,14 @@
 #include <QMessageBox>
 #include <QQuickItem>
 #include <QPlainTextEdit>
+#include <QQmlError>
 #include <QQuickWidget>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QUrl>
 #include <QQmlContext>
 
+#include <utility>
 #include <cstdint>
 #include <span>
 
@@ -84,6 +86,7 @@ void MainWindow::buildUi() {
     quickView_ = new QQuickWidget(this);
     quickView_->setResizeMode(QQuickWidget::SizeRootObjectToView);
     quickView_->rootContext()->setContextProperty("viewerWindow", this);
+    connect(quickView_, &QQuickWidget::statusChanged, this, &MainWindow::handleQuickViewStatusChanged);
     quickView_->setSource(QUrl(QStringLiteral("qrc:/qml/ViewerScene.qml")));
     setCentralWidget(quickView_);
 
@@ -91,6 +94,32 @@ void MainWindow::buildUi() {
 
     setWindowTitle("SoaSimQt3D - Quick 3D Viewer");
     resize(1280, 820);
+}
+
+void MainWindow::handleQuickViewStatusChanged(const QQuickWidget::Status status) {
+    if (quickView_ == nullptr) {
+        return;
+    }
+
+    if (status == QQuickWidget::Error) {
+        appendDiagnosticLine("ERROR: ViewerScene.qml failed to load.");
+        const QList<QQmlError> errors = quickView_->errors();
+        for (const QQmlError& error : errors) {
+            appendDiagnosticLine(error.toString());
+        }
+        return;
+    }
+
+    if (status != QQuickWidget::Ready || quickView_->rootObject() == nullptr) {
+        return;
+    }
+
+    syncLayerPropertiesToQml();
+    if (pendingRuntimeScene_.has_value()) {
+        RuntimeSceneData pending = std::move(*pendingRuntimeScene_);
+        pendingRuntimeScene_.reset();
+        applyRuntimeScene(std::move(pending));
+    }
 }
 
 void MainWindow::syncLayerPropertiesToQml() {
@@ -158,15 +187,17 @@ bool MainWindow::loadMldFile(const QString& path) {
     appendDiagnosticLine(QString("Converting to Runtime Scene"));
     auto runtimeScene = runtimeSceneConverter_.convert(parse, scene);
     geometryStore_ = std::move(runtimeScene.geometries);
-    applyRuntimeScene(runtimeScene);
+    applyRuntimeScene(std::move(runtimeScene));
 
     const QFileInfo info(path);
     statusBar()->showMessage(QString("Loaded %1").arg(info.fileName()));
     return true;
 }
 
-void MainWindow::applyRuntimeScene(const RuntimeSceneData& data) {
+void MainWindow::applyRuntimeScene(RuntimeSceneData data) {
     if (quickView_ == nullptr || quickView_->rootObject() == nullptr) {
+        appendDiagnosticLine("Viewer is not ready yet; deferring scene assignment.");
+        pendingRuntimeScene_ = std::move(data);
         return;
     }
 

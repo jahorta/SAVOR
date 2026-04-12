@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QDockWidget;
@@ -30,9 +31,10 @@ public slots:
 private:
     void buildUi();
     void syncLayerPropertiesToQml();
+    void handleQuickViewStatusChanged(QQuickWidget::Status status);
     void chooseAndLoadMldFile();
     bool loadMldFile(const QString& path);
-    void applyRuntimeScene(const RuntimeSceneData& data);
+    void applyRuntimeScene(RuntimeSceneData data);
 
     const scene::IQtSceneBuilder& sceneBuilder_;
 
@@ -47,6 +49,7 @@ private:
 
     std::vector<std::unique_ptr<StaticMeshGeometry>> geometryStore_{};
     RuntimeSceneConverter runtimeSceneConverter_{};
+    std::optional<RuntimeSceneData> pendingRuntimeScene_{};
 };
 
 } // namespace soasim::qt3d::gui
