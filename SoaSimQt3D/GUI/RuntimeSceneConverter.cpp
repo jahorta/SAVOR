@@ -195,7 +195,11 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
                 QVariantMap map{};
                 map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
                 map.insert("color", QColor(QStringLiteral("#4EA7C8")));
-                map.insert("label", QString("Collision_%1_obj_%2").arg(collision.sourceEntryId).arg(objectAddress));
+                map.insert("label", QString("Collision_%1_%2_tbl_%3_obj_%4")
+                    .arg(collision.sourceEntryId)
+                    .arg(QString::fromStdString(collision.fxnName))
+                    .arg(collision.tblId)
+                    .arg(objectAddress));
                 out.collisions.push_back(map);
                 out.geometries.push_back(std::move(geom));
                 emittedAny = true;
@@ -212,7 +216,10 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
             QVariantMap map{};
             map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
             map.insert("color", QColor(QStringLiteral("#4EA7C8")));
-            map.insert("label", QString("Collision_%1").arg(collision.sourceEntryId));
+            map.insert("label", QString("Collision_%1_%2_tbl_%3")
+                .arg(collision.sourceEntryId)
+                .arg(QString::fromStdString(collision.fxnName))
+                .arg(collision.tblId));
             out.collisions.push_back(map);
             out.geometries.push_back(std::move(geom));
             updateBounds(center.x(), center.y(), center.z());
@@ -238,11 +245,9 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
                 QVariantMap map{};
                 map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
                 map.insert("color", QColor(QStringLiteral("#E06666")));
-                map.insert("label", QString("Trigger_%1_%2_tbl_%3_obj_%4")
-                    .arg(trigger.sourceEntryId)
+                map.insert("label", QString("%1_tbl_%2")
                     .arg(QString::fromStdString(trigger.fxnName))
-                    .arg(trigger.tblId)
-                    .arg(objectAddress));
+                    .arg(trigger.tblId));
                 out.triggers.push_back(map);
                 out.geometries.push_back(std::move(geom));
                 emittedAny = true;
@@ -259,8 +264,7 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
             QVariantMap map{};
             map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
             map.insert("color", QColor(QStringLiteral("#E06666")));
-            map.insert("label", QString("Trigger_%1_%2_tbl_%3")
-                .arg(trigger.sourceEntryId)
+            map.insert("label", QString("%1_tbl_%2")
                 .arg(QString::fromStdString(trigger.fxnName))
                 .arg(trigger.tblId));
             out.triggers.push_back(map);
@@ -280,10 +284,21 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
         QVariantMap map{};
         map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
         map.insert("color", QColor(QStringLiteral("#CC00FF")));
-        map.insert("label", QString("Unknown_%1_%2_tbl_%3")
+        map.insert("label", QString("Unknown entryId=%1 fxn=%2 tblId=%3 pos=(%4,%5,%6) rot=(%7,%8,%9,%10) scale=(%11,%12,%13) rawBytes=%14")
             .arg(unknown.sourceEntryId)
             .arg(QString::fromStdString(unknown.fxnName))
-            .arg(unknown.tblId));
+            .arg(unknown.tblId)
+            .arg(unknown.transform.position.x, 0, 'f', 3)
+            .arg(unknown.transform.position.y, 0, 'f', 3)
+            .arg(unknown.transform.position.z, 0, 'f', 3)
+            .arg(unknown.transform.rotation.x, 0, 'f', 3)
+            .arg(unknown.transform.rotation.y, 0, 'f', 3)
+            .arg(unknown.transform.rotation.z, 0, 'f', 3)
+            .arg(unknown.transform.rotation.w, 0, 'f', 3)
+            .arg(unknown.transform.scale.x, 0, 'f', 3)
+            .arg(unknown.transform.scale.y, 0, 'f', 3)
+            .arg(unknown.transform.scale.z, 0, 'f', 3)
+            .arg(unknown.rawPayload.size()));
         out.unknowns.push_back(map);
         out.geometries.push_back(std::move(geom));
 

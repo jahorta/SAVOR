@@ -141,7 +141,7 @@ Item {
         Repeater3D {
             model: root.groundMeshes
             delegate: Model {
-                visible: root.showGrounds
+                visible: root.showGrounds && (modelData.visible !== false)
                 geometry: modelData.geometry
                 materials: DefaultMaterial {
                     diffuseColor: modelData.color
@@ -155,7 +155,7 @@ Item {
         Repeater3D {
             model: root.linkMeshes
             delegate: Model {
-                visible: root.showLinks
+                visible: root.showLinks && (modelData.visible !== false)
                 geometry: modelData.geometry
                 materials: DefaultMaterial {
                     diffuseColor: modelData.color
@@ -168,7 +168,7 @@ Item {
         Repeater3D {
             model: root.collisionMeshes
             delegate: Model {
-                visible: root.showCollisions
+                visible: root.showCollisions && (modelData.visible !== false)
                 geometry: modelData.geometry
                 materials: DefaultMaterial {
                     diffuseColor: modelData.color
@@ -181,7 +181,7 @@ Item {
         Repeater3D {
             model: root.triggerMeshes
             delegate: Model {
-                visible: root.showTriggers
+                visible: root.showTriggers && (modelData.visible !== false)
                 geometry: modelData.geometry
                 materials: DefaultMaterial {
                     diffuseColor: modelData.color
@@ -194,7 +194,7 @@ Item {
         Repeater3D {
             model: root.unknownMeshes
             delegate: Model {
-                visible: root.showUnknowns
+                visible: root.showUnknowns && (modelData.visible !== false)
                 geometry: modelData.geometry
                 materials: DefaultMaterial {
                     diffuseColor: modelData.color

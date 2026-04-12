@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RuntimeSceneConverter.h"
+#include "VisibilityTreeWidget.h"
 #include "../Scene/IQtSceneBuilder.h"
 
 #include <QMainWindow>
@@ -14,6 +15,7 @@
 class QDockWidget;
 class QPlainTextEdit;
 class QQuickWidget;
+class QAction;
 
 namespace soasim::qt3d::gui {
 
@@ -36,17 +38,35 @@ private:
     void chooseAndLoadMldFile();
     bool loadMldFile(const QString& path);
     void applyRuntimeScene(RuntimeSceneData data);
+    void applyMeshesToQml();
+    void setLayerVisibility(VisibilityTreeWidget::LayerKind layer, bool visible);
+    void setAllVisibility(bool visible);
+    QVariantList* meshesForLayer(VisibilityTreeWidget::LayerKind layer);
+    void setLeafVisibility(VisibilityTreeWidget::LayerKind layer, int index, bool visible);
+    void setActionCheckedNoSignal(QAction* action, bool checked);
 
     const scene::IQtSceneBuilder& sceneBuilder_;
 
     QQuickWidget* quickView_ = nullptr;
     QPlainTextEdit* diagnosticsView_ = nullptr;
+    VisibilityTreeWidget* visibilityWidget_ = nullptr;
+    QAction* groundsAction_ = nullptr;
+    QAction* linksAction_ = nullptr;
+    QAction* collisionsAction_ = nullptr;
+    QAction* triggersAction_ = nullptr;
+    QAction* unknownsAction_ = nullptr;
+    bool updatingVisibilityTree_ = false;
 
     bool showGrounds_ = true;
     bool showLinks_ = true;
     bool showCollisions_ = true;
     bool showTriggers_ = true;
     bool showUnknowns_ = true;
+    QVariantList groundMeshes_{};
+    QVariantList linkMeshes_{};
+    QVariantList collisionMeshes_{};
+    QVariantList triggerMeshes_{};
+    QVariantList unknownMeshes_{};
 
     std::vector<std::unique_ptr<StaticMeshGeometry>> geometryStore_{};
     RuntimeSceneConverter runtimeSceneConverter_{};
