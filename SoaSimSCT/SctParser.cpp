@@ -1,9 +1,11 @@
 #include "SctParser.h"
 #include "SctOpcodeMetadata.h"
+#include "SctScptDecodeHelpers.h"
 
 #include "../Compression/Aklz.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -185,7 +187,8 @@ struct DecodedInstruction {
     std::uint32_t wordOffset,
     Endian endian,
     std::uint32_t instructionOffset,
-    std::vector<SctDiagnostic>& diagnostics) {
+    std::vector<SctDiagnostic>& diagnostics,
+    SctInstruction::ScptParameterValueRecord* record) {
 
     if (wordOffset + 4u > sectionBytes.size()) {
         diagnostics.push_back({"SCPT parameter decode failed: out-of-bounds read.", instructionOffset});
@@ -194,11 +197,16 @@ struct DecodedInstruction {
 
     const auto firstWord = readU32(sectionBytes, wordOffset, endian);
     if (isScptNoLoopValue(firstWord)) {
+        if (record != nullptr) {
+            record->resolvedValue = detail::toHexWord(firstWord);
+            record->evaluationTrace.push_back({firstWord, record->resolvedValue});
+        }
         return 1;
     }
 
     std::uint32_t consumedWords = 0;
     std::uint32_t cursor = wordOffset;
+    std::array<std::string, 20> resultStack{};
 
     // Mirror SALSA's _SCPT_analyze stack-driven loop semantics.
     // In Python this starts as `stack_index = 0`, `max_index = 18` and bails
@@ -217,10 +225,33 @@ struct DecodedInstruction {
         ++consumedWords;
 
         if (currentWord == kScptStopCode) {
+            if (record != nullptr) {
+                record->hitStopCode = true;
+                if (!resultStack[2].empty()) {
+                    record->resolvedValue = resultStack[2];
+                } else {
+                    record->resolvedValue = "return values (0x1d)";
+                }
+                record->evaluationTrace.push_back({currentWord, "return values (0x1d)"});
+            }
             return consumedWords;
         }
 
         if (isScptCompareCode(currentWord)) {
+            const auto lhs = detail::stackValue(resultStack, stackIndex);
+            const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
+            const auto expr = "(" + lhs + " " + detail::compareSymbol(currentWord) + " " + rhs + ")";
+            std::int32_t nones = 0;
+            if (lhs == "?") {
+                ++nones;
+            }
+            if (rhs == "?") {
+                ++nones;
+            }
+            resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
+            if (record != nullptr) {
+                record->evaluationTrace.push_back({currentWord, expr});
+            }
             --stackIndex;
             if (currentWord == 0x0000000a) {
                 ++stackIndex;
@@ -230,6 +261,20 @@ struct DecodedInstruction {
         }
 
         if (isScptArithmeticCode(currentWord)) {
+            const auto lhs = detail::stackValue(resultStack, stackIndex);
+            const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
+            const auto expr = "(" + lhs + " " + detail::arithmeticSymbol(currentWord) + " " + rhs + ")";
+            std::int32_t nones = 0;
+            if (lhs == "?") {
+                ++nones;
+            }
+            if (rhs == "?") {
+                ++nones;
+            }
+            resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
+            if (record != nullptr) {
+                record->evaluationTrace.push_back({currentWord, expr});
+            }
             --stackIndex;
             cursor += 4u;
             continue;
@@ -242,17 +287,49 @@ struct DecodedInstruction {
                     diagnostics.push_back({"SCPT float literal payload exceeds section bounds.", instructionOffset});
                     return consumedWords;
                 }
+                const auto floatPayload = readU32(sectionBytes, cursor + 4u, endian);
+                const auto floatValue = detail::floatFromWordBits(floatPayload);
+                const auto value = std::string{detail::inputPrefix(action)} + std::to_string(floatValue);
+                resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
+                if (record != nullptr) {
+                    record->evaluationTrace.push_back({currentWord, detail::toHexWord(currentWord)});
+                    record->evaluationTrace.push_back({floatPayload, value});
+                }
                 ++consumedWords;
                 cursor += 8u;
             } else {
+                std::string value;
+                if (action == 0x08000000u) {
+                    const auto whole = (currentWord & 0x00ffff00u) >> 8u;
+                    const auto frac = currentWord & 0x000000ffu;
+                    value = std::string{detail::inputPrefix(action)} + std::to_string(whole) + "+" + std::to_string(frac) + "/256";
+                } else {
+                    value = std::string{detail::inputPrefix(action)} + std::to_string(currentWord & 0x00ffffffu);
+                }
+                resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
+                if (record != nullptr) {
+                    record->evaluationTrace.push_back({currentWord, value});
+                }
                 cursor += 4u;
             }
         } else {
+            const auto masked = currentWord & 0x00ffffffu;
+            auto value = detail::secondaryLabel(masked);
+            if (value.empty()) {
+                value = std::string{detail::inputPrefix(action)} + std::to_string(masked);
+            }
+            resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
+            if (record != nullptr) {
+                record->evaluationTrace.push_back({currentWord, value});
+            }
             cursor += 4u;
         }
         ++stackIndex;
     }
 
+    if (record != nullptr && record->resolvedValue.empty() && !resultStack[2].empty()) {
+        record->resolvedValue = resultStack[2];
+    }
     diagnostics.push_back({"SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
     return consumedWords;
 }
@@ -319,12 +396,17 @@ struct DecodedInstruction {
 
             const bool isScptParam = paramIndex < 64u && ((paramPattern.scptAnalyzeMask >> paramIndex) & 1ull) != 0ull;
             std::uint32_t wordsForParam = 1;
+            SctInstruction::ScptParameterValueRecord scptRecord{};
             if (isScptParam) {
-                wordsForParam = consumeScptParameterWords(sectionBytes, paramWordOffset, chosenEndian, offset, diagnostics);
+                scptRecord.parameterIndex = static_cast<std::uint8_t>(paramIndex);
+                scptRecord.operandStartWordIndex = consumedOperandWords;
+                wordsForParam = consumeScptParameterWords(
+                    sectionBytes, paramWordOffset, chosenEndian, offset, diagnostics, &scptRecord);
                 if (wordsForParam == 0) {
                     return false;
                 }
                 decoded.inst.scptAnalyzeOperandIndexes.push_back(static_cast<std::uint8_t>(paramIndex));
+                scptRecord.operandWordCount = wordsForParam;
             }
 
             if (paramPattern.iterationCountParam >= 0
@@ -342,6 +424,9 @@ struct DecodedInstruction {
             }
 
             consumedOperandWords += wordsForParam;
+            if (isScptParam) {
+                decoded.inst.scptParameterValueRecords.push_back(std::move(scptRecord));
+            }
             return true;
         };
 
