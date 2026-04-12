@@ -20,7 +20,7 @@ struct PackedVertex {
 
 class StaticMeshGeometry final : public QQuick3DGeometry {
 public:
-    explicit StaticMeshGeometry(QObject* parent = nullptr);
+    explicit StaticMeshGeometry(QQuick3DObject* parent = nullptr);
 
     void setTriangleMesh(const std::vector<PackedVertex>& vertices,
         const std::vector<std::uint32_t>& indices);

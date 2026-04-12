@@ -9,7 +9,7 @@
 
 namespace soasim::qt3d::gui {
 
-StaticMeshGeometry::StaticMeshGeometry(QObject* parent)
+StaticMeshGeometry::StaticMeshGeometry(QQuick3DObject* parent)
     : QQuick3DGeometry(parent) {
 }
 
