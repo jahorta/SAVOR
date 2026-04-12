@@ -11,6 +11,7 @@
 #include <QPlainTextEdit>
 #include <QQmlContext>
 #include <QQmlError>
+#include <QQuickItem>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QToolBar>

@@ -122,7 +122,6 @@
     <QtMoc Include="GUI\VisibilityTreeWidget.h" />
     <ClInclude Include="GUI\RuntimeSceneConverter.h" />
     <ClInclude Include="GUI\StaticMeshGeometry.h" />
-    <ClInclude Include="GUI\VisibilityTreeWidget.h" />
     <ClInclude Include="Scene\BasicQtSceneBuilder.h" />
     <ClInclude Include="Scene\IQtSceneBuilder.h" />
     <ClInclude Include="Scene\QtSceneData.h" />
