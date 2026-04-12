@@ -614,7 +614,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                 result.diagnostics.insert(result.diagnostics.end(), inst_diagnostics.begin(), inst_diagnostics.end());
 
                 instructionByOffset[cursor] = section.instructions.size();
-                visited.insert(cursor, decoded.inst.sizeBytes);
+                visited.try_emplace(cursor, decoded.inst.sizeBytes);
                 section.instructions.push_back(decoded.inst);
                 block.instructionOffsets.push_back(cursor);
 
