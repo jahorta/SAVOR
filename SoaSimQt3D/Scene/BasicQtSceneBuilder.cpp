@@ -28,7 +28,9 @@ SceneBuildResult BasicQtSceneBuilder::buildScene(const soasim::mld::model::Geome
         }
         for (const auto& poly : object.mesh.polygons) {
             for (const auto idx : poly.indices) {
-                mesh.indices.push_back(idx);
+                if (idx < mesh.vertices.size()) {
+                    mesh.indices.push_back(idx);
+                }
             }
         }
         if (object.sourceKind == soasim::mld::model::GeometrySourceKind::Grnd) {
