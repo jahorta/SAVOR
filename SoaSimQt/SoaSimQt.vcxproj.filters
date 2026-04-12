@@ -224,6 +224,7 @@
     <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
@@ -292,6 +293,7 @@
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
