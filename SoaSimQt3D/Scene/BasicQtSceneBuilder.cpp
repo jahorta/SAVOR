@@ -1,5 +1,8 @@
 #include "BasicQtSceneBuilder.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <set>
 #include <utility>
 
 namespace soasim::qt3d::scene {
@@ -34,6 +37,21 @@ SceneBuildResult BasicQtSceneBuilder::buildScene(const soasim::mld::model::Geome
         }
         out.grounds.push_back(std::move(node));
     }
+
+    std::set<std::pair<std::uint32_t, std::uint32_t>> dedup{};
+    for (const auto& ground : out.grounds) {
+        for (const auto linkedId : ground.linkedGrndIds) {
+            const auto key = std::minmax(ground.grndId, linkedId);
+            if (!dedup.insert(key).second) {
+                continue;
+            }
+            out.links.push_back(GroundLinkSceneNode{
+                .fromGrndId = key.first,
+                .toGrndId = key.second,
+            });
+        }
+    }
+
     return out;
 }
 

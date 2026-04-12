@@ -23,21 +23,34 @@ struct SceneMesh {
 
 struct GroundSceneNode {
     std::uint32_t grndId = 0;
+    std::vector<std::uint32_t> linkedGrndIds{};
     SceneMesh mesh{};
+};
+
+struct GroundLinkSceneNode {
+    std::uint32_t fromGrndId = 0;
+    std::uint32_t toGrndId = 0;
 };
 
 struct TriggerSceneNode {
     std::uint32_t sourceEntryId = 0;
     std::uint32_t fxn = 0;
+    float px = 0.0f;
+    float py = 0.0f;
+    float pz = 0.0f;
 };
 
 struct UnknownSceneNode {
     std::uint32_t sourceEntryId = 0;
     std::uint32_t fxn = 0;
+    float px = 0.0f;
+    float py = 0.0f;
+    float pz = 0.0f;
 };
 
 struct SceneBuildResult {
     std::vector<GroundSceneNode> grounds{};
+    std::vector<GroundLinkSceneNode> links{};
     std::vector<TriggerSceneNode> triggers{};
     std::vector<UnknownSceneNode> unknowns{};
 };
