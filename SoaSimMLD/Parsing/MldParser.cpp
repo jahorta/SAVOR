@@ -186,6 +186,7 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         std::size_t chunkDataSize = 0;
         bool chunkSizeLittleEndian = true;
         bool sawPof0Chunk = false;
+        std::vector<std::uint8_t> pof0Data{};
         std::vector<std::uint8_t> data{};
     };
     std::optional<PendingNjcm> pendingNjcm{};
@@ -235,12 +236,15 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
             state.sawPof0Chunk = false;
+            state.pof0Data.clear();
             state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
                 bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             pendingNjcm = std::move(state);
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
                 pendingNjcm->sawPof0Chunk = true;
+                pendingNjcm->pof0Data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
+                    bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             }
             if ((*tag == tagPof0 || *tag == tagNjtl || *tag == tagNmdm || *tag == tagNcam) && pendingNjcm.has_value()) {
                 auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
@@ -248,7 +252,8 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
                     pendingNjcm->chunkDataSize,
                     pendingNjcm->chunkSizeLittleEndian,
                     pendingNjcm->sawPof0Chunk,
-                    options.njcmPolicy);
+                    options.njcmPolicy,
+                    std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
                 auto summary = summarizeDecodedNjcmChunk(decoded);
                 njcmChunks.push_back(summary);
                 decodedNjcmChunks.push_back(std::move(decoded));
@@ -267,7 +272,8 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             pendingNjcm->chunkDataSize,
             pendingNjcm->chunkSizeLittleEndian,
             pendingNjcm->sawPof0Chunk,
-            options.njcmPolicy);
+            options.njcmPolicy,
+            std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
         auto summary = summarizeDecodedNjcmChunk(decoded);
         njcmChunks.push_back(summary);
         decodedNjcmChunks.push_back(std::move(decoded));
@@ -353,6 +359,17 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", realData=0x" + std::to_string(static_cast<std::size_t>(*ptrRealDataOpt)) +
             ", textureTable=0x" + std::to_string(static_cast<std::size_t>(*ptrTextureTableOpt)),
     });
+    if (!options.filterEntryIdList.empty()) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Entry filter enabled by ID list (" + std::to_string(options.filterEntryIdList.size()) + " IDs).",
+        });
+    } else if (!options.filterFxnName.empty()) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Entry filter enabled by fxnName=\"" + options.filterFxnName + "\".",
+        });
+    }
 
     std::vector<model::IndexEntry> entries{};
     entries.reserve(entryCount);
@@ -392,10 +409,24 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         std::make_unique<CollisionEntryHandler>(),
         std::make_unique<TriggerEntryHandler>(),
     };
+    const bool useEntryIdFilter = !options.filterEntryIdList.empty();
+    std::unordered_set<std::uint32_t> selectedEntryIds{};
+    if (useEntryIdFilter) {
+        selectedEntryIds.insert(options.filterEntryIdList.begin(), options.filterEntryIdList.end());
+    }
+    const std::string normalizedFilterFxn = useEntryIdFilter ? std::string{} : normalizeFxnName(options.filterFxnName);
+    const bool useFxnFilter = !useEntryIdFilter && !normalizedFilterFxn.empty();
 
     for (const auto& entry : entries) {
-        addHistogram(histogram, options, entry.fxnName);
         const auto normalizedFxnName = normalizeFxnName(entry.fxnName);
+        const bool selected = useEntryIdFilter
+            ? (selectedEntryIds.find(entry.entryId) != selectedEntryIds.end())
+            : (!useFxnFilter || normalizedFxnName == normalizedFilterFxn);
+        if (!selected) {
+            continue;
+        }
+
+        addHistogram(histogram, options, entry.fxnName);
 
         const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
         std::vector<std::uint32_t> objectAddresses{};

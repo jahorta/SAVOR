@@ -1,4 +1,5 @@
 #include "NJCMParser.h"
+#include "NJCMParityPath.h"
 
 #include <array>
 #include <algorithm>
@@ -72,6 +73,34 @@ struct NjcmCandidateMetrics {
     std::size_t decodedTriangleCount = 0;
     std::size_t score = 0;
 };
+
+[[nodiscard]] std::size_t vertexWordsPerVertexByType(const std::uint8_t type) {
+    switch (type) {
+    case 32U: // Vertex_VertexSH
+        return 4;
+    case 33U: // Vertex_VertexNormalSH
+        return 8;
+    case 34U: // Vertex_Vertex
+        return 3;
+    case 35U: // Vertex_VertexDiffuse8
+    case 36U: // Vertex_VertexUserFlags
+    case 37U: // Vertex_VertexNinjaFlags
+    case 38U: // Vertex_VertexDiffuseSpecular5
+    case 39U: // Vertex_VertexDiffuseSpecular4
+        return 4;
+    case 40U: // Vertex_VertexDiffuseSpecular16
+    case 41U: // Vertex_VertexNormal
+    case 42U: // Vertex_VertexNormalDiffuse8
+    case 43U: // Vertex_VertexNormalUserFlags
+    case 44U: // Vertex_VertexNormalNinjaFlags
+    case 45U: // Vertex_VertexNormalDiffuseSpecular5
+    case 46U: // Vertex_VertexNormalDiffuseSpecular4
+    case 47U: // Vertex_VertexNormalDiffuseSpecular16
+        return 7;
+    default:
+        return 0;
+    }
+}
 
 [[nodiscard]] NjcmCandidateMetrics scoreNjcmCandidate(std::span<const std::uint8_t> data, const bool littleEndian, const std::uint32_t imageBase) {
     NjcmCandidateMetrics m{};
@@ -304,19 +333,35 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
     const std::size_t chunkDataSize,
     const bool chunkSizeLittleEndian,
     const bool sawPof0Chunk,
-    const NjcmParsePolicy& policy) {
+    const NjcmParsePolicy& policy,
+    std::span<const std::uint8_t> pof0Data) {
+    if (policy.useSaToolsParityPath) {
+        return decodeNjcmChunkSaToolsParity(njcmData,
+            chunkOffset,
+            chunkDataSize,
+            chunkSizeLittleEndian,
+            sawPof0Chunk,
+            policy,
+            pof0Data);
+    }
+
     model::NjcmDecodedChunk out{};
     out.chunkOffset = chunkOffset;
     out.chunkDataSize = chunkDataSize;
     out.chunkSizeLittleEndian = chunkSizeLittleEndian;
     out.payloadLittleEndian = policy.payloadLittleEndian;
+    const std::uint32_t effectiveImageBase = policy.imageBase;
     out.imageBase = policy.imageBase;
     out.sawPof0Chunk = sawPof0Chunk;
     out.usedPof0Fixup = false;
 
     std::vector<std::uint8_t> decoded(njcmData.begin(), njcmData.end());
-    if (policy.applyPof0Fixups && sawPof0Chunk) {
-        out.diagnostics.push_back("POF0 fixup requested by policy, but deterministic decode does not apply sidecar data.");
+    const bool shouldApplyPof0 = sawPof0Chunk && !pof0Data.empty() && policy.applyPof0Fixups;
+    if (shouldApplyPof0) {
+        const auto deltas = decodePof0Deltas(pof0Data);
+        applyPof0Fixups(decoded, deltas, effectiveImageBase, policy.payloadLittleEndian);
+        out.usedPof0Fixup = true;
+        out.diagnostics.push_back("POF0 sidecar applied before deterministic decode.");
     } else if (sawPof0Chunk) {
         out.diagnostics.push_back("POF0 sidecar detected; skipped fixups per deterministic policy.");
     }
@@ -345,18 +390,18 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
             continue;
         }
 
-        if (const auto childOff = resolvePointer(*childRaw, policy.imageBase, decoded.size()); childOff.has_value()) {
+        if (const auto childOff = resolvePointer(*childRaw, effectiveImageBase, decoded.size()); childOff.has_value()) {
             obj.hasChild = true;
             obj.childOffset = *childOff;
             stack.push_back(*childOff);
         }
-        if (const auto siblingOff = resolvePointer(*siblingRaw, policy.imageBase, decoded.size()); siblingOff.has_value()) {
+        if (const auto siblingOff = resolvePointer(*siblingRaw, effectiveImageBase, decoded.size()); siblingOff.has_value()) {
             obj.hasSibling = true;
             obj.siblingOffset = *siblingOff;
             stack.push_back(*siblingOff);
         }
 
-        if (const auto attachOff = resolvePointer(*attachRaw, policy.imageBase, decoded.size()); attachOff.has_value()) {
+        if (const auto attachOff = resolvePointer(*attachRaw, effectiveImageBase, decoded.size()); attachOff.has_value()) {
             obj.hasAttach = true;
             obj.attachOffset = *attachOff;
             if (*attachOff + 8 > decoded.size()) {
@@ -371,7 +416,7 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                 if (!vlistRaw.has_value() || !plistRaw.has_value()) {
                     out.diagnostics.push_back("Attach record truncated while reading list pointers.");
                 } else {
-                    if (const auto vlistOff = resolvePointer(*vlistRaw, policy.imageBase, decoded.size()); vlistOff.has_value()) {
+                    if (const auto vlistOff = resolvePointer(*vlistRaw, effectiveImageBase, decoded.size()); vlistOff.has_value()) {
                         attach.vertexListOffset = *vlistOff;
                         std::size_t cur = *vlistOff;
                         for (std::size_t i = 0; i < 4096 && cur + 4 <= decoded.size(); ++i) {
@@ -405,7 +450,13 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                                 const std::size_t payloadOff = cur + 8;
                                 if (payloadOff <= decoded.size() && step >= 8) {
                                     const std::size_t payloadBytes = step - 8;
-                                    const std::size_t stride = payloadBytes / static_cast<std::size_t>(vc.vertexCount);
+                                    std::size_t stride = 0;
+                                    const auto wordsPerVertex = vertexWordsPerVertexByType(type);
+                                    if (wordsPerVertex > 0) {
+                                        stride = wordsPerVertex * 4U;
+                                    } else {
+                                        stride = payloadBytes / static_cast<std::size_t>(vc.vertexCount);
+                                    }
                                     if (stride >= 12) {
                                         for (std::uint16_t vi = 0; vi < vc.vertexCount; ++vi) {
                                             const std::size_t vOff = payloadOff + static_cast<std::size_t>(vi) * stride;
@@ -438,7 +489,7 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                     }
                     attach.semanticVertices = std::move(indexedVertices);
 
-                    if (const auto plistOff = resolvePointer(*plistRaw, policy.imageBase, decoded.size()); plistOff.has_value()) {
+                    if (const auto plistOff = resolvePointer(*plistRaw, effectiveImageBase, decoded.size()); plistOff.has_value()) {
                         attach.polyListOffset = *plistOff;
                         std::size_t cur = *plistOff;
                         for (std::size_t i = 0; i < 8192 && cur + 2 <= decoded.size(); ++i) {
@@ -506,10 +557,6 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                                     std::size_t wordsPerVertex = 1;
                                     if (type == 65U || type == 66U || type == 70U) {
                                         wordsPerVertex = 3;
-                                    } else if (type == 67U) {
-                                        wordsPerVertex = 4;
-                                    } else if (type == 68U || type == 69U) {
-                                        wordsPerVertex = 6;
                                     } else if (type == 71U || type == 72U || type == 74U || type == 75U) {
                                         wordsPerVertex = 5;
                                     }
