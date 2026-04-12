@@ -106,6 +106,7 @@
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\GeometryBuilder.h" />
     <ClInclude Include="Parsing\NJCMParser.h" />
+    <ClInclude Include="Parsing\NJCMParityPath.h" />
     <ClInclude Include="Parsing\MldBinaryReader.h" />
     <ClInclude Include="Parsing\MldParser.h" />
     <ClInclude Include="SoaSimMLD.h" />
@@ -114,6 +115,7 @@
     <ClCompile Include="Parsing\MldBinaryReader.cpp" />
     <ClCompile Include="Parsing\GeometryBuilder.cpp" />
     <ClCompile Include="Parsing\NJCMParser.cpp" />
+    <ClCompile Include="Parsing\NJCMParityPath.cpp" />
     <ClCompile Include="Parsing\MldParser.cpp" />
     <ClCompile Include="SoaSimMLD.cpp" />
   </ItemGroup>

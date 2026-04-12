@@ -30,6 +30,7 @@ struct NjcmParsePolicy {
     bool chunkSizeLittleEndian = false;
     std::uint32_t imageBase = 0;
     bool applyPof0Fixups = false;
+    bool useSaToolsParityPath = false;
     bool allowHeuristicFallback = true;
 };
 
@@ -52,7 +53,8 @@ void applyPof0Fixups(std::vector<std::uint8_t>& target,
     std::size_t chunkDataSize,
     bool chunkSizeLittleEndian,
     bool sawPof0Chunk,
-    const NjcmParsePolicy& policy);
+    const NjcmParsePolicy& policy,
+    std::span<const std::uint8_t> pof0Data = {});
 
 [[nodiscard]] NjcmChunkSummary summarizeDecodedNjcmChunk(const model::NjcmDecodedChunk& decodedChunk);
 
