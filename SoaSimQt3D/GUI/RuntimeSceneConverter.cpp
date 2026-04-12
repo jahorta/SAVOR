@@ -1,6 +1,7 @@
 #include "RuntimeSceneConverter.h"
 
 #include <QColor>
+#include <QQmlEngine>
 #include <QQuaternion>
 #include <QVariantMap>
 
@@ -70,6 +71,7 @@ QVector3D centroidFromVertices(const std::vector<scene::SceneVertex>& vertices) 
 std::unique_ptr<StaticMeshGeometry> createTriangleGeometry(const std::vector<PackedVertex>& vertices,
     const std::vector<std::uint32_t>& indices) {
     auto geom = std::make_unique<StaticMeshGeometry>();
+    QQmlEngine::setObjectOwnership(geom.get(), QQmlEngine::CppOwnership);
     geom->setTriangleMesh(vertices, indices);
     return geom;
 }
@@ -77,6 +79,7 @@ std::unique_ptr<StaticMeshGeometry> createTriangleGeometry(const std::vector<Pac
 std::unique_ptr<StaticMeshGeometry> createLineGeometry(const std::vector<PackedVertex>& vertices,
     const std::vector<std::uint32_t>& indices) {
     auto geom = std::make_unique<StaticMeshGeometry>();
+    QQmlEngine::setObjectOwnership(geom.get(), QQmlEngine::CppOwnership);
     geom->setLineMesh(vertices, indices);
     return geom;
 }
