@@ -117,7 +117,7 @@
     <ClCompile Include="GUI\StaticMeshGeometry.cpp" />
     <ClCompile Include="Scene\BasicQtSceneBuilder.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClInclude Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\MainWindow.h" />
     <ClInclude Include="GUI\RuntimeSceneConverter.h" />
     <ClInclude Include="GUI\StaticMeshGeometry.h" />
     <ClInclude Include="Scene\BasicQtSceneBuilder.h" />

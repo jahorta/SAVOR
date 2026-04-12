@@ -16,9 +16,16 @@ class QQuickWidget;
 namespace soasim::qt3d::gui {
 
 class MainWindow final : public QMainWindow {
+
+    Q_OBJECT;
+
 public:
     explicit MainWindow(const scene::IQtSceneBuilder& sceneBuilder,
         QWidget* parent = nullptr);
+
+public slots:
+    void appendDiagnosticLine(const QString& line);
+
 
 private:
     void buildUi();
@@ -26,7 +33,6 @@ private:
     void chooseAndLoadMldFile();
     bool loadMldFile(const QString& path);
     void applyRuntimeScene(const RuntimeSceneData& data);
-    void appendDiagnosticLine(const QString& line);
 
     const scene::IQtSceneBuilder& sceneBuilder_;
 
