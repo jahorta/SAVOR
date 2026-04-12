@@ -48,9 +48,19 @@ struct DecodedObjectChunkRange {
     std::size_t decodedChunkEnd = 0;
 };
 
+struct ParsedRawEntry {
+    std::uint32_t sourceEntryId = 0;
+    std::string fxnName{};
+    std::uint32_t tblId = 0;
+    model::Transform transform{};
+    std::vector<std::uint32_t> objectAddresses{};
+    std::vector<std::uint8_t> payload{};
+};
+
 struct ParseResult {
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
+    std::vector<ParsedRawEntry> rawEntries{};
     std::vector<ParseDiagnostic> diagnostics{};
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};

@@ -115,11 +115,14 @@
     <ClCompile Include="GUI\MainWindow.cpp" />
     <ClCompile Include="GUI\RuntimeSceneConverter.cpp" />
     <ClCompile Include="GUI\StaticMeshGeometry.cpp" />
+    <ClCompile Include="GUI\VisibilityTreeWidget.cpp" />
     <ClCompile Include="Scene\BasicQtSceneBuilder.cpp" />
     <ClCompile Include="main.cpp" />
     <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\VisibilityTreeWidget.h" />
     <ClInclude Include="GUI\RuntimeSceneConverter.h" />
     <ClInclude Include="GUI\StaticMeshGeometry.h" />
+    <ClInclude Include="GUI\VisibilityTreeWidget.h" />
     <ClInclude Include="Scene\BasicQtSceneBuilder.h" />
     <ClInclude Include="Scene\IQtSceneBuilder.h" />
     <ClInclude Include="Scene\QtSceneData.h" />
