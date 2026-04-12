@@ -384,18 +384,12 @@ struct DecodedInstruction {
                         }
                     }
                 }
-            } else {
-                const auto jumpParam = paramPattern.jumpParam;
-                if (jumpParam >= 0 && static_cast<std::size_t>(jumpParam) < decoded.inst.operands.size()) {
-                    const auto rel = static_cast<std::int32_t>(decoded.inst.operands[static_cast<std::size_t>(jumpParam)]);
-                    const auto jumpTarget = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes) + rel;
-                    if (jumpTarget >= 0) {
-                        decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
-                    }
-                } else {
-                    diagnostics.push_back({"Control-flow instruction missing jump parameter metadata.", offset});
+            } else  {
+                const auto rel = static_cast<std::int32_t>(decoded.inst.operands.back());
+                const auto jumpTarget = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes) + rel + -4;
+                if (jumpTarget >= 0) {
+                    decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
                 }
-
                 if (opcode == 0) {
                     decoded.successors.push_back(offset + decoded.inst.sizeBytes);
                 }
