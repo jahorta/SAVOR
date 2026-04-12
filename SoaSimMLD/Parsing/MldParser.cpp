@@ -3,10 +3,12 @@
 #include "../../Compression/Aklz.h"
 #include "../Model/IndexEntry.h"
 #include "../common/ByteUtils.h"
+#include "EntryHandlers.h"
 #include "MldBinaryReader.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -85,6 +87,55 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
     }
     ++histogram[fxnName];
 }
+
+[[nodiscard]] std::string normalizeFxnName(std::string_view fxnName) {
+    std::string normalized{};
+    normalized.reserve(fxnName.size());
+    for (const auto ch : fxnName) {
+        if (std::isalnum(static_cast<unsigned char>(ch)) == 0) {
+            continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return normalized;
+}
+
+class CollisionEntryHandler final : public EntryHandler {
+public:
+    [[nodiscard]] bool canHandle(const std::string_view fxnName) const override {
+        const auto normalized = normalizeFxnName(fxnName);
+        return normalized == "wall" ||
+            normalized == "walluv" ||
+            normalized == "hasigo1" ||
+            normalized == "hasigo2";
+    }
+
+    void parse(const RawEntry& entry, model::WorldModel& out) const override {
+        model::CollisionVolume collision{};
+        collision.sourceEntryId = entry.sourceEntryId;
+        collision.transform = entry.transform;
+        out.collisions.push_back(std::move(collision));
+    }
+};
+
+class TriggerEntryHandler final : public EntryHandler {
+public:
+    [[nodiscard]] bool canHandle(const std::string_view fxnName) const override {
+        const auto normalized = normalizeFxnName(fxnName);
+        return normalized == "treasure" ||
+            normalized == "goscript" ||
+            normalized == "wallmot";
+    }
+
+    void parse(const RawEntry& entry, model::WorldModel& out) const override {
+        model::TriggerVolume trigger{};
+        trigger.sourceEntryId = entry.sourceEntryId;
+        trigger.fxnName = std::string(entry.fxnName);
+        trigger.tblId = entry.tblId;
+        trigger.transform = entry.transform;
+        out.triggers.push_back(std::move(trigger));
+    }
+};
 
 void parseNjChunkStream(std::span<const std::uint8_t> bytes,
     const std::size_t imageBase,
@@ -305,35 +356,56 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     std::unordered_set<std::uint32_t> uniqueObjectAddresses{};
     std::unordered_set<std::uint32_t> uniqueMotionAddresses{};
     std::unordered_map<std::uint32_t, const model::IndexEntry*> groundAddressOwners{};
+    const std::array<std::unique_ptr<EntryHandler>, 2> handlers{
+        std::make_unique<CollisionEntryHandler>(),
+        std::make_unique<TriggerEntryHandler>(),
+    };
 
     for (const auto& entry : entries) {
         addHistogram(histogram, options, entry.fxnName);
+        const auto normalizedFxnName = normalizeFxnName(entry.fxnName);
 
-        if ((entry.tblId & 0xF0000000U) == 0x10000000U) {
-            model::CollisionVolume collision{};
-            collision.sourceEntryId = entry.entryId;
-            collision.transform = entry.transform;
-            result.world.collisions.push_back(std::move(collision));
-        } else if ((entry.tblId & 0xF0000000U) == 0x20000000U) {
-            model::TriggerVolume trigger{};
-            trigger.sourceEntryId = entry.entryId;
-            trigger.fxn = entry.tblId;
-            trigger.transform = entry.transform;
-            result.world.triggers.push_back(trigger);
-            result.searchWorld.regions.push_back(EncounterOrTriggerRegion{
-                .sourceEntryId = entry.entryId,
-                .fxn = entry.tblId,
-                .transform = entry.transform,
-            });
-        } else if (options.preserveUnknownEntries) {
+        const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
+        RawEntry rawEntry{
+            .sourceEntryId = entry.entryId,
+            .fxnName = entry.fxnName,
+            .tblId = entry.tblId,
+            .transform = entry.transform,
+            .payload = std::span<const std::uint8_t>(payload.data() + static_cast<std::ptrdiff_t>(entryOffset), entrySize),
+        };
+
+        bool classified = false;
+        bool classifiedAsTrigger = false;
+        for (const auto& handler : handlers) {
+            if (!handler->canHandle(rawEntry.fxnName)) {
+                continue;
+            }
+            handler->parse(rawEntry, result.world);
+            classified = true;
+            classifiedAsTrigger = normalizedFxnName == "treasure" ||
+                normalizedFxnName == "goscript" ||
+                normalizedFxnName == "wallmot";
+            break;
+        }
+
+        if (!classified && options.preserveUnknownEntries) {
             UnknownEntry unknown{};
             unknown.sourceEntryId = entry.entryId;
-            unknown.fxn = entry.tblId;
+            unknown.fxnName = entry.fxnName;
+            unknown.tblId = entry.tblId;
             unknown.transform = entry.transform;
-            const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
             unknown.rawPayload.assign(payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
                 payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize));
             result.world.unknownEntries.push_back(std::move(unknown));
+        }
+
+        if (classifiedAsTrigger) {
+            result.searchWorld.regions.push_back(EncounterOrTriggerRegion{
+                .sourceEntryId = entry.entryId,
+                .fxnName = entry.fxnName,
+                .tblId = entry.tblId,
+                .transform = entry.transform,
+            });
         }
 
         result.diagnostics.push_back(ParseDiagnostic{

@@ -6,11 +6,13 @@ Item {
     id: root
     property bool showGrounds: true
     property bool showLinks: true
+    property bool showCollisions: true
     property bool showTriggers: true
     property bool showUnknowns: true
 
     property var groundMeshes: []
     property var linkMeshes: []
+    property var collisionMeshes: []
     property var triggerMeshes: []
     property var unknownMeshes: []
 
@@ -78,6 +80,19 @@ Item {
                     diffuseColor: modelData.color
                     cullMode: Material.NoCulling
                     lighting: DefaultMaterial.NoLighting
+                }
+            }
+        }
+
+        Repeater3D {
+            model: root.collisionMeshes
+            delegate: Model {
+                visible: root.showCollisions
+                geometry: modelData.geometry
+                materials: DefaultMaterial {
+                    diffuseColor: modelData.color
+                    cullMode: Material.NoCulling
+                    opacity: 0.65
                 }
             }
         }

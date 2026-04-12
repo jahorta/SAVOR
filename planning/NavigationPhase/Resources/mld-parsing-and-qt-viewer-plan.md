@@ -308,12 +308,13 @@ The first milestone does not need every possible semantic flag on the GRND objec
 - display them in the viewer,
 - and expose adjacency to the search layer.
 
-## 5. Entry parsing by `fxn`
+## 5. Entry parsing by `fxnName`
 
 Entries that are not GRND should be parsed into a common entry structure that at minimum captures:
 
 - entry identifier,
-- `fxn`,
+- `fxnName`,
+- `tblId` (metadata only),
 - transform,
 - raw parameter block,
 - any known subtype fields.
@@ -326,14 +327,16 @@ Suggested pattern:
 class EntryHandler {
 public:
     virtual ~EntryHandler() = default;
-    virtual bool can_handle(uint32_t fxn) const = 0;
+    virtual bool can_handle(std::string_view fxn_name) const = 0;
     virtual void parse(const RawEntry& entry, WorldModel& out) const = 0;
 };
 ```
 
-That gives you an incremental path where unknown `fxn` values still remain visible in the world model and in diagnostics.
+`tblId` should **not** be used for collision/trigger classification in this phase. It should be preserved in parsed data for later correlation against paired `.sct` metadata and richer subtype resolution.
 
-## Initial supported `fxn` strategy
+That gives you an incremental path where unknown `fxnName` values still remain visible in the world model and in diagnostics.
+
+## Initial supported `fxnName` strategy
 
 The early implementation should not wait for full handler coverage.
 
@@ -347,10 +350,10 @@ Instead, define an initial support matrix:
 2. **Supported as debug placeholders**
    - entries with known transform but unknown behavior
 
-3. **Unsupported but preserved**
-   - entries whose payload is not yet understood
+3. **Unsupported but preserved as `UnknownEntry`**
+   - entries whose `fxnName` does not resolve to a known handler
 
-The first implementation should also produce a histogram of all `fxn` values encountered across test MLDs. That will let you prioritize the next handlers by frequency and by gameplay importance.
+The first implementation should also produce a histogram of all `fxnName` values encountered across test MLDs. That will let you prioritize the next handlers by frequency and by gameplay importance.
 
 ## Transform handling
 
@@ -500,11 +503,11 @@ Goal: begin interpreting non-GRND entries.
 Deliverables:
 
 - common raw entry parser
-- handler registry keyed by `fxn`
+- handler registry keyed by `fxnName`
 - first supported collision handlers
 - first supported trigger handlers
 - debug visualization for unsupported entries
-- `fxn` frequency report from sample areas
+- `fxnName` frequency report from sample areas
 
 ## Phase 3: Navigation-facing integration
 

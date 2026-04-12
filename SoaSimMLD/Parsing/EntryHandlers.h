@@ -4,12 +4,14 @@
 
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace soasim::mld::parsing {
 
 struct RawEntry {
     std::uint32_t sourceEntryId = 0;
-    std::uint32_t fxn = 0;
+    std::string_view fxnName{};
+    std::uint32_t tblId = 0;
     model::Transform transform{};
     std::span<const std::uint8_t> payload{};
 };
@@ -18,7 +20,7 @@ class EntryHandler {
 public:
     virtual ~EntryHandler() = default;
 
-    [[nodiscard]] virtual bool canHandle(std::uint32_t fxn) const = 0;
+    [[nodiscard]] virtual bool canHandle(std::string_view fxnName) const = 0;
     virtual void parse(const RawEntry& entry, model::WorldModel& out) const = 0;
 };
 
