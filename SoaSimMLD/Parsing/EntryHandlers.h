@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <vector>
 #include <string_view>
 
 namespace soasim::mld::parsing {
@@ -13,6 +14,7 @@ struct RawEntry {
     std::string_view fxnName{};
     std::uint32_t tblId = 0;
     model::Transform transform{};
+    std::vector<std::uint32_t> objectAddresses{};
     std::span<const std::uint8_t> payload{};
 };
 

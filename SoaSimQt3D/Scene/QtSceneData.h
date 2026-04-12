@@ -27,6 +27,11 @@ struct GroundSceneNode {
     SceneMesh mesh{};
 };
 
+struct NjcmSceneNode {
+    std::uint32_t objectAddress = 0;
+    SceneMesh mesh{};
+};
+
 struct GroundLinkSceneNode {
     std::uint32_t fromGrndId = 0;
     std::uint32_t toGrndId = 0;
@@ -50,6 +55,7 @@ struct UnknownSceneNode {
 
 struct SceneBuildResult {
     std::vector<GroundSceneNode> grounds{};
+    std::vector<NjcmSceneNode> njcmObjects{};
     std::vector<GroundLinkSceneNode> links{};
     std::vector<TriggerSceneNode> triggers{};
     std::vector<UnknownSceneNode> unknowns{};

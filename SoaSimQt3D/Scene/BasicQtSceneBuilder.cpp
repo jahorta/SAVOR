@@ -10,16 +10,12 @@ namespace soasim::qt3d::scene {
 SceneBuildResult BasicQtSceneBuilder::buildScene(const soasim::mld::model::GeometryBuildResult& geometry) const {
     SceneBuildResult out{};
     out.grounds.reserve(geometry.objects.size());
+    out.njcmObjects.reserve(geometry.objects.size());
     for (const auto& object : geometry.objects) {
-        if (object.sourceKind != soasim::mld::model::GeometrySourceKind::Grnd &&
-            object.sourceKind != soasim::mld::model::GeometrySourceKind::Njcm) {
-            continue;
-        }
-        GroundSceneNode node{};
-        node.grndId = object.sourceId;
-        node.mesh.vertices.reserve(object.mesh.vertices.size());
+        SceneMesh mesh{};
+        mesh.vertices.reserve(object.mesh.vertices.size());
         for (const auto& vtx : object.mesh.vertices) {
-            node.mesh.vertices.push_back(SceneVertex{
+            mesh.vertices.push_back(SceneVertex{
                 .px = vtx.position.x,
                 .py = vtx.position.y,
                 .pz = vtx.position.z,
@@ -32,10 +28,23 @@ SceneBuildResult BasicQtSceneBuilder::buildScene(const soasim::mld::model::Geome
         }
         for (const auto& poly : object.mesh.polygons) {
             for (const auto idx : poly.indices) {
-                node.mesh.indices.push_back(idx);
+                mesh.indices.push_back(idx);
             }
         }
-        out.grounds.push_back(std::move(node));
+        if (object.sourceKind == soasim::mld::model::GeometrySourceKind::Grnd) {
+            GroundSceneNode node{};
+            node.grndId = object.sourceId;
+            node.mesh = std::move(mesh);
+            out.grounds.push_back(std::move(node));
+            continue;
+        }
+        if (object.sourceKind == soasim::mld::model::GeometrySourceKind::Njcm) {
+            NjcmSceneNode node{};
+            node.objectAddress = object.sourceId;
+            node.mesh = std::move(mesh);
+            out.njcmObjects.push_back(std::move(node));
+            continue;
+        }
     }
 
     std::set<std::pair<std::uint32_t, std::uint32_t>> dedup{};
