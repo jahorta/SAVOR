@@ -73,6 +73,34 @@ struct NjcmCandidateMetrics {
     std::size_t score = 0;
 };
 
+[[nodiscard]] std::size_t vertexWordsPerVertexByType(const std::uint8_t type) {
+    switch (type) {
+    case 32U: // Vertex_VertexSH
+        return 4;
+    case 33U: // Vertex_VertexNormalSH
+        return 8;
+    case 34U: // Vertex_Vertex
+        return 3;
+    case 35U: // Vertex_VertexDiffuse8
+    case 36U: // Vertex_VertexUserFlags
+    case 37U: // Vertex_VertexNinjaFlags
+    case 38U: // Vertex_VertexDiffuseSpecular5
+    case 39U: // Vertex_VertexDiffuseSpecular4
+        return 4;
+    case 40U: // Vertex_VertexDiffuseSpecular16
+    case 41U: // Vertex_VertexNormal
+    case 42U: // Vertex_VertexNormalDiffuse8
+    case 43U: // Vertex_VertexNormalUserFlags
+    case 44U: // Vertex_VertexNormalNinjaFlags
+    case 45U: // Vertex_VertexNormalDiffuseSpecular5
+    case 46U: // Vertex_VertexNormalDiffuseSpecular4
+    case 47U: // Vertex_VertexNormalDiffuseSpecular16
+        return 7;
+    default:
+        return 0;
+    }
+}
+
 [[nodiscard]] NjcmCandidateMetrics scoreNjcmCandidate(std::span<const std::uint8_t> data, const bool littleEndian, const std::uint32_t imageBase) {
     NjcmCandidateMetrics m{};
     std::unordered_set<std::size_t> visitedObjects{};
@@ -405,7 +433,13 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                                 const std::size_t payloadOff = cur + 8;
                                 if (payloadOff <= decoded.size() && step >= 8) {
                                     const std::size_t payloadBytes = step - 8;
-                                    const std::size_t stride = payloadBytes / static_cast<std::size_t>(vc.vertexCount);
+                                    std::size_t stride = 0;
+                                    const auto wordsPerVertex = vertexWordsPerVertexByType(type);
+                                    if (wordsPerVertex > 0) {
+                                        stride = wordsPerVertex * 4U;
+                                    } else {
+                                        stride = payloadBytes / static_cast<std::size_t>(vc.vertexCount);
+                                    }
                                     if (stride >= 12) {
                                         for (std::uint16_t vi = 0; vi < vc.vertexCount; ++vi) {
                                             const std::size_t vOff = payloadOff + static_cast<std::size_t>(vi) * stride;
@@ -506,10 +540,6 @@ model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_
                                     std::size_t wordsPerVertex = 1;
                                     if (type == 65U || type == 66U || type == 70U) {
                                         wordsPerVertex = 3;
-                                    } else if (type == 67U) {
-                                        wordsPerVertex = 4;
-                                    } else if (type == 68U || type == 69U) {
-                                        wordsPerVertex = 6;
                                     } else if (type == 71U || type == 72U || type == 74U || type == 75U) {
                                         wordsPerVertex = 5;
                                     }

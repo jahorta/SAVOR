@@ -40,6 +40,8 @@ struct ParseOptions {
     bool preserveUnknownEntries = true;
     bool emitFxnHistogram = true;
     NjcmParsePolicy njcmPolicy{};
+    std::string filterFxnName{};
+    std::vector<std::uint32_t> filterEntryIdList{};
 };
 
 struct DecodedObjectChunkRange {
