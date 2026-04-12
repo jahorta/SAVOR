@@ -1,0 +1,280 @@
+grndSurfaces=12
+collisions=59
+triggers=16
+unknownEntries=32
+searchSurfaces=12
+searchRegions=16
+njcmChunks=35
+chunkTypes:
+  - ????: 50
+  - NJCM: 35
+  - NJTL: 137
+  - POF0: 65
+fxnHistogram:
+  - Eff_ShamLensFx: 4
+  - append: 1
+  - eff_man: 1
+  - goscript: 11
+  - ground: 11
+  - hasigo1: 1
+  - hasigo2: 1
+  - kmap: 2
+  - man: 2
+  - motscpt: 11
+  - treasure: 4
+  - wall: 51
+  - wallmot: 1
+  - walluv: 6
+njcm:
+  - offset=541924 bytes=896 score=23 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=17 triEst=2 pof0=no
+  - offset=242388 bytes=50292 score=1504 payloadEndian=BE sizeEndian=BE imageBase=0 objects=153 attaches=88 verts=987 triEst=360 pof0=no
+  - offset=27960 bytes=788 score=27 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=16 triEst=0 pof0=no
+  - offset=23672 bytes=1336 score=57 payloadEndian=BE sizeEndian=BE imageBase=0 objects=6 attaches=3 verts=25 triEst=11 pof0=no
+  - offset=44056 bytes=2060 score=77 payloadEndian=BE sizeEndian=BE imageBase=0 objects=6 attaches=5 verts=36 triEst=12 pof0=no
+  - offset=25484 bytes=1860 score=91 payloadEndian=BE sizeEndian=BE imageBase=0 objects=9 attaches=5 verts=33 triEst=11 pof0=no
+  - offset=346148 bytes=636 score=32 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=2 verts=12 triEst=9 pof0=no
+  - offset=33024 bytes=1320 score=23 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=32 triEst=0 pof0=no
+  - offset=542936 bytes=2020 score=27 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=45 triEst=0 pof0=no
+  - offset=28888 bytes=1528 score=46 payloadEndian=BE sizeEndian=BE imageBase=0 objects=4 attaches=2 verts=32 triEst=4 pof0=no
+  - offset=30596 bytes=2308 score=70 payloadEndian=BE sizeEndian=BE imageBase=0 objects=6 attaches=4 verts=48 triEst=3 pof0=no
+  - offset=34472 bytes=3724 score=123 payloadEndian=BE sizeEndian=BE imageBase=0 objects=12 attaches=7 verts=88 triEst=11 pof0=no
+  - offset=46436 bytes=1040 score=53 payloadEndian=BE sizeEndian=BE imageBase=0 objects=5 attaches=3 verts=16 triEst=2 pof0=no
+  - offset=47780 bytes=2104 score=92 payloadEndian=BE sizeEndian=BE imageBase=0 objects=7 attaches=6 verts=40 triEst=5 pof0=no
+  - offset=50040 bytes=2844 score=96 payloadEndian=BE sizeEndian=BE imageBase=0 objects=8 attaches=6 verts=58 triEst=20 pof0=no
+  - offset=347324 bytes=16912 score=475 payloadEndian=BE sizeEndian=BE imageBase=0 objects=28 attaches=25 verts=380 triEst=113 pof0=no
+  - offset=53552 bytes=400 score=17 payloadEndian=BE sizeEndian=BE imageBase=0 objects=2 attaches=1 verts=8 triEst=9 pof0=no
+  - offset=73936 bytes=400 score=17 payloadEndian=BE sizeEndian=BE imageBase=0 objects=2 attaches=1 verts=8 triEst=9 pof0=no
+  - offset=331460 bytes=1252 score=32 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=2 verts=26 triEst=9 pof0=no
+  - offset=74384 bytes=400 score=17 payloadEndian=BE sizeEndian=BE imageBase=0 objects=2 attaches=1 verts=8 triEst=9 pof0=no
+  - offset=82956 bytes=43348 score=1153 payloadEndian=BE sizeEndian=BE imageBase=0 objects=116 attaches=75 verts=882 triEst=783 pof0=no
+  - offset=325036 bytes=1136 score=51 payloadEndian=BE sizeEndian=BE imageBase=0 objects=4 attaches=3 verts=21 triEst=11 pof0=no
+  - offset=326276 bytes=356 score=23 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=4 triEst=0 pof0=no
+  - offset=326744 bytes=1460 score=53 payloadEndian=BE sizeEndian=BE imageBase=0 objects=5 attaches=3 verts=29 triEst=1 pof0=no
+  - offset=328344 bytes=1488 score=53 payloadEndian=BE sizeEndian=BE imageBase=0 objects=5 attaches=3 verts=29 triEst=1 pof0=no
+  - offset=329976 bytes=1372 score=38 payloadEndian=BE sizeEndian=BE imageBase=0 objects=4 attaches=2 verts=29 triEst=12 pof0=no
+  - offset=332836 bytes=8564 score=206 payloadEndian=BE sizeEndian=BE imageBase=0 objects=14 attaches=12 verts=189 triEst=31 pof0=no
+  - offset=341660 bytes=3464 score=84 payloadEndian=BE sizeEndian=BE imageBase=0 objects=6 attaches=4 verts=76 triEst=8 pof0=no
+  - offset=345200 bytes=396 score=17 payloadEndian=BE sizeEndian=BE imageBase=0 objects=2 attaches=1 verts=8 triEst=6 pof0=no
+  - offset=345648 bytes=396 score=17 payloadEndian=BE sizeEndian=BE imageBase=0 objects=2 attaches=1 verts=8 triEst=9 pof0=no
+  - offset=545060 bytes=908 score=23 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=17 triEst=1 pof0=no
+  - offset=365156 bytes=95092 score=2668 payloadEndian=BE sizeEndian=BE imageBase=0 objects=148 attaches=140 verts=2035 triEst=289 pof0=no
+  - offset=461488 bytes=26860 score=806 payloadEndian=BE sizeEndian=BE imageBase=0 objects=46 attaches=44 verts=596 triEst=76 pof0=no
+  - offset=489388 bytes=51864 score=1975 payloadEndian=BE sizeEndian=BE imageBase=0 objects=118 attaches=115 verts=1105 triEst=85 pof0=no
+  - offset=546084 bytes=1680 score=23 payloadEndian=BE sizeEndian=BE imageBase=0 objects=3 attaches=1 verts=34 triEst=32 pof0=no
+decodedNjcm:
+  - offset=541924 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=242388 objects=153 attaches=88 parseOk=yes fallback=no
+  - offset=27960 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=23672 objects=6 attaches=3 parseOk=yes fallback=no
+  - offset=44056 objects=6 attaches=5 parseOk=yes fallback=no
+  - offset=25484 objects=9 attaches=5 parseOk=yes fallback=no
+  - offset=346148 objects=3 attaches=2 parseOk=yes fallback=no
+  - offset=33024 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=542936 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=28888 objects=4 attaches=2 parseOk=yes fallback=no
+  - offset=30596 objects=6 attaches=4 parseOk=yes fallback=no
+  - offset=34472 objects=12 attaches=7 parseOk=yes fallback=no
+  - offset=46436 objects=5 attaches=3 parseOk=yes fallback=no
+  - offset=47780 objects=7 attaches=6 parseOk=yes fallback=no
+  - offset=50040 objects=8 attaches=6 parseOk=yes fallback=no
+  - offset=347324 objects=28 attaches=25 parseOk=yes fallback=no
+  - offset=53552 objects=2 attaches=1 parseOk=yes fallback=no
+  - offset=73936 objects=2 attaches=1 parseOk=yes fallback=no
+  - offset=331460 objects=3 attaches=2 parseOk=yes fallback=no
+  - offset=74384 objects=2 attaches=1 parseOk=yes fallback=no
+  - offset=82956 objects=116 attaches=75 parseOk=yes fallback=no
+  - offset=325036 objects=4 attaches=3 parseOk=yes fallback=no
+  - offset=326276 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=326744 objects=5 attaches=3 parseOk=yes fallback=no
+  - offset=328344 objects=5 attaches=3 parseOk=yes fallback=no
+  - offset=329976 objects=4 attaches=2 parseOk=yes fallback=no
+  - offset=332836 objects=14 attaches=12 parseOk=yes fallback=no
+  - offset=341660 objects=6 attaches=4 parseOk=yes fallback=no
+  - offset=345200 objects=2 attaches=1 parseOk=yes fallback=no
+  - offset=345648 objects=2 attaches=1 parseOk=yes fallback=no
+  - offset=545060 objects=3 attaches=1 parseOk=yes fallback=no
+  - offset=365156 objects=148 attaches=140 parseOk=yes fallback=no
+  - offset=461488 objects=46 attaches=44 parseOk=yes fallback=no
+  - offset=489388 objects=118 attaches=115 parseOk=yes fallback=no
+  - offset=546084 objects=3 attaches=1 parseOk=yes fallback=no
+diagnostics:
+  - [info] Index-based parse: entries=107, entryTable=0x24, fxnParams=0x11152, realData=0x23584, textureTable=0x547808
+  - [info] Entry 0: id=0, tblId=0x9000, fxn="kmap", groundLinks=0, params2=0, functionParams=16, objects=0, grounds=0, motions=0
+  - [info] Entry 1: id=1, tblId=0x9001, fxn="kmap", groundLinks=0, params2=0, functionParams=16, objects=0, grounds=0, motions=0
+  - [info] Entry 2: id=2, tblId=0x1035, fxn="motscpt", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 3: id=3, tblId=0x1034, fxn="motscpt", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 4: id=4, tblId=0x1033, fxn="motscpt", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 5: id=5, tblId=0x1032, fxn="motscpt", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 6: id=6, tblId=0x1007, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 7: id=7, tblId=0x1008, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 8: id=8, tblId=0x1009, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 9: id=9, tblId=0x1016, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 10: id=10, tblId=0x1017, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 11: id=11, tblId=0x1018, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 12: id=12, tblId=0x1019, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 13: id=13, tblId=0x1043, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 14: id=14, tblId=0x1041, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 15: id=15, tblId=0x1042, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 16: id=16, tblId=0x1040, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 17: id=17, tblId=0x1039, fxn="walluv", groundLinks=0, params2=0, functionParams=11, objects=1, grounds=0, motions=0
+  - [info] Entry 18: id=18, tblId=0x4013, fxn="wallmot", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 19: id=19, tblId=0x4110, fxn="treasure", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 20: id=20, tblId=0x4111, fxn="treasure", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 21: id=21, tblId=0x4112, fxn="treasure", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 22: id=22, tblId=0x4113, fxn="treasure", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=1
+  - [info] Entry 23: id=23, tblId=0x4010, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 24: id=24, tblId=0x4011, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 25: id=25, tblId=0x4102, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 26: id=26, tblId=0x4104, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 27: id=27, tblId=0x4100, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 28: id=28, tblId=0x4101, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 29: id=29, tblId=0x4105, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 30: id=30, tblId=0x6000, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 31: id=31, tblId=0x6001, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 32: id=32, tblId=0x0, fxn="ground", groundLinks=1, params2=54, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 33: id=33, tblId=0x1, fxn="ground", groundLinks=3, params2=58, functionParams=8, objects=0, grounds=2, motions=0
+  - [info] Entry 34: id=34, tblId=0x2, fxn="ground", groundLinks=2, params2=58, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 35: id=35, tblId=0x3, fxn="ground", groundLinks=1, params2=58, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 36: id=36, tblId=0x4, fxn="ground", groundLinks=2, params2=60, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 37: id=37, tblId=0x5, fxn="ground", groundLinks=2, params2=72, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 38: id=38, tblId=0x6, fxn="ground", groundLinks=1, params2=70, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 39: id=39, tblId=0x7, fxn="ground", groundLinks=0, params2=65, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 40: id=40, tblId=0x8, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 41: id=41, tblId=0x7000, fxn="hasigo1", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=0
+  - [info] Entry 42: id=42, tblId=0x7001, fxn="hasigo2", groundLinks=0, params2=0, functionParams=9, objects=1, grounds=0, motions=0
+  - [info] Entry 43: id=43, tblId=0x6100, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 44: id=44, tblId=0x6101, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 45: id=45, tblId=0x4294951860, fxn="append", groundLinks=0, params2=0, functionParams=8, objects=0, grounds=0, motions=1
+  - [info] Entry 46: id=46, tblId=0x6500, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 47: id=47, tblId=0x6501, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 48: id=48, tblId=0x4012, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 49: id=49, tblId=0x3997, fxn="man", groundLinks=0, params2=0, functionParams=14, objects=1, grounds=0, motions=6
+  - [info] Entry 50: id=50, tblId=0x3996, fxn="man", groundLinks=0, params2=0, functionParams=14, objects=1, grounds=0, motions=4
+  - [info] Entry 51: id=51, tblId=0x11, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 52: id=52, tblId=0x12, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=0, grounds=1, motions=0
+  - [info] Entry 53: id=53, tblId=0x6600, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 54: id=54, tblId=0x6601, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 55: id=55, tblId=0x6602, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 56: id=56, tblId=0x6603, fxn="goscript", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 57: id=57, tblId=0x8000, fxn="Eff_ShamLensFx", groundLinks=0, params2=0, functionParams=62, objects=0, grounds=0, motions=0
+  - [info] Entry 58: id=58, tblId=0x8001, fxn="Eff_ShamLensFx", groundLinks=0, params2=0, functionParams=62, objects=0, grounds=0, motions=0
+  - [info] Entry 59: id=59, tblId=0x8002, fxn="Eff_ShamLensFx", groundLinks=0, params2=0, functionParams=62, objects=0, grounds=0, motions=0
+  - [info] Entry 60: id=60, tblId=0x8003, fxn="Eff_ShamLensFx", groundLinks=0, params2=0, functionParams=62, objects=0, grounds=0, motions=0
+  - [info] Entry 61: id=61, tblId=0x10000, fxn="eff_man", groundLinks=0, params2=0, functionParams=9, objects=0, grounds=0, motions=0
+  - [info] Entry 62: id=62, tblId=0x1020, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 63: id=63, tblId=0x2005, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 64: id=64, tblId=0x2006, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 65: id=65, tblId=0x2007, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 66: id=66, tblId=0x2008, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 67: id=67, tblId=0x2009, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 68: id=68, tblId=0x2010, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 69: id=69, tblId=0x2011, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 70: id=70, tblId=0x2012, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 71: id=71, tblId=0x2013, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 72: id=72, tblId=0x2014, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 73: id=73, tblId=0x1044, fxn="walluv", groundLinks=0, params2=0, functionParams=11, objects=1, grounds=0, motions=0
+  - [info] Entry 74: id=74, tblId=0x1036, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 75: id=75, tblId=0x1037, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 76: id=76, tblId=0x1038, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 77: id=77, tblId=0x1021, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 78: id=78, tblId=0x1023, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 79: id=79, tblId=0x1024, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 80: id=80, tblId=0x1025, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 81: id=81, tblId=0x1026, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 82: id=82, tblId=0x1027, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 83: id=83, tblId=0x1028, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 84: id=84, tblId=0x1029, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 85: id=85, tblId=0x1030, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 86: id=86, tblId=0x1031, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 87: id=87, tblId=0x2000, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 88: id=88, tblId=0x2001, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 89: id=89, tblId=0x2002, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 90: id=90, tblId=0x2003, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 91: id=91, tblId=0x2004, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 92: id=92, tblId=0x200, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 93: id=93, tblId=0x201, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 94: id=94, tblId=0x202, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 95: id=95, tblId=0x203, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 96: id=96, tblId=0x204, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 97: id=97, tblId=0x205, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 98: id=98, tblId=0x100, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 99: id=99, tblId=0x101, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 100: id=100, tblId=0x102, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 101: id=101, tblId=0x103, fxn="wall", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 102: id=102, tblId=0x2211, fxn="walluv", groundLinks=0, params2=0, functionParams=10, objects=1, grounds=0, motions=0
+  - [info] Entry 103: id=103, tblId=0x2214, fxn="wall", groundLinks=0, params2=0, functionParams=10, objects=1, grounds=0, motions=0
+  - [info] Entry 104: id=104, tblId=0x2210, fxn="walluv", groundLinks=0, params2=0, functionParams=10, objects=1, grounds=0, motions=0
+  - [info] Entry 105: id=105, tblId=0x2212, fxn="walluv", groundLinks=0, params2=0, functionParams=10, objects=1, grounds=0, motions=0
+  - [info] Entry 106: id=106, tblId=0x2200, fxn="walluv", groundLinks=0, params2=0, functionParams=10, objects=1, grounds=0, motions=0
+  - [info] Unique chunk address counts: grounds=12, objects=35, motions=13
+  - [info] NJCM decode summary @ 541924: size=896, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=3, verts=17, triEst=2, score=23
+  - [info] NJCM decode summary @ 242388: size=50292, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=153, attaches=88, vchunks=115, pchunks=199, verts=987, triEst=360, score=1504
+  - [info] NJCM decode summary @ 27960: size=788, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=5, verts=16, triEst=0, score=27
+  - [info] NJCM decode summary @ 23672: size=1336, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=6, attaches=3, vchunks=3, pchunks=9, verts=25, triEst=11, score=57
+  - [info] NJCM decode summary @ 44056: size=2060, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=6, attaches=5, vchunks=5, pchunks=14, verts=36, triEst=12, score=77
+  - [info] NJCM decode summary @ 25484: size=1860, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=9, attaches=5, vchunks=5, pchunks=15, verts=33, triEst=11, score=91
+  - [info] NJCM decode summary @ 346148: size=636, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=2, vchunks=2, pchunks=5, verts=12, triEst=9, score=32
+  - [info] NJCM decode summary @ 33024: size=1320, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=3, verts=32, triEst=0, score=23
+  - [info] NJCM decode summary @ 542936: size=2020, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=5, verts=45, triEst=0, score=27
+  - [info] NJCM decode summary @ 28888: size=1528, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=4, attaches=2, vchunks=2, pchunks=10, verts=32, triEst=4, score=46
+  - [info] NJCM decode summary @ 30596: size=2308, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=6, attaches=4, vchunks=4, pchunks=13, verts=48, triEst=3, score=70
+  - [info] NJCM decode summary @ 34472: size=3724, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=12, attaches=7, vchunks=7, pchunks=20, verts=88, triEst=11, score=123
+  - [info] NJCM decode summary @ 46436: size=1040, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=5, attaches=3, vchunks=3, pchunks=9, verts=16, triEst=2, score=53
+  - [info] NJCM decode summary @ 47780: size=2104, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=7, attaches=6, vchunks=6, pchunks=17, verts=40, triEst=5, score=92
+  - [info] NJCM decode summary @ 50040: size=2844, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=8, attaches=6, vchunks=6, pchunks=17, verts=58, triEst=20, score=96
+  - [info] NJCM decode summary @ 347324: size=16912, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=28, attaches=25, vchunks=25, pchunks=119, verts=380, triEst=113, score=475
+  - [info] NJCM decode summary @ 53552: size=400, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=2, attaches=1, vchunks=1, pchunks=2, verts=8, triEst=9, score=17
+  - [info] NJCM decode summary @ 73936: size=400, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=2, attaches=1, vchunks=1, pchunks=2, verts=8, triEst=9, score=17
+  - [info] NJCM decode summary @ 331460: size=1252, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=2, vchunks=2, pchunks=5, verts=26, triEst=9, score=32
+  - [info] NJCM decode summary @ 74384: size=400, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=2, attaches=1, vchunks=1, pchunks=2, verts=8, triEst=9, score=17
+  - [info] NJCM decode summary @ 82956: size=43348, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=116, attaches=75, vchunks=111, pchunks=121, verts=882, triEst=783, score=1153
+  - [info] NJCM decode summary @ 325036: size=1136, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=4, attaches=3, vchunks=3, pchunks=10, verts=21, triEst=11, score=51
+  - [info] NJCM decode summary @ 326276: size=356, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=3, verts=4, triEst=0, score=23
+  - [info] NJCM decode summary @ 326744: size=1460, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=5, attaches=3, vchunks=3, pchunks=9, verts=29, triEst=1, score=53
+  - [info] NJCM decode summary @ 328344: size=1488, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=5, attaches=3, vchunks=3, pchunks=9, verts=29, triEst=1, score=53
+  - [info] NJCM decode summary @ 329976: size=1372, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=4, attaches=2, vchunks=2, pchunks=6, verts=29, triEst=12, score=38
+  - [info] NJCM decode summary @ 332836: size=8564, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=14, attaches=12, vchunks=12, pchunks=45, verts=189, triEst=31, score=206
+  - [info] NJCM decode summary @ 341660: size=3464, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=6, attaches=4, vchunks=4, pchunks=20, verts=76, triEst=8, score=84
+  - [info] NJCM decode summary @ 345200: size=396, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=2, attaches=1, vchunks=1, pchunks=2, verts=8, triEst=6, score=17
+  - [info] NJCM decode summary @ 345648: size=396, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=2, attaches=1, vchunks=1, pchunks=2, verts=8, triEst=9, score=17
+  - [info] NJCM decode summary @ 545060: size=908, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=3, verts=17, triEst=1, score=23
+  - [info] NJCM decode summary @ 365156: size=95092, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=148, attaches=140, vchunks=140, pchunks=688, verts=2035, triEst=289, score=2668
+  - [info] NJCM decode summary @ 461488: size=26860, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=46, attaches=44, vchunks=44, pchunks=201, verts=596, triEst=76, score=806
+  - [info] NJCM decode summary @ 489388: size=51864, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=118, attaches=115, vchunks=115, pchunks=464, verts=1105, triEst=85, score=1975
+  - [info] NJCM decode summary @ 546084: size=1680, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=3, attaches=1, vchunks=1, pchunks=3, verts=34, triEst=32, score=23
+  - [info] NJCM deterministic decode @ 541924: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 242388: parseOk=yes, fallback=no, diagnostics=61
+  - [info] NJCM deterministic decode @ 27960: parseOk=yes, fallback=no, diagnostics=3
+  - [info] NJCM deterministic decode @ 23672: parseOk=yes, fallback=no, diagnostics=4
+  - [info] NJCM deterministic decode @ 44056: parseOk=yes, fallback=no, diagnostics=5
+  - [info] NJCM deterministic decode @ 25484: parseOk=yes, fallback=no, diagnostics=6
+  - [info] NJCM deterministic decode @ 346148: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 33024: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 542936: parseOk=yes, fallback=no, diagnostics=3
+  - [info] NJCM deterministic decode @ 28888: parseOk=yes, fallback=no, diagnostics=5
+  - [info] NJCM deterministic decode @ 30596: parseOk=yes, fallback=no, diagnostics=6
+  - [info] NJCM deterministic decode @ 34472: parseOk=yes, fallback=no, diagnostics=5
+  - [info] NJCM deterministic decode @ 46436: parseOk=yes, fallback=no, diagnostics=4
+  - [info] NJCM deterministic decode @ 47780: parseOk=yes, fallback=no, diagnostics=7
+  - [info] NJCM deterministic decode @ 50040: parseOk=yes, fallback=no, diagnostics=6
+  - [info] NJCM deterministic decode @ 347324: parseOk=yes, fallback=no, diagnostics=51
+  - [info] NJCM deterministic decode @ 53552: parseOk=yes, fallback=no, diagnostics=1
+  - [info] NJCM deterministic decode @ 73936: parseOk=yes, fallback=no, diagnostics=1
+  - [info] NJCM deterministic decode @ 331460: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 74384: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 82956: parseOk=yes, fallback=no, diagnostics=36
+  - [info] NJCM deterministic decode @ 325036: parseOk=yes, fallback=no, diagnostics=4
+  - [info] NJCM deterministic decode @ 326276: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 326744: parseOk=yes, fallback=no, diagnostics=4
+  - [info] NJCM deterministic decode @ 328344: parseOk=yes, fallback=no, diagnostics=4
+  - [info] NJCM deterministic decode @ 329976: parseOk=yes, fallback=no, diagnostics=3
+  - [info] NJCM deterministic decode @ 332836: parseOk=yes, fallback=no, diagnostics=23
+  - [info] NJCM deterministic decode @ 341660: parseOk=yes, fallback=no, diagnostics=10
+  - [info] NJCM deterministic decode @ 345200: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 345648: parseOk=yes, fallback=no, diagnostics=1
+  - [info] NJCM deterministic decode @ 545060: parseOk=yes, fallback=no, diagnostics=2
+  - [info] NJCM deterministic decode @ 365156: parseOk=yes, fallback=no, diagnostics=308
+  - [info] NJCM deterministic decode @ 461488: parseOk=yes, fallback=no, diagnostics=89
+  - [info] NJCM deterministic decode @ 489388: parseOk=yes, fallback=no, diagnostics=188
+  - [info] NJCM deterministic decode @ 546084: parseOk=yes, fallback=no, diagnostics=2
+  - [info] Parsed MLD bytes: GRND=12, collisions=59, triggers=16, unknownEntries=32, njcmChunks=35, chunkTypes=4
