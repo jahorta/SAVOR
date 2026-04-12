@@ -1,0 +1,399 @@
+grndSurfaces=0
+collisions=0
+triggers=0
+unknownEntries=11
+searchSurfaces=0
+searchRegions=0
+njcmChunks=8
+chunkTypes:
+  - ????: 16
+  - NJCM: 8
+  - NJTL: 19
+  - POF0: 16
+fxnHistogram:
+  - ground: 3
+  - motscpt: 8
+njcm:
+  - offset=16636 bytes=19816 score=478 payloadEndian=BE sizeEndian=BE imageBase=0 objects=33 attaches=30 verts=381 triEst=93 pof0=no
+  - offset=2172 bytes=6560 score=192 payloadEndian=BE sizeEndian=BE imageBase=0 objects=14 attaches=12 verts=133 triEst=1 pof0=no
+  - offset=9340 bytes=6560 score=192 payloadEndian=BE sizeEndian=BE imageBase=0 objects=14 attaches=12 verts=133 triEst=1 pof0=no
+  - offset=37692 bytes=19816 score=478 payloadEndian=BE sizeEndian=BE imageBase=0 objects=33 attaches=30 verts=381 triEst=86 pof0=no
+  - offset=233976 bytes=860 score=53 payloadEndian=BE sizeEndian=BE imageBase=0 objects=5 attaches=3 verts=12 triEst=0 pof0=no
+  - offset=88036 bytes=3680 score=98 payloadEndian=BE sizeEndian=BE imageBase=0 objects=8 attaches=6 verts=72 triEst=0 pof0=no
+  - offset=58948 bytes=27708 score=740 payloadEndian=BE sizeEndian=BE imageBase=0 objects=48 attaches=44 verts=548 triEst=85 pof0=no
+  - offset=92392 bytes=139960 score=5131 payloadEndian=BE sizeEndian=BE imageBase=0 objects=370 attaches=317 verts=2605 triEst=282 pof0=no
+decodedNjcm:
+  - offset=16636 objects=33 attaches=30 parseOk=yes fallback=no
+  - offset=2172 objects=14 attaches=12 parseOk=yes fallback=no
+  - offset=9340 objects=14 attaches=12 parseOk=yes fallback=no
+  - offset=37692 objects=33 attaches=30 parseOk=yes fallback=no
+  - offset=233976 objects=5 attaches=3 parseOk=yes fallback=no
+  - offset=88036 objects=8 attaches=6 parseOk=yes fallback=no
+  - offset=58948 objects=48 attaches=44 parseOk=yes fallback=no
+  - offset=92392 objects=370 attaches=317 parseOk=yes fallback=no
+diagnostics:
+  - [info] Index-based parse: entries=11, entryTable=0x24, fxnParams=0x1168, realData=0x2016, textureTable=0x234880
+  - [info] Entry 0: id=0, tblId=0x1000, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 1: id=1, tblId=0x1001, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 2: id=2, tblId=0x1002, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 3: id=3, tblId=0x1003, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 4: id=4, tblId=0x1004, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 5: id=5, tblId=0x1005, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 6: id=6, tblId=0x1006, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 7: id=7, tblId=0x1007, fxn="motscpt", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=1
+  - [info] Entry 8: id=8, tblId=0x101, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 9: id=9, tblId=0x100, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Entry 10: id=10, tblId=0x102, fxn="ground", groundLinks=0, params2=0, functionParams=8, objects=1, grounds=0, motions=0
+  - [info] Unique chunk address counts: grounds=0, objects=8, motions=5
+  - [info] NJCM decode summary @ 16636: size=19816, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=33, attaches=30, vchunks=30, pchunks=98, verts=381, triEst=93, score=478
+  - [info] NJCM decode summary @ 2172: size=6560, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=14, attaches=12, vchunks=12, pchunks=38, verts=133, triEst=1, score=192
+  - [info] NJCM decode summary @ 9340: size=6560, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=14, attaches=12, vchunks=12, pchunks=38, verts=133, triEst=1, score=192
+  - [info] NJCM decode summary @ 37692: size=19816, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=33, attaches=30, vchunks=30, pchunks=98, verts=381, triEst=86, score=478
+  - [info] NJCM decode summary @ 233976: size=860, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=5, attaches=3, vchunks=3, pchunks=9, verts=12, triEst=0, score=53
+  - [info] NJCM decode summary @ 88036: size=3680, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=8, attaches=6, vchunks=6, pchunks=18, verts=72, triEst=0, score=98
+  - [info] NJCM decode summary @ 58948: size=27708, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=48, attaches=44, vchunks=44, pchunks=164, verts=548, triEst=85, score=740
+  - [info] NJCM decode summary @ 92392: size=139960, sizeEndian=BE, payloadEndian=BE, imageBase=0, pof0=no, objects=370, attaches=317, vchunks=317, pchunks=1033, verts=2605, triEst=282, score=5131
+  - [info] NJCM deterministic decode @ 16636: parseOk=yes, fallback=no, diagnostics=33
+  - [warning] NJCM attach @ 2740 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 3492 emitted zero triangles despite polyChunks=3 and semanticVertices=7
+  - [warning] NJCM attach @ 4332 emitted zero triangles despite polyChunks=5 and semanticVertices=18
+  - [warning] NJCM attach @ 14700 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 8544 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [info] NJCM semantic summary @ 16636: attachVerts=381, attachTriEst=93, polyChunksWithTriangles=26, polyChunksEmpty=72, semanticIndices=279, polyTypes={8:34, 19:30, 65:34}, polyTypesWithTriangles={65:26}
+  - [warning] NJCM semantic index bounds @ 16636: outOfRangeIndices=103, highestIndex=32763
+  - [info] NJCM deterministic decode @ 2172: parseOk=yes, fallback=no, diagnostics=14
+  - [warning] NJCM attach @ 1576 emitted zero triangles despite polyChunks=5 and semanticVertices=15
+  - [warning] NJCM attach @ 2316 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 3056 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 4048 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 5040 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 6032 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 6536 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 6284 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 5292 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 4300 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3308 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [info] NJCM semantic summary @ 2172: attachVerts=133, attachTriEst=1, polyChunksWithTriangles=1, polyChunksEmpty=37, semanticIndices=3, polyTypes={8:13, 19:12, 65:13}, polyTypesWithTriangles={65:1}
+  - [warning] NJCM semantic index bounds @ 2172: outOfRangeIndices=3, highestIndex=32763
+  - [info] NJCM deterministic decode @ 9340: parseOk=yes, fallback=no, diagnostics=14
+  - [warning] NJCM attach @ 1576 emitted zero triangles despite polyChunks=5 and semanticVertices=15
+  - [warning] NJCM attach @ 2316 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 3056 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 4048 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 5040 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 6032 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 6536 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 6284 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 5292 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 4300 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3308 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [info] NJCM semantic summary @ 9340: attachVerts=133, attachTriEst=1, polyChunksWithTriangles=1, polyChunksEmpty=37, semanticIndices=3, polyTypes={8:13, 19:12, 65:13}, polyTypesWithTriangles={65:1}
+  - [warning] NJCM semantic index bounds @ 9340: outOfRangeIndices=3, highestIndex=32763
+  - [info] NJCM deterministic decode @ 37692: parseOk=yes, fallback=no, diagnostics=33
+  - [warning] NJCM attach @ 2580 emitted zero triangles despite polyChunks=3 and semanticVertices=7
+  - [warning] NJCM attach @ 3116 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 4332 emitted zero triangles despite polyChunks=5 and semanticVertices=18
+  - [warning] NJCM attach @ 14700 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 7928 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [info] NJCM semantic summary @ 37692: attachVerts=381, attachTriEst=86, polyChunksWithTriangles=26, polyChunksEmpty=72, semanticIndices=258, polyTypes={8:34, 19:30, 65:34}, polyTypesWithTriangles={65:26}
+  - [warning] NJCM semantic index bounds @ 37692: outOfRangeIndices=95, highestIndex=32763
+  - [info] NJCM deterministic decode @ 233976: parseOk=yes, fallback=no, diagnostics=4
+  - [warning] NJCM attach @ 332 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 584 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 836 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [info] NJCM semantic summary @ 233976: attachVerts=12, attachTriEst=0, polyChunksWithTriangles=0, polyChunksEmpty=9, semanticIndices=0, polyTypes={8:3, 19:3, 65:3}, polyTypesWithTriangles={}
+  - [info] NJCM deterministic decode @ 88036: parseOk=yes, fallback=no, diagnostics=7
+  - [warning] NJCM attach @ 688 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 1224 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 1832 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 2440 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 3048 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 3656 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [info] NJCM semantic summary @ 88036: attachVerts=72, attachTriEst=0, polyChunksWithTriangles=0, polyChunksEmpty=18, semanticIndices=0, polyTypes={8:6, 19:6, 65:6}, polyTypesWithTriangles={}
+  - [info] NJCM deterministic decode @ 58948: parseOk=yes, fallback=no, diagnostics=59
+  - [warning] NJCM attach @ 668 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 23604 emitted zero triangles despite polyChunks=3 and semanticVertices=20
+  - [warning] NJCM attach @ 23940 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 4696 emitted zero triangles despite polyChunks=7 and semanticVertices=12
+  - [warning] NJCM attach @ 20912 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 21164 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 21416 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 6980 emitted zero triangles despite polyChunks=9 and semanticVertices=16
+  - [warning] NJCM attach @ 20660 emitted zero triangles despite polyChunks=3 and semanticVertices=10
+  - [warning] NJCM attach @ 7448 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 15708 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 16736 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 20160 emitted zero triangles despite polyChunks=5 and semanticVertices=6
+  - [warning] NJCM attach @ 17352 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 17968 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 18584 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 19200 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 19816 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 16120 emitted zero triangles despite polyChunks=5 and semanticVertices=8
+  - [warning] NJCM attach @ 9468 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 5148 emitted zero triangles despite polyChunks=5 and semanticVertices=8
+  - [warning] NJCM attach @ 5468 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 4068 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [info] NJCM semantic summary @ 58948: attachVerts=548, attachTriEst=85, polyChunksWithTriangles=21, polyChunksEmpty=143, semanticIndices=255, polyTypes={8:60, 19:44, 65:60}, polyTypesWithTriangles={65:21}
+  - [warning] NJCM semantic index bounds @ 58948: outOfRangeIndices=80, highestIndex=32763
+  - [info] NJCM deterministic decode @ 92392: parseOk=yes, fallback=no, diagnostics=358
+  - [warning] NJCM attach @ 2460 emitted zero triangles despite polyChunks=5 and semanticVertices=54
+  - [warning] NJCM attach @ 2712 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3972 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 8060 emitted zero triangles despite polyChunks=5 and semanticVertices=8
+  - [warning] NJCM attach @ 16780 emitted zero triangles despite polyChunks=5 and semanticVertices=8
+  - [warning] NJCM attach @ 28460 emitted zero triangles despite polyChunks=5 and semanticVertices=8
+  - [warning] NJCM attach @ 49988 emitted zero triangles despite polyChunks=5 and semanticVertices=7
+  - [warning] NJCM attach @ 88036 emitted zero triangles despite polyChunks=5 and semanticVertices=7
+  - [warning] NJCM attach @ 92696 emitted zero triangles despite polyChunks=5 and semanticVertices=13
+  - [warning] NJCM attach @ 104744 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 138656 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 138976 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 139296 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 139616 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 139936 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 134504 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 136756 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 137160 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 137564 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 138284 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 134908 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 136032 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 135628 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 128508 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 131480 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 131884 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 133008 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 133728 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 132604 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 128912 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 130036 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 130756 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 129632 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 122512 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 125484 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 125888 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 127012 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 127732 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 126608 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 122916 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 124040 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 124760 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 123636 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 116516 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 119488 emitted zero triangles despite polyChunks=5 and semanticVertices=16
+  - [warning] NJCM attach @ 119892 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 121016 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 121736 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 120612 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 116920 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 118044 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 118764 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 117640 emitted zero triangles despite polyChunks=3 and semanticVertices=16
+  - [warning] NJCM attach @ 115096 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 114844 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 112208 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 112460 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 111364 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 108980 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 108136 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 104996 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 105248 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 105500 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 105752 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 104492 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 103632 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 102772 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 101860 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 101000 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 100140 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 99228 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 98368 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 97508 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 96596 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 95736 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 94876 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 88288 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 88644 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 89812 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 90168 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 91060 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 91416 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 91736 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 92056 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 90488 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 90808 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 88964 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 89284 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 56028 emitted zero triangles despite polyChunks=3 and semanticVertices=14
+  - [warning] NJCM attach @ 61080 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 85872 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 86376 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 86880 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 87384 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 87636 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 87132 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 86628 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 86124 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 83804 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 84308 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 84812 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 85316 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 85568 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 85064 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 84560 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 84056 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 81684 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 82188 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 82692 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 83196 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 83448 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 82944 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 82440 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 81936 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 79616 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 80120 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 80624 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 81128 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 81380 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 80876 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 80372 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 79868 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 77496 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 78000 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 78504 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 79008 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 79260 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 78756 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 78252 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 77748 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 75428 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 75932 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 76436 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 76940 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 77192 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 76688 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 76184 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 75680 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 73308 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 73812 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 74316 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 74820 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 75072 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 74568 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 74064 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 73560 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 71240 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 71744 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 72248 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 72752 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 73004 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 72500 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 71996 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 71492 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 69120 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 69624 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 70128 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 70632 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 70884 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 70380 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 69876 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 69372 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 67052 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 67556 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 68060 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 68564 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 68816 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 68312 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 67808 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 67304 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 64932 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 65436 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 65940 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 66444 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 66696 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 66192 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 65688 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 65184 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 62864 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 63368 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 63872 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 64376 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 64628 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 64124 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 63620 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 63116 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 50344 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 51512 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 51868 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 52760 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 53012 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 53368 emitted zero triangles despite polyChunks=4 and semanticVertices=6
+  - [warning] NJCM attach @ 53688 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 54008 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 52188 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 52508 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 50664 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 50984 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 28904 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 29292 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 30164 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 30632 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 30952 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 31608 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 33620 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 34236 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 34852 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 35468 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 36700 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 27728 emitted zero triangles despite polyChunks=5 and semanticVertices=12
+  - [warning] NJCM attach @ 27980 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 17224 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 18016 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 18484 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 18952 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 19272 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 19928 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 21940 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 22556 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 23172 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 23788 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 24404 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 25020 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 8504 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 9376 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 9764 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 10084 emitted zero triangles despite polyChunks=3 and semanticVertices=6
+  - [warning] NJCM attach @ 10552 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 11208 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 13836 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 14452 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 15068 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 15684 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 16300 emitted zero triangles despite polyChunks=3 and semanticVertices=12
+  - [warning] NJCM attach @ 5524 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 6028 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 7580 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 6496 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 6912 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 7328 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 5776 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 4440 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 4856 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 5272 emitted zero triangles despite polyChunks=3 and semanticVertices=8
+  - [warning] NJCM attach @ 2964 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3216 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3468 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [warning] NJCM attach @ 3720 emitted zero triangles despite polyChunks=3 and semanticVertices=4
+  - [info] NJCM semantic summary @ 92392: attachVerts=2605, attachTriEst=282, polyChunksWithTriangles=69, polyChunksEmpty=964, semanticIndices=846, polyTypes={8:354, 19:317, 65:362}, polyTypesWithTriangles={65:69}
+  - [warning] NJCM semantic index bounds @ 92392: outOfRangeIndices=219, highestIndex=32767
+  - [warning] NJCM object summary 0x3FE0: chunks=1, attaches=30, verts=381, triEst=93, polyChunksWithTriangles=26, polyChunksEmpty=72, outOfRangeIndices=103, polyTypes={8:34, 19:30, 65:34}
+  - [warning] NJCM object summary 0x7E0: chunks=1, attaches=12, verts=133, triEst=1, polyChunksWithTriangles=1, polyChunksEmpty=37, outOfRangeIndices=3, polyTypes={8:13, 19:12, 65:13}
+  - [warning] NJCM object summary 0x23E0: chunks=1, attaches=12, verts=133, triEst=1, polyChunksWithTriangles=1, polyChunksEmpty=37, outOfRangeIndices=3, polyTypes={8:13, 19:12, 65:13}
+  - [warning] NJCM object summary 0x9220: chunks=1, attaches=30, verts=381, triEst=86, polyChunksWithTriangles=26, polyChunksEmpty=72, outOfRangeIndices=95, polyTypes={8:34, 19:30, 65:34}
+  - [warning] NJCM object summary 0x391A0: chunks=1, attaches=3, verts=12, triEst=0, polyChunksWithTriangles=0, polyChunksEmpty=9, outOfRangeIndices=0, polyTypes={8:3, 19:3, 65:3}
+  - [warning] NJCM object summary 0x157A0: chunks=1, attaches=6, verts=72, triEst=0, polyChunksWithTriangles=0, polyChunksEmpty=18, outOfRangeIndices=0, polyTypes={8:6, 19:6, 65:6}
+  - [warning] NJCM object summary 0xE460: chunks=1, attaches=44, verts=548, triEst=85, polyChunksWithTriangles=21, polyChunksEmpty=143, outOfRangeIndices=80, polyTypes={8:60, 19:44, 65:60}
+  - [warning] NJCM object summary 0x16680: chunks=1, attaches=317, verts=2605, triEst=282, polyChunksWithTriangles=69, polyChunksEmpty=964, outOfRangeIndices=219, polyTypes={8:354, 19:317, 65:362}
+  - [info] Parsed MLD bytes: GRND=0, collisions=0, triggers=0, unknownEntries=11, njcmChunks=8, chunkTypes=4
+  - [warning] No GRND records decoded. This likely means container layout assumptions still need refinement.
