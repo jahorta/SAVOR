@@ -157,6 +157,24 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
         }
     }
 
+    for (const auto& collision : parse.world.collisions) {
+        const QVector3D center(collision.transform.position.x,
+            collision.transform.position.y,
+            collision.transform.position.z);
+        const auto vertices = cubeVertices(center, kMarkerSize * 0.6f);
+        const auto indices = cubeIndices();
+
+        auto geom = createTriangleGeometry(vertices, indices);
+        QVariantMap map{};
+        map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
+        map.insert("color", QColor(QStringLiteral("#4EA7C8")));
+        map.insert("label", QString("Collision_%1").arg(collision.sourceEntryId));
+        out.collisions.push_back(map);
+        out.geometries.push_back(std::move(geom));
+
+        updateBounds(center.x(), center.y(), center.z());
+    }
+
     for (const auto& trigger : parse.world.triggers) {
         const QVector3D center(trigger.transform.position.x,
             trigger.transform.position.y,
@@ -168,9 +186,10 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
         QVariantMap map{};
         map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
         map.insert("color", QColor(QStringLiteral("#E06666")));
-        map.insert("label", QString("Trigger_%1_fxn_%2")
+        map.insert("label", QString("Trigger_%1_%2_tbl_%3")
             .arg(trigger.sourceEntryId)
-            .arg(trigger.fxn));
+            .arg(QString::fromStdString(trigger.fxnName))
+            .arg(trigger.tblId));
         out.triggers.push_back(map);
         out.geometries.push_back(std::move(geom));
 
@@ -188,9 +207,10 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
         QVariantMap map{};
         map.insert("geometry", QVariant::fromValue(static_cast<QObject*>(geom.get())));
         map.insert("color", QColor(QStringLiteral("#CC00FF")));
-        map.insert("label", QString("Unknown_%1_fxn_%2")
+        map.insert("label", QString("Unknown_%1_%2_tbl_%3")
             .arg(unknown.sourceEntryId)
-            .arg(unknown.fxn));
+            .arg(QString::fromStdString(unknown.fxnName))
+            .arg(unknown.tblId));
         out.unknowns.push_back(map);
         out.geometries.push_back(std::move(geom));
 
@@ -215,6 +235,7 @@ RuntimeSceneData RuntimeSceneConverter::convert(const soasim::mld::parsing::Pars
     }
     out.diagnostics.push_back("Scene summary: grounds=" + std::to_string(scene.grounds.size()) +
         ", links=" + std::to_string(out.links.size()) +
+        ", collisions=" + std::to_string(parse.world.collisions.size()) +
         ", triggers=" + std::to_string(parse.world.triggers.size()) +
         ", unknown=" + std::to_string(parse.world.unknownEntries.size()));
 

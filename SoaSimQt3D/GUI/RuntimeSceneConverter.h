@@ -17,6 +17,7 @@ namespace soasim::qt3d::gui {
 struct RuntimeSceneData {
     QVariantList grounds{};
     QVariantList links{};
+    QVariantList collisions{};
     QVariantList triggers{};
     QVariantList unknowns{};
     QVector3D center{ 0.0f, 0.0f, 0.0f };

@@ -35,6 +35,7 @@ private:
 
     bool showGrounds_ = true;
     bool showLinks_ = true;
+    bool showCollisions_ = true;
     bool showTriggers_ = true;
     bool showUnknowns_ = true;
 

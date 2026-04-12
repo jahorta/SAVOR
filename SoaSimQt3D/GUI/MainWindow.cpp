@@ -58,6 +58,14 @@ void MainWindow::buildUi() {
         syncLayerPropertiesToQml();
     });
 
+    auto* collisionAction = viewToolbar->addAction("Collision");
+    collisionAction->setCheckable(true);
+    collisionAction->setChecked(true);
+    connect(collisionAction, &QAction::toggled, this, [this](const bool checked) {
+        showCollisions_ = checked;
+        syncLayerPropertiesToQml();
+    });
+
     auto* unknownAction = viewToolbar->addAction("Unknown");
     unknownAction->setCheckable(true);
     unknownAction->setChecked(true);
@@ -93,6 +101,7 @@ void MainWindow::syncLayerPropertiesToQml() {
     QObject* root = quickView_->rootObject();
     root->setProperty("showGrounds", showGrounds_);
     root->setProperty("showLinks", showLinks_);
+    root->setProperty("showCollisions", showCollisions_);
     root->setProperty("showTriggers", showTriggers_);
     root->setProperty("showUnknowns", showUnknowns_);
 }
@@ -158,6 +167,7 @@ void MainWindow::applyRuntimeScene(const RuntimeSceneData& data) {
     QObject* root = quickView_->rootObject();
     root->setProperty("groundMeshes", data.grounds);
     root->setProperty("linkMeshes", data.links);
+    root->setProperty("collisionMeshes", data.collisions);
     root->setProperty("triggerMeshes", data.triggers);
     root->setProperty("unknownMeshes", data.unknowns);
     root->setProperty("cameraTarget", QVariant::fromValue(data.center));
@@ -170,9 +180,10 @@ void MainWindow::applyRuntimeScene(const RuntimeSceneData& data) {
         appendDiagnosticLine(QString::fromStdString(line));
     }
 
-    statusBar()->showMessage(QString("Scene updated: Grounds=%1, Links=%2, Triggers=%3, Unknown=%4")
+    statusBar()->showMessage(QString("Scene updated: Grounds=%1, Links=%2, Collisions=%3, Triggers=%4, Unknown=%5")
         .arg(static_cast<int>(data.grounds.size()))
         .arg(static_cast<int>(data.links.size()))
+        .arg(static_cast<int>(data.collisions.size()))
         .arg(static_cast<int>(data.triggers.size()))
         .arg(static_cast<int>(data.unknowns.size())));
 }
