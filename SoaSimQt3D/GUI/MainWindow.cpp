@@ -138,6 +138,8 @@ bool MainWindow::loadMldFile(const QString& path) {
         return false;
     }
 
+
+    appendDiagnosticLine(QString("Parsing MLD File."));
     soasim::mld::parsing::MldParser parser{};
     soasim::mld::parsing::ParseOptions options{};
     options.preserveUnknownEntries = true;
@@ -146,10 +148,14 @@ bool MainWindow::loadMldFile(const QString& path) {
             static_cast<std::size_t>(bytes.size())),
         options);
 
+    appendDiagnosticLine(QString("Building Geometry."));
     soasim::mld::parsing::GeometryBuilder geometryBuilder{};
     const auto geometry = geometryBuilder.build(parse);
+
+    appendDiagnosticLine(QString("Building Scene"));
     const auto scene = sceneBuilder_.buildScene(geometry);
 
+    appendDiagnosticLine(QString("Converting to Runtime Scene"));
     auto runtimeScene = runtimeSceneConverter_.convert(parse, scene);
     geometryStore_ = std::move(runtimeScene.geometries);
     applyRuntimeScene(runtimeScene);
@@ -164,6 +170,7 @@ void MainWindow::applyRuntimeScene(const RuntimeSceneData& data) {
         return;
     }
 
+    appendDiagnosticLine(QString("Assigning objects to layers."));
     QObject* root = quickView_->rootObject();
     root->setProperty("groundMeshes", data.grounds);
     root->setProperty("linkMeshes", data.links);
@@ -175,7 +182,6 @@ void MainWindow::applyRuntimeScene(const RuntimeSceneData& data) {
 
     syncLayerPropertiesToQml();
 
-    diagnosticsView_->clear();
     for (const auto& line : data.diagnostics) {
         appendDiagnosticLine(QString::fromStdString(line));
     }
