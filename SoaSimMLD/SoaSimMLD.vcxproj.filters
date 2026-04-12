@@ -49,6 +49,9 @@
     <ClInclude Include="Parsing\NJCMParser.h">
       <Filter>Parsing</Filter>
     </ClInclude>
+    <ClInclude Include="Parsing\NJCMParityPath.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
       <Filter>Parsing</Filter>
     </ClInclude>
@@ -70,6 +73,9 @@
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\NJCMParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMParityPath.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">
