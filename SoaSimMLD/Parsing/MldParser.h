@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NJCMParser.h"
+#include "../Model/NjcmModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
 
@@ -38,6 +39,7 @@ struct ParseOptions {
     CoordinatePolicy coordinates{};
     bool preserveUnknownEntries = true;
     bool emitFxnHistogram = true;
+    NjcmParsePolicy njcmPolicy{};
 };
 
 struct ParseResult {
@@ -47,6 +49,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<NjcmChunkSummary> njcmChunks{};
+    std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
 };
 
 class MldParser {

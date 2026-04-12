@@ -22,6 +22,12 @@
     <ClInclude Include="Model\IndexEntry.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Model\GeometryModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\NjcmModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="Model\U32List.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -35,6 +41,9 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\EntryHandlers.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\GeometryBuilder.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\NJCMParser.h">
@@ -55,6 +64,9 @@
       <Filter>EntryPoint</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldBinaryReader.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\GeometryBuilder.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\NJCMParser.cpp">
