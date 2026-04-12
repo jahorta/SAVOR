@@ -25,7 +25,7 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
     tree_->setUniformRowHeights(true);
     tree_->setRootIsDecorated(true);
 
-    connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
+    connect(tree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int column) {
         if (item == nullptr || column != 0 || updating_) {
             return;
         }
@@ -34,12 +34,21 @@ VisibilityTreeWidget::VisibilityTreeWidget(QWidget* parent)
         const int leafIndex = item->data(0, kLeafIndexRole).toInt();
         const Qt::CheckState state = item->checkState(0);
 
-        if (leafIndex < 0 && state == Qt::PartiallyChecked) {
+        if (state == Qt::PartiallyChecked) {
             updateTriStateChecks();
             return;
         }
 
         const bool checked = state == Qt::Checked;
+
+        if (leafIndex < 0) {
+            const QSignalBlocker blocker(tree_);
+            updating_ = true;
+            for (int i = 0; i < item->childCount(); ++i) {
+                item->child(i)->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+            }
+            updating_ = false;
+        }
 
         if (layer == LayerKind::All && leafIndex < 0) {
             emit allToggled(checked);
@@ -82,12 +91,10 @@ void VisibilityTreeWidget::rebuildTree() {
     };
 
     allItem_ = makeNode(QStringLiteral("All"), LayerKind::All, -1);
-    allItem_->setFlags(allItem_->flags() | Qt::ItemIsAutoTristate);
     tree_->addTopLevelItem(allItem_);
 
     auto buildLayer = [&](const LayerKind layer, const QVariantList& meshes, QTreeWidgetItem*& outItem) {
         outItem = makeNode(layerLabel(layer), layer, -1);
-        outItem->setFlags(outItem->flags() | Qt::ItemIsAutoTristate);
         allItem_->addChild(outItem);
 
         for (int i = 0; i < meshes.size(); ++i) {
