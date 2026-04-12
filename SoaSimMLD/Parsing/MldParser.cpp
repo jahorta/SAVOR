@@ -89,7 +89,9 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
 void parseNjChunkStream(std::span<const std::uint8_t> bytes,
     const std::size_t imageBase,
     std::unordered_map<std::uint32_t, std::size_t>& chunkTypeCounts,
-    std::vector<NjcmChunkSummary>& njcmChunks) {
+    std::vector<NjcmChunkSummary>& njcmChunks,
+    std::vector<model::NjcmDecodedChunk>& decodedNjcmChunks,
+    const ParseOptions& options) {
     constexpr std::uint32_t tagNjcm = makeTag('N', 'J', 'C', 'M');
     constexpr std::uint32_t tagNjtl = makeTag('N', 'J', 'T', 'L');
     constexpr std::uint32_t tagPof0 = makeTag('P', 'O', 'F', '0');
@@ -100,6 +102,7 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         std::size_t chunkStart = 0;
         std::size_t chunkDataSize = 0;
         bool chunkSizeLittleEndian = true;
+        bool sawPof0Chunk = false;
         std::vector<std::uint8_t> data{};
     };
     std::optional<PendingNjcm> pendingNjcm{};
@@ -117,8 +120,16 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         const std::size_t dataStart = reader.position();
         std::size_t chunkSize = static_cast<std::size_t>(*chunkSizeLe);
         bool chunkSizeLittleEndian = true;
+        if (!options.njcmPolicy.chunkSizeLittleEndian) {
+            const std::uint32_t sizeBe = ((*chunkSizeLe & 0x000000FFU) << 24) |
+                ((*chunkSizeLe & 0x0000FF00U) << 8) |
+                ((*chunkSizeLe & 0x00FF0000U) >> 8) |
+                ((*chunkSizeLe & 0xFF000000U) >> 24);
+            chunkSize = static_cast<std::size_t>(sizeBe);
+            chunkSizeLittleEndian = false;
+        }
         std::size_t dataEnd = dataStart + chunkSize;
-        if (dataEnd > reader.size()) {
+        if (dataEnd > reader.size() && options.njcmPolicy.allowHeuristicFallback) {
             const std::uint32_t sizeBe = ((*chunkSizeLe & 0x000000FFU) << 24) |
                 ((*chunkSizeLe & 0x0000FF00U) << 8) |
                 ((*chunkSizeLe & 0x00FF0000U) >> 8) |
@@ -140,20 +151,24 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             state.chunkStart = absChunkStart;
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
+            state.sawPof0Chunk = false;
             state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
                 bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             pendingNjcm = std::move(state);
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
-                const auto pofSpan = bytes.subspan(dataStart, chunkSize);
-                auto summary = analyzeNjcmChunk(
-                    std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
+                pendingNjcm->sawPof0Chunk = true;
+            }
+            if ((*tag == tagPof0 || *tag == tagNjtl || *tag == tagNmdm || *tag == tagNcam) && pendingNjcm.has_value()) {
+                auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
                     pendingNjcm->chunkStart,
                     pendingNjcm->chunkDataSize,
                     pendingNjcm->chunkSizeLittleEndian,
-                    true,
-                    pofSpan);
+                    pendingNjcm->sawPof0Chunk,
+                    options.njcmPolicy);
+                auto summary = summarizeDecodedNjcmChunk(decoded);
                 njcmChunks.push_back(summary);
+                decodedNjcmChunks.push_back(std::move(decoded));
                 pendingNjcm.reset();
             }
         }
@@ -164,13 +179,15 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
     }
 
     if (pendingNjcm.has_value()) {
-        auto summary = analyzeNjcmChunk(
-            std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
+        auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
             pendingNjcm->chunkStart,
             pendingNjcm->chunkDataSize,
             pendingNjcm->chunkSizeLittleEndian,
-            false);
+            pendingNjcm->sawPof0Chunk,
+            options.njcmPolicy);
+        auto summary = summarizeDecodedNjcmChunk(decoded);
         njcmChunks.push_back(summary);
+        decodedNjcmChunks.push_back(std::move(decoded));
     }
 }
 
@@ -397,7 +414,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             continue;
         }
 
-        parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize), startAbs, chunkTypeCounts, result.njcmChunks);
+        parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize),
+            startAbs,
+            chunkTypeCounts,
+            result.njcmChunks,
+            result.decodedNjcmChunks,
+            options);
     }
 
     for (const auto groundAddress : uniqueGroundAddresses) {
@@ -476,6 +498,15 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 ", verts=" + std::to_string(njcm.decodedVertexCount) +
                 ", triEst=" + std::to_string(njcm.decodedTriangleCount) +
                 ", score=" + std::to_string(njcm.score),
+        });
+    }
+    for (const auto& decoded : result.decodedNjcmChunks) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = decoded.parseSucceeded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
+            .message = "NJCM deterministic decode @ " + std::to_string(decoded.chunkOffset) +
+                ": parseOk=" + std::string(decoded.parseSucceeded ? "yes" : "no") +
+                ", fallback=" + std::string(decoded.parsedWithHeuristicFallback ? "yes" : "no") +
+                ", diagnostics=" + std::to_string(decoded.diagnostics.size()),
         });
     }
 
@@ -570,6 +601,18 @@ std::string formatParseSummary(const ParseResult& parseResult) {
                 << " verts=" << chunk.decodedVertexCount
                 << " triEst=" << chunk.decodedTriangleCount
                 << " pof0=" << (chunk.usedPof0Fixup ? "yes" : "no")
+                << '\n';
+        }
+    }
+
+    if (!parseResult.decodedNjcmChunks.empty()) {
+        out << "decodedNjcm:" << '\n';
+        for (const auto& decoded : parseResult.decodedNjcmChunks) {
+            out << "  - offset=" << decoded.chunkOffset
+                << " objects=" << decoded.objects.size()
+                << " attaches=" << decoded.attaches.size()
+                << " parseOk=" << (decoded.parseSucceeded ? "yes" : "no")
+                << " fallback=" << (decoded.parsedWithHeuristicFallback ? "yes" : "no")
                 << '\n';
         }
     }

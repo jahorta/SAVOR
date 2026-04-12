@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Model/NjcmModel.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -23,6 +25,14 @@ struct NjcmChunkSummary {
     std::size_t score = 0;
 };
 
+struct NjcmParsePolicy {
+    bool payloadLittleEndian = false;
+    bool chunkSizeLittleEndian = false;
+    std::uint32_t imageBase = 0;
+    bool applyPof0Fixups = false;
+    bool allowHeuristicFallback = true;
+};
+
 [[nodiscard]] std::vector<std::size_t> decodePof0Deltas(std::span<const std::uint8_t> pofData);
 
 void applyPof0Fixups(std::vector<std::uint8_t>& target,
@@ -36,5 +46,14 @@ void applyPof0Fixups(std::vector<std::uint8_t>& target,
     bool chunkSizeLittleEndian,
     bool usedPof0Fixup,
     std::span<const std::uint8_t> pof0Data = {});
+
+[[nodiscard]] model::NjcmDecodedChunk decodeNjcmChunkDeterministic(std::span<const std::uint8_t> njcmData,
+    std::size_t chunkOffset,
+    std::size_t chunkDataSize,
+    bool chunkSizeLittleEndian,
+    bool sawPof0Chunk,
+    const NjcmParsePolicy& policy);
+
+[[nodiscard]] NjcmChunkSummary summarizeDecodedNjcmChunk(const model::NjcmDecodedChunk& decodedChunk);
 
 } // namespace soasim::mld::parsing

@@ -97,11 +97,14 @@
   <ItemGroup>
     <ClInclude Include="common\ByteUtils.h" />
     <ClInclude Include="Model\IndexEntry.h" />
+    <ClInclude Include="Model\GeometryModel.h" />
+    <ClInclude Include="Model\NjcmModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
+    <ClInclude Include="Parsing\GeometryBuilder.h" />
     <ClInclude Include="Parsing\NJCMParser.h" />
     <ClInclude Include="Parsing\MldBinaryReader.h" />
     <ClInclude Include="Parsing\MldParser.h" />
@@ -109,6 +112,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Parsing\MldBinaryReader.cpp" />
+    <ClCompile Include="Parsing\GeometryBuilder.cpp" />
     <ClCompile Include="Parsing\NJCMParser.cpp" />
     <ClCompile Include="Parsing\MldParser.cpp" />
     <ClCompile Include="SoaSimMLD.cpp" />
