@@ -29,12 +29,18 @@
     <ClInclude Include="SctOpcodeMetadata.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctScptDecodeHelpers.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="SctParseProbe.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SctScptDecodeHelpers.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>

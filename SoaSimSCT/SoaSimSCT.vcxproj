@@ -102,10 +102,12 @@
     <ClInclude Include="SctParser.h" />
     <ClInclude Include="SctParseProbe.h" />
     <ClInclude Include="SctOpcodeMetadata.h" />
+    <ClInclude Include="SctScptDecodeHelpers.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp" />
     <ClCompile Include="SctParseProbe.cpp" />
+    <ClCompile Include="SctScptDecodeHelpers.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">

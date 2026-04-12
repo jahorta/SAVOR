@@ -18,11 +18,16 @@ std::string formatParseSummary(const SctParseResult& parseResult) {
     out << "sectionCount=" << parseResult.file.sections.size() << '\n';
 
     for (const auto& section : parseResult.file.sections) {
+        std::size_t scptRecordCount = 0;
+        for (const auto& inst : section.instructions) {
+            scptRecordCount += inst.scptParameterValueRecords.size();
+        }
         out << "- [" << section.id.index << "] " << section.id.name
             << " isStringSection=" << (section.isStringSection ? "true" : "false")
             << " instructions=" << section.instructions.size()
             << " blocks=" << section.blocks.size()
-            << " unknownRegions=" << section.unknownRegions.size() << '\n';
+            << " unknownRegions=" << section.unknownRegions.size()
+            << " scptParamRecords=" << scptRecordCount << '\n';
     }
 
     if (!parseResult.diagnostics.empty()) {

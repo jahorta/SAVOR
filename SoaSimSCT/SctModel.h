@@ -12,10 +12,25 @@ struct SctSectionId {
 };
 
 struct SctInstruction {
+    struct ScptTraceEntry {
+        std::uint32_t rawWord = 0;
+        std::string interpretedValue;
+    };
+
+    struct ScptParameterValueRecord {
+        std::uint8_t parameterIndex = 0;
+        std::uint32_t operandStartWordIndex = 0;
+        std::uint32_t operandWordCount = 0;
+        bool hitStopCode = false;
+        std::string resolvedValue;
+        std::vector<ScptTraceEntry> evaluationTrace;
+    };
+
     std::uint32_t offset = 0;
     std::uint16_t opcode = 0;
     std::vector<std::uint32_t> operands;
     std::vector<std::uint8_t> scptAnalyzeOperandIndexes;
+    std::vector<ScptParameterValueRecord> scptParameterValueRecords;
     std::uint32_t sizeBytes = 0;
     bool decodeOk = false;
 };
