@@ -14,6 +14,12 @@
       <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Parsing\NjcmRecords">
+      <UniqueIdentifier>{800245be-0554-44da-9803-3c36875dd03a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parsing\SAToolsParity">
+      <UniqueIdentifier>{ed63b32a-e461-493e-9169-5404afbf4870}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common\ByteUtils.h">
@@ -46,56 +52,56 @@
     <ClInclude Include="Parsing\GeometryBuilder.h">
       <Filter>Parsing</Filter>
     </ClInclude>
-    <ClInclude Include="Parsing\NJCMAttachRecordParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMDecodeContext.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMObjectRecordParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMParityPath.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMPolyRecordParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\NJCMVertexRecordParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldParser.h">
       <Filter>Parsing</Filter>
     </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityAttachParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityObjectParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityPolyParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityStripParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityVertexParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\SaToolsParityVolumeParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
     <ClInclude Include="SoaSimMLD.h">
       <Filter>EntryPoint</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMAttachRecordParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMDecodeContext.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMObjectRecordParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMPolyRecordParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMVertexRecordParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityAttachParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityObjectParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityPolyParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityStripParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityVertexParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityVolumeParser.h">
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJCMParityPath.h">
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -108,50 +114,50 @@
     <ClCompile Include="Parsing\GeometryBuilder.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
-    <ClCompile Include="Parsing\NJCMAttachRecordParser.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMDecodeContext.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMObjectRecordParser.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMParser.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMParityPath.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMPolyRecordParser.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\NJCMVertexRecordParser.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
+    <ClCompile Include="Parsing\NJCMAttachRecordParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMDecodeContext.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMObjectRecordParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMPolyRecordParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMVertexRecordParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityAttachParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityObjectParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityPolyParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityStripParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityVertexParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\SaToolsParityVolumeParser.cpp">
-      <Filter>Parsing</Filter>
+      <Filter>Parsing\SAToolsParity</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJCMParityPath.cpp">
+      <Filter>Parsing\SAToolsParity</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
