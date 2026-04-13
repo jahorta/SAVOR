@@ -8,6 +8,7 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
     std::size_t chunkStart,
     std::size_t chunkEnd,
     std::uint8_t type,
+    model::NjAttachRecord& attach,
     model::NjPolyChunkRecord& polyChunk,
     model::NjSemanticPolygon& semanticPolygon,
     std::size_t& attachTriangleCount);

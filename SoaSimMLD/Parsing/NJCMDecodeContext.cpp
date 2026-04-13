@@ -80,6 +80,11 @@ std::size_t vertexWordsPerVertexByType(const std::uint8_t type) {
     case 46U: // Vertex_VertexNormalDiffuseSpecular4
     case 47U: // Vertex_VertexNormalDiffuseSpecular16
         return 7;
+    case 48U: // Vertex_VertexNormalX
+        return 4;
+    case 49U: // Vertex_VertexNormalXDiffuse8
+    case 50U: // Vertex_VertexNormalXUserFlags
+        return 5;
     default:
         return 0;
     }

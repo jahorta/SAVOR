@@ -62,13 +62,37 @@ void appendNjcmGeometry(const ParseResult& parseResult, model::GeometryBuildResu
                 obj.mesh.vertices.push_back(sv);
             }
 
-            obj.mesh.polygons.reserve(attach.semanticPolygons.size());
-            for (const auto& poly : attach.semanticPolygons) {
-                model::SemanticPolygon sp{};
-                sp.indices = poly.indices;
-                sp.primitiveType = poly.type;
-                sp.estimatedTriangleCount = poly.estimatedTriangleCount;
-                obj.mesh.polygons.push_back(std::move(sp));
+            if (!attach.semanticPrimitives.empty()) {
+                obj.mesh.polygons.reserve(attach.semanticPrimitives.size());
+                for (const auto& prim : attach.semanticPrimitives) {
+                    model::SemanticPolygon sp{};
+                    sp.indices = prim.indices;
+                    sp.primitiveType = static_cast<std::uint8_t>(prim.kind);
+                    switch (prim.kind) {
+                    case model::NjPrimitiveKind::Triangle:
+                        sp.estimatedTriangleCount = 1;
+                        break;
+                    case model::NjPrimitiveKind::Quad:
+                        sp.estimatedTriangleCount = 2;
+                        break;
+                    case model::NjPrimitiveKind::Strip:
+                        sp.estimatedTriangleCount = (prim.indices.size() > 2U) ? (prim.indices.size() - 2U) : 0U;
+                        break;
+                    default:
+                        sp.estimatedTriangleCount = 0;
+                        break;
+                    }
+                    obj.mesh.polygons.push_back(std::move(sp));
+                }
+            } else {
+                obj.mesh.polygons.reserve(attach.semanticPolygons.size());
+                for (const auto& poly : attach.semanticPolygons) {
+                    model::SemanticPolygon sp{};
+                    sp.indices = poly.indices;
+                    sp.primitiveType = poly.type;
+                    sp.estimatedTriangleCount = poly.estimatedTriangleCount;
+                    obj.mesh.polygons.push_back(std::move(sp));
+                }
             }
 
             if (obj.mesh.vertices.empty() && attach.decodedVertexCount > 0) {

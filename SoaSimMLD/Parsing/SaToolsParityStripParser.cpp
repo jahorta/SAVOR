@@ -8,6 +8,7 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
     const std::size_t chunkStart,
     const std::size_t chunkEnd,
     const std::uint8_t type,
+    model::NjAttachRecord& attach,
     model::NjPolyChunkRecord& polyChunk,
     model::NjSemanticPolygon& semanticPolygon,
     std::size_t& attachTriangleCount) {
@@ -30,10 +31,13 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
     switch (type) {
     case 65U: // StripUVN
     case 66U: // StripUVH
-    case 71U: // StripUVN2
-    case 72U: // StripUVH2
         wordsPerVertex = 3;
         break;
+    case 70U: // StripColor
+        wordsPerVertex = 3;
+        break;
+    case 71U: // StripUVNColor
+    case 72U: // StripUVHColor
     case 74U:
     case 75U:
         wordsPerVertex = 5;
@@ -88,6 +92,12 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
             ctx.out->diagnostics.push_back("SA-parity strip payload exceeded chunk bounds.");
             break;
         }
+
+        model::NjSemanticPrimitive stripPrimitive{};
+        stripPrimitive.kind = model::NjPrimitiveKind::Strip;
+        stripPrimitive.reversed = reverse;
+        stripPrimitive.indices = stripIndices;
+        attach.semanticPrimitives.push_back(std::move(stripPrimitive));
 
         for (std::size_t ii = 2; ii < stripIndices.size(); ++ii) {
             std::uint32_t a = stripIndices[ii - 2];

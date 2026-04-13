@@ -8,6 +8,7 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
     const std::size_t chunkStart,
     const std::size_t chunkEnd,
     const std::uint8_t type,
+    model::NjAttachRecord& attach,
     model::NjPolyChunkRecord& polyChunk,
     model::NjSemanticPolygon& semanticPolygon,
     std::size_t& attachTriangleCount) {
@@ -53,6 +54,35 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
             appendTriangle(static_cast<std::uint32_t>(*i0 & 0x7FFFU),
                 static_cast<std::uint32_t>(*i1 & 0x7FFFU),
                 static_cast<std::uint32_t>(*i2 & 0x7FFFU));
+            model::NjSemanticPrimitive prim{};
+            prim.kind = model::NjPrimitiveKind::Triangle;
+            prim.indices = {
+                static_cast<std::uint32_t>(*i0 & 0x7FFFU),
+                static_cast<std::uint32_t>(*i1 & 0x7FFFU),
+                static_cast<std::uint32_t>(*i2 & 0x7FFFU),
+            };
+            if (userOffset > 0U) {
+                const auto uf1 = readWord(pos + 6);
+                if (uf1.has_value()) {
+                    prim.userFlags1.push_back(*uf1);
+                    polyChunk.rawIndexWords.push_back(*uf1);
+                }
+                if (userOffset > 1U) {
+                    const auto uf2 = readWord(pos + 8);
+                    if (uf2.has_value()) {
+                        prim.userFlags2.push_back(*uf2);
+                        polyChunk.rawIndexWords.push_back(*uf2);
+                    }
+                    if (userOffset > 2U) {
+                        const auto uf3 = readWord(pos + 10);
+                        if (uf3.has_value()) {
+                            prim.userFlags3.push_back(*uf3);
+                            polyChunk.rawIndexWords.push_back(*uf3);
+                        }
+                    }
+                }
+            }
+            attach.semanticPrimitives.push_back(std::move(prim));
             pos += (3U + userOffset) * 2U;
         } else if (type == 57U) {
             if (pos + (4U + userOffset) * 2U > chunkEnd) {
@@ -75,6 +105,31 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
             const std::uint32_t d = static_cast<std::uint32_t>(*i3 & 0x7FFFU);
             appendTriangle(a, b, c);
             appendTriangle(a, c, d);
+            model::NjSemanticPrimitive prim{};
+            prim.kind = model::NjPrimitiveKind::Quad;
+            prim.indices = { a, b, c, d };
+            if (userOffset > 0U) {
+                const auto uf1 = readWord(pos + 8);
+                if (uf1.has_value()) {
+                    prim.userFlags1.push_back(*uf1);
+                    polyChunk.rawIndexWords.push_back(*uf1);
+                }
+                if (userOffset > 1U) {
+                    const auto uf2 = readWord(pos + 10);
+                    if (uf2.has_value()) {
+                        prim.userFlags2.push_back(*uf2);
+                        polyChunk.rawIndexWords.push_back(*uf2);
+                    }
+                    if (userOffset > 2U) {
+                        const auto uf3 = readWord(pos + 12);
+                        if (uf3.has_value()) {
+                            prim.userFlags3.push_back(*uf3);
+                            polyChunk.rawIndexWords.push_back(*uf3);
+                        }
+                    }
+                }
+            }
+            attach.semanticPrimitives.push_back(std::move(prim));
             pos += (4U + userOffset) * 2U;
         } else {
             if (pos + 2 > chunkEnd) {
@@ -89,6 +144,18 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
             const std::size_t len = static_cast<std::size_t>(*flagLen & 0x7FFFU);
             std::vector<std::uint32_t> stripIndices{};
             stripIndices.reserve(len);
+            std::vector<std::uint16_t> stripUf1{};
+            std::vector<std::uint16_t> stripUf2{};
+            std::vector<std::uint16_t> stripUf3{};
+            if (userOffset > 0U && len > 2U) {
+                stripUf1.reserve(len - 2U);
+                if (userOffset > 1U) {
+                    stripUf2.reserve(len - 2U);
+                }
+                if (userOffset > 2U) {
+                    stripUf3.reserve(len - 2U);
+                }
+            }
             bool stripOk = true;
 
             for (std::size_t vi = 0; vi < len; ++vi) {
@@ -104,6 +171,27 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
                 }
                 stripIndices.push_back(static_cast<std::uint32_t>(*idxWord & 0x7FFFU));
                 polyChunk.rawIndexWords.push_back(*idxWord);
+                if (vi >= 2U && userOffset > 0U) {
+                    const auto uf1 = readWord(pos + 2);
+                    if (uf1.has_value()) {
+                        stripUf1.push_back(*uf1);
+                        polyChunk.rawIndexWords.push_back(*uf1);
+                    }
+                    if (userOffset > 1U) {
+                        const auto uf2 = readWord(pos + 4);
+                        if (uf2.has_value()) {
+                            stripUf2.push_back(*uf2);
+                            polyChunk.rawIndexWords.push_back(*uf2);
+                        }
+                        if (userOffset > 2U) {
+                            const auto uf3 = readWord(pos + 6);
+                            if (uf3.has_value()) {
+                                stripUf3.push_back(*uf3);
+                                polyChunk.rawIndexWords.push_back(*uf3);
+                            }
+                        }
+                    }
+                }
                 pos += words * 2U;
             }
             if (!stripOk) {
@@ -122,6 +210,14 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
                 }
                 appendTriangle(a, b, c);
             }
+            model::NjSemanticPrimitive prim{};
+            prim.kind = model::NjPrimitiveKind::Strip;
+            prim.reversed = reverse;
+            prim.indices = stripIndices;
+            prim.userFlags1 = std::move(stripUf1);
+            prim.userFlags2 = std::move(stripUf2);
+            prim.userFlags3 = std::move(stripUf3);
+            attach.semanticPrimitives.push_back(std::move(prim));
         }
     }
 }
