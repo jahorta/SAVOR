@@ -196,6 +196,7 @@ bool MainWindow::loadMldFile(const QString& path) {
     soasim::mld::parsing::MldParser parser{};
     soasim::mld::parsing::ParseOptions options{};
     options.preserveUnknownEntries = true;
+    options.njcmPolicy.useSaToolsParityPath = true;
     const auto parse = parser.parse(
         std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.constData()),
             static_cast<std::size_t>(bytes.size())),
