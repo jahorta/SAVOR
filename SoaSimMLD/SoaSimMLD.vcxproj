@@ -114,6 +114,13 @@
     <ClInclude Include="Parsing\NJCMVertexRecordParser.h" />
     <ClInclude Include="Parsing\MldBinaryReader.h" />
     <ClInclude Include="Parsing\MldParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityAttachParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityObjectParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityPolyParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityStripParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityVertexParser.h" />
+    <ClInclude Include="Parsing\SaToolsParityVolumeParser.h" />
     <ClInclude Include="SoaSimMLD.h" />
   </ItemGroup>
   <ItemGroup>
@@ -127,6 +134,13 @@
     <ClCompile Include="Parsing\NJCMPolyRecordParser.cpp" />
     <ClCompile Include="Parsing\NJCMVertexRecordParser.cpp" />
     <ClCompile Include="Parsing\MldParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityAttachParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityObjectParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityPolyParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityStripParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityVertexParser.cpp" />
+    <ClCompile Include="Parsing\SaToolsParityVolumeParser.cpp" />
     <ClCompile Include="SoaSimMLD.cpp" />
   </ItemGroup>
   <ItemGroup>

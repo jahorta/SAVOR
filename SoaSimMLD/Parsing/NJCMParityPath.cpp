@@ -1,4 +1,5 @@
 #include "NJCMParityPath.h"
+#include "SaToolsParityParser.h"
 
 namespace soasim::mld::parsing {
 
@@ -16,7 +17,7 @@ model::NjcmDecodedChunk decodeNjcmChunkSaToolsParity(std::span<const std::uint8_
         adjusted.imageBase = static_cast<std::uint32_t>(chunkOffset);
     }
 
-    return decodeNjcmChunkDeterministic(njcmData,
+    return satools_parity::decodeWithObjectModel(njcmData,
         chunkOffset,
         chunkDataSize,
         chunkSizeLittleEndian,
