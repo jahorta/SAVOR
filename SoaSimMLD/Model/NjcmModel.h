@@ -36,6 +36,21 @@ struct NjSemanticPolygon {
     std::size_t estimatedTriangleCount = 0;
 };
 
+enum class NjPrimitiveKind : std::uint8_t {
+    Triangle = 3,
+    Quad = 4,
+    Strip = 5,
+};
+
+struct NjSemanticPrimitive {
+    NjPrimitiveKind kind = NjPrimitiveKind::Triangle;
+    bool reversed = false;
+    std::vector<std::uint32_t> indices{};
+    std::vector<std::uint16_t> userFlags1{};
+    std::vector<std::uint16_t> userFlags2{};
+    std::vector<std::uint16_t> userFlags3{};
+};
+
 struct NjAttachRecord {
     std::size_t offset = 0;
     std::size_t vertexListOffset = 0;
@@ -44,6 +59,7 @@ struct NjAttachRecord {
     std::vector<NjPolyChunkRecord> polyChunks{};
     std::vector<NjSemanticVertex> semanticVertices{};
     std::vector<NjSemanticPolygon> semanticPolygons{};
+    std::vector<NjSemanticPrimitive> semanticPrimitives{};
     std::size_t decodedVertexCount = 0;
     std::size_t decodedTriangleCount = 0;
 };

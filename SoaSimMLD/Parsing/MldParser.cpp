@@ -186,10 +186,12 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         std::size_t chunkDataSize = 0;
         bool chunkSizeLittleEndian = true;
         bool sawPof0Chunk = false;
+        std::uint32_t pofImageBaseLocal = 0;
         std::vector<std::uint8_t> pof0Data{};
         std::vector<std::uint8_t> data{};
     };
     std::optional<PendingNjcm> pendingNjcm{};
+    std::uint32_t runningImageBaseLocal = 0;
 
     MldBinaryReader reader(bytes);
     while (reader.remaining() >= 8) {
@@ -198,6 +200,13 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         const auto chunkSizeLe = reader.readU32LE();
         if (!tag.has_value() || !chunkSizeLe.has_value()) {
             break;
+        }
+        const bool knownTag = (*tag == tagNjcm) || (*tag == tagNjtl) || (*tag == tagPof0) || (*tag == tagNmdm) || (*tag == tagNcam);
+        if (!knownTag) {
+            if (!reader.seek(relChunkStart + 1U)) {
+                break;
+            }
+            continue;
         }
         ++chunkTypeCounts[*tag];
 
@@ -236,6 +245,7 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
             state.sawPof0Chunk = false;
+            state.pofImageBaseLocal = 0;
             state.pof0Data.clear();
             state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
                 bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
@@ -243,16 +253,21 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
                 pendingNjcm->sawPof0Chunk = true;
+                pendingNjcm->pofImageBaseLocal = runningImageBaseLocal;
                 pendingNjcm->pof0Data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
                     bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             }
             if ((*tag == tagPof0 || *tag == tagNjtl || *tag == tagNmdm || *tag == tagNcam) && pendingNjcm.has_value()) {
+                auto decodePolicy = options.njcmPolicy;
+                if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
+                    decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
+                }
                 auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
                     pendingNjcm->chunkStart,
                     pendingNjcm->chunkDataSize,
                     pendingNjcm->chunkSizeLittleEndian,
                     pendingNjcm->sawPof0Chunk,
-                    options.njcmPolicy,
+                    decodePolicy,
                     std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
                 auto summary = summarizeDecodedNjcmChunk(decoded);
                 njcmChunks.push_back(summary);
@@ -264,15 +279,23 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         if (!reader.seek(dataEnd)) {
             break;
         }
+
+        if (*tag != tagPof0) {
+            runningImageBaseLocal += static_cast<std::uint32_t>(relChunkStart);
+        }
     }
 
     if (pendingNjcm.has_value()) {
+        auto decodePolicy = options.njcmPolicy;
+        if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
+            decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
+        }
         auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
             pendingNjcm->chunkStart,
             pendingNjcm->chunkDataSize,
             pendingNjcm->chunkSizeLittleEndian,
             pendingNjcm->sawPof0Chunk,
-            options.njcmPolicy,
+            decodePolicy,
             std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
         auto summary = summarizeDecodedNjcmChunk(decoded);
         njcmChunks.push_back(summary);
