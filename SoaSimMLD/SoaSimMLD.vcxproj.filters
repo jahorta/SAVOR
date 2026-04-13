@@ -73,6 +73,27 @@
     <ClInclude Include="Parsing\MldParser.h">
       <Filter>Parsing</Filter>
     </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityAttachParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityObjectParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityPolyParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityStripParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityVertexParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\SaToolsParityVolumeParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
     <ClInclude Include="SoaSimMLD.h">
       <Filter>EntryPoint</Filter>
     </ClInclude>
@@ -109,6 +130,27 @@
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityAttachParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityObjectParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityPolyParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityStripParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityVertexParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\SaToolsParityVolumeParser.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
   </ItemGroup>
