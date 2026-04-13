@@ -1,0 +1,357 @@
+SkiesOfArcadia NJCM parse log started.
+[nmldArchiveFile] Begin name=a101b, bytes=2299072, grndDecode=False, outputAsLittle=False
+[nmldArchiveFile] Header count=107, ptrNmldTable=0x00000018, ptrFxnParams=0x00002B90, realData=0x00005C20, texTable=0x00085BE0
+[GetEntries] Reading 107 entries from offset=0x00000018
+[GetEntries] Entry[0] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[1] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[2] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[3] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[4] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[5] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[6] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[7] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[8] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[9] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[10] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[11] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[12] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[13] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[14] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[15] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[16] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[17] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[18] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[19] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[20] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[21] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[22] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[23] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[24] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[25] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[26] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[27] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[28] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[29] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[30] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[31] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[32] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[33] objectAddrs=1, motionAddrs=1, groundAddrs=2
+[GetEntries] Entry[34] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[35] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[36] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[37] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[38] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[39] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[40] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[41] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[42] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[43] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[44] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[45] objectAddrs=1, motionAddrs=100, groundAddrs=1
+[GetEntries] Entry[46] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[47] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[48] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[49] objectAddrs=1, motionAddrs=11, groundAddrs=1
+[GetEntries] Entry[50] objectAddrs=1, motionAddrs=11, groundAddrs=1
+[GetEntries] Entry[51] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[52] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[53] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[54] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[55] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[56] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[57] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[58] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[59] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[60] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[61] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[62] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[63] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[64] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[65] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[66] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[67] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[68] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[69] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[70] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[71] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[72] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[73] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[74] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[75] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[76] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[77] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[78] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[79] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[80] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[81] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[82] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[83] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[84] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[85] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[86] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[87] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[88] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[89] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[90] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[91] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[92] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[93] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[94] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[95] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[96] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[97] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[98] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[99] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[100] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[101] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[102] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[103] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[104] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[105] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetEntries] Entry[106] objectAddrs=1, motionAddrs=1, groundAddrs=1
+[GetNmldPieces] Start objects=35, motions=13, grounds=12
+[GetNmldPieces] Parsing object offset=0x00005C20, name=a101b_NJ_001
+[nmldObject] Begin parse name=a101b_NJ_001, tableOffset=0x00005C20, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x000005B0 (1456), unknown=0x00000000
+[nmldObject] Data start=0x00005C30, copiedBytes=0x000005B0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=1336 modelIndex=0 imgBase=72 pof0Fixup=yes objs=6 attaches=3 verts=25 tris=28 vchunks=3 pchunks=9 indices=38 oob=0 vtypes={41:3} ptypes={8:3, 19:3, 65:3}
+[nmldObject] Complete name=a101b_NJ_001, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00006320, name=a101b_NJ_002
+[nmldObject] Begin parse name=a101b_NJ_002, tableOffset=0x00006320, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x0000006C, ptrNJTL=0x00000010, chunkSize=0x000007D0 (2000), unknown=0x00000000
+[nmldObject] Data start=0x00006330, copiedBytes=0x000007D0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=92 size=1860 modelIndex=0 imgBase=92 pof0Fixup=yes objs=9 attaches=5 verts=33 tris=32 vchunks=5 pchunks=15 indices=46 oob=0 vtypes={41:5} ptypes={8:5, 19:5, 65:5}
+[nmldObject] Complete name=a101b_NJ_002, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00006CE0, name=a101b_NJ_003
+[nmldObject] Begin parse name=a101b_NJ_003, tableOffset=0x00006CE0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000390 (912), unknown=0x00000000
+[nmldObject] Data start=0x00006CF0, copiedBytes=0x00000390, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=788 modelIndex=0 imgBase=72 pof0Fixup=yes objs=3 attaches=1 verts=16 tris=22 vchunks=1 pchunks=5 indices=28 oob=0 vtypes={41:1} ptypes={8:2, 19:1, 65:2}
+[nmldObject] Complete name=a101b_NJ_003, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00007080, name=a101b_NJ_004
+[nmldObject] Begin parse name=a101b_NJ_004, tableOffset=0x00007080, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000670 (1648), unknown=0x00000000
+[nmldObject] Data start=0x00007090, copiedBytes=0x00000670, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=1528 modelIndex=0 imgBase=72 pof0Fixup=yes objs=4 attaches=2 verts=32 tris=44 vchunks=2 pchunks=10 indices=64 oob=0 vtypes={41:2} ptypes={8:4, 19:2, 65:4}
+[nmldObject] Complete name=a101b_NJ_004, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00007700, name=a101b_NJ_005
+[nmldObject] Begin parse name=a101b_NJ_005, tableOffset=0x00007700, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000084, ptrNJTL=0x00000010, chunkSize=0x000009B0 (2480), unknown=0x00000000
+[nmldObject] Data start=0x00007710, copiedBytes=0x000009B0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=116 size=2308 modelIndex=0 imgBase=116 pof0Fixup=yes objs=6 attaches=4 verts=48 tris=56 vchunks=4 pchunks=13 indices=92 oob=0 vtypes={41:4} ptypes={8:4, 19:4, 65:5}
+[nmldObject] Complete name=a101b_NJ_005, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000080C0, name=a101b_NJ_006
+[nmldObject] Begin parse name=a101b_NJ_006, tableOffset=0x000080C0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000040, ptrNJTL=0x00000010, chunkSize=0x00000570 (1392), unknown=0x00000000
+[nmldObject] Data start=0x000080D0, copiedBytes=0x00000570, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=48 size=1320 modelIndex=0 imgBase=48 pof0Fixup=yes objs=3 attaches=1 verts=32 tris=32 vchunks=1 pchunks=3 indices=34 oob=0 vtypes={42:1} ptypes={8:1, 19:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_006, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00008640, name=a101b_NJ_007
+[nmldObject] Begin parse name=a101b_NJ_007, tableOffset=0x00008640, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000068, ptrNJTL=0x00000010, chunkSize=0x00000F30 (3888), unknown=0x00000000
+[nmldObject] Data start=0x00008650, copiedBytes=0x00000F30, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=88 size=3724 modelIndex=0 imgBase=88 pof0Fixup=yes objs=12 attaches=7 verts=88 tris=84 vchunks=7 pchunks=20 indices=102 oob=0 vtypes={41:7} ptypes={8:6, 19:7, 64:1, 65:6}
+[nmldObject] Complete name=a101b_NJ_007, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0000ABC0, name=a101b_NJ_008
+[nmldObject] Begin parse name=a101b_NJ_008, tableOffset=0x0000ABC0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000890 (2192), unknown=0x00000000
+[nmldObject] Data start=0x0000ABD0, copiedBytes=0x00000890, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=2060 modelIndex=0 imgBase=72 pof0Fixup=yes objs=6 attaches=5 verts=36 tris=42 vchunks=5 pchunks=14 indices=78 oob=0 vtypes={42:5} ptypes={8:4, 19:5, 64:1, 65:4}
+[nmldObject] Complete name=a101b_NJ_008, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0000B520, name=a101b_NJ_009
+[nmldObject] Begin parse name=a101b_NJ_009, tableOffset=0x0000B520, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x00000470 (1136), unknown=0x00000000
+[nmldObject] Data start=0x0000B530, copiedBytes=0x00000470, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=1040 modelIndex=0 imgBase=52 pof0Fixup=yes objs=5 attaches=3 verts=16 tris=16 vchunks=3 pchunks=9 indices=32 oob=0 vtypes={41:3} ptypes={8:3, 19:3, 65:3}
+[nmldObject] Complete name=a101b_NJ_009, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0000BA60, name=a101b_NJ_010
+[nmldObject] Begin parse name=a101b_NJ_010, tableOffset=0x0000BA60, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000008B0 (2224), unknown=0x00000000
+[nmldObject] Data start=0x0000BA70, copiedBytes=0x000008B0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=2104 modelIndex=0 imgBase=52 pof0Fixup=yes objs=7 attaches=6 verts=40 tris=40 vchunks=6 pchunks=17 indices=76 oob=0 vtypes={41:6} ptypes={8:5, 19:6, 64:1, 65:5}
+[nmldObject] Complete name=a101b_NJ_010, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0000C320, name=a101b_NJ_011
+[nmldObject] Begin parse name=a101b_NJ_011, tableOffset=0x0000C320, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000BB0 (2992), unknown=0x00000000
+[nmldObject] Data start=0x0000C330, copiedBytes=0x00000BB0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=2844 modelIndex=0 imgBase=72 pof0Fixup=yes objs=8 attaches=6 verts=58 tris=78 vchunks=6 pchunks=17 indices=116 oob=0 vtypes={41:6} ptypes={8:5, 19:6, 64:1, 65:5}
+[nmldObject] Complete name=a101b_NJ_011, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0000D120, name=a101b_NJ_012
+[nmldObject] Begin parse name=a101b_NJ_012, tableOffset=0x0000D120, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000010, ptrNJTL=0x00000000, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x0000D130, copiedBytes=0x000001B0, firstMagic=NJCM
+[nmldObject] NinjaBinary parsed texLists=0, modelCount=1
+[NJCM] offset=0 size=400 modelIndex=0 imgBase=0 pof0Fixup=yes objs=2 attaches=1 verts=8 tris=12 vchunks=1 pchunks=2 indices=18 oob=0 vtypes={41:1} ptypes={23:1, 64:1}
+[nmldObject] Complete name=a101b_NJ_012, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000120C0, name=a101b_NJ_013
+[nmldObject] Begin parse name=a101b_NJ_013, tableOffset=0x000120C0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000010, ptrNJTL=0x00000000, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x000120D0, copiedBytes=0x000001B0, firstMagic=NJCM
+[nmldObject] NinjaBinary parsed texLists=0, modelCount=1
+[NJCM] offset=0 size=400 modelIndex=0 imgBase=0 pof0Fixup=yes objs=2 attaches=1 verts=8 tris=12 vchunks=1 pchunks=2 indices=18 oob=0 vtypes={41:1} ptypes={23:1, 64:1}
+[nmldObject] Complete name=a101b_NJ_013, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00012280, name=a101b_NJ_014
+[nmldObject] Begin parse name=a101b_NJ_014, tableOffset=0x00012280, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000010, ptrNJTL=0x00000000, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x00012290, copiedBytes=0x000001B0, firstMagic=NJCM
+[nmldObject] NinjaBinary parsed texLists=0, modelCount=1
+[NJCM] offset=0 size=400 modelIndex=0 imgBase=0 pof0Fixup=yes objs=2 attaches=1 verts=8 tris=12 vchunks=1 pchunks=2 indices=18 oob=0 vtypes={41:1} ptypes={23:1, 64:1}
+[nmldObject] Complete name=a101b_NJ_014, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000142C0, name=a101b_NJ_015
+[nmldObject] Begin parse name=a101b_NJ_015, tableOffset=0x000142C0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x0000014C, ptrNJTL=0x00000010, chunkSize=0x0000ABF0 (44016), unknown=0x00000000
+[nmldObject] Data start=0x000142D0, copiedBytes=0x0000ABF0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=316 size=43348 modelIndex=0 imgBase=316 pof0Fixup=yes objs=116 attaches=75 verts=882 tris=1210 vchunks=111 pchunks=115 indices=1822 oob=511 vtypes={41:46, 44:65} ptypes={0:5, 4:5, 5:5, 8:34, 19:24, 23:4, 64:4, 65:34}
+[nmldObject] Complete name=a101b_NJ_015, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0003B1A0, name=a101b_NJ_016
+[nmldObject] Begin parse name=a101b_NJ_016, tableOffset=0x0003B1A0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000134, ptrNJTL=0x00000010, chunkSize=0x0000C750 (51024), unknown=0x00000000
+[nmldObject] Data start=0x0003B1B0, copiedBytes=0x0000C750, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=292 size=50292 modelIndex=0 imgBase=292 pof0Fixup=yes objs=153 attaches=88 verts=987 tris=1440 vchunks=115 pchunks=163 indices=2128 oob=1281 vtypes={41:76, 44:39} ptypes={0:9, 4:9, 5:9, 8:45, 17:1, 19:33, 23:5, 64:6, 65:46}
+[nmldObject] Complete name=a101b_NJ_016, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0004F540, name=a101b_NJ_017
+[nmldObject] Begin parse name=a101b_NJ_017, tableOffset=0x0004F540, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x0000006C, ptrNJTL=0x00000010, chunkSize=0x000004F0 (1264), unknown=0x00000000
+[nmldObject] Data start=0x0004F550, copiedBytes=0x000004F0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=92 size=1136 modelIndex=0 imgBase=92 pof0Fixup=yes objs=4 attaches=3 verts=21 tris=26 vchunks=3 pchunks=10 indices=46 oob=0 vtypes={41:3} ptypes={8:3, 19:2, 23:1, 64:1, 65:3}
+[nmldObject] Complete name=a101b_NJ_017, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0004FA40, name=a101b_NJ_018
+[nmldObject] Begin parse name=a101b_NJ_018, tableOffset=0x0004FA40, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x0004FA50, copiedBytes=0x000001B0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=356 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=1 verts=4 tris=2 vchunks=1 pchunks=3 indices=4 oob=0 vtypes={42:1} ptypes={8:1, 19:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_018, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x0004FC00, name=a101b_NJ_019
+[nmldObject] Begin parse name=a101b_NJ_019, tableOffset=0x0004FC00, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000630 (1584), unknown=0x00000000
+[nmldObject] Data start=0x0004FC10, copiedBytes=0x00000630, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=1460 modelIndex=0 imgBase=72 pof0Fixup=yes objs=5 attaches=3 verts=29 tris=36 vchunks=3 pchunks=9 indices=50 oob=0 vtypes={41:3} ptypes={8:3, 19:3, 65:3}
+[nmldObject] Complete name=a101b_NJ_019, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00050240, name=a101b_NJ_020
+[nmldObject] Begin parse name=a101b_NJ_020, tableOffset=0x00050240, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000650 (1616), unknown=0x00000000
+[nmldObject] Data start=0x00050250, copiedBytes=0x00000650, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=1488 modelIndex=0 imgBase=72 pof0Fixup=yes objs=5 attaches=3 verts=29 tris=38 vchunks=3 pchunks=9 indices=54 oob=0 vtypes={41:3} ptypes={8:3, 19:3, 65:3}
+[nmldObject] Complete name=a101b_NJ_020, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000508A0, name=a101b_NJ_021
+[nmldObject] Begin parse name=a101b_NJ_021, tableOffset=0x000508A0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x000005D0 (1488), unknown=0x00000000
+[nmldObject] Data start=0x000508B0, copiedBytes=0x000005D0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=1372 modelIndex=0 imgBase=72 pof0Fixup=yes objs=4 attaches=2 verts=29 tris=38 vchunks=2 pchunks=6 indices=54 oob=0 vtypes={41:2} ptypes={8:2, 19:2, 65:2}
+[nmldObject] Complete name=a101b_NJ_021, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00050E80, name=a101b_NJ_022
+[nmldObject] Begin parse name=a101b_NJ_022, tableOffset=0x00050E80, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x00000550 (1360), unknown=0x00000000
+[nmldObject] Data start=0x00050E90, copiedBytes=0x00000550, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=1252 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=2 verts=26 tris=44 vchunks=2 pchunks=5 indices=66 oob=0 vtypes={41:2} ptypes={8:1, 19:1, 23:1, 64:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_022, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000513E0, name=a101b_NJ_023
+[nmldObject] Begin parse name=a101b_NJ_023, tableOffset=0x000513E0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x00002210 (8720), unknown=0x00000000
+[nmldObject] Data start=0x000513F0, copiedBytes=0x00002210, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=8564 modelIndex=0 imgBase=52 pof0Fixup=yes objs=14 attaches=12 verts=189 tris=238 vchunks=12 pchunks=45 indices=400 oob=0 vtypes={41:12} ptypes={8:11, 19:12, 64:1, 65:21}
+[nmldObject] Complete name=a101b_NJ_023, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00053600, name=a101b_NJ_024
+[nmldObject] Begin parse name=a101b_NJ_024, tableOffset=0x00053600, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x0000009C, ptrNJTL=0x00000010, chunkSize=0x00000E50 (3664), unknown=0x00000000
+[nmldObject] Data start=0x00053610, copiedBytes=0x00000E50, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=140 size=3464 modelIndex=0 imgBase=140 pof0Fixup=yes objs=6 attaches=4 verts=76 tris=112 vchunks=4 pchunks=20 indices=162 oob=0 vtypes={41:4} ptypes={8:7, 19:4, 65:9}
+[nmldObject] Complete name=a101b_NJ_024, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00054460, name=a101b_NJ_025
+[nmldObject] Begin parse name=a101b_NJ_025, tableOffset=0x00054460, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000010, ptrNJTL=0x00000000, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x00054470, copiedBytes=0x000001B0, firstMagic=NJCM
+[nmldObject] NinjaBinary parsed texLists=0, modelCount=1
+[NJCM] offset=0 size=396 modelIndex=0 imgBase=0 pof0Fixup=yes objs=2 attaches=1 verts=8 tris=12 vchunks=1 pchunks=2 indices=18 oob=0 vtypes={41:1} ptypes={19:1, 64:1}
+[nmldObject] Complete name=a101b_NJ_025, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00054620, name=a101b_NJ_026
+[nmldObject] Begin parse name=a101b_NJ_026, tableOffset=0x00054620, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000010, ptrNJTL=0x00000000, chunkSize=0x000001B0 (432), unknown=0x00000000
+[nmldObject] Data start=0x00054630, copiedBytes=0x000001B0, firstMagic=NJCM
+[nmldObject] NinjaBinary parsed texLists=0, modelCount=1
+[NJCM] offset=0 size=396 modelIndex=0 imgBase=0 pof0Fixup=yes objs=2 attaches=1 verts=8 tris=12 vchunks=1 pchunks=2 indices=18 oob=0 vtypes={41:1} ptypes={19:1, 64:1}
+[nmldObject] Complete name=a101b_NJ_026, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000547E0, name=a101b_NJ_027
+[nmldObject] Begin parse name=a101b_NJ_027, tableOffset=0x000547E0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000002D0 (720), unknown=0x00000000
+[nmldObject] Data start=0x000547F0, copiedBytes=0x000002D0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=636 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=2 verts=12 tris=14 vchunks=2 pchunks=5 indices=22 oob=0 vtypes={41:2} ptypes={8:1, 19:1, 23:1, 64:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_027, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00054AC0, name=a101b_NJ_028
+[nmldObject] Begin parse name=a101b_NJ_028, tableOffset=0x00054AC0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x000001FC, ptrNJTL=0x00000010, chunkSize=0x00004490 (17552), unknown=0x00000000
+[nmldObject] Data start=0x00054AD0, copiedBytes=0x00004490, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=492 size=16912 modelIndex=0 imgBase=492 pof0Fixup=yes objs=28 attaches=25 verts=380 tris=446 vchunks=25 pchunks=119 indices=710 oob=0 vtypes={41:25} ptypes={8:41, 18:1, 19:25, 65:52}
+[nmldObject] Complete name=a101b_NJ_028, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00058F60, name=a101b_NJ_029
+[nmldObject] Begin parse name=a101b_NJ_029, tableOffset=0x00058F60, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000304, ptrNJTL=0x00000010, chunkSize=0x00017930 (96560), unknown=0x00000000
+[nmldObject] Data start=0x00058F70, copiedBytes=0x00017930, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=756 size=95092 modelIndex=0 imgBase=756 pof0Fixup=yes objs=148 attaches=140 verts=2035 tris=2471 vchunks=140 pchunks=688 indices=4379 oob=0 vtypes={41:140} ptypes={8:236, 17:1, 19:140, 65:311}
+[nmldObject] Complete name=a101b_NJ_029, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000708A0, name=a101b_NJ_030
+[nmldObject] Begin parse name=a101b_NJ_030, tableOffset=0x000708A0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000210, ptrNJTL=0x00000010, chunkSize=0x00006BD0 (27600), unknown=0x00000000
+[nmldObject] Data start=0x000708B0, copiedBytes=0x00006BD0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=512 size=26860 modelIndex=0 imgBase=512 pof0Fixup=yes objs=46 attaches=44 verts=596 tris=710 vchunks=44 pchunks=201 indices=1100 oob=0 vtypes={41:44} ptypes={8:67, 19:44, 65:90}
+[nmldObject] Complete name=a101b_NJ_030, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00077480, name=a101b_NJ_031
+[nmldObject] Begin parse name=a101b_NJ_031, tableOffset=0x00077480, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x0000032C, ptrNJTL=0x00000010, chunkSize=0x0000D010 (53264), unknown=0x00000000
+[nmldObject] Data start=0x00077490, copiedBytes=0x0000D010, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=796 size=51864 modelIndex=0 imgBase=796 pof0Fixup=yes objs=118 attaches=115 verts=1105 tris=1240 vchunks=115 pchunks=464 indices=1802 oob=0 vtypes={41:115} ptypes={8:159, 17:1, 19:115, 65:189}
+[nmldObject] Complete name=a101b_NJ_031, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000844A0, name=a101b_NJ_032
+[nmldObject] Begin parse name=a101b_NJ_032, tableOffset=0x000844A0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000003D0 (976), unknown=0x00000000
+[nmldObject] Data start=0x000844B0, copiedBytes=0x000003D0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=896 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=1 verts=17 tris=24 vchunks=1 pchunks=3 indices=32 oob=0 vtypes={42:1} ptypes={8:1, 19:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_032, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x00084880, name=a101b_NJ_033
+[nmldObject] Begin parse name=a101b_NJ_033, tableOffset=0x00084880, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000058, ptrNJTL=0x00000010, chunkSize=0x00000850 (2128), unknown=0x00000000
+[nmldObject] Data start=0x00084890, copiedBytes=0x00000850, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=72 size=2020 modelIndex=0 imgBase=72 pof0Fixup=yes objs=3 attaches=1 verts=45 tris=56 vchunks=1 pchunks=5 indices=84 oob=0 vtypes={42:1} ptypes={8:2, 19:1, 65:2}
+[nmldObject] Complete name=a101b_NJ_033, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000850E0, name=a101b_NJ_034
+[nmldObject] Begin parse name=a101b_NJ_034, tableOffset=0x000850E0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000003F0 (1008), unknown=0x00000000
+[nmldObject] Data start=0x000850F0, copiedBytes=0x000003F0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=908 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=1 verts=17 tris=24 vchunks=1 pchunks=3 indices=34 oob=0 vtypes={42:1} ptypes={8:1, 19:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_034, littleEndianOutput=disabled
+[GetNmldPieces] Parsing object offset=0x000854E0, name=a101b_NJ_035
+[nmldObject] Begin parse name=a101b_NJ_035, tableOffset=0x000854E0, outputAsLittle=False
+[nmldObject] Header ptrNJCM=0x00000044, ptrNJTL=0x00000010, chunkSize=0x000006F0 (1776), unknown=0x00000000
+[nmldObject] Data start=0x000854F0, copiedBytes=0x000006F0, firstMagic=NJTL
+[nmldObject] NinjaBinary parsed texLists=1, modelCount=1
+[NJCM] offset=52 size=1680 modelIndex=0 imgBase=52 pof0Fixup=yes objs=3 attaches=1 verts=34 tris=64 vchunks=1 pchunks=3 indices=82 oob=0 vtypes={42:1} ptypes={8:1, 19:1, 65:1}
+[nmldObject] Complete name=a101b_NJ_035, littleEndianOutput=disabled
