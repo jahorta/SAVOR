@@ -43,6 +43,9 @@
     <ClInclude Include="Model\NjcmModel.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Model\MldTextureArchiveModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="Model\NjtlModel.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -67,10 +70,16 @@
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h">
       <Filter>Parsing</Filter>
     </ClInclude>
+    <ClInclude Include="Parsing\GvrTextureDecoder.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
     <ClInclude Include="Parsing\GeometryBuilder.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\MldTextureArchiveParser.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldParser.h">
@@ -138,10 +147,16 @@
     <ClCompile Include="Parsing\MldBinaryReader.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
+    <ClCompile Include="Parsing\MldTextureArchiveParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
     <ClCompile Include="Parsing\BlenderIrBuilder.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\GvrTextureDecoder.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GeometryBuilder.cpp">

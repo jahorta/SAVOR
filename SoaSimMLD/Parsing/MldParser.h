@@ -4,6 +4,7 @@
 #include "../Model/BlenderIrModel.h"
 #include "../Model/NjcmModel.h"
 #include "../Model/NjtlModel.h"
+#include "../Model/MldTextureArchiveModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
 
@@ -76,6 +77,7 @@ struct ParseResult {
     std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
     std::vector<model::NjObjectBlockModel> decodedNjObjectBlocks{};
     std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
+    std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};
     std::vector<std::string> blenderIrDiagnostics{};
     std::vector<std::string> blenderIrArtifactPaths{};

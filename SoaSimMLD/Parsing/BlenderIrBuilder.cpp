@@ -1,7 +1,9 @@
 #include "BlenderIrBuilder.h"
 
 #include "BlenderIrDiagnostics.h"
+#include "GvrTextureDecoder.h"
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace soasim::mld::parsing {
@@ -51,8 +53,29 @@ void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::Ble
 model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) const {
     model::BlenderIrScene out{};
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> meshIndicesByObjectAddress{};
+    std::unordered_map<std::uint32_t, std::vector<std::string>> textureNamesByObjectAddress{};
 
     for (const auto& objectRange : parseResult.decodedObjectChunkRanges) {
+        std::vector<std::string> objectTextureNames{};
+        for (std::size_t chunkIdx = objectRange.decodedChunkBegin;
+            chunkIdx < objectRange.decodedChunkEnd && chunkIdx < parseResult.decodedNjObjectBlocks.size();
+            ++chunkIdx) {
+            const auto& block = parseResult.decodedNjObjectBlocks[chunkIdx];
+            if (!block.njtl.has_value()) {
+                continue;
+            }
+            for (const auto& t : block.njtl->textureNames) {
+                objectTextureNames.push_back(t.name);
+            }
+            if (!objectTextureNames.empty()) {
+                break;
+            }
+        }
+        if (!objectTextureNames.empty()) {
+            textureNamesByObjectAddress[objectRange.objectAddress] = std::move(objectTextureNames);
+        }
+
+
         for (std::size_t chunkIdx = objectRange.decodedChunkBegin;
             chunkIdx < objectRange.decodedChunkEnd && chunkIdx < parseResult.decodedNjcmChunks.size();
             ++chunkIdx) {
@@ -95,6 +118,10 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
                         material.fromCacheReplay = poly.fromCacheReplay;
                         material.materialStateKey = poly.materialStateKey;
                         material.textureId = poly.textureId;
+                        if (const auto names = textureNamesByObjectAddress.find(objectRange.objectAddress);
+                            names != textureNamesByObjectAddress.end() && poly.textureId < names->second.size()) {
+                            material.textureName = names->second[poly.textureId];
+                        }
                         material.materialHash = materialHash;
                         mesh.materials.push_back(material);
                     }
@@ -138,6 +165,53 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
         }
 
         out.indexEntries.push_back(std::move(instance));
+    }
+
+    if (parseResult.textureArchive.has_value()) {
+        std::vector<std::string> usedTextureNames{};
+        for (const auto& objectRange : parseResult.decodedObjectChunkRanges) {
+            const auto namesIt = textureNamesByObjectAddress.find(objectRange.objectAddress);
+            if (namesIt == textureNamesByObjectAddress.end()) {
+                continue;
+            }
+            for (const auto& n : namesIt->second) {
+                if (!n.empty() && std::find(usedTextureNames.begin(), usedTextureNames.end(), n) == usedTextureNames.end()) {
+                    usedTextureNames.push_back(n);
+                }
+            }
+        }
+
+        std::size_t unnamedCursor = 0;
+        for (const auto& tx : parseResult.textureArchive->entries) {
+            model::BlenderIrTexture outTexture{};
+            outTexture.sourceOffset = tx.gvrDataOffset;
+            outTexture.sourceSize = tx.gvrDataSize;
+            outTexture.encodedFormat = "gvr";
+            outTexture.encodedData = tx.gvrData;
+            outTexture.width = tx.width;
+            outTexture.height = tx.height;
+            outTexture.pixelFormat = "rgba8";
+
+            const auto decoded = decodeGvrToRgba8(tx);
+            if (decoded.decoded) {
+                outTexture.width = decoded.width;
+                outTexture.height = decoded.height;
+                outTexture.pixelData = decoded.rgba8;
+            } else {
+                out.diagnostics.push_back("BlenderIrBuilder texture decode warning: " +
+                    (decoded.diagnostics.empty() ? std::string("unknown decode failure.") : decoded.diagnostics.front()));
+            }
+
+            if (tx.hasGlobalIndex && tx.globalIndex < usedTextureNames.size()) {
+                outTexture.textureName = usedTextureNames[tx.globalIndex];
+            } else if (!usedTextureNames.empty()) {
+                outTexture.textureName = usedTextureNames[unnamedCursor % usedTextureNames.size()];
+                ++unnamedCursor;
+            }
+
+            out.textures.push_back(std::move(outTexture));
+        }
+        out.diagnostics.push_back("BlenderIrBuilder texture payloads include decoded RGBA8 when possible and preserve source encoded payloads.");
     }
 
     out.diagnostics.push_back("BlenderIrBuilder produced " + std::to_string(out.meshes.size()) + " meshes and " +
