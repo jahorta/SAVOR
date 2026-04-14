@@ -60,6 +60,7 @@ std::optional<std::size_t> resolvePointer(const std::uint32_t rawPtr, const std:
 std::size_t vertexWordsPerVertexByType(const std::uint8_t type) {
     switch (type) {
     case 32U: // Vertex_VertexSH
+    case 48U: // Vertex_VertexNormalX
         return 4;
     case 33U: // Vertex_VertexNormalSH
         return 8;
@@ -71,20 +72,19 @@ std::size_t vertexWordsPerVertexByType(const std::uint8_t type) {
     case 38U: // Vertex_VertexDiffuseSpecular5
     case 39U: // Vertex_VertexDiffuseSpecular4
         return 4;
-    case 40U: // Vertex_VertexDiffuseSpecular16
     case 41U: // Vertex_VertexNormal
+        return 6;
     case 42U: // Vertex_VertexNormalDiffuse8
     case 43U: // Vertex_VertexNormalUserFlags
     case 44U: // Vertex_VertexNormalNinjaFlags
     case 45U: // Vertex_VertexNormalDiffuseSpecular5
     case 46U: // Vertex_VertexNormalDiffuseSpecular4
-    case 47U: // Vertex_VertexNormalDiffuseSpecular16
         return 7;
-    case 48U: // Vertex_VertexNormalX
-        return 4;
     case 49U: // Vertex_VertexNormalXDiffuse8
     case 50U: // Vertex_VertexNormalXUserFlags
         return 5;
+    case 40U: // Vertex_VertexDiffuseSpecular16           - Not Supported
+    case 47U: // Vertex_VertexNormalDiffuseSpecular16     - Not Supported
     default:
         return 0;
     }
