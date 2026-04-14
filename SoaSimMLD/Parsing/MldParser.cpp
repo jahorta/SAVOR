@@ -1,5 +1,7 @@
 #include "MldParser.h"
 
+#include "../Export/BlenderIrJsonExporter.h"
+#include "BlenderIrBuilder.h"
 #include "../../Compression/Aklz.h"
 #include "../Model/IndexEntry.h"
 #include "../common/ByteUtils.h"
@@ -8,6 +10,8 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <cctype>
 #include <iostream>
 #include <iomanip>
@@ -259,6 +263,7 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             }
             if ((*tag == tagPof0 || *tag == tagNjtl || *tag == tagNmdm || *tag == tagNcam) && pendingNjcm.has_value()) {
                 auto decodePolicy = options.njcmPolicy;
+                decodePolicy.useSaToolsParityPath = true;
                 if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
                     decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
                 }
@@ -287,6 +292,7 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
 
     if (pendingNjcm.has_value()) {
         auto decodePolicy = options.njcmPolicy;
+        decodePolicy.useSaToolsParityPath = true;
         if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
             decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
         }
@@ -308,6 +314,12 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
 ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
     std::cout << "[SoaSimMLD] Step 1/5: Starting parse (" << mldBytes.size() << " bytes).\n";
     ParseResult result{};
+    if (!options.njcmPolicy.useSaToolsParityPath) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "NJCM parsing forced to SA tools parity path; non-parity path is currently disabled.",
+        });
+    }
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = mldBytes;
@@ -811,6 +823,38 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         });
     }
 
+    if (options.buildBlenderIntermediateIr) {
+        BlenderIrBuilder blenderIrBuilder{};
+        result.blenderIrScene = blenderIrBuilder.build(result);
+        if (result.blenderIrScene.has_value()) {
+            result.blenderIrDiagnostics = result.blenderIrScene->diagnostics;
+
+            if (options.exportBlenderIrJson && !options.blenderIrOutputDir.empty()) {
+                std::error_code ec{};
+                std::filesystem::create_directories(options.blenderIrOutputDir, ec);
+                if (ec) {
+                    result.diagnostics.push_back(ParseDiagnostic{
+                        .severity = ParseDiagnostic::Severity::Warning,
+                        .message = "Failed to create Blender IR output directory: " + options.blenderIrOutputDir,
+                    });
+                } else {
+                    exporting::BlenderIrJsonExporter exporter{};
+                    const auto path = options.blenderIrOutputDir + "/blender_ir_scene.json";
+                    std::ofstream os(path, std::ios::binary);
+                    if (!os) {
+                        result.diagnostics.push_back(ParseDiagnostic{
+                            .severity = ParseDiagnostic::Severity::Warning,
+                            .message = "Failed to open Blender IR JSON output file: " + path,
+                        });
+                    } else {
+                        os << exporter.toJson(*result.blenderIrScene);
+                        result.blenderIrArtifactPaths.push_back(path);
+                    }
+                }
+            }
+        }
+    }
+
     result.searchWorld.surfaces.reserve(result.world.grndSurfaces.size());
     for (const auto& grnd : result.world.grndSurfaces) {
         result.searchWorld.surfaces.push_back(WalkSurfaceNode{
@@ -873,6 +917,8 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
     out << "njcmChunks=" << parseResult.njcmChunks.size() << '\n';
+    out << "blenderIrMeshes=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->meshes.size() : 0) << '\n';
+    out << "blenderIrIndexEntries=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->indexEntries.size() : 0) << '\n';
 
     if (!parseResult.chunkTypeHistogram.empty()) {
         out << "chunkTypes:" << '\n';

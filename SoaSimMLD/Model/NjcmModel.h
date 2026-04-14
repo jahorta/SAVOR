@@ -32,6 +32,11 @@ struct NjSemanticVertex {
 
 struct NjSemanticPolygon {
     std::uint8_t type = 0;
+    std::uint8_t sourceChunkFlags = 0;
+    std::size_t sourceChunkOffset = 0;
+    bool fromCacheReplay = false;
+    std::uint32_t materialStateKey = 0;
+    std::uint16_t textureId = 0xFFFFU;
     std::vector<std::uint32_t> indices{};
     std::size_t estimatedTriangleCount = 0;
 };

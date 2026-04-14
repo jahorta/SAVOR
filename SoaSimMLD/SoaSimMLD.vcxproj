@@ -96,14 +96,18 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="common\ByteUtils.h" />
+    <ClInclude Include="Export\BlenderIrJsonExporter.h" />
     <ClInclude Include="Model\IndexEntry.h" />
     <ClInclude Include="Model\GeometryModel.h" />
+    <ClInclude Include="Model\BlenderIrModel.h" />
     <ClInclude Include="Model\NjcmModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
+    <ClInclude Include="Parsing\BlenderIrBuilder.h" />
+    <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
     <ClInclude Include="Parsing\GeometryBuilder.h" />
     <ClInclude Include="Parsing\NJCMAttachRecordParser.h" />
     <ClInclude Include="Parsing\NJCMDecodeContext.h" />
@@ -124,7 +128,10 @@
     <ClInclude Include="SoaSimMLD.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Model\BlenderIrModel.cpp" />
     <ClCompile Include="Parsing\MldBinaryReader.cpp" />
+    <ClCompile Include="Parsing\BlenderIrBuilder.cpp" />
+    <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp" />
     <ClCompile Include="Parsing\GeometryBuilder.cpp" />
     <ClCompile Include="Parsing\NJCMAttachRecordParser.cpp" />
     <ClCompile Include="Parsing\NJCMDecodeContext.cpp" />
@@ -141,6 +148,7 @@
     <ClCompile Include="Parsing\SaToolsParityStripParser.cpp" />
     <ClCompile Include="Parsing\SaToolsParityVertexParser.cpp" />
     <ClCompile Include="Parsing\SaToolsParityVolumeParser.cpp" />
+    <ClCompile Include="Export\BlenderIrJsonExporter.cpp" />
     <ClCompile Include="SoaSimMLD.cpp" />
   </ItemGroup>
   <ItemGroup>

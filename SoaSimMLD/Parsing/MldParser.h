@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NJCMParser.h"
+#include "../Model/BlenderIrModel.h"
 #include "../Model/NjcmModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,9 +41,12 @@ struct ParseOptions {
     CoordinatePolicy coordinates{};
     bool preserveUnknownEntries = true;
     bool emitFxnHistogram = true;
-    NjcmParsePolicy njcmPolicy{};
+    NjcmParsePolicy njcmPolicy{ .useSaToolsParityPath = true };
     std::string filterFxnName{};
     std::vector<std::uint32_t> filterEntryIdList{};
+    bool buildBlenderIntermediateIr = true;
+    bool exportBlenderIrJson = false;
+    std::string blenderIrOutputDir{};
 };
 
 struct DecodedObjectChunkRange {
@@ -69,6 +74,9 @@ struct ParseResult {
     std::vector<NjcmChunkSummary> njcmChunks{};
     std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
     std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
+    std::optional<model::BlenderIrScene> blenderIrScene{};
+    std::vector<std::string> blenderIrDiagnostics{};
+    std::vector<std::string> blenderIrArtifactPaths{};
 };
 
 class MldParser {

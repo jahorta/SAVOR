@@ -14,6 +14,9 @@
       <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Export">
+      <UniqueIdentifier>{C8A2F599-A70B-4D84-BAA2-0CF225D37020}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Parsing\NjcmRecords">
       <UniqueIdentifier>{800245be-0554-44da-9803-3c36875dd03a}</UniqueIdentifier>
     </Filter>
@@ -25,10 +28,16 @@
     <ClInclude Include="common\ByteUtils.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Export\BlenderIrJsonExporter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
     <ClInclude Include="Model\IndexEntry.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\GeometryModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\BlenderIrModel.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\NjcmModel.h">
@@ -47,6 +56,12 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\EntryHandlers.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\BlenderIrBuilder.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\BlenderIrDiagnostics.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\GeometryBuilder.h">
@@ -105,10 +120,22 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Export\BlenderIrJsonExporter.cpp">
+      <Filter>Export</Filter>
+    </ClCompile>
     <ClCompile Include="SoaSimMLD.cpp">
       <Filter>EntryPoint</Filter>
     </ClCompile>
+    <ClCompile Include="Model\BlenderIrModel.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
     <ClCompile Include="Parsing\MldBinaryReader.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\BlenderIrBuilder.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GeometryBuilder.cpp">

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Model/SearchWorldModel.h"
+#include "Model/BlenderIrModel.h"
 #include "Model/NjcmModel.h"
 #include "Model/GeometryModel.h"
 #include "Model/Types.h"
