@@ -3,6 +3,7 @@
 #include "NJCMParser.h"
 #include "../Model/BlenderIrModel.h"
 #include "../Model/NjcmModel.h"
+#include "../Model/NjtlModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
 
@@ -73,6 +74,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<NjcmChunkSummary> njcmChunks{};
     std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
+    std::vector<model::NjObjectBlockModel> decodedNjObjectBlocks{};
     std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
     std::optional<model::BlenderIrScene> blenderIrScene{};
     std::vector<std::string> blenderIrDiagnostics{};

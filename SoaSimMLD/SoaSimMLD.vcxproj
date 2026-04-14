@@ -101,6 +101,7 @@
     <ClInclude Include="Model\GeometryModel.h" />
     <ClInclude Include="Model\BlenderIrModel.h" />
     <ClInclude Include="Model\NjcmModel.h" />
+    <ClInclude Include="Model\NjtlModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
@@ -113,6 +114,7 @@
     <ClInclude Include="Parsing\NJCMDecodeContext.h" />
     <ClInclude Include="Parsing\NJCMObjectRecordParser.h" />
     <ClInclude Include="Parsing\NJCMParser.h" />
+    <ClInclude Include="Parsing\NJTLParser.h" />
     <ClInclude Include="Parsing\NJCMParityPath.h" />
     <ClInclude Include="Parsing\NJCMPolyRecordParser.h" />
     <ClInclude Include="Parsing\NJCMVertexRecordParser.h" />
@@ -137,6 +139,7 @@
     <ClCompile Include="Parsing\NJCMDecodeContext.cpp" />
     <ClCompile Include="Parsing\NJCMObjectRecordParser.cpp" />
     <ClCompile Include="Parsing\NJCMParser.cpp" />
+    <ClCompile Include="Parsing\NJTLParser.cpp" />
     <ClCompile Include="Parsing\NJCMParityPath.cpp" />
     <ClCompile Include="Parsing\NJCMPolyRecordParser.cpp" />
     <ClCompile Include="Parsing\NJCMVertexRecordParser.cpp" />

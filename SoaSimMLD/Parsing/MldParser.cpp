@@ -7,6 +7,7 @@
 #include "../common/ByteUtils.h"
 #include "EntryHandlers.h"
 #include "MldBinaryReader.h"
+#include "NJTLParser.h"
 
 #include <algorithm>
 #include <array>
@@ -173,11 +174,12 @@ public:
     }
 };
 
-void parseNjChunkStream(std::span<const std::uint8_t> bytes,
+void parseNjBlockStream(std::span<const std::uint8_t> bytes,
     const std::size_t imageBase,
     std::unordered_map<std::uint32_t, std::size_t>& chunkTypeCounts,
     std::vector<NjcmChunkSummary>& njcmChunks,
     std::vector<model::NjcmDecodedChunk>& decodedNjcmChunks,
+    std::vector<model::NjObjectBlockModel>& decodedNjObjectBlocks,
     const ParseOptions& options) {
     constexpr std::uint32_t tagNjcm = makeTag('N', 'J', 'C', 'M');
     constexpr std::uint32_t tagNjtl = makeTag('N', 'J', 'T', 'L');
@@ -189,12 +191,15 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
         std::size_t chunkStart = 0;
         std::size_t chunkDataSize = 0;
         bool chunkSizeLittleEndian = true;
+        bool hasNjtlBeforeNjcm = false;
+        std::optional<model::NjtlBlock> njtlBlock{};
         bool sawPof0Chunk = false;
         std::uint32_t pofImageBaseLocal = 0;
         std::vector<std::uint8_t> pof0Data{};
         std::vector<std::uint8_t> data{};
     };
     std::optional<PendingNjcm> pendingNjcm{};
+    std::optional<model::NjtlBlock> pendingNjtl{};
     std::uint32_t runningImageBaseLocal = 0;
 
     MldBinaryReader reader(bytes);
@@ -248,6 +253,8 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             state.chunkStart = absChunkStart;
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
+            state.hasNjtlBeforeNjcm = pendingNjtl.has_value();
+            state.njtlBlock = std::move(pendingNjtl);
             state.sawPof0Chunk = false;
             state.pofImageBaseLocal = 0;
             state.pof0Data.clear();
@@ -255,6 +262,10 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
                 bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             pendingNjcm = std::move(state);
         } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
+            if (*tag == tagNjtl) {
+                const std::span<const std::uint8_t> njtlData(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart), chunkSize);
+                pendingNjtl = parseNjtlBlock(njtlData, absChunkStart, chunkSize, chunkSizeLittleEndian);
+            }
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
                 pendingNjcm->sawPof0Chunk = true;
                 pendingNjcm->pofImageBaseLocal = runningImageBaseLocal;
@@ -276,7 +287,12 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
                     std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
                 auto summary = summarizeDecodedNjcmChunk(decoded);
                 njcmChunks.push_back(summary);
-                decodedNjcmChunks.push_back(std::move(decoded));
+                decodedNjcmChunks.push_back(decoded);
+                decodedNjObjectBlocks.push_back(model::NjObjectBlockModel{
+                    .hasNjtlBeforeNjcm = pendingNjcm->hasNjtlBeforeNjcm,
+                    .njtl = std::move(pendingNjcm->njtlBlock),
+                    .njcm = std::move(decoded),
+                });
                 pendingNjcm.reset();
             }
         }
@@ -305,7 +321,12 @@ void parseNjChunkStream(std::span<const std::uint8_t> bytes,
             std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
         auto summary = summarizeDecodedNjcmChunk(decoded);
         njcmChunks.push_back(summary);
-        decodedNjcmChunks.push_back(std::move(decoded));
+        decodedNjcmChunks.push_back(decoded);
+        decodedNjObjectBlocks.push_back(model::NjObjectBlockModel{
+            .hasNjtlBeforeNjcm = pendingNjcm->hasNjtlBeforeNjcm,
+            .njtl = std::move(pendingNjcm->njtlBlock),
+            .njcm = std::move(decoded),
+        });
     }
 }
 
@@ -604,11 +625,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
 
         const auto decodedChunkBegin = result.decodedNjcmChunks.size();
-        parseNjChunkStream(payload.subspan(startAbs, objectPayloadSize),
+        parseNjBlockStream(payload.subspan(startAbs, objectPayloadSize),
             startAbs,
             chunkTypeCounts,
             result.njcmChunks,
             result.decodedNjcmChunks,
+            result.decodedNjObjectBlocks,
             options);
         const auto decodedChunkEnd = result.decodedNjcmChunks.size();
         result.decodedObjectChunkRanges.push_back(DecodedObjectChunkRange{
@@ -773,6 +795,20 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
     }
 
+    for (const auto& block : result.decodedNjObjectBlocks) {
+        if (!block.njtl.has_value()) {
+            continue;
+        }
+        const auto& njtl = *block.njtl;
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = njtl.parseSucceeded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
+            .message = "NJTL summary @ " + std::to_string(njtl.chunkOffset) +
+                ": count=" + std::to_string(njtl.textureCount) +
+                ", parsed=" + std::to_string(njtl.textureNames.size()) +
+                ", hasNjtlBeforeNjcm=" + std::string(block.hasNjtlBeforeNjcm ? "yes" : "no"),
+        });
+    }
+
     for (const auto& objectRange : result.decodedObjectChunkRanges) {
         std::size_t objectAttachCount = 0;
         std::size_t objectVertices = 0;
@@ -891,6 +927,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", triggers=" + std::to_string(result.world.triggers.size()) +
             ", unknownEntries=" + std::to_string(result.world.unknownEntries.size()) +
             ", njcmChunks=" + std::to_string(result.njcmChunks.size()) +
+            ", njObjectBlocks=" + std::to_string(result.decodedNjObjectBlocks.size()) +
             ", chunkTypes=" + std::to_string(result.chunkTypeHistogram.size()),
     });
 
@@ -917,6 +954,7 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
     out << "njcmChunks=" << parseResult.njcmChunks.size() << '\n';
+    out << "njObjectBlocks=" << parseResult.decodedNjObjectBlocks.size() << '\n';
     out << "blenderIrMeshes=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->meshes.size() : 0) << '\n';
     out << "blenderIrIndexEntries=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->indexEntries.size() : 0) << '\n';
 
@@ -960,6 +998,30 @@ std::string formatParseSummary(const ParseResult& parseResult) {
                 << " attaches=" << decoded.attaches.size()
                 << " parseOk=" << (decoded.parseSucceeded ? "yes" : "no")
                 << " fallback=" << (decoded.parsedWithHeuristicFallback ? "yes" : "no")
+                << '\n';
+        }
+    }
+
+    if (!parseResult.decodedNjObjectBlocks.empty()) {
+        out << "decodedNjObjectBlocks:" << '\n';
+        for (const auto& block : parseResult.decodedNjObjectBlocks) {
+            out << "  - njcmOffset=" << block.njcm.chunkOffset
+                << " hasNjtlBeforeNjcm=" << (block.hasNjtlBeforeNjcm ? "yes" : "no")
+                << " njtlOffset=" << (block.njtl.has_value() ? std::to_string(block.njtl->chunkOffset) : "none");
+            if (block.njtl.has_value()) {
+                out << " njtlTextures=" << block.njtl->textureNames.size();
+                if (!block.njtl->textureNames.empty()) {
+                    out << " names=[";
+                    for (std::size_t i = 0; i < block.njtl->textureNames.size(); ++i) {
+                        if (i != 0) {
+                            out << ", ";
+                        }
+                        out << block.njtl->textureNames[i].name;
+                    }
+                    out << "]";
+                }
+            }
+            out
                 << '\n';
         }
     }
