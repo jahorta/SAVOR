@@ -7,6 +7,7 @@
 #include "../common/ByteUtils.h"
 #include "EntryHandlers.h"
 #include "MldBinaryReader.h"
+#include "MldTextureArchiveParser.h"
 #include "NJTLParser.h"
 
 #include <algorithm>
@@ -415,6 +416,15 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", realData=0x" + std::to_string(static_cast<std::size_t>(*ptrRealDataOpt)) +
             ", textureTable=0x" + std::to_string(static_cast<std::size_t>(*ptrTextureTableOpt)),
     });
+    result.textureArchive = parseMldTextureArchive(payload, static_cast<std::size_t>(*ptrTextureTableOpt));
+    if (result.textureArchive.has_value()) {
+        for (const auto& textureDiag : result.textureArchive->diagnostics) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = ParseDiagnostic::Severity::Info,
+                .message = textureDiag,
+            });
+        }
+    }
     if (!options.filterEntryIdList.empty()) {
         result.diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Info,

@@ -41,7 +41,20 @@ struct BlenderIrMaterial {
     bool fromCacheReplay = false;
     std::uint32_t materialStateKey = 0;
     std::uint16_t textureId = 0xFFFFU;
+    std::string textureName{};
     std::uint64_t materialHash = 0;
+};
+
+struct BlenderIrTexture {
+    std::string textureName{};
+    std::size_t sourceOffset = 0;
+    std::size_t sourceSize = 0;
+    std::string encodedFormat{}; // e.g. "gvr", "png", "dds"
+    std::vector<std::uint8_t> encodedData{};
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string pixelFormat{}; // canonical target, e.g. "rgba8"
+    std::vector<std::uint8_t> pixelData{};
 };
 
 struct BlenderIrTriangleSet {
@@ -82,6 +95,7 @@ struct BlenderIrInstance {
 struct BlenderIrScene {
     std::vector<BlenderIrMesh> meshes{};
     std::vector<BlenderIrInstance> indexEntries{};
+    std::vector<BlenderIrTexture> textures{};
     std::vector<std::string> diagnostics{};
 };
 

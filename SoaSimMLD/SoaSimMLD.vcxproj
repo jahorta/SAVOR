@@ -101,6 +101,7 @@
     <ClInclude Include="Model\GeometryModel.h" />
     <ClInclude Include="Model\BlenderIrModel.h" />
     <ClInclude Include="Model\NjcmModel.h" />
+    <ClInclude Include="Model\MldTextureArchiveModel.h" />
     <ClInclude Include="Model\NjtlModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
@@ -109,6 +110,7 @@
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\BlenderIrBuilder.h" />
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
+    <ClInclude Include="Parsing\GvrTextureDecoder.h" />
     <ClInclude Include="Parsing\GeometryBuilder.h" />
     <ClInclude Include="Parsing\NJCMAttachRecordParser.h" />
     <ClInclude Include="Parsing\NJCMDecodeContext.h" />
@@ -119,6 +121,7 @@
     <ClInclude Include="Parsing\NJCMPolyRecordParser.h" />
     <ClInclude Include="Parsing\NJCMVertexRecordParser.h" />
     <ClInclude Include="Parsing\MldBinaryReader.h" />
+    <ClInclude Include="Parsing\MldTextureArchiveParser.h" />
     <ClInclude Include="Parsing\MldParser.h" />
     <ClInclude Include="Parsing\SaToolsParityAttachParser.h" />
     <ClInclude Include="Parsing\SaToolsParityObjectParser.h" />
@@ -132,8 +135,10 @@
   <ItemGroup>
     <ClCompile Include="Model\BlenderIrModel.cpp" />
     <ClCompile Include="Parsing\MldBinaryReader.cpp" />
+    <ClCompile Include="Parsing\MldTextureArchiveParser.cpp" />
     <ClCompile Include="Parsing\BlenderIrBuilder.cpp" />
     <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp" />
+    <ClCompile Include="Parsing\GvrTextureDecoder.cpp" />
     <ClCompile Include="Parsing\GeometryBuilder.cpp" />
     <ClCompile Include="Parsing\NJCMAttachRecordParser.cpp" />
     <ClCompile Include="Parsing\NJCMDecodeContext.cpp" />

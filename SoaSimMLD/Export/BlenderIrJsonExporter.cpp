@@ -1,5 +1,7 @@
 #include "BlenderIrJsonExporter.h"
 
+#include <cstdint>
+#include <span>
 #include <sstream>
 
 namespace soasim::mld::exporting {
@@ -38,6 +40,42 @@ void writeTransform(std::ostringstream& out, const model::Transform& tx) {
     out << ",\"scale\":";
     writeVec3(out, tx.scale);
     out << '}';
+}
+
+[[nodiscard]] std::string toBase64(std::span<const std::uint8_t> data) {
+    static constexpr char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out{};
+    out.reserve(((data.size() + 2U) / 3U) * 4U);
+
+    std::size_t i = 0;
+    while (i + 2U < data.size()) {
+        const std::uint32_t chunk = (static_cast<std::uint32_t>(data[i]) << 16U) |
+            (static_cast<std::uint32_t>(data[i + 1U]) << 8U) |
+            static_cast<std::uint32_t>(data[i + 2U]);
+        out.push_back(kTable[(chunk >> 18U) & 0x3FU]);
+        out.push_back(kTable[(chunk >> 12U) & 0x3FU]);
+        out.push_back(kTable[(chunk >> 6U) & 0x3FU]);
+        out.push_back(kTable[chunk & 0x3FU]);
+        i += 3U;
+    }
+
+    const auto remaining = data.size() - i;
+    if (remaining == 1U) {
+        const std::uint32_t chunk = static_cast<std::uint32_t>(data[i]) << 16U;
+        out.push_back(kTable[(chunk >> 18U) & 0x3FU]);
+        out.push_back(kTable[(chunk >> 12U) & 0x3FU]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (remaining == 2U) {
+        const std::uint32_t chunk = (static_cast<std::uint32_t>(data[i]) << 16U) |
+            (static_cast<std::uint32_t>(data[i + 1U]) << 8U);
+        out.push_back(kTable[(chunk >> 18U) & 0x3FU]);
+        out.push_back(kTable[(chunk >> 12U) & 0x3FU]);
+        out.push_back(kTable[(chunk >> 6U) & 0x3FU]);
+        out.push_back('=');
+    }
+
+    return out;
 }
 
 } // namespace
@@ -84,6 +122,9 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 << ",\"fromCacheReplay\":" << (material.fromCacheReplay ? "true" : "false")
                 << ",\"materialStateKey\":" << material.materialStateKey
                 << ",\"textureId\":" << material.textureId
+                << ",\"textureName\":";
+            writeJsonString(out, material.textureName);
+            out
                 << ",\"materialHash\":" << material.materialHash
                 << '}';
         }
@@ -154,6 +195,32 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << ']';
 
         out << '}';
+    }
+
+    out << "],\"textures\":[";
+    for (std::size_t ti = 0; ti < scene.textures.size(); ++ti) {
+        if (ti != 0) {
+            out << ',';
+        }
+        const auto& t = scene.textures[ti];
+        out << '{'
+            << "\"sourceOffset\":" << t.sourceOffset
+            << ",\"sourceSize\":" << t.sourceSize
+            << ",\"encodedFormat\":";
+        writeJsonString(out, t.encodedFormat);
+        out
+            << ",\"textureName\":";
+        writeJsonString(out, t.textureName);
+        out << ",\"encodedDataBase64\":";
+        writeJsonString(out, toBase64(std::span<const std::uint8_t>(t.encodedData.data(), t.encodedData.size())));
+        out << ",\"width\":" << t.width
+            << ",\"height\":" << t.height
+            << ",\"pixelFormat\":";
+        writeJsonString(out, t.pixelFormat);
+        out << ",\"pixelDataBase64\":";
+        writeJsonString(out, toBase64(std::span<const std::uint8_t>(t.pixelData.data(), t.pixelData.size())));
+        out
+            << '}';
     }
 
     out << "],\"diagnostics\":[";
