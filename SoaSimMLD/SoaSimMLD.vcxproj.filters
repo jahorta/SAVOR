@@ -43,6 +43,9 @@
     <ClInclude Include="Model\NjcmModel.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Model\NjtlModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="Model\U32List.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -86,6 +89,9 @@
       <Filter>Parsing\NjcmRecords</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\NJCMParser.h">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\NJTLParser.h">
       <Filter>Parsing\NjcmRecords</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\NJCMPolyRecordParser.h">
@@ -154,6 +160,9 @@
       <Filter>Parsing\NjcmRecords</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\NJCMParser.cpp">
+      <Filter>Parsing\NjcmRecords</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\NJTLParser.cpp">
       <Filter>Parsing\NjcmRecords</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\NJCMPolyRecordParser.cpp">
