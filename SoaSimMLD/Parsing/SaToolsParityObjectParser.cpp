@@ -20,15 +20,15 @@ std::optional<model::NjObjectRecord> parseObject(const NjcmDecodeContext& ctx,
         return std::nullopt;
     }
 
-    if (const auto childOff = resolvePointer(*childRaw, ctx.imageBase, ctx.decoded.size()); childOff.has_value()) {
-        obj.hasChild = true;
-        obj.childOffset = *childOff;
-        traversalStack.push_back(*childOff);
-    }
     if (const auto siblingOff = resolvePointer(*siblingRaw, ctx.imageBase, ctx.decoded.size()); siblingOff.has_value()) {
         obj.hasSibling = true;
         obj.siblingOffset = *siblingOff;
         traversalStack.push_back(*siblingOff);
+    }
+    if (const auto childOff = resolvePointer(*childRaw, ctx.imageBase, ctx.decoded.size()); childOff.has_value()) {
+        obj.hasChild = true;
+        obj.childOffset = *childOff;
+        traversalStack.push_back(*childOff);
     }
     if (const auto attachOff = resolvePointer(*attachRaw, ctx.imageBase, ctx.decoded.size()); attachOff.has_value()) {
         obj.hasAttach = true;
