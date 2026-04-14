@@ -9,11 +9,25 @@
 namespace soasim::mld::parsing::satools_parity {
 namespace {
 
+struct MaterialState {
+    std::uint8_t blendFlags = 0;
+    std::uint8_t mipmapFlags = 0;
+    std::uint8_t specularFlags = 0;
+    std::uint16_t textureId = 0xFFFFU;
+
+    [[nodiscard]] std::uint32_t key() const {
+        return static_cast<std::uint32_t>(blendFlags) |
+            (static_cast<std::uint32_t>(mipmapFlags) << 8U) |
+            (static_cast<std::uint32_t>(specularFlags) << 16U);
+    }
+};
+
 void parsePolyListInternal(const NjcmDecodeContext& ctx,
     const std::size_t polyListOffset,
     model::NjAttachRecord& attach,
     std::unordered_map<std::uint8_t, std::size_t>& cacheStarts,
     std::unordered_set<std::size_t>& recursionGuard,
+    MaterialState& materialState,
     const bool recordChunkRecords) {
     if (!recursionGuard.insert(polyListOffset).second) {
         ctx.out->diagnostics.push_back("SA-parity polygon cache recursion detected; skipping replay.");
@@ -61,6 +75,11 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
 
         model::NjSemanticPolygon sp{};
         sp.type = type;
+        sp.sourceChunkFlags = flags;
+        sp.sourceChunkOffset = cur;
+        sp.fromCacheReplay = !recordChunkRecords;
+        sp.materialStateKey = materialState.key();
+        sp.textureId = materialState.textureId;
 
         if (type >= 64U && type <= 75U && step >= 6U) {
             parseStripChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
@@ -75,8 +94,16 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
             break; // matches sa_tools ProcessPolyList early return on cache chunk
         } else if (type == 5U) { // Bits_DrawPolygonList
             if (const auto it = cacheStarts.find(flags); it != cacheStarts.end()) {
-                parsePolyListInternal(ctx, it->second, attach, cacheStarts, recursionGuard, false);
+                parsePolyListInternal(ctx, it->second, attach, cacheStarts, recursionGuard, materialState, false);
             }
+        } else if (type == 1U) {
+            materialState.blendFlags = flags;
+        } else if (type == 2U) {
+            materialState.mipmapFlags = flags;
+        } else if (type == 3U) {
+            materialState.specularFlags = flags;
+        } else if (type == 8U || type == 9U) {
+            materialState.textureId = readU16At(ctx.decoded, cur + 2U, ctx.littleEndian).value_or(materialState.textureId);
         }
 
         pc.estimatedTriangleCount = sp.estimatedTriangleCount;
@@ -111,7 +138,8 @@ void parsePolyChunks(const NjcmDecodeContext& ctx, const std::size_t polyListOff
     attach.polyListOffset = polyListOffset;
     std::unordered_map<std::uint8_t, std::size_t> cacheStarts{};
     std::unordered_set<std::size_t> recursionGuard{};
-    parsePolyListInternal(ctx, polyListOffset, attach, cacheStarts, recursionGuard, true);
+    MaterialState materialState{};
+    parsePolyListInternal(ctx, polyListOffset, attach, cacheStarts, recursionGuard, materialState, true);
 }
 
 } // namespace soasim::mld::parsing::satools_parity
