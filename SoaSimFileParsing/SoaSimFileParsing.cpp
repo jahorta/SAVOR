@@ -322,11 +322,11 @@ int main(int argc, char** argv) {
 
         if (extension == ".mld") {
             std::cout << "[SoaSimFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
-            auto parsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
-            const auto outPath = outputDir / (entry.path().stem().string() + ".mld.txt");
-            std::string summary = soasim::mld::parsing::formatParseSummary(parsed);
-            std::ofstream out(outPath, std::ios::binary);
-            out << summary.c_str();
+            //auto parsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
+            //const auto outPath = outputDir / (entry.path().stem().string() + ".mld.txt");
+            //std::string summary = soasim::mld::parsing::formatParseSummary(parsed);
+            //std::ofstream out(outPath, std::ios::binary);
+            //out << summary.c_str();
 
             soasim::mld::parsing::ParseOptions parityOptions{};
             parityOptions.njcmPolicy.useSaToolsParityPath = true;
@@ -336,9 +336,9 @@ int main(int argc, char** argv) {
             std::ofstream parityOut(parityOutPath, std::ios::binary);
             parityOut << soasim::mld::parsing::formatParseSummary(parityParsed);
 
-            const auto comparisonOutPath = outputDir / (entry.path().stem().string() + ".mld.njcm-compare.txt");
-            std::ofstream compareOut(comparisonOutPath, std::ios::binary);
-            compareOut << formatNjcmParityComparison(parsed, parityParsed);
+            //const auto comparisonOutPath = outputDir / (entry.path().stem().string() + ".mld.njcm-compare.txt");
+            //std::ofstream compareOut(comparisonOutPath, std::ios::binary);
+            //compareOut << formatNjcmParityComparison(parsed, parityParsed);
             ++filesProcessed;
             continue;
         }
