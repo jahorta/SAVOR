@@ -65,6 +65,8 @@ def _parse_json(path: str) -> dict[str, Any]:
     for required_key in ("meshes", "indexEntries", "textures"):
         if required_key not in payload:
             raise ValueError(f"Missing required top-level key: {required_key}")
+    if "objectTrees" not in payload:
+        payload["objectTrees"] = []
 
     return payload
 
@@ -247,6 +249,10 @@ def _apply_transform(obj: Object, transform: dict[str, Any]) -> None:
     obj.scale = (float(scale[0]), float(scale[1]), float(scale[2]))
 
 
+def _create_empty(name: str) -> Object:
+    return bpy.data.objects.new(name, None)
+
+
 def import_blender_ir_json(
     json_path: str,
     clear_target_collection: bool,
@@ -272,33 +278,105 @@ def import_blender_ir_json(
         mesh_obj.hide_render = True
         mesh_objects.append(mesh_obj)
 
+    object_trees: list[dict[str, Any]] = payload.get("objectTrees", [])
+
     for entry in payload.get("indexEntries", []):
         transform = entry.get("transform", {})
-        mesh_indices = entry.get("meshIndices", [])
         entry_id = int(entry.get("sourceEntryId", 0))
         fxn_name = str(entry.get("fxnName", ""))
+        entry_root = _create_empty(f"SoaEntry_{entry_id}")
+        _apply_transform(entry_root, transform)
+        entry_root["soasim_source_entry_id"] = entry_id
+        entry_root["soasim_tbl_id"] = int(entry.get("tblId", 0))
+        entry_root["soasim_fxn_name"] = fxn_name
+        entry_root["soasim_object_addresses"] = ",".join(
+            str(int(v)) for v in entry.get("objectAddresses", [])
+        )
+        root_collection.objects.link(entry_root)
+        stats.object_count += 1
 
-        for slot, mesh_index in enumerate(mesh_indices):
-            mi = int(mesh_index)
-            if mi < 0 or mi >= len(mesh_objects):
+        tree_indices = entry.get("objectTreeIndices", [])
+        if not tree_indices:
+            mesh_indices = entry.get("meshIndices", [])
+            for slot, mesh_index in enumerate(mesh_indices):
+                mi = int(mesh_index)
+                if mi < 0 or mi >= len(mesh_objects):
+                    stats.warnings += 1
+                    continue
+                source_obj = mesh_objects[mi]
+                instance_name = f"SoaInst_{entry_id}_{slot}_{source_obj.name}"
+                instance_obj = bpy.data.objects.new(instance_name, source_obj.data)
+                instance_obj.parent = entry_root
+                instance_obj["soasim_mesh_index"] = mi
+                root_collection.objects.link(instance_obj)
+                stats.object_count += 1
+            continue
+
+        for slot, tree_index in enumerate(tree_indices):
+            ti = int(tree_index)
+            if ti < 0 or ti >= len(object_trees):
                 stats.warnings += 1
                 continue
 
-            source_obj = mesh_objects[mi]
-            instance_name = f"SoaInst_{entry_id}_{slot}_{source_obj.name}"
-            instance_obj = bpy.data.objects.new(instance_name, source_obj.data)
-            _apply_transform(instance_obj, transform)
-
-            instance_obj["soasim_source_entry_id"] = entry_id
-            instance_obj["soasim_tbl_id"] = int(entry.get("tblId", 0))
-            instance_obj["soasim_fxn_name"] = fxn_name
-            instance_obj["soasim_mesh_index"] = mi
-            instance_obj["soasim_object_addresses"] = ",".join(
-                str(int(v)) for v in entry.get("objectAddresses", [])
+            tree = object_trees[ti]
+            tree_root_name = (
+                f"SoaTree_{entry_id}_{slot}_"
+                f"{int(tree.get('sourceObjectAddress', 0))}_"
+                f"{int(tree.get('sourceChunkOffset', 0))}"
             )
-
-            root_collection.objects.link(instance_obj)
+            tree_root = _create_empty(tree_root_name)
+            tree_root.parent = entry_root
+            tree_root["soasim_tree_index"] = ti
+            tree_root["soasim_source_object_address"] = int(tree.get("sourceObjectAddress", 0))
+            tree_root["soasim_source_chunk_offset"] = int(tree.get("sourceChunkOffset", 0))
+            root_collection.objects.link(tree_root)
             stats.object_count += 1
+
+            nodes = tree.get("nodes", [])
+            node_objects: list[Object | None] = [None] * len(nodes)
+            for node_idx, node in enumerate(nodes):
+                node_name = f"{tree_root_name}_Node_{node_idx}"
+                node_obj = _create_empty(node_name)
+                _apply_transform(node_obj, node.get("localTransform", {}))
+                node_obj["soasim_node_index"] = node_idx
+                node_obj["soasim_source_node_offset"] = int(node.get("sourceNodeOffset", 0))
+                node_obj["soasim_source_eval_flags"] = int(node.get("sourceEvalFlags", 0))
+                node_obj["soasim_source_attach_offset"] = int(node.get("sourceAttachOffset", 0))
+                root_collection.objects.link(node_obj)
+                node_objects[node_idx] = node_obj
+                stats.object_count += 1
+
+            for node_idx, node in enumerate(nodes):
+                node_obj = node_objects[node_idx]
+                if node_obj is None:
+                    continue
+
+                parent_idx = node.get("parentNodeIndex")
+                if parent_idx is None:
+                    node_obj.parent = tree_root
+                else:
+                    pi = int(parent_idx)
+                    if 0 <= pi < len(node_objects) and node_objects[pi] is not None:
+                        node_obj.parent = node_objects[pi]
+                    else:
+                        node_obj.parent = tree_root
+                        stats.warnings += 1
+
+                mesh_index = node.get("meshIndex")
+                if mesh_index is None:
+                    continue
+                mi = int(mesh_index)
+                if mi < 0 or mi >= len(mesh_objects):
+                    stats.warnings += 1
+                    continue
+
+                source_obj = mesh_objects[mi]
+                attach_name = f"{node_obj.name}_{source_obj.name}"
+                attach_obj = bpy.data.objects.new(attach_name, source_obj.data)
+                attach_obj.parent = node_obj
+                attach_obj["soasim_mesh_index"] = mi
+                root_collection.objects.link(attach_obj)
+                stats.object_count += 1
 
     return stats
 

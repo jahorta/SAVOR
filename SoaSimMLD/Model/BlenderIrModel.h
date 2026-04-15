@@ -82,6 +82,24 @@ struct BlenderIrMesh {
     BlenderIrMeshDiagnostics diagnostics{};
 };
 
+struct BlenderIrNode {
+    std::size_t sourceNodeOffset = 0;
+    std::uint32_t sourceEvalFlags = 0;
+    std::size_t sourceAttachOffset = 0;
+    bool hasAttach = false;
+    std::optional<std::size_t> meshIndex{};
+    Transform localTransform{};
+    std::optional<std::size_t> parentNodeIndex{};
+    std::vector<std::size_t> childNodeIndices{};
+};
+
+struct BlenderIrObjectTree {
+    std::string label{};
+    std::uint32_t sourceObjectAddress = 0;
+    std::size_t sourceChunkOffset = 0;
+    std::vector<BlenderIrNode> nodes{};
+    std::vector<std::size_t> rootNodeIndices{};
+};
 
 struct BlenderIrInstance {
     std::uint32_t sourceEntryId = 0;
@@ -90,10 +108,12 @@ struct BlenderIrInstance {
     Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     std::vector<std::size_t> meshIndices{};
+    std::vector<std::size_t> objectTreeIndices{};
 };
 
 struct BlenderIrScene {
     std::vector<BlenderIrMesh> meshes{};
+    std::vector<BlenderIrObjectTree> objectTrees{};
     std::vector<BlenderIrInstance> indexEntries{};
     std::vector<BlenderIrTexture> textures{};
     std::vector<std::string> diagnostics{};

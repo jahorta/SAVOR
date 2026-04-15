@@ -4,7 +4,9 @@
 #include "GvrTextureDecoder.h"
 
 #include <algorithm>
+#include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace soasim::mld::parsing {
 namespace {
@@ -53,6 +55,7 @@ void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::Ble
 model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) const {
     model::BlenderIrScene out{};
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> meshIndicesByObjectAddress{};
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>> treeIndicesByObjectAddress{};
     std::unordered_map<std::uint32_t, std::vector<std::string>> textureNamesByObjectAddress{};
 
     for (const auto& objectRange : parseResult.decodedObjectChunkRanges) {
@@ -80,6 +83,7 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
             chunkIdx < objectRange.decodedChunkEnd && chunkIdx < parseResult.decodedNjcmChunks.size();
             ++chunkIdx) {
             const auto& chunk = parseResult.decodedNjcmChunks[chunkIdx];
+            std::unordered_map<std::size_t, std::size_t> meshIndexByAttachOffset{};
 
             for (const auto& attach : chunk.attaches) {
                 model::BlenderIrMesh mesh{};
@@ -139,8 +143,80 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
 
                 BlenderIrDiagnostics::finalizeMesh(mesh);
                 out.meshes.push_back(std::move(mesh));
-                meshIndicesByObjectAddress[objectRange.objectAddress].push_back(out.meshes.size() - 1U);
+                const std::size_t meshIndex = out.meshes.size() - 1U;
+                meshIndicesByObjectAddress[objectRange.objectAddress].push_back(meshIndex);
+                meshIndexByAttachOffset[attach.offset] = meshIndex;
             }
+
+            model::BlenderIrObjectTree tree{};
+            tree.label = "NJCM_obj_" + std::to_string(objectRange.objectAddress) + "_chunk_" + std::to_string(chunk.chunkOffset);
+            tree.sourceObjectAddress = objectRange.objectAddress;
+            tree.sourceChunkOffset = chunk.chunkOffset;
+            tree.nodes.reserve(chunk.objects.size());
+
+            std::unordered_map<std::size_t, std::size_t> nodeIndexByObjectOffset{};
+            for (const auto& sourceObject : chunk.objects) {
+                model::BlenderIrNode node{};
+                node.sourceNodeOffset = sourceObject.offset;
+                node.sourceEvalFlags = sourceObject.evalFlags;
+                node.sourceAttachOffset = sourceObject.attachOffset;
+                node.hasAttach = sourceObject.hasAttach;
+                node.localTransform = sourceObject.localTransform;
+                if (sourceObject.hasAttach) {
+                    if (const auto meshIt = meshIndexByAttachOffset.find(sourceObject.attachOffset); meshIt != meshIndexByAttachOffset.end()) {
+                        node.meshIndex = meshIt->second;
+                    }
+                }
+                tree.nodes.push_back(std::move(node));
+                nodeIndexByObjectOffset[sourceObject.offset] = tree.nodes.size() - 1U;
+            }
+
+            for (std::size_t parentIdx = 0; parentIdx < chunk.objects.size(); ++parentIdx) {
+                const auto& sourceObject = chunk.objects[parentIdx];
+                if (!sourceObject.hasChild) {
+                    continue;
+                }
+
+                std::unordered_set<std::size_t> siblingGuard{};
+                std::optional<std::size_t> siblingOffset = sourceObject.childOffset;
+                while (siblingOffset.has_value()) {
+                    if (!siblingGuard.insert(*siblingOffset).second) {
+                        break;
+                    }
+
+                    const auto childIt = nodeIndexByObjectOffset.find(*siblingOffset);
+                    if (childIt == nodeIndexByObjectOffset.end()) {
+                        break;
+                    }
+
+                    const std::size_t childIdx = childIt->second;
+                    auto& childNode = tree.nodes[childIdx];
+                    if (!childNode.parentNodeIndex.has_value()) {
+                        childNode.parentNodeIndex = parentIdx;
+                    }
+                    tree.nodes[parentIdx].childNodeIndices.push_back(childIdx);
+
+                    const auto& childSourceObject = chunk.objects[childIdx];
+                    siblingOffset = childSourceObject.hasSibling
+                        ? std::optional<std::size_t>{ childSourceObject.siblingOffset }
+                        : std::nullopt;
+                }
+            }
+
+            for (std::size_t nodeIdx = 0; nodeIdx < tree.nodes.size(); ++nodeIdx) {
+                if (!tree.nodes[nodeIdx].parentNodeIndex.has_value()) {
+                    tree.rootNodeIndices.push_back(nodeIdx);
+                }
+                if (tree.nodes[nodeIdx].hasAttach && !tree.nodes[nodeIdx].meshIndex.has_value()) {
+                    out.diagnostics.push_back(
+                        "BlenderIrBuilder tree node @ " + std::to_string(tree.nodes[nodeIdx].sourceNodeOffset) +
+                        " references attach @ " + std::to_string(tree.nodes[nodeIdx].sourceAttachOffset) +
+                        " but no attach mesh was produced.");
+                }
+            }
+
+            out.objectTrees.push_back(std::move(tree));
+            treeIndicesByObjectAddress[objectRange.objectAddress].push_back(out.objectTrees.size() - 1U);
         }
     }
 
@@ -157,11 +233,14 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
             if (const auto found = meshIndicesByObjectAddress.find(objectAddress); found != meshIndicesByObjectAddress.end()) {
                 instance.meshIndices.insert(instance.meshIndices.end(), found->second.begin(), found->second.end());
             }
+            if (const auto found = treeIndicesByObjectAddress.find(objectAddress); found != treeIndicesByObjectAddress.end()) {
+                instance.objectTreeIndices.insert(instance.objectTreeIndices.end(), found->second.begin(), found->second.end());
+            }
         }
 
-        if (instance.meshIndices.empty() && !instance.objectAddresses.empty()) {
+        if (instance.objectTreeIndices.empty() && !instance.objectAddresses.empty()) {
             out.diagnostics.push_back("BlenderIrBuilder entry " + std::to_string(entry.sourceEntryId) +
-                " references object(s) with no Blender IR mesh output.");
+                " references object(s) with no Blender IR object-tree output.");
         }
 
         out.indexEntries.push_back(std::move(instance));
@@ -214,7 +293,8 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
         out.diagnostics.push_back("BlenderIrBuilder texture payloads include decoded RGBA8 when possible and preserve source encoded payloads.");
     }
 
-    out.diagnostics.push_back("BlenderIrBuilder produced " + std::to_string(out.meshes.size()) + " meshes and " +
+    out.diagnostics.push_back("BlenderIrBuilder produced " + std::to_string(out.meshes.size()) + " meshes, " +
+        std::to_string(out.objectTrees.size()) + " object trees and " +
         std::to_string(out.indexEntries.size()) + " index entries.");
     return out;
 }
