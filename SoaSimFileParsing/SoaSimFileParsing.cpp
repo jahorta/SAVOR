@@ -280,6 +280,8 @@ int main(int argc, char** argv) {
 
     soasim::sct::SctParser sctParser{};
     soasim::mld::parsing::MldParser mldParser{};
+    soasim::mld::parsing::BlenderIrBuilder builder{};
+    soasim::mld::exporting::BlenderIrJsonExporter exporter{};
     std::cout << "[SoaSimFileParsing] Step 3/4: Parsing input files...\n";
 
     std::size_t filesProcessed = 0;
@@ -336,9 +338,10 @@ int main(int argc, char** argv) {
             std::ofstream parityOut(parityOutPath, std::ios::binary);
             parityOut << soasim::mld::parsing::formatParseSummary(parityParsed);
 
-            //const auto comparisonOutPath = outputDir / (entry.path().stem().string() + ".mld.njcm-compare.txt");
-            //std::ofstream compareOut(comparisonOutPath, std::ios::binary);
-            //compareOut << formatNjcmParityComparison(parsed, parityParsed);
+
+            const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".json");
+            std::ofstream jsonOut(jsonOutPath, std::ios::binary);
+            jsonOut << exporter.toJson(builder.build(parityParsed)).c_str();
             ++filesProcessed;
             continue;
         }
