@@ -191,7 +191,7 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
     struct PendingNjcm {
         std::size_t chunkStart = 0;
         std::size_t chunkDataSize = 0;
-        bool chunkSizeLittleEndian = true;
+        bool chunkSizeLittleEndian = false;
         bool hasNjtlBeforeNjcm = false;
         std::optional<model::NjtlBlock> njtlBlock{};
         bool sawPof0Chunk = false;
@@ -199,9 +199,19 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
         std::vector<std::uint8_t> pof0Data{};
         std::vector<std::uint8_t> data{};
     };
+
+    struct PendingNjtl {
+        std::size_t chunkStart = 0;
+        std::size_t chunkDataSize = 0;
+        bool chunkSizeLittleEndian = false;
+        std::vector<std::uint8_t> data{};
+        std::optional<model::NjtlBlock> njtlBlock{};
+    };
+
     std::optional<PendingNjcm> pendingNjcm{};
-    std::optional<model::NjtlBlock> pendingNjtl{};
+    std::optional<PendingNjtl> pendingNjtl{};
     std::uint32_t runningImageBaseLocal = 0;
+    bool njtlSeen = false;
 
     MldBinaryReader reader(bytes);
     while (reader.remaining() >= 8) {
@@ -250,23 +260,37 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
 
         const std::size_t absChunkStart = imageBase + relChunkStart;
         if (*tag == tagNjcm) {
+            if (njtlSeen && pendingNjtl.has_value() && !pendingNjtl.value().njtlBlock.has_value()) {
+                parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
+            }
+
             PendingNjcm state{};
             state.chunkStart = absChunkStart;
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
-            state.hasNjtlBeforeNjcm = pendingNjtl.has_value();
-            state.njtlBlock = std::move(pendingNjtl);
+            state.hasNjtlBeforeNjcm = njtlSeen;
+            state.njtlBlock = std::move(pendingNjtl.value().njtlBlock);
             state.sawPof0Chunk = false;
             state.pofImageBaseLocal = 0;
             state.pof0Data.clear();
             state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
                 bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
             pendingNjcm = std::move(state);
-        } else if (*tag == tagNjtl || *tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
-            if (*tag == tagNjtl) {
-                const std::span<const std::uint8_t> njtlData(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart), chunkSize);
-                pendingNjtl = parseNjtlBlock(njtlData, absChunkStart, chunkSize, chunkSizeLittleEndian);
+        } else if (*tag == tagNjtl) {
+            PendingNjtl state{};
+            state.chunkStart = absChunkStart;
+            state.chunkDataSize = chunkSize;
+            state.chunkSizeLittleEndian = chunkSizeLittleEndian;
+            state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
+                bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
+        } else if (*tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
+            
+            if (*tag == tagPof0 && pendingNjtl.has_value()) {
+                auto deltas = decodePof0Deltas(bytes.subspan(dataStart, chunkSize));
+                applyPof0Fixups(pendingNjtl.value().data, deltas, runningImageBaseLocal, chunkSizeLittleEndian);
+                pendingNjtl.value().njtlBlock = parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
             }
+            
             if (*tag == tagPof0 && pendingNjcm.has_value()) {
                 pendingNjcm->sawPof0Chunk = true;
                 pendingNjcm->pofImageBaseLocal = runningImageBaseLocal;
