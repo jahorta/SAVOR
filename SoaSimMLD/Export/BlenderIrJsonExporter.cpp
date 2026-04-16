@@ -161,6 +161,63 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << '}';
     }
 
+    out << "],\"objectTrees\":[";
+    for (std::size_t treeIdx = 0; treeIdx < scene.objectTrees.size(); ++treeIdx) {
+        if (treeIdx != 0) {
+            out << ',';
+        }
+        const auto& tree = scene.objectTrees[treeIdx];
+        out << '{';
+        out << "\"label\":";
+        writeJsonString(out, tree.label);
+        out << ",\"sourceObjectAddress\":" << tree.sourceObjectAddress;
+        out << ",\"sourceChunkOffset\":" << tree.sourceChunkOffset;
+        out << ",\"rootNodeIndices\":[";
+        for (std::size_t ri = 0; ri < tree.rootNodeIndices.size(); ++ri) {
+            if (ri != 0) {
+                out << ',';
+            }
+            out << tree.rootNodeIndices[ri];
+        }
+        out << ']';
+
+        out << ",\"nodes\":[";
+        for (std::size_t nodeIdx = 0; nodeIdx < tree.nodes.size(); ++nodeIdx) {
+            if (nodeIdx != 0) {
+                out << ',';
+            }
+            const auto& node = tree.nodes[nodeIdx];
+            out << '{'
+                << "\"sourceNodeOffset\":" << node.sourceNodeOffset
+                << ",\"sourceEvalFlags\":" << node.sourceEvalFlags
+                << ",\"sourceAttachOffset\":" << node.sourceAttachOffset
+                << ",\"hasAttach\":" << (node.hasAttach ? "true" : "false")
+                << ",\"meshIndex\":";
+            if (node.meshIndex.has_value()) {
+                out << *node.meshIndex;
+            } else {
+                out << "null";
+            }
+            out << ",\"localTransform\":";
+            writeTransform(out, node.localTransform);
+            out << ",\"parentNodeIndex\":";
+            if (node.parentNodeIndex.has_value()) {
+                out << *node.parentNodeIndex;
+            } else {
+                out << "null";
+            }
+            out << ",\"childNodeIndices\":[";
+            for (std::size_t ci = 0; ci < node.childNodeIndices.size(); ++ci) {
+                if (ci != 0) {
+                    out << ',';
+                }
+                out << node.childNodeIndices[ci];
+            }
+            out << "]}";
+        }
+        out << "]}";
+    }
+
     out << "],\"indexEntries\":[";
     for (std::size_t idx = 0; idx < scene.indexEntries.size(); ++idx) {
         if (idx != 0) {
@@ -191,6 +248,14 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << ',';
             }
             out << entry.meshIndices[mi];
+        }
+        out << ']';
+        out << ",\"objectTreeIndices\":[";
+        for (std::size_t oi = 0; oi < entry.objectTreeIndices.size(); ++oi) {
+            if (oi != 0) {
+                out << ',';
+            }
+            out << entry.objectTreeIndices[oi];
         }
         out << ']';
 

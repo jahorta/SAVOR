@@ -71,12 +71,14 @@ struct NjAttachRecord {
 
 struct NjObjectRecord {
     std::size_t offset = 0;
+    std::uint32_t evalFlags = 0;
     std::size_t attachOffset = 0;
     std::size_t childOffset = 0;
     std::size_t siblingOffset = 0;
     bool hasAttach = false;
     bool hasChild = false;
     bool hasSibling = false;
+    Transform localTransform{};
 };
 
 struct NjcmDecodedChunk {
