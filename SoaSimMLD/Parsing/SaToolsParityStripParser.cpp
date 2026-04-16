@@ -1,6 +1,8 @@
 #include "SaToolsParityStripParser.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 
 namespace soasim::mld::parsing::satools_parity {
 
@@ -65,8 +67,8 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
         }
         pos += 2;
 
-        const bool reverse = ((*flagLen & 0x8000U) != 0U);
-        const std::size_t len = static_cast<std::size_t>(*flagLen & 0x7FFFU);
+        const bool reverse = ((*flagLen & 0x8000U) == 0x8000U);
+        const std::size_t len = std::abs(static_cast<std::int16_t>((*flagLen)));
         std::vector<std::uint32_t> stripIndices{};
         stripIndices.reserve(len);
 
@@ -83,7 +85,8 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
                 stripOk = false;
                 break;
             }
-            stripIndices.push_back(static_cast<std::uint32_t>(*idxWord & 0x7FFFU));
+
+            stripIndices.push_back(*idxWord);
             polyChunk.rawIndexWords.push_back(*idxWord);
             pos += perVertexWords * 2U;
         }
