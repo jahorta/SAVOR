@@ -592,14 +592,13 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 ", grounds=" + std::to_string(entry.groundCount) +
                 ", motions=" + std::to_string(entry.motionCount),
         });
-
         for (const auto objectAddress : entry.objectAddresses->values) {
             if (objectAddress == 0U) {
                 continue;
             }
             uniqueObjectAddresses.insert(objectAddress);
         }
-
+        
         for (const auto groundAddress : entry.groundAddresses->values) {
             if (groundAddress == 0U) {
                 continue;
@@ -635,7 +634,13 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         result.world.grndSurfaces.push_back(std::move(surface));
     }
 
-    for (const auto objectAddress : uniqueObjectAddresses) {
+
+    std::vector<uint32_t> objectAddressesAll{};
+    for (const auto addr : uniqueObjectAddresses) {
+        objectAddressesAll.push_back(addr);
+    }
+    std::sort(objectAddressesAll.begin(), objectAddressesAll.end());
+    for (const auto objectAddress : objectAddressesAll) {
         const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
         const auto relNjcm = common::readU32AtBE(payload, objectOffset + 0x00);
         const auto objectSizeField = common::readU32AtBE(payload, objectOffset + 0x04);
