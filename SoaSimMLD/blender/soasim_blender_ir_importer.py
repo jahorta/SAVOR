@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import bpy
+import mathutils
 from bpy.props import BoolProperty, StringProperty
 from bpy.types import Collection, Image, Material, Mesh, Object
 from bpy_extras.io_utils import ImportHelper
@@ -50,6 +51,7 @@ class ImportStats:
 
 BLENDER_CUSTOM_INT_MIN = -(2**31)
 BLENDER_CUSTOM_INT_MAX = (2**31) - 1
+NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), -1.5707963267948966)
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
@@ -271,7 +273,9 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
     vertices = []
     for vertex in vertices_data:
         pos = vertex.get("position", [0.0, 0.0, 0.0])
-        vertices.append((float(pos[0]), float(pos[1]), float(pos[2])))
+        source_position = mathutils.Vector((float(pos[0]), float(pos[1]), float(pos[2])))
+        blender_position = NJCM_TO_BLENDER_AXIS @ source_position
+        vertices.append((blender_position.x, blender_position.y, blender_position.z))
 
     triangles: list[tuple[int, int, int]] = []
     poly_material_indices: list[int] = []
@@ -366,14 +370,16 @@ def _apply_transform(obj: Object, transform: dict[str, Any]) -> None:
     quat = transform.get("rotation", [0.0, 0.0, 0.0, 1.0])
     scale = transform.get("scale", [1.0, 1.0, 1.0])
 
-    obj.location = (float(position[0]), float(position[1]), float(position[2]))
-    obj.rotation_mode = "QUATERNION"
-    obj.rotation_quaternion = (
-        float(quat[3]),
-        float(quat[0]),
-        float(quat[1]),
-        float(quat[2]),
+    source_position = mathutils.Vector((float(position[0]), float(position[1]), float(position[2])))
+    blender_position = NJCM_TO_BLENDER_AXIS @ source_position
+    obj.location = (blender_position.x, blender_position.y, blender_position.z)
+
+    source_rotation = mathutils.Quaternion(
+        (float(quat[3]), float(quat[0]), float(quat[1]), float(quat[2]))
     )
+    blender_rotation = NJCM_TO_BLENDER_AXIS @ source_rotation @ NJCM_TO_BLENDER_AXIS.conjugated()
+    obj.rotation_mode = "QUATERNION"
+    obj.rotation_quaternion = blender_rotation
     obj.scale = (float(scale[0]), float(scale[1]), float(scale[2]))
 
 
