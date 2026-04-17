@@ -40,6 +40,87 @@ void appendTriangleFromIndices(const std::vector<std::uint32_t>& indices,
     outSet.corners.push_back(cc);
 }
 
+void appendPrimitiveTriangleCorners(const model::NjSemanticPrimitive& primitive, model::BlenderIrTriangleSet& outSet) {
+    if (primitive.indices.size() >= 3U) {
+        appendTriangleFromIndices(primitive.indices, 0, 1, 2, outSet);
+    }
+}
+
+void appendPrimitiveQuadCorners(const model::NjSemanticPrimitive& primitive, model::BlenderIrTriangleSet& outSet) {
+    if (primitive.indices.size() >= 4U) {
+        appendTriangleFromIndices(primitive.indices, 0, 1, 2, outSet);
+        appendTriangleFromIndices(primitive.indices, 0, 2, 3, outSet);
+    }
+}
+
+void appendPrimitiveStripCorners(const model::NjSemanticPrimitive& primitive, model::BlenderIrTriangleSet& outSet) {
+    for (std::size_t ii = 2; ii < primitive.indices.size(); ++ii) {
+        std::size_t a = ii - 2U;
+        std::size_t b = ii - 1U;
+        const std::size_t c = ii;
+        if ((ii & 1U) != 0U) {
+            std::swap(a, b);
+        }
+        if (primitive.reversed) {
+            std::swap(a, b);
+        }
+        appendTriangleFromIndices(primitive.indices, a, b, c, outSet);
+    }
+}
+
+void appendTrianglesFromPrimitive(const model::NjSemanticPrimitive& primitive, model::BlenderIrTriangleSet& outSet) {
+    switch (primitive.kind) {
+    case model::NjPrimitiveKind::Triangle:
+        appendPrimitiveTriangleCorners(primitive, outSet);
+        break;
+    case model::NjPrimitiveKind::Quad:
+        appendPrimitiveQuadCorners(primitive, outSet);
+        break;
+    case model::NjPrimitiveKind::Strip:
+        appendPrimitiveStripCorners(primitive, outSet);
+        break;
+    default:
+        break;
+    }
+}
+
+[[nodiscard]] std::size_t estimatedPrimitiveTriangleCount(const model::NjSemanticPrimitive& primitive) {
+    const auto countNonDegenerateTriangle = [&](const std::size_t a, const std::size_t b, const std::size_t c) -> std::size_t {
+        const auto ia = primitive.indices[a];
+        const auto ib = primitive.indices[b];
+        const auto ic = primitive.indices[c];
+        return (ia == ib || ib == ic || ia == ic) ? 0U : 1U;
+    };
+
+    switch (primitive.kind) {
+    case model::NjPrimitiveKind::Triangle:
+        return (primitive.indices.size() >= 3U) ? countNonDegenerateTriangle(0U, 1U, 2U) : 0U;
+    case model::NjPrimitiveKind::Quad:
+        if (primitive.indices.size() < 4U) {
+            return 0U;
+        }
+        return countNonDegenerateTriangle(0U, 1U, 2U) + countNonDegenerateTriangle(0U, 2U, 3U);
+    case model::NjPrimitiveKind::Strip: {
+        std::size_t triangleCount = 0U;
+        for (std::size_t ii = 2; ii < primitive.indices.size(); ++ii) {
+            std::size_t a = ii - 2U;
+            std::size_t b = ii - 1U;
+            const std::size_t c = ii;
+            if ((ii & 1U) != 0U) {
+                std::swap(a, b);
+            }
+            if (primitive.reversed) {
+                std::swap(a, b);
+            }
+            triangleCount += countNonDegenerateTriangle(a, b, c);
+        }
+        return triangleCount;
+    }
+    default:
+        return 0U;
+    }
+}
+
 void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::BlenderIrTriangleSet& outSet) {
     if (poly.indices.size() < 3) {
         return;
@@ -48,6 +129,48 @@ void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::Ble
     for (std::size_t ii = 1; ii + 1 < poly.indices.size(); ++ii) {
         appendTriangleFromIndices(poly.indices, 0, ii, ii + 1, outSet);
     }
+}
+
+[[nodiscard]] bool polygonChunkUsesPrimitives(const std::uint8_t type) {
+    // Primitive-bearing polygon chunks (strip + volume family) should be triangulated from semanticPrimitives.
+    return (type >= 56U && type <= 58U) || (type >= 64U && type <= 75U);
+}
+
+[[nodiscard]] const model::NjSemanticPolygon* selectPrimitiveMaterialSource(const std::vector<model::NjSemanticPolygon>& polygons,
+    std::size_t& primitivePolygonCursor,
+    std::size_t& primitivePolygonRemainingTriangleBudget,
+    const std::size_t primitiveTriangleCountEstimate) {
+    if (polygons.empty()) {
+        return nullptr;
+    }
+
+    if (primitivePolygonCursor >= polygons.size()) {
+        primitivePolygonCursor = polygons.size() - 1U;
+        primitivePolygonRemainingTriangleBudget = 0U;
+    }
+
+    const auto* selected = &polygons[primitivePolygonCursor];
+    if (primitivePolygonRemainingTriangleBudget == 0U) {
+        primitivePolygonRemainingTriangleBudget = selected->estimatedTriangleCount;
+    }
+
+    if (primitivePolygonRemainingTriangleBudget == 0U) {
+        if (primitivePolygonCursor + 1U < polygons.size()) {
+            ++primitivePolygonCursor;
+            selected = &polygons[primitivePolygonCursor];
+        }
+        return selected;
+    }
+
+    if (primitiveTriangleCountEstimate >= primitivePolygonRemainingTriangleBudget) {
+        primitivePolygonRemainingTriangleBudget = 0U;
+        if (primitivePolygonCursor + 1U < polygons.size()) {
+            ++primitivePolygonCursor;
+        }
+    } else {
+        primitivePolygonRemainingTriangleBudget -= primitiveTriangleCountEstimate;
+    }
+    return selected;
 }
 
 } // namespace
@@ -102,14 +225,14 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
 
                 std::unordered_map<std::uint64_t, std::size_t> materialIndexByHash{};
 
-                for (const auto& poly : attach.semanticPolygons) {
+                const auto resolveMaterialIndex = [&](const model::NjSemanticPolygon& poly) -> std::size_t {
                     const auto materialHash = hashMaterial(poly.type,
                         poly.sourceChunkFlags,
                         poly.fromCacheReplay,
                         poly.materialStateKey,
                         poly.textureId);
 
-                    std::size_t materialIndex = 0;
+                    std::size_t materialIndex = 0U;
                     if (const auto found = materialIndexByHash.find(materialHash); found != materialIndexByHash.end()) {
                         materialIndex = found->second;
                     } else {
@@ -129,15 +252,51 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
                         material.materialHash = materialHash;
                         mesh.materials.push_back(material);
                     }
+                    return materialIndex;
+                };
 
-                    model::BlenderIrTriangleSet triangleSet{};
-                    triangleSet.materialIndex = materialIndex;
-                    triangleSet.polyType = poly.type;
-                    triangleSet.sourceChunkOffset = poly.sourceChunkOffset;
-                    triangleSet.fromCacheReplay = poly.fromCacheReplay;
-                    appendTrianglesFromPolygon(poly, triangleSet);
-                    if (!triangleSet.corners.empty()) {
-                        mesh.triangleSets.push_back(std::move(triangleSet));
+                if (!attach.semanticPrimitives.empty()) {
+                    std::vector<model::NjSemanticPolygon> primitiveMaterialPolygons{};
+                    primitiveMaterialPolygons.reserve(attach.semanticPolygons.size());
+                    for (const auto& poly : attach.semanticPolygons) {
+                        if (polygonChunkUsesPrimitives(poly.type)) {
+                            primitiveMaterialPolygons.push_back(poly);
+                        }
+                    }
+
+                    std::size_t primitivePolygonCursor = 0U;
+                    std::size_t primitivePolygonRemainingTriangleBudget = 0U;
+                    for (const auto& primitive : attach.semanticPrimitives) {
+                        const auto primitiveTriangleCountEstimate = estimatedPrimitiveTriangleCount(primitive);
+                        const auto* materialPoly = selectPrimitiveMaterialSource(primitiveMaterialPolygons,
+                            primitivePolygonCursor,
+                            primitivePolygonRemainingTriangleBudget,
+                            primitiveTriangleCountEstimate);
+                        if (materialPoly == nullptr) {
+                            continue;
+                        }
+
+                        model::BlenderIrTriangleSet triangleSet{};
+                        triangleSet.materialIndex = resolveMaterialIndex(*materialPoly);
+                        triangleSet.polyType = materialPoly->type;
+                        triangleSet.sourceChunkOffset = materialPoly->sourceChunkOffset;
+                        triangleSet.fromCacheReplay = materialPoly->fromCacheReplay;
+                        appendTrianglesFromPrimitive(primitive, triangleSet);
+                        if (!triangleSet.corners.empty()) {
+                            mesh.triangleSets.push_back(std::move(triangleSet));
+                        }
+                    }
+                } else {
+                    for (const auto& poly : attach.semanticPolygons) {
+                        model::BlenderIrTriangleSet triangleSet{};
+                        triangleSet.materialIndex = resolveMaterialIndex(poly);
+                        triangleSet.polyType = poly.type;
+                        triangleSet.sourceChunkOffset = poly.sourceChunkOffset;
+                        triangleSet.fromCacheReplay = poly.fromCacheReplay;
+                        appendTrianglesFromPolygon(poly, triangleSet);
+                        if (!triangleSet.corners.empty()) {
+                            mesh.triangleSets.push_back(std::move(triangleSet));
+                        }
                     }
                 }
 

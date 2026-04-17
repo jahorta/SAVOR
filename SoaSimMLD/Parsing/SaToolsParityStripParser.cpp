@@ -86,6 +86,8 @@ void parseStripChunk(const NjcmDecodeContext& ctx,
                 break;
             }
 
+            // SA-parity mode intentionally preserves full source index words (no 0x7FFF masking)
+            // for forensic parity checks and out-of-bounds detection.
             stripIndices.push_back(*idxWord);
             polyChunk.rawIndexWords.push_back(*idxWord);
             pos += perVertexWords * 2U;
