@@ -118,12 +118,14 @@
     <ClCompile Include="Cli.cpp" />
     <ClCompile Include="DbSetup.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="MultiLineProgressRenderer.cpp" />
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Cli.h" />
     <ClInclude Include="DbSetup.h" />
+    <ClInclude Include="MultiLineProgressRenderer.h" />
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
   </ItemGroup>
   <ItemGroup>

@@ -29,6 +29,9 @@
     <ClCompile Include="Cli.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
+    <ClCompile Include="MultiLineProgressRenderer.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Imports</Filter>
     </ClCompile>
@@ -42,6 +45,9 @@
     </ClInclude>
     <ClInclude Include="SeedProbeRealWorkerScenario.h">
       <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="MultiLineProgressRenderer.h">
+      <Filter>Helpers</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
