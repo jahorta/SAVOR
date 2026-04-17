@@ -32,7 +32,6 @@ namespace simcore::runner::parallel::simcoredb {
 
 struct DBWorkflowWorkerCoordinatorConfig {
     size_t desired_workers = 1;
-    uint32_t child_launch_timeout_ms = 30000;
     uint32_t controller_sleep_ms = 5;
     std::string worker_exe_path;
     std::string iso_path;

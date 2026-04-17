@@ -32,6 +32,7 @@ using simcore::db::execution::workflow::StaticWorkflowModeProvider;
 using simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig;
+using simcore::runner::parallel::simcoredb::WorkflowCoordinatorTelemetry;
 using simcore::runner::parallel::simcoredb::ScheduledJobSet;
 using simcore::runner::parallel::simcoredb::WorkflowReadyStep;
 using ::WorkerSnapshot;
@@ -171,7 +172,7 @@ std::vector<std::string> FormatActiveJobSetLines(
             || state == WorkflowStepState::Failed
             || state == WorkflowStepState::Skipped;
     };
-    const auto select_step = [&](WorkflowStepState target) -> const simcore::db::execution::workflow::WorkflowStepSnapshot* {
+    const auto select_step = [&](WorkflowStepState target) -> const simcore::db::execution::workflow::WorkflowStepRecord* {
         const auto it = std::find_if(graph.steps.begin(), graph.steps.end(), [&](const auto& step) {
             return step.state == target;
         });

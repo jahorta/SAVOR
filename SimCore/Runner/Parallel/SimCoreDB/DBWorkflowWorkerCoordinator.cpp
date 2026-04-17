@@ -554,7 +554,7 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
         return false;
     }
 
-    slot.ready.store(slot.worker->wait_ready(worker_cfg_.child_launch_timeout_ms));
+    slot.ready.store(slot.worker->wait_ready(0));
     RegisterWorkerSlotTelemetry(slot);
     if (!slot.ready.load()) {
         std::ostringstream error;
