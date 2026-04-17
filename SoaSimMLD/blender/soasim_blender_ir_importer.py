@@ -52,6 +52,9 @@ class ImportStats:
 BLENDER_CUSTOM_INT_MIN = -(2**31)
 BLENDER_CUSTOM_INT_MAX = (2**31) - 1
 NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), 1.5707963267948966)
+NJD_EVAL_UNIT_POS = 1 << 0
+NJD_EVAL_UNIT_ANG = 1 << 1
+NJD_EVAL_UNIT_SCL = 1 << 2
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
@@ -365,22 +368,49 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
     return obj
 
 
-def _apply_transform(obj: Object, transform: dict[str, Any]) -> None:
+def _set_parent_with_identity_inverse(obj: Object, parent: Object) -> None:
+    obj.parent = parent
+    obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+
+
+def _transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
     position = transform.get("position", [0.0, 0.0, 0.0])
     quat = transform.get("rotation", [0.0, 0.0, 0.0, 1.0])
     scale = transform.get("scale", [1.0, 1.0, 1.0])
 
     source_position = mathutils.Vector((float(position[0]), float(position[1]), float(position[2])))
     blender_position = NJCM_TO_BLENDER_AXIS @ source_position
-    obj.location = (blender_position.x, blender_position.y, blender_position.z)
 
     source_rotation = mathutils.Quaternion(
         (float(quat[3]), float(quat[0]), float(quat[1]), float(quat[2]))
     )
     blender_rotation = NJCM_TO_BLENDER_AXIS @ source_rotation @ NJCM_TO_BLENDER_AXIS.conjugated()
+    blender_scale = mathutils.Vector((float(scale[0]), float(scale[1]), float(scale[2])))
+    return mathutils.Matrix.LocRotScale(blender_position, blender_rotation, blender_scale)
+
+
+def _apply_transform(obj: Object, transform: dict[str, Any]) -> None:
     obj.rotation_mode = "QUATERNION"
-    obj.rotation_quaternion = blender_rotation
-    obj.scale = (float(scale[0]), float(scale[1]), float(scale[2]))
+    obj.matrix_basis = _transform_to_matrix(transform)
+
+
+def _apply_identity_local_transform(obj: Object) -> None:
+    obj.rotation_mode = "QUATERNION"
+    obj.matrix_basis = mathutils.Matrix.Identity(4)
+
+
+def _resolve_node_transform(node: dict[str, Any]) -> dict[str, Any]:
+    transform = dict(node.get("localTransform", {}))
+    eval_flags = int(node.get("sourceEvalFlags", 0))
+
+    if (eval_flags & NJD_EVAL_UNIT_POS) != 0:
+        transform["position"] = [0.0, 0.0, 0.0]
+    if (eval_flags & NJD_EVAL_UNIT_ANG) != 0:
+        transform["rotation"] = [0.0, 0.0, 0.0, 1.0]
+    if (eval_flags & NJD_EVAL_UNIT_SCL) != 0:
+        transform["scale"] = [1.0, 1.0, 1.0]
+
+    return transform
 
 
 def _create_empty(name: str) -> Object:
@@ -452,7 +482,8 @@ def import_blender_ir_json(
                 source_obj = mesh_objects[mi]
                 instance_name = f"SoaInst_{entry_id}_{slot}_{source_obj.name}"
                 instance_obj = bpy.data.objects.new(instance_name, source_obj.data)
-                instance_obj.parent = entry_root
+                _set_parent_with_identity_inverse(instance_obj, entry_root)
+                _apply_identity_local_transform(instance_obj)
                 instance_obj["soasim_mesh_index"] = mi
                 root_collection.objects.link(instance_obj)
                 stats.object_count += 1
@@ -471,7 +502,8 @@ def import_blender_ir_json(
                 f"{int(tree.get('sourceChunkOffset', 0))}"
             )
             tree_root = _create_empty(tree_root_name)
-            tree_root.parent = entry_root
+            _set_parent_with_identity_inverse(tree_root, entry_root)
+            _apply_identity_local_transform(tree_root)
             _set_custom_int_property(
                 tree_root,
                 "soasim_tree_index",
@@ -501,7 +533,6 @@ def import_blender_ir_json(
             for node_idx, node in enumerate(nodes):
                 node_name = f"{tree_root_name}_Node_{node_idx}"
                 node_obj = _create_empty(node_name)
-                _apply_transform(node_obj, node.get("localTransform", {}))
                 _set_custom_int_property(
                     node_obj,
                     "soasim_node_index",
@@ -541,14 +572,15 @@ def import_blender_ir_json(
 
                 parent_idx = node.get("parentNodeIndex")
                 if parent_idx is None:
-                    node_obj.parent = tree_root
+                    _set_parent_with_identity_inverse(node_obj, tree_root)
                 else:
                     pi = int(parent_idx)
                     if 0 <= pi < len(node_objects) and node_objects[pi] is not None:
-                        node_obj.parent = node_objects[pi]
+                        _set_parent_with_identity_inverse(node_obj, node_objects[pi])
                     else:
-                        node_obj.parent = tree_root
+                        _set_parent_with_identity_inverse(node_obj, tree_root)
                         stats.warnings += 1
+                _apply_transform(node_obj, _resolve_node_transform(node))
 
                 mesh_index = node.get("meshIndex")
                 if mesh_index is None:
@@ -563,7 +595,8 @@ def import_blender_ir_json(
                 source_obj = mesh_objects[mi]
                 attach_name = f"{node_obj.name}_{source_obj.name}"
                 attach_obj = bpy.data.objects.new(attach_name, source_obj.data)
-                attach_obj.parent = node_obj
+                _set_parent_with_identity_inverse(attach_obj, node_obj)
+                _apply_identity_local_transform(attach_obj)
                 attach_obj["soasim_mesh_index"] = mi
                 root_collection.objects.link(attach_obj)
                 stats.object_count += 1
