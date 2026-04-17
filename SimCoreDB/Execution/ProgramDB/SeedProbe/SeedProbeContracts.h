@@ -2,12 +2,14 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <sstream>
 #include <string>
 
 #include "../../../../SimCore/DB/DBCore/DbResult.h"
 #include "../../../../SimCore/Utils/Hex.h"
 #include "../../../../SimCore/Utils/IniDoc.h"
+#include "../../../../SimCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
 #include "../../../../SimCore/Runner/Script/PhaseScriptVM.h"
 
@@ -212,6 +214,63 @@ static inline std::string fingerprint_for(int64_t probe_id, const std::string& f
     oss << "PK=3;PV=1;probe_id=" << probe_id
         << ";frame=" << frame_hex << ";run_ms=" << run_ms << ";vi=" << vi_stall_ms;
     return oss.str();
+}
+
+static inline std::optional<std::string> fingerprint_value(const std::string& fingerprint, const std::string& key) {
+    const std::string token = key + "=";
+    const auto token_pos = fingerprint.find(token);
+    if (token_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    const std::size_t value_begin = token_pos + token.size();
+    std::size_t value_end = fingerprint.find(';', value_begin);
+    if (value_end == std::string::npos) {
+        value_end = fingerprint.size();
+    }
+    return fingerprint.substr(value_begin, value_end - value_begin);
+}
+
+static inline std::optional<uint32_t> parse_u32_or_null(const std::optional<std::string>& text) {
+    if (!text.has_value() || text->empty()) {
+        return std::nullopt;
+    }
+    try {
+        return static_cast<uint32_t>(std::stoul(*text));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+static inline std::optional<simcore::GCInputFrame> parse_frame_hex_or_null(const std::optional<std::string>& frame_hex) {
+    if (!frame_hex.has_value() || frame_hex->empty()) {
+        return std::nullopt;
+    }
+    const auto bytes = hex_to_bytes(*frame_hex);
+    if (bytes.size() != sizeof(simcore::GCInputFrame)) {
+        return std::nullopt;
+    }
+
+    simcore::GCInputFrame frame{};
+    std::memcpy(&frame, bytes.data(), sizeof(simcore::GCInputFrame));
+    return frame;
+}
+
+static inline simcore::seedprobe::EncodeSpec build_encode_spec_from_fingerprint(const std::string& fingerprint) {
+    simcore::seedprobe::EncodeSpec spec{};
+    const auto frame = parse_frame_hex_or_null(fingerprint_value(fingerprint, "frame"));
+    if (frame.has_value()) {
+        spec.frame = *frame;
+    }
+
+    if (const auto run_ms = parse_u32_or_null(fingerprint_value(fingerprint, "run_ms")); run_ms.has_value()) {
+        spec.run_ms = *run_ms;
+    }
+    if (const auto vi_stall_ms = parse_u32_or_null(fingerprint_value(fingerprint, "vi")); vi_stall_ms.has_value()) {
+        spec.vi_stall_ms = *vi_stall_ms;
+    }
+
+    return spec;
 }
 
 } // namespace simcore::db::execution::programdb::seedprobe

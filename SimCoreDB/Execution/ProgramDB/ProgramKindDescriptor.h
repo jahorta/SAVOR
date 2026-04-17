@@ -5,6 +5,8 @@
 #include <optional>
 #include <string>
 
+#include "../../../SimCore/Runner/Script/PhaseScriptVM.h"
+
 namespace simcore {
 struct PRResult;
 }
@@ -62,6 +64,7 @@ struct IJobPersistenceAdapter {
 struct IRuntimeInitAdapter {
     virtual ~IRuntimeInitAdapter() = default;
     virtual RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const = 0;
+    virtual std::optional<simcore::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest& request) const = 0;
 };
 
 struct IResultMapper {
