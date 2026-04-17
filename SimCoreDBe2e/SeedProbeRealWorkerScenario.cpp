@@ -32,6 +32,8 @@ using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig;
 using simcore::runner::parallel::simcoredb::ScheduledJobSet;
 using simcore::runner::parallel::simcoredb::WorkflowReadyStep;
+using ::WorkerSnapshot;
+using ::WorkerStateKind;
 
 namespace {
 
@@ -86,6 +88,51 @@ std::string FormatCoordinatorTelemetryLine(const WorkflowCoordinatorTelemetry& t
         << " dispatch=" << telemetry.dispatch_attempt_count
         << " miss=" << telemetry.dispatch_miss_count
         << " progress_batches=" << telemetry.progress_batch_count;
+    return oss.str();
+}
+
+std::string FormatWorkerRollupLine(const std::vector<WorkerSnapshot>& workers) {
+    std::size_t running = 0;
+    std::size_t idle = 0;
+    std::size_t dead = 0;
+    std::vector<std::string> assigned_job_ids;
+    std::optional<std::string> last_error;
+
+    for (const auto& worker : workers) {
+        if (worker.job_id.has_value()) {
+            ++running;
+            assigned_job_ids.push_back(std::to_string(*worker.job_id));
+        } else if (worker.state == WorkerStateKind::Idle || worker.state == WorkerStateKind::Paused) {
+            ++idle;
+        } else if (worker.state == WorkerStateKind::Dead || worker.state == WorkerStateKind::Stopping) {
+            ++dead;
+        } else {
+            ++idle;
+        }
+
+        if (!worker.last_error.empty()) {
+            std::ostringstream err;
+            err << "w" << worker.worker_id << " pid=" << worker.pid << " err=" << worker.last_error;
+            last_error = err.str();
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "worker_rollup running=" << running << " idle=" << idle << " dead=" << dead;
+    if (!assigned_job_ids.empty()) {
+        oss << " jobs=";
+        for (std::size_t i = 0; i < assigned_job_ids.size(); ++i) {
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << assigned_job_ids[i];
+        }
+    } else {
+        oss << " jobs=none";
+    }
+    if (last_error.has_value()) {
+        oss << " last_error=" << *last_error;
+    }
     return oss.str();
 }
 
@@ -167,13 +214,22 @@ std::vector<std::string> FormatActiveJobSetLines(
     return { "job_set=none (waiting for materialization/running step)" };
 }
 
+std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
+    return std::count_if(workers.begin(), workers.end(), [](const WorkerSnapshot& worker) {
+        return worker.state != WorkerStateKind::Dead && worker.state != WorkerStateKind::Stopping;
+    });
+}
+
 std::vector<std::string> BuildProgressLines(
     simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
     const WorkflowCoordinatorTelemetry& telemetry,
-    size_t active_workers,
+    const std::vector<WorkerSnapshot>& worker_snapshot,
     const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
     std::vector<std::string> lines;
-    lines.push_back(FormatCoordinatorTelemetryLine(telemetry, active_workers));
+    lines.push_back(FormatCoordinatorTelemetryLine(telemetry, worker_snapshot.size()));
+    if (CountActiveWorkers(worker_snapshot) > 1) {
+        lines.push_back(FormatWorkerRollupLine(worker_snapshot));
+    }
     if (!graph.has_value()) {
         lines.push_back("workflow=unavailable");
         lines.push_back("job_set=unavailable");
@@ -287,7 +343,7 @@ bool RunSeedProbeRealWorkerSmoke(
 
         const auto telemetry = coordinator.SnapshotTelemetry();
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
-        latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.ActiveWorkerCount(), graph);
+        latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.SnapshotWorkers(), graph);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
             progress_renderer.Render(std::cout);
@@ -335,7 +391,7 @@ bool RunSeedProbeRealWorkerSmoke(
     const auto final_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     const auto final_telemetry = coordinator.SnapshotTelemetry();
     if (final_graph.has_value()) {
-        latest_lines = BuildProgressLines(execution_db, final_telemetry, coordinator.ActiveWorkerCount(), final_graph);
+        latest_lines = BuildProgressLines(execution_db, final_telemetry, coordinator.SnapshotWorkers(), final_graph);
     }
     if (latest_lines.empty()) {
         latest_lines.push_back("workflow=unavailable");

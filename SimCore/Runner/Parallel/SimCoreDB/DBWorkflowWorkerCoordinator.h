@@ -16,6 +16,7 @@
 #include "../PRTypes.h"
 #include "../ProcessWorker.h"
 #include "../TSQueue.h"
+#include "../WorkerStatusRegistry.h"
 #include "../../../../SimCoreDB/Execution/IExecutionDb.h"
 #include "../../../../SimCoreDB/Execution/ProgramDB/ProgramKindRegistry.h"
 #include "../../../../SimCoreDB/Execution/Workflow/AdapterChainOrchestrator.h"
@@ -108,6 +109,7 @@ public:
 
     PRStatus SnapshotStatus() const;
     WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
+    std::vector<WorkerSnapshot> SnapshotWorkers() const;
 
 private:
     struct WorkerSlot {
@@ -148,6 +150,9 @@ private:
         std::optional<std::int64_t> job_id,
         std::optional<std::int64_t> job_set_id,
         const std::string& reason) const;
+
+    void RegisterWorkerSlotTelemetry(const WorkerSlot& slot);
+    void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider_ = nullptr;
@@ -206,6 +211,7 @@ private:
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };
+    WorkerStatusRegistry worker_status_;
 };
 
 } // namespace simcore::runner::parallel::simcoredb

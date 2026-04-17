@@ -261,10 +261,14 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(size_t worker_idx, uint64_t jo
 
     if (!slot.worker->send_job(job_id, epoch_.load(), job)) {
         slot.worker->release_slot();
+        MarkWorkerError(slot, "send_job failed");
         return false;
     }
 
     slot.in_flight_job_id = job_id;
+    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), static_cast<std::int64_t>(job_id), std::nullopt);
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Running);
+    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
     return true;
 }
 
@@ -326,6 +330,11 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     telemetry.max_progress_batch_size = max_progress_batch_size_.load();
     telemetry.workflow_created_signal_count = workflow_created_signal_count_.load();
     return telemetry;
+}
+
+std::vector<WorkerSnapshot> DBWorkflowWorkerCoordinator::SnapshotWorkers() const {
+    std::lock_guard<std::mutex> lock(workers_mtx_);
+    return worker_status_.GetClusterSnapshot();
 }
 
 void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
@@ -540,19 +549,31 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
 
     if (!slot.worker->start(ps, &results_q_)) {
         slot.ready.store(false);
+        RegisterWorkerSlotTelemetry(slot);
+        MarkWorkerError(slot, "ProcessWorker.start failed");
         return false;
     }
 
     slot.ready.store(slot.worker->wait_ready(worker_cfg_.child_launch_timeout_ms));
+    RegisterWorkerSlotTelemetry(slot);
+    if (!slot.ready.load()) {
+        std::ostringstream error;
+        error << "wait_ready failed err=" << slot.worker->ready_error();
+        MarkWorkerError(slot, error.str());
+    }
     return slot.ready.load();
 }
 
 void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Stopping);
+    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
     slot.ready.store(false);
     slot.in_flight_job_id.reset();
     if (slot.worker) {
         slot.worker->stop();
     }
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
+    worker_status_.UnregisterWorker(static_cast<std::int64_t>(slot.id));
 }
 
 std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorkerCoordinator::CollectDispatchableWorkers() {
@@ -591,10 +612,17 @@ void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const simcore::PRResult&
 
     auto& slot = *workers_[result.worker_id];
     slot.in_flight_job_id.reset();
+    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
     if (slot.worker) {
         slot.worker->release_slot();
+        if (slot.worker->is_ready()) {
+            worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Idle);
+        } else {
+            MarkWorkerError(slot, "worker became unavailable after result");
+        }
     }
 }
+
 
 void DBWorkflowWorkerCoordinator::EmitAdapterTraceEvent(
     const WorkflowReadyStep& step,
@@ -664,6 +692,24 @@ void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
             },
             &error);
     }
+}
+
+void DBWorkflowWorkerCoordinator::RegisterWorkerSlotTelemetry(const WorkerSlot& slot) {
+    int pid = 0;
+    WorkerStateKind state = WorkerStateKind::Dead;
+    if (slot.worker) {
+        pid = static_cast<int>(slot.worker->GetPid());
+        state = slot.worker->is_ready() ? WorkerStateKind::Idle : WorkerStateKind::Dead;
+    }
+    worker_status_.RegisterWorker(static_cast<std::int64_t>(slot.id), "localhost", pid, "workflow");
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), state);
+    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
+    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
+}
+
+void DBWorkflowWorkerCoordinator::MarkWorkerError(const WorkerSlot& slot, const std::string& error) {
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
+    worker_status_.RecordError(static_cast<std::int64_t>(slot.id), error);
 }
 
 void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
