@@ -11,6 +11,7 @@
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
+    <ClCompile Include="test_satools_parity_poly_parser.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_simcoreDB.cpp" />
     <ClCompile Include="test_simcoreDB_fixture_sqlite.cpp" />
