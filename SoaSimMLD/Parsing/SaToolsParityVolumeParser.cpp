@@ -51,15 +51,17 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
             polyChunk.rawIndexWords.push_back(*i0);
             polyChunk.rawIndexWords.push_back(*i1);
             polyChunk.rawIndexWords.push_back(*i2);
-            appendTriangle(static_cast<std::uint32_t>(*i0 & 0x7FFFU),
-                static_cast<std::uint32_t>(*i1 & 0x7FFFU),
-                static_cast<std::uint32_t>(*i2 & 0x7FFFU));
+            // SA-parity mode intentionally preserves full source index words (no 0x7FFF masking)
+            // for forensic parity checks and out-of-bounds detection.
+            appendTriangle(static_cast<std::uint32_t>(*i0),
+                static_cast<std::uint32_t>(*i1),
+                static_cast<std::uint32_t>(*i2));
             model::NjSemanticPrimitive prim{};
             prim.kind = model::NjPrimitiveKind::Triangle;
             prim.indices = {
-                static_cast<std::uint32_t>(*i0 & 0x7FFFU),
-                static_cast<std::uint32_t>(*i1 & 0x7FFFU),
-                static_cast<std::uint32_t>(*i2 & 0x7FFFU),
+                static_cast<std::uint32_t>(*i0),
+                static_cast<std::uint32_t>(*i1),
+                static_cast<std::uint32_t>(*i2),
             };
             if (userOffset > 0U) {
                 const auto uf1 = readWord(pos + 6);
@@ -99,10 +101,12 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
             polyChunk.rawIndexWords.push_back(*i1);
             polyChunk.rawIndexWords.push_back(*i2);
             polyChunk.rawIndexWords.push_back(*i3);
-            const std::uint32_t a = static_cast<std::uint32_t>(*i0 & 0x7FFFU);
-            const std::uint32_t b = static_cast<std::uint32_t>(*i1 & 0x7FFFU);
-            const std::uint32_t c = static_cast<std::uint32_t>(*i2 & 0x7FFFU);
-            const std::uint32_t d = static_cast<std::uint32_t>(*i3 & 0x7FFFU);
+            // SA-parity mode intentionally preserves full source index words (no 0x7FFF masking)
+            // for forensic parity checks and out-of-bounds detection.
+            const std::uint32_t a = static_cast<std::uint32_t>(*i0);
+            const std::uint32_t b = static_cast<std::uint32_t>(*i1);
+            const std::uint32_t c = static_cast<std::uint32_t>(*i2);
+            const std::uint32_t d = static_cast<std::uint32_t>(*i3);
             appendTriangle(a, b, c);
             appendTriangle(a, c, d);
             model::NjSemanticPrimitive prim{};
@@ -169,7 +173,9 @@ void parseVolumeChunk(const NjcmDecodeContext& ctx,
                     stripOk = false;
                     break;
                 }
-                stripIndices.push_back(static_cast<std::uint32_t>(*idxWord & 0x7FFFU));
+                // SA-parity mode intentionally preserves full source index words (no 0x7FFF masking)
+                // for forensic parity checks and out-of-bounds detection.
+                stripIndices.push_back(static_cast<std::uint32_t>(*idxWord));
                 polyChunk.rawIndexWords.push_back(*idxWord);
                 if (vi >= 2U && userOffset > 0U) {
                     const auto uf1 = readWord(pos + 2);
