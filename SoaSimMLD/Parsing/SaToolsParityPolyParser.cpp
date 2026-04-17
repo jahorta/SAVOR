@@ -22,6 +22,23 @@ struct MaterialState {
     }
 };
 
+[[nodiscard]] bool isSaToolsSupportedStripType(const std::uint8_t type) {
+    switch (type) {
+    case 64U: // Strip_Strip
+    case 65U: // Strip_StripUVN
+    case 66U: // Strip_StripUVH
+    case 70U: // Strip_StripColor
+    case 71U: // Strip_StripUVNColor
+    case 72U: // Strip_StripUVHColor
+    case 73U: // Strip_Strip2
+    case 74U: // Strip_StripUVN2
+    case 75U: // Strip_StripUVH2
+        return true;
+    default:
+        return false;
+    }
+}
+
 void parsePolyListInternal(const NjcmDecodeContext& ctx,
     const std::size_t polyListOffset,
     model::NjAttachRecord& attach,
@@ -82,7 +99,13 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
         sp.textureId = materialState.textureId;
 
         if (type >= 64U && type <= 75U && step >= 6U) {
-            parseStripChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
+            if (isSaToolsSupportedStripType(type)) {
+                parseStripChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
+            } else {
+                ctx.out->diagnostics.push_back("SA-parity unsupported strip chunk type " +
+                    std::to_string(type) + " at offset " + std::to_string(cur) +
+                    "; chunk metadata preserved and geometry decode skipped.");
+            }
         } else if (type == 56U || type == 57U || type == 58U) {
             parseVolumeChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
         } else if (type == 4U) { // Bits_CachePolygonList
@@ -118,7 +141,8 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
             }
         }
 
-        if (!recordChunkRecords && (type >= 56U && type <= 58U || type >= 64U && type <= 75U)) {
+        if (!recordChunkRecords && (type >= 56U && type <= 58U ||
+            (type >= 64U && type <= 75U && isSaToolsSupportedStripType(type)))) {
             // Replay path: inject semantic geometry so downstream rendering sees cache-draw output
             attach.semanticPolygons.push_back(std::move(sp));
         } else if (recordChunkRecords) {
