@@ -51,7 +51,7 @@ class ImportStats:
 
 BLENDER_CUSTOM_INT_MIN = -(2**31)
 BLENDER_CUSTOM_INT_MAX = (2**31) - 1
-NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), -1.5707963267948966)
+NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), 1.5707963267948966)
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
