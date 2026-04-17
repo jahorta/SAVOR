@@ -1,14 +1,27 @@
 #include "SeedProbeRealWorkerScenario.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <iostream>
+#include <sstream>
 #include <thread>
+#include <vector>
 
 #include "Execution/Workflow/WorkflowModeProvider.h"
+#include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 
 #include "Cli.h"
 #include "DbSetup.h"
+#include "MultiLineProgressRenderer.h"
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace simcore::e2e {
 
@@ -28,6 +41,149 @@ std::int64_t ComputeSeedProbeTimeoutMs(std::int64_t baseline_timeout_ms) {
     const std::int64_t grid_probe_count = static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * 2 * 3;
     const std::int64_t multiplier = 1 + grid_probe_count + kSeedProbeAverageUniqueCountEstimate;
     return baseline_timeout_ms * multiplier;
+}
+
+const char* ToString(simcore::db::execution::workflow::WorkflowInstanceState state) {
+    using simcore::db::execution::workflow::WorkflowInstanceState;
+    switch (state) {
+    case WorkflowInstanceState::Pending: return "PENDING";
+    case WorkflowInstanceState::Running: return "RUNNING";
+    case WorkflowInstanceState::Completed: return "COMPLETED";
+    case WorkflowInstanceState::Failed: return "FAILED";
+    case WorkflowInstanceState::Canceled: return "CANCELED";
+    }
+    return "UNKNOWN";
+}
+
+const char* ToString(simcore::db::execution::workflow::WorkflowStepState state) {
+    using simcore::db::execution::workflow::WorkflowStepState;
+    switch (state) {
+    case WorkflowStepState::Waiting: return "WAITING";
+    case WorkflowStepState::Ready: return "READY";
+    case WorkflowStepState::Materialized: return "MATERIALIZED";
+    case WorkflowStepState::Running: return "RUNNING";
+    case WorkflowStepState::Completed: return "COMPLETED";
+    case WorkflowStepState::Failed: return "FAILED";
+    case WorkflowStepState::Skipped: return "SKIPPED";
+    }
+    return "UNKNOWN";
+}
+
+bool IsInteractiveStdout() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return ::isatty(fileno(stdout)) != 0;
+#endif
+}
+
+std::string FormatCoordinatorTelemetryLine(const WorkflowCoordinatorTelemetry& telemetry, size_t active_workers) {
+    std::ostringstream oss;
+    oss << "workers=" << active_workers
+        << " scans=" << telemetry.ready_scan_count
+        << " enqueued=" << telemetry.ready_steps_enqueued
+        << " materialized=" << telemetry.materialization_count
+        << " dispatch=" << telemetry.dispatch_attempt_count
+        << " miss=" << telemetry.dispatch_miss_count
+        << " progress_batches=" << telemetry.progress_batch_count;
+    return oss.str();
+}
+
+std::string FormatWorkflowStateLine(const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
+    std::array<std::size_t, 7> counts{};
+    for (const auto& step : graph.steps) {
+        const auto idx = static_cast<std::size_t>(step.state);
+        if (idx < counts.size()) {
+            ++counts[idx];
+        }
+    }
+
+    const std::size_t completed = counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Completed)];
+    std::ostringstream oss;
+    oss << "workflow=" << ToString(graph.instance.state) << " steps=" << completed << "/" << graph.steps.size()
+        << " [WAITING=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Waiting)]
+        << " READY=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Ready)]
+        << " MATERIALIZED=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Materialized)]
+        << " RUNNING=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Running)]
+        << " COMPLETED=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Completed)]
+        << " FAILED=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Failed)]
+        << " SKIPPED=" << counts[static_cast<std::size_t>(simcore::db::execution::workflow::WorkflowStepState::Skipped)]
+        << "]";
+    return oss.str();
+}
+
+std::vector<std::string> FormatActiveJobSetLines(
+    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
+    for (const auto& step : graph.steps) {
+        if (!step.job_set_id.has_value()) {
+            continue;
+        }
+
+        if (step.state != simcore::db::execution::workflow::WorkflowStepState::Materialized
+            && step.state != simcore::db::execution::workflow::WorkflowStepState::Running
+            && step.state != simcore::db::execution::workflow::WorkflowStepState::Ready) {
+            continue;
+        }
+
+        const auto job_set_id = *step.job_set_id;
+        std::int64_t total = 0;
+        std::int64_t completed = 0;
+        std::int64_t failed = 0;
+        std::int64_t running = 0;
+        std::int64_t queued = 0;
+        std::string ignored_error;
+        (void)execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + ";",
+            &total,
+            &ignored_error);
+        (void)execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='COMPLETED';",
+            &completed,
+            &ignored_error);
+        (void)execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='FAILED';",
+            &failed,
+            &ignored_error);
+        (void)execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='RUNNING';",
+            &running,
+            &ignored_error);
+        (void)execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='QUEUED';",
+            &queued,
+            &ignored_error);
+
+        std::ostringstream summary;
+        summary << "job_set=" << job_set_id
+                << " step=" << step.step_key
+                << " state=" << ToString(step.state)
+                << " jobs completed=" << completed << "/" << total;
+        std::ostringstream detail;
+        detail << "job_states running=" << running << " queued=" << queued << " failed=" << failed;
+        return { summary.str(), detail.str() };
+    }
+
+    return { "job_set=none (waiting for materialization/running step)" };
+}
+
+std::vector<std::string> BuildProgressLines(
+    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    const WorkflowCoordinatorTelemetry& telemetry,
+    size_t active_workers,
+    const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
+    std::vector<std::string> lines;
+    lines.push_back(FormatCoordinatorTelemetryLine(telemetry, active_workers));
+    if (!graph.has_value()) {
+        lines.push_back("workflow=unavailable");
+        lines.push_back("job_set=unavailable");
+        return lines;
+    }
+
+    lines.push_back(FormatWorkflowStateLine(*graph));
+    const auto job_lines = FormatActiveJobSetLines(execution_db, *graph);
+    lines.insert(lines.end(), job_lines.begin(), job_lines.end());
+    return lines;
 }
 
 } // namespace
@@ -115,34 +271,58 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     const auto timeout_ms = ComputeSeedProbeTimeoutMs(options.timeout_ms);
+    const bool interactive_stdout = IsInteractiveStdout();
+    MultiLineProgressRenderer progress_renderer;
     const auto started = std::chrono::steady_clock::now();
     std::size_t poll_count = 0;
+    std::size_t ticks_since_snapshot = 0;
+    bool reached_completed = false;
+    bool saw_terminal_failure = false;
+    bool timed_out = false;
+    std::vector<std::string> latest_lines;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(timeout_ms)) {
         (void)ui_read_db->ListProjectionSubscriptions("Execution", "exec_outbox_message");
         ++poll_count;
+        ++ticks_since_snapshot;
 
         const auto telemetry = coordinator.SnapshotTelemetry();
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.ActiveWorkerCount(), graph);
+        if (interactive_stdout) {
+            progress_renderer.SetLines(latest_lines);
+            progress_renderer.Render(std::cout);
+        } else if (ticks_since_snapshot >= 10 || poll_count == 1) {
+            ticks_since_snapshot = 0;
+            std::cout << "[seedprobe] ";
+            for (std::size_t i = 0; i < latest_lines.size(); ++i) {
+                if (i > 0) {
+                    std::cout << " | ";
+                }
+                std::cout << latest_lines[i];
+            }
+            std::cout << '\n';
+        }
+
         if (graph.has_value()) {
             using simcore::db::execution::workflow::WorkflowInstanceState;
             if (graph->instance.state == WorkflowInstanceState::Completed) {
+                reached_completed = true;
                 break;
             }
             if (graph->instance.state == WorkflowInstanceState::Failed
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
-                if (error_out) *error_out = "workflow did not complete successfully";
-                coordinator.Stop();
-                return false;
+                saw_terminal_failure = true;
+                break;
             }
         }
         if (telemetry.ready_scan_count == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
             continue;
         }
-        if (graph.has_value() && graph->instance.state == simcore::db::execution::workflow::WorkflowInstanceState::Completed) {
-            break;
-        }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
+    }
+    if (!reached_completed && !saw_terminal_failure) {
+        timed_out = true;
     }
 
     coordinator.Stop();
@@ -153,9 +333,33 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     const auto final_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    if (final_graph.has_value()) {
+        latest_lines = BuildProgressLines(execution_db, final_telemetry, coordinator.ActiveWorkerCount(), final_graph);
+    }
+    if (latest_lines.empty()) {
+        latest_lines.push_back("workflow=unavailable");
+    }
+
+    std::string final_status = "success";
+    if (saw_terminal_failure) {
+        final_status = "failure";
+    } else if (!final_graph.has_value()
+        || final_graph->instance.state != simcore::db::execution::workflow::WorkflowInstanceState::Completed
+        || timed_out) {
+        final_status = "timeout";
+    }
+
+    std::cout << "[seedprobe-final] status=" << final_status << '\n';
+    for (const auto& line : latest_lines) {
+        std::cout << "  " << line << '\n';
+    }
+
     if (!final_graph.has_value()
         || final_graph->instance.state != simcore::db::execution::workflow::WorkflowInstanceState::Completed) {
-        if (error_out) *error_out = "workflow did not reach COMPLETED state before timeout";
+        if (error_out) *error_out = saw_terminal_failure
+            ? "workflow did not complete successfully"
+            : "workflow did not reach COMPLETED state before timeout";
         return false;
     }
 
