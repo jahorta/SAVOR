@@ -128,7 +128,7 @@ bool SeedExecutionWorkflow(
     if (!analysis_db->CreateSeedProbeSet(
             {
                 .name = "SimCoreDBe2e probe set",
-                .probe_flavor = "seedprobe",
+                .probe_flavor = "BATTLE_PRE",
                 .breakpoint_policy_name = "default",
                 .segment_source_kind = "manual",
                 .created_at_utc = UtcNow(),
