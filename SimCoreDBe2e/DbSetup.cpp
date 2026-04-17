@@ -9,11 +9,10 @@ namespace simcore::e2e {
 using simcore::db::types::UtcNow;
 
 simcore::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
-    const bool using_default_workspace = !options.workspace_root.has_value();
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default");
 
     std::error_code ec;
-    if (using_default_workspace && std::filesystem::exists(root)) {
+    if (std::filesystem::exists(root)) {
         std::filesystem::remove_all(root, ec);
     }
 
