@@ -85,6 +85,63 @@ namespace simcore::db {
             [=](DbEnv& e) { return impl_get(e, job_set_id); });
     }
 
+    static DbResult<JobSetLite> impl_get_lite(DbEnv& env, int64_t job_set_id) {
+        auto* db = env.handle();
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(
+                db,
+                "SELECT js.job_set_id, js.parent_job_set_id, js.program_kind, "
+                "CASE WHEN js.purpose IS NULL THEN '' ELSE js.purpose END AS purpose, "
+                "CASE WHEN js.created_at IS NULL THEN 0 ELSE js.created_at END AS created_at, "
+                "COALESCE(p.total, 0) AS total_jobs, "
+                "COALESCE(p.terminal, 0) AS completed_jobs, "
+                "COALESCE(p.succeeded, 0) AS succeeded_jobs, "
+                "COALESCE(p.failed, 0) AS failed_jobs, "
+                "COALESCE(p.canceled, 0) AS canceled_jobs, "
+                "js.expected_total "
+                "FROM job_sets js "
+                "LEFT JOIN v_job_set_progress_h p ON p.job_set_id = js.job_set_id "
+                "WHERE js.job_set_id=?",
+                -1,
+                &st,
+                nullptr)
+            != SQLITE_OK) {
+            return DbResult<JobSetLite>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), sqlite3_errmsg(db) });
+        }
+
+        sqlite3_bind_int64(st, 1, job_set_id);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            JobSetLite r{};
+            r.job_set_id = sqlite3_column_int64(st, 0);
+            if (sqlite3_column_type(st, 1) != SQLITE_NULL) {
+                r.parent_job_set_id = sqlite3_column_int64(st, 1);
+            }
+            r.program_kind = sqlite3_column_int(st, 2);
+            if (sqlite3_column_type(st, 3) != SQLITE_NULL) {
+                r.purpose = std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)));
+            }
+            r.created_at = sqlite3_column_int64(st, 4);
+            r.total_jobs = sqlite3_column_int64(st, 5);
+            r.completed_jobs = sqlite3_column_int64(st, 6);
+            r.succeeded_jobs = sqlite3_column_int64(st, 7);
+            r.failed_jobs = sqlite3_column_int64(st, 8);
+            r.canceled_jobs = sqlite3_column_int64(st, 9);
+            if (sqlite3_column_type(st, 10) != SQLITE_NULL) {
+                r.expected_total = sqlite3_column_int64(st, 10);
+            }
+            sqlite3_finalize(st);
+            return DbResult<JobSetLite>::Ok(std::move(r));
+        }
+
+        sqlite3_finalize(st);
+        return DbResult<JobSetLite>::Err({ map_sqlite_err(sqlite3_errcode(db)), sqlite3_errcode(db), "job_set not found" });
+    }
+
+    std::future<DbResult<JobSetLite>> JobSetsRepo::GetLiteAsync(int64_t job_set_id, RetryPolicy rp) {
+        return DBService::instance().submit_res<JobSetLite>(OpType::Read, Priority::Normal, rp,
+            [=](DbEnv& e) { return impl_get_lite(e, job_set_id); });
+    }
+
     static DbResult<void> impl_set_meta_text(DbEnv& env, int64_t job_set_id, const std::optional<std::string>& meta_text) {
         auto* db = env.handle();
         sqlite3_stmt* st = nullptr;
