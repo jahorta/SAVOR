@@ -3,8 +3,8 @@
 #include "SaToolsParityStripParser.h"
 #include "SaToolsParityVolumeParser.h"
 
+#include <optional>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace soasim::mld::parsing::satools_parity {
 namespace {
@@ -20,6 +20,19 @@ struct MaterialState {
             (static_cast<std::uint32_t>(mipmapFlags) << 8U) |
             (static_cast<std::uint32_t>(specularFlags) << 16U);
     }
+};
+
+struct RawPolyChunk {
+    std::size_t offset = 0;
+    std::size_t stepBytes = 0;
+    std::uint8_t type = 0;
+    std::uint8_t flags = 0;
+    std::uint16_t sizeWords16 = 0;
+};
+
+struct ResolvedPolyChunk {
+    RawPolyChunk chunk{};
+    bool fromCacheReplay = false;
 };
 
 [[nodiscard]] bool isSaToolsSupportedStripType(const std::uint8_t type) {
@@ -39,18 +52,9 @@ struct MaterialState {
     }
 }
 
-void parsePolyListInternal(const NjcmDecodeContext& ctx,
+void runRawChunkParsePass(const NjcmDecodeContext& ctx,
     const std::size_t polyListOffset,
-    model::NjAttachRecord& attach,
-    std::unordered_map<std::uint8_t, std::size_t>& cacheStarts,
-    std::unordered_set<std::size_t>& recursionGuard,
-    MaterialState& materialState,
-    const bool recordChunkRecords) {
-    if (!recursionGuard.insert(polyListOffset).second) {
-        ctx.out->diagnostics.push_back("SA-parity polygon cache recursion detected; skipping replay.");
-        return;
-    }
-
+    std::vector<RawPolyChunk>& rawChunks) {
     std::size_t cur = polyListOffset;
     for (std::size_t i = 0; i < 8192 && cur + 2 <= ctx.decoded.size(); ++i) {
         const auto header = readU16At(ctx.decoded, cur, ctx.littleEndian);
@@ -64,12 +68,12 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
             break;
         }
 
-        std::size_t step = 0;
+        std::size_t stepBytes = 0;
         std::uint16_t sizeWords16 = 0;
         if (type <= 5U) { // bits chunks (null/blend/mipmap/spec/cache/draw)
-            step = 2;
+            stepBytes = 2;
         } else if (type == 8U || type == 9U) {
-            step = 4;
+            stepBytes = 4;
         } else {
             const auto sw = readU16At(ctx.decoded, cur + 2, ctx.littleEndian);
             if (!sw.has_value()) {
@@ -77,63 +81,124 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
                 break;
             }
             sizeWords16 = *sw;
-            step = 4U + static_cast<std::size_t>(*sw) * 2U;
+            stepBytes = 4U + static_cast<std::size_t>(*sw) * 2U;
         }
 
-        if (step == 0 || cur + step > ctx.decoded.size()) {
+        if (stepBytes == 0 || cur + stepBytes > ctx.decoded.size()) {
             ctx.out->diagnostics.push_back("SA-parity polygon chunk step exceeded buffer.");
             break;
         }
 
+        RawPolyChunk parsedChunk{};
+        parsedChunk.offset = cur;
+        parsedChunk.stepBytes = stepBytes;
+        parsedChunk.type = type;
+        parsedChunk.flags = flags;
+        parsedChunk.sizeWords16 = sizeWords16;
+        rawChunks.push_back(parsedChunk);
+        cur += stepBytes;
+    }
+}
+
+void runActiveStreamResolutionPass(const NjcmDecodeContext& ctx,
+    const std::vector<RawPolyChunk>& rawChunks,
+    std::vector<ResolvedPolyChunk>& activeStream) {
+    std::unordered_map<std::uint8_t, std::vector<RawPolyChunk>> cacheBuckets{};
+    std::optional<std::uint8_t> activeCacheTarget{};
+
+    for (const auto& chunk : rawChunks) {
+        if (chunk.type == 4U) { // Bits_CachePolygonList
+            cacheBuckets[chunk.flags].clear();
+            activeCacheTarget = chunk.flags;
+            continue;
+        }
+
+        if (chunk.type == 5U) { // Bits_DrawPolygonList
+            if (const auto it = cacheBuckets.find(chunk.flags); it != cacheBuckets.end()) {
+                for (const auto& cachedChunk : it->second) {
+                    ResolvedPolyChunk replayChunk{};
+                    replayChunk.chunk = cachedChunk;
+                    replayChunk.fromCacheReplay = true;
+                    activeStream.push_back(std::move(replayChunk));
+                }
+            } else {
+                ctx.out->diagnostics.push_back("SA-parity draw polygon list referenced missing cache bucket " +
+                    std::to_string(chunk.flags) + ".");
+            }
+            continue;
+        }
+
+        if (activeCacheTarget.has_value()) {
+            cacheBuckets[*activeCacheTarget].push_back(chunk);
+        } else {
+            ResolvedPolyChunk directChunk{};
+            directChunk.chunk = chunk;
+            directChunk.fromCacheReplay = false;
+            activeStream.push_back(std::move(directChunk));
+        }
+    }
+}
+
+void decodeResolvedStream(const NjcmDecodeContext& ctx,
+    const std::vector<ResolvedPolyChunk>& activeStream,
+    model::NjAttachRecord& attach) {
+    MaterialState materialState{};
+
+    for (const auto& resolved : activeStream) {
+        const auto& chunk = resolved.chunk;
+
         model::NjPolyChunkRecord pc{};
-        pc.offset = cur;
-        pc.type = type;
-        pc.sizeWords16 = sizeWords16;
+        pc.offset = chunk.offset;
+        pc.type = chunk.type;
+        pc.sizeWords16 = chunk.sizeWords16;
 
         model::NjSemanticPolygon sp{};
-        sp.type = type;
-        sp.sourceChunkFlags = flags;
-        sp.sourceChunkOffset = cur;
-        sp.fromCacheReplay = !recordChunkRecords;
+        sp.type = chunk.type;
+        sp.sourceChunkFlags = chunk.flags;
+        sp.sourceChunkOffset = chunk.offset;
+        sp.fromCacheReplay = resolved.fromCacheReplay;
         sp.materialStateKey = materialState.key();
         sp.textureId = materialState.textureId;
 
-        if (type >= 64U && type <= 75U && step >= 6U) {
-            if (isSaToolsSupportedStripType(type)) {
-                parseStripChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
+        if (chunk.type >= 64U && chunk.type <= 75U && chunk.stepBytes >= 6U) {
+            if (isSaToolsSupportedStripType(chunk.type)) {
+                parseStripChunk(ctx,
+                    chunk.offset,
+                    chunk.offset + chunk.stepBytes,
+                    chunk.type,
+                    attach,
+                    pc,
+                    sp,
+                    attach.decodedTriangleCount);
             } else {
                 ctx.out->diagnostics.push_back("SA-parity unsupported strip chunk type " +
-                    std::to_string(type) + " at offset " + std::to_string(cur) +
+                    std::to_string(chunk.type) + " at offset " + std::to_string(chunk.offset) +
                     "; chunk metadata preserved and geometry decode skipped.");
             }
-        } else if (type == 56U || type == 57U || type == 58U) {
-            parseVolumeChunk(ctx, cur, cur + step, type, attach, pc, sp, attach.decodedTriangleCount);
-        } else if (type == 4U) { // Bits_CachePolygonList
-            cacheStarts[flags] = cur + step;
-            if (recordChunkRecords) {
-                attach.semanticPolygons.push_back(std::move(sp));
-                attach.polyChunks.push_back(std::move(pc));
-            }
-            break; // matches sa_tools ProcessPolyList early return on cache chunk
-        } else if (type == 5U) { // Bits_DrawPolygonList
-            if (const auto it = cacheStarts.find(flags); it != cacheStarts.end()) {
-                parsePolyListInternal(ctx, it->second, attach, cacheStarts, recursionGuard, materialState, false);
-            }
-        } else if (type == 1U) {
-            materialState.blendFlags = flags;
-        } else if (type == 2U) {
-            materialState.mipmapFlags = flags;
-        } else if (type == 3U) {
-            materialState.specularFlags = flags;
-        } else if (type == 8U || type == 9U) {
-            materialState.textureId = readU16At(ctx.decoded, cur + 2U, ctx.littleEndian).value_or(materialState.textureId);
+        } else if (chunk.type == 56U || chunk.type == 57U || chunk.type == 58U) {
+            parseVolumeChunk(ctx,
+                chunk.offset,
+                chunk.offset + chunk.stepBytes,
+                chunk.type,
+                attach,
+                pc,
+                sp,
+                attach.decodedTriangleCount);
+        } else if (chunk.type == 1U) {
+            materialState.blendFlags = chunk.flags;
+        } else if (chunk.type == 2U) {
+            materialState.mipmapFlags = chunk.flags;
+        } else if (chunk.type == 3U) {
+            materialState.specularFlags = chunk.flags;
+        } else if (chunk.type == 8U || chunk.type == 9U) {
+            materialState.textureId = readU16At(ctx.decoded, chunk.offset + 2U, ctx.littleEndian).value_or(materialState.textureId);
         }
 
         pc.estimatedTriangleCount = sp.estimatedTriangleCount;
-        if (sp.indices.empty() && step >= 4U) {
-            const std::size_t words = (step - 4U) / 2U;
+        if (sp.indices.empty() && chunk.stepBytes >= 4U) {
+            const std::size_t words = (chunk.stepBytes - 4U) / 2U;
             for (std::size_t wi = 0; wi < words; ++wi) {
-                const auto word = readU16At(ctx.decoded, cur + 4U + wi * 2U, ctx.littleEndian);
+                const auto word = readU16At(ctx.decoded, chunk.offset + 4U + wi * 2U, ctx.littleEndian);
                 if (!word.has_value()) {
                     break;
                 }
@@ -141,29 +206,32 @@ void parsePolyListInternal(const NjcmDecodeContext& ctx,
             }
         }
 
-        if (!recordChunkRecords && (type >= 56U && type <= 58U ||
-            (type >= 64U && type <= 75U && isSaToolsSupportedStripType(type)))) {
+        if (resolved.fromCacheReplay && (chunk.type == 56U || chunk.type == 57U || chunk.type == 58U ||
+            (chunk.type >= 64U && chunk.type <= 75U && isSaToolsSupportedStripType(chunk.type)))) {
             // Replay path: inject semantic geometry so downstream rendering sees cache-draw output
             attach.semanticPolygons.push_back(std::move(sp));
-        } else if (recordChunkRecords) {
-            attach.semanticPolygons.push_back(std::move(sp));
-            attach.polyChunks.push_back(std::move(pc));
+            continue;
         }
 
-        cur += step;
+        attach.semanticPolygons.push_back(std::move(sp));
+        attach.polyChunks.push_back(std::move(pc));
     }
-
-    recursionGuard.erase(polyListOffset);
 }
 
 } // namespace
 
 void parsePolyChunks(const NjcmDecodeContext& ctx, const std::size_t polyListOffset, model::NjAttachRecord& attach) {
     attach.polyListOffset = polyListOffset;
-    std::unordered_map<std::uint8_t, std::size_t> cacheStarts{};
-    std::unordered_set<std::size_t> recursionGuard{};
-    MaterialState materialState{};
-    parsePolyListInternal(ctx, polyListOffset, attach, cacheStarts, recursionGuard, materialState, true);
+
+    std::vector<RawPolyChunk> rawChunks{};
+    rawChunks.reserve(128);
+    runRawChunkParsePass(ctx, polyListOffset, rawChunks);
+
+    std::vector<ResolvedPolyChunk> activeStream{};
+    activeStream.reserve(rawChunks.size());
+    runActiveStreamResolutionPass(ctx, rawChunks, activeStream);
+
+    decodeResolvedStream(ctx, activeStream, attach);
 }
 
 } // namespace soasim::mld::parsing::satools_parity
