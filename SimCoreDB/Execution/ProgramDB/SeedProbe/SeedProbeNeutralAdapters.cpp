@@ -5,6 +5,7 @@
 #include "../../../../SimCore/Runner/IPC/Wire.h"
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SimCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "SeedProbeContracts.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
@@ -123,6 +124,25 @@ RuntimeInitRequest RequiredSavestateRuntimeInitAdapter::BuildRuntimeInit(std::in
     request.savestate_ref_kind = kSavestateRefKind;
     request.savestate_ref_id = probe_run->entry_savestate_id;
     return request;
+}
+
+std::optional<simcore::PSJob> RequiredSavestateRuntimeInitAdapter::MaterializePsJob(
+    std::int64_t job_id,
+    const RuntimeInitRequest& /*request*/) const {
+    if (execution_db_ == nullptr) {
+        return std::nullopt;
+    }
+    const auto job_row = execution_db_->GetJob(job_id);
+    if (!job_row.has_value()) {
+        return std::nullopt;
+    }
+
+    simcore::PSJob job{};
+    const auto spec = build_encode_spec_from_fingerprint(job_row->fingerprint);
+    if (!simcore::seedprobe::encode_payload(spec, job.payload)) {
+        return std::nullopt;
+    }
+    return job;
 }
 
 ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {

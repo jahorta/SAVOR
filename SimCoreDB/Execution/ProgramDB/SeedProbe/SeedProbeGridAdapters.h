@@ -71,6 +71,7 @@ public:
     SeedProbeRuntimeInitAdapter(simcore::db::IExecutionDb* execution_db, const simcore::db::IAnalysisDb* analysis_db);
 
     RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const override;
+    std::optional<simcore::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest& request) const override;
 
 private:
     simcore::db::IExecutionDb* execution_db_ = nullptr;
