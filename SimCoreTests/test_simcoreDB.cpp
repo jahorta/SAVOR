@@ -742,6 +742,50 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
     EXPECT_EQ(status.pending_start_workers, 1u);
 }
 
+TEST(Stage3cCoordinatorReplacement, SnapshotWorkersTracksSlotLifecycleAcrossEnqueueStartStop) {
+    using namespace simcore::runner::parallel::simcoredb;
+    using namespace simcore::db::execution::workflow;
+
+    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
+
+    DBWorkflowWorkerCoordinator coordinator(
+        nullptr,
+        &mode_provider,
+        DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 1,
+            .worker_exe_path = "missing-worker-binary.exe",
+            .controller_sleep_ms = 1,
+        },
+        CoordinatorIntegrationConfig{},
+        [](const WorkflowReadyStep& step) {
+            return ScheduledJobSet{
+                .job_set_id = 12000 + step.workflow_step_id,
+                .workflow_step_id = step.workflow_step_id,
+            };
+        });
+
+    EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
+
+    coordinator.EnqueueReadyStep({
+        .workflow_instance_id = 501,
+        .workflow_step_id = 601,
+        .step_key = "Grid",
+        .step_kind = "seedprobe.grid",
+        .priority = 1,
+    });
+    EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
+
+    coordinator.Start();
+    const auto started_snapshot = coordinator.SnapshotWorkers();
+    ASSERT_EQ(started_snapshot.size(), 1u);
+    EXPECT_EQ(started_snapshot[0].worker_id, 0);
+    EXPECT_FALSE(started_snapshot[0].job_id.has_value());
+    EXPECT_TRUE(started_snapshot[0].state == WorkerStateKind::Idle || started_snapshot[0].state == WorkerStateKind::Dead);
+
+    coordinator.Stop();
+    EXPECT_TRUE(coordinator.SnapshotWorkers().empty());
+}
+
 TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsToExecutionDb) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
