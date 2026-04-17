@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,46 @@ class ImportStats:
     texture_count: int = 0
     material_count: int = 0
     warnings: int = 0
+    warning_messages: list[str] = field(default_factory=list)
+
+    def add_warning(self, message: str) -> None:
+        self.warnings += 1
+        self.warning_messages.append(message)
+        print(f"[SoaSim Import Warning] {message}")
+
+
+BLENDER_CUSTOM_INT_MIN = -(2**31)
+BLENDER_CUSTOM_INT_MAX = (2**31) - 1
+
+
+def _read_int(value: Any, *, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid integer for {field_name}: {value!r}") from exc
+
+
+def _set_custom_int_property(
+    owner: Any,
+    key: str,
+    raw_value: Any,
+    stats: ImportStats,
+    *,
+    field_name: str,
+) -> None:
+    value = _read_int(raw_value, field_name=field_name)
+    if BLENDER_CUSTOM_INT_MIN <= value <= BLENDER_CUSTOM_INT_MAX:
+        owner[key] = value
+        return
+
+    owner[key] = str(value)
+    stats.add_warning(
+        (
+            f"{field_name}={value} does not fit Blender custom int range "
+            f"[{BLENDER_CUSTOM_INT_MIN}, {BLENDER_CUSTOM_INT_MAX}] "
+            f"and was stored as string property '{key}'."
+        )
+    )
 
 
 def _ensure_collection(name: str, parent: Collection | None = None) -> Collection:
@@ -113,8 +153,20 @@ def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) ->
             continue
 
         image["soasim_texture_name"] = texture_name
-        image["soasim_source_offset"] = int(texture.get("sourceOffset", 0))
-        image["soasim_source_size"] = int(texture.get("sourceSize", 0))
+        _set_custom_int_property(
+            image,
+            "soasim_source_offset",
+            texture.get("sourceOffset", 0),
+            stats,
+            field_name=f"textures[{index}].sourceOffset",
+        )
+        _set_custom_int_property(
+            image,
+            "soasim_source_size",
+            texture.get("sourceSize", 0),
+            stats,
+            field_name=f"textures[{index}].sourceSize",
+        )
         image["soasim_encoded_format"] = str(texture.get("encodedFormat", ""))
         images_by_name[texture_name] = image
         stats.texture_count += 1
@@ -122,7 +174,14 @@ def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) ->
     return images_by_name
 
 
-def _build_material(material_data: dict[str, Any], texture_lookup: dict[str, Image]) -> Material:
+def _build_material(
+    material_data: dict[str, Any],
+    texture_lookup: dict[str, Image],
+    stats: ImportStats,
+    *,
+    mesh_field_name: str,
+    material_index: int,
+) -> Material:
     material_hash = int(material_data.get("materialHash", 0))
     name = f"SoaMat_{material_hash:016x}"
     material = bpy.data.materials.get(name)
@@ -130,10 +189,34 @@ def _build_material(material_data: dict[str, Any], texture_lookup: dict[str, Ima
         material = bpy.data.materials.new(name=name)
 
     material.use_nodes = True
-    material["soasim_poly_type"] = int(material_data.get("polyType", 0))
-    material["soasim_chunk_flags"] = int(material_data.get("chunkFlags", 0))
-    material["soasim_material_state_key"] = int(material_data.get("materialStateKey", 0))
-    material["soasim_texture_id"] = int(material_data.get("textureId", 0))
+    _set_custom_int_property(
+        material,
+        "soasim_poly_type",
+        material_data.get("polyType", 0),
+        stats,
+        field_name=f"{mesh_field_name}.materials[{material_index}].polyType",
+    )
+    _set_custom_int_property(
+        material,
+        "soasim_chunk_flags",
+        material_data.get("chunkFlags", 0),
+        stats,
+        field_name=f"{mesh_field_name}.materials[{material_index}].chunkFlags",
+    )
+    _set_custom_int_property(
+        material,
+        "soasim_material_state_key",
+        material_data.get("materialStateKey", 0),
+        stats,
+        field_name=f"{mesh_field_name}.materials[{material_index}].materialStateKey",
+    )
+    _set_custom_int_property(
+        material,
+        "soasim_texture_id",
+        material_data.get("textureId", 0),
+        stats,
+        field_name=f"{mesh_field_name}.materials[{material_index}].textureId",
+    )
     material["soasim_texture_name"] = str(material_data.get("textureName", ""))
 
     node_tree = material.node_tree
@@ -182,6 +265,7 @@ def _triangles_from_corners(corners: list[Any]) -> list[tuple[int, int, int]]:
 
 def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], stats: ImportStats) -> Object:
     mesh_name = str(mesh_data.get("label", "SoaMesh"))
+    mesh_field_name = f"meshes[{mesh_name}]"
 
     vertices_data = mesh_data.get("vertices", [])
     vertices = []
@@ -204,8 +288,16 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
     mesh.update()
 
     material_slots: list[Material] = []
-    for material_data in mesh_data.get("materials", []):
-        material_slots.append(_build_material(material_data, texture_lookup))
+    for material_index, material_data in enumerate(mesh_data.get("materials", [])):
+        material_slots.append(
+            _build_material(
+                material_data,
+                texture_lookup,
+                stats,
+                mesh_field_name=mesh_field_name,
+                material_index=material_index,
+            )
+        )
 
     for material in material_slots:
         mesh.materials.append(material)
@@ -220,12 +312,48 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
             stats.warnings += 1
 
     diagnostics = mesh_data.get("diagnostics", {})
-    mesh["soasim_source_object_address"] = int(mesh_data.get("sourceObjectAddress", 0))
-    mesh["soasim_source_chunk_offset"] = int(mesh_data.get("sourceChunkOffset", 0))
-    mesh["soasim_source_attach_offset"] = int(mesh_data.get("sourceAttachOffset", 0))
-    mesh["soasim_diag_degenerate"] = int(diagnostics.get("degenerateTriangleCount", 0))
-    mesh["soasim_diag_out_of_range"] = int(diagnostics.get("outOfRangeIndexCount", 0))
-    mesh["soasim_diag_cache_replay"] = int(diagnostics.get("cacheReplayTriangleCount", 0))
+    _set_custom_int_property(
+        mesh,
+        "soasim_source_object_address",
+        mesh_data.get("sourceObjectAddress", 0),
+        stats,
+        field_name=f"{mesh_field_name}.sourceObjectAddress",
+    )
+    _set_custom_int_property(
+        mesh,
+        "soasim_source_chunk_offset",
+        mesh_data.get("sourceChunkOffset", 0),
+        stats,
+        field_name=f"{mesh_field_name}.sourceChunkOffset",
+    )
+    _set_custom_int_property(
+        mesh,
+        "soasim_source_attach_offset",
+        mesh_data.get("sourceAttachOffset", 0),
+        stats,
+        field_name=f"{mesh_field_name}.sourceAttachOffset",
+    )
+    _set_custom_int_property(
+        mesh,
+        "soasim_diag_degenerate",
+        diagnostics.get("degenerateTriangleCount", 0),
+        stats,
+        field_name=f"{mesh_field_name}.diagnostics.degenerateTriangleCount",
+    )
+    _set_custom_int_property(
+        mesh,
+        "soasim_diag_out_of_range",
+        diagnostics.get("outOfRangeIndexCount", 0),
+        stats,
+        field_name=f"{mesh_field_name}.diagnostics.outOfRangeIndexCount",
+    )
+    _set_custom_int_property(
+        mesh,
+        "soasim_diag_cache_replay",
+        diagnostics.get("cacheReplayTriangleCount", 0),
+        stats,
+        field_name=f"{mesh_field_name}.diagnostics.cacheReplayTriangleCount",
+    )
 
     obj = bpy.data.objects.new(mesh_name, mesh)
     stats.mesh_count += 1
@@ -286,8 +414,20 @@ def import_blender_ir_json(
         fxn_name = str(entry.get("fxnName", ""))
         entry_root = _create_empty(f"SoaEntry_{entry_id}")
         _apply_transform(entry_root, transform)
-        entry_root["soasim_source_entry_id"] = entry_id
-        entry_root["soasim_tbl_id"] = int(entry.get("tblId", 0))
+        _set_custom_int_property(
+            entry_root,
+            "soasim_source_entry_id",
+            entry_id,
+            stats,
+            field_name=f"indexEntries[{entry_id}].sourceEntryId",
+        )
+        _set_custom_int_property(
+            entry_root,
+            "soasim_tbl_id",
+            entry.get("tblId", 0),
+            stats,
+            field_name=f"indexEntries[{entry_id}].tblId",
+        )
         entry_root["soasim_fxn_name"] = fxn_name
         entry_root["soasim_object_addresses"] = ",".join(
             str(int(v)) for v in entry.get("objectAddresses", [])
@@ -326,9 +466,27 @@ def import_blender_ir_json(
             )
             tree_root = _create_empty(tree_root_name)
             tree_root.parent = entry_root
-            tree_root["soasim_tree_index"] = ti
-            tree_root["soasim_source_object_address"] = int(tree.get("sourceObjectAddress", 0))
-            tree_root["soasim_source_chunk_offset"] = int(tree.get("sourceChunkOffset", 0))
+            _set_custom_int_property(
+                tree_root,
+                "soasim_tree_index",
+                ti,
+                stats,
+                field_name=f"indexEntries[{entry_id}].objectTreeIndices[{slot}]",
+            )
+            _set_custom_int_property(
+                tree_root,
+                "soasim_source_object_address",
+                tree.get("sourceObjectAddress", 0),
+                stats,
+                field_name=f"objectTrees[{ti}].sourceObjectAddress",
+            )
+            _set_custom_int_property(
+                tree_root,
+                "soasim_source_chunk_offset",
+                tree.get("sourceChunkOffset", 0),
+                stats,
+                field_name=f"objectTrees[{ti}].sourceChunkOffset",
+            )
             root_collection.objects.link(tree_root)
             stats.object_count += 1
 
@@ -338,10 +496,34 @@ def import_blender_ir_json(
                 node_name = f"{tree_root_name}_Node_{node_idx}"
                 node_obj = _create_empty(node_name)
                 _apply_transform(node_obj, node.get("localTransform", {}))
-                node_obj["soasim_node_index"] = node_idx
-                node_obj["soasim_source_node_offset"] = int(node.get("sourceNodeOffset", 0))
-                node_obj["soasim_source_eval_flags"] = int(node.get("sourceEvalFlags", 0))
-                node_obj["soasim_source_attach_offset"] = int(node.get("sourceAttachOffset", 0))
+                _set_custom_int_property(
+                    node_obj,
+                    "soasim_node_index",
+                    node_idx,
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].nodeIndex",
+                )
+                _set_custom_int_property(
+                    node_obj,
+                    "soasim_source_node_offset",
+                    node.get("sourceNodeOffset", 0),
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceNodeOffset",
+                )
+                _set_custom_int_property(
+                    node_obj,
+                    "soasim_source_eval_flags",
+                    node.get("sourceEvalFlags", 0),
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceEvalFlags",
+                )
+                _set_custom_int_property(
+                    node_obj,
+                    "soasim_source_attach_offset",
+                    node.get("sourceAttachOffset", 0),
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceAttachOffset",
+                )
                 root_collection.objects.link(node_obj)
                 node_objects[node_idx] = node_obj
                 stats.object_count += 1
@@ -367,7 +549,9 @@ def import_blender_ir_json(
                     continue
                 mi = int(mesh_index)
                 if mi < 0 or mi >= len(mesh_objects):
-                    stats.warnings += 1
+                    stats.add_warning(
+                        f"Invalid mesh index {mi} at objectTrees[{ti}].nodes[{node_idx}].meshIndex."
+                    )
                     continue
 
                 source_obj = mesh_objects[mi]
@@ -414,6 +598,14 @@ class IMPORT_SCENE_OT_soasim_blender_ir(bpy.types.Operator, ImportHelper):
         except Exception as exc:  # Blender operator-level error boundary
             self.report({"ERROR"}, f"SoaSim import failed: {exc}")
             return {"CANCELLED"}
+
+        for warning in stats.warning_messages[:5]:
+            self.report({"WARNING"}, warning)
+        if len(stats.warning_messages) > 5:
+            self.report(
+                {"WARNING"},
+                f"{len(stats.warning_messages) - 5} additional warnings written to the Blender console.",
+            )
 
         self.report(
             {"INFO"},
