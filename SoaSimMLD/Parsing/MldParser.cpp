@@ -261,7 +261,7 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
         const std::size_t absChunkStart = imageBase + relChunkStart;
         if (*tag == tagNjcm) {
             if (njtlSeen && pendingNjtl.has_value() && !pendingNjtl.value().njtlBlock.has_value()) {
-                parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
+                pendingNjtl.value().njtlBlock = parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
             }
 
             PendingNjcm state{};
@@ -269,7 +269,8 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
             state.chunkDataSize = chunkSize;
             state.chunkSizeLittleEndian = chunkSizeLittleEndian;
             state.hasNjtlBeforeNjcm = njtlSeen;
-            state.njtlBlock = std::move(pendingNjtl.value().njtlBlock);
+            if (pendingNjtl.has_value() && pendingNjtl.value().njtlBlock.has_value())
+                state.njtlBlock = std::move(pendingNjtl.value().njtlBlock);
             state.sawPof0Chunk = false;
             state.pofImageBaseLocal = 0;
             state.pof0Data.clear();
@@ -287,7 +288,7 @@ void parseNjBlockStream(std::span<const std::uint8_t> bytes,
             
             if (*tag == tagPof0 && pendingNjtl.has_value()) {
                 auto deltas = decodePof0Deltas(bytes.subspan(dataStart, chunkSize));
-                applyPof0Fixups(pendingNjtl.value().data, deltas, runningImageBaseLocal, chunkSizeLittleEndian);
+                applyPof0Fixups(pendingNjtl.value().data, deltas, runningImageBaseLocal, pendingNjtl.value().chunkSizeLittleEndian);
                 pendingNjtl.value().njtlBlock = parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
             }
             
