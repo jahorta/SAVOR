@@ -40,6 +40,41 @@ void appendTriangleFromIndices(const std::vector<std::uint32_t>& indices,
     outSet.corners.push_back(cc);
 }
 
+void appendTrianglesFromPrimitive(const model::NjSemanticPrimitive& primitive, model::BlenderIrTriangleSet& outSet) {
+    const auto& indices = primitive.indices;
+    switch (primitive.kind) {
+    case model::NjPrimitiveKind::Triangle:
+        if (indices.size() >= 3U) {
+            appendTriangleFromIndices(indices, 0, 1, 2, outSet);
+        }
+        break;
+    case model::NjPrimitiveKind::Quad:
+        if (indices.size() >= 4U) {
+            // Match sa_tools/SA3D late triangulation intent for quads: (a,b,c) + (a,c,d).
+            appendTriangleFromIndices(indices, 0, 1, 2, outSet);
+            appendTriangleFromIndices(indices, 0, 2, 3, outSet);
+        }
+        break;
+    case model::NjPrimitiveKind::Strip:
+        // Match sa_tools/SA3D strip behavior: preserve strip intent first, triangulate late with parity winding.
+        for (std::size_t ii = 2; ii < indices.size(); ++ii) {
+            std::size_t a = ii - 2U;
+            std::size_t b = ii - 1U;
+            const std::size_t c = ii;
+            if ((ii & 1U) != 0U) {
+                std::swap(a, b);
+            }
+            if (primitive.reversed) {
+                std::swap(a, b);
+            }
+            appendTriangleFromIndices(indices, a, b, c, outSet);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::BlenderIrTriangleSet& outSet) {
     if (poly.indices.size() < 3) {
         return;
@@ -48,6 +83,11 @@ void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::Ble
     for (std::size_t ii = 1; ii + 1 < poly.indices.size(); ++ii) {
         appendTriangleFromIndices(poly.indices, 0, ii, ii + 1, outSet);
     }
+}
+
+[[nodiscard]] bool polygonChunkUsesPrimitives(const std::uint8_t type) {
+    // Primitive-bearing polygon chunks (strip + volume family) should be triangulated from semanticPrimitives.
+    return (type >= 56U && type <= 58U) || (type >= 64U && type <= 75U);
 }
 
 } // namespace
@@ -102,6 +142,7 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
 
                 std::unordered_map<std::uint64_t, std::size_t> materialIndexByHash{};
 
+                std::size_t primitiveCursor = 0;
                 for (const auto& poly : attach.semanticPolygons) {
                     const auto materialHash = hashMaterial(poly.type,
                         poly.sourceChunkFlags,
@@ -135,7 +176,16 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
                     triangleSet.polyType = poly.type;
                     triangleSet.sourceChunkOffset = poly.sourceChunkOffset;
                     triangleSet.fromCacheReplay = poly.fromCacheReplay;
-                    appendTrianglesFromPolygon(poly, triangleSet);
+                    if (polygonChunkUsesPrimitives(poly.type) && primitiveCursor < attach.semanticPrimitives.size()) {
+                        // Mirror sa_tools/SA3D behavior: preserve strip/volume primitive intent during parse,
+                        // then triangulate here at IR emission time.
+                        appendTrianglesFromPrimitive(attach.semanticPrimitives[primitiveCursor], triangleSet);
+                        ++primitiveCursor;
+                    } else {
+                        // Fallback for non-primitive records (Bits/Material/Tiny/Cache/Draw metadata) and
+                        // degraded cases where no semantic primitive was captured.
+                        appendTrianglesFromPolygon(poly, triangleSet);
+                    }
                     if (!triangleSet.corners.empty()) {
                         mesh.triangleSets.push_back(std::move(triangleSet));
                     }
