@@ -1,6 +1,7 @@
 #include "SeedProbeRealWorkerScenario.h"
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +12,7 @@
 
 #include "Execution/Workflow/WorkflowModeProvider.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
+#include "DB/Scheduling/JobSetsRepo.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 
 #include "Cli.h"
@@ -162,56 +164,64 @@ std::string FormatWorkflowStateLine(const simcore::db::execution::workflow::Work
 std::vector<std::string> FormatActiveJobSetLines(
     simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
     const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
-    for (const auto& step : graph.steps) {
-        if (!step.job_set_id.has_value()) {
-            continue;
-        }
+    (void)execution_db;
+    using simcore::db::execution::workflow::WorkflowStepState;
+    const auto is_terminal = [](WorkflowStepState state) {
+        return state == WorkflowStepState::Completed
+            || state == WorkflowStepState::Failed
+            || state == WorkflowStepState::Skipped;
+    };
+    const auto select_step = [&](WorkflowStepState target) -> const simcore::db::execution::workflow::WorkflowStepSnapshot* {
+        const auto it = std::find_if(graph.steps.begin(), graph.steps.end(), [&](const auto& step) {
+            return step.state == target;
+        });
+        return it == graph.steps.end() ? nullptr : &(*it);
+    };
 
-        if (step.state != simcore::db::execution::workflow::WorkflowStepState::Materialized
-            && step.state != simcore::db::execution::workflow::WorkflowStepState::Running
-            && step.state != simcore::db::execution::workflow::WorkflowStepState::Ready) {
-            continue;
-        }
-
-        const auto job_set_id = *step.job_set_id;
-        std::int64_t total = 0;
-        std::int64_t completed = 0;
-        std::int64_t failed = 0;
-        std::int64_t running = 0;
-        std::int64_t queued = 0;
-        std::string ignored_error;
-        (void)execution_db->ValidationQueryInt(
-            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + ";",
-            &total,
-            &ignored_error);
-        (void)execution_db->ValidationQueryInt(
-            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='COMPLETED';",
-            &completed,
-            &ignored_error);
-        (void)execution_db->ValidationQueryInt(
-            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='FAILED';",
-            &failed,
-            &ignored_error);
-        (void)execution_db->ValidationQueryInt(
-            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='RUNNING';",
-            &running,
-            &ignored_error);
-        (void)execution_db->ValidationQueryInt(
-            "SELECT COUNT(1) FROM exec_job WHERE job_set_id=" + std::to_string(job_set_id) + " AND state='QUEUED';",
-            &queued,
-            &ignored_error);
-
-        std::ostringstream summary;
-        summary << "job_set=" << job_set_id
-                << " step=" << step.step_key
-                << " state=" << ToString(step.state)
-                << " jobs completed=" << completed << "/" << total;
-        std::ostringstream detail;
-        detail << "job_states running=" << running << " queued=" << queued << " failed=" << failed;
-        return { summary.str(), detail.str() };
+    const auto* selected_step = select_step(WorkflowStepState::Running);
+    if (selected_step == nullptr) selected_step = select_step(WorkflowStepState::Materialized);
+    if (selected_step == nullptr) selected_step = select_step(WorkflowStepState::Ready);
+    if (selected_step == nullptr) {
+        const auto it = std::find_if(graph.steps.begin(), graph.steps.end(), [&](const auto& step) {
+            return !is_terminal(step.state);
+        });
+        selected_step = (it == graph.steps.end()) ? nullptr : &(*it);
+    }
+    if (selected_step == nullptr) {
+        return { "current_step=none (all steps terminal)" };
     }
 
-    return { "job_set=none (waiting for materialization/running step)" };
+    std::ostringstream step_label;
+    step_label << "current_step key=" << selected_step->step_key
+               << " kind=" << selected_step->step_kind
+               << " workflow_step_id=" << selected_step->workflow_step_id
+               << " state=" << ToString(selected_step->state);
+    if (!selected_step->job_set_id.has_value()) {
+        return { step_label.str(), "current step not materialized yet" };
+    }
+
+    const auto job_set_id = *selected_step->job_set_id;
+    const auto lite = simcore::db::JobSetsRepo::GetLite(job_set_id);
+    if (!lite.ok) {
+        return { step_label.str(), "job_set progress unavailable" };
+    }
+
+    const auto& row = lite.value;
+    const std::int64_t total = row.total_jobs;
+    const std::int64_t done = row.completed_jobs;
+    const std::int64_t ok = row.succeeded_jobs;
+    const std::int64_t fail = row.failed_jobs;
+    const std::int64_t can = row.canceled_jobs;
+    const std::int64_t remaining = std::max<std::int64_t>(0, total - ok - fail - can);
+
+    std::ostringstream progress;
+    progress << "job_set=" << job_set_id
+             << " progress done=" << done << "/" << total
+             << " ok=" << ok
+             << " fail=" << fail
+             << " can=" << can
+             << " remaining=" << remaining;
+    return { step_label.str(), progress.str() };
 }
 
 std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
