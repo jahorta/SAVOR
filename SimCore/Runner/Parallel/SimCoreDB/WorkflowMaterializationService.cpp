@@ -136,6 +136,16 @@ bool WorkflowMaterializationService::CleanupDispatchedOrExpired(std::int64_t job
     return true;
 }
 
+bool WorkflowMaterializationService::AbandonClaim(std::int64_t job_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = claimed_jobs_.find(JobKey(job_id));
+    if (it == claimed_jobs_.end()) {
+        return false;
+    }
+    claimed_jobs_.erase(it);
+    return true;
+}
+
 std::size_t WorkflowMaterializationService::ExpireClaimsOlderThan(std::chrono::milliseconds max_age, std::chrono::steady_clock::time_point now) {
     std::size_t expired = 0;
     std::lock_guard<std::mutex> lock(mutex_);

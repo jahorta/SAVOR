@@ -58,6 +58,8 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t progress_batch_count = 0;
     std::int64_t max_progress_batch_size = 0;
     std::int64_t workflow_created_signal_count = 0;
+    std::int64_t materialization_failure_count = 0;
+    std::int64_t payload_materialization_failure_count = 0;
 };
 
 class DBWorkflowWorkerCoordinator {
@@ -149,6 +151,11 @@ private:
         std::optional<std::int64_t> job_id,
         std::optional<std::int64_t> job_set_id,
         const std::string& reason) const;
+    void EmitWorkflowFailureEvents(
+        const WorkflowReadyStep& step,
+        const std::string& stage,
+        const std::string& reason) const;
+    void MaybeTerminalFailStepInStrictSmokeMode(const WorkflowReadyStep& step, const std::string& requested_by) const;
 
     void RegisterWorkerSlotTelemetry(const WorkerSlot& slot);
     void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
@@ -207,6 +214,8 @@ private:
     std::atomic<std::int64_t> progress_batch_count_{ 0 };
     std::atomic<std::int64_t> max_progress_batch_size_{ 0 };
     std::atomic<std::int64_t> workflow_created_signal_count_{ 0 };
+    std::atomic<std::int64_t> materialization_failure_count_{ 0 };
+    std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };

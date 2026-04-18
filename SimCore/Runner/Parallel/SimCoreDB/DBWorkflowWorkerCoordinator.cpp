@@ -59,13 +59,21 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
         [this](const WorkflowReadyStep& step, const ScheduledJobSet& scheduled) {
             if (execution_db_ && execution_db_->WorkflowCommandService()) {
                 std::string error;
-                (void)execution_db_->WorkflowCommandService()->MarkStepMaterialized(
+                const bool marked = execution_db_->WorkflowCommandService()->MarkStepMaterialized(
                     {
                         .workflow_step_id = step.workflow_step_id,
                         .job_set_id = scheduled.job_set_id,
                         .requested_by = "workflow_materialize",
                     },
                     &error);
+                if (!marked) {
+                    ++materialization_failure_count_;
+                    EmitWorkflowFailureEvents(
+                        step,
+                        "MarkStepMaterialized",
+                        error.empty() ? "unknown error" : error);
+                    MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_materialize_strict_smoke");
+                }
             }
             workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
         })
@@ -329,6 +337,8 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     telemetry.progress_batch_count = progress_batch_count_.load();
     telemetry.max_progress_batch_size = max_progress_batch_size_.load();
     telemetry.workflow_created_signal_count = workflow_created_signal_count_.load();
+    telemetry.materialization_failure_count = materialization_failure_count_.load();
+    telemetry.payload_materialization_failure_count = payload_materialization_failure_count_.load();
     return telemetry;
 }
 
@@ -348,6 +358,15 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         PollReadyStepsFromDb();
         (void)workflow_materialization_service_.ClaimJobs(std::chrono::steady_clock::now());
         (void)workflow_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+        for (const auto& failed_payload : workflow_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
+            ++payload_materialization_failure_count_;
+            std::ostringstream message;
+            message << "job_id=" << failed_payload.job_id << ";job_set_id=" << failed_payload.job_set_id
+                    << ";reason=build_payload returned empty";
+            EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
+            MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
+            (void)workflow_materialization_service_.AbandonClaim(failed_payload.job_id);
+        }
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
@@ -433,6 +452,15 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             }
         }
         (void)workflow_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+        for (const auto& failed_payload : workflow_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
+            ++payload_materialization_failure_count_;
+            std::ostringstream message;
+            message << "job_id=" << failed_payload.job_id << ";job_set_id=" << failed_payload.job_set_id
+                    << ";reason=build_payload returned empty";
+            EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
+            MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
+            (void)workflow_materialization_service_.AbandonClaim(failed_payload.job_id);
+        }
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
@@ -692,6 +720,57 @@ void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
             },
             &error);
     }
+}
+
+void DBWorkflowWorkerCoordinator::EmitWorkflowFailureEvents(
+    const WorkflowReadyStep& step,
+    const std::string& stage,
+    const std::string& reason) const {
+    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+        return;
+    }
+    std::ostringstream detail;
+    detail << "stage=" << stage << ";reason=" << reason;
+    std::string error;
+    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.WorkflowStepCoordinatorFailure.v1",
+            .source_key = stage,
+            .request_id = std::nullopt,
+            .message = detail.str(),
+            .requested_by = "workflow_coordinator",
+        },
+        &error);
+    (void)execution_db_->WorkflowCommandService()->AppendLifecycleEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.WorkflowStepCoordinatorFailure.v1",
+            .message = detail.str(),
+            .requested_by = "workflow_coordinator",
+        },
+        &error);
+}
+
+void DBWorkflowWorkerCoordinator::MaybeTerminalFailStepInStrictSmokeMode(
+    const WorkflowReadyStep& step,
+    const std::string& requested_by) const {
+    if (!integration_cfg_.strict_smoke_terminal_on_failure) {
+        return;
+    }
+    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+        return;
+    }
+    std::string error;
+    (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
+        {
+            .workflow_step_id = step.workflow_step_id,
+            .terminal_state = "FAILED",
+            .requested_by = requested_by,
+        },
+        &error);
 }
 
 void DBWorkflowWorkerCoordinator::RegisterWorkerSlotTelemetry(const WorkerSlot& slot) {
