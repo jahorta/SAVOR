@@ -70,6 +70,7 @@ public:
     std::vector<ClaimedJobRecord> ListByState(ClaimedJobLifecycleState state) const;
     bool MarkDispatched(std::int64_t job_id, std::chrono::steady_clock::time_point now);
     bool CleanupDispatchedOrExpired(std::int64_t job_id);
+    bool AbandonClaim(std::int64_t job_id);
     std::size_t ExpireClaimsOlderThan(std::chrono::milliseconds max_age, std::chrono::steady_clock::time_point now);
 
 private:
