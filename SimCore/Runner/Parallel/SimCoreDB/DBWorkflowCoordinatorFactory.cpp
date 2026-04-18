@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "../../../../SimCoreDB/Execution/Workflow/AdapterChainOrchestrator.h"
 #include "../../../../SimCoreDB/Execution/Workflow/WorkflowOrchestration.h"
 
 namespace simcore::runner::parallel::simcoredb {
@@ -61,23 +62,23 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
 
     auto shared_state = std::make_shared<CoordinatedJobState>();
 
-    auto schedule_fn = [execution_db, program_kind_registry, shared_state](const WorkflowReadyStep& step) -> ScheduledJobSet {
+    auto adapter_chain_orchestrator = std::make_shared<simcore::db::execution::workflow::AdapterChainOrchestrator>(
+        program_kind_registry,
+        nullptr);
+
+    auto schedule_fn = [execution_db, program_kind_registry, shared_state, adapter_chain_orchestrator](const WorkflowReadyStep& step) -> ScheduledJobSet {
         if (execution_db == nullptr || program_kind_registry == nullptr) {
             return {};
         }
 
         const auto* descriptor = program_kind_registry->FindForStepKind(step.step_kind);
-        if (descriptor == nullptr || descriptor->job_persistence == nullptr) {
+        if (descriptor == nullptr || descriptor->job_persistence == nullptr || adapter_chain_orchestrator == nullptr) {
             return {};
         }
-
-        std::int64_t domain_ref_id = step.workflow_instance_id;
-        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(step.workflow_instance_id);
-        if (graph.has_value() && graph->instance.root_scope_id.has_value()) {
-            domain_ref_id = *graph->instance.root_scope_id;
+        const auto persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, step.workflow_step_id);
+        if (!persisted.has_value()) {
+            return {};
         }
-
-        const auto persisted = descriptor->job_persistence->EncodeForQueueing(domain_ref_id);
 
         simcore::db::CreateJobSetCommand create_set{};
         create_set.program_kind = descriptor->program_kind;
@@ -85,8 +86,13 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
         create_set.created_by = std::string("DBWorkflowCoordinatorFactory");
         create_set.created_at_utc = UtcNowMs();
         create_set.expected_total = 1;
-        create_set.domain_ref_kind = persisted.program_ref_kind;
-        create_set.domain_ref_id = persisted.program_ref_id;
+        if (!persisted->program_ref_kind.empty()) {
+            create_set.domain_ref_kind = persisted->program_ref_kind;
+        }
+        if (persisted->program_ref_id > 0) {
+            create_set.domain_ref_id = persisted->program_ref_id;
+        }
+        create_set.meta_note = "workflow_step_id=" + std::to_string(step.workflow_step_id);
 
         std::int64_t job_set_id = 0;
         std::string error;
@@ -97,10 +103,10 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
         simcore::db::EnqueueJobCommand enqueue{};
         enqueue.job_set_id = job_set_id;
         enqueue.program_kind = descriptor->program_kind;
-        enqueue.program_version = persisted.program_version;
-        enqueue.program_ref_kind = persisted.program_ref_kind;
-        enqueue.program_ref_id = persisted.program_ref_id;
-        enqueue.fingerprint = persisted.fingerprint.empty() ? (step.step_kind + ":" + std::to_string(step.workflow_step_id)) : persisted.fingerprint;
+        enqueue.program_version = persisted->program_version;
+        enqueue.program_ref_kind = persisted->program_ref_kind;
+        enqueue.program_ref_id = persisted->program_ref_id;
+        enqueue.fingerprint = persisted->fingerprint.empty() ? (step.step_kind + ":" + std::to_string(step.workflow_step_id)) : persisted->fingerprint;
         enqueue.priority = step.priority;
         enqueue.max_attempts = 1;
 
