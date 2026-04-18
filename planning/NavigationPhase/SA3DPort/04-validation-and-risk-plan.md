@@ -2,6 +2,15 @@
 
 Date: 2026-04-18
 
+Decision update: 2026-04-18
+- Reference implementation for parity is pinned to:
+  - parser reference repo: `https://github.com/X-Hax/SA3D.Modeling`
+  - parser release tag: `1.2.1`
+  - parser commit hash: `13813e7`
+  - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
+  - policy: modify `DetailedIO` per-slice to emit slice-specific input/output pairs.
+- Milestone target is read/parse parity only; write parity is deferred.
+
 ---
 
 ## 1) Validation strategy
@@ -35,6 +44,77 @@ For each NJ model/animation fixture, persist:
 Store under:
 - `planning/NavigationPhase/SA3DPort/goldens/` (proposed)
 
+## D) Parity harness architecture (reference .NET + C++)
+
+1. **Reference extractor (.NET)**
+   - Use forked runner from `jahorta/SA3D.Modeling` `DetailedIO` branch.
+   - For each fixture, emit stable JSON summaries (structural + semantic metrics) plus slice-specific input/output pairs.
+2. **Port extractor (C++)**
+   - Run SoaSimMLD parser backend (`sa3d_port`) on the same fixtures.
+   - Emit the same JSON schema.
+3. **Comparator**
+   - Compare JSON outputs field-by-field with tolerances only where explicitly documented.
+   - Emit per-fixture pass/fail plus mismatch diagnostics.
+4. **A/B switch**
+   - Keep toggleable backend path (`current parser` vs `sa3d_port`) inside the MLD parser so both
+     implementations consume the same MLD-derived NJ model/motion blocks.
+
+## E) Recommended parity report format (v1)
+
+Each fixture should emit one JSON document with:
+
+1. **Header**
+   - `fixture_id`, `mld_path`, `block_offsets`, `reference_version` (`SA3D.Modeling@13813e7`), `reference_runner_branch` (`DetailedIO`), `timestamp_utc`.
+2. **Structural metrics**
+   - node count, attach count, chunk histogram, motion node count, frame count.
+3. **Semantic metrics**
+   - triangles per attach, material run count, texture run count, strip degenerates/winding counters.
+4. **Diagnostics**
+   - warnings/errors with stable codes and source locations (block offset + node index where applicable).
+5. **Slice IO pairs**
+   - per-slice captured inputs and outputs (operation id, input bytes/fields, output values/structures).
+6. **Comparison summary**
+   - per-section pass/fail, mismatch count, and top-N mismatch samples.
+
+## F) Step-wise parity harness expansion (Slices 1-3)
+
+Harness growth must follow implementation slices; do not require unavailable sections early.
+
+### Slice 1 (primitives only)
+- Implement in harness:
+  - primitive IO pair capture/replay from `DetailedIO` over real extracted NJ blocks (endian reads/writes + image-base arithmetic),
+  - pointer LUT behavior IO pairs,
+  - BAMS conversion IO pairs.
+- Report sections enabled:
+  - `primitives` (enabled),
+  - `block_map`, `node_graph`, `mesh`, `motion` (marked `not_applicable`).
+- Pass criteria:
+  - byte/value parity for vectors and zero unexpected diagnostics.
+
+### Slice 2 (NJ block + metadata shell)
+- Implement in harness:
+  - MLD-path fixture ingestion and NJ block extraction pipeline.
+  - reference vs C++ block map comparison (`offset -> header`).
+  - metadata shell decode diagnostics comparison.
+  - replay `DetailedIO`-emitted slice-specific IO pairs for block + metadata operations.
+- Report sections enabled:
+  - `primitives` + `block_map` + `metadata_shell` (enabled),
+  - `node_graph`, `mesh`, `motion` (`not_applicable`).
+- Pass criteria:
+  - all expected NJ blocks resolved at matching offsets and headers.
+
+### Slice 3 (Node core object graph)
+- Implement in harness:
+  - reference and C++ node tree summary extraction.
+  - linkage invariant checks (child/next/parent coherence).
+  - transform/attribute summary comparison by node index/path.
+  - replay `DetailedIO`-emitted node-graph IO pairs for targeted read/transform operations.
+- Report sections enabled:
+  - `primitives` + `block_map` + `metadata_shell` + `node_graph` (enabled),
+  - `mesh`, `motion` (`not_applicable`).
+- Pass criteria:
+  - node graph structural parity at 100% metrics for fixture set.
+
 ## C) Acceptance gates
 
 - Slice 3 gate: Node graph parity >= 100% structural metrics.
@@ -64,6 +144,11 @@ Store under:
 - [ ] Add poly chunk trace with type, size, and semantic impact.
 - [ ] Add animation trace with node count, shortRot, frame counts.
 - [ ] Add summary JSON emitter for fixture comparison.
+
+Notes:
+- Most risk signals should come from parity harness output.
+- Keep lightweight in-parser assertions/microtests for early failures that the full harness may surface later
+  (e.g., endian/address arithmetic, LUT uniqueness guarantees).
 
 ---
 

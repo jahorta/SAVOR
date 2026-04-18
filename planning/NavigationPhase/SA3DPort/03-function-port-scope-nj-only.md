@@ -7,6 +7,10 @@ Goal: list functions to port first, constrained to:
 - prioritize NJ behavior
 - ignore SA1/SA2/BASIC/GC-unique behaviors unless they are unavoidable shared plumbing
 
+Decision update: 2026-04-18
+- Write-side APIs are deferred (`WriteNJ`, motion/animation write helpers).
+- Read/parse parity is the only milestone target in this phase.
+
 ---
 
 ## 1) `File/ModelFile.cs`
@@ -16,7 +20,6 @@ Goal: list functions to port first, constrained to:
 - `CheckIsNJModelFile(...)`.
 - `ReadFromFile`, `ReadFromBytes`, `Read(...)` wrappers.
 - `ReadNJ(...)`.
-- `WriteNJ(...)` (optional in phase 1; required if we need reserialization parity).
 
 ## Shared helpers to port if using writes/metadata
 - `CreateWeldings(...)` (only if metadata weld import is consumed).
@@ -25,6 +28,7 @@ Goal: list functions to port first, constrained to:
 ## Defer / ignore for NJ-first milestone
 - `CheckIsSAModelFile(...)`.
 - `ReadSA(...)`, `WriteSA(...)`.
+- `WriteNJ(...)`.
 
 ---
 
@@ -37,11 +41,12 @@ Goal: list functions to port first, constrained to:
 - `ReadNJ(...)`.
 
 ## Likely needed anyway
-- `Write(...)` if the project needs animation round-trip tests.
+- `Write(...)` is deferred until an explicit round-trip milestone.
 
 ## Defer / ignore for NJ-first milestone
 - `CheckIsSAAnimFile(...)`.
 - `ReadSA(...)` and SA version handling branches.
+- write-side animation entry and helpers.
 
 ---
 

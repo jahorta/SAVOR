@@ -2,6 +2,14 @@
 
 Date: 2026-04-18
 
+Decision update: 2026-04-18
+- Scope is now locked to NJ-first (`ModelFile` + `AnimationFile` entry paths), CHUNK-focused mesh path,
+  and required normalization (`Buffer*`/`Weighted*`), with `LevelFile` + BASIC/GC + SA container branches
+  deferred until a later milestone.
+- Port order in this document is finalized as the execution order.
+- `WriteNJ`/write-side animation work is explicitly deferred for this milestone.
+- A mirrored implementation tree is locked under `SoaSimMLD/SA3DPort` (see Slice 0).
+
 Status legend:
 - `[ ]` not started
 - `[-]` in progress
@@ -11,11 +19,33 @@ Status legend:
 
 ## Slice 0 — Ground rules and compatibility harness
 
-- [ ] Freeze source revision hashes for `SA3D.Modeling` files in this plan.
-- [ ] Define C++ naming and namespace mapping rules from C# source.
-- [ ] Build fixture corpus (NJ model + NJ motion files).
+- [x] Lock NJ-first scope and defer non-goals.
+- [x] Freeze source revision to:
+  - parser reference repo: `https://github.com/X-Hax/SA3D.Modeling`
+  - parser release tag: `1.2.1`
+  - parser commit hash: `13813e7`
+  - reference-runner fork: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
+  - reference-runner policy: use `DetailedIO` branch and update it per-slice to emit slice-specific input/output pairs.
+- [x] Define C++ naming and namespace mapping rule:
+  - match C# source naming and namespace hierarchy as closely as possible.
+- [x] Lock mirrored implementation tree under `SoaSimMLD/SA3DPort`:
+  - `File/`
+  - `ObjectData/Enums/`
+  - `ObjectData/`
+  - `Mesh/Chunk/PolyChunks/`
+  - `Mesh/Chunk/Structs/`
+  - `Mesh/Buffer/`
+  - `Mesh/Weighted/`
+  - `Animation/Utilities/`
+  - `Animation/`
+  - `Structs/`
+- [x] Build fixture corpus policy:
+  - source fixtures come from a maintained list of MLD files known to include both model and motion NJ blocks.
+  - extraction path is via MLD parser block provider (not direct standalone NJ file loading).
 - [ ] Build parity report format (counts, hashes, diagnostics).
-- [ ] Create toggleable backends (`current parser` vs `sa3d_port`) for A/B.
+- [x] Create toggleable backends inside MLD parser (`current parser` vs `sa3d_port`) for A/B.
+- [ ] Implement .NET reference runner from `jahorta/SA3D.Modeling` `DetailedIO` branch that emits fixture summaries
+  and slice-specific input/output pairs in stable JSON for comparison against C++ output.
 
 Exit criteria:
 - Repeatable fixture runner exists before first ported parser code lands.
@@ -35,6 +65,10 @@ Checklist:
 - [ ] Implement pointer LUT behavior for read memoization + write de-dup.
 - [ ] Port BAMS float/angle conversion behavior.
 - [ ] Add unit tests for endian stack, pointers, and BAMS exactness.
+- [ ] Extend parity harness (Slice 1 mode):
+  - compare primitive/lut/bams input/output pairs captured from `DetailedIO` processing of real extracted NJ blocks,
+  - emit `parity_report_v1` with `slice_stage = 1` and only `primitives` section populated,
+  - skip node/attach/motion sections as `not_applicable`.
 
 Exit criteria:
 - Byte-accurate primitive tests passing for representative values.
@@ -54,6 +88,11 @@ Checklist:
 - [ ] Port metadata block decode required by animation/model file wrappers.
 - [ ] Keep metadata-write path behind feature flag initially.
 - [ ] Add block map regression tests from sample NJ files.
+- [ ] Extend parity harness (Slice 2 mode):
+  - ingest MLD fixtures and extract NJ model/motion block addresses via MLD parser path,
+  - compare block map (`offset -> header`) to .NET reference output,
+  - compare slice-specific input/output pairs emitted by `DetailedIO` for NJ block + metadata shell operations,
+  - emit `parity_report_v1` with `slice_stage = 2` including `block_map` + metadata shell diagnostics.
 
 Exit criteria:
 - For fixtures, discovered block addresses match reference outputs.
@@ -76,6 +115,11 @@ Checklist:
 - [ ] Port child/next tree linkage invariants.
 - [ ] Port transform and quaternion/euler handling.
 - [ ] Add graph consistency checks (cycle guard, sibling/parent coherence).
+- [ ] Extend parity harness (Slice 3 mode):
+  - compare node tree structural metrics (node count, depth, child/next linkage invariants),
+  - compare per-node transform/attribute summaries where available,
+  - compare slice-specific node-graph input/output pairs emitted by `DetailedIO`,
+  - emit `parity_report_v1` with `slice_stage = 3` enabling structural section for nodes.
 
 Exit criteria:
 - Node tree round-trip is stable for NJ model fixtures.
@@ -130,7 +174,7 @@ Target files/types:
 Checklist:
 - [ ] Port `CheckIsModelFile` with NJ detection branch.
 - [ ] Port `ReadNJ` path (`GetBlockAddresses`, model block, image base, `Node.Read`).
-- [ ] Port `WriteNJ` path only if write parity is needed in phase 1.
+- [ ] Do not port `WriteNJ` in this milestone (explicit defer).
 - [ ] Keep `ReadSA/WriteSA` as out-of-scope stubs or deferred tasks.
 
 Exit criteria:
@@ -153,7 +197,8 @@ Target files/types:
 Checklist:
 - [ ] Port keyframe enum/flags and interpolation handling.
 - [ ] Port keyframe read helpers and rotation decoding.
-- [ ] Port `Motion.Read` and write path with LUT semantics.
+- [ ] Port `Motion.Read` path with LUT semantics.
+- [ ] Defer motion write path for this milestone.
 - [ ] Validate node-count and short-rot fallback behavior.
 
 Exit criteria:
@@ -169,7 +214,7 @@ Target files/types:
 Checklist:
 - [ ] Port `CheckIsAnimationFile` NJ detection path.
 - [ ] Port `ReadNJ` path with required node count guard.
-- [ ] Port write path only when needed by downstream tasks.
+- [ ] Do not port animation write path in this milestone (explicit defer).
 - [ ] Keep SA animation versions/features deferred.
 
 Exit criteria:
