@@ -37,6 +37,24 @@ public:
         std::string* error_out = nullptr) override;
     bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override;
     bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) override;
+    std::optional<ClaimedExecutionJob> ClaimNextReadyExecutionJob(
+        std::string_view claimed_by_token,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) override;
+    std::vector<ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+        std::string_view claimed_by_token,
+        int requested_jobs,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) override;
+    bool RenewExecutionJobLease(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::int64_t lease_duration_ms,
+        bool* renewed_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RequeueExpiredExecutionLeases(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
     bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) override;
     retention::OutboxRetentionPreview PreviewOutboxRetention(

@@ -400,6 +400,228 @@ bool SqliteExecutionDb::EnqueueJob(
     return true;
 }
 
+std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob(
+    std::string_view claimed_by_token,
+    std::int64_t lease_duration_ms,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return std::nullopt;
+    }
+    if (claimed_by_token.empty()) {
+        if (error_out) *error_out = "claimed_by_token is required";
+        return std::nullopt;
+    }
+    if (lease_duration_ms <= 0) {
+        if (error_out) *error_out = "lease_duration_ms must be > 0";
+        return std::nullopt;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return std::nullopt;
+    }
+    const auto rollback = [&]() { (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); };
+
+    const auto now_utc = CurrentUtcMs(db_);
+    const auto lease_expires_at_utc = now_utc + lease_duration_ms;
+
+    Statement claim_st;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET claimed_by_token=?1, lease_expires_at_utc=?2 "
+            "WHERE job_id=("
+            "  SELECT job_id FROM exec_job "
+            "  WHERE state='QUEUED' "
+            "    AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?3) "
+            "  ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
+            "  LIMIT 1"
+            ") "
+            "AND state='QUEUED' "
+            "AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?3) "
+            "RETURNING job_id, job_set_id, savestate_id, program_kind, program_ref_kind, program_ref_id;",
+        -1,
+        &claim_st.st,
+        nullptr)
+        != SQLITE_OK) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return std::nullopt;
+    }
+
+    const auto token = std::string(claimed_by_token);
+    sqlite3_bind_text(claim_st.st, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(claim_st.st, 2, lease_expires_at_utc);
+    sqlite3_bind_int64(claim_st.st, 3, now_utc);
+
+    ClaimedExecutionJob claimed{};
+    const auto rc = sqlite3_step(claim_st.st);
+    if (rc == SQLITE_ROW) {
+        claimed.job_id = sqlite3_column_int64(claim_st.st, 0);
+        claimed.job_set_id = sqlite3_column_int64(claim_st.st, 1);
+        if (sqlite3_column_type(claim_st.st, 2) != SQLITE_NULL) {
+            claimed.savestate_affinity_key = "savestate:" + std::to_string(sqlite3_column_int64(claim_st.st, 2));
+        }
+        const auto program_kind = sqlite3_column_int(claim_st.st, 3);
+        const auto* program_ref_kind_text = sqlite3_column_text(claim_st.st, 4);
+        const auto program_ref_kind = program_ref_kind_text ? reinterpret_cast<const char*>(program_ref_kind_text) : "";
+        const auto program_ref_id = sqlite3_column_int64(claim_st.st, 5);
+        claimed.program_runtime_affinity_key =
+            std::to_string(program_kind) + ":" + program_ref_kind + ":" + std::to_string(program_ref_id);
+
+        Statement step_st;
+        if (sqlite3_prepare_v2(db_,
+            "SELECT workflow_instance_id, workflow_step_id, step_key, step_kind, priority "
+                "FROM exec_workflow_step "
+                "WHERE job_set_id=?1;",
+            -1,
+            &step_st.st,
+            nullptr)
+            == SQLITE_OK) {
+            sqlite3_bind_int64(step_st.st, 1, claimed.job_set_id);
+            if (sqlite3_step(step_st.st) == SQLITE_ROW) {
+                claimed.workflow_instance_id = sqlite3_column_int64(step_st.st, 0);
+                claimed.workflow_step_id = sqlite3_column_int64(step_st.st, 1);
+                const auto* step_key = sqlite3_column_text(step_st.st, 2);
+                const auto* step_kind = sqlite3_column_text(step_st.st, 3);
+                claimed.workflow_step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
+                claimed.workflow_step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
+                claimed.workflow_step_priority = sqlite3_column_int(step_st.st, 4);
+            }
+        }
+    } else if (rc != SQLITE_DONE) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return std::nullopt;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return std::nullopt;
+    }
+
+    if (claimed.job_id <= 0) {
+        return std::nullopt;
+    }
+    return claimed;
+}
+
+std::vector<ClaimedExecutionJob> SqliteExecutionDb::ClaimBatchReadyExecutionJobs(
+    std::string_view claimed_by_token,
+    int requested_jobs,
+    std::int64_t lease_duration_ms,
+    std::string* error_out) {
+    std::vector<ClaimedExecutionJob> claimed;
+    if (requested_jobs <= 0) {
+        return claimed;
+    }
+
+    claimed.reserve(static_cast<std::size_t>(requested_jobs));
+    for (int i = 0; i < requested_jobs; ++i) {
+        std::string claim_error;
+        auto claimed_job = ClaimNextReadyExecutionJob(claimed_by_token, lease_duration_ms, &claim_error);
+        if (!claim_error.empty()) {
+            if (error_out) *error_out = claim_error;
+            break;
+        }
+        if (!claimed_job.has_value()) {
+            break;
+        }
+        claimed.push_back(std::move(*claimed_job));
+    }
+    return claimed;
+}
+
+bool SqliteExecutionDb::RenewExecutionJobLease(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::int64_t lease_duration_ms,
+    bool* renewed_out,
+    std::string* error_out) {
+    if (renewed_out) *renewed_out = false;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (claimed_by_token.empty()) {
+        if (error_out) *error_out = "claimed_by_token is required";
+        return false;
+    }
+    if (lease_duration_ms <= 0) {
+        if (error_out) *error_out = "lease_duration_ms must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET lease_expires_at_utc=?1 "
+            "WHERE job_id=?2 "
+            "AND state='QUEUED' "
+            "AND claimed_by_token=?3 "
+            "AND COALESCE(lease_expires_at_utc, 0) > ?4;",
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    const auto now_utc = CurrentUtcMs(db_);
+    const auto lease_expires_at_utc = now_utc + lease_duration_ms;
+    const auto token = std::string(claimed_by_token);
+    sqlite3_bind_int64(st.st, 1, lease_expires_at_utc);
+    sqlite3_bind_int64(st.st, 2, job_id);
+    sqlite3_bind_text(st.st, 3, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 4, now_utc);
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (renewed_out) *renewed_out = sqlite3_changes(db_) > 0;
+    return true;
+}
+
+bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    if (rows_requeued_out) *rows_requeued_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET claimed_by_token=NULL, lease_expires_at_utc=NULL "
+            "WHERE state='QUEUED' "
+            "AND claimed_by_token IS NOT NULL "
+            "AND claimed_by_token<>'' "
+            "AND COALESCE(lease_expires_at_utc, 0) <= ?1;",
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, CurrentUtcMs(db_));
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (rows_requeued_out) *rows_requeued_out = sqlite3_changes(db_);
+    return true;
+}
+
 bool SqliteExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
