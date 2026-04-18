@@ -26,6 +26,7 @@ That opens the importer operator (`import_scene.soasim_blender_ir`) with options
 
 - **Collection** (target collection name, default `SoaSim_Imported`)
 - **Clear Target Collection** (clear previous imported objects before loading)
+- **Emit Parity Debug Log** (writes per-entry/per-node local + world transform matrices into a Blender Text datablock named `<Collection>_ParityDebug`)
 
 Then select your exported `blender_ir_scene.json` and import.
 

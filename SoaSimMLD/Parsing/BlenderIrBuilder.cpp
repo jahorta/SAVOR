@@ -4,7 +4,9 @@
 #include "GvrTextureDecoder.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -171,6 +173,27 @@ void appendTrianglesFromPolygon(const model::NjSemanticPolygon& poly, model::Ble
         primitivePolygonRemainingTriangleBudget -= primitiveTriangleCountEstimate;
     }
     return selected;
+}
+
+[[nodiscard]] std::string formatVec3(const model::Vec3& v) {
+    std::ostringstream out{};
+    out << std::fixed << std::setprecision(6)
+        << '[' << v.x << ',' << v.y << ',' << v.z << ']';
+    return out.str();
+}
+
+[[nodiscard]] std::string formatQuat(const model::Quat& q) {
+    std::ostringstream out{};
+    out << std::fixed << std::setprecision(6)
+        << '[' << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ']';
+    return out.str();
+}
+
+[[nodiscard]] std::string formatOptionalIndex(const std::optional<std::size_t>& value) {
+    if (!value.has_value()) {
+        return "null";
+    }
+    return std::to_string(*value);
 }
 
 } // namespace
@@ -372,6 +395,27 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
                         " references attach @ " + std::to_string(tree.nodes[nodeIdx].sourceAttachOffset) +
                         " but no attach mesh was produced.");
                 }
+
+                const auto& node = tree.nodes[nodeIdx];
+                const auto evalFlagsHex = [&]() {
+                    std::ostringstream flags{};
+                    flags << std::hex << std::uppercase << node.sourceEvalFlags;
+                    return flags.str();
+                }();
+                out.diagnostics.push_back(
+                    "PARITY_NODE treeObjectAddress=" + std::to_string(tree.sourceObjectAddress) +
+                    " treeChunkOffset=" + std::to_string(tree.sourceChunkOffset) +
+                    " nodeIndex=" + std::to_string(nodeIdx) +
+                    " sourceNodeOffset=" + std::to_string(node.sourceNodeOffset) +
+                    " parentNodeIndex=" + formatOptionalIndex(node.parentNodeIndex) +
+                    " meshIndex=" + formatOptionalIndex(node.meshIndex) +
+                    " hasAttach=" + std::string(node.hasAttach ? "true" : "false") +
+                    " sourceAttachOffset=" + std::to_string(node.sourceAttachOffset) +
+                    " sourceEvalFlags=0x" + evalFlagsHex +
+                    " localPosition=" + formatVec3(node.localTransform.position) +
+                    " localRotationRaw=" + formatVec3(node.localTransform.rotationRaw) +
+                    " localRotationQuat=" + formatQuat(node.localTransform.rotation) +
+                    " localScale=" + formatVec3(node.localTransform.scale));
             }
 
             out.objectTrees.push_back(std::move(tree));
@@ -401,6 +445,18 @@ model::BlenderIrScene BlenderIrBuilder::build(const ParseResult& parseResult) co
             out.diagnostics.push_back("BlenderIrBuilder entry " + std::to_string(entry.sourceEntryId) +
                 " references object(s) with no Blender IR object-tree output.");
         }
+
+        out.diagnostics.push_back(
+            "PARITY_ENTRY sourceEntryId=" + std::to_string(instance.sourceEntryId) +
+            " tblId=" + std::to_string(instance.tblId) +
+            " fxnName=" + instance.fxnName +
+            " objectAddressCount=" + std::to_string(instance.objectAddresses.size()) +
+            " meshIndexCount=" + std::to_string(instance.meshIndices.size()) +
+            " objectTreeIndexCount=" + std::to_string(instance.objectTreeIndices.size()) +
+            " position=" + formatVec3(instance.transform.position) +
+            " rotationRaw=" + formatVec3(instance.transform.rotationRaw) +
+            " rotationQuat=" + formatQuat(instance.transform.rotation) +
+            " scale=" + formatVec3(instance.transform.scale));
 
         out.indexEntries.push_back(std::move(instance));
     }

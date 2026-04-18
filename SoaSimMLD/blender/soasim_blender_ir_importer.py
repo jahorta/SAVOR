@@ -42,6 +42,7 @@ class ImportStats:
     material_count: int = 0
     warnings: int = 0
     warning_messages: list[str] = field(default_factory=list)
+    debug_lines: int = 0
 
     def add_warning(self, message: str) -> None:
         self.warnings += 1
@@ -399,6 +400,29 @@ def _apply_identity_local_transform(obj: Object) -> None:
     obj.matrix_basis = mathutils.Matrix.Identity(4)
 
 
+def _matrix_to_compact_string(matrix: mathutils.Matrix) -> str:
+    rows: list[str] = []
+    for row in matrix:
+        rows.append(f"[{row[0]:.6f},{row[1]:.6f},{row[2]:.6f},{row[3]:.6f}]")
+    return "[" + ",".join(rows) + "]"
+
+
+def _write_debug_log(debug_lines: list[str], target_collection_name: str, stats: ImportStats) -> None:
+    if not debug_lines:
+        return
+
+    text_name = f"{target_collection_name}_ParityDebug"
+    text_block = bpy.data.texts.get(text_name)
+    if text_block is None:
+        text_block = bpy.data.texts.new(text_name)
+    else:
+        text_block.clear()
+    text_block.write("\n".join(debug_lines))
+
+    stats.debug_lines = len(debug_lines)
+    print(f"[SoaSim Parity Debug] wrote {len(debug_lines)} lines to Blender text '{text_name}'")
+
+
 def _resolve_node_transform(node: dict[str, Any]) -> dict[str, Any]:
     transform = dict(node.get("localTransform", {}))
     eval_flags = int(node.get("sourceEvalFlags", 0))
@@ -421,6 +445,7 @@ def import_blender_ir_json(
     json_path: str,
     clear_target_collection: bool,
     target_collection_name: str,
+    emit_parity_debug: bool,
 ) -> ImportStats:
     payload = _parse_json(json_path)
     stats = ImportStats()
@@ -443,6 +468,7 @@ def import_blender_ir_json(
         mesh_objects.append(mesh_obj)
 
     object_trees: list[dict[str, Any]] = payload.get("objectTrees", [])
+    debug_lines: list[str] = []
 
     for entry in payload.get("indexEntries", []):
         transform = entry.get("transform", {})
@@ -450,6 +476,15 @@ def import_blender_ir_json(
         fxn_name = str(entry.get("fxnName", ""))
         entry_root = _create_empty(f"SoaEntry_{entry_id}")
         _apply_transform(entry_root, transform)
+        if emit_parity_debug:
+            debug_lines.append(
+                (
+                    f"ENTRY sourceEntryId={entry_id} tblId={int(entry.get('tblId', 0))} "
+                    f"fxnName={fxn_name} "
+                    f"basis={_matrix_to_compact_string(entry_root.matrix_basis)} "
+                    f"world={_matrix_to_compact_string(entry_root.matrix_world)}"
+                )
+            )
         _set_custom_int_property(
             entry_root,
             "soasim_source_entry_id",
@@ -581,6 +616,17 @@ def import_blender_ir_json(
                         _set_parent_with_identity_inverse(node_obj, tree_root)
                         stats.warnings += 1
                 _apply_transform(node_obj, _resolve_node_transform(node))
+                if emit_parity_debug:
+                    debug_lines.append(
+                        (
+                            f"NODE treeIndex={ti} nodeIndex={node_idx} "
+                            f"parentNodeIndex={parent_idx} "
+                            f"sourceNodeOffset={int(node.get('sourceNodeOffset', 0))} "
+                            f"sourceEvalFlags=0x{int(node.get('sourceEvalFlags', 0)):X} "
+                            f"basis={_matrix_to_compact_string(node_obj.matrix_basis)} "
+                            f"world={_matrix_to_compact_string(node_obj.matrix_world)}"
+                        )
+                    )
 
                 mesh_index = node.get("meshIndex")
                 if mesh_index is None:
@@ -600,6 +646,9 @@ def import_blender_ir_json(
                 attach_obj["soasim_mesh_index"] = mi
                 root_collection.objects.link(attach_obj)
                 stats.object_count += 1
+
+    if emit_parity_debug:
+        _write_debug_log(debug_lines, target_collection_name, stats)
 
     return stats
 
@@ -624,6 +673,15 @@ class IMPORT_SCENE_OT_soasim_blender_ir(bpy.types.Operator, ImportHelper):
         description="Delete existing objects in target collections before import",
     )
 
+    emit_parity_debug: BoolProperty(
+        name="Emit Parity Debug Log",
+        default=False,
+        description=(
+            "Write per-entry and per-node transform matrices into a Blender Text datablock "
+            "named '<Collection>_ParityDebug' for SAIO parity comparison."
+        ),
+    )
+
     def execute(self, context: bpy.types.Context) -> set[str]:
         del context
         json_path = str(Path(self.filepath))
@@ -633,6 +691,7 @@ class IMPORT_SCENE_OT_soasim_blender_ir(bpy.types.Operator, ImportHelper):
                 json_path=json_path,
                 clear_target_collection=self.clear_target_collection,
                 target_collection_name=self.target_collection_name,
+                emit_parity_debug=self.emit_parity_debug,
             )
         except Exception as exc:  # Blender operator-level error boundary
             self.report({"ERROR"}, f"SoaSim import failed: {exc}")
@@ -652,7 +711,7 @@ class IMPORT_SCENE_OT_soasim_blender_ir(bpy.types.Operator, ImportHelper):
                 "SoaSim import complete: "
                 f"meshes={stats.mesh_count}, objects={stats.object_count}, "
                 f"textures={stats.texture_count}, materials={stats.material_count}, "
-                f"warnings={stats.warnings}"
+                f"warnings={stats.warnings}, debugLines={stats.debug_lines}"
             ),
         )
         return {"FINISHED"}
