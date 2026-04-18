@@ -4,6 +4,10 @@ Date: 2026-04-18
 
 This inventory is the concrete file set used to build the dependency graph/checklist/function scope docs.
 
+Decision update: 2026-04-18
+- Port implementation will mirror the SA3D source hierarchy under `SoaSimMLD/SA3DPort`.
+- Read/parse parity only for this milestone; write-side APIs are deferred.
+
 ---
 
 ## Included source groups
@@ -94,3 +98,18 @@ If future requirements include SA container support or level parsing, add:
 - Landtable classes
 - BASIC and GC mesh/attach branches
 - full SA metadata version compatibility matrix
+
+---
+
+## Locked target tree root (SoaSimMLD)
+
+- `SoaSimMLD/SA3DPort/File/`
+- `SoaSimMLD/SA3DPort/ObjectData/Enums/`
+- `SoaSimMLD/SA3DPort/ObjectData/`
+- `SoaSimMLD/SA3DPort/Mesh/Chunk/PolyChunks/`
+- `SoaSimMLD/SA3DPort/Mesh/Chunk/Structs/`
+- `SoaSimMLD/SA3DPort/Mesh/Buffer/`
+- `SoaSimMLD/SA3DPort/Mesh/Weighted/`
+- `SoaSimMLD/SA3DPort/Animation/Utilities/`
+- `SoaSimMLD/SA3DPort/Animation/`
+- `SoaSimMLD/SA3DPort/Structs/`

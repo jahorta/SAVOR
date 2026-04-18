@@ -3,6 +3,11 @@
 Date: 2026-04-18  
 Scope: dependencies reachable from `File/ModelFile.cs` and `File/AnimationFile.cs`, excluding `LevelFile.cs` paths and excluding SA1/SA2/BASIC/GC-unique branches unless shared by NJ-CHUNK behavior.
 
+Decision update: 2026-04-18
+- Scope above is locked for this milestone.
+- Port order constraints in section 4 are finalized as implementation order.
+- Write-side NJ/animation paths are not part of this milestone.
+
 ---
 
 ## 1) Scope filter used
