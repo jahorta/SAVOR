@@ -66,6 +66,18 @@ struct ExecutionJobRecord {
     std::int64_t queued_at_utc = 0;
 };
 
+struct ClaimedExecutionJob {
+    std::int64_t job_id = 0;
+    std::int64_t job_set_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string workflow_step_key;
+    std::string workflow_step_kind;
+    int workflow_step_priority = 0;
+    std::optional<std::string> savestate_affinity_key;
+    std::optional<std::string> program_runtime_affinity_key;
+};
+
 struct IExecutionDb {
     virtual ~IExecutionDb() = default;
 
@@ -78,6 +90,24 @@ struct IExecutionDb {
         std::string* error_out = nullptr) = 0;
     virtual bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) = 0;
     virtual bool EnqueueJob(const EnqueueJobCommand& command, std::int64_t* job_id_out = nullptr, std::string* error_out = nullptr) = 0;
+    virtual std::optional<ClaimedExecutionJob> ClaimNextReadyExecutionJob(
+        std::string_view claimed_by_token,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) = 0;
+    virtual std::vector<ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+        std::string_view claimed_by_token,
+        int requested_jobs,
+        std::int64_t lease_duration_ms,
+        std::string* error_out = nullptr) = 0;
+    virtual bool RenewExecutionJobLease(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::int64_t lease_duration_ms,
+        bool* renewed_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+    virtual bool RequeueExpiredExecutionLeases(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) = 0;
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
     virtual bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) = 0;
 
