@@ -1,6 +1,5 @@
 #pragma once
 
-#include "NJCMParser.h"
 #include "../Model/BlenderIrModel.h"
 #include "../Model/NjcmModel.h"
 #include "../Model/NjtlModel.h"
@@ -29,6 +28,22 @@ struct ParseDiagnostic {
     std::string message{};
 };
 
+struct NjcmChunkSummary {
+    std::size_t chunkOffset = 0;
+    std::size_t chunkDataSize = 0;
+    bool chunkSizeLittleEndian = true;
+    bool payloadLittleEndian = true;
+    std::uint32_t imageBase = 0;
+    bool usedPof0Fixup = false;
+    std::size_t objectCount = 0;
+    std::size_t attachCount = 0;
+    std::size_t vertexChunkCount = 0;
+    std::size_t polyChunkCount = 0;
+    std::size_t decodedVertexCount = 0;
+    std::size_t decodedTriangleCount = 0;
+    std::size_t score = 0;
+};
+
 struct CoordinatePolicy {
     bool swapYZ = false;
     bool negateX = false;
@@ -43,7 +58,6 @@ struct ParseOptions {
     CoordinatePolicy coordinates{};
     bool preserveUnknownEntries = true;
     bool emitFxnHistogram = true;
-    NjcmParsePolicy njcmPolicy{ .useSaToolsParityPath = true };
     std::string filterFxnName{};
     std::vector<std::uint32_t> filterEntryIdList{};
     bool buildBlenderIntermediateIr = true;

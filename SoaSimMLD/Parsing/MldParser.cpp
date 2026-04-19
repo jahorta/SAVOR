@@ -8,7 +8,6 @@
 #include "EntryHandlers.h"
 #include "MldBinaryReader.h"
 #include "MldTextureArchiveParser.h"
-#include "NJTLParser.h"
 
 #include <algorithm>
 #include <array>
@@ -107,33 +106,6 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
     return normalized;
 }
 
-[[nodiscard]] std::string toHex(const std::uint32_t value) {
-    std::ostringstream oss;
-    oss << "0x" << std::hex << std::uppercase << value;
-    return oss.str();
-}
-
-[[nodiscard]] std::string formatPolyTypeHistogram(const std::unordered_map<std::uint8_t, std::size_t>& counts) {
-    if (counts.empty()) {
-        return "{}";
-    }
-    std::vector<std::pair<std::uint8_t, std::size_t>> ordered(counts.begin(), counts.end());
-    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
-        return a.first < b.first;
-    });
-
-    std::ostringstream out;
-    out << "{";
-    for (std::size_t ii = 0; ii < ordered.size(); ++ii) {
-        if (ii != 0) {
-            out << ", ";
-        }
-        out << static_cast<unsigned>(ordered[ii].first) << ":" << ordered[ii].second;
-    }
-    out << "}";
-    return out.str();
-}
-
 class CollisionEntryHandler final : public EntryHandler {
 public:
     [[nodiscard]] bool canHandle(const std::string_view fxnName) const override {
@@ -175,198 +147,11 @@ public:
     }
 };
 
-void parseNjBlockStream(std::span<const std::uint8_t> bytes,
-    const std::size_t imageBase,
-    std::unordered_map<std::uint32_t, std::size_t>& chunkTypeCounts,
-    std::vector<NjcmChunkSummary>& njcmChunks,
-    std::vector<model::NjcmDecodedChunk>& decodedNjcmChunks,
-    std::vector<model::NjObjectBlockModel>& decodedNjObjectBlocks,
-    const ParseOptions& options) {
-    constexpr std::uint32_t tagNjcm = makeTag('N', 'J', 'C', 'M');
-    constexpr std::uint32_t tagNjtl = makeTag('N', 'J', 'T', 'L');
-    constexpr std::uint32_t tagPof0 = makeTag('P', 'O', 'F', '0');
-    constexpr std::uint32_t tagNmdm = makeTag('N', 'M', 'D', 'M');
-    constexpr std::uint32_t tagNcam = makeTag('N', 'C', 'A', 'M');
-
-    struct PendingNjcm {
-        std::size_t chunkStart = 0;
-        std::size_t chunkDataSize = 0;
-        bool chunkSizeLittleEndian = false;
-        bool hasNjtlBeforeNjcm = false;
-        std::optional<model::NjtlBlock> njtlBlock{};
-        bool sawPof0Chunk = false;
-        std::uint32_t pofImageBaseLocal = 0;
-        std::vector<std::uint8_t> pof0Data{};
-        std::vector<std::uint8_t> data{};
-    };
-
-    struct PendingNjtl {
-        std::size_t chunkStart = 0;
-        std::size_t chunkDataSize = 0;
-        bool chunkSizeLittleEndian = false;
-        std::vector<std::uint8_t> data{};
-        std::optional<model::NjtlBlock> njtlBlock{};
-    };
-
-    std::optional<PendingNjcm> pendingNjcm{};
-    std::optional<PendingNjtl> pendingNjtl{};
-    std::uint32_t runningImageBaseLocal = 0;
-    bool njtlSeen = false;
-
-    MldBinaryReader reader(bytes);
-    while (reader.remaining() >= 8) {
-        const std::size_t relChunkStart = reader.position();
-        const auto tag = reader.readU32LE();
-        const auto chunkSizeLe = reader.readU32LE();
-        if (!tag.has_value() || !chunkSizeLe.has_value()) {
-            break;
-        }
-        const bool knownTag = (*tag == tagNjcm) || (*tag == tagNjtl) || (*tag == tagPof0) || (*tag == tagNmdm) || (*tag == tagNcam);
-        if (!knownTag) {
-            if (!reader.seek(relChunkStart + 1U)) {
-                break;
-            }
-            continue;
-        }
-        ++chunkTypeCounts[*tag];
-
-        const std::size_t dataStart = reader.position();
-        std::size_t chunkSize = static_cast<std::size_t>(*chunkSizeLe);
-        bool chunkSizeLittleEndian = true;
-        if (!options.njcmPolicy.chunkSizeLittleEndian) {
-            const std::uint32_t sizeBe = ((*chunkSizeLe & 0x000000FFU) << 24) |
-                ((*chunkSizeLe & 0x0000FF00U) << 8) |
-                ((*chunkSizeLe & 0x00FF0000U) >> 8) |
-                ((*chunkSizeLe & 0xFF000000U) >> 24);
-            chunkSize = static_cast<std::size_t>(sizeBe);
-            chunkSizeLittleEndian = false;
-        }
-        std::size_t dataEnd = dataStart + chunkSize;
-        if (dataEnd > reader.size() && options.njcmPolicy.allowHeuristicFallback) {
-            const std::uint32_t sizeBe = ((*chunkSizeLe & 0x000000FFU) << 24) |
-                ((*chunkSizeLe & 0x0000FF00U) << 8) |
-                ((*chunkSizeLe & 0x00FF0000U) >> 8) |
-                ((*chunkSizeLe & 0xFF000000U) >> 24);
-            const std::size_t beEnd = dataStart + static_cast<std::size_t>(sizeBe);
-            if (beEnd <= reader.size()) {
-                chunkSize = static_cast<std::size_t>(sizeBe);
-                dataEnd = beEnd;
-                chunkSizeLittleEndian = false;
-            }
-        }
-        if (dataEnd > reader.size()) {
-            break;
-        }
-
-        const std::size_t absChunkStart = imageBase + relChunkStart;
-        if (*tag == tagNjcm) {
-            if (njtlSeen && pendingNjtl.has_value() && !pendingNjtl.value().njtlBlock.has_value()) {
-                pendingNjtl.value().njtlBlock = parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
-            }
-
-            PendingNjcm state{};
-            state.chunkStart = absChunkStart;
-            state.chunkDataSize = chunkSize;
-            state.chunkSizeLittleEndian = chunkSizeLittleEndian;
-            state.hasNjtlBeforeNjcm = njtlSeen;
-            if (pendingNjtl.has_value() && pendingNjtl.value().njtlBlock.has_value())
-                state.njtlBlock = std::move(pendingNjtl.value().njtlBlock);
-            state.sawPof0Chunk = false;
-            state.pofImageBaseLocal = 0;
-            state.pof0Data.clear();
-            state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
-                bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
-            pendingNjcm = std::move(state);
-        } else if (*tag == tagNjtl) {
-            PendingNjtl state{};
-            state.chunkStart = absChunkStart;
-            state.chunkDataSize = chunkSize;
-            state.chunkSizeLittleEndian = chunkSizeLittleEndian;
-            state.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
-                bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
-        } else if (*tag == tagPof0 || *tag == tagNmdm || *tag == tagNcam) {
-            
-            if (*tag == tagPof0 && pendingNjtl.has_value()) {
-                auto deltas = decodePof0Deltas(bytes.subspan(dataStart, chunkSize));
-                applyPof0Fixups(pendingNjtl.value().data, deltas, runningImageBaseLocal, pendingNjtl.value().chunkSizeLittleEndian);
-                pendingNjtl.value().njtlBlock = parseNjtlBlock(pendingNjtl.value().data, pendingNjtl.value().chunkStart, pendingNjtl.value().chunkDataSize, pendingNjtl.value().chunkSizeLittleEndian);
-            }
-            
-            if (*tag == tagPof0 && pendingNjcm.has_value()) {
-                pendingNjcm->sawPof0Chunk = true;
-                pendingNjcm->pofImageBaseLocal = runningImageBaseLocal;
-                pendingNjcm->pof0Data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataStart),
-                    bytes.begin() + static_cast<std::ptrdiff_t>(dataEnd));
-            }
-            if ((*tag == tagPof0 || *tag == tagNjtl || *tag == tagNmdm || *tag == tagNcam) && pendingNjcm.has_value()) {
-                auto decodePolicy = options.njcmPolicy;
-                decodePolicy.useSaToolsParityPath = true;
-                if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
-                    decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
-                }
-                auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
-                    pendingNjcm->chunkStart,
-                    pendingNjcm->chunkDataSize,
-                    pendingNjcm->chunkSizeLittleEndian,
-                    pendingNjcm->sawPof0Chunk,
-                    decodePolicy,
-                    std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
-                auto summary = summarizeDecodedNjcmChunk(decoded);
-                njcmChunks.push_back(summary);
-                decodedNjcmChunks.push_back(decoded);
-                decodedNjObjectBlocks.push_back(model::NjObjectBlockModel{
-                    .hasNjtlBeforeNjcm = pendingNjcm->hasNjtlBeforeNjcm,
-                    .njtl = std::move(pendingNjcm->njtlBlock),
-                    .njcm = std::move(decoded),
-                });
-                pendingNjcm.reset();
-            }
-        }
-
-        if (!reader.seek(dataEnd)) {
-            break;
-        }
-
-        if (*tag != tagPof0) {
-            runningImageBaseLocal += static_cast<std::uint32_t>(relChunkStart);
-        }
-    }
-
-    if (pendingNjcm.has_value()) {
-        auto decodePolicy = options.njcmPolicy;
-        decodePolicy.useSaToolsParityPath = true;
-        if (decodePolicy.useSaToolsParityPath && pendingNjcm->sawPof0Chunk) {
-            decodePolicy.imageBase = pendingNjcm->pofImageBaseLocal;
-        }
-        auto decoded = decodeNjcmChunkDeterministic(std::span<const std::uint8_t>(pendingNjcm->data.data(), pendingNjcm->data.size()),
-            pendingNjcm->chunkStart,
-            pendingNjcm->chunkDataSize,
-            pendingNjcm->chunkSizeLittleEndian,
-            pendingNjcm->sawPof0Chunk,
-            decodePolicy,
-            std::span<const std::uint8_t>(pendingNjcm->pof0Data.data(), pendingNjcm->pof0Data.size()));
-        auto summary = summarizeDecodedNjcmChunk(decoded);
-        njcmChunks.push_back(summary);
-        decodedNjcmChunks.push_back(decoded);
-        decodedNjObjectBlocks.push_back(model::NjObjectBlockModel{
-            .hasNjtlBeforeNjcm = pendingNjcm->hasNjtlBeforeNjcm,
-            .njtl = std::move(pendingNjcm->njtlBlock),
-            .njcm = std::move(decoded),
-        });
-    }
-}
-
 } // namespace
 
 ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
     std::cout << "[SoaSimMLD] Step 1/5: Starting parse (" << mldBytes.size() << " bytes).\n";
     ParseResult result{};
-    if (!options.njcmPolicy.useSaToolsParityPath) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "NJCM parsing forced to SA tools parity path; non-parity path is currently disabled.",
-        });
-    }
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = mldBytes;
@@ -641,44 +426,10 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         objectAddressesAll.push_back(addr);
     }
     std::sort(objectAddressesAll.begin(), objectAddressesAll.end());
-    for (const auto objectAddress : objectAddressesAll) {
-        const std::size_t objectOffset = static_cast<std::size_t>(objectAddress);
-        const auto relNjcm = common::readU32AtBE(payload, objectOffset + 0x00);
-        const auto objectSizeField = common::readU32AtBE(payload, objectOffset + 0x04);
-        const auto relNjtl = common::readU32AtBE(payload, objectOffset + 0x08);
-        if (!relNjcm.has_value() || !objectSizeField.has_value() || !relNjtl.has_value()) {
-            continue;
-        }
-        if (*objectSizeField < 16) {
-            continue;
-        }
-
-        const std::size_t objectPayloadSize = static_cast<std::size_t>(*objectSizeField - 16U);
-        const std::size_t startRel = (*relNjtl != 0U) ? static_cast<std::size_t>(*relNjtl) : static_cast<std::size_t>(*relNjcm);
-        const std::size_t startAbs = objectOffset + startRel;
-        if (startAbs >= payload.size() || startAbs + objectPayloadSize > payload.size()) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Warning,
-                .message = "Object payload out of bounds @ 0x" + std::to_string(objectOffset),
-            });
-            continue;
-        }
-
-        const auto decodedChunkBegin = result.decodedNjcmChunks.size();
-        parseNjBlockStream(payload.subspan(startAbs, objectPayloadSize),
-            startAbs,
-            chunkTypeCounts,
-            result.njcmChunks,
-            result.decodedNjcmChunks,
-            result.decodedNjObjectBlocks,
-            options);
-        const auto decodedChunkEnd = result.decodedNjcmChunks.size();
-        result.decodedObjectChunkRanges.push_back(DecodedObjectChunkRange{
-            .objectAddress = objectAddress,
-            .decodedChunkBegin = decodedChunkBegin,
-            .decodedChunkEnd = decodedChunkEnd,
-        });
-    }
+    result.diagnostics.push_back(ParseDiagnostic{
+        .severity = ParseDiagnostic::Severity::Info,
+        .message = "Legacy Ninja parsing modules (NJCM/NJTL) have been removed from MLD parsing. Object addresses are retained for SA3D IR migration.",
+    });
 
     for (const auto groundAddress : uniqueGroundAddresses) {
         const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
@@ -739,165 +490,6 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", objects=" + std::to_string(uniqueObjectAddresses.size()) +
             ", motions=" + std::to_string(uniqueMotionAddresses.size()),
     });
-
-    for (const auto& njcm : result.njcmChunks) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "NJCM decode summary @ " + std::to_string(njcm.chunkOffset) +
-                ": size=" + std::to_string(njcm.chunkDataSize) +
-                ", sizeEndian=" + std::string(njcm.chunkSizeLittleEndian ? "LE" : "BE") +
-                ", payloadEndian=" + std::string(njcm.payloadLittleEndian ? "LE" : "BE") +
-                ", imageBase=" + std::to_string(njcm.imageBase) +
-                ", pof0=" + std::string(njcm.usedPof0Fixup ? "yes" : "no") +
-                ", objects=" + std::to_string(njcm.objectCount) +
-                ", attaches=" + std::to_string(njcm.attachCount) +
-                ", vchunks=" + std::to_string(njcm.vertexChunkCount) +
-                ", pchunks=" + std::to_string(njcm.polyChunkCount) +
-                ", verts=" + std::to_string(njcm.decodedVertexCount) +
-                ", triEst=" + std::to_string(njcm.decodedTriangleCount) +
-                ", score=" + std::to_string(njcm.score),
-        });
-    }
-    for (const auto& decoded : result.decodedNjcmChunks) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = decoded.parseSucceeded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
-            .message = "NJCM deterministic decode @ " + std::to_string(decoded.chunkOffset) +
-                ": parseOk=" + std::string(decoded.parseSucceeded ? "yes" : "no") +
-                ", fallback=" + std::string(decoded.parsedWithHeuristicFallback ? "yes" : "no") +
-                ", diagnostics=" + std::to_string(decoded.diagnostics.size()),
-        });
-
-        std::size_t decodedAttachTriangles = 0;
-        std::size_t decodedAttachVertices = 0;
-        std::size_t emptySemanticPolyChunks = 0;
-        std::size_t nonEmptySemanticPolyChunks = 0;
-        std::size_t outOfRangeIndexCount = 0;
-        std::size_t totalSemanticIndexCount = 0;
-        std::size_t highestSemanticIndex = 0;
-        bool sawAnyIndex = false;
-        std::unordered_map<std::uint8_t, std::size_t> polyTypeCounts{};
-        std::unordered_map<std::uint8_t, std::size_t> polyTypeWithTriangles{};
-
-        for (std::size_t attachIdx = 0; attachIdx < decoded.attaches.size(); ++attachIdx) {
-            const auto& attach = decoded.attaches[attachIdx];
-            decodedAttachTriangles += attach.decodedTriangleCount;
-            decodedAttachVertices += attach.semanticVertices.size();
-
-            for (const auto& poly : attach.semanticPolygons) {
-                ++polyTypeCounts[poly.type];
-                if (poly.indices.empty()) {
-                    ++emptySemanticPolyChunks;
-                } else {
-                    ++nonEmptySemanticPolyChunks;
-                    ++polyTypeWithTriangles[poly.type];
-                }
-
-                for (const auto idx : poly.indices) {
-                    sawAnyIndex = true;
-                    ++totalSemanticIndexCount;
-                    highestSemanticIndex = std::max(highestSemanticIndex, static_cast<std::size_t>(idx));
-                    if (idx >= attach.semanticVertices.size()) {
-                        ++outOfRangeIndexCount;
-                    }
-                }
-            }
-
-            if (attach.decodedTriangleCount == 0 && !attach.polyChunks.empty()) {
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = "NJCM attach @ " + std::to_string(attach.offset) +
-                        " emitted zero triangles despite polyChunks=" + std::to_string(attach.polyChunks.size()) +
-                        " and semanticVertices=" + std::to_string(attach.semanticVertices.size()),
-                });
-            }
-        }
-
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "NJCM semantic summary @ " + std::to_string(decoded.chunkOffset) +
-                ": attachVerts=" + std::to_string(decodedAttachVertices) +
-                ", attachTriEst=" + std::to_string(decodedAttachTriangles) +
-                ", polyChunksWithTriangles=" + std::to_string(nonEmptySemanticPolyChunks) +
-                ", polyChunksEmpty=" + std::to_string(emptySemanticPolyChunks) +
-                ", semanticIndices=" + std::to_string(totalSemanticIndexCount) +
-                ", polyTypes=" + formatPolyTypeHistogram(polyTypeCounts) +
-                ", polyTypesWithTriangles=" + formatPolyTypeHistogram(polyTypeWithTriangles),
-        });
-
-        if (sawAnyIndex) {
-            const auto severity = (outOfRangeIndexCount > 0) ? ParseDiagnostic::Severity::Warning : ParseDiagnostic::Severity::Info;
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = severity,
-                .message = "NJCM semantic index bounds @ " + std::to_string(decoded.chunkOffset) +
-                    ": outOfRangeIndices=" + std::to_string(outOfRangeIndexCount) +
-                    ", highestIndex=" + std::to_string(highestSemanticIndex),
-            });
-        }
-    }
-
-    for (const auto& block : result.decodedNjObjectBlocks) {
-        if (!block.njtl.has_value()) {
-            continue;
-        }
-        const auto& njtl = *block.njtl;
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = njtl.parseSucceeded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
-            .message = "NJTL summary @ " + std::to_string(njtl.chunkOffset) +
-                ": count=" + std::to_string(njtl.textureCount) +
-                ", parsed=" + std::to_string(njtl.textureNames.size()) +
-                ", hasNjtlBeforeNjcm=" + std::string(block.hasNjtlBeforeNjcm ? "yes" : "no"),
-        });
-    }
-
-    for (const auto& objectRange : result.decodedObjectChunkRanges) {
-        std::size_t objectAttachCount = 0;
-        std::size_t objectVertices = 0;
-        std::size_t objectTriangles = 0;
-        std::size_t objectEmptyPolyChunks = 0;
-        std::size_t objectNonEmptyPolyChunks = 0;
-        std::size_t objectOutOfRangeIndices = 0;
-        std::unordered_map<std::uint8_t, std::size_t> objectPolyTypes{};
-
-        for (std::size_t chunkIdx = objectRange.decodedChunkBegin;
-            chunkIdx < objectRange.decodedChunkEnd && chunkIdx < result.decodedNjcmChunks.size();
-            ++chunkIdx) {
-            const auto& decoded = result.decodedNjcmChunks[chunkIdx];
-            objectAttachCount += decoded.attaches.size();
-            for (const auto& attach : decoded.attaches) {
-                objectVertices += attach.semanticVertices.size();
-                objectTriangles += attach.decodedTriangleCount;
-                for (const auto& poly : attach.semanticPolygons) {
-                    ++objectPolyTypes[poly.type];
-                    if (poly.indices.empty()) {
-                        ++objectEmptyPolyChunks;
-                    } else {
-                        ++objectNonEmptyPolyChunks;
-                    }
-                    for (const auto idx : poly.indices) {
-                        if (idx >= attach.semanticVertices.size()) {
-                            ++objectOutOfRangeIndices;
-                        }
-                    }
-                }
-            }
-        }
-
-        const auto severity = (objectOutOfRangeIndices > 0 || (objectTriangles == 0 && objectAttachCount > 0))
-            ? ParseDiagnostic::Severity::Warning
-            : ParseDiagnostic::Severity::Info;
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = severity,
-            .message = "NJCM object summary " + toHex(objectRange.objectAddress) +
-                ": chunks=" + std::to_string(objectRange.decodedChunkEnd - objectRange.decodedChunkBegin) +
-                ", attaches=" + std::to_string(objectAttachCount) +
-                ", verts=" + std::to_string(objectVertices) +
-                ", triEst=" + std::to_string(objectTriangles) +
-                ", polyChunksWithTriangles=" + std::to_string(objectNonEmptyPolyChunks) +
-                ", polyChunksEmpty=" + std::to_string(objectEmptyPolyChunks) +
-                ", outOfRangeIndices=" + std::to_string(objectOutOfRangeIndices) +
-                ", polyTypes=" + formatPolyTypeHistogram(objectPolyTypes),
-        });
-    }
 
     if (options.buildBlenderIntermediateIr) {
         BlenderIrBuilder blenderIrBuilder{};
@@ -966,8 +558,6 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             ", collisions=" + std::to_string(result.world.collisions.size()) +
             ", triggers=" + std::to_string(result.world.triggers.size()) +
             ", unknownEntries=" + std::to_string(result.world.unknownEntries.size()) +
-            ", njcmChunks=" + std::to_string(result.njcmChunks.size()) +
-            ", njObjectBlocks=" + std::to_string(result.decodedNjObjectBlocks.size()) +
             ", chunkTypes=" + std::to_string(result.chunkTypeHistogram.size()),
     });
 
@@ -980,7 +570,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
     std::cout << "[SoaSimMLD] Step 5/5: Parse complete. Entries=" << entries.size()
               << ", GRND=" << result.world.grndSurfaces.size()
-              << ", NJCM=" << result.njcmChunks.size() << ".\n";
+              << ".\n";
 
     return result;
 }
@@ -993,8 +583,6 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "unknownEntries=" << parseResult.world.unknownEntries.size() << '\n';
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
-    out << "njcmChunks=" << parseResult.njcmChunks.size() << '\n';
-    out << "njObjectBlocks=" << parseResult.decodedNjObjectBlocks.size() << '\n';
     out << "blenderIrMeshes=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->meshes.size() : 0) << '\n';
     out << "blenderIrIndexEntries=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->indexEntries.size() : 0) << '\n';
 
@@ -1009,60 +597,6 @@ std::string formatParseSummary(const ParseResult& parseResult) {
         out << "fxnHistogram:" << '\n';
         for (const auto& [fxn, count] : parseResult.fxnHistogram) {
             out << "  - " << fxn << ": " << count << '\n';
-        }
-    }
-
-    if (!parseResult.njcmChunks.empty()) {
-        out << "njcm:" << '\n';
-        for (const auto& chunk : parseResult.njcmChunks) {
-            out << "  - offset=" << chunk.chunkOffset
-                << " bytes=" << chunk.chunkDataSize
-                << " score=" << chunk.score
-                << " payloadEndian=" << (chunk.payloadLittleEndian ? "LE" : "BE")
-                << " sizeEndian=" << (chunk.chunkSizeLittleEndian ? "LE" : "BE")
-                << " imageBase=" << chunk.imageBase
-                << " objects=" << chunk.objectCount
-                << " attaches=" << chunk.attachCount
-                << " verts=" << chunk.decodedVertexCount
-                << " triEst=" << chunk.decodedTriangleCount
-                << " pof0=" << (chunk.usedPof0Fixup ? "yes" : "no")
-                << '\n';
-        }
-    }
-
-    if (!parseResult.decodedNjcmChunks.empty()) {
-        out << "decodedNjcm:" << '\n';
-        for (const auto& decoded : parseResult.decodedNjcmChunks) {
-            out << "  - offset=" << decoded.chunkOffset
-                << " objects=" << decoded.objects.size()
-                << " attaches=" << decoded.attaches.size()
-                << " parseOk=" << (decoded.parseSucceeded ? "yes" : "no")
-                << " fallback=" << (decoded.parsedWithHeuristicFallback ? "yes" : "no")
-                << '\n';
-        }
-    }
-
-    if (!parseResult.decodedNjObjectBlocks.empty()) {
-        out << "decodedNjObjectBlocks:" << '\n';
-        for (const auto& block : parseResult.decodedNjObjectBlocks) {
-            out << "  - njcmOffset=" << block.njcm.chunkOffset
-                << " hasNjtlBeforeNjcm=" << (block.hasNjtlBeforeNjcm ? "yes" : "no")
-                << " njtlOffset=" << (block.njtl.has_value() ? std::to_string(block.njtl->chunkOffset) : "none");
-            if (block.njtl.has_value()) {
-                out << " njtlTextures=" << block.njtl->textureNames.size();
-                if (!block.njtl->textureNames.empty()) {
-                    out << " names=[";
-                    for (std::size_t i = 0; i < block.njtl->textureNames.size(); ++i) {
-                        if (i != 0) {
-                            out << ", ";
-                        }
-                        out << block.njtl->textureNames[i].name;
-                    }
-                    out << "]";
-                }
-            }
-            out
-                << '\n';
         }
     }
 
