@@ -1,17 +1,36 @@
-# SA3DRefRunner (Framework Scaffold)
+# SA3DRefRunner
 
-This is an initial framework for the .NET SA3D bridge runner.
+Reference bridge runner for generating `parity_report_v1` JSON from fixture inputs, including extracted NJ block byte files.
 
 ## Commands
 
-- `run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] [--slice <n>]`
-- `run-all --manifest <path> --out <dir> [--slice <n>]`
+- `run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] [--slice <n>] [--sa3d-parser-cmd <template>]`
+- `run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-parser-cmd <template>]`
 
-## Current status
+## Parser command template
 
-- Emits deterministic JSON scaffold reports with `parity_report_v1` shape.
-- Emits `slice_io_pairs` placeholders for slice-level replay wiring.
-- Does **not** yet bind to `SA3D.Modeling` parser APIs (framework only).
+Use `--sa3d-parser-cmd` to invoke an external DetailedIO-compatible parser command.
+
+Supported placeholders:
+
+- `{input}` absolute fixture path
+- `{output}` absolute temp output path that the parser command must write
+- `{slice}` numeric slice stage
+
+Example template:
+
+```bash
+--sa3d-parser-cmd "dotnet run --project /path/to/DetailedIO/Runner.csproj -- --input {input} --output {output} --slice {slice}"
+```
+
+If no parser command is provided, the bridge still emits baseline deterministic reports with warning diagnostics.
+
+## Determinism behavior
+
+- UTF-8 no BOM output
+- stable fixture ordering for `run-all`
+- sorted key ordering for metric and IO dictionaries
+- consistent diagnostic and batch summary shapes
 
 ## Build / Run
 

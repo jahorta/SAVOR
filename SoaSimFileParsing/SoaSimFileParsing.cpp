@@ -58,17 +58,19 @@ struct CliOptions {
     std::filesystem::path outputDir{};
     bool runAbSa3dPortVsSa3dBridge = false;
     std::optional<std::filesystem::path> dotnetBridgeExe{};
+    std::optional<std::string> dotnetBridgeCommand{};
 };
 
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--dotnet-bridge-exe <path>]\n\n"
+        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--dotnet-bridge-exe <path>] [--dotnet-bridge-cmd <prefix>]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SoaSimFileParsing/inputs\n"
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
-        << "  - --dotnet-bridge-exe should point to the .NET bridge runner executable used for SA3D reference output.\n";
+        << "  - --dotnet-bridge-exe should point to the .NET bridge runner executable used for SA3D reference output.\n"
+        << "  - --dotnet-bridge-cmd supplies a full command prefix (e.g. 'dotnet run --project ... --') used to invoke run-one.\n";
 }
 
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
@@ -94,6 +96,15 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             }
             ++i;
             options.dotnetBridgeExe = std::filesystem::path(argv[i]);
+            continue;
+        }
+        if (arg == "--dotnet-bridge-cmd") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --dotnet-bridge-cmd.\n";
+                return std::nullopt;
+            }
+            ++i;
+            options.dotnetBridgeCommand = std::string(argv[i]);
             continue;
         }
         if (!arg.empty() && arg.front() == '-') {
@@ -166,21 +177,27 @@ void writeFixtureManifestFromInputDir(const std::filesystem::path& inputDir, con
 
 std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
     const std::optional<std::filesystem::path>& bridgeExe,
+    const std::optional<std::string>& bridgeCommand,
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir,
     const std::filesystem::path& fixtureManifestPath) {
-    if (!bridgeExe.has_value()) {
-        return std::nullopt;
-    }
-    const auto bridgePath = *bridgeExe;
-    if (!std::filesystem::exists(bridgePath)) {
-        std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge executable does not exist: "
-                  << bridgePath.string() << "\n";
+    std::string commandPrefix{};
+    if (bridgeCommand.has_value() && !bridgeCommand->empty()) {
+        commandPrefix = *bridgeCommand;
+    } else if (bridgeExe.has_value()) {
+        const auto bridgePath = *bridgeExe;
+        if (!std::filesystem::exists(bridgePath)) {
+            std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge executable does not exist: "
+                      << bridgePath.string() << "\n";
+            return std::nullopt;
+        }
+        commandPrefix = quotePath(bridgePath);
+    } else {
         return std::nullopt;
     }
 
     const auto bridgeOutPath = outputDir / (inputPath.stem().string() + ".sa3d.reference.json");
-    const auto command = quotePath(bridgePath) +
+    const auto command = commandPrefix +
         " run-one" +
         " --input " + quotePath(inputPath) +
         " --out " + quotePath(outputDir) +
@@ -198,6 +215,17 @@ std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
         return std::nullopt;
     }
     return bridgeOutPath;
+}
+
+std::string toBlockKindLabel(const soasim::mld::parsing::ExtractedNjBlock::Kind kind) {
+    switch (kind) {
+    case soasim::mld::parsing::ExtractedNjBlock::Kind::Object:
+        return "object";
+    case soasim::mld::parsing::ExtractedNjBlock::Kind::Motion:
+        return "motion";
+    default:
+        return "unknown";
+    }
 }
 
 std::string readTextFile(const std::filesystem::path& path) {
@@ -218,22 +246,29 @@ bool containsJsonProperty(const std::string& json, const std::string_view key) {
 void writeBridgeAbComparison(
     const std::filesystem::path& outPath,
     const soasim::mld::parsing::ParseResult& sa3dPortParsed,
-    const std::optional<std::filesystem::path>& bridgeReportPath) {
+    const std::vector<std::filesystem::path>& bridgeReportPaths) {
     std::ofstream out(outPath, std::ios::binary);
     out << "mode=sa3d_port_vs_dotnet_sa3d\n";
     out << "sa3d_port.decoded_chunks=" << sa3dPortParsed.decodedNjcmChunks.size() << "\n";
     out << "sa3d_port.object_blocks=" << sa3dPortParsed.decodedNjObjectBlocks.size() << "\n";
     out << "sa3d_port.diagnostics=" << sa3dPortParsed.diagnostics.size() << "\n";
+    out << "sa3d_port.extracted_nj_blocks=" << sa3dPortParsed.extractedNjBlocks.size() << "\n";
 
-    if (!bridgeReportPath.has_value()) {
+    if (bridgeReportPaths.empty()) {
         out << "reference.present=false\n";
         out << "comparison.status=missing_reference_output\n";
         return;
     }
 
     out << "reference.present=true\n";
-    out << "reference.path=" << bridgeReportPath->string() << "\n";
-    const std::string bridgeJson = readTextFile(*bridgeReportPath);
+    out << "reference.reports=" << bridgeReportPaths.size() << "\n";
+    bool allReportsSchemaReady = true;
+    std::size_t schemaReadyCount = 0;
+    for (std::size_t i = 0; i < bridgeReportPaths.size(); ++i) {
+        out << "reference.path[" << i << "]=" << bridgeReportPaths[i].string() << "\n";
+    }
+
+    const std::string bridgeJson = readTextFile(bridgeReportPaths.front());
     if (bridgeJson.empty()) {
         out << "comparison.status=reference_output_empty\n";
         return;
@@ -247,9 +282,21 @@ void writeBridgeAbComparison(
     out << "reference.has_fixture=" << (hasFixture ? "true" : "false") << "\n";
     out << "reference.has_slice_io_pairs=" << (hasSliceIoPairs ? "true" : "false") << "\n";
     out << "reference.has_outputs=" << (hasOutputs ? "true" : "false") << "\n";
-    out << "comparison.status="
-        << ((hasSchema && hasFixture && hasSliceIoPairs && hasOutputs) ? "framework_ready" : "reference_schema_incomplete")
-        << "\n";
+    for (const auto& reportPath : bridgeReportPaths) {
+        const std::string reportJson = readTextFile(reportPath);
+        const bool reportReady = !reportJson.empty()
+            && containsJsonProperty(reportJson, "schema")
+            && containsJsonProperty(reportJson, "fixture")
+            && containsJsonProperty(reportJson, "slice_io_pairs")
+            && containsJsonProperty(reportJson, "outputs");
+        if (reportReady) {
+            ++schemaReadyCount;
+        } else {
+            allReportsSchemaReady = false;
+        }
+    }
+    out << "reference.schema_ready=" << schemaReadyCount << "/" << bridgeReportPaths.size() << "\n";
+    out << "comparison.status=" << (allReportsSchemaReady ? "framework_ready" : "reference_schema_incomplete") << "\n";
 }
 
 void writeSctReport(const std::filesystem::path& outPath, const soasim::sct::SctParseResult& result) {
@@ -364,14 +411,35 @@ int main(int argc, char** argv) {
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);
                 jsonOut << exporter.toJson(builder.build(sa3dPortParsed)).c_str();
 
-                const auto bridgeReportPath = maybeInvokeDotnetBridge(
-                    cliOptions->dotnetBridgeExe,
-                    entry.path(),
-                    outputDir,
-                    outputDir / "FIXTURE_MANIFEST.generated.json");
+                std::vector<std::filesystem::path> bridgeReportPaths{};
+                for (const auto& block : sa3dPortParsed.extractedNjBlocks) {
+                    if (block.bytes.empty()) {
+                        continue;
+                    }
+
+                    const auto kindLabel = toBlockKindLabel(block.kind);
+                    const auto pairLabel = block.includesNjtlPrefix ? "_njtl_njcm" : "";
+                    const auto blockStem = entry.path().stem().string() + ".block_" + std::to_string(block.offset) + "_" + kindLabel + pairLabel;
+                    const auto blockInputPath = outputDir / (blockStem + ".njblk.bin");
+                    if (!writeAllBytes(blockInputPath, std::span<const std::uint8_t>(block.bytes.data(), block.bytes.size()))) {
+                        std::cerr << "[SoaSimFileParsing] WARNING: failed to write extracted NJ block input: "
+                                  << blockInputPath.string() << "\n";
+                        continue;
+                    }
+
+                    const auto bridgeReportPath = maybeInvokeDotnetBridge(
+                        cliOptions->dotnetBridgeExe,
+                        cliOptions->dotnetBridgeCommand,
+                        blockInputPath,
+                        outputDir,
+                        outputDir / "FIXTURE_MANIFEST.generated.json");
+                    if (bridgeReportPath.has_value()) {
+                        bridgeReportPaths.push_back(*bridgeReportPath);
+                    }
+                }
 
                 const auto compareOutPath = outputDir / (entry.path().stem().string() + ".mld.ab.compare.txt");
-                writeBridgeAbComparison(compareOutPath, sa3dPortParsed, bridgeReportPath);
+                writeBridgeAbComparison(compareOutPath, sa3dPortParsed, bridgeReportPaths);
             } else {
                 soasim::mld::parsing::ParseOptions parityOptions{};
                 parityOptions.njcmPolicy.useSaToolsParityPath = true;

@@ -80,6 +80,19 @@ struct ParsedRawEntry {
     std::vector<std::uint8_t> payload{};
 };
 
+struct ExtractedNjBlock {
+    enum class Kind {
+        Object,
+        Motion,
+    };
+
+    Kind kind = Kind::Object;
+    std::uint32_t offset = 0;
+    std::size_t size = 0;
+    bool includesNjtlPrefix = false;
+    std::vector<std::uint8_t> bytes{};
+};
+
 struct ParseResult {
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
@@ -91,6 +104,7 @@ struct ParseResult {
     std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
     std::vector<model::NjObjectBlockModel> decodedNjObjectBlocks{};
     std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
+    std::vector<ExtractedNjBlock> extractedNjBlocks{};
     std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};
     std::vector<std::string> blenderIrDiagnostics{};
@@ -102,6 +116,10 @@ public:
     MldParser() = default;
 
     [[nodiscard]] ParseResult parse(std::span<const std::uint8_t> mldBytes,
+        const ParseOptions& options = {}) const;
+
+    [[nodiscard]] std::vector<ExtractedNjBlock> extractNjBlocks(
+        std::span<const std::uint8_t> mldBytes,
         const ParseOptions& options = {}) const;
 };
 
