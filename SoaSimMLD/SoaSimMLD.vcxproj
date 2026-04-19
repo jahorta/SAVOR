@@ -134,6 +134,19 @@
       <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
     </ProjectReference>
   </ItemGroup>
+  <PropertyGroup>
+    <Sa3dSubmoduleRoot>$(SolutionDir)third-party\SA3D.Modeling</Sa3dSubmoduleRoot>
+    <Sa3dBridgeProject>$(SolutionDir)tools\sa3d_ref_runner\SA3DRefRunner.csproj</Sa3dBridgeProject>
+    <Sa3dBridgeOutputDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\sa3d_bridge\</Sa3dBridgeOutputDir>
+  </PropertyGroup>
+  <Target Name="BuildSa3dDependencies" AfterTargets="Build" Condition="'$(Platform)' == 'x64'">
+    <Message Text="[SoaSimMLD] Building SA3D submodule (.NET projects) from $(Sa3dSubmoduleRoot)..." Importance="high" />
+    <Exec Condition="Exists('$(Sa3dSubmoduleRoot)')" Command="dotnet build &quot;$(Sa3dSubmoduleRoot)&quot; -c $(Configuration)" />
+    <Error Condition="!Exists('$(Sa3dSubmoduleRoot)')" Text="SA3D submodule directory is missing: $(Sa3dSubmoduleRoot). Initialize submodules before building." />
+    <Message Text="[SoaSimMLD] Publishing SA3D .NET bridge to $(Sa3dBridgeOutputDir)..." Importance="high" />
+    <Exec Condition="Exists('$(Sa3dBridgeProject)')" Command="dotnet publish &quot;$(Sa3dBridgeProject)&quot; -c $(Configuration) -r win-x64 --self-contained false -o &quot;$(Sa3dBridgeOutputDir)&quot;" />
+    <Error Condition="!Exists('$(Sa3dBridgeProject)')" Text="SA3D bridge project is missing: $(Sa3dBridgeProject)." />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

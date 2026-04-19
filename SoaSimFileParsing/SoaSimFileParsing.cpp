@@ -70,6 +70,7 @@ void printUsage() {
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --dotnet-bridge-exe should point to the .NET bridge runner executable used for SA3D reference output.\n"
+        << "    If omitted, SoaSimFileParsing tries: <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe\n"
         << "  - --dotnet-bridge-cmd supplies a full command prefix (e.g. 'dotnet run --project ... --') used to invoke run-one.\n";
 }
 
@@ -178,22 +179,24 @@ void writeFixtureManifestFromInputDir(const std::filesystem::path& inputDir, con
 std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
     const std::optional<std::filesystem::path>& bridgeExe,
     const std::optional<std::string>& bridgeCommand,
+    const std::filesystem::path& processDir,
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir,
     const std::filesystem::path& fixtureManifestPath) {
     std::string commandPrefix{};
     if (bridgeCommand.has_value() && !bridgeCommand->empty()) {
         commandPrefix = *bridgeCommand;
-    } else if (bridgeExe.has_value()) {
-        const auto bridgePath = *bridgeExe;
+    } else {
+        const auto bridgePath = bridgeExe.has_value()
+            ? *bridgeExe
+            : (processDir / "sa3d_bridge" / "SA3DRefRunner.exe");
+
         if (!std::filesystem::exists(bridgePath)) {
             std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge executable does not exist: "
                       << bridgePath.string() << "\n";
             return std::nullopt;
         }
         commandPrefix = quotePath(bridgePath);
-    } else {
-        return std::nullopt;
     }
 
     const auto bridgeOutPath = outputDir / (inputPath.stem().string() + ".sa3d.reference.json");
@@ -334,6 +337,9 @@ int main(int argc, char** argv) {
     const std::filesystem::path source_file = __FILE__;
     const std::filesystem::path source_dir = source_file.parent_path();
 
+    const std::filesystem::path processPath = std::filesystem::absolute(std::filesystem::path(argv[0]));
+    const std::filesystem::path processDir = processPath.parent_path();
+
     const auto cliOptions = parseCliOptions(argc, argv, source_dir);
     if (!cliOptions.has_value()) {
         return 1;
@@ -430,6 +436,7 @@ int main(int argc, char** argv) {
                     const auto bridgeReportPath = maybeInvokeDotnetBridge(
                         cliOptions->dotnetBridgeExe,
                         cliOptions->dotnetBridgeCommand,
+                        processDir,
                         blockInputPath,
                         outputDir,
                         outputDir / "FIXTURE_MANIFEST.generated.json");
