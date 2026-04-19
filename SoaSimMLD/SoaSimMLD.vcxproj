@@ -135,7 +135,7 @@
     </ProjectReference>
   </ItemGroup>
   <PropertyGroup>
-    <Sa3dSubmoduleRoot>$(SolutionDir)third-party\SA3D.Modeling</Sa3dSubmoduleRoot>
+    <Sa3dSubmoduleRoot>$(SolutionDir)third-party\SA3D.Modeling\src</Sa3dSubmoduleRoot>
     <Sa3dBridgeProject>$(SolutionDir)tools\sa3d_ref_runner\SA3DRefRunner.csproj</Sa3dBridgeProject>
     <Sa3dBridgeOutputDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\sa3d_bridge\</Sa3dBridgeOutputDir>
   </PropertyGroup>
