@@ -4,6 +4,10 @@ Date: 2026-04-18
 Status: Draft
 Purpose: design and implementation plan for a reference runner that emits fixture summaries for C++ parity comparison.
 
+Implementation note (2026-04-19):
+- Initial framework scaffold now exists at `tools/sa3d_ref_runner` with command-line plumbing and JSON skeleton emission.
+- SA3D.Modeling parser binding and slice-specific capture internals remain pending.
+
 ---
 
 ## 1) Objectives
@@ -25,7 +29,7 @@ Non-goals:
 ## Inputs
 - pinned parser source: `X-Hax/SA3D.Modeling` tag `1.2.1`, commit `13813e7`.
 - runner source: `jahorta/SA3D.Modeling` branch `DetailedIO`.
-- fixture manifest entries (MLD path + expected model/motion block presence).
+- fixture discovery policy (`SoaSimFileParsing/inputs/*.mld`, include all present files).
 - extracted NJ model/motion bytes (provided by MLD parser extraction stage).
 
 ## Outputs
@@ -37,8 +41,8 @@ Non-goals:
 
 ## 3) Runner architecture
 
-1. **Manifest reader**
-   - loads fixtures from `FIXTURE_MANIFEST.json`.
+1. **Fixture discovery reader**
+   - loads discovery policy from `FIXTURE_MANIFEST.json` and resolves fixtures from `SoaSimFileParsing/inputs`.
 2. **Block provider adapter**
    - receives model/motion NJ blocks from MLD extraction pipeline.
    - writes temporary buffers for parser invocation if needed.
@@ -99,6 +103,8 @@ tools/sa3d_ref_runner/
    - `run-all --manifest ... --out ...`
 10. Add per-fixture command:
    - `run-one --fixture-id ...`
+11. Add bridge-friendly command wiring for `SoaSimFileParsing`:
+   - `run-one --input ... --out ... --manifest ...`
 
 ---
 
@@ -123,8 +129,8 @@ tools/sa3d_ref_runner/
 
 - C++ harness calls:
   1. MLD extraction step for NJ blocks.
-  2. .NET reference runner for expected summary + slice IO pairs.
-  3. C++ backend runner for actual summary + IO-pair replay validation.
+  2. `SoaSimFileParsing --ab-sa3d-port-vs-sa3d-bridge` launches `.NET sa3d` bridge runner for expected summaries.
+  3. same `SoaSimFileParsing` run executes C++ `sa3d_port` extraction for actual summaries.
   4. comparator for pass/fail and mismatch report.
 
 - Ensure reference and C++ runs consume identical extracted block payloads.

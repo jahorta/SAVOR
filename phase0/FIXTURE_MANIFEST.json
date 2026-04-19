@@ -1,5 +1,11 @@
 {
   "schema": "soasim_fixture_manifest_v1",
-  "generated_utc": "2026-04-18T00:00:00Z",
+  "generated_utc": "2026-04-19T00:00:00Z",
+  "fixture_policy": {
+    "mode": "auto_discover",
+    "root": "SoaSimFileParsing/inputs",
+    "glob": "*.mld",
+    "selection": "all"
+  },
   "fixtures": []
 }
