@@ -40,12 +40,12 @@ Status legend:
   - `Animation/`
   - `Structs/`
 - [x] Build fixture corpus policy:
-  - source fixtures come from a maintained list of MLD files known to include both model and motion NJ blocks.
+  - source fixtures are auto-discovered from `SoaSimFileParsing/inputs/*.mld` and all discovered files are included.
   - extraction path is via MLD parser block provider (not direct standalone NJ file loading).
 - [ ] Build parity report format (counts, hashes, diagnostics).
-- [x] Create toggleable backends inside MLD parser (`current parser` vs `sa3d_port`) for A/B.
-- [ ] Implement .NET reference runner from `jahorta/SA3D.Modeling` `DetailedIO` branch that emits fixture summaries
-  and slice-specific input/output pairs in stable JSON for comparison against C++ output.
+- [x] Add A/B CLI mode to `SoaSimFileParsing` for `sa3d_port` (C++) vs `sa3d` (.NET bridge) comparison over discovered fixtures.
+- [-] Implement .NET bridge invocation path in A/B mode so `SoaSimFileParsing` executes `sa3d` reference parsing per fixture and emits stable JSON for comparison against `sa3d_port`.
+  - Framework scaffold added under `tools/sa3d_ref_runner` with `run-one`/`run-all` commands and `parity_report_v1` JSON shape.
 
 Exit criteria:
 - Repeatable fixture runner exists before first ported parser code lands.

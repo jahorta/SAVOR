@@ -8,7 +8,7 @@ Status: Active for Phase 0
 - Repository: `https://github.com/X-Hax/SA3D.Modeling`
 - Release tag: `1.2.1`
 - Commit: `13813e7`
-- Local checkout target: `third_party/SA3D.Modeling`
+- Local checkout target: `third-party/SA3D.Modeling.ref`
 
 ### Fetch command
 
@@ -19,7 +19,7 @@ bash tools/sa3d_ref/fetch_ref.sh
 ### Verify pinned hash
 
 ```bash
-git -C third_party/SA3D.Modeling rev-parse --short HEAD
+git -C third-party/SA3D.Modeling.ref rev-parse --short HEAD
 ```
 
 Expected output:
@@ -34,7 +34,7 @@ Expected output:
 
 - Repository: `https://github.com/jahorta/SA3D.Modeling`
 - Branch: `DetailedIO`
-- Local checkout target: `third_party/SA3D.Modeling.DetailedIO`
+- Local checkout target: `third-party/SA3D.Modeling` (git submodule)
 
 ### Fetch command
 
@@ -45,7 +45,7 @@ bash tools/sa3d_ref/fetch_runner.sh
 ### Verify branch
 
 ```bash
-git -C third_party/SA3D.Modeling.DetailedIO branch --show-current
+git -C third-party/SA3D.Modeling branch --show-current
 ```
 
 Expected output:
@@ -58,5 +58,5 @@ DetailedIO
 
 ## Notes
 
-- The runner repo is intentionally kept as a normal clone for now (not yet tracked as a git submodule).
+- The runner source is integrated as the `third-party/SA3D.Modeling` git submodule on branch `DetailedIO`.
 - Phase 0 parity harness work should target scripts, schema, and manifest flow first.

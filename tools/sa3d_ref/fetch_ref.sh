@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TARGET_DIR="$ROOT_DIR/third_party/SA3D.Modeling"
+TARGET_DIR="$ROOT_DIR/third-party/SA3D.Modeling.ref"
 REMOTE_URL="https://github.com/X-Hax/SA3D.Modeling.git"
 PINNED_COMMIT="13813e7"
 

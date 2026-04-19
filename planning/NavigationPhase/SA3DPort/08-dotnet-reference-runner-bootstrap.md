@@ -1,9 +1,9 @@
-# .NET Reference Runner Bootstrap (Pre-Submodule)
+# .NET Reference Runner Bootstrap (Submodule Integrated)
 
 Date: 2026-04-18
 Status: In Progress
 
-This document tracks what can be built now while the `jahorta/SA3D.Modeling` `DetailedIO` source is not yet integrated as a submodule.
+This document tracks bootstrap and follow-up tasks now that `jahorta/SA3D.Modeling` `DetailedIO` is integrated as the `third-party/SA3D.Modeling` submodule.
 
 ## Completed bootstrap components
 
@@ -19,10 +19,12 @@ This document tracks what can be built now while the `jahorta/SA3D.Modeling` `De
    - Basic static validation for fixture schema and on-disk paths.
 6. `phase0/PARITY_REPORT_SCHEMA.json`
    - Locked baseline schema for `parity_report_v1`.
+7. `tools/sa3d_ref_runner/` framework scaffold
+   - Added `SA3DRefRunner.csproj` + `Program.cs` with `run-one`/`run-all` commands and JSON report skeleton output.
 
-## Next steps once runner source is added
+## Next steps with runner source integrated
 
-1. Add `tools/sa3d_ref_runner/` .NET project from document 07 proposed layout.
-2. Wire `run-one` and `run-all` CLI commands.
-3. Integrate summary extraction + slice IO pair capture.
+1. Integrate actual SA3D.Modeling parser calls into the `tools/sa3d_ref_runner` framework scaffold.
+2. Extend `run-one` and `run-all` to emit real structural/semantic metrics (not framework placeholders).
+3. Integrate summary extraction + slice IO pair capture for the current active slice.
 4. Produce deterministic JSON output and batch summary index.

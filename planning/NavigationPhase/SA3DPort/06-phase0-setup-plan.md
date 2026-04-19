@@ -15,7 +15,7 @@ Scope: detailed implementation plan for Slice 0 decisions.
   - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
   - workflow policy: update `DetailedIO` each slice to emit slice-specific input/output pairs.
 - C++ naming and namespace mapping should match C# source as closely as possible.
-- Fixture inputs are MLD files that contain both NJ model and NJ motion blocks.
+- Fixture inputs are all `*.mld` files auto-discovered from `SoaSimFileParsing/inputs`.
 - Fixture extraction path is via SoaSim MLD parser (not ad-hoc standalone NJ readers).
 - Backend toggle is implemented inside the MLD parser provider path.
 
@@ -28,7 +28,7 @@ Scope: detailed implementation plan for Slice 0 decisions.
 2. `phase0/NAMING_AND_NAMESPACE_MAPPING.md`
    - Defines exact C# -> C++ mapping conventions.
 3. `phase0/FIXTURE_MANIFEST.json`
-   - Declares MLD fixture list and expected presence of model/motion NJ blocks.
+   - Declares auto-discovery policy for fixtures (`SoaSimFileParsing/inputs/*.mld`, selection=`all`).
 4. `phase0/PARITY_REPORT_SCHEMA.json`
    - JSON schema for structural/semantic/diagnostic summary output plus slice IO pairs.
 5. MLD parser backend switch design note
@@ -63,13 +63,12 @@ Acceptance:
 
 ## C) Fixture manifest through MLD parser
 
-- [ ] Build `FIXTURE_MANIFEST.json` with:
-  - fixture id,
-  - MLD path,
-  - expected model/motion block presence,
-  - notes (problematic/replay-heavy/etc).
+- [ ] Build `FIXTURE_MANIFEST.json` with auto-discovery policy:
+  - fixture root (`SoaSimFileParsing/inputs`),
+  - glob (`*.mld`),
+  - selection (`all`).
 - [ ] Add manifest validator to ensure files exist and are readable.
-- [ ] Add loader path in MLD parser test harness that reads manifest entries.
+- [ ] Add loader path in `SoaSimFileParsing` harness that reads discovery policy and resolves manifest entries.
 
 Acceptance:
 - manifest load passes and each fixture yields block discovery results.
@@ -90,11 +89,11 @@ Acceptance:
 
 ## E) Toggleable backend in MLD parser
 
-- [ ] Add parser mode switch in MLD provider path:
-  - `current_parser`
-  - `sa3d_port`
+- [ ] Add parser mode switch in `SoaSimFileParsing` CLI for A/B:
+  - `sa3d_port` (C++ parser path)
+  - `sa3d` (.NET bridge reference parser path)
 - [ ] Ensure both backends receive the same decoded NJ block bytes from MLD extraction.
-- [ ] Add harness command to run both backends over same manifest.
+- [ ] Add harness command/flag to run both backends over all discovered fixtures.
 
 Acceptance:
 - A/B run emits paired outputs per fixture with identical input block provenance.

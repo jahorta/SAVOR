@@ -43,6 +43,7 @@ For each NJ model/animation fixture, persist:
 
 Store under:
 - `planning/NavigationPhase/SA3DPort/goldens/` (proposed)
+- fixture discovery root: `SoaSimFileParsing/inputs` using `*.mld` (all files).
 
 ## D) Parity harness architecture (reference .NET + C++)
 
@@ -52,12 +53,13 @@ Store under:
 2. **Port extractor (C++)**
    - Run SoaSimMLD parser backend (`sa3d_port`) on the same fixtures.
    - Emit the same JSON schema.
-3. **Comparator**
+3. **Reference extractor invocation (.NET bridge)**
+   - Invoke SA3D reference parse (`sa3d`) through the .NET bridge from `SoaSimFileParsing` A/B CLI mode.
+4. **Comparator**
    - Compare JSON outputs field-by-field with tolerances only where explicitly documented.
    - Emit per-fixture pass/fail plus mismatch diagnostics.
-4. **A/B switch**
-   - Keep toggleable backend path (`current parser` vs `sa3d_port`) inside the MLD parser so both
-     implementations consume the same MLD-derived NJ model/motion blocks.
+5. **A/B switch**
+   - Drive A/B from `SoaSimFileParsing` CLI so `sa3d_port` and `.NET sa3d` consume the same MLD-derived fixture bytes.
 
 ## E) Recommended parity report format (v1)
 
