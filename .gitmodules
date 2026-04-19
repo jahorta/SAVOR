@@ -1,0 +1,4 @@
+[submodule "third-party/SA3D.Modeling"]
+	path = third-party/SA3D.Modeling
+	url = https://github.com/jahorta/SA3D.Modeling.git
+	branch = DetailedIO
