@@ -106,6 +106,113 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
     return normalized;
 }
 
+[[nodiscard]] std::vector<ExtractedNjBlock> buildExtractedNjBlocks(
+    std::span<const std::uint8_t> payload,
+    const std::unordered_set<std::uint32_t>& objectAddresses,
+    const std::unordered_set<std::uint32_t>& motionAddresses,
+    const std::unordered_set<std::uint32_t>& textureAddresses) {
+    struct CandidateAddress {
+        enum class Kind {
+            TextureList,
+            Object,
+            Motion,
+        };
+
+        std::uint32_t offset = 0;
+        Kind kind = Kind::Object;
+    };
+
+    const auto readTag = [&](const std::uint32_t offset) -> std::optional<std::uint32_t> {
+        const auto idx = static_cast<std::size_t>(offset);
+        if (idx + 4U > payload.size()) {
+            return std::nullopt;
+        }
+        return common::readU32AtBE(payload, idx);
+    };
+
+    std::vector<CandidateAddress> candidates{};
+    candidates.reserve(objectAddresses.size() + motionAddresses.size() + textureAddresses.size());
+    for (const auto offset : textureAddresses) {
+        if (offset > 0U && static_cast<std::size_t>(offset) < payload.size()) {
+            candidates.push_back(CandidateAddress{
+                .offset = offset,
+                .kind = CandidateAddress::Kind::TextureList,
+            });
+        }
+    }
+    for (const auto offset : objectAddresses) {
+        if (offset > 0U && static_cast<std::size_t>(offset) < payload.size()) {
+            candidates.push_back(CandidateAddress{
+                .offset = offset,
+                .kind = CandidateAddress::Kind::Object,
+            });
+        }
+    }
+    for (const auto offset : motionAddresses) {
+        if (offset > 0U && static_cast<std::size_t>(offset) < payload.size()) {
+            candidates.push_back(CandidateAddress{
+                .offset = offset,
+                .kind = CandidateAddress::Kind::Motion,
+            });
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const CandidateAddress& a, const CandidateAddress& b) {
+        if (a.offset != b.offset) {
+            return a.offset < b.offset;
+        }
+        return static_cast<int>(a.kind) < static_cast<int>(b.kind);
+    });
+    candidates.erase(std::unique(candidates.begin(), candidates.end(), [](const CandidateAddress& a, const CandidateAddress& b) {
+        return a.offset == b.offset;
+    }), candidates.end());
+
+    std::vector<ExtractedNjBlock> blocks{};
+    blocks.reserve(candidates.size());
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto candidate = candidates[i];
+        const auto begin = static_cast<std::size_t>(candidate.offset);
+        const auto end = (i + 1 < candidates.size())
+            ? static_cast<std::size_t>(candidates[i + 1].offset)
+            : payload.size();
+        if (begin >= end || begin >= payload.size()) {
+            continue;
+        }
+
+        bool includesNjtlPrefix = false;
+        std::size_t effectiveEnd = std::min(end, payload.size());
+        if (candidate.kind == CandidateAddress::Kind::TextureList && i + 1 < candidates.size()) {
+            const auto currentTag = readTag(candidate.offset).value_or(0U);
+            const auto nextTag = readTag(candidates[i + 1].offset).value_or(0U);
+            const bool currentIsNjtl = currentTag == makeTag('N', 'J', 'T', 'L') || currentTag == makeTag('G', 'J', 'T', 'L');
+            const bool nextIsNjcm = nextTag == makeTag('N', 'J', 'C', 'M') || nextTag == makeTag('G', 'J', 'C', 'M');
+            const bool nextIsObject = candidates[i + 1].kind == CandidateAddress::Kind::Object;
+            if (currentIsNjtl && nextIsNjcm && nextIsObject) {
+                const auto objectEnd = (i + 2 < candidates.size())
+                    ? static_cast<std::size_t>(candidates[i + 2].offset)
+                    : payload.size();
+                effectiveEnd = std::min(objectEnd, payload.size());
+                includesNjtlPrefix = true;
+                ++i; // consume the NJCM start with its preceding NJTL as one extracted NJ block.
+            }
+        }
+
+        ExtractedNjBlock block{};
+        block.kind = candidate.kind == CandidateAddress::Kind::Motion
+            ? ExtractedNjBlock::Kind::Motion
+            : ExtractedNjBlock::Kind::Object;
+        block.offset = candidate.offset;
+        block.size = effectiveEnd - begin;
+        block.includesNjtlPrefix = includesNjtlPrefix;
+        block.bytes.assign(
+            payload.begin() + static_cast<std::ptrdiff_t>(begin),
+            payload.begin() + static_cast<std::ptrdiff_t>(effectiveEnd));
+        blocks.push_back(std::move(block));
+    }
+
+    return blocks;
+}
+
 class CollisionEntryHandler final : public EntryHandler {
 public:
     [[nodiscard]] bool canHandle(const std::string_view fxnName) const override {
@@ -280,6 +387,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     std::unordered_set<std::uint32_t> uniqueGroundAddresses{};
     std::unordered_set<std::uint32_t> uniqueObjectAddresses{};
     std::unordered_set<std::uint32_t> uniqueMotionAddresses{};
+    std::unordered_set<std::uint32_t> uniqueTextureAddresses{};
     std::unordered_map<std::uint32_t, const model::IndexEntry*> groundAddressOwners{};
     const std::array<std::unique_ptr<EntryHandler>, 2> handlers{
         std::make_unique<CollisionEntryHandler>(),
@@ -403,6 +511,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
 
         if (static_cast<std::size_t>(entry.texturesPointer) < payload.size()) {
             ++chunkTypeCounts[makeTag('N', 'J', 'T', 'L')];
+            uniqueTextureAddresses.insert(entry.texturesPointer);
         }
     }
 
@@ -426,6 +535,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         objectAddressesAll.push_back(addr);
     }
     std::sort(objectAddressesAll.begin(), objectAddressesAll.end());
+    result.extractedNjBlocks = buildExtractedNjBlocks(payload, uniqueObjectAddresses, uniqueMotionAddresses, uniqueTextureAddresses);
+    result.diagnostics.push_back(ParseDiagnostic{
+        .severity = ParseDiagnostic::Severity::Info,
+        .message = "Extracted NJ blocks from MLD payload: " + std::to_string(result.extractedNjBlocks.size()),
+    });
     result.diagnostics.push_back(ParseDiagnostic{
         .severity = ParseDiagnostic::Severity::Info,
         .message = "Legacy Ninja parsing modules (NJCM/NJTL) have been removed from MLD parsing. Object addresses are retained for SA3D IR migration.",
@@ -575,6 +689,13 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     return result;
 }
 
+std::vector<ExtractedNjBlock> MldParser::extractNjBlocks(
+    std::span<const std::uint8_t> mldBytes,
+    const ParseOptions& options) const {
+    const auto parsed = parse(mldBytes, options);
+    return parsed.extractedNjBlocks;
+}
+
 std::string formatParseSummary(const ParseResult& parseResult) {
     std::ostringstream out;
     out << "grndSurfaces=" << parseResult.world.grndSurfaces.size() << '\n';
@@ -583,6 +704,7 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "unknownEntries=" << parseResult.world.unknownEntries.size() << '\n';
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
+    out << "extractedNjBlocks=" << parseResult.extractedNjBlocks.size() << '\n';
     out << "blenderIrMeshes=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->meshes.size() : 0) << '\n';
     out << "blenderIrIndexEntries=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->indexEntries.size() : 0) << '\n';
 
