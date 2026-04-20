@@ -149,7 +149,7 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
 
     Statement st;
     if (!Prepare(db_,
-        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority "
+        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority, s.input_ref_id "
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "WHERE i.state='RUNNING' AND s.state='READY' AND s.job_set_id IS NULL "
@@ -168,6 +168,7 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
         row.step_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
         row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
         row.priority = sqlite3_column_int(st.st, 4);
+        row.input_ref_id = ColumnInt64Optional(st.st, 5);
         rows.push_back(std::move(row));
     }
 
@@ -370,8 +371,8 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     for (const auto& step : command.steps) {
         Statement insert_step;
         if (!Prepare(db_,
-            "INSERT INTO exec_workflow_step(workflow_instance_id, step_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc) "
-            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11);",
+            "INSERT INTO exec_workflow_step(workflow_instance_id, step_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12);",
             &insert_step,
             error_out)) {
             rollback();
@@ -388,8 +389,9 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         sqlite3_bind_int(insert_step.st, 7, step.priority);
         sqlite3_bind_int(insert_step.st, 8, step.max_attempts > 0 ? step.max_attempts : 1);
         if (step.input_ref_kind.has_value()) sqlite3_bind_text(insert_step.st, 9, step.input_ref_kind->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_step.st, 9);
-        sqlite3_bind_int64(insert_step.st, 10, now);
-        if (is_ready) sqlite3_bind_int64(insert_step.st, 11, now); else sqlite3_bind_null(insert_step.st, 11);
+        if (step.input_ref_id.has_value()) sqlite3_bind_int64(insert_step.st, 10, *step.input_ref_id); else sqlite3_bind_null(insert_step.st, 10);
+        sqlite3_bind_int64(insert_step.st, 11, now);
+        if (is_ready) sqlite3_bind_int64(insert_step.st, 12, now); else sqlite3_bind_null(insert_step.st, 12);
 
         if (sqlite3_step(insert_step.st) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
