@@ -28,3 +28,9 @@ This document tracks bootstrap and follow-up tasks now that `jahorta/SA3D.Modeli
 2. Extend `run-one` and `run-all` to emit real structural/semantic metrics (not framework placeholders).
 3. Integrate summary extraction + slice IO pair capture for the current active slice.
 4. Produce deterministic JSON output and batch summary index.
+
+Implementation update (2026-04-20):
+- `run-all` now supports either explicit fixture entries (`fixtures[].mld_path`) or policy-based auto-discovery.
+- Relative fixture paths are resolved from the manifest location for reproducible invocation from different working directories.
+- SoaSimFileParsing bridge invocation now supports `--dotnet-bridge-slice` and forwards `--slice` to the .NET runner.
+- A/B comparison output now records reference `comparison` presence and pass-state probe fields.

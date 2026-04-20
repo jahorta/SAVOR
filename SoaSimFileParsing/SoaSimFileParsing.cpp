@@ -59,19 +59,21 @@ struct CliOptions {
     bool runAbSa3dPortVsSa3dBridge = false;
     std::optional<std::filesystem::path> dotnetBridgeExe{};
     std::optional<std::string> dotnetBridgeCommand{};
+    int dotnetBridgeSlice = 0;
 };
 
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--dotnet-bridge-exe <path>] [--dotnet-bridge-cmd <prefix>]\n\n"
+        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--dotnet-bridge-exe <path>] [--dotnet-bridge-cmd <prefix>] [--dotnet-bridge-slice <n>]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SoaSimFileParsing/inputs\n"
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --dotnet-bridge-exe should point to the .NET bridge runner executable used for SA3D reference output.\n"
         << "    If omitted, SoaSimFileParsing tries: <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe\n"
-        << "  - --dotnet-bridge-cmd supplies a full command prefix (e.g. 'dotnet run --project ... --') used to invoke run-one.\n";
+        << "  - --dotnet-bridge-cmd supplies a full command prefix (e.g. 'dotnet run --project ... --') used to invoke run-one.\n"
+        << "  - --dotnet-bridge-slice sets the --slice value passed to the .NET bridge runner (default 0).\n";
 }
 
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
@@ -106,6 +108,24 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             }
             ++i;
             options.dotnetBridgeCommand = std::string(argv[i]);
+            continue;
+        }
+        if (arg == "--dotnet-bridge-slice") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --dotnet-bridge-slice.\n";
+                return std::nullopt;
+            }
+            ++i;
+            try {
+                options.dotnetBridgeSlice = std::stoi(argv[i]);
+                if (options.dotnetBridgeSlice < 0) {
+                    std::cerr << "--dotnet-bridge-slice must be >= 0.\n";
+                    return std::nullopt;
+                }
+            } catch (...) {
+                std::cerr << "Invalid integer value for --dotnet-bridge-slice: " << argv[i] << "\n";
+                return std::nullopt;
+            }
             continue;
         }
         if (!arg.empty() && arg.front() == '-') {
@@ -182,7 +202,8 @@ std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
     const std::filesystem::path& processDir,
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir,
-    const std::filesystem::path& fixtureManifestPath) {
+    const std::filesystem::path& fixtureManifestPath,
+    int slice) {
     std::string commandPrefix{};
     if (bridgeCommand.has_value() && !bridgeCommand->empty()) {
         commandPrefix = *bridgeCommand;
@@ -205,7 +226,8 @@ std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
         " --input " + quotePath(inputPath) +
         " --out " + quotePath(outputDir) +
         " --output-file " + quotePath(bridgeOutPath) +
-        " --manifest " + quotePath(fixtureManifestPath);
+        " --manifest " + quotePath(fixtureManifestPath) +
+        " --slice " + std::to_string(slice);
     const int exitCode = std::system(command.c_str());
     if (exitCode != 0) {
         std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge run failed with exit code "
@@ -281,17 +303,22 @@ void writeBridgeAbComparison(
     const bool hasFixture = containsJsonProperty(bridgeJson, "fixture");
     const bool hasSliceIoPairs = containsJsonProperty(bridgeJson, "slice_io_pairs");
     const bool hasOutputs = containsJsonProperty(bridgeJson, "outputs");
+    const bool hasComparison = containsJsonProperty(bridgeJson, "comparison");
+    const bool hasPassTrue = bridgeJson.find("\"pass\": true") != std::string::npos;
     out << "reference.has_schema=" << (hasSchema ? "true" : "false") << "\n";
     out << "reference.has_fixture=" << (hasFixture ? "true" : "false") << "\n";
     out << "reference.has_slice_io_pairs=" << (hasSliceIoPairs ? "true" : "false") << "\n";
     out << "reference.has_outputs=" << (hasOutputs ? "true" : "false") << "\n";
+    out << "reference.has_comparison=" << (hasComparison ? "true" : "false") << "\n";
+    out << "reference.pass_true=" << (hasPassTrue ? "true" : "false") << "\n";
     for (const auto& reportPath : bridgeReportPaths) {
         const std::string reportJson = readTextFile(reportPath);
         const bool reportReady = !reportJson.empty()
             && containsJsonProperty(reportJson, "schema")
             && containsJsonProperty(reportJson, "fixture")
             && containsJsonProperty(reportJson, "slice_io_pairs")
-            && containsJsonProperty(reportJson, "outputs");
+            && containsJsonProperty(reportJson, "outputs")
+            && containsJsonProperty(reportJson, "comparison");
         if (reportReady) {
             ++schemaReadyCount;
         } else {
@@ -438,7 +465,8 @@ int main(int argc, char** argv) {
                         processDir,
                         blockInputPath,
                         outputDir,
-                        outputDir / "FIXTURE_MANIFEST.generated.json");
+                        outputDir / "FIXTURE_MANIFEST.generated.json",
+                        cliOptions->dotnetBridgeSlice);
                     if (bridgeReportPath.has_value()) {
                         bridgeReportPaths.push_back(*bridgeReportPath);
                     }
