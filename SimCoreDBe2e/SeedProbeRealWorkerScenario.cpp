@@ -11,8 +11,10 @@
 #include <vector>
 
 #include "Execution/Workflow/WorkflowModeProvider.h"
-#include "Execution/Workflow/WorkflowOrchestration.h"
+#include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "DB/Scheduling/JobSetsRepo.h"
+#include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 
 #include "Cli.h"
@@ -30,11 +32,10 @@ namespace simcore::e2e {
 using simcore::db::execution::workflow::WorkflowExecutionMode;
 using simcore::db::execution::workflow::StaticWorkflowModeProvider;
 using simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig;
+using simcore::runner::parallel::simcoredb::BuildDbBackedWorkflowCoordinator;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig;
 using simcore::runner::parallel::simcoredb::WorkflowCoordinatorTelemetry;
-using simcore::runner::parallel::simcoredb::ScheduledJobSet;
-using simcore::runner::parallel::simcoredb::WorkflowReadyStep;
 using ::WorkerSnapshot;
 using ::WorkerStateKind;
 
@@ -308,13 +309,13 @@ bool RunSeedProbeRealWorkerSmoke(
 
     StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "SimCoreDBe2e" });
 
-    std::int64_t next_job_set_id = 30000;
-    auto schedule = [&](const WorkflowReadyStep& step) {
-        ++next_job_set_id;
-        return ScheduledJobSet{ .job_set_id = next_job_set_id, .workflow_step_id = step.workflow_step_id };
-    };
+    simcore::db::execution::programdb::ProgramKindRegistry program_kind_registry;
+    simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
+        &program_kind_registry,
+        execution_db,
+        db_service->AnalysisDb());
 
-    DBWorkflowWorkerCoordinator coordinator(
+    DBWorkflowWorkerCoordinator coordinator = BuildDbBackedWorkflowCoordinator(
         execution_db,
         &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
@@ -327,7 +328,7 @@ bool RunSeedProbeRealWorkerSmoke(
                 std::filesystem::temp_directory_path() / "simcoredbe2e-workers").string(),
         },
         CoordinatorIntegrationConfig{},
-        schedule);
+        &program_kind_registry);
 
     coordinator.Start();
     auto* ui_read_db = db_service->UiReadDb();
