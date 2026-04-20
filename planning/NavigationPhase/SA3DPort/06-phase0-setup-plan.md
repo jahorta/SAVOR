@@ -15,6 +15,7 @@ Scope: detailed implementation plan for Slice 0 decisions.
   - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
   - workflow policy: update `DetailedIO` each slice to emit slice-specific input/output pairs.
 - C++ naming and namespace mapping should match C# source as closely as possible.
+- Implementation lives in a dedicated `Sa3Dport` Visual Studio C++ project.
 - Fixture inputs are all `*.mld` files auto-discovered from `SoaSimFileParsing/inputs`.
 - Fixture extraction path is via SoaSim MLD parser (not ad-hoc standalone NJ readers).
 - Backend toggle is implemented inside the MLD parser provider path.
@@ -52,14 +53,14 @@ Acceptance:
 ## B) Naming + namespace mapping
 
 - [ ] Document mapping rules with examples:
-  - namespace segments preserved under `SoaSimMLD/SA3DPort`.
+  - namespace segments preserved under `Sa3Dport`.
   - type names unchanged where legal in C++.
   - method names preserved unless language constraints require adaptation.
   - enum values preserved 1:1.
 - [ ] Add exception table for any unavoidable divergences.
 
 Acceptance:
-- every new SA3DPort file can be mapped back to original C# type path with no ambiguity.
+- every new Sa3Dport file can be mapped back to original C# type path with no ambiguity.
 
 ## C) Fixture manifest through MLD parser
 
