@@ -51,7 +51,7 @@ Store under:
    - Use forked runner from `jahorta/SA3D.Modeling` `DetailedIO` branch.
    - For each fixture, emit stable JSON summaries (structural + semantic metrics) plus slice-specific input/output pairs.
 2. **Port extractor (C++)**
-   - Run SoaSimMLD parser backend (`sa3d_port`) on the same fixtures.
+   - Run Sa3Dport parser backend (`sa3d_port`) on the same fixtures.
    - Emit the same JSON schema.
 3. **Reference extractor invocation (.NET bridge)**
    - Invoke SA3D reference parse (`sa3d`) through the .NET bridge from `SoaSimFileParsing` A/B CLI mode.

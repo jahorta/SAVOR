@@ -8,7 +8,7 @@ Decision update: 2026-04-18
   deferred until a later milestone.
 - Port order in this document is finalized as the execution order.
 - `WriteNJ`/write-side animation work is explicitly deferred for this milestone.
-- A mirrored implementation tree is locked under `SoaSimMLD/SA3DPort` (see Slice 0).
+- A mirrored implementation tree is locked under `Sa3Dport` (see Slice 0).
 
 Status legend:
 - `[ ]` not started
@@ -28,7 +28,8 @@ Status legend:
   - reference-runner policy: use `DetailedIO` branch and update it per-slice to emit slice-specific input/output pairs.
 - [x] Define C++ naming and namespace mapping rule:
   - match C# source naming and namespace hierarchy as closely as possible.
-- [x] Lock mirrored implementation tree under `SoaSimMLD/SA3DPort`:
+- [x] Create dedicated Visual Studio C++ project `Sa3Dport` for parser implementation.
+- [x] Lock mirrored implementation tree under `Sa3Dport`:
   - `File/`
   - `ObjectData/Enums/`
   - `ObjectData/`
@@ -61,10 +62,11 @@ Target files/types:
 - `Structs/BAMSFHelper.cs`
 
 Checklist:
-- [ ] Implement endian-aware primitive reads/writes with image-base semantics.
-- [ ] Implement pointer LUT behavior for read memoization + write de-dup.
-- [ ] Port BAMS float/angle conversion behavior.
-- [ ] Add unit tests for endian stack, pointers, and BAMS exactness.
+- [x] Implement endian-aware primitive reads/writes with image-base semantics.
+- [x] Implement pointer LUT behavior for read memoization + write de-dup.
+- [x] Port BAMS float/angle conversion behavior.
+- [x] Add unit tests for endian stack, pointers, and BAMS exactness.
+  - Added `SimCoreTests/test_sa3dport_stage1.cpp` covering file headers, endian read semantics, pointer LUT memoization, and BAMS conversion round-trips.
 - [ ] Extend parity harness (Slice 1 mode):
   - compare primitive/lut/bams input/output pairs captured from `DetailedIO` processing of real extracted NJ blocks,
   - emit `parity_report_v1` with `slice_stage = 1` and only `primitives` section populated,
