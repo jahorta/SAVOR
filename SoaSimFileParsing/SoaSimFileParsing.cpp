@@ -406,7 +406,6 @@ int main(int argc, char** argv) {
             std::cout << "[SoaSimFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
             if (cliOptions->runAbSa3dPortVsSa3dBridge) {
                 soasim::mld::parsing::ParseOptions sa3dPortOptions{};
-                sa3dPortOptions.njcmPolicy.useSaToolsParityPath = true;
                 auto sa3dPortParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), sa3dPortOptions);
 
                 const auto sa3dPortOutPath = outputDir / (entry.path().stem().string() + ".mld.sa3d_port.txt");
@@ -449,7 +448,6 @@ int main(int argc, char** argv) {
                 writeBridgeAbComparison(compareOutPath, sa3dPortParsed, bridgeReportPaths);
             } else {
                 soasim::mld::parsing::ParseOptions parityOptions{};
-                parityOptions.njcmPolicy.useSaToolsParityPath = true;
                 auto parityParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), parityOptions);
 
                 const auto parityOutPath = outputDir / (entry.path().stem().string() + ".mld.parity.txt");
