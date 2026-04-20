@@ -20,6 +20,11 @@ struct JobPersistenceRecord {
     std::int32_t program_version = 1;
 };
 
+struct WorkflowStepScheduleResult {
+    JobPersistenceRecord persistence;
+    std::int64_t root_job_set_id = 0;
+};
+
 struct RuntimeInitRequest {
     std::string savestate_ref_kind;
     std::int64_t savestate_ref_id = 0;
@@ -57,7 +62,7 @@ struct WorkflowTransitionDecision {
 
 struct IJobPersistenceAdapter {
     virtual ~IJobPersistenceAdapter() = default;
-    virtual JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const = 0;
+    virtual WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const = 0;
     virtual std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const = 0;
 };
 

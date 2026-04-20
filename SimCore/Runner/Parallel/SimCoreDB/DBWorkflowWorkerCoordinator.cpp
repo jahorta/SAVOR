@@ -53,8 +53,6 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     , persist_materialization_fn_(std::move(persist_materialization_fn))
     , workflow_materialization_service_(
         &workflow_scheduler_adapter_,
-        std::move(claim_jobs_fn),
-        std::move(build_job_payload_fn),
         persist_materialization_fn_,
         [this](const WorkflowReadyStep& step, const ScheduledJobSet& scheduled) {
             if (execution_db_ && execution_db_->WorkflowCommandService()) {
@@ -77,8 +75,11 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
             }
             workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
         })
+    , job_materialization_service_(
+        std::move(claim_jobs_fn),
+        std::move(build_job_payload_fn))
     , workflow_dispatch_coordinator_(
-        &workflow_materialization_service_,
+        &job_materialization_service_,
         [this](size_t worker_idx, const ClaimedJobRecord& claimed_job) {
             const auto job_id = claimed_job.job_id;
             if (adapter_chain_orchestrator_) {
@@ -237,10 +238,15 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
     if (!integration_cfg_.workflow_enabled) {
         return std::nullopt;
     }
+    if (!step.input_ref_id.has_value()) {
+        EmitWorkflowFailureEvents(step, "OnInputComplete", "missing input_ref_id");
+        MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_materialize_missing_input_ref");
+        return std::nullopt;
+    }
 
     if (adapter_chain_orchestrator_) {
         simcore::db::execution::workflow::AdapterChainTrace trace{};
-        (void)adapter_chain_orchestrator_->OnInputComplete(step.step_kind, step.workflow_step_id, &trace);
+        (void)adapter_chain_orchestrator_->OnInputComplete(step.step_kind, *step.input_ref_id, &trace);
         ++adapter_input_complete_invocations_;
         EmitAdapterTraceEvent(step, "OnInputComplete", "invoked", std::nullopt, std::nullopt);
     }
@@ -356,16 +362,21 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         }
 
         PollReadyStepsFromDb();
-        (void)workflow_materialization_service_.ClaimJobs(std::chrono::steady_clock::now());
-        (void)workflow_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
-        for (const auto& failed_payload : workflow_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
+        const auto worker_target = ActiveWorkerCount();
+        const auto buffered = job_materialization_service_.CountBufferedJobs();
+        if (buffered < worker_target) {
+            const auto claim_budget = worker_target - buffered;
+            (void)job_materialization_service_.ClaimJobs(claim_budget, std::chrono::steady_clock::now());
+        }
+        (void)job_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+        for (const auto& failed_payload : job_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
             ++payload_materialization_failure_count_;
             std::ostringstream message;
             message << "job_id=" << failed_payload.job_id << ";job_set_id=" << failed_payload.job_set_id
                     << ";reason=build_payload returned empty";
             EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
             MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
-            (void)workflow_materialization_service_.AbandonClaim(failed_payload.job_id);
+            (void)job_materialization_service_.AbandonClaim(failed_payload.job_id);
         }
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
@@ -380,10 +391,6 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
                 }
             }
         }
-        stale_claim_count_.fetch_add(
-            static_cast<std::int64_t>(
-                workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now())));
-
         WorkflowReadyStep step;
         if (!TryDequeueReadyStep(&step)) {
             std::unique_lock<std::mutex> lock(queue_mtx_);
@@ -427,8 +434,13 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         }
 
         if (adapter_chain_orchestrator_) {
+            if (!step.input_ref_id.has_value()) {
+                EmitWorkflowFailureEvents(step, "OnInputComplete", "missing input_ref_id");
+                MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_materialize_missing_input_ref");
+                continue;
+            }
             simcore::db::execution::workflow::AdapterChainTrace trace{};
-            const auto persisted = adapter_chain_orchestrator_->OnInputComplete(step.step_kind, step.workflow_step_id, &trace);
+            const auto persisted = adapter_chain_orchestrator_->OnInputComplete(step.step_kind, *step.input_ref_id, &trace);
             ++adapter_input_complete_invocations_;
             EmitAdapterTraceEvent(
                 step,
@@ -436,7 +448,7 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
                 "invoked",
                 std::nullopt,
                 std::nullopt,
-                persisted.has_value() ? std::optional<std::string>("program_ref_id=" + std::to_string(persisted->program_ref_id)) : std::nullopt);
+                persisted.has_value() ? std::optional<std::string>("program_ref_id=" + std::to_string(persisted->persistence.program_ref_id)) : std::nullopt);
         }
 
         const auto materialize_started = std::chrono::steady_clock::now();
@@ -451,15 +463,15 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
                 max_materialization_latency_ms_.store(static_cast<std::int64_t>(materialization_latency_ms));
             }
         }
-        (void)workflow_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
-        for (const auto& failed_payload : workflow_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
+        (void)job_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+        for (const auto& failed_payload : job_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
             ++payload_materialization_failure_count_;
             std::ostringstream message;
             message << "job_id=" << failed_payload.job_id << ";job_set_id=" << failed_payload.job_set_id
                     << ";reason=build_payload returned empty";
             EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
             MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
-            (void)workflow_materialization_service_.AbandonClaim(failed_payload.job_id);
+            (void)job_materialization_service_.AbandonClaim(failed_payload.job_id);
         }
         {
             const auto dispatchable_workers = CollectDispatchableWorkers();
@@ -474,10 +486,6 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
                 }
             }
         }
-        stale_claim_count_.fetch_add(
-            static_cast<std::int64_t>(
-                workflow_materialization_service_.ExpireClaimsOlderThan(std::chrono::milliseconds(5000), std::chrono::steady_clock::now())));
-
         {
             std::lock_guard<std::mutex> lock(queue_mtx_);
             ++materialized_count_;
@@ -551,7 +559,7 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
         }
 
         ReleaseWorkerByResult(result);
-        (void)workflow_materialization_service_.CleanupDispatchedOrExpired(static_cast<std::int64_t>(result.job_id));
+        (void)job_materialization_service_.CleanupDispatchedOrExpired(static_cast<std::int64_t>(result.job_id));
         if (result_callback_) {
             result_callback_(result);
         }
@@ -826,6 +834,7 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
             .step_key = step.step_key,
             .step_kind = step.step_kind,
             .priority = step.priority,
+            .input_ref_id = step.input_ref_id,
         });
         ++ready_steps_enqueued_;
     }

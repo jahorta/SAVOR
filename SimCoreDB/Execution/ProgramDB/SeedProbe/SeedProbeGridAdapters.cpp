@@ -63,7 +63,8 @@ SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(simcore::
     , fanout_(BuildFanout()) {
 }
 
-JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+    WorkflowStepScheduleResult scheduled{};
     const std::int64_t probe_run_id = domain_ref_id;
     if (execution_db_ && probe_run_id > 0) {
         simcore::db::CreateJobSetCommand set_cmd{};
@@ -78,6 +79,7 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
         std::int64_t job_set_id = 0;
         std::string error;
         if (execution_db_->CreateJobSet(set_cmd, &job_set_id, &error) && job_set_id > 0) {
+            scheduled.root_job_set_id = job_set_id;
             for (const auto& entry : fanout_) {
                 simcore::db::EnqueueJobCommand enqueue{};
                 enqueue.job_set_id = job_set_id;
@@ -89,8 +91,7 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
                 enqueue.input_ini = "";
-                std::int64_t ignored_job_id = 0;
-                (void)execution_db_->EnqueueJob(enqueue, &ignored_job_id, &error);
+                (void)execution_db_->EnqueueJob(enqueue, nullptr, &error);
             }
         }
     }
@@ -100,7 +101,8 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
         fanout_.end(),
         [domain_ref_id](const GridFanoutEntry& entry) { return entry.domain_ref_id == domain_ref_id; });
     if (it != fanout_.end()) {
-        return it->persistence;
+        scheduled.persistence = it->persistence;
+        return scheduled;
     }
 
     JobPersistenceRecord fallback{};
@@ -108,7 +110,8 @@ JobPersistenceRecord SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::
     fallback.program_ref_id = blueprint_.probe_id;
     fallback.program_version = blueprint_.program_version;
     fallback.fingerprint = FingerprintFor(blueprint_, probe_run_id, /*frame_hex*/"", "grid", domain_ref_id);
-    return fallback;
+    scheduled.persistence = std::move(fallback);
+    return scheduled;
 }
 
 std::int64_t SeedProbeGridJobPersistenceAdapter::DecodeDomainRefId(const JobPersistenceRecord& persisted) const {

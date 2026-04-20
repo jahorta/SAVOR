@@ -6,7 +6,7 @@
 namespace simcore::runner::parallel::simcoredb {
 
 WorkflowDispatchCoordinator::WorkflowDispatchCoordinator(
-    WorkflowMaterializationService* materialization_service,
+    JobMaterializationService* materialization_service,
     DispatchToWorkerFn dispatch_to_worker)
     : materialization_service_(materialization_service)
     , dispatch_to_worker_(std::move(dispatch_to_worker)) {

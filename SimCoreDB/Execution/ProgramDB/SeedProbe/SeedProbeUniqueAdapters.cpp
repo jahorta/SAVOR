@@ -100,21 +100,22 @@ SeedProbeUniqueJobPersistenceAdapter::SeedProbeUniqueJobPersistenceAdapter(
     , unique_ini_(unique_ini) {
 }
 
-JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
-    JobPersistenceRecord persisted{};
+WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+    WorkflowStepScheduleResult scheduled{};
+    auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = "sp_probe_run";
     persisted.program_ref_id = domain_ref_id;
     persisted.program_version = blueprint_.program_version;
     persisted.fingerprint = "PK=3;phase=unique;probe_run_id=" + std::to_string(domain_ref_id);
 
     if (execution_db_ == nullptr || analysis_db_ == nullptr || domain_ref_id <= 0) {
-        return persisted;
+        return scheduled;
     }
 
     const auto neutral_seed = analysis_db_->LookupSeedProbeNeutralSeed(domain_ref_id);
     const auto grid_rows = analysis_db_->ListSeedProbeGridSeeds(domain_ref_id);
     if (!neutral_seed.has_value() || grid_rows.empty()) {
-        return persisted;
+        return scheduled;
     }
 
     simcore::RandSeedProbeResult grid{};
@@ -160,8 +161,9 @@ JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std
             &root_job_set_id,
             &error)
         || root_job_set_id <= 0) {
-        return persisted;
+        return scheduled;
     }
+    scheduled.root_job_set_id = root_job_set_id;
 
     for (auto& sample : planned.samples) {
         std::int64_t child_job_set_id = 0;
@@ -197,12 +199,11 @@ JobPersistenceRecord SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std
                 + ";frame=" + frame_hex;
             enqueue.priority = 0;
             enqueue.max_attempts = 2;
-            std::int64_t ignored_job_id = 0;
-            (void)execution_db_->EnqueueJob(enqueue, &ignored_job_id, &error);
+            (void)execution_db_->EnqueueJob(enqueue, nullptr, &error);
         }
     }
 
-    return persisted;
+    return scheduled;
 }
 
 std::int64_t SeedProbeUniqueJobPersistenceAdapter::DecodeDomainRefId(const JobPersistenceRecord& persisted) const {

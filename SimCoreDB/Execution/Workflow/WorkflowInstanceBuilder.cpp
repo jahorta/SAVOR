@@ -57,6 +57,7 @@ bool WorkflowInstanceBuilder::BuildCreateCommand(
         if (!definition_step.required_inputs.empty()) {
             step.input_ref_kind = definition_step.required_inputs.front();
         }
+        step.input_ref_id = input.input_ref_id;
         command.steps.push_back(std::move(step));
     }
 

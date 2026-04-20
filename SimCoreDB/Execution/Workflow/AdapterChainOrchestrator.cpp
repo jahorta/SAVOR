@@ -49,7 +49,7 @@ AdapterChainOrchestrator::AdapterChainOrchestrator(
     , completion_gate_(completion_gate) {
 }
 
-std::optional<programdb::JobPersistenceRecord> AdapterChainOrchestrator::OnInputComplete(
+std::optional<programdb::WorkflowStepScheduleResult> AdapterChainOrchestrator::OnInputComplete(
     std::string_view step_kind,
     std::int64_t domain_ref_id,
     AdapterChainTrace* trace) const {

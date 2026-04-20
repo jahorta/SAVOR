@@ -48,7 +48,7 @@ public:
         const programdb::ProgramKindRegistry* registry,
         StepCompletionGateService* completion_gate);
 
-    std::optional<programdb::JobPersistenceRecord> OnInputComplete(std::string_view step_kind, std::int64_t domain_ref_id, AdapterChainTrace* trace = nullptr) const;
+    std::optional<programdb::WorkflowStepScheduleResult> OnInputComplete(std::string_view step_kind, std::int64_t domain_ref_id, AdapterChainTrace* trace = nullptr) const;
     std::optional<programdb::RuntimeInitRequest> OnJobClaimed(std::string_view step_kind, std::int64_t job_id, AdapterChainTrace* trace = nullptr) const;
     std::optional<programdb::ResultMapPayload> OnJobTerminal(std::string_view step_kind, std::int64_t job_id, const std::string& result_ini, AdapterChainTrace* trace = nullptr, std::string* error_out = nullptr) const;
     std::optional<programdb::ResultMapPayload> OnJobTerminal(std::string_view step_kind, std::int64_t job_id, const simcore::PRResult& result, AdapterChainTrace* trace = nullptr, std::string* error_out = nullptr) const;

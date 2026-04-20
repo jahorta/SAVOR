@@ -27,6 +27,7 @@
 #include "StepInputAggregationService.h"
 #include "WorkflowDispatchCoordinator.h"
 #include "WorkflowMaterializationService.h"
+#include "JobMaterializationService.h"
 
 namespace simcore::runner::parallel::simcoredb {
 
@@ -65,8 +66,8 @@ struct WorkflowCoordinatorTelemetry {
 class DBWorkflowWorkerCoordinator {
 public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
-    using BuildJobPayloadFn = WorkflowMaterializationService::BuildJobPayloadFn;
-    using ClaimJobsFn = WorkflowMaterializationService::ClaimJobsFn;
+    using BuildJobPayloadFn = JobMaterializationService::BuildJobPayloadFn;
+    using ClaimJobsFn = JobMaterializationService::ClaimJobsFn;
     using ProgressCallback = std::function<void(const simcore::PRProgress&)>;
     using ResultCallback = std::function<void(const simcore::PRResult&)>;
 
@@ -168,6 +169,7 @@ private:
     StepInputAggregationService input_aggregation_service_;
     ReadyStepPersistFn persist_materialization_fn_;
     WorkflowMaterializationService workflow_materialization_service_;
+    JobMaterializationService job_materialization_service_;
     WorkflowDispatchCoordinator workflow_dispatch_coordinator_;
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
     std::unique_ptr<simcore::db::execution::workflow::StepCompletionGateService> owned_step_completion_gate_;
