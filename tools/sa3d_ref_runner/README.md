@@ -7,6 +7,12 @@ Reference bridge runner for generating `parity_report_v1` JSON from fixture inpu
 - `run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] [--slice <n>] [--sa3d-parser-cmd <template>]`
 - `run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-parser-cmd <template>]`
 
+`run-all` fixture resolution behavior:
+
+1. If `fixtures[].mld_path` entries are present in the manifest, those paths are used directly.
+2. Otherwise, `fixture_policy.root` + `fixture_policy.glob` auto-discovery is used.
+3. Relative paths are resolved from the manifest file directory.
+
 ## Parser command template
 
 Use `--sa3d-parser-cmd` to invoke an external DetailedIO-compatible parser command.
