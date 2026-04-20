@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 internal static class Program
 {
@@ -473,6 +474,17 @@ internal static class Program
         using var document = JsonDocument.Parse(json);
 
         var root = document.RootElement;
+        var manifestDir = Path.GetDirectoryName(manifestPath) ?? Directory.GetCurrentDirectory();
+
+        var explicitFixturePaths = ResolveExplicitFixturePaths(root, manifestDir);
+        if (explicitFixturePaths.Count > 0)
+        {
+            return explicitFixturePaths
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         var fixturePolicy = root.TryGetProperty("fixture_policy", out var policyElement) ? policyElement : default;
         var fixtureRoot = fixturePolicy.ValueKind != JsonValueKind.Undefined && fixturePolicy.TryGetProperty("root", out var rootElement)
             ? rootElement.GetString() ?? string.Empty
@@ -481,16 +493,61 @@ internal static class Program
             ? globElement.GetString() ?? "*.mld"
             : "*.mld";
 
-        var repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(manifestPath) ?? ".", ".."));
         var effectiveFixtureRoot = string.IsNullOrWhiteSpace(fixtureRoot)
-            ? repoRoot
-            : Path.GetFullPath(Path.Combine(repoRoot, fixtureRoot));
+            ? manifestDir
+            : Path.GetFullPath(Path.Combine(manifestDir, fixtureRoot));
 
         var files = Directory.Exists(effectiveFixtureRoot)
-            ? Directory.GetFiles(effectiveFixtureRoot, fixtureGlob, SearchOption.TopDirectoryOnly)
+            ? Directory.GetFiles(effectiveFixtureRoot, "*", SearchOption.TopDirectoryOnly)
+                .Where(path => GlobMatches(Path.GetFileName(path), fixtureGlob))
+                .ToArray()
             : Array.Empty<string>();
 
         return files.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static IReadOnlyList<string> ResolveExplicitFixturePaths(JsonElement root, string manifestDir)
+    {
+        if (!root.TryGetProperty("fixtures", out var fixturesElement) || fixturesElement.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        var fixturePaths = new List<string>();
+        foreach (var fixture in fixturesElement.EnumerateArray())
+        {
+            if (fixture.ValueKind != JsonValueKind.Object
+                || !fixture.TryGetProperty("mld_path", out var mldPathElement)
+                || mldPathElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var fixturePathRaw = mldPathElement.GetString();
+            if (string.IsNullOrWhiteSpace(fixturePathRaw))
+            {
+                continue;
+            }
+
+            var fixturePath = Path.IsPathRooted(fixturePathRaw)
+                ? fixturePathRaw
+                : Path.GetFullPath(Path.Combine(manifestDir, fixturePathRaw));
+            if (File.Exists(fixturePath))
+            {
+                fixturePaths.Add(fixturePath);
+            }
+        }
+
+        return fixturePaths;
+    }
+
+    private static bool GlobMatches(string fileName, string globPattern)
+    {
+        var escaped = Regex.Escape(globPattern)
+            .Replace(@"\*", ".*", StringComparison.Ordinal)
+            .Replace(@"\?", ".", StringComparison.Ordinal);
+        var regexPattern = "^" + escaped + "$";
+        return Regex.IsMatch(fileName, regexPattern, RegexOptions.CultureInvariant);
     }
 
     private static void WriteReport(string outputFile, ReferenceReport report)
