@@ -57,23 +57,18 @@ struct CliOptions {
     std::filesystem::path inputDir{};
     std::filesystem::path outputDir{};
     bool runAbSa3dPortVsSa3dBridge = false;
-    std::optional<std::filesystem::path> dotnetBridgeExe{};
-    std::optional<std::string> dotnetBridgeCommand{};
-    int dotnetBridgeSlice = 0;
 };
 
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--dotnet-bridge-exe <path>] [--dotnet-bridge-cmd <prefix>] [--dotnet-bridge-slice <n>]\n\n"
+        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SoaSimFileParsing/inputs\n"
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
-        << "  - --dotnet-bridge-exe should point to the .NET bridge runner executable used for SA3D reference output.\n"
-        << "    If omitted, SoaSimFileParsing tries: <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe\n"
-        << "  - --dotnet-bridge-cmd supplies a full command prefix (e.g. 'dotnet run --project ... --') used to invoke run-one.\n"
-        << "  - --dotnet-bridge-slice sets the --slice value passed to the .NET bridge runner (default 0).\n";
+        << "  - Bridge executable path is auto-discovered at <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
+        << "  - In A/B mode, all slices (0..9) run automatically per fixture using a per-fixture NJ block manifest.\n";
 }
 
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
@@ -90,42 +85,6 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--ab-sa3d-port-vs-sa3d-bridge") {
             options.runAbSa3dPortVsSa3dBridge = true;
-            continue;
-        }
-        if (arg == "--dotnet-bridge-exe") {
-            if (i + 1 >= argc) {
-                std::cerr << "Missing value for --dotnet-bridge-exe.\n";
-                return std::nullopt;
-            }
-            ++i;
-            options.dotnetBridgeExe = std::filesystem::path(argv[i]);
-            continue;
-        }
-        if (arg == "--dotnet-bridge-cmd") {
-            if (i + 1 >= argc) {
-                std::cerr << "Missing value for --dotnet-bridge-cmd.\n";
-                return std::nullopt;
-            }
-            ++i;
-            options.dotnetBridgeCommand = std::string(argv[i]);
-            continue;
-        }
-        if (arg == "--dotnet-bridge-slice") {
-            if (i + 1 >= argc) {
-                std::cerr << "Missing value for --dotnet-bridge-slice.\n";
-                return std::nullopt;
-            }
-            ++i;
-            try {
-                options.dotnetBridgeSlice = std::stoi(argv[i]);
-                if (options.dotnetBridgeSlice < 0) {
-                    std::cerr << "--dotnet-bridge-slice must be >= 0.\n";
-                    return std::nullopt;
-                }
-            } catch (...) {
-                std::cerr << "Invalid integer value for --dotnet-bridge-slice: " << argv[i] << "\n";
-                return std::nullopt;
-            }
             continue;
         }
         if (!arg.empty() && arg.front() == '-') {
@@ -159,6 +118,34 @@ std::string quotePath(const std::filesystem::path& path) {
         escaped.push_back(c);
     }
     escaped.push_back('"');
+    return escaped;
+}
+
+std::string jsonEscape(std::string value) {
+    std::string escaped{};
+    escaped.reserve(value.size() + 8);
+    for (const char c : value) {
+        switch (c) {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped.push_back(c);
+            break;
+        }
+    }
     return escaped;
 }
 
@@ -197,36 +184,27 @@ void writeFixtureManifestFromInputDir(const std::filesystem::path& inputDir, con
 }
 
 std::optional<std::filesystem::path> maybeInvokeDotnetBridge(
-    const std::optional<std::filesystem::path>& bridgeExe,
-    const std::optional<std::string>& bridgeCommand,
     const std::filesystem::path& processDir,
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir,
     const std::filesystem::path& fixtureManifestPath,
+    const std::filesystem::path& blockManifestPath,
     int slice) {
-    std::string commandPrefix{};
-    if (bridgeCommand.has_value() && !bridgeCommand->empty()) {
-        commandPrefix = *bridgeCommand;
-    } else {
-        const auto bridgePath = bridgeExe.has_value()
-            ? *bridgeExe
-            : (processDir / "sa3d_bridge" / "SA3DRefRunner.exe");
-
-        if (!std::filesystem::exists(bridgePath)) {
-            std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge executable does not exist: "
-                      << bridgePath.string() << "\n";
-            return std::nullopt;
-        }
-        commandPrefix = quotePath(bridgePath);
+    const auto bridgePath = processDir / "sa3d_bridge" / "SA3DRefRunner.exe";
+    if (!std::filesystem::exists(bridgePath)) {
+        std::cerr << "[SoaSimFileParsing] WARNING: .NET bridge executable does not exist: "
+                  << bridgePath.string() << "\n";
+        return std::nullopt;
     }
 
-    const auto bridgeOutPath = outputDir / (inputPath.stem().string() + ".sa3d.reference.json");
-    const auto command = commandPrefix +
+    const auto bridgeOutPath = outputDir / (inputPath.stem().string() + ".slice_" + std::to_string(slice) + ".sa3d.reference.json");
+    const auto command = quotePath(bridgePath) +
         " run-one" +
         " --input " + quotePath(inputPath) +
         " --out " + quotePath(outputDir) +
         " --output-file " + quotePath(bridgeOutPath) +
         " --manifest " + quotePath(fixtureManifestPath) +
+        " --block-manifest " + quotePath(blockManifestPath) +
         " --slice " + std::to_string(slice);
     const int exitCode = std::system(command.c_str());
     if (exitCode != 0) {
@@ -251,6 +229,35 @@ std::string toBlockKindLabel(const soasim::mld::parsing::ExtractedNjBlock::Kind 
     default:
         return "unknown";
     }
+}
+
+void writeFixtureBlockManifest(
+    const std::filesystem::path& outPath,
+    const std::string_view fixtureId,
+    const std::vector<std::filesystem::path>& blockInputPaths,
+    const std::vector<soasim::mld::parsing::ExtractedNjBlock>& extractedBlocks) {
+    std::ofstream out(outPath, std::ios::binary);
+    out << "{\n";
+    out << "  \"schema\": \"soasim_fixture_block_manifest_v1\",\n";
+    out << "  \"fixture_id\": \"" << jsonEscape(std::string(fixtureId)) << "\",\n";
+    out << "  \"blocks\": [\n";
+    for (std::size_t i = 0; i < blockInputPaths.size() && i < extractedBlocks.size(); ++i) {
+        const auto& block = extractedBlocks[i];
+        out << "    {\n";
+        out << "      \"index\": " << i << ",\n";
+        out << "      \"kind\": \"" << toBlockKindLabel(block.kind) << "\",\n";
+        out << "      \"offset\": " << block.offset << ",\n";
+        out << "      \"size\": " << block.size << ",\n";
+        out << "      \"includes_njtl_prefix\": " << (block.includesNjtlPrefix ? "true" : "false") << ",\n";
+        out << "      \"path\": \"" << jsonEscape(blockInputPaths[i].string()) << "\"\n";
+        out << "    }";
+        if (i + 1 < blockInputPaths.size() && i + 1 < extractedBlocks.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
 }
 
 std::string readTextFile(const std::filesystem::path& path) {
@@ -392,6 +399,8 @@ int main(int argc, char** argv) {
     std::cout << "[SoaSimFileParsing] Step 3/4: Parsing input files...\n";
 
     std::size_t filesProcessed = 0;
+    constexpr int kAbStartSlice = 0;
+    constexpr int kAbEndSlice = 9;
 
     for (const auto& entry : std::filesystem::directory_iterator(inputDir)) {
         if (!entry.is_regular_file()) {
@@ -401,6 +410,10 @@ int main(int argc, char** argv) {
         const auto extension = toLowerCopy(entry.path().extension().string());
         const auto bytes = readAllBytes(entry.path());
         if (bytes.empty()) {
+            continue;
+        }
+
+        if (cliOptions->runAbSa3dPortVsSa3dBridge && extension != ".mld") {
             continue;
         }
 
@@ -444,6 +457,8 @@ int main(int argc, char** argv) {
                 jsonOut << exporter.toJson(builder.build(sa3dPortParsed)).c_str();
 
                 std::vector<std::filesystem::path> bridgeReportPaths{};
+                std::vector<std::filesystem::path> blockInputPaths{};
+                std::vector<soasim::mld::parsing::ExtractedNjBlock> validBlocks{};
                 for (const auto& block : sa3dPortParsed.extractedNjBlocks) {
                     if (block.bytes.empty()) {
                         continue;
@@ -458,15 +473,21 @@ int main(int argc, char** argv) {
                                   << blockInputPath.string() << "\n";
                         continue;
                     }
+                    blockInputPaths.push_back(blockInputPath);
+                    validBlocks.push_back(block);
+                }
 
+                const auto blockManifestPath = outputDir / (entry.path().stem().string() + ".block_manifest.json");
+                writeFixtureBlockManifest(blockManifestPath, entry.path().stem().string(), blockInputPaths, validBlocks);
+
+                for (int slice = kAbStartSlice; slice <= kAbEndSlice; ++slice) {
                     const auto bridgeReportPath = maybeInvokeDotnetBridge(
-                        cliOptions->dotnetBridgeExe,
-                        cliOptions->dotnetBridgeCommand,
                         processDir,
-                        blockInputPath,
+                        entry.path(),
                         outputDir,
                         outputDir / "FIXTURE_MANIFEST.generated.json",
-                        cliOptions->dotnetBridgeSlice);
+                        blockManifestPath,
+                        slice);
                     if (bridgeReportPath.has_value()) {
                         bridgeReportPaths.push_back(*bridgeReportPath);
                     }

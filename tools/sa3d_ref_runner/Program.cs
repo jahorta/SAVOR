@@ -1,8 +1,8 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 internal static class Program
@@ -36,13 +36,11 @@ internal static class Program
     private static void PrintUsage()
     {
         Console.WriteLine("SA3DRefRunner usage:");
-        Console.WriteLine("  SA3DRefRunner run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] [--slice <n>] [--sa3d-parser-cmd <template>]");
-        Console.WriteLine("  SA3DRefRunner run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-parser-cmd <template>]");
+        Console.WriteLine("  SA3DRefRunner run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] --block-manifest <path> [--slice <n>] [--sa3d-modeling-dll <path>]");
+        Console.WriteLine("  SA3DRefRunner run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-modeling-dll <path>]");
         Console.WriteLine();
-        Console.WriteLine("Template placeholders for --sa3d-parser-cmd:");
-        Console.WriteLine("  {input} = absolute input fixture path");
-        Console.WriteLine("  {output} = absolute temp output path to write parser JSON");
-        Console.WriteLine("  {slice} = current numeric slice");
+        Console.WriteLine("Defaults:");
+        Console.WriteLine("  SA3D.Modeling.dll is auto-discovered next to SA3DRefRunner or under third-party/SA3D.Modeling build outputs.");
     }
 
     private static Dictionary<string, string> ParseOptions(string[] args)
@@ -190,8 +188,9 @@ internal static class Program
         var bytes = File.ReadAllBytes(inputPath);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         var diagnostics = new List<Diagnostic>();
+        var blockManifest = TryLoadBlockManifest(options, diagnostics);
 
-        var parserOutput = InvokeReferenceParser(inputPath, outDir, options, slice, diagnostics);
+        var parserOutput = InvokeSa3dModelingReference(inputPath, outDir, options, slice, blockManifest, diagnostics);
 
         var metrics = new Metrics
         {
@@ -206,6 +205,19 @@ internal static class Program
                 ["reference_status"] = JsonSerializer.SerializeToElement(parserOutput.Status),
             },
         };
+
+        if (blockManifest is not null)
+        {
+            metrics.Structural["block_manifest_present"] = JsonSerializer.SerializeToElement(true);
+            metrics.Structural["block_count"] = JsonSerializer.SerializeToElement(blockManifest.Blocks.Count);
+            metrics.Structural["object_block_count"] = JsonSerializer.SerializeToElement(blockManifest.Blocks.Count(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase)));
+            metrics.Structural["motion_block_count"] = JsonSerializer.SerializeToElement(blockManifest.Blocks.Count(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase)));
+            metrics.Semantic["fixture_id"] = JsonSerializer.SerializeToElement(blockManifest.FixtureId ?? string.Empty);
+        }
+        else
+        {
+            metrics.Structural["block_manifest_present"] = JsonSerializer.SerializeToElement(false);
+        }
 
         if (parserOutput.Structural is not null)
         {
@@ -259,6 +271,8 @@ internal static class Program
                         ["input_path"] = JsonSerializer.SerializeToElement(inputPath),
                         ["input_size_bytes"] = JsonSerializer.SerializeToElement(bytes.Length),
                         ["input_sha256"] = JsonSerializer.SerializeToElement(hash),
+                        ["block_manifest_path"] = JsonSerializer.SerializeToElement(options.TryGetValue("--block-manifest", out var blockManifestPathRaw) ? Path.GetFullPath(blockManifestPathRaw) : string.Empty),
+                        ["block_count"] = JsonSerializer.SerializeToElement(blockManifest?.Blocks.Count ?? 0),
                     },
                     Outputs = parserOutput.Outputs,
                 },
@@ -266,206 +280,291 @@ internal static class Program
         };
     }
 
-    private static ParserInvocationResult InvokeReferenceParser(
-        string inputPath,
-        string outDir,
-        Dictionary<string, string> options,
-        int slice,
-        List<Diagnostic> diagnostics)
+    private static BlockManifest? TryLoadBlockManifest(Dictionary<string, string> options, List<Diagnostic> diagnostics)
     {
-        if (!options.TryGetValue("--sa3d-parser-cmd", out var template) || string.IsNullOrWhiteSpace(template))
+        if (!options.TryGetValue("--block-manifest", out var blockManifestRaw) || string.IsNullOrWhiteSpace(blockManifestRaw))
         {
-            diagnostics.Add(new Diagnostic
-            {
-                Code = "REF_NOT_CONFIGURED",
-                Severity = "warning",
-                Stage = "reference_invoke",
-                Message = "No --sa3d-parser-cmd provided; bridge emitted baseline report without parser invocation.",
-            });
-
-            return ParserInvocationResult.NotInvoked();
+            return null;
         }
 
-        var tempOut = Path.Combine(outDir, Path.GetFileNameWithoutExtension(inputPath) + ".sa3d.reference.raw.json");
-        var command = template
-            .Replace("{input}", EscapeForShell(inputPath), StringComparison.Ordinal)
-            .Replace("{output}", EscapeForShell(tempOut), StringComparison.Ordinal)
-            .Replace("{slice}", slice.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
-
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "bash",
-                ArgumentList = { "-lc", command },
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            },
-        };
-
-        process.Start();
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
+        var blockManifestPath = Path.GetFullPath(blockManifestRaw);
+        if (!File.Exists(blockManifestPath))
         {
             diagnostics.Add(new Diagnostic
             {
-                Code = "REF_EXEC_FAILED",
+                Code = "BLOCK_MANIFEST_MISSING",
                 Severity = "error",
-                Stage = "reference_invoke",
-                Message = $"Reference parser command exited with code {process.ExitCode}. stderr={TrimForDiagnostic(stderr)} stdout={TrimForDiagnostic(stdout)}",
+                Stage = "block_manifest_load",
+                Message = $"Block manifest does not exist: {blockManifestPath}",
             });
-            return ParserInvocationResult.Failed("exec_failed");
-        }
-
-        if (!File.Exists(tempOut))
-        {
-            diagnostics.Add(new Diagnostic
-            {
-                Code = "REF_OUTPUT_MISSING",
-                Severity = "error",
-                Stage = "reference_parse",
-                Message = $"Reference parser command completed but did not create expected output file: {tempOut}",
-            });
-            return ParserInvocationResult.Failed("output_missing");
+            return null;
         }
 
         try
         {
-            var json = File.ReadAllText(tempOut, Encoding.UTF8);
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            var structural = ReadObjectAsDictionary(root, "structural");
-            var semantic = ReadObjectAsDictionary(root, "semantic");
-            var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+            var json = File.ReadAllText(blockManifestPath, Encoding.UTF8);
+            var manifest = JsonSerializer.Deserialize<BlockManifest>(json, JsonOptions);
+            if (manifest is null)
             {
-                ["reference_output_path"] = JsonSerializer.SerializeToElement(tempOut),
-                ["reference_stdout"] = JsonSerializer.SerializeToElement(stdout),
-                ["reference_stderr"] = JsonSerializer.SerializeToElement(stderr),
-            };
-
-            if (root.TryGetProperty("outputs", out var outputsElement) && outputsElement.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var property in outputsElement.EnumerateObject().OrderBy(x => x.Name, StringComparer.Ordinal))
+                diagnostics.Add(new Diagnostic
                 {
-                    outputs[property.Name] = property.Value.Clone();
+                    Code = "BLOCK_MANIFEST_INVALID",
+                    Severity = "error",
+                    Stage = "block_manifest_load",
+                    Message = $"Block manifest JSON parsed to null: {blockManifestPath}",
+                });
+                return null;
+            }
+
+            var blockManifestDir = Path.GetDirectoryName(blockManifestPath) ?? Directory.GetCurrentDirectory();
+            foreach (var block in manifest.Blocks)
+            {
+                if (string.IsNullOrWhiteSpace(block.Path))
+                {
+                    continue;
+                }
+                block.Path = Path.IsPathRooted(block.Path)
+                    ? block.Path
+                    : Path.GetFullPath(Path.Combine(blockManifestDir, block.Path));
+            }
+
+            var missingCount = manifest.Blocks.Count(x => string.IsNullOrWhiteSpace(x.Path) || !File.Exists(x.Path));
+            if (missingCount > 0)
+            {
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "BLOCK_MANIFEST_BLOCKS_MISSING",
+                    Severity = "error",
+                    Stage = "block_manifest_load",
+                    Message = $"Block manifest contains {missingCount} missing block file path(s).",
+                });
+            }
+            return manifest;
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add(new Diagnostic
+            {
+                Code = "BLOCK_MANIFEST_PARSE_FAILED",
+                Severity = "error",
+                Stage = "block_manifest_load",
+                Message = $"Failed to parse block manifest JSON: {ex.Message}",
+            });
+            return null;
+        }
+    }
+
+    private static ParserInvocationResult InvokeSa3dModelingReference(
+        string inputPath,
+        string outDir,
+        Dictionary<string, string> options,
+        int slice,
+        BlockManifest? blockManifest,
+        List<Diagnostic> diagnostics)
+    {
+        if (blockManifest is null || blockManifest.Blocks.Count == 0)
+        {
+            diagnostics.Add(new Diagnostic
+            {
+                Code = "BLOCK_MANIFEST_REQUIRED",
+                Severity = "error",
+                Stage = "reference_invoke",
+                Message = "A populated --block-manifest is required for SA3D.Modeling bridge invocation.",
+            });
+            return ParserInvocationResult.Failed("missing_block_manifest");
+        }
+
+        if (!TryResolveSa3dModelingAssemblyPath(options, out var assemblyPath))
+        {
+            diagnostics.Add(new Diagnostic
+            {
+                Code = "SA3D_ASSEMBLY_NOT_FOUND",
+                Severity = "error",
+                Stage = "reference_invoke",
+                Message = "Could not locate SA3D.Modeling.dll. Provide --sa3d-modeling-dll or place it next to SA3DRefRunner.",
+            });
+            return ParserInvocationResult.Failed("assembly_not_found");
+        }
+
+        try
+        {
+            var assembly = System.Reflection.Assembly.LoadFrom(assemblyPath);
+            var modelType = assembly.GetType("SA3D.Modeling.File.ModelFile", throwOnError: false);
+            var animationType = assembly.GetType("SA3D.Modeling.File.AnimationFile", throwOnError: false);
+            if (modelType is null || animationType is null)
+            {
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "SA3D_TYPES_NOT_FOUND",
+                    Severity = "error",
+                    Stage = "reference_invoke",
+                    Message = "Loaded SA3D.Modeling assembly but required file wrapper types were not found.",
+                });
+                return ParserInvocationResult.Failed("types_not_found");
+            }
+
+            var modelReadMethod = FindReadFromBytesMethod(modelType);
+            var motionReadMethod = FindReadFromBytesMethod(animationType);
+            if (modelReadMethod is null || motionReadMethod is null)
+            {
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "SA3D_READ_METHOD_NOT_FOUND",
+                    Severity = "error",
+                    Stage = "reference_invoke",
+                    Message = "Could not locate compatible ReadFromBytes APIs on SA3D.Modeling file wrappers.",
+                });
+                return ParserInvocationResult.Failed("read_api_missing");
+            }
+
+            var parsedObject = 0;
+            var parsedMotion = 0;
+            var failedBlocks = 0;
+            var firstModelOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault();
+            var firstMotionOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault();
+
+            foreach (var block in blockManifest.Blocks)
+            {
+                if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+                {
+                    failedBlocks++;
+                    continue;
+                }
+
+                var blockBytes = File.ReadAllBytes(block.Path);
+                var targetMethod = block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase)
+                    ? motionReadMethod
+                    : modelReadMethod;
+                try
+                {
+                    _ = targetMethod.Invoke(null, BuildReadFromBytesArgs(targetMethod, blockBytes));
+                    if (block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                    {
+                        parsedMotion++;
+                    }
+                    else
+                    {
+                        parsedObject++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failedBlocks++;
+                    diagnostics.Add(new Diagnostic
+                    {
+                        Code = "SA3D_BLOCK_PARSE_FAILED",
+                        Severity = "error",
+                        Stage = "reference_parse",
+                        Message = $"Failed to parse block index={block.Index} kind={block.Kind}: {ex.GetBaseException().Message}",
+                    });
                 }
             }
 
-            var invocationDiagnostics = ExtractDiagnostics(root);
-            diagnostics.AddRange(invocationDiagnostics);
+            var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["sa3d_modeling_assembly"] = JsonSerializer.SerializeToElement(assemblyPath),
+                ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+                ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+                ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+            };
+
+            var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["reference_library"] = JsonSerializer.SerializeToElement("SA3D.Modeling"),
+            };
+
+            var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_reflection"),
+                ["sa3d_modeling_dll"] = JsonSerializer.SerializeToElement(assemblyPath),
+                ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+                ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+                ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+                ["slice"] = JsonSerializer.SerializeToElement(slice),
+                ["fixture_input"] = JsonSerializer.SerializeToElement(inputPath),
+            };
 
             return new ParserInvocationResult
             {
                 Invoked = true,
-                Status = "ok",
+                Status = failedBlocks == 0 ? "ok" : "partial",
                 Structural = structural,
                 Semantic = semantic,
                 Outputs = outputs,
-                ModelBlockOffset = TryGetNullableInt(root, "model_block_offset"),
-                MotionBlockOffset = TryGetNullableInt(root, "motion_block_offset"),
+                ModelBlockOffset = firstModelOffset,
+                MotionBlockOffset = firstMotionOffset,
             };
         }
         catch (Exception ex)
         {
             diagnostics.Add(new Diagnostic
             {
-                Code = "REF_JSON_INVALID",
+                Code = "SA3D_INVOKE_FAILED",
                 Severity = "error",
-                Stage = "reference_parse",
-                Message = $"Reference parser output JSON failed to parse: {ex.Message}",
+                Stage = "reference_invoke",
+                Message = $"Failed to invoke SA3D.Modeling via reflection: {ex.Message}",
             });
-            return ParserInvocationResult.Failed("invalid_json");
+            return ParserInvocationResult.Failed("invoke_failed");
         }
     }
 
-    private static Dictionary<string, JsonElement>? ReadObjectAsDictionary(JsonElement root, string name)
+    private static bool TryResolveSa3dModelingAssemblyPath(Dictionary<string, string> options, out string assemblyPath)
     {
-        if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+        var candidates = new List<string>();
+        if (options.TryGetValue("--sa3d-modeling-dll", out var explicitPath) && !string.IsNullOrWhiteSpace(explicitPath))
         {
-            return null;
+            candidates.Add(Path.GetFullPath(explicitPath));
         }
 
-        return value.EnumerateObject()
-            .OrderBy(x => x.Name, StringComparer.Ordinal)
-            .ToDictionary(x => x.Name, x => x.Value.Clone(), StringComparer.Ordinal);
+        var appBase = AppContext.BaseDirectory;
+        candidates.Add(Path.Combine(appBase, "SA3D.Modeling.dll"));
+        candidates.Add(Path.GetFullPath(Path.Combine(appBase, "..", "..", "..", "..", "third-party", "SA3D.Modeling", "SA3D.Modeling", "bin", "Debug", "net8.0", "SA3D.Modeling.dll")));
+        candidates.Add(Path.GetFullPath(Path.Combine(appBase, "..", "..", "..", "..", "third-party", "SA3D.Modeling", "SA3D.Modeling", "bin", "Release", "net8.0", "SA3D.Modeling.dll")));
+
+        assemblyPath = candidates.FirstOrDefault(File.Exists) ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(assemblyPath);
     }
 
-    private static int? TryGetNullableInt(JsonElement root, string property)
+    private static System.Reflection.MethodInfo? FindReadFromBytesMethod(Type wrapperType)
     {
-        if (!root.TryGetProperty(property, out var value))
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.Null)
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
-        {
-            return intValue;
-        }
-
-        return null;
-    }
-
-    private static List<Diagnostic> ExtractDiagnostics(JsonElement root)
-    {
-        var diagnostics = new List<Diagnostic>();
-        if (!root.TryGetProperty("diagnostics", out var diagnosticsElement) || diagnosticsElement.ValueKind != JsonValueKind.Array)
-        {
-            return diagnostics;
-        }
-
-        foreach (var item in diagnosticsElement.EnumerateArray())
-        {
-            var code = item.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String
-                ? codeValue.GetString() ?? "REF_DIAGNOSTIC"
-                : "REF_DIAGNOSTIC";
-            var message = item.TryGetProperty("message", out var messageValue) && messageValue.ValueKind == JsonValueKind.String
-                ? messageValue.GetString() ?? string.Empty
-                : string.Empty;
-            var stage = item.TryGetProperty("stage", out var stageValue) && stageValue.ValueKind == JsonValueKind.String
-                ? stageValue.GetString() ?? "reference_parse"
-                : "reference_parse";
-            var severity = item.TryGetProperty("severity", out var severityValue) && severityValue.ValueKind == JsonValueKind.String
-                ? severityValue.GetString() ?? "info"
-                : "info";
-
-            diagnostics.Add(new Diagnostic
+        return wrapperType
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .FirstOrDefault(method =>
             {
-                Code = code,
-                Message = message,
-                Stage = stage,
-                Severity = severity,
+                if (!method.Name.Equals("ReadFromBytes", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                var parameters = method.GetParameters();
+                return parameters.Length > 0 && parameters[0].ParameterType == typeof(byte[]);
             });
-        }
-
-        return diagnostics;
     }
 
-    private static string EscapeForShell(string path)
+    private static object?[] BuildReadFromBytesArgs(System.Reflection.MethodInfo method, byte[] bytes)
     {
-        return "'" + path.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
-    }
-
-    private static string TrimForDiagnostic(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
+        var parameters = method.GetParameters();
+        var args = new object?[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
         {
-            return string.Empty;
+            if (i == 0)
+            {
+                args[i] = bytes;
+                continue;
+            }
+            args[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : GetDefault(parameters[i].ParameterType);
         }
+        return args;
+    }
 
-        const int maxLen = 400;
-        var trimmed = value.Trim();
-        return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
+    private static object? GetDefault(Type type)
+    {
+        return type.IsValueType ? Activator.CreateInstance(type) : null;
     }
 
     private static IReadOnlyList<string> ResolveFixturePaths(string manifestPath)
@@ -704,4 +803,37 @@ internal sealed class BatchFixtureResult
     public bool Pass { get; set; }
 
     public int ErrorCount { get; set; }
+}
+
+internal sealed class BlockManifest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; set; } = string.Empty;
+
+    [JsonPropertyName("fixture_id")]
+    public string FixtureId { get; set; } = string.Empty;
+
+    [JsonPropertyName("blocks")]
+    public List<BlockManifestItem> Blocks { get; set; } = [];
+}
+
+internal sealed class BlockManifestItem
+{
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    [JsonPropertyName("offset")]
+    public int Offset { get; set; }
+
+    [JsonPropertyName("size")]
+    public int Size { get; set; }
+
+    [JsonPropertyName("includes_njtl_prefix")]
+    public bool IncludesNjtlPrefix { get; set; }
+
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
 }
