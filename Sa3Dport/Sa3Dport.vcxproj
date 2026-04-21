@@ -97,6 +97,7 @@
   <ItemGroup>
     <ClInclude Include="File\FileHeaders.h" />
     <ClInclude Include="Sa3Dport.h" />
+    <ClInclude Include="Testing\Slice1TestApi.h" />
     <ClInclude Include="Structs\BAMSFHelper.h" />
     <ClInclude Include="Structs\EndianIOExtensions.h" />
     <ClInclude Include="Structs\PointerLUT.h" />

@@ -15,6 +15,10 @@ Status legend:
 - `[-]` in progress
 - `[x]` complete
 
+Test harness direction update (2026-04-21):
+- Each implementation slice should define a dedicated test shortcut header under `Sa3Dport/Testing/` (for example, `Slice1TestApi.h`).
+- Reference-runner captured input payloads from `SA3D.Modeling` should be shaped to feed these slice headers directly for parity and unit testing.
+
 ---
 
 ## Slice 0 — Ground rules and compatibility harness
@@ -67,6 +71,7 @@ Checklist:
 - [x] Port BAMS float/angle conversion behavior.
 - [x] Add unit tests for endian stack, pointers, and BAMS exactness.
   - Added `SimCoreTests/test_sa3dport_stage1.cpp` covering file headers, endian read semantics, pointer LUT memoization, and BAMS conversion round-trips.
+- [x] Add a Slice 1 test shortcut header (`Sa3Dport/Testing/Slice1TestApi.h`) so captured `SA3D.Modeling` inputs can be passed directly into slice-targeted C++ tests without re-wiring includes per test file.
 - [ ] Extend parity harness (Slice 1 mode):
   - compare primitive/lut/bams input/output pairs captured from `DetailedIO` processing of real extracted NJ blocks,
   - emit `parity_report_v1` with `slice_stage = 1` and only `primitives` section populated,

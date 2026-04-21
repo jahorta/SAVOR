@@ -16,6 +16,7 @@ Implementation note (2026-04-19):
 - Consume NJ model/motion blocks extracted from MLD fixtures.
 - Emit stable JSON summaries aligned with `parity_report_v1`.
 - Emit per-slice input/output pairs that can be replayed directly by the C++ port.
+- Align each slice payload with a matching C++ test shortcut header (`Sa3Dport/Testing/Slice{N}TestApi.h`) so parity fixtures can be injected into tests without custom glue per test file.
 - Support batch execution over fixture manifest.
 
 Non-goals:
@@ -52,6 +53,7 @@ Non-goals:
    - computes structural and semantic metrics.
 5. **IO pair capture builder**
    - captures slice-targeted input/output pairs during parse operations.
+   - normalizes shape so inputs map 1:1 to `Sa3Dport/Testing/Slice{N}TestApi.h` helper entry points.
 6. **JSON writer**
    - emits deterministic report + IO pair artifacts using locked ordering and numeric formatting.
 
