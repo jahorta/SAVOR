@@ -13,7 +13,6 @@
 #include "Execution/Workflow/WorkflowModeProvider.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "DB/Scheduling/JobSetsRepo.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 
@@ -203,12 +202,12 @@ std::vector<std::string> FormatActiveJobSetLines(
     }
 
     const auto job_set_id = *selected_step->job_set_id;
-    const auto lite = simcore::db::JobSetsRepo::GetLite(job_set_id);
-    if (!lite.ok) {
+    const auto details = execution_db != nullptr ? execution_db->GetJobSetProgress(job_set_id) : std::nullopt;
+    if (!details.has_value()) {
         return { step_label.str(), "job_set progress unavailable" };
     }
 
-    const auto& row = lite.value;
+    const auto& row = *details;
     const std::int64_t total = row.total_jobs;
     const std::int64_t done = row.completed_jobs;
     const std::int64_t ok = row.succeeded_jobs;

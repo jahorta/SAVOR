@@ -277,6 +277,52 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     return row;
 }
 
+std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgress(std::int64_t job_set_id) const {
+    if (db_ == nullptr || job_set_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT js.job_set_id, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id), 0) AS total_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j "
+            "         WHERE j.job_set_id=js.job_set_id "
+            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), 0) AS completed_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j "
+            "         WHERE j.job_set_id=js.job_set_id "
+            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')), 0) AS succeeded_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='FAILED'), 0) AS failed_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='CANCELED'), 0) AS canceled_jobs, "
+            "js.expected_total "
+            "FROM exec_job_set js "
+            "WHERE js.job_set_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, job_set_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ExecutionJobSetProgressDetails details{};
+    details.job_set_id = sqlite3_column_int64(st.st, 0);
+    details.total_jobs = sqlite3_column_int64(st.st, 1);
+    details.completed_jobs = sqlite3_column_int64(st.st, 2);
+    details.succeeded_jobs = sqlite3_column_int64(st.st, 3);
+    details.failed_jobs = sqlite3_column_int64(st.st, 4);
+    details.canceled_jobs = sqlite3_column_int64(st.st, 5);
+    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
+        details.expected_total = sqlite3_column_int64(st.st, 6);
+    }
+    return details;
+}
+
 bool SqliteExecutionDb::CreateJobSet(
     const CreateJobSetCommand& command,
     std::int64_t* job_set_id_out,

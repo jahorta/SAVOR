@@ -16,6 +16,15 @@ namespace simcore::db::execution::workflow {
 class SqliteWorkflowOrchestrationQueryService;
 class SqliteWorkflowOrchestrationCommandService;
 struct WorkflowInvariantRemediationCommand;
+struct ExecutionJobSetProgressDetails {
+    std::int64_t job_set_id = 0;
+    std::int64_t total_jobs = 0;
+    std::int64_t completed_jobs = 0;
+    std::int64_t succeeded_jobs = 0;
+    std::int64_t failed_jobs = 0;
+    std::int64_t canceled_jobs = 0;
+    std::optional<std::int64_t> expected_total;
+};
 
 class SqliteExecutionDb final : public simcore::db::IExecutionDb {
 public:
@@ -56,6 +65,7 @@ public:
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
+    std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const;
     bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) override;
     retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
