@@ -1,22 +1,14 @@
 @echo off
 setlocal enableextensions enabledelayedexpansion
 
-if "%~1"=="" (
-  echo Usage:
-  echo   run_ab_all_slices.bat ^<SoaSimFileParsing.exe^> [input_dir] [output_root] [dotnet_bridge_exe] [dotnet_bridge_cmd] [start_slice] [end_slice]
-  echo.
-  echo Defaults:
-  echo   start_slice=0
-  echo   end_slice=9
-  exit /b 1
-)
-
 set "SOASIM_FILE_PARSER=%~1"
+if "%SOASIM_FILE_PARSER%"=="" set "SOASIM_FILE_PARSER=..\..\bin\x64\Debug\SoaSimFileParsing.exe"
+
 set "INPUT_DIR=%~2"
-if "%INPUT_DIR%"=="" set "INPUT_DIR=SoaSimFileParsing\inputs"
+if "%INPUT_DIR%"=="" set "INPUT_DIR=..\inputs"
 
 set "OUTPUT_ROOT=%~3"
-if "%OUTPUT_ROOT%"=="" set "OUTPUT_ROOT=SoaSimFileParsing\parsed\ab_slices"
+if "%OUTPUT_ROOT%"=="" set "OUTPUT_ROOT=..\parsed\ab_slices"
 
 set "DOTNET_BRIDGE_EXE=%~4"
 set "DOTNET_BRIDGE_CMD=%~5"

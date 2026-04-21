@@ -16,10 +16,10 @@ set "SLICE=%~2"
 if "%SLICE%"=="" set "SLICE=0"
 
 set "INPUT_DIR=%~3"
-if "%INPUT_DIR%"=="" set "INPUT_DIR=SoaSimFileParsing\inputs"
+if "%INPUT_DIR%"=="" set "INPUT_DIR=..\inputs"
 
 set "OUTPUT_ROOT=%~4"
-if "%OUTPUT_ROOT%"=="" set "OUTPUT_ROOT=SoaSimFileParsing\parsed\ab_slices"
+if "%OUTPUT_ROOT%"=="" set "OUTPUT_ROOT=..\parsed\ab_slices"
 
 set "DOTNET_BRIDGE_EXE=%~5"
 set "DOTNET_BRIDGE_CMD=%~6"
@@ -32,14 +32,14 @@ echo [run_ab_slice] parser_exe=%SOASIM_FILE_PARSER%
 echo [run_ab_slice] input_dir=%INPUT_DIR%
 echo [run_ab_slice] output_dir=%SLICE_OUTPUT_DIR%
 
-set "COMMAND=\"%SOASIM_FILE_PARSER%\" \"%INPUT_DIR%\" \"%SLICE_OUTPUT_DIR%\" --ab-sa3d-port-vs-sa3d-bridge --dotnet-bridge-slice %SLICE%"
+set "COMMAND=%SOASIM_FILE_PARSER% %INPUT_DIR% %SLICE_OUTPUT_DIR% --ab-sa3d-port-vs-sa3d-bridge --dotnet-bridge-slice %SLICE%"
 
 if not "%DOTNET_BRIDGE_EXE%"=="" (
-  set "COMMAND=!COMMAND! --dotnet-bridge-exe \"%DOTNET_BRIDGE_EXE%\""
+  set "COMMAND=!COMMAND! --dotnet-bridge-exe %DOTNET_BRIDGE_EXE%"
 )
 
 if not "%DOTNET_BRIDGE_CMD%"=="" (
-  set "COMMAND=!COMMAND! --dotnet-bridge-cmd \"%DOTNET_BRIDGE_CMD%\""
+  set "COMMAND=!COMMAND! --dotnet-bridge-cmd %DOTNET_BRIDGE_CMD%"
 )
 
 echo [run_ab_slice] !COMMAND!
