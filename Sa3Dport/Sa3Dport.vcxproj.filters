@@ -15,6 +15,9 @@
     <Filter Include="Structs">
       <UniqueIdentifier>{26157E12-A6CD-48EC-97FB-BDB44FC80D8E}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Testing">
+      <UniqueIdentifier>{E55F122A-D26D-43A4-A90F-8A3778DBB18A}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Sa3Dport.h">
@@ -31,6 +34,9 @@
     </ClInclude>
     <ClInclude Include="Structs\PointerLUT.h">
       <Filter>Structs</Filter>
+    </ClInclude>
+    <ClInclude Include="Testing\Slice1TestApi.h">
+      <Filter>Testing</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
