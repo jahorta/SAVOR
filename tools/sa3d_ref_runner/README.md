@@ -4,8 +4,8 @@ Reference bridge runner for generating `parity_report_v1` JSON from fixture inpu
 
 ## Commands
 
-- `run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] [--slice <n>] [--sa3d-parser-cmd <template>]`
-- `run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-parser-cmd <template>]`
+- `run-one --input <file.mld> --out <dir> [--output-file <path>] [--manifest <path>] --block-manifest <path> [--slice <n>] [--sa3d-modeling-dll <path>]`
+- `run-all --manifest <path> --out <dir> [--slice <n>] [--sa3d-modeling-dll <path>]`
 
 `run-all` fixture resolution behavior:
 
@@ -13,23 +13,17 @@ Reference bridge runner for generating `parity_report_v1` JSON from fixture inpu
 2. Otherwise, `fixture_policy.root` + `fixture_policy.glob` auto-discovery is used.
 3. Relative paths are resolved from the manifest file directory.
 
-## Parser command template
+## SA3D.Modeling binding
 
-Use `--sa3d-parser-cmd` to invoke an external DetailedIO-compatible parser command.
+- The runner invokes `SA3D.Modeling` directly (via reflection) for each block in the fixture block manifest.
+- `--sa3d-modeling-dll <path>` can be used to force a specific assembly location.
+- If omitted, the runner attempts to find `SA3D.Modeling.dll` next to `SA3DRefRunner` or under known `third-party/SA3D.Modeling` build output locations.
 
-Supported placeholders:
+## Block manifest protocol
 
-- `{input}` absolute fixture path
-- `{output}` absolute temp output path that the parser command must write
-- `{slice}` numeric slice stage
-
-Example template:
-
-```bash
---sa3d-parser-cmd "dotnet run --project /path/to/DetailedIO/Runner.csproj -- --input {input} --output {output} --slice {slice}"
-```
-
-If no parser command is provided, the bridge still emits baseline deterministic reports with warning diagnostics.
+- `--block-manifest <path>` allows one fixture-level invocation carrying all extracted NJ blocks.
+- The runner validates block paths and emits consolidated block metrics (`block_count`, object/motion counts).
+- This is intended for SoaSimFileParsing A/B flows that pass one manifest per fixture per slice.
 
 ## Determinism behavior
 
