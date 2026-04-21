@@ -1,9 +1,6 @@
 #include "gtest/gtest.h"
 
-#include "File/FileHeaders.h"
-#include "Structs/BAMSFHelper.h"
-#include "Structs/EndianIOExtensions.h"
-#include "Structs/PointerLUT.h"
+#include "Testing/Slice1TestApi.h"
 
 #include <array>
 #include <cstddef>
@@ -12,12 +9,12 @@
 
 namespace {
 
-using namespace Sa3Dport;
+using namespace Sa3Dport::Testing::Slice1;
 
 TEST(Sa3DportStage1, FileHeadersRecognizeNjcmMagic) {
     constexpr std::array<char, 4> candidate {'N', 'J', 'C', 'M'};
-    EXPECT_TRUE(File::FileHeaders::MatchesMagic(candidate, File::FileHeaders::kNjcmMagic));
-    EXPECT_FALSE(File::FileHeaders::MatchesMagic(candidate, File::FileHeaders::kNjtlMagic));
+    EXPECT_TRUE(MatchesMagic(candidate, kNjcmMagic));
+    EXPECT_FALSE(MatchesMagic(candidate, kNjtlMagic));
 }
 
 TEST(Sa3DportStage1, EndianReaderReadsLittleEndianPrimitives) {
@@ -26,7 +23,7 @@ TEST(Sa3DportStage1, EndianReaderReadsLittleEndianPrimitives) {
         std::byte {0xFC}, std::byte {0xFF}, std::byte {0xFF}, std::byte {0xFF},
     };
 
-    Structs::EndianReader reader(bytes, Structs::Endianness::Little);
+    auto reader = MakeReader(bytes, Endianness::Little);
     EXPECT_EQ(reader.ReadU32(), 0x12345678u);
     EXPECT_EQ(reader.ReadI32(), -4);
 }
@@ -36,12 +33,12 @@ TEST(Sa3DportStage1, EndianReaderAppliesImageBaseForPointerOffsets) {
         std::byte {0x20}, std::byte {0x10}, std::byte {0x00}, std::byte {0x00},
     };
 
-    Structs::EndianReader reader(bytes, Structs::Endianness::Little, 0x1000);
+    auto reader = MakeReader(bytes, Endianness::Little, 0x1000);
     EXPECT_EQ(reader.ReadPointerOffset(), 0x20u);
 }
 
 TEST(Sa3DportStage1, PointerLutMemoizesByAddress) {
-    Structs::PointerLUT<int> lut;
+    PointerLUT<int> lut;
     auto first = std::make_shared<int>(7);
     auto second = std::make_shared<int>(9);
 
@@ -56,14 +53,14 @@ TEST(Sa3DportStage1, PointerLutMemoizesByAddress) {
 
 TEST(Sa3DportStage1, BamsConversionsRoundTripDegreesAndRadians) {
     constexpr float degrees = 90.0f;
-    const auto bams = Structs::BAMSFHelper::DegreesToBams(degrees);
+    const auto bams = DegreesToBams(degrees);
 
     EXPECT_EQ(bams, 16384);
-    EXPECT_NEAR(Structs::BAMSFHelper::BamsToDegrees(bams), degrees, 0.001f);
+    EXPECT_NEAR(BamsToDegrees(bams), degrees, 0.001f);
 
-    constexpr float radians = Structs::BAMSFHelper::kPi * 0.5f;
-    EXPECT_NEAR(Structs::BAMSFHelper::RadiansToBams(radians), 16384.0f, 0.01f);
-    EXPECT_NEAR(Structs::BAMSFHelper::BamsToRadians(16384), radians, 0.001f);
+    constexpr float radians = kPi * 0.5f;
+    EXPECT_NEAR(RadiansToBams(radians), 16384.0f, 0.01f);
+    EXPECT_NEAR(BamsToRadians(16384), radians, 0.001f);
 }
 
 } // namespace
