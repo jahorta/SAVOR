@@ -474,6 +474,9 @@
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Parallel\SimCoreDB\JobMaterializationService.h">
+      <Filter>Runner\Parallel</Filter>
+    </ClInclude>
     <ClInclude Include="Runner\Parallel\SimCoreDB\StepInputAggregationService.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
@@ -813,6 +816,9 @@
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowSchedulerAdapter.cpp">
+      <Filter>Runner\Parallel</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Parallel\SimCoreDB\JobMaterializationService.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\StepInputAggregationService.cpp">
