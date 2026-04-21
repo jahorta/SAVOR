@@ -80,7 +80,7 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;$(SolutionDir)SoaSimMLD;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;$(SolutionDir)SoaSimMLD;$(SolutionDir)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
@@ -113,7 +113,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;$(SolutionDir)SoaSimMLD;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;$(SolutionDir)SoaSimMLD;$(SolutionDir)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
@@ -135,6 +135,7 @@
     <ClCompile Include="test_GC_input_frame_builder.cpp" />
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
+    <ClCompile Include="test_sa3dport_stage1.cpp" />
     <ClCompile Include="test_satools_parity_poly_parser.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_simcoreDB.cpp" />

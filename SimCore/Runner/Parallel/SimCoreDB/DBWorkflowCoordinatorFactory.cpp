@@ -1,10 +1,7 @@
 #include "DBWorkflowCoordinatorFactory.h"
 
-#include <chrono>
 #include <cstdint>
-#include <deque>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 
@@ -13,16 +10,6 @@
 
 namespace simcore::runner::parallel::simcoredb {
 namespace {
-
-std::int64_t UtcNowMs() {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-}
-
-struct CoordinatedJobState {
-    mutable std::mutex mutex;
-    std::deque<ClaimedJobSeed> claimable_jobs;
-};
 
 std::optional<simcore::PSJob> MaterializePsJob(
     const simcore::db::execution::programdb::ProgramKindDescriptor* descriptor,
@@ -60,13 +47,11 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
         }
     }
 
-    auto shared_state = std::make_shared<CoordinatedJobState>();
-
     auto adapter_chain_orchestrator = std::make_shared<simcore::db::execution::workflow::AdapterChainOrchestrator>(
         program_kind_registry,
         nullptr);
 
-    auto schedule_fn = [execution_db, program_kind_registry, shared_state, adapter_chain_orchestrator](const WorkflowReadyStep& step) -> ScheduledJobSet {
+    auto schedule_fn = [execution_db, program_kind_registry, adapter_chain_orchestrator](const WorkflowReadyStep& step) -> ScheduledJobSet {
         if (execution_db == nullptr || program_kind_registry == nullptr) {
             return {};
         }
@@ -75,65 +60,48 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
         if (descriptor == nullptr || descriptor->job_persistence == nullptr || adapter_chain_orchestrator == nullptr) {
             return {};
         }
-        const auto persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, step.workflow_step_id);
+        if (!step.input_ref_id.has_value()) {
+            return {};
+        }
+        const auto domain_ref_id = *step.input_ref_id;
+        const auto persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, domain_ref_id);
         if (!persisted.has_value()) {
             return {};
         }
-
-        simcore::db::CreateJobSetCommand create_set{};
-        create_set.program_kind = descriptor->program_kind;
-        create_set.purpose = "workflow";
-        create_set.created_by = std::string("DBWorkflowCoordinatorFactory");
-        create_set.created_at_utc = UtcNowMs();
-        create_set.expected_total = 1;
-        if (!persisted->program_ref_kind.empty()) {
-            create_set.domain_ref_kind = persisted->program_ref_kind;
-        }
-        if (persisted->program_ref_id > 0) {
-            create_set.domain_ref_id = persisted->program_ref_id;
-        }
-        create_set.meta_note = "workflow_step_id=" + std::to_string(step.workflow_step_id);
-
-        std::int64_t job_set_id = 0;
-        std::string error;
-        if (!execution_db->CreateJobSet(create_set, &job_set_id, &error) || job_set_id <= 0) {
+        if (persisted->root_job_set_id <= 0) {
             return {};
         }
-
-        simcore::db::EnqueueJobCommand enqueue{};
-        enqueue.job_set_id = job_set_id;
-        enqueue.program_kind = descriptor->program_kind;
-        enqueue.program_version = persisted->program_version;
-        enqueue.program_ref_kind = persisted->program_ref_kind;
-        enqueue.program_ref_id = persisted->program_ref_id;
-        enqueue.fingerprint = persisted->fingerprint.empty() ? (step.step_kind + ":" + std::to_string(step.workflow_step_id)) : persisted->fingerprint;
-        enqueue.priority = step.priority;
-        enqueue.max_attempts = 1;
-
-        std::int64_t job_id = 0;
-        if (!execution_db->EnqueueJob(enqueue, &job_id, &error) || job_id <= 0) {
-            return {};
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(shared_state->mutex);
-            shared_state->claimable_jobs.push_back(ClaimedJobSeed{
-                .step = step,
-                .job_set_id = job_set_id,
-                .job_id = job_id,
-            });
-        }
-
-        return ScheduledJobSet{ .job_set_id = job_set_id, .workflow_step_id = step.workflow_step_id };
+        return ScheduledJobSet{ .job_set_id = persisted->root_job_set_id, .workflow_step_id = step.workflow_step_id };
     };
 
-    auto claim_jobs_fn = [shared_state]() {
+    auto claim_jobs_fn = [execution_db](std::size_t max_claims) {
         std::vector<ClaimedJobSeed> claims;
-        std::lock_guard<std::mutex> lock(shared_state->mutex);
-        claims.reserve(shared_state->claimable_jobs.size());
-        while (!shared_state->claimable_jobs.empty()) {
-            claims.push_back(shared_state->claimable_jobs.front());
-            shared_state->claimable_jobs.pop_front();
+        if (execution_db == nullptr || max_claims == 0) {
+            return claims;
+        }
+        std::string error;
+        const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
+            "workflow_job_materializer",
+            static_cast<int>(max_claims),
+            30000,
+            &error);
+        claims.reserve(claimed_jobs.size());
+        for (const auto& claimed : claimed_jobs) {
+            claims.push_back(ClaimedJobSeed{
+                .step = WorkflowReadyStep{
+                    .workflow_instance_id = claimed.workflow_instance_id,
+                    .workflow_step_id = claimed.workflow_step_id,
+                    .step_key = claimed.workflow_step_key,
+                    .step_kind = claimed.workflow_step_kind,
+                    .priority = claimed.workflow_step_priority,
+                },
+                .job_set_id = claimed.job_set_id,
+                .job_id = claimed.job_id,
+                .affinity = ClaimedJobAffinity{
+                    .savestate_affinity_key = claimed.savestate_affinity_key,
+                    .program_runtime_affinity_key = claimed.program_runtime_affinity_key,
+                },
+            });
         }
         return claims;
     };

@@ -51,8 +51,9 @@ NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
     , analysis_db_(analysis_db) {
 }
 
-JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
-    JobPersistenceRecord persisted{};
+WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+    WorkflowStepScheduleResult scheduled{};
+    auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = kProgramRefKind;
     persisted.program_version = kProgramVersion;
     persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id);
@@ -76,6 +77,7 @@ JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::i
             &job_set_id,
             &error);
         if (job_set_id > 0) {
+            scheduled.root_job_set_id = job_set_id;
             (void)execution_db_->EnqueueJob(
                 {
                     .job_set_id = job_set_id,
@@ -91,7 +93,7 @@ JobPersistenceRecord NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::i
                 &error);
         }
     }
-    return persisted;
+    return scheduled;
 }
 
 std::int64_t NeutralProbeJobPersistenceAdapter::DecodeDomainRefId(const JobPersistenceRecord& persisted) const {

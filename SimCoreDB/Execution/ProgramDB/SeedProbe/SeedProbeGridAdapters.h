@@ -46,7 +46,7 @@ class SeedProbeGridJobPersistenceAdapter final : public IJobPersistenceAdapter {
 public:
     SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid);
 
-    JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const override;
+    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
 
     const std::vector<GridFanoutEntry>& Fanout() const;
