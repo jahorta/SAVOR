@@ -1,12 +1,12 @@
-# .NET Reference Runner Plan (`jahorta/SA3D.Modeling` `DetailedIO`)
+# .NET Reference Runner Plan (`jahorta/SA3D.Modeling` `DetailedIO2`)
 
 Date: 2026-04-18
 Status: Draft
 Purpose: design and implementation plan for a reference runner that emits fixture summaries for C++ parity comparison.
 
-Implementation note (2026-04-19):
-- Initial framework scaffold now exists at `tools/sa3d_ref_runner` with command-line plumbing and JSON skeleton emission.
-- SA3D.Modeling parser binding and slice-specific capture internals remain pending.
+Implementation notes:
+- 2026-04-19: Initial framework scaffold now exists at `tools/sa3d_ref_runner` with command-line plumbing and JSON skeleton emission.
+- 2026-04-25: Bridge direction updated to consume `ParityReportGenerator.CreateFromBytes(...)` in-memory and collate block-level `slice_io_pairs` into a fixture-level report payload.
 
 ---
 
@@ -29,7 +29,7 @@ Non-goals:
 
 ## Inputs
 - pinned parser source: `X-Hax/SA3D.Modeling` tag `1.2.1`, commit `13813e7`.
-- runner source: `jahorta/SA3D.Modeling` branch `DetailedIO`.
+- runner source: `jahorta/SA3D.Modeling` branch `DetailedIO2`.
 - fixture discovery policy (`SoaSimFileParsing/inputs/*.mld`, include all present files).
 - extracted NJ model/motion bytes (provided by MLD parser extraction stage).
 
@@ -48,12 +48,15 @@ Non-goals:
    - receives model/motion NJ blocks from MLD extraction pipeline.
    - writes temporary buffers for parser invocation if needed.
 3. **Reference parser wrapper**
-   - invokes SA3D.Modeling read APIs for model and animation.
+   - invokes `SA3D.Modeling.Parity.ParityReportGenerator.CreateFromBytes(...)` per extracted NJ block.
+   - checks parity diagnostics for each block and marks partial failures without terminating the fixture run.
 4. **Summary builder**
    - computes structural and semantic metrics.
 5. **IO pair capture builder**
-   - captures slice-targeted input/output pairs during parse operations.
-   - normalizes shape so inputs map 1:1 to `Sa3Dport/Testing/Slice{N}TestApi.h` helper entry points.
+   - captures slice-targeted input/output pairs from parity report payloads.
+   - collates all block-level pairs into one fixture-level collection in memory.
+   - emits `slice_io_pairs = [{ slice, pairs[] }]` where each pair carries `function_id`, `input_fields`, and `output`.
+   - stores payload inputs as base64 blobs so replay data can be casted directly into port-side structures.
 6. **JSON writer**
    - emits deterministic report + IO pair artifacts using locked ordering and numeric formatting.
 
@@ -92,7 +95,7 @@ tools/sa3d_ref_runner/
 ## 5) Implementation steps
 
 1. Bootstrap .NET CLI project and lock target framework.
-2. Add parser dependency sourced from pinned checkout (`13813e7`) and runner edits on `DetailedIO`.
+2. Add parser dependency sourced from pinned checkout (`13813e7`) and runner edits on `DetailedIO2`.
 3. Implement manifest loader and validation.
 4. Implement adapter for MLD-extracted NJ blocks.
 5. Implement model summary extraction:

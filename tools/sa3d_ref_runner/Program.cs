@@ -237,6 +237,33 @@ internal static class Program
 
         var hasError = diagnostics.Any(d => d.Severity.Equals("error", StringComparison.OrdinalIgnoreCase));
 
+        var fixtureBlobBase64 = Convert.ToBase64String(bytes);
+        var slicePairs = parserOutput.CollatedSlicePairs.Count > 0
+            ? parserOutput.CollatedSlicePairs
+            : new List<SliceIoPair>
+            {
+                new()
+                {
+                    Slice = slice,
+                    Pairs =
+                    [
+                        new FunctionIoPair
+                        {
+                            FunctionId = "sa3d.bridge.fixture_context",
+                            InputFields = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                            {
+                                ["fixture_blob_base64"] = JsonSerializer.SerializeToElement(fixtureBlobBase64),
+                                ["fixture_blob_encoding"] = JsonSerializer.SerializeToElement("base64"),
+                                ["input_size_bytes"] = JsonSerializer.SerializeToElement(bytes.Length),
+                                ["input_sha256"] = JsonSerializer.SerializeToElement(hash),
+                                ["block_count"] = JsonSerializer.SerializeToElement(blockManifest?.Blocks.Count ?? 0),
+                            },
+                            Output = JsonSerializer.SerializeToElement(parserOutput.Outputs, JsonOptions),
+                        },
+                    ],
+                },
+            };
+
         return new ReferenceReport
         {
             Schema = "parity_report_v1",
@@ -252,7 +279,7 @@ internal static class Program
                 Source = "SA3D.Modeling",
                 Tag = "1.2.1",
                 Commit = "13813e7",
-                RunnerBranch = "DetailedIO",
+                RunnerBranch = "DetailedIO2",
             },
             Metrics = metrics,
             Diagnostics = diagnostics.OrderBy(d => d.Code, StringComparer.Ordinal).ToList(),
@@ -261,22 +288,7 @@ internal static class Program
                 Pass = !hasError,
                 MismatchCount = hasError ? diagnostics.Count(x => x.Severity.Equals("error", StringComparison.OrdinalIgnoreCase)) : 0,
             },
-            SliceIoPairs = new List<SliceIoPair>
-            {
-                new()
-                {
-                    Slice = slice,
-                    Inputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
-                    {
-                        ["input_path"] = JsonSerializer.SerializeToElement(inputPath),
-                        ["input_size_bytes"] = JsonSerializer.SerializeToElement(bytes.Length),
-                        ["input_sha256"] = JsonSerializer.SerializeToElement(hash),
-                        ["block_manifest_path"] = JsonSerializer.SerializeToElement(options.TryGetValue("--block-manifest", out var blockManifestPathRaw) ? Path.GetFullPath(blockManifestPathRaw) : string.Empty),
-                        ["block_count"] = JsonSerializer.SerializeToElement(blockManifest?.Blocks.Count ?? 0),
-                    },
-                    Outputs = parserOutput.Outputs,
-                },
-            },
+            SliceIoPairs = slicePairs,
         };
     }
 
@@ -389,117 +401,20 @@ internal static class Program
         try
         {
             var assembly = System.Reflection.Assembly.LoadFrom(assemblyPath);
-            var modelType = assembly.GetType("SA3D.Modeling.File.ModelFile", throwOnError: false);
-            var animationType = assembly.GetType("SA3D.Modeling.File.AnimationFile", throwOnError: false);
-            if (modelType is null || animationType is null)
+            if (TryInvokeParityReportGenerator(assembly, inputPath, slice, blockManifest, diagnostics, out var parityResult))
             {
-                diagnostics.Add(new Diagnostic
-                {
-                    Code = "SA3D_TYPES_NOT_FOUND",
-                    Severity = "error",
-                    Stage = "reference_invoke",
-                    Message = "Loaded SA3D.Modeling assembly but required file wrapper types were not found.",
-                });
-                return ParserInvocationResult.Failed("types_not_found");
+                parityResult.Outputs["sa3d_modeling_dll"] = JsonSerializer.SerializeToElement(assemblyPath);
+                return parityResult;
             }
 
-            var modelReadMethod = FindReadFromBytesMethod(modelType);
-            var motionReadMethod = FindReadFromBytesMethod(animationType);
-            if (modelReadMethod is null || motionReadMethod is null)
+            diagnostics.Add(new Diagnostic
             {
-                diagnostics.Add(new Diagnostic
-                {
-                    Code = "SA3D_READ_METHOD_NOT_FOUND",
-                    Severity = "error",
-                    Stage = "reference_invoke",
-                    Message = "Could not locate compatible ReadFromBytes APIs on SA3D.Modeling file wrappers.",
-                });
-                return ParserInvocationResult.Failed("read_api_missing");
-            }
-
-            var parsedObject = 0;
-            var parsedMotion = 0;
-            var failedBlocks = 0;
-            var firstModelOffset = blockManifest.Blocks
-                .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
-                .Select(x => (int?)x.Offset)
-                .FirstOrDefault();
-            var firstMotionOffset = blockManifest.Blocks
-                .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
-                .Select(x => (int?)x.Offset)
-                .FirstOrDefault();
-
-            foreach (var block in blockManifest.Blocks)
-            {
-                if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
-                {
-                    failedBlocks++;
-                    continue;
-                }
-
-                var blockBytes = File.ReadAllBytes(block.Path);
-                var targetMethod = block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase)
-                    ? motionReadMethod
-                    : modelReadMethod;
-                try
-                {
-                    _ = targetMethod.Invoke(null, BuildReadFromBytesArgs(targetMethod, blockBytes));
-                    if (block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
-                    {
-                        parsedMotion++;
-                    }
-                    else
-                    {
-                        parsedObject++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    failedBlocks++;
-                    diagnostics.Add(new Diagnostic
-                    {
-                        Code = "SA3D_BLOCK_PARSE_FAILED",
-                        Severity = "error",
-                        Stage = "reference_parse",
-                        Message = $"Failed to parse block index={block.Index} kind={block.Kind}: {ex.GetBaseException().Message}",
-                    });
-                }
-            }
-
-            var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-            {
-                ["sa3d_modeling_assembly"] = JsonSerializer.SerializeToElement(assemblyPath),
-                ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
-                ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
-                ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
-            };
-
-            var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-            {
-                ["reference_library"] = JsonSerializer.SerializeToElement("SA3D.Modeling"),
-            };
-
-            var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
-            {
-                ["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_reflection"),
-                ["sa3d_modeling_dll"] = JsonSerializer.SerializeToElement(assemblyPath),
-                ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
-                ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
-                ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
-                ["slice"] = JsonSerializer.SerializeToElement(slice),
-                ["fixture_input"] = JsonSerializer.SerializeToElement(inputPath),
-            };
-
-            return new ParserInvocationResult
-            {
-                Invoked = true,
-                Status = failedBlocks == 0 ? "ok" : "partial",
-                Structural = structural,
-                Semantic = semantic,
-                Outputs = outputs,
-                ModelBlockOffset = firstModelOffset,
-                MotionBlockOffset = firstMotionOffset,
-            };
+                Code = "SA3D_PARITY_API_NOT_FOUND",
+                Severity = "warning",
+                Stage = "reference_invoke",
+                Message = "ParityReportGenerator API not found; falling back to ReadFromBytes reflection binding.",
+            });
+            return InvokeLegacyReadFromBytes(assembly, inputPath, slice, blockManifest, diagnostics, assemblyPath);
         }
         catch (Exception ex)
         {
@@ -512,6 +427,293 @@ internal static class Program
             });
             return ParserInvocationResult.Failed("invoke_failed");
         }
+    }
+
+    private static bool TryInvokeParityReportGenerator(
+        System.Reflection.Assembly assembly,
+        string inputPath,
+        int requestedSlice,
+        BlockManifest blockManifest,
+        List<Diagnostic> diagnostics,
+        out ParserInvocationResult result)
+    {
+        result = ParserInvocationResult.Failed("parity_invoke_failed");
+        var generatorType = assembly.GetType("SA3D.Modeling.Parity.ParityReportGenerator", throwOnError: false);
+        var optionsType = assembly.GetType("SA3D.Modeling.Parity.ParityCaptureOptions", throwOnError: false);
+        if (generatorType is null || optionsType is null)
+        {
+            return false;
+        }
+
+        var createMethod = generatorType
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .FirstOrDefault(method =>
+            {
+                if (!method.Name.Equals("CreateFromBytes", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                var parameters = method.GetParameters();
+                return parameters.Length > 0 && parameters[0].ParameterType == typeof(byte[]);
+            });
+        if (createMethod is null)
+        {
+            return false;
+        }
+
+        var parsedObject = 0;
+        var parsedMotion = 0;
+        var failedBlocks = 0;
+        var parityErrorBlocks = 0;
+        var firstModelOffset = blockManifest.Blocks
+            .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+            .Select(x => (int?)x.Offset)
+            .FirstOrDefault();
+        var firstMotionOffset = blockManifest.Blocks
+            .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+            .Select(x => (int?)x.Offset)
+            .FirstOrDefault();
+        var collatedFunctionPairs = new List<SliceFunctionPair>();
+        var fixtureId = Path.GetFileNameWithoutExtension(inputPath);
+
+        foreach (var block in blockManifest.Blocks.OrderBy(x => x.Index))
+        {
+            if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+            {
+                failedBlocks++;
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "SA3D_BLOCK_FILE_MISSING",
+                    Severity = "error",
+                    Stage = "reference_parse",
+                    Message = $"Missing block file for index={block.Index} kind={block.Kind}.",
+                });
+                continue;
+            }
+
+            var blockBytes = File.ReadAllBytes(block.Path);
+            try
+            {
+                var optionsInstance = BuildParityCaptureOptions(optionsType, requestedSlice, block.Offset, block.Kind);
+                var reportObject = createMethod.Invoke(null, BuildParityCreateArgs(createMethod, blockBytes, optionsInstance, fixtureId, block));
+                if (reportObject is null)
+                {
+                    failedBlocks++;
+                    diagnostics.Add(new Diagnostic
+                    {
+                        Code = "SA3D_PARITY_REPORT_NULL",
+                        Severity = "error",
+                        Stage = "reference_parse",
+                        Message = $"Parity report was null for block index={block.Index} kind={block.Kind}.",
+                    });
+                    continue;
+                }
+
+                var reportJson = JsonSerializer.SerializeToElement(reportObject, reportObject.GetType(), JsonOptions);
+                if (block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                {
+                    parsedMotion++;
+                }
+                else
+                {
+                    parsedObject++;
+                }
+
+                if (AppendParityDiagnostics(diagnostics, reportJson, block))
+                {
+                    parityErrorBlocks++;
+                }
+
+                var blockPairs = ExtractParityFunctionPairs(reportJson, requestedSlice, block, blockBytes);
+                if (blockPairs.Count == 0)
+                {
+                    diagnostics.Add(new Diagnostic
+                    {
+                        Code = "SA3D_PARITY_SLICE_MISSING",
+                        Severity = "warning",
+                        Stage = "reference_parse",
+                        Message = $"No slice_io_pairs for requested slice={requestedSlice} on block index={block.Index} kind={block.Kind}.",
+                    });
+                }
+                collatedFunctionPairs.AddRange(blockPairs);
+            }
+            catch (Exception ex)
+            {
+                failedBlocks++;
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "SA3D_BLOCK_PARSE_FAILED",
+                    Severity = "error",
+                    Stage = "reference_parse",
+                    Message = $"Failed to parse block index={block.Index} kind={block.Kind}: {ex.GetBaseException().Message}",
+                });
+            }
+        }
+
+        var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_parity_report_generator"),
+            ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+            ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+            ["parity_error_blocks"] = JsonSerializer.SerializeToElement(parityErrorBlocks),
+            ["collated_slice_pairs"] = JsonSerializer.SerializeToElement(collatedFunctionPairs.Count),
+        };
+
+        var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["reference_library"] = JsonSerializer.SerializeToElement("SA3D.Modeling"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("parity_report_generator"),
+        };
+
+        var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_parity_report_generator"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("parity_report_generator"),
+            ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+            ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+            ["parity_error_blocks"] = JsonSerializer.SerializeToElement(parityErrorBlocks),
+            ["collated_slice_pairs"] = JsonSerializer.SerializeToElement(collatedFunctionPairs.Count),
+            ["slice"] = JsonSerializer.SerializeToElement(requestedSlice),
+            ["fixture_input_blob_base64"] = JsonSerializer.SerializeToElement(Convert.ToBase64String(File.ReadAllBytes(inputPath))),
+        };
+
+        result = new ParserInvocationResult
+        {
+            Invoked = true,
+            Status = failedBlocks == 0 && parityErrorBlocks == 0 ? "ok" : "partial",
+            Structural = structural,
+            Semantic = semantic,
+            Outputs = outputs,
+            ModelBlockOffset = firstModelOffset,
+            MotionBlockOffset = firstMotionOffset,
+            CollatedSlicePairs = GroupFunctionPairsBySlice(collatedFunctionPairs),
+        };
+        return true;
+    }
+
+    private static ParserInvocationResult InvokeLegacyReadFromBytes(
+        System.Reflection.Assembly assembly,
+        string inputPath,
+        int slice,
+        BlockManifest blockManifest,
+        List<Diagnostic> diagnostics,
+        string assemblyPath)
+    {
+        var modelType = assembly.GetType("SA3D.Modeling.File.ModelFile", throwOnError: false);
+        var animationType = assembly.GetType("SA3D.Modeling.File.AnimationFile", throwOnError: false);
+        if (modelType is null || animationType is null)
+        {
+            diagnostics.Add(new Diagnostic
+            {
+                Code = "SA3D_TYPES_NOT_FOUND",
+                Severity = "error",
+                Stage = "reference_invoke",
+                Message = "Loaded SA3D.Modeling assembly but required file wrapper types were not found.",
+            });
+            return ParserInvocationResult.Failed("types_not_found");
+        }
+
+        var modelReadMethod = FindReadFromBytesMethod(modelType);
+        var motionReadMethod = FindReadFromBytesMethod(animationType);
+        if (modelReadMethod is null || motionReadMethod is null)
+        {
+            diagnostics.Add(new Diagnostic
+            {
+                Code = "SA3D_READ_METHOD_NOT_FOUND",
+                Severity = "error",
+                Stage = "reference_invoke",
+                Message = "Could not locate compatible ReadFromBytes APIs on SA3D.Modeling file wrappers.",
+            });
+            return ParserInvocationResult.Failed("read_api_missing");
+        }
+
+        var parsedObject = 0;
+        var parsedMotion = 0;
+        var failedBlocks = 0;
+        var firstModelOffset = blockManifest.Blocks
+            .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+            .Select(x => (int?)x.Offset)
+            .FirstOrDefault();
+        var firstMotionOffset = blockManifest.Blocks
+            .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+            .Select(x => (int?)x.Offset)
+            .FirstOrDefault();
+
+        foreach (var block in blockManifest.Blocks)
+        {
+            if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+            {
+                failedBlocks++;
+                continue;
+            }
+
+            var blockBytes = File.ReadAllBytes(block.Path);
+            var targetMethod = block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase)
+                ? motionReadMethod
+                : modelReadMethod;
+            try
+            {
+                _ = targetMethod.Invoke(null, BuildReadFromBytesArgs(targetMethod, blockBytes));
+                if (block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                {
+                    parsedMotion++;
+                }
+                else
+                {
+                    parsedObject++;
+                }
+            }
+            catch (Exception ex)
+            {
+                failedBlocks++;
+                diagnostics.Add(new Diagnostic
+                {
+                    Code = "SA3D_BLOCK_PARSE_FAILED",
+                    Severity = "error",
+                    Stage = "reference_parse",
+                    Message = $"Failed to parse block index={block.Index} kind={block.Kind}: {ex.GetBaseException().Message}",
+                });
+            }
+        }
+
+        var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["sa3d_modeling_assembly"] = JsonSerializer.SerializeToElement(assemblyPath),
+            ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+            ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+        };
+
+        var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["reference_library"] = JsonSerializer.SerializeToElement("SA3D.Modeling"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("legacy_readfrombytes"),
+        };
+
+        var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_reflection"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("legacy_readfrombytes"),
+            ["sa3d_modeling_dll"] = JsonSerializer.SerializeToElement(assemblyPath),
+            ["parsed_object_blocks"] = JsonSerializer.SerializeToElement(parsedObject),
+            ["parsed_motion_blocks"] = JsonSerializer.SerializeToElement(parsedMotion),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(failedBlocks),
+            ["slice"] = JsonSerializer.SerializeToElement(slice),
+            ["fixture_input_blob_base64"] = JsonSerializer.SerializeToElement(Convert.ToBase64String(File.ReadAllBytes(inputPath))),
+        };
+
+        return new ParserInvocationResult
+        {
+            Invoked = true,
+            Status = failedBlocks == 0 ? "ok" : "partial",
+            Structural = structural,
+            Semantic = semantic,
+            Outputs = outputs,
+            ModelBlockOffset = firstModelOffset,
+            MotionBlockOffset = firstMotionOffset,
+        };
     }
 
     private static bool TryResolveSa3dModelingAssemblyPath(Dictionary<string, string> options, out string assemblyPath)
@@ -565,6 +767,372 @@ internal static class Program
     private static object? GetDefault(Type type)
     {
         return type.IsValueType ? Activator.CreateInstance(type) : null;
+    }
+
+    private static object? BuildParityCaptureOptions(Type optionsType, int requestedSlice, int blockOffset, string blockKind)
+    {
+        var instance = Activator.CreateInstance(optionsType);
+        if (instance is null)
+        {
+            return null;
+        }
+
+        SetPropertyIfPresent(optionsType, instance, "EnableCapture", true);
+        SetPropertyIfPresent(optionsType, instance, "CaptureEnabled", true);
+        SetPropertyIfPresent(optionsType, instance, "Address", blockOffset);
+        SetPropertyIfPresent(optionsType, instance, "ImageBase", blockOffset);
+        SetPropertyIfPresent(optionsType, instance, "IsAnimation", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
+        SetPropertyIfPresent(optionsType, instance, "TreatAsAnimation", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
+        SetPropertyIfPresent(optionsType, instance, "TryAnimationFallback", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
+
+        var requestedSlicesProperty = optionsType.GetProperty("RequestedSlices", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        if (requestedSlicesProperty is not null && requestedSlicesProperty.CanWrite && requestedSlicesProperty.PropertyType == typeof(int[]))
+        {
+            requestedSlicesProperty.SetValue(instance, new[] { requestedSlice });
+        }
+
+        return instance;
+    }
+
+    private static void SetPropertyIfPresent(Type type, object target, string propertyName, object value)
+    {
+        var property = type.GetProperty(propertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        if (property is null || !property.CanWrite)
+        {
+            return;
+        }
+
+        try
+        {
+            var normalized = ConvertValueForType(value, property.PropertyType);
+            property.SetValue(target, normalized);
+        }
+        catch
+        {
+            // intentionally swallow: we support a best-effort reflection bridge across branch variants.
+        }
+    }
+
+    private static object? ConvertValueForType(object value, Type targetType)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (effectiveType.IsAssignableFrom(value.GetType()))
+        {
+            return value;
+        }
+
+        if (effectiveType == typeof(int))
+        {
+            return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+        if (effectiveType == typeof(uint))
+        {
+            return Convert.ToUInt32(value, CultureInfo.InvariantCulture);
+        }
+        if (effectiveType == typeof(bool))
+        {
+            return Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+        }
+        if (effectiveType == typeof(string))
+        {
+            return Convert.ToString(value, CultureInfo.InvariantCulture);
+        }
+
+        return value;
+    }
+
+    private static object?[] BuildParityCreateArgs(
+        System.Reflection.MethodInfo method,
+        byte[] bytes,
+        object? optionsInstance,
+        string fixtureId,
+        BlockManifestItem block)
+    {
+        var parameters = method.GetParameters();
+        var args = new object?[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            var parameter = parameters[i];
+            if (i == 0 && parameter.ParameterType == typeof(byte[]))
+            {
+                args[i] = bytes;
+                continue;
+            }
+
+            if (optionsInstance is not null && parameter.ParameterType.IsInstanceOfType(optionsInstance))
+            {
+                args[i] = optionsInstance;
+                continue;
+            }
+
+            if (parameter.ParameterType == typeof(string))
+            {
+                if (parameter.Name?.Contains("fixture", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    args[i] = fixtureId;
+                }
+                else if (parameter.Name?.Contains("run", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    args[i] = $"{fixtureId}-block-{block.Index}";
+                }
+                else if (parameter.HasDefaultValue)
+                {
+                    args[i] = parameter.DefaultValue;
+                }
+                else
+                {
+                    args[i] = string.Empty;
+                }
+                continue;
+            }
+
+            if (parameter.ParameterType == typeof(bool)
+                && parameter.Name?.Contains("animation", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                args[i] = block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (parameter.HasDefaultValue)
+            {
+                args[i] = parameter.DefaultValue;
+            }
+            else
+            {
+                args[i] = GetDefault(parameter.ParameterType);
+            }
+        }
+        return args;
+    }
+
+    private static bool AppendParityDiagnostics(List<Diagnostic> diagnostics, JsonElement reportJson, BlockManifestItem block)
+    {
+        if (!TryGetProperty(reportJson, out var diagnosticsElement, "diagnostics", "Diagnostics")
+            || diagnosticsElement.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var hasError = false;
+        foreach (var item in diagnosticsElement.EnumerateArray())
+        {
+            var code = TryGetString(item, "code", "Code");
+            var message = TryGetString(item, "message", "Message");
+            var stage = TryGetString(item, "stage", "Stage");
+            var severity = TryGetString(item, "severity", "Severity");
+            var normalizedSeverity = string.IsNullOrWhiteSpace(severity) ? "warning" : severity;
+            if (normalizedSeverity.Equals("error", StringComparison.OrdinalIgnoreCase))
+            {
+                hasError = true;
+            }
+
+            diagnostics.Add(new Diagnostic
+            {
+                Code = string.IsNullOrWhiteSpace(code) ? "SA3D_PARITY_DIAGNOSTIC" : code,
+                Severity = normalizedSeverity,
+                Stage = string.IsNullOrWhiteSpace(stage) ? "reference_parse" : stage,
+                Message = $"block index={block.Index} kind={block.Kind}: {message}",
+            });
+        }
+        return hasError;
+    }
+
+    private static List<SliceFunctionPair> ExtractParityFunctionPairs(
+        JsonElement reportJson,
+        int requestedSlice,
+        BlockManifestItem block,
+        byte[] blockBytes)
+    {
+        var pairs = new List<SliceFunctionPair>();
+        if (!TryGetProperty(reportJson, out var slicePairsElement, "slice_io_pairs", "SliceIOPairs")
+            || slicePairsElement.ValueKind != JsonValueKind.Array)
+        {
+            return pairs;
+        }
+
+        var sequence = 0;
+        var blockBlobBase64 = Convert.ToBase64String(blockBytes);
+        foreach (var pairElement in slicePairsElement.EnumerateArray())
+        {
+            var pairSlice = TryGetInt(pairElement, "slice", "Slice");
+            if (pairSlice.HasValue && pairSlice.Value != requestedSlice)
+            {
+                continue;
+            }
+
+            var inputs = TryGetProperty(pairElement, out var inputElement, "inputs", "Inputs")
+                ? ConvertObjectToSortedDictionary(inputElement)
+                : new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+            var outputs = TryGetProperty(pairElement, out var outputElement, "outputs", "Outputs")
+                ? ConvertObjectToSortedDictionary(outputElement)
+                : new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+
+            inputs["block_index"] = JsonSerializer.SerializeToElement(block.Index);
+            inputs["block_kind"] = JsonSerializer.SerializeToElement(block.Kind);
+            inputs["block_offset"] = JsonSerializer.SerializeToElement(block.Offset);
+            inputs["block_size"] = JsonSerializer.SerializeToElement(block.Size);
+            inputs["pair_sequence_in_block"] = JsonSerializer.SerializeToElement(sequence);
+            inputs["input_blob_base64"] = JsonSerializer.SerializeToElement(blockBlobBase64);
+            inputs["input_blob_encoding"] = JsonSerializer.SerializeToElement("base64");
+
+            var operationRoutes = BuildOperationRoutes(inputElement, outputElement, block.Kind);
+            foreach (var route in operationRoutes)
+            {
+                var pairInputs = new SortedDictionary<string, JsonElement>(inputs, StringComparer.Ordinal)
+                {
+                    ["operation"] = JsonSerializer.SerializeToElement(route.Operation),
+                };
+
+                pairs.Add(new SliceFunctionPair
+                {
+                    Slice = pairSlice ?? requestedSlice,
+                    Pair = new FunctionIoPair
+                    {
+                        FunctionId = route.FunctionId,
+                        InputFields = pairInputs,
+                        Output = JsonSerializer.SerializeToElement(outputs, JsonOptions),
+                    },
+                });
+            }
+
+            sequence++;
+        }
+        return pairs;
+    }
+
+    private static List<SliceIoPair> GroupFunctionPairsBySlice(List<SliceFunctionPair> functionPairs)
+    {
+        return functionPairs
+            .GroupBy(x => x.Slice)
+            .OrderBy(group => group.Key)
+            .Select(group => new SliceIoPair
+            {
+                Slice = group.Key,
+                Pairs = group
+                    .Select(x => x.Pair)
+                    .OrderBy(x => x.FunctionId, StringComparer.Ordinal)
+                    .ToList(),
+            })
+            .ToList();
+    }
+
+    private static List<OperationRoute> BuildOperationRoutes(JsonElement inputs, JsonElement outputs, string blockKind)
+    {
+        var operations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectOperationNames(inputs, operations);
+        CollectOperationNames(outputs, operations);
+        if (operations.Count == 0)
+        {
+            operations.Add(blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase) ? "motion_decode" : "model_decode");
+        }
+
+        return operations
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .Select(operation => new OperationRoute
+            {
+                Operation = operation,
+                FunctionId = ResolveFunctionId(operation),
+            })
+            .ToList();
+    }
+
+    private static void CollectOperationNames(JsonElement element, HashSet<string> operations)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (property.NameEquals("operation") || property.NameEquals("operation_kind") || property.NameEquals("Operation") || property.NameEquals("OperationKind"))
+                    {
+                        var op = property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : null;
+                        if (!string.IsNullOrWhiteSpace(op))
+                        {
+                            operations.Add(op);
+                        }
+                    }
+                    CollectOperationNames(property.Value, operations);
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectOperationNames(item, operations);
+                }
+                break;
+        }
+    }
+
+    private static string ResolveFunctionId(string operation)
+    {
+        return operation.ToLowerInvariant() switch
+        {
+            "primitive_op" => "Sa3Dport.Testing.Slice1TestApi.PrimitiveOp",
+            "bams_checkpoint" => "Sa3Dport.Testing.Slice1TestApi.BamsCheckpoint",
+            "lut_op" => "Sa3Dport.Testing.Slice1TestApi.LutOp",
+            "nj_blocks" => "Sa3Dport.Testing.Slice2TestApi.NjBlocks",
+            "motion_decode" => "Sa3Dport.File.AnimationFile.ReadNJ",
+            "model_decode" => "Sa3Dport.File.ModelFile.ReadNJ",
+            _ => $"unknown:{operation}",
+        };
+    }
+
+    private static bool TryGetProperty(JsonElement element, out JsonElement value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out value))
+            {
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string TryGetString(JsonElement element, params string[] names)
+    {
+        if (!TryGetProperty(element, out var value, names) || value.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+        return value.GetString() ?? string.Empty;
+    }
+
+    private static int? TryGetInt(JsonElement element, params string[] names)
+    {
+        if (!TryGetProperty(element, out var value, names))
+        {
+            return null;
+        }
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
+        {
+            return intValue;
+        }
+        return null;
+    }
+
+    private static SortedDictionary<string, JsonElement> ConvertObjectToSortedDictionary(JsonElement element)
+    {
+        var result = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            result["value"] = element;
+            return result;
+        }
+
+        foreach (var property in element.EnumerateObject().OrderBy(x => x.Name, StringComparer.Ordinal))
+        {
+            result[property.Name] = property.Value;
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<string> ResolveFixturePaths(string manifestPath)
@@ -729,9 +1297,19 @@ internal sealed class SliceIoPair
 {
     public int Slice { get; set; }
 
-    public SortedDictionary<string, JsonElement> Inputs { get; set; } = new(StringComparer.Ordinal);
+    public List<FunctionIoPair> Pairs { get; set; } = [];
+}
 
-    public SortedDictionary<string, JsonElement> Outputs { get; set; } = new(StringComparer.Ordinal);
+internal sealed class FunctionIoPair
+{
+    [JsonPropertyName("function_id")]
+    public string FunctionId { get; set; } = string.Empty;
+
+    [JsonPropertyName("input_fields")]
+    public SortedDictionary<string, JsonElement> InputFields { get; set; } = new(StringComparer.Ordinal);
+
+    [JsonPropertyName("output")]
+    public JsonElement Output { get; set; }
 }
 
 internal sealed class ParserInvocationResult
@@ -750,6 +1328,8 @@ internal sealed class ParserInvocationResult
 
     public int? MotionBlockOffset { get; init; }
 
+    public List<SliceIoPair> CollatedSlicePairs { get; init; } = [];
+
     public static ParserInvocationResult NotInvoked()
     {
         return new ParserInvocationResult
@@ -760,6 +1340,7 @@ internal sealed class ParserInvocationResult
             {
                 ["parser_binding"] = JsonSerializer.SerializeToElement("not_configured"),
             },
+            CollatedSlicePairs = [],
         };
     }
 
@@ -773,8 +1354,23 @@ internal sealed class ParserInvocationResult
             {
                 ["parser_binding"] = JsonSerializer.SerializeToElement(status),
             },
+            CollatedSlicePairs = [],
         };
     }
+}
+
+internal sealed class OperationRoute
+{
+    public string Operation { get; set; } = string.Empty;
+
+    public string FunctionId { get; set; } = string.Empty;
+}
+
+internal sealed class SliceFunctionPair
+{
+    public int Slice { get; set; }
+
+    public FunctionIoPair Pair { get; set; } = new();
 }
 
 internal sealed class BatchSummary

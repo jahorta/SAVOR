@@ -16,6 +16,10 @@ Reference bridge runner for generating `parity_report_v1` JSON from fixture inpu
 ## SA3D.Modeling binding
 
 - The runner invokes `SA3D.Modeling` directly (via reflection) for each block in the fixture block manifest.
+- Preferred mode uses `SA3D.Modeling.Parity.ParityReportGenerator.CreateFromBytes(...)` in-memory and collates block-level `slice_io_pairs` into one fixture report.
+- `slice_io_pairs` are grouped by `slice`; each slice entry contains `pairs[]` entries with `function_id`, `input_fields`, and `output`.
+- Collated pair inputs include base64 payload blobs (`input_blob_base64`) and provenance metadata so downstream C++ harness logic can dispatch each input to the correct ported function and deserialize payloads directly.
+- Legacy fallback mode invokes `ModelFile/AnimationFile.ReadFromBytes(...)` if parity APIs are unavailable.
 - `--sa3d-modeling-dll <path>` can be used to force a specific assembly location.
 - If omitted, the runner attempts to find `SA3D.Modeling.dll` next to `SA3DRefRunner` or under known `third-party/SA3D.Modeling` build output locations.
 
