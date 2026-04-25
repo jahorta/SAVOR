@@ -6,9 +6,132 @@
 #include <utility>
 
 #include "../../../../SimCoreDB/Execution/Jobs/JobEventOrchestration.h"
-#include "../../../../SimCoreDB/Execution/Workflow/WorkflowModeProvider.h"
 
 namespace simcore::runner::parallel::simcoredb {
+namespace {
+
+std::optional<simcore::PSJob> MaterializePsJob(
+    const simcore::db::execution::programdb::ProgramKindDescriptor* descriptor,
+    std::int64_t job_id) {
+    if (descriptor == nullptr || descriptor->runtime_init == nullptr) {
+        return std::nullopt;
+    }
+    const auto init_request = descriptor->runtime_init->BuildRuntimeInit(job_id);
+    return descriptor->runtime_init->MaterializePsJob(job_id, init_request);
+}
+
+WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
+    simcore::db::IExecutionDb* execution_db,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
+    WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn) {
+    if (workflow_schedule_fn) {
+        return workflow_schedule_fn;
+    }
+    auto adapter_chain_orchestrator = std::make_shared<simcore::db::execution::workflow::AdapterChainOrchestrator>(
+        program_kind_registry,
+        nullptr);
+    return [execution_db, program_kind_registry, adapter_chain_orchestrator](const WorkflowReadyStep& step) -> ScheduledJobSet {
+        if (execution_db == nullptr || program_kind_registry == nullptr) {
+            return {};
+        }
+        const auto* descriptor = program_kind_registry->FindForStepKind(step.step_kind);
+        if (descriptor == nullptr || descriptor->job_persistence == nullptr || adapter_chain_orchestrator == nullptr) {
+            return {};
+        }
+        if (!step.input_ref_id.has_value()) {
+            return {};
+        }
+        const auto persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, *step.input_ref_id);
+        if (!persisted.has_value() || persisted->root_job_set_id <= 0) {
+            return {};
+        }
+        return ScheduledJobSet{ .job_set_id = persisted->root_job_set_id, .workflow_step_id = step.workflow_step_id };
+    };
+}
+
+DBWorkflowWorkerCoordinator::ClaimJobsFn ResolveClaimJobsFn(
+    simcore::db::IExecutionDb* execution_db,
+    DBWorkflowWorkerCoordinator::ClaimJobsFn claim_jobs_fn) {
+    if (claim_jobs_fn) {
+        return claim_jobs_fn;
+    }
+    return [execution_db](std::size_t max_claims) {
+        std::vector<ClaimedJobSeed> claims;
+        if (execution_db == nullptr || max_claims == 0) {
+            return claims;
+        }
+        std::string error;
+        const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
+            "workflow_job_materializer",
+            static_cast<int>(max_claims),
+            30000,
+            &error);
+        claims.reserve(claimed_jobs.size());
+        for (const auto& claimed : claimed_jobs) {
+            claims.push_back(ClaimedJobSeed{
+                .step = WorkflowReadyStep{
+                    .workflow_instance_id = claimed.workflow_instance_id,
+                    .workflow_step_id = claimed.workflow_step_id,
+                    .step_key = claimed.workflow_step_key,
+                    .step_kind = claimed.workflow_step_kind,
+                    .priority = claimed.workflow_step_priority,
+                },
+                .job_set_id = claimed.job_set_id,
+                .job_id = claimed.job_id,
+                .affinity = ClaimedJobAffinity{
+                    .savestate_affinity_key = claimed.savestate_affinity_key,
+                    .program_runtime_affinity_key = claimed.program_runtime_affinity_key,
+                },
+            });
+        }
+        return claims;
+    };
+}
+
+DBWorkflowWorkerCoordinator::BuildJobPayloadFn ResolveBuildJobPayloadFn(
+    simcore::db::IExecutionDb* execution_db,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
+    DBWorkflowWorkerCoordinator::BuildJobPayloadFn build_job_payload_fn) {
+    if (build_job_payload_fn) {
+        return build_job_payload_fn;
+    }
+    return [execution_db, program_kind_registry](std::int64_t job_id, const WorkflowReadyStep& step) -> std::optional<simcore::PSJob> {
+        if (execution_db == nullptr || program_kind_registry == nullptr) {
+            return std::nullopt;
+        }
+        const auto job_record = execution_db->GetJob(job_id);
+        if (!job_record.has_value()) {
+            return std::nullopt;
+        }
+        const auto* descriptor = program_kind_registry->FindForStepKind(step.step_kind);
+        if (descriptor == nullptr) {
+            return std::nullopt;
+        }
+        return MaterializePsJob(descriptor, job_id);
+    };
+}
+
+} // namespace
+
+DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
+    simcore::db::IExecutionDb* execution_db,
+    DBWorkflowWorkerCoordinatorConfig worker_cfg,
+    CoordinatorIntegrationConfig integration_cfg,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
+    ReadyStepPersistFn persist_materialization_fn,
+    simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate)
+    : DBWorkflowWorkerCoordinator(
+        execution_db,
+        nullptr,
+        std::move(worker_cfg),
+        integration_cfg,
+        {},
+        {},
+        {},
+        std::move(persist_materialization_fn),
+        program_kind_registry,
+        step_completion_gate) {
+}
 
 DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     simcore::db::IExecutionDb* execution_db,
@@ -22,10 +145,12 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate)
     : execution_db_(execution_db)
-    , mode_provider_(mode_provider)
     , worker_cfg_(std::move(worker_cfg))
     , integration_cfg_(integration_cfg)
-    , workflow_scheduler_adapter_(std::move(workflow_schedule_fn))
+    , schedule_ready_step_fn_(ResolveWorkflowScheduleFn(
+        execution_db,
+        program_kind_registry,
+        std::move(workflow_schedule_fn)))
     , input_aggregation_service_(
         StepInputAggregationConfig{},
         [this](
@@ -51,60 +176,11 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
                 &error);
         })
     , persist_materialization_fn_(std::move(persist_materialization_fn))
-    , workflow_materialization_service_(
-        &workflow_scheduler_adapter_,
-        persist_materialization_fn_,
-        [this](const WorkflowReadyStep& step, const ScheduledJobSet& scheduled) {
-            if (execution_db_ && execution_db_->WorkflowCommandService()) {
-                std::string error;
-                const bool marked = execution_db_->WorkflowCommandService()->MarkStepMaterialized(
-                    {
-                        .workflow_step_id = step.workflow_step_id,
-                        .job_set_id = scheduled.job_set_id,
-                        .requested_by = "workflow_materialize",
-                    },
-                    &error);
-                if (!marked) {
-                    ++materialization_failure_count_;
-                    EmitWorkflowFailureEvents(
-                        step,
-                        "MarkStepMaterialized",
-                        error.empty() ? "unknown error" : error);
-                    MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_materialize_strict_smoke");
-                }
-            }
-            workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
-        })
     , job_materialization_service_(
-        std::move(claim_jobs_fn),
-        std::move(build_job_payload_fn))
-    , workflow_dispatch_coordinator_(
-        &job_materialization_service_,
-        [this](size_t worker_idx, const ClaimedJobRecord& claimed_job) {
-            const auto job_id = claimed_job.job_id;
-            if (adapter_chain_orchestrator_) {
-                simcore::db::execution::workflow::AdapterChainTrace trace{};
-                (void)adapter_chain_orchestrator_->OnJobClaimed(claimed_job.step.step_kind, job_id, &trace);
-                ++adapter_job_claimed_invocations_;
-                EmitAdapterTraceEvent(claimed_job.step, "OnJobClaimed", "invoked", job_id, claimed_job.job_set_id);
-            }
-            if (!claimed_job.payload.has_value()) {
-                return false;
-            }
-            if (!SendJobToWorker(worker_idx, static_cast<std::uint64_t>(job_id), *claimed_job.payload)) {
-                return false;
-            }
-            std::lock_guard<std::mutex> worker_lock(workers_mtx_);
-            if (worker_idx < workers_.size()) {
-                workers_[worker_idx]->loaded_savestate_affinity_key = claimed_job.affinity.savestate_affinity_key;
-            }
-            dispatched_job_context_by_id_[static_cast<std::uint64_t>(job_id)] = DispatchedJobContext{
-                .step = claimed_job.step,
-                .job_set_id = claimed_job.job_set_id,
-            };
-            return true;
-        })
+        ResolveClaimJobsFn(execution_db, std::move(claim_jobs_fn)),
+        ResolveBuildJobPayloadFn(execution_db, program_kind_registry, std::move(build_job_payload_fn)))
     , program_kind_registry_(program_kind_registry) {
+    (void)mode_provider;
     if (step_completion_gate != nullptr) {
         step_completion_gate_ = step_completion_gate;
     } else {
@@ -251,7 +327,7 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
         EmitAdapterTraceEvent(step, "OnInputComplete", "invoked", std::nullopt, std::nullopt);
     }
 
-    const auto scheduled = workflow_materialization_service_.MaterializeWorkflowStep(step);
+    const auto scheduled = MaterializeWorkflowStepInternal(step);
     if (!scheduled.has_value()) {
         return std::nullopt;
     }
@@ -259,6 +335,43 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
     std::lock_guard<std::mutex> lock(queue_mtx_);
     ++materialized_count_;
     ++epoch_;
+    return scheduled;
+}
+
+std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowStepInternal(const WorkflowReadyStep& step) {
+    if (!schedule_ready_step_fn_) {
+        return std::nullopt;
+    }
+
+    const auto scheduled = schedule_ready_step_fn_(step);
+    if (scheduled.job_set_id <= 0) {
+        return std::nullopt;
+    }
+
+    if (execution_db_ && execution_db_->WorkflowCommandService()) {
+        std::string error;
+        const bool marked = execution_db_->WorkflowCommandService()->MarkStepMaterialized(
+            {
+                .workflow_step_id = step.workflow_step_id,
+                .job_set_id = scheduled.job_set_id,
+                .requested_by = "workflow_materialize",
+            },
+            &error);
+        if (!marked) {
+            ++materialization_failure_count_;
+            EmitWorkflowFailureEvents(
+                step,
+                "MarkStepMaterialized",
+                error.empty() ? "unknown error" : error);
+            MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_materialize_strict_smoke");
+            return std::nullopt;
+        }
+    }
+
+    if (persist_materialization_fn_) {
+        persist_materialization_fn_(step, scheduled);
+    }
+    workflow_bridge_.NotifyMaterialized(step.workflow_step_id, scheduled.job_set_id);
     return scheduled;
 }
 
@@ -284,6 +397,85 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(size_t worker_idx, uint64_t jo
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Running);
     worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
     return true;
+}
+
+bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job) {
+    const auto job_id = claimed_job.job_id;
+    if (adapter_chain_orchestrator_) {
+        simcore::db::execution::workflow::AdapterChainTrace trace{};
+        (void)adapter_chain_orchestrator_->OnJobClaimed(claimed_job.step.step_kind, job_id, &trace);
+        ++adapter_job_claimed_invocations_;
+        EmitAdapterTraceEvent(claimed_job.step, "OnJobClaimed", "invoked", job_id, claimed_job.job_set_id);
+    }
+    if (!claimed_job.payload.has_value()) {
+        return false;
+    }
+    if (!SendJobToWorker(worker_idx, static_cast<std::uint64_t>(job_id), *claimed_job.payload)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> worker_lock(workers_mtx_);
+    if (worker_idx < workers_.size()) {
+        workers_[worker_idx]->loaded_savestate_affinity_key = claimed_job.affinity.savestate_affinity_key;
+    }
+    dispatched_job_context_by_id_[static_cast<std::uint64_t>(job_id)] = DispatchedJobContext{
+        .step = claimed_job.step,
+        .job_set_id = claimed_job.job_set_id,
+    };
+    return true;
+}
+
+bool DBWorkflowWorkerCoordinator::BetterDispatchPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs) {
+    const bool lhs_savestate = lhs.affinity.savestate_affinity_key.has_value() && !lhs.affinity.savestate_affinity_key->empty();
+    const bool rhs_savestate = rhs.affinity.savestate_affinity_key.has_value() && !rhs.affinity.savestate_affinity_key->empty();
+    if (lhs_savestate != rhs_savestate) {
+        return lhs_savestate;
+    }
+
+    const bool lhs_runtime = lhs.affinity.program_runtime_affinity_key.has_value() && !lhs.affinity.program_runtime_affinity_key->empty();
+    const bool rhs_runtime = rhs.affinity.program_runtime_affinity_key.has_value() && !rhs.affinity.program_runtime_affinity_key->empty();
+    if (lhs_runtime != rhs_runtime) {
+        return lhs_runtime;
+    }
+
+    return lhs.claim_sequence < rhs.claim_sequence;
+}
+
+bool DBWorkflowWorkerCoordinator::DispatchNextEligibleForWorker(
+    size_t worker_idx,
+    const std::optional<std::string>& worker_savestate_affinity,
+    std::chrono::steady_clock::time_point now) {
+    auto eligible = job_materialization_service_.ListByState(ClaimedJobLifecycleState::EligibleForDispatch);
+    if (eligible.empty()) {
+        return false;
+    }
+
+    std::stable_sort(eligible.begin(), eligible.end(), [&](const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs) {
+        const bool lhs_savestate_match = worker_savestate_affinity.has_value()
+            && lhs.affinity.savestate_affinity_key.has_value()
+            && lhs.affinity.savestate_affinity_key.value() == worker_savestate_affinity.value();
+        const bool rhs_savestate_match = worker_savestate_affinity.has_value()
+            && rhs.affinity.savestate_affinity_key.has_value()
+            && rhs.affinity.savestate_affinity_key.value() == worker_savestate_affinity.value();
+        if (lhs_savestate_match != rhs_savestate_match) {
+            return lhs_savestate_match;
+        }
+
+        return BetterDispatchPriority(lhs, rhs);
+    });
+
+    for (const auto& candidate : eligible) {
+        if (!candidate.payload.has_value()) {
+            continue;
+        }
+        const bool dispatched = DispatchClaimedJobToWorker(worker_idx, candidate);
+        if (!dispatched) {
+            continue;
+        }
+        (void)job_materialization_service_.MarkDispatched(candidate.job_id, now);
+        return true;
+    }
+
+    return false;
 }
 
 size_t DBWorkflowWorkerCoordinator::ActiveWorkerCount() const {
@@ -382,7 +574,7 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
                 ++dispatch_attempt_count_;
-                const bool dispatched = workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
+                const bool dispatched = DispatchNextEligibleForWorker(
                     worker.worker_idx,
                     worker.loaded_savestate_affinity_key,
                     std::chrono::steady_clock::now());
@@ -452,7 +644,7 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
         }
 
         const auto materialize_started = std::chrono::steady_clock::now();
-        (void)workflow_materialization_service_.MaterializeWorkflowStep(step);
+        (void)MaterializeWorkflowStepInternal(step);
         ++materialization_count_;
         const auto materialization_latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - materialize_started).count();
@@ -477,7 +669,7 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             const auto dispatchable_workers = CollectDispatchableWorkers();
             for (const auto& worker : dispatchable_workers) {
                 ++dispatch_attempt_count_;
-                const bool dispatched = workflow_dispatch_coordinator_.DispatchNextEligibleForWorker(
+                const bool dispatched = DispatchNextEligibleForWorker(
                     worker.worker_idx,
                     worker.loaded_savestate_affinity_key,
                     std::chrono::steady_clock::now());

@@ -10,7 +10,6 @@
 #include <thread>
 #include <vector>
 
-#include "Execution/Workflow/WorkflowModeProvider.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
@@ -28,8 +27,6 @@
 
 namespace simcore::e2e {
 
-using simcore::db::execution::workflow::WorkflowExecutionMode;
-using simcore::db::execution::workflow::StaticWorkflowModeProvider;
 using simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig;
 using simcore::runner::parallel::simcoredb::BuildDbBackedWorkflowCoordinator;
 using simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator;
@@ -306,8 +303,6 @@ bool RunSeedProbeRealWorkerSmoke(
         return false;
     }
 
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "SimCoreDBe2e" });
-
     simcore::db::execution::programdb::ProgramKindRegistry program_kind_registry;
     simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
         &program_kind_registry,
@@ -316,7 +311,6 @@ bool RunSeedProbeRealWorkerSmoke(
 
     DBWorkflowWorkerCoordinator coordinator = BuildDbBackedWorkflowCoordinator(
         execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 1,
             .controller_sleep_ms = static_cast<uint32_t>(options.poll_ms),
