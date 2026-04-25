@@ -12,8 +12,8 @@ Scope: detailed implementation plan for Slice 0 decisions.
   - parser reference repo: `https://github.com/X-Hax/SA3D.Modeling`
   - parser release tag: `1.2.1`
   - parser commit hash: `13813e7`
-  - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
-  - workflow policy: update `DetailedIO` each slice to emit slice-specific input/output pairs.
+  - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO2`
+  - workflow policy: update `DetailedIO2` each slice to emit slice-specific input/output pairs.
 - C++ naming and namespace mapping should match C# source as closely as possible.
 - Implementation lives in a dedicated `Sa3Dport` Visual Studio C++ project.
 - Fixture inputs are all `*.mld` files auto-discovered from `SoaSimFileParsing/inputs`.
@@ -44,11 +44,11 @@ Scope: detailed implementation plan for Slice 0 decisions.
 - [ ] Add script (`tools/sa3d_ref/fetch_ref.sh` or equivalent) that clones/fetches repo and checks out `13813e7`.
 - [ ] Add verification command to print checked-out hash.
 - [ ] Add script (`tools/sa3d_ref/fetch_runner.sh` or equivalent) that clones/fetches `jahorta/SA3D.Modeling`
-  and checks out `DetailedIO`.
+  and checks out `DetailedIO2`.
 - [ ] Add phase0 reference doc with exact commands.
 
 Acceptance:
-- parser command reliably lands on commit `13813e7` and runner command reliably lands on `DetailedIO`.
+- parser command reliably lands on commit `13813e7` and runner command reliably lands on `DetailedIO2`.
 
 ## B) Naming + namespace mapping
 

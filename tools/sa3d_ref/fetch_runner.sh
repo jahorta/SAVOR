@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TARGET_DIR="$ROOT_DIR/third-party/SA3D.Modeling"
 REMOTE_URL="https://github.com/jahorta/SA3D.Modeling.git"
-TARGET_BRANCH="DetailedIO"
+TARGET_BRANCH="DetailedIO2"
 
 if [[ -d "$TARGET_DIR/.git" ]]; then
   git -C "$TARGET_DIR" fetch --all --tags --prune

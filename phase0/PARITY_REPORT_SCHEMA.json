@@ -79,11 +79,22 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["slice", "inputs", "outputs"],
+        "required": ["slice", "pairs"],
         "properties": {
           "slice": { "type": "integer", "minimum": 0 },
-          "inputs": { "type": "object" },
-          "outputs": { "type": "object" }
+          "pairs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["function_id", "input_fields", "output"],
+              "properties": {
+                "function_id": { "type": "string" },
+                "input_fields": { "type": "object" },
+                "output": { "type": "object" }
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

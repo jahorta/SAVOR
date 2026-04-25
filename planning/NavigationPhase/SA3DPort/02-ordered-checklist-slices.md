@@ -28,8 +28,8 @@ Test harness direction update (2026-04-21):
   - parser reference repo: `https://github.com/X-Hax/SA3D.Modeling`
   - parser release tag: `1.2.1`
   - parser commit hash: `13813e7`
-  - reference-runner fork: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
-  - reference-runner policy: use `DetailedIO` branch and update it per-slice to emit slice-specific input/output pairs.
+  - reference-runner fork: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO2`
+  - reference-runner policy: use `DetailedIO2` branch and update it per-slice to emit slice-specific input/output pairs.
 - [x] Define C++ naming and namespace mapping rule:
   - match C# source naming and namespace hierarchy as closely as possible.
 - [x] Create dedicated Visual Studio C++ project `Sa3Dport` for parser implementation.
@@ -73,7 +73,7 @@ Checklist:
   - Added `SimCoreTests/test_sa3dport_stage1.cpp` covering file headers, endian read semantics, pointer LUT memoization, and BAMS conversion round-trips.
 - [x] Add a Slice 1 test shortcut header (`Sa3Dport/Testing/Slice1TestApi.h`) so captured `SA3D.Modeling` inputs can be passed directly into slice-targeted C++ tests without re-wiring includes per test file.
 - [ ] Extend parity harness (Slice 1 mode):
-  - compare primitive/lut/bams input/output pairs captured from `DetailedIO` processing of real extracted NJ blocks,
+  - compare primitive/lut/bams input/output pairs captured from `DetailedIO2` processing of real extracted NJ blocks,
   - emit `parity_report_v1` with `slice_stage = 1` and only `primitives` section populated,
   - skip node/attach/motion sections as `not_applicable`.
 
@@ -98,7 +98,7 @@ Checklist:
 - [ ] Extend parity harness (Slice 2 mode):
   - ingest MLD fixtures and extract NJ model/motion block addresses via MLD parser path,
   - compare block map (`offset -> header`) to .NET reference output,
-  - compare slice-specific input/output pairs emitted by `DetailedIO` for NJ block + metadata shell operations,
+  - compare slice-specific input/output pairs emitted by `DetailedIO2` for NJ block + metadata shell operations,
   - emit `parity_report_v1` with `slice_stage = 2` including `block_map` + metadata shell diagnostics.
 
 Exit criteria:
@@ -125,7 +125,7 @@ Checklist:
 - [ ] Extend parity harness (Slice 3 mode):
   - compare node tree structural metrics (node count, depth, child/next linkage invariants),
   - compare per-node transform/attribute summaries where available,
-  - compare slice-specific node-graph input/output pairs emitted by `DetailedIO`,
+  - compare slice-specific node-graph input/output pairs emitted by `DetailedIO2`,
   - emit `parity_report_v1` with `slice_stage = 3` enabling structural section for nodes.
 
 Exit criteria:

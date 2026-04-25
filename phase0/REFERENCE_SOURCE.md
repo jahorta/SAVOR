@@ -33,7 +33,7 @@ Expected output:
 ## Reference runner source
 
 - Repository: `https://github.com/jahorta/SA3D.Modeling`
-- Branch: `DetailedIO`
+- Branch: `DetailedIO2`
 - Local checkout target: `third-party/SA3D.Modeling` (git submodule)
 
 ### Fetch command
@@ -51,12 +51,12 @@ git -C third-party/SA3D.Modeling branch --show-current
 Expected output:
 
 ```text
-DetailedIO
+DetailedIO2
 ```
 
 ---
 
 ## Notes
 
-- The runner source is integrated as the `third-party/SA3D.Modeling` git submodule on branch `DetailedIO`.
+- The runner source is integrated as the `third-party/SA3D.Modeling` git submodule on branch `DetailedIO2`.
 - Phase 0 parity harness work should target scripts, schema, and manifest flow first.
