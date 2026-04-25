@@ -25,8 +25,6 @@
 #include "WorkflowIntegrationMode.h"
 #include "WorkflowSchedulerAdapter.h"
 #include "StepInputAggregationService.h"
-#include "WorkflowDispatchCoordinator.h"
-#include "WorkflowMaterializationService.h"
 #include "JobMaterializationService.h"
 
 namespace simcore::runner::parallel::simcoredb {
@@ -70,6 +68,14 @@ public:
     using ClaimJobsFn = JobMaterializationService::ClaimJobsFn;
     using ProgressCallback = std::function<void(const simcore::PRProgress&)>;
     using ResultCallback = std::function<void(const simcore::PRResult&)>;
+
+    DBWorkflowWorkerCoordinator(
+        simcore::db::IExecutionDb* execution_db,
+        DBWorkflowWorkerCoordinatorConfig worker_cfg,
+        CoordinatorIntegrationConfig integration_cfg,
+        const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
+        ReadyStepPersistFn persist_materialization_fn = {},
+        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr);
 
     DBWorkflowWorkerCoordinator(
         simcore::db::IExecutionDb* execution_db,
@@ -140,6 +146,13 @@ private:
     void PollReadyStepsFromDb();
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
     std::string ReadyDedupKey(std::int64_t workflow_step_id) const;
+    std::optional<ScheduledJobSet> MaterializeWorkflowStepInternal(const WorkflowReadyStep& step);
+    bool DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job);
+    bool DispatchNextEligibleForWorker(
+        size_t worker_idx,
+        const std::optional<std::string>& worker_savestate_affinity,
+        std::chrono::steady_clock::time_point now);
+    static bool BetterDispatchPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs);
     void EmitAdapterTraceEvent(
         const WorkflowReadyStep& step,
         const std::string& stage,
@@ -162,15 +175,12 @@ private:
     void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
-    simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider_ = nullptr;
     DBWorkflowWorkerCoordinatorConfig worker_cfg_{};
     CoordinatorIntegrationConfig integration_cfg_{};
-    WorkflowSchedulerAdapter workflow_scheduler_adapter_;
+    std::function<ScheduledJobSet(const WorkflowReadyStep&)> schedule_ready_step_fn_;
     StepInputAggregationService input_aggregation_service_;
     ReadyStepPersistFn persist_materialization_fn_;
-    WorkflowMaterializationService workflow_materialization_service_;
     JobMaterializationService job_materialization_service_;
-    WorkflowDispatchCoordinator workflow_dispatch_coordinator_;
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
     std::unique_ptr<simcore::db::execution::workflow::StepCompletionGateService> owned_step_completion_gate_;
     simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate_ = nullptr;
