@@ -317,8 +317,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Breakpoints\BPRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
-    <ClInclude Include="Runner\Parallel\DB\DBTriggerEngine.h" />
-    <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinator.h" />
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.h" />
@@ -444,8 +442,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
-    <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
-    <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp" />
