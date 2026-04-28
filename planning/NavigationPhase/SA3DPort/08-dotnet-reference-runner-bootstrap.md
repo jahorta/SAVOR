@@ -3,7 +3,7 @@
 Date: 2026-04-18
 Status: In Progress
 
-This document tracks bootstrap and follow-up tasks now that `jahorta/SA3D.Modeling` `DetailedIO` is integrated as the `third-party/SA3D.Modeling` submodule.
+This document tracks bootstrap and follow-up tasks now that `jahorta/SA3D.Modeling` `DetailedIO2` is integrated as the `third-party/SA3D.Modeling` submodule.
 
 ## Completed bootstrap components
 
@@ -12,7 +12,7 @@ This document tracks bootstrap and follow-up tasks now that `jahorta/SA3D.Modeli
 2. `tools/sa3d_ref/fetch_ref.sh`
    - Automated checkout for `X-Hax/SA3D.Modeling@13813e7`.
 3. `tools/sa3d_ref/fetch_runner.sh`
-   - Automated checkout for `jahorta/SA3D.Modeling` `DetailedIO`.
+   - Automated checkout for `jahorta/SA3D.Modeling` `DetailedIO2`.
 4. `phase0/FIXTURE_MANIFEST.json`
    - Initial schema shell for fixture enumeration.
 5. `tools/sa3d_ref/validate_manifest.py`
@@ -34,3 +34,9 @@ Implementation update (2026-04-20):
 - Relative fixture paths are resolved from the manifest location for reproducible invocation from different working directories.
 - SoaSimFileParsing bridge invocation now supports `--dotnet-bridge-slice` and forwards `--slice` to the .NET runner.
 - A/B comparison output now records reference `comparison` presence and pass-state probe fields.
+
+Implementation update (2026-04-25):
+- Bridge invocation now targets parity-capture APIs in-memory (`ParityReportGenerator.CreateFromBytes`) when available.
+- Per-block parity diagnostics are checked and merged into fixture diagnostics.
+- Block-level captures are collated to `slice_io_pairs` grouped by slice, where each pair entry includes `function_id`, `input_fields`, and `output` for downstream replay in `SoaSimFileParsing`.
+- Pair inputs now carry base64 payload blobs to support direct deserialization/casting in port-side tests.

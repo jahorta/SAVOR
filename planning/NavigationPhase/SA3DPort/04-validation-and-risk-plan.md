@@ -7,8 +7,8 @@ Decision update: 2026-04-18
   - parser reference repo: `https://github.com/X-Hax/SA3D.Modeling`
   - parser release tag: `1.2.1`
   - parser commit hash: `13813e7`
-  - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO`
-  - policy: modify `DetailedIO` per-slice to emit slice-specific input/output pairs.
+  - reference-runner fork/branch: `https://github.com/jahorta/SA3D.Modeling/tree/DetailedIO2`
+  - policy: modify `DetailedIO2` per-slice to emit slice-specific input/output pairs.
 - Milestone target is read/parse parity only; write parity is deferred.
 
 ---
@@ -48,7 +48,7 @@ Store under:
 ## D) Parity harness architecture (reference .NET + C++)
 
 1. **Reference extractor (.NET)**
-   - Use forked runner from `jahorta/SA3D.Modeling` `DetailedIO` branch.
+   - Use forked runner from `jahorta/SA3D.Modeling` `DetailedIO2` branch.
    - For each fixture, emit stable JSON summaries (structural + semantic metrics) plus slice-specific input/output pairs.
 2. **Port extractor (C++)**
    - Run Sa3Dport parser backend (`sa3d_port`) on the same fixtures.
@@ -66,7 +66,7 @@ Store under:
 Each fixture should emit one JSON document with:
 
 1. **Header**
-   - `fixture_id`, `mld_path`, `block_offsets`, `reference_version` (`SA3D.Modeling@13813e7`), `reference_runner_branch` (`DetailedIO`), `timestamp_utc`.
+   - `fixture_id`, `mld_path`, `block_offsets`, `reference_version` (`SA3D.Modeling@13813e7`), `reference_runner_branch` (`DetailedIO2`), `timestamp_utc`.
 2. **Structural metrics**
    - node count, attach count, chunk histogram, motion node count, frame count.
 3. **Semantic metrics**
@@ -84,7 +84,7 @@ Harness growth must follow implementation slices; do not require unavailable sec
 
 ### Slice 1 (primitives only)
 - Implement in harness:
-  - primitive IO pair capture/replay from `DetailedIO` over real extracted NJ blocks (endian reads/writes + image-base arithmetic),
+  - primitive IO pair capture/replay from `DetailedIO2` over real extracted NJ blocks (endian reads/writes + image-base arithmetic),
   - pointer LUT behavior IO pairs,
   - BAMS conversion IO pairs.
 - Report sections enabled:
@@ -98,7 +98,7 @@ Harness growth must follow implementation slices; do not require unavailable sec
   - MLD-path fixture ingestion and NJ block extraction pipeline.
   - reference vs C++ block map comparison (`offset -> header`).
   - metadata shell decode diagnostics comparison.
-  - replay `DetailedIO`-emitted slice-specific IO pairs for block + metadata operations.
+  - replay `DetailedIO2`-emitted slice-specific IO pairs for block + metadata operations.
 - Report sections enabled:
   - `primitives` + `block_map` + `metadata_shell` (enabled),
   - `node_graph`, `mesh`, `motion` (`not_applicable`).
@@ -110,7 +110,7 @@ Harness growth must follow implementation slices; do not require unavailable sec
   - reference and C++ node tree summary extraction.
   - linkage invariant checks (child/next/parent coherence).
   - transform/attribute summary comparison by node index/path.
-  - replay `DetailedIO`-emitted node-graph IO pairs for targeted read/transform operations.
+  - replay `DetailedIO2`-emitted node-graph IO pairs for targeted read/transform operations.
 - Report sections enabled:
   - `primitives` + `block_map` + `metadata_shell` + `node_graph` (enabled),
   - `mesh`, `motion` (`not_applicable`).
