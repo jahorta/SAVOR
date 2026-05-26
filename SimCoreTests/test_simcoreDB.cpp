@@ -455,11 +455,14 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
 
     class MockPersistence final : public IJobPersistenceAdapter {
     public:
-        JobPersistenceRecord EncodeForQueueing(std::int64_t domain_ref_id) const override {
+        WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
             JobPersistenceRecord r{};
             r.program_ref_kind = "mock";
             r.program_ref_id = domain_ref_id;
-            return r;
+            return WorkflowStepScheduleResult{
+                .persistence = r,
+                .root_job_set_id = domain_ref_id,
+            };
         }
         std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override { return persisted.program_ref_id; }
     };
@@ -471,6 +474,10 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
             r.savestate_ref_kind = "savestate";
             r.savestate_ref_id = job_id;
             return r;
+        }
+        std::optional<simcore::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest&) const override {
+            (void)job_id;
+            return simcore::PSJob{};
         }
     };
     class MockMapper final : public IResultMapper {
@@ -753,8 +760,8 @@ TEST(Stage3cCoordinatorReplacement, SnapshotWorkersTracksSlotLifecycleAcrossEnqu
         &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 1,
-            .worker_exe_path = "missing-worker-binary.exe",
             .controller_sleep_ms = 1,
+            .worker_exe_path = "missing-worker-binary.exe",
         },
         CoordinatorIntegrationConfig{},
         [](const WorkflowReadyStep& step) {

@@ -3,6 +3,7 @@
 #include "File/FileHeaders.h"
 #include "Structs/BAMSFHelper.h"
 #include "Structs/EndianIOExtensions.h"
+#include "Structs/MathHelper.h"
 #include "Structs/PointerLUT.h"
 
 #include <array>
@@ -34,20 +35,20 @@ using PointerLUT = Structs::PointerLUT<T>;
 
 inline constexpr float kPi = Structs::BAMSFHelper::kPi;
 
-inline constexpr std::int32_t DegreesToBams(float degrees) {
-    return Structs::BAMSFHelper::DegreesToBams(degrees);
+inline std::int32_t DegreesToBams(float degrees) {
+    return Structs::MathCompat::round_to_even_i32(degrees * (65536.0f / 360.0f));
 }
 
-inline constexpr float BamsToDegrees(std::int32_t bams) {
-    return Structs::BAMSFHelper::BamsToDegrees(bams);
+inline float BamsToDegrees(std::int32_t bams) {
+    return static_cast<float>(bams) * (360.0f / 65536.0f);
 }
 
 inline float RadiansToBams(float radians) {
-    return Structs::BAMSFHelper::RadiansToBams(radians);
+    return static_cast<float>(Structs::MathHelper::rad_to_bams(radians));
 }
 
 inline float BamsToRadians(std::int32_t bams) {
-    return Structs::BAMSFHelper::BamsToRadians(bams);
+    return Structs::MathHelper::bams_to_rad(bams);
 }
 
 } // namespace Sa3Dport::Testing::Slice1

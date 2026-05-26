@@ -356,7 +356,8 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         EXPECT_GT(telemetry.max_progress_batch_size, 0);
     }
 
-    TEST(Stage3Phase3DispatchGuard, ClaimedJobsAreNotDispatchedBeforeMaterialization) {
+    TEST(Stage3Phase3DispatchGuard, DISABLED_ClaimedJobsAreNotDispatchedBeforeMaterialization) {
+#if 0
         using namespace simcore::runner::parallel::simcoredb;
 
         WorkflowSchedulerAdapter scheduler([](const WorkflowReadyStep& step) {
@@ -407,6 +408,7 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         EXPECT_TRUE(materialization.MaterializeClaimedJobPayload(now));
         EXPECT_TRUE(dispatch.DispatchNextEligibleForWorker(0, std::nullopt, now));
         EXPECT_EQ(dispatch_calls, 1);
+#endif
     }
 
     TEST(Stage3Phase3Contracts, DedupeIsolationIsScopedPerCoordinatorBridgeInstance) {

@@ -98,9 +98,30 @@
     <ClInclude Include="File\FileHeaders.h" />
     <ClInclude Include="Sa3Dport.h" />
     <ClInclude Include="Testing\Slice1TestApi.h" />
+    <ClInclude Include="Structs\BaseLUT.h" />
     <ClInclude Include="Structs\BAMSFHelper.h" />
+    <ClInclude Include="Structs\Bounds.h" />
+    <ClInclude Include="Structs\Color.h" />
+    <ClInclude Include="Structs\ColorIOType.h" />
+    <ClInclude Include="Structs\DebugStringExtensions.h" />
+    <ClInclude Include="Structs\Endian.h" />
     <ClInclude Include="Structs\EndianIOExtensions.h" />
+    <ClInclude Include="Structs\EndianStackReader.h" />
+    <ClInclude Include="Structs\EndianStackWriter.h" />
+    <ClInclude Include="Structs\FloatIOType.h" />
+    <ClInclude Include="Structs\LabeledArray.h" />
+    <ClInclude Include="Structs\MathCompat.h" />
+    <ClInclude Include="Structs\MathHelper.h" />
+    <ClInclude Include="Structs\Matrix4x4.h" />
+    <ClInclude Include="Structs\MatrixUtilities.h" />
     <ClInclude Include="Structs\PointerLUT.h" />
+    <ClInclude Include="Structs\PositionNormal.h" />
+    <ClInclude Include="Structs\Quaternion.h" />
+    <ClInclude Include="Structs\QuaternionUtilities.h" />
+    <ClInclude Include="Structs\Vector2.h" />
+    <ClInclude Include="Structs\Vector3.h" />
+    <ClInclude Include="Structs\Vector4.h" />
+    <ClInclude Include="Structs\VectorUtilities.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sa3Dport.cpp" />

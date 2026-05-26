@@ -10,16 +10,6 @@
 namespace simcore::runner::parallel::simcoredb {
 namespace {
 
-std::optional<simcore::PSJob> MaterializePsJob(
-    const simcore::db::execution::programdb::ProgramKindDescriptor* descriptor,
-    std::int64_t job_id) {
-    if (descriptor == nullptr || descriptor->runtime_init == nullptr) {
-        return std::nullopt;
-    }
-    const auto init_request = descriptor->runtime_init->BuildRuntimeInit(job_id);
-    return descriptor->runtime_init->MaterializePsJob(job_id, init_request);
-}
-
 WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
     simcore::db::IExecutionDb* execution_db,
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
@@ -49,68 +39,6 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
     };
 }
 
-DBWorkflowWorkerCoordinator::ClaimJobsFn ResolveClaimJobsFn(
-    simcore::db::IExecutionDb* execution_db,
-    DBWorkflowWorkerCoordinator::ClaimJobsFn claim_jobs_fn) {
-    if (claim_jobs_fn) {
-        return claim_jobs_fn;
-    }
-    return [execution_db](std::size_t max_claims) {
-        std::vector<ClaimedJobSeed> claims;
-        if (execution_db == nullptr || max_claims == 0) {
-            return claims;
-        }
-        std::string error;
-        const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
-            "workflow_job_materializer",
-            static_cast<int>(max_claims),
-            30000,
-            &error);
-        claims.reserve(claimed_jobs.size());
-        for (const auto& claimed : claimed_jobs) {
-            claims.push_back(ClaimedJobSeed{
-                .step = WorkflowReadyStep{
-                    .workflow_instance_id = claimed.workflow_instance_id,
-                    .workflow_step_id = claimed.workflow_step_id,
-                    .step_key = claimed.workflow_step_key,
-                    .step_kind = claimed.workflow_step_kind,
-                    .priority = claimed.workflow_step_priority,
-                },
-                .job_set_id = claimed.job_set_id,
-                .job_id = claimed.job_id,
-                .affinity = ClaimedJobAffinity{
-                    .savestate_affinity_key = claimed.savestate_affinity_key,
-                    .program_runtime_affinity_key = claimed.program_runtime_affinity_key,
-                },
-            });
-        }
-        return claims;
-    };
-}
-
-DBWorkflowWorkerCoordinator::BuildJobPayloadFn ResolveBuildJobPayloadFn(
-    simcore::db::IExecutionDb* execution_db,
-    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
-    DBWorkflowWorkerCoordinator::BuildJobPayloadFn build_job_payload_fn) {
-    if (build_job_payload_fn) {
-        return build_job_payload_fn;
-    }
-    return [execution_db, program_kind_registry](std::int64_t job_id, const WorkflowReadyStep& step) -> std::optional<simcore::PSJob> {
-        if (execution_db == nullptr || program_kind_registry == nullptr) {
-            return std::nullopt;
-        }
-        const auto job_record = execution_db->GetJob(job_id);
-        if (!job_record.has_value()) {
-            return std::nullopt;
-        }
-        const auto* descriptor = program_kind_registry->FindForStepKind(step.step_kind);
-        if (descriptor == nullptr) {
-            return std::nullopt;
-        }
-        return MaterializePsJob(descriptor, job_id);
-    };
-}
-
 } // namespace
 
 DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
@@ -126,8 +54,6 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
         std::move(worker_cfg),
         integration_cfg,
         {},
-        {},
-        {},
         std::move(persist_materialization_fn),
         program_kind_registry,
         step_completion_gate) {
@@ -139,8 +65,6 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     DBWorkflowWorkerCoordinatorConfig worker_cfg,
     CoordinatorIntegrationConfig integration_cfg,
     WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
-    ClaimJobsFn claim_jobs_fn,
-    BuildJobPayloadFn build_job_payload_fn,
     ReadyStepPersistFn persist_materialization_fn,
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate)
@@ -176,9 +100,7 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
                 &error);
         })
     , persist_materialization_fn_(std::move(persist_materialization_fn))
-    , job_materialization_service_(
-        ResolveClaimJobsFn(execution_db, std::move(claim_jobs_fn)),
-        ResolveBuildJobPayloadFn(execution_db, program_kind_registry, std::move(build_job_payload_fn)))
+    , job_materialization_service_(execution_db, program_kind_registry)
     , program_kind_registry_(program_kind_registry) {
     (void)mode_provider;
     if (step_completion_gate != nullptr) {
@@ -546,21 +468,22 @@ std::vector<WorkerSnapshot> DBWorkflowWorkerCoordinator::SnapshotWorkers() const
 }
 
 void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
+    
+    PollReadyStepsFromDb();
+
     while (!stop_.load()) {
         if (paused_.load()) {
             std::unique_lock<std::mutex> lock(queue_mtx_);
             queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
             continue;
         }
-
-        PollReadyStepsFromDb();
         const auto worker_target = ActiveWorkerCount();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
         if (buffered < worker_target) {
             const auto claim_budget = worker_target - buffered;
             (void)job_materialization_service_.ClaimJobs(claim_budget, std::chrono::steady_clock::now());
         }
-        (void)job_materialization_service_.MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+
         for (const auto& failed_payload : job_materialization_service_.ListByState(ClaimedJobLifecycleState::PayloadMaterialized)) {
             ++payload_materialization_failure_count_;
             std::ostringstream message;
@@ -569,19 +492,6 @@ void DBWorkflowWorkerCoordinator::CoordinatorLoop() {
             EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
             MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
             (void)job_materialization_service_.AbandonClaim(failed_payload.job_id);
-        }
-        {
-            const auto dispatchable_workers = CollectDispatchableWorkers();
-            for (const auto& worker : dispatchable_workers) {
-                ++dispatch_attempt_count_;
-                const bool dispatched = DispatchNextEligibleForWorker(
-                    worker.worker_idx,
-                    worker.loaded_savestate_affinity_key,
-                    std::chrono::steady_clock::now());
-                if (!dispatched) {
-                    ++dispatch_miss_count_;
-                }
-            }
         }
         WorkflowReadyStep step;
         if (!TryDequeueReadyStep(&step)) {

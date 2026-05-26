@@ -5,27 +5,53 @@
 namespace simcore::runner::parallel::simcoredb {
 
 JobMaterializationService::JobMaterializationService(
-    ClaimJobsFn claim_jobs,
-    BuildJobPayloadFn build_payload,
-    ResolveAffinityFn resolve_affinity)
-    : claim_jobs_(std::move(claim_jobs))
-    , build_payload_(std::move(build_payload))
-    , resolve_affinity_(std::move(resolve_affinity)) {
+    simcore::db::IExecutionDb* execution_db,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry)
+    : execution_db(std::move(execution_db))
+    , program_kind_registry(program_kind_registry) {
 }
 
+
+
 std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now) {
-    if (max_claims == 0) {
+    if (execution_db == nullptr || max_claims == 0) {
         return 0;
     }
-    const auto claimed_seeds = claim_jobs_ ? claim_jobs_(max_claims) : std::vector<ClaimedJobSeed>{};
+    std::vector<ClaimedJobSeed> claims;
+
+    std::string error;
+    const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
+        "workflow_job_materializer",
+        static_cast<int>(max_claims),
+        30000,
+        &error);
+    claims.reserve(claimed_jobs.size());
+    for (const auto& claimed : claimed_jobs) {
+        claims.push_back(ClaimedJobSeed{
+            .step = WorkflowReadyStep{
+                .workflow_instance_id = claimed.workflow_instance_id,
+                .workflow_step_id = claimed.workflow_step_id,
+                .step_key = claimed.workflow_step_key,
+                .step_kind = claimed.workflow_step_kind,
+                .priority = claimed.workflow_step_priority,
+            },
+            .job_set_id = claimed.job_set_id,
+            .job_id = claimed.job_id,
+            .affinity = ClaimedJobAffinity{
+                .savestate_affinity_key = claimed.savestate_affinity_key,
+                .program_runtime_affinity_key = claimed.program_runtime_affinity_key,
+            },
+            });
+    }
+
     std::size_t claimed = 0;
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& seed : claimed_seeds) {
+    for (const auto& seed : claims) {
         const auto job_id = seed.job_id;
         if (job_id <= 0) {
             continue;
         }
-        const auto key = JobKey(job_id);
+        const auto key = std::to_string(job_id);
         auto [it, inserted] = claimed_jobs_.try_emplace(key);
         if (!inserted) {
             continue;
@@ -39,47 +65,60 @@ std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::ch
         record.claim_sequence = ++claim_sequence_counter_;
         record.claimed_at = now;
         record.state = ClaimedJobLifecycleState::Claimed;
+        claimed_jobs_q_.push(record);
         ++claimed;
     }
     return claimed;
 }
 
 bool JobMaterializationService::MaterializeClaimedJobPayload(std::chrono::steady_clock::time_point now) {
-    std::string selected_key;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& [key, record] : claimed_jobs_) {
-            if (record.state != ClaimedJobLifecycleState::Claimed) {
-                continue;
-            }
-            if (selected_key.empty() || BetterClaimPriority(record, claimed_jobs_.at(selected_key))) {
-                selected_key = key;
-            }
-        }
-    }
-
-    if (selected_key.empty() || !build_payload_) {
-        return false;
-    }
+    (void)now;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = claimed_jobs_.find(selected_key);
-    if (it == claimed_jobs_.end() || it->second.state != ClaimedJobLifecycleState::Claimed) {
-        return false;
-    }
+    bool materialized = false;
 
-    auto& record = it->second;
-    record.payload = build_payload_(record.job_id, record.step);
-    record.state = ClaimedJobLifecycleState::PayloadMaterialized;
-    if (record.payload.has_value()) {
-        if (resolve_affinity_) {
-            record.affinity = resolve_affinity_(record);
+    for (auto& [_, record] : claimed_jobs_) {
+        if (record.state != ClaimedJobLifecycleState::Claimed) {
+            continue;
         }
-        record.state = ClaimedJobLifecycleState::EligibleForDispatch;
+
+        if (execution_db == nullptr || program_kind_registry == nullptr) {
+            record.state = ClaimedJobLifecycleState::PayloadMaterialized;
+            ++payload_materialization_failure_count_;
+            continue;
+        }
+
+        const auto* descriptor = program_kind_registry->FindForStepKind(record.step.step_kind);
+        if (descriptor == nullptr || descriptor->runtime_init == nullptr) {
+            record.state = ClaimedJobLifecycleState::PayloadMaterialized;
+            ++payload_materialization_failure_count_;
+            continue;
+        }
+
+        const auto init_request = descriptor->runtime_init->BuildRuntimeInit(record.job_id);
+        record.payload = descriptor->runtime_init->MaterializePsJob(record.job_id, init_request);
+        record.affinity = ClaimedJobAffinity{
+            .savestate_affinity_key = std::to_string(init_request.savestate_ref_id),
+            .program_runtime_affinity_key = init_request.bootstrap_profile,
+        };
+        record.state = record.payload.has_value()
+            ? ClaimedJobLifecycleState::EligibleForDispatch
+            : ClaimedJobLifecycleState::PayloadMaterialized;
+        if (!record.payload.has_value()) {
+            ++payload_materialization_failure_count_;
+        }
+        materialized = true;
     }
 
-    (void)now;
-    return true;
+    return materialized;
+}
+
+void JobMaterializationService::MaterializeClaimedJobPayloadLoop() {
+    ClaimedJobRecord job;
+    while (claimed_jobs_q_.pop_wait(job)) {
+        (void)job;
+        (void)MaterializeClaimedJobPayload(std::chrono::steady_clock::now());
+    }
 }
 
 std::vector<ClaimedJobRecord> JobMaterializationService::ListByState(ClaimedJobLifecycleState state) const {
@@ -95,7 +134,7 @@ std::vector<ClaimedJobRecord> JobMaterializationService::ListByState(ClaimedJobL
 
 bool JobMaterializationService::MarkDispatched(std::int64_t job_id, std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = claimed_jobs_.find(JobKey(job_id));
+    const auto it = claimed_jobs_.find(std::to_string(job_id));
     if (it == claimed_jobs_.end()) {
         return false;
     }
@@ -106,7 +145,7 @@ bool JobMaterializationService::MarkDispatched(std::int64_t job_id, std::chrono:
 
 bool JobMaterializationService::CleanupDispatchedOrExpired(std::int64_t job_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = claimed_jobs_.find(JobKey(job_id));
+    const auto it = claimed_jobs_.find(std::to_string(job_id));
     if (it == claimed_jobs_.end()) {
         return false;
     }
@@ -120,7 +159,7 @@ bool JobMaterializationService::CleanupDispatchedOrExpired(std::int64_t job_id) 
 
 bool JobMaterializationService::AbandonClaim(std::int64_t job_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = claimed_jobs_.find(JobKey(job_id));
+    const auto it = claimed_jobs_.find(std::to_string(job_id));
     if (it == claimed_jobs_.end()) {
         return false;
     }
@@ -170,10 +209,6 @@ bool JobMaterializationService::BetterClaimPriority(const ClaimedJobRecord& lhs,
     }
 
     return lhs.claim_sequence < rhs.claim_sequence;
-}
-
-std::string JobMaterializationService::JobKey(std::int64_t job_id) {
-    return std::to_string(job_id);
 }
 
 } // namespace simcore::runner::parallel::simcoredb

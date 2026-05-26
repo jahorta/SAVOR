@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -10,7 +11,10 @@
 #include <vector>
 
 #include "../PRTypes.h"
+#include "../TSQueue.h"
 #include "WorkflowSchedulerAdapter.h"
+#include "../../../../SimCoreDB/Execution/IExecutionDb.h"
+#include "../../../../SimCoreDB/Execution/ProgramDB/ProgramKindRegistry.h"
 
 namespace simcore::runner::parallel::simcoredb {
 
@@ -53,12 +57,13 @@ public:
     using ResolveAffinityFn = std::function<ClaimedJobAffinity(const ClaimedJobRecord&)>;
 
     JobMaterializationService(
-        ClaimJobsFn claim_jobs,
-        BuildJobPayloadFn build_payload,
-        ResolveAffinityFn resolve_affinity = {});
+        simcore::db::IExecutionDb* execution_db,
+        const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry
+    );
 
     std::size_t ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now);
     bool MaterializeClaimedJobPayload(std::chrono::steady_clock::time_point now);
+    void MaterializeClaimedJobPayloadLoop();
 
     std::vector<ClaimedJobRecord> ListByState(ClaimedJobLifecycleState state) const;
     bool MarkDispatched(std::int64_t job_id, std::chrono::steady_clock::time_point now);
@@ -69,15 +74,15 @@ public:
 
 private:
     static bool BetterClaimPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs);
-    static std::string JobKey(std::int64_t job_id);
 
-    ClaimJobsFn claim_jobs_;
-    BuildJobPayloadFn build_payload_;
-    ResolveAffinityFn resolve_affinity_;
-
+    
+    std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };    
     mutable std::mutex mutex_;
+    TSQueue<ClaimedJobRecord> claimed_jobs_q_;
     std::unordered_map<std::string, ClaimedJobRecord> claimed_jobs_;
     std::uint64_t claim_sequence_counter_ = 0;
+    simcore::db::IExecutionDb* execution_db;
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry;
 };
 
 } // namespace simcore::runner::parallel::simcoredb

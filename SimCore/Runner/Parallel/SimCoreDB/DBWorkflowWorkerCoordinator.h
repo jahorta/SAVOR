@@ -64,8 +64,6 @@ struct WorkflowCoordinatorTelemetry {
 class DBWorkflowWorkerCoordinator {
 public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
-    using BuildJobPayloadFn = JobMaterializationService::BuildJobPayloadFn;
-    using ClaimJobsFn = JobMaterializationService::ClaimJobsFn;
     using ProgressCallback = std::function<void(const simcore::PRProgress&)>;
     using ResultCallback = std::function<void(const simcore::PRResult&)>;
 
@@ -83,8 +81,6 @@ public:
         DBWorkflowWorkerCoordinatorConfig worker_cfg,
         CoordinatorIntegrationConfig integration_cfg,
         WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
-        ClaimJobsFn claim_jobs_fn = {},
-        BuildJobPayloadFn build_job_payload_fn = {},
         ReadyStepPersistFn persist_materialization_fn = {},
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
         simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr);
