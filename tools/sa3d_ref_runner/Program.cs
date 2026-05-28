@@ -4,6 +4,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using SA3D.Modeling.Animation;
+using SA3D.Modeling.File;
+using SA3D.Modeling.Mesh.Buffer;
+using SA3D.Modeling.Mesh.Chunk;
+using SA3D.Modeling.Mesh.Chunk.PolyChunks;
 
 internal static class Program
 {
@@ -386,6 +391,26 @@ internal static class Program
             return ParserInvocationResult.Failed("missing_block_manifest");
         }
 
+        if (slice == 1)
+        {
+            return BuildPrimitiveProbeReferenceResult(blockManifest);
+        }
+
+        if (slice == 2)
+        {
+            return BuildBlockManifestReferenceResult(blockManifest);
+        }
+
+        if (slice is >= 3 and <= 9)
+        {
+            return BuildStagedSa3dReferenceResult(blockManifest, slice, diagnostics);
+        }
+
+        if (slice != 1)
+        {
+            return ParserInvocationResult.NotApplicable($"slice_{slice}_not_implemented");
+        }
+
         if (!TryResolveSa3dModelingAssemblyPath(options, out var assemblyPath))
         {
             diagnostics.Add(new Diagnostic
@@ -427,6 +452,1406 @@ internal static class Program
             });
             return ParserInvocationResult.Failed("invoke_failed");
         }
+    }
+
+    private static ParserInvocationResult BuildPrimitiveProbeReferenceResult(BlockManifest blockManifest)
+    {
+        var functionPairs = new List<SliceFunctionPair>();
+        var primitiveCount = 0;
+        var bamsCount = 0;
+        var lutCount = 0;
+
+        foreach (var block in blockManifest.Blocks.OrderBy(x => x.Index))
+        {
+            if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+            {
+                continue;
+            }
+
+            var bytes = File.ReadAllBytes(block.Path);
+            foreach (var primitive in BuildPrimitiveProbePairs(block, bytes))
+            {
+                functionPairs.Add(new SliceFunctionPair { Slice = 1, Pair = primitive });
+                primitiveCount++;
+            }
+
+            if (bytes.Length >= 2)
+            {
+                var bamsValue = ReadI16BigEndian(bytes, 0);
+                functionPairs.Add(new SliceFunctionPair
+                {
+                    Slice = 1,
+                    Pair = new FunctionIoPair
+                    {
+                        FunctionId = "Sa3Dport.Testing.Slice1TestApi.BamsCheckpoint",
+                        InputFields = BuildCommonProbeInput(block, bytes, 0, "bams_to_deg", "bams16"),
+                        Output = JsonSerializer.SerializeToElement(new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                        {
+                            ["degrees"] = JsonSerializer.SerializeToElement(bamsValue * (360.0 / 65536.0)),
+                            ["radians"] = JsonSerializer.SerializeToElement(bamsValue * (Math.PI * 2.0 / 65536.0)),
+                        }, JsonOptions),
+                    },
+                });
+                bamsCount++;
+            }
+
+            functionPairs.Add(new SliceFunctionPair
+            {
+                Slice = 1,
+                Pair = new FunctionIoPair
+                {
+                    FunctionId = "Sa3Dport.Testing.Slice1TestApi.LutOp",
+                    InputFields = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["action"] = JsonSerializer.SerializeToElement("add"),
+                        ["address"] = JsonSerializer.SerializeToElement(block.Offset),
+                        ["block_index"] = JsonSerializer.SerializeToElement(block.Index),
+                        ["block_kind"] = JsonSerializer.SerializeToElement(block.Kind),
+                        ["category"] = JsonSerializer.SerializeToElement(block.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase) ? "motion" : "object"),
+                    },
+                    Output = JsonSerializer.SerializeToElement(new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["memoized"] = JsonSerializer.SerializeToElement(true),
+                    }, JsonOptions),
+                },
+            });
+            lutCount++;
+        }
+
+        var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("primitive_probe"),
+            ["block_count"] = JsonSerializer.SerializeToElement(blockManifest.Blocks.Count),
+            ["collated_slice_pairs"] = JsonSerializer.SerializeToElement(functionPairs.Count),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(0),
+            ["primitive_op_count"] = JsonSerializer.SerializeToElement(primitiveCount),
+            ["bams_checkpoint_count"] = JsonSerializer.SerializeToElement(bamsCount),
+            ["lut_op_count"] = JsonSerializer.SerializeToElement(lutCount),
+            ["parity_error_blocks"] = JsonSerializer.SerializeToElement(0),
+        };
+
+        var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["capture_mode"] = JsonSerializer.SerializeToElement("primitive_probe"),
+        };
+
+        var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("primitive_probe"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("primitive_probe"),
+            ["primitive_op_count"] = JsonSerializer.SerializeToElement(primitiveCount),
+            ["bams_checkpoint_count"] = JsonSerializer.SerializeToElement(bamsCount),
+            ["lut_op_count"] = JsonSerializer.SerializeToElement(lutCount),
+            ["slice"] = JsonSerializer.SerializeToElement(1),
+        };
+
+        return new ParserInvocationResult
+        {
+            Invoked = true,
+            Status = "ok",
+            Structural = structural,
+            Semantic = semantic,
+            Outputs = outputs,
+            ModelBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            MotionBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            CollatedSlicePairs = GroupFunctionPairsBySlice(functionPairs),
+        };
+    }
+
+    private static IEnumerable<FunctionIoPair> BuildPrimitiveProbePairs(BlockManifestItem block, byte[] bytes)
+    {
+        var offsets = new SortedSet<int> { 0 };
+        if (bytes.Length >= 8)
+        {
+            offsets.Add(4);
+        }
+        if (bytes.Length >= 16)
+        {
+            offsets.Add(8);
+            offsets.Add(12);
+        }
+        if (bytes.Length >= 4)
+        {
+            offsets.Add(Math.Max(0, bytes.Length - 4));
+        }
+
+        foreach (var offset in offsets)
+        {
+            if (offset + 4 <= bytes.Length)
+            {
+                yield return BuildPrimitiveProbePair(block, bytes, offset, "u32_be", ReadU32BigEndian(bytes, offset));
+                yield return BuildPrimitiveProbePair(block, bytes, offset, "u32_le", ReadU32LittleEndian(bytes, offset));
+            }
+            else if (offset + 2 <= bytes.Length)
+            {
+                yield return BuildPrimitiveProbePair(block, bytes, offset, "u16_be", ReadU16BigEndian(bytes, offset));
+                yield return BuildPrimitiveProbePair(block, bytes, offset, "u16_le", ReadU16LittleEndian(bytes, offset));
+            }
+            else if (offset < bytes.Length)
+            {
+                yield return BuildPrimitiveProbePair(block, bytes, offset, "u8", bytes[offset]);
+            }
+        }
+    }
+
+    private static FunctionIoPair BuildPrimitiveProbePair(BlockManifestItem block, byte[] bytes, int offset, string type, object value)
+    {
+        return new FunctionIoPair
+        {
+            FunctionId = "Sa3Dport.Testing.Slice1TestApi.PrimitiveOp",
+            InputFields = BuildCommonProbeInput(block, bytes, offset, "read", type),
+            Output = JsonSerializer.SerializeToElement(new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["value_hint"] = JsonSerializer.SerializeToElement(value),
+            }, JsonOptions),
+        };
+    }
+
+    private static SortedDictionary<string, JsonElement> BuildCommonProbeInput(
+        BlockManifestItem block,
+        byte[] bytes,
+        int localOffset,
+        string operation,
+        string type)
+    {
+        return new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["block_index"] = JsonSerializer.SerializeToElement(block.Index),
+            ["block_kind"] = JsonSerializer.SerializeToElement(block.Kind),
+            ["block_offset"] = JsonSerializer.SerializeToElement(block.Offset),
+            ["block_size"] = JsonSerializer.SerializeToElement(block.Size),
+            ["input_blob_base64"] = JsonSerializer.SerializeToElement(Convert.ToBase64String(bytes)),
+            ["input_blob_encoding"] = JsonSerializer.SerializeToElement("base64"),
+            ["local_offset"] = JsonSerializer.SerializeToElement(localOffset),
+            ["operation"] = JsonSerializer.SerializeToElement(operation),
+            ["source_offset"] = JsonSerializer.SerializeToElement(block.Offset + localOffset),
+            ["type"] = JsonSerializer.SerializeToElement(type),
+        };
+    }
+
+    private static ushort ReadU16BigEndian(byte[] bytes, int offset)
+    {
+        return (ushort)((bytes[offset] << 8) | bytes[offset + 1]);
+    }
+
+    private static ushort ReadU16LittleEndian(byte[] bytes, int offset)
+    {
+        return (ushort)(bytes[offset] | (bytes[offset + 1] << 8));
+    }
+
+    private static short ReadI16BigEndian(byte[] bytes, int offset)
+    {
+        return unchecked((short)ReadU16BigEndian(bytes, offset));
+    }
+
+    private static uint ReadU32BigEndian(byte[] bytes, int offset)
+    {
+        return ((uint)bytes[offset] << 24)
+            | ((uint)bytes[offset + 1] << 16)
+            | ((uint)bytes[offset + 2] << 8)
+            | bytes[offset + 3];
+    }
+
+    private static uint ReadU32LittleEndian(byte[] bytes, int offset)
+    {
+        return bytes[offset]
+            | ((uint)bytes[offset + 1] << 8)
+            | ((uint)bytes[offset + 2] << 16)
+            | ((uint)bytes[offset + 3] << 24);
+    }
+
+    private static ParserInvocationResult BuildBlockManifestReferenceResult(BlockManifest blockManifest)
+    {
+        var orderedBlocks = new List<SortedDictionary<string, JsonElement>>();
+        var blockMapHash = FnvOffsetBasis;
+
+        foreach (var block in blockManifest.Blocks.OrderBy(x => x.Index))
+        {
+            if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+            {
+                continue;
+            }
+
+            var bytes = File.ReadAllBytes(block.Path);
+            foreach (var scanned in ScanNjBlocks(bytes))
+            {
+                var sourceOffset = checked((uint)block.Offset + scanned.Offset);
+                orderedBlocks.Add(new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["index"] = JsonSerializer.SerializeToElement(block.Index),
+                    ["kind"] = JsonSerializer.SerializeToElement(block.Kind),
+                    ["offset"] = JsonSerializer.SerializeToElement(sourceOffset),
+                    ["local_offset"] = JsonSerializer.SerializeToElement(scanned.Offset),
+                    ["header"] = JsonSerializer.SerializeToElement(scanned.Header),
+                    ["size"] = JsonSerializer.SerializeToElement(scanned.Size),
+                    ["role"] = JsonSerializer.SerializeToElement(scanned.Role),
+                    ["includes_njtl_prefix"] = JsonSerializer.SerializeToElement(block.IncludesNjtlPrefix),
+                });
+
+                FnvUpdateUInt32(ref blockMapHash, (uint)block.Index);
+                FnvUpdateUInt32(ref blockMapHash, sourceOffset);
+                FnvUpdateUInt32(ref blockMapHash, scanned.Offset);
+                FnvUpdateUInt32(ref blockMapHash, scanned.Header);
+                FnvUpdateUInt32(ref blockMapHash, scanned.Size);
+                FnvUpdateString(ref blockMapHash, scanned.Role);
+            }
+        }
+
+        var blockArray = JsonSerializer.SerializeToElement(orderedBlocks, JsonOptions);
+        var blockCount = orderedBlocks.Count;
+        var objectCount = blockManifest.Blocks.Count(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase));
+        var motionCount = blockManifest.Blocks.Count(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase));
+        var selectionHash = ComputeJsonHash(blockArray);
+
+        var structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("block_manifest"),
+            ["block_count"] = JsonSerializer.SerializeToElement(blockCount),
+            ["object_block_count"] = JsonSerializer.SerializeToElement(objectCount),
+            ["motion_block_count"] = JsonSerializer.SerializeToElement(motionCount),
+            ["failed_blocks"] = JsonSerializer.SerializeToElement(0),
+            ["parity_error_blocks"] = JsonSerializer.SerializeToElement(0),
+            ["collated_slice_pairs"] = JsonSerializer.SerializeToElement(1),
+        };
+
+        var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["capture_mode"] = JsonSerializer.SerializeToElement("block_manifest"),
+            ["selection_hash"] = JsonSerializer.SerializeToElement(selectionHash),
+            ["block_map_hash"] = JsonSerializer.SerializeToElement(ToHex64(blockMapHash)),
+        };
+
+        var outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["parser_binding"] = JsonSerializer.SerializeToElement("block_manifest"),
+            ["capture_mode"] = JsonSerializer.SerializeToElement("block_manifest"),
+            ["block_count"] = JsonSerializer.SerializeToElement(blockCount),
+            ["object_block_count"] = JsonSerializer.SerializeToElement(objectCount),
+            ["motion_block_count"] = JsonSerializer.SerializeToElement(motionCount),
+            ["selection_hash"] = JsonSerializer.SerializeToElement(selectionHash),
+            ["block_map_hash"] = JsonSerializer.SerializeToElement(ToHex64(blockMapHash)),
+        };
+
+        var pairInputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["blocks"] = blockArray,
+            ["fixture_id"] = JsonSerializer.SerializeToElement(blockManifest.FixtureId ?? string.Empty),
+            ["operation"] = JsonSerializer.SerializeToElement("nj_blocks"),
+        };
+
+        return new ParserInvocationResult
+        {
+            Invoked = true,
+            Status = "ok",
+            Structural = structural,
+            Semantic = semantic,
+            Outputs = outputs,
+            ModelBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            MotionBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            CollatedSlicePairs =
+            [
+                new SliceIoPair
+                {
+                    Slice = 2,
+                    Pairs =
+                    [
+                        new FunctionIoPair
+                        {
+                            FunctionId = "Sa3Dport.Testing.Slice2TestApi.NjBlocks",
+                            InputFields = pairInputs,
+                            Output = JsonSerializer.SerializeToElement(outputs, JsonOptions),
+                        },
+                    ],
+                },
+            ],
+        };
+    }
+
+    private static ParserInvocationResult BuildStagedSa3dReferenceResult(
+        BlockManifest blockManifest,
+        int requestedSlice,
+        List<Diagnostic> diagnostics)
+    {
+        var summary = BuildStagedSa3dSummary(blockManifest, diagnostics);
+        var outputs = summary.ToJsonDictionary();
+        outputs["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_staged_summary");
+        outputs["capture_mode"] = JsonSerializer.SerializeToElement($"slice_{requestedSlice}_summary");
+
+        var structural = new Dictionary<string, JsonElement>(summary.ToJsonDictionary(), StringComparer.Ordinal);
+        structural["parser_binding"] = JsonSerializer.SerializeToElement("sa3d_modeling_staged_summary");
+        structural["collated_slice_pairs"] = JsonSerializer.SerializeToElement(1);
+
+        var semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["capture_mode"] = JsonSerializer.SerializeToElement($"slice_{requestedSlice}_summary"),
+            ["slice3_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice3StructuralHash),
+            ["slice4_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice4StructuralHash),
+            ["slice5_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice5StructuralHash),
+            ["slice6_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice6StructuralHash),
+            ["slice7_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice7StructuralHash),
+            ["slice8_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice8StructuralHash),
+            ["slice9_structural_hash"] = JsonSerializer.SerializeToElement(summary.Slice9StructuralHash),
+        };
+
+        return new ParserInvocationResult
+        {
+            Invoked = true,
+            Status = summary.DiagnosticCount == 0 ? "ok" : "summary_with_diagnostics",
+            Structural = structural,
+            Semantic = semantic,
+            Outputs = outputs,
+            ModelBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("object", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            MotionBlockOffset = blockManifest.Blocks
+                .Where(x => x.Kind.Equals("motion", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (int?)x.Offset)
+                .FirstOrDefault(),
+            CollatedSlicePairs =
+            [
+                new SliceIoPair
+                {
+                    Slice = requestedSlice,
+                    Pairs =
+                    [
+                        new FunctionIoPair
+                        {
+                            FunctionId = requestedSlice switch
+                            {
+                                3 => "Sa3Dport.Testing.Slice3TestApi.ReadNode",
+                                4 => "Sa3Dport.Testing.Slice4TestApi.ReadChunkAttach",
+                                5 => "Sa3Dport.Testing.Slice5TestApi.ReadPolyChunks",
+                                6 => "Sa3Dport.Testing.Slice6TestApi.ReadModelFile",
+                                7 => "Sa3Dport.Testing.Slice7TestApi.ReadMotionBlock",
+                                8 => "Sa3Dport.Testing.Slice8TestApi.ReadAnimationFile",
+                                9 => "Sa3Dport.Testing.Slice9TestApi.NormalizeMeshData",
+                                _ => "Sa3Dport.Testing.StagedSummary",
+                            },
+                            InputFields = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+                            {
+                                ["fixture_id"] = JsonSerializer.SerializeToElement(blockManifest.FixtureId ?? string.Empty),
+                                ["operation"] = JsonSerializer.SerializeToElement($"slice_{requestedSlice}_summary"),
+                            },
+                            Output = JsonSerializer.SerializeToElement(outputs, JsonOptions),
+                        },
+                    ],
+                },
+            ],
+        };
+    }
+
+    private static StagedSa3dSummary BuildStagedSa3dSummary(BlockManifest blockManifest, List<Diagnostic> diagnostics)
+    {
+        var summary = new StagedSa3dSummary();
+        var slice3Hash = FnvOffsetBasis;
+        var slice4Hash = FnvOffsetBasis;
+        var slice5Hash = FnvOffsetBasis;
+        var slice5TypeHash = FnvOffsetBasis;
+        var slice5AttributeHash = FnvOffsetBasis;
+        var slice5ByteSizeHash = FnvOffsetBasis;
+        var slice5StripMetaHash = FnvOffsetBasis;
+        var slice6Hash = FnvOffsetBasis;
+        var slice7Hash = FnvOffsetBasis;
+        var slice8Hash = FnvOffsetBasis;
+        var slice9Hash = FnvOffsetBasis;
+        uint? lastModelNodeCount = null;
+
+        foreach (var block in blockManifest.Blocks.OrderBy(x => x.Index))
+        {
+            if (string.IsNullOrWhiteSpace(block.Path) || !File.Exists(block.Path))
+            {
+                continue;
+            }
+
+            var bytes = File.ReadAllBytes(block.Path);
+            foreach (var scanned in ScanNjBlocks(bytes))
+            {
+                if (scanned.Role.Equals("animation", StringComparison.OrdinalIgnoreCase))
+                {
+                    summary.Slice7MotionBlockCount++;
+                    summary.Slice8AnimationFileCheckCount++;
+                    if (lastModelNodeCount is null)
+                    {
+                        summary.DiagnosticCount++;
+                        diagnostics.Add(new Diagnostic
+                        {
+                            Code = "SA3D_SLICE7_NODE_COUNT_MISSING",
+                            Severity = "warning",
+                            Stage = "reference_summary",
+                            Message = $"block index={block.Index} kind={block.Kind}: no preceding model node count",
+                        });
+                        continue;
+                    }
+
+                    try
+                    {
+                        var bigEndian = CheckBigEndian32(bytes, checked((int)scanned.Offset + 4));
+                        var animation = ReadSafeMotionSummary(bytes, scanned.Offset, lastModelNodeCount.Value, false, bigEndian);
+                        FnvUpdateUInt32(ref slice7Hash, (uint)block.Index);
+                        FnvUpdateUInt32(ref slice7Hash, scanned.Offset);
+                        UpdateSlice7SummaryWithMotionSummary(summary, ref slice7Hash, animation);
+
+                        FnvUpdateUInt32(ref slice8Hash, (uint)block.Index);
+                        FnvUpdateUInt32(ref slice8Hash, scanned.Offset);
+                        FnvUpdateUInt32(ref slice8Hash, scanned.Offset);
+                        UpdateSlice8SummaryWithMotionSummary(summary, ref slice8Hash, animation);
+                    }
+                    catch (Exception ex)
+                    {
+                        summary.DiagnosticCount++;
+                        diagnostics.Add(new Diagnostic
+                        {
+                            Code = "SA3D_SLICE7_SUMMARY_FAILED",
+                            Severity = "warning",
+                            Stage = "reference_summary",
+                            Message = $"block index={block.Index} kind={block.Kind}: {ex.Message}",
+                        });
+                    }
+                    continue;
+                }
+
+                if (!scanned.Role.Equals("model", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                summary.Slice3ModelBlockCount++;
+                try
+                {
+                    if (ModelFile.CheckIsModelFile(bytes))
+                    {
+                        summary.Slice6ModelFileCheckCount++;
+                    }
+                    var model = ModelFile.ReadFromBytes(bytes);
+                    summary.Slice3ParsedModelCount++;
+                    summary.Slice6ParsedModelFileCount++;
+                    lastModelNodeCount = (uint)model.Model.GetTreeNodeEnumerable().Count();
+                    FnvUpdateUInt32(ref slice3Hash, (uint)block.Index);
+                    FnvUpdateUInt32(ref slice3Hash, scanned.Offset);
+                    FnvUpdateUInt32(ref slice4Hash, (uint)block.Index);
+                    FnvUpdateUInt32(ref slice4Hash, scanned.Offset);
+                    FnvUpdateUInt32(ref slice5Hash, (uint)block.Index);
+                    FnvUpdateUInt32(ref slice5Hash, scanned.Offset);
+                    FnvUpdateUInt32(ref slice6Hash, (uint)block.Index);
+                    FnvUpdateUInt32(ref slice6Hash, scanned.Offset);
+                    FnvUpdateUInt32(ref slice6Hash, (uint)model.Format);
+                    FnvUpdateUInt32(ref slice9Hash, (uint)block.Index);
+                    FnvUpdateUInt32(ref slice9Hash, scanned.Offset);
+
+                    foreach (var node in model.Model.GetTreeNodeEnumerable())
+                    {
+                        UpdateSummaryWithNode(
+                            summary,
+                            ref slice3Hash,
+                            ref slice4Hash,
+                            ref slice5Hash,
+                            ref slice5TypeHash,
+                            ref slice5AttributeHash,
+                            ref slice5ByteSizeHash,
+                            ref slice5StripMetaHash,
+                            node);
+                        UpdateSlice6SummaryWithNode(summary, ref slice6Hash, node);
+                    }
+
+                    try
+                    {
+                        model.Model.BufferMeshData(false);
+                        var slice9Summary = BuildSlice9NormalizationSummary(model.Model);
+                        UpdateSlice9Summary(summary, ref slice9Hash, slice9Summary);
+                    }
+                    catch (Exception ex)
+                    {
+                        summary.DiagnosticCount++;
+                        diagnostics.Add(new Diagnostic
+                        {
+                            Code = "SA3D_SLICE9_SUMMARY_FAILED",
+                            Severity = "error",
+                            Stage = "reference_summary",
+                            Message = $"block index={block.Index} kind={block.Kind}: {ex.Message}",
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    summary.DiagnosticCount++;
+                    diagnostics.Add(new Diagnostic
+                    {
+                        Code = "SA3D_STAGED_SUMMARY_FAILED",
+                        Severity = "error",
+                        Stage = "reference_summary",
+                        Message = $"block index={block.Index} kind={block.Kind}: {ex.Message}",
+                    });
+                }
+            }
+        }
+
+        summary.Slice3StructuralHash = ToHex64(slice3Hash);
+        summary.Slice4StructuralHash = ToHex64(slice4Hash);
+        summary.Slice5StructuralHash = ToHex64(slice5Hash);
+        summary.Slice5TypeHash = ToHex64(slice5TypeHash);
+        summary.Slice5AttributeHash = ToHex64(slice5AttributeHash);
+        summary.Slice5ByteSizeHash = ToHex64(slice5ByteSizeHash);
+        summary.Slice5StripMetaHash = ToHex64(slice5StripMetaHash);
+        summary.Slice6StructuralHash = ToHex64(slice6Hash);
+        summary.Slice7StructuralHash = ToHex64(slice7Hash);
+        summary.Slice8StructuralHash = ToHex64(slice8Hash);
+        summary.Slice9StructuralHash = ToHex64(slice9Hash);
+        return summary;
+    }
+
+    private static void UpdateSummaryWithNode(
+        StagedSa3dSummary summary,
+        ref ulong slice3Hash,
+        ref ulong slice4Hash,
+        ref ulong slice5Hash,
+        ref ulong slice5TypeHash,
+        ref ulong slice5AttributeHash,
+        ref ulong slice5ByteSizeHash,
+        ref ulong slice5StripMetaHash,
+        SA3D.Modeling.ObjectData.Node node)
+    {
+        summary.Slice3NodeCount++;
+        FnvUpdateUInt32(ref slice3Hash, (uint)node.Attributes);
+        FnvUpdateUInt32(ref slice3Hash, node.Attach is null ? 0u : 1u);
+        FnvUpdateUInt32(ref slice3Hash, node.Child is null ? 0u : 1u);
+        FnvUpdateUInt32(ref slice3Hash, node.Next is null ? 0u : 1u);
+
+        if (node.Attach is not null)
+        {
+            summary.Slice3AttachRefCount++;
+        }
+
+        if (node.Attach is not ChunkAttach attach)
+        {
+            return;
+        }
+
+        summary.Slice4ChunkAttachCount++;
+        FnvUpdateUInt32(ref slice4Hash, (uint)(attach.VertexChunks?.Length ?? 0));
+        FnvUpdateUInt32(ref slice4Hash, (uint)(attach.PolyChunks?.Length ?? 0));
+
+        if (attach.VertexChunks is not null)
+        {
+            foreach (var vertexChunk in attach.VertexChunks)
+            {
+                if (vertexChunk is null)
+                {
+                    FnvUpdateUInt32(ref slice4Hash, 0);
+                    continue;
+                }
+
+                summary.Slice4VertexChunkCount++;
+                summary.Slice4VertexCount += vertexChunk.Vertices.Length;
+                if (vertexChunk.HasWeight)
+                {
+                    summary.Slice4WeightedVertexChunkCount++;
+                }
+                FnvUpdateUInt32(ref slice4Hash, (uint)vertexChunk.Type);
+                FnvUpdateUInt32(ref slice4Hash, vertexChunk.Attributes);
+                FnvUpdateUInt32(ref slice4Hash, vertexChunk.IndexOffset);
+                FnvUpdateUInt32(ref slice4Hash, (uint)vertexChunk.Vertices.Length);
+            }
+        }
+
+        if (attach.PolyChunks is null)
+        {
+            return;
+        }
+
+        foreach (var polyChunk in attach.PolyChunks)
+        {
+            if (polyChunk is null)
+            {
+                summary.Slice5NullPolyChunkCount++;
+                FnvUpdateUInt32(ref slice5Hash, 0);
+                continue;
+            }
+
+            summary.Slice5PolyChunkCount++;
+            FnvUpdateUInt32(ref slice5Hash, (uint)polyChunk.Type);
+            FnvUpdateUInt32(ref slice5Hash, polyChunk.Attributes);
+            FnvUpdateUInt32(ref slice5Hash, polyChunk.ByteSize);
+            FnvUpdateUInt32(ref slice5TypeHash, (uint)polyChunk.Type);
+            FnvUpdateUInt32(ref slice5AttributeHash, polyChunk.Attributes);
+            FnvUpdateUInt32(ref slice5ByteSizeHash, polyChunk.ByteSize);
+
+            switch (polyChunk)
+            {
+                case BitsChunk:
+                    summary.Slice5BitsChunkCount++;
+                    break;
+                case TextureChunk:
+                    summary.Slice5TextureChunkCount++;
+                    break;
+                case MaterialBumpChunk:
+                    summary.Slice5MaterialBumpChunkCount++;
+                    break;
+                case MaterialChunk:
+                    summary.Slice5MaterialChunkCount++;
+                    break;
+                case StripChunk strip:
+                    summary.Slice5StripChunkCount++;
+                    FnvUpdateUInt32(ref slice5Hash, (uint)strip.Strips.Length);
+                    FnvUpdateUInt32(ref slice5Hash, (uint)strip.TriangleAttributeCount);
+                    FnvUpdateUInt32(ref slice5StripMetaHash, (uint)strip.Strips.Length);
+                    FnvUpdateUInt32(ref slice5StripMetaHash, (uint)strip.TriangleAttributeCount);
+                    foreach (var stripData in strip.Strips)
+                    {
+                        summary.Slice5PolyCornerCount += stripData.Corners.Length;
+                        FnvUpdateUInt32(ref slice5Hash, (uint)stripData.Corners.Length);
+                        FnvUpdateUInt32(ref slice5StripMetaHash, (uint)stripData.Corners.Length);
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static void UpdateSlice6SummaryWithNode(
+        StagedSa3dSummary summary,
+        ref ulong slice6Hash,
+        SA3D.Modeling.ObjectData.Node node)
+    {
+        summary.Slice6NodeCount++;
+        FnvUpdateUInt32(ref slice6Hash, (uint)node.Attributes);
+        FnvUpdateUInt32(ref slice6Hash, node.Attach is null ? 0u : 1u);
+        FnvUpdateUInt32(ref slice6Hash, node.Child is null ? 0u : 1u);
+        FnvUpdateUInt32(ref slice6Hash, node.Next is null ? 0u : 1u);
+
+        if (node.Attach is not null)
+        {
+            summary.Slice6AttachRefCount++;
+        }
+
+        if (node.Attach is not ChunkAttach attach)
+        {
+            return;
+        }
+
+        summary.Slice6ChunkAttachCount++;
+        FnvUpdateUInt32(ref slice6Hash, (uint)(attach.VertexChunks?.Length ?? 0));
+        FnvUpdateUInt32(ref slice6Hash, (uint)(attach.PolyChunks?.Length ?? 0));
+
+        if (attach.PolyChunks is null)
+        {
+            return;
+        }
+
+        foreach (var polyChunk in attach.PolyChunks)
+        {
+            if (polyChunk is null)
+            {
+                FnvUpdateUInt32(ref slice6Hash, 0);
+                continue;
+            }
+
+            summary.Slice6PolyChunkCount++;
+            FnvUpdateUInt32(ref slice6Hash, (uint)polyChunk.Type);
+            FnvUpdateUInt32(ref slice6Hash, polyChunk.Attributes);
+            FnvUpdateUInt32(ref slice6Hash, polyChunk.ByteSize);
+        }
+    }
+
+    private static void UpdateSlice7SummaryWithMotion(
+        StagedSa3dSummary summary,
+        ref ulong slice7Hash,
+        Motion motion)
+    {
+        summary.Slice7ParsedMotionCount++;
+        summary.Slice7NodeCount += (int)motion.NodeCount;
+        FnvUpdateUInt32(ref slice7Hash, motion.NodeCount);
+        FnvUpdateUInt32(ref slice7Hash, (uint)motion.InterpolationMode);
+        FnvUpdateUInt32(ref slice7Hash, motion.ShortRot ? 1u : 0u);
+        FnvUpdateUInt32(ref slice7Hash, (uint)motion.ManualKeyframeTypes);
+        FnvUpdateUInt32(ref slice7Hash, (uint)motion.KeyframeTypes);
+        FnvUpdateUInt32(ref slice7Hash, motion.GetFrameCount());
+
+        foreach (var pair in motion.Keyframes.OrderBy(x => x.Key))
+        {
+            summary.Slice7KeyframeSetCount++;
+            FnvUpdateUInt32(ref slice7Hash, (uint)pair.Key);
+            FnvUpdateUInt32(ref slice7Hash, (uint)pair.Value.Type);
+            FnvUpdateUInt32(ref slice7Hash, pair.Value.KeyframeCount);
+            var channels = GetKeyframeChannels(pair.Value).ToList();
+            FnvUpdateUInt32(ref slice7Hash, (uint)channels.Count);
+            foreach (var channel in channels)
+            {
+                summary.Slice7ChannelCount++;
+                summary.Slice7KeyframeCount += channel.Count;
+                FnvUpdateUInt32(ref slice7Hash, (uint)channel.Type);
+                FnvUpdateUInt32(ref slice7Hash, (uint)channel.Count);
+                FnvUpdateUInt32(ref slice7Hash, channel.FirstFrame);
+                FnvUpdateUInt32(ref slice7Hash, channel.LastFrame);
+            }
+        }
+    }
+
+    private static void UpdateSlice8SummaryWithMotion(
+        StagedSa3dSummary summary,
+        ref ulong slice8Hash,
+        Motion motion)
+    {
+        summary.Slice8ParsedAnimationFileCount++;
+        summary.Slice8NodeCount += (int)motion.NodeCount;
+        FnvUpdateUInt32(ref slice8Hash, motion.NodeCount);
+        FnvUpdateUInt32(ref slice8Hash, (uint)motion.InterpolationMode);
+        FnvUpdateUInt32(ref slice8Hash, motion.ShortRot ? 1u : 0u);
+        FnvUpdateUInt32(ref slice8Hash, (uint)motion.ManualKeyframeTypes);
+        FnvUpdateUInt32(ref slice8Hash, (uint)motion.KeyframeTypes);
+        FnvUpdateUInt32(ref slice8Hash, motion.GetFrameCount());
+
+        foreach (var pair in motion.Keyframes.OrderBy(x => x.Key))
+        {
+            summary.Slice8KeyframeSetCount++;
+            FnvUpdateUInt32(ref slice8Hash, (uint)pair.Key);
+            FnvUpdateUInt32(ref slice8Hash, (uint)pair.Value.Type);
+            FnvUpdateUInt32(ref slice8Hash, pair.Value.KeyframeCount);
+            var channels = GetKeyframeChannels(pair.Value).ToList();
+            FnvUpdateUInt32(ref slice8Hash, (uint)channels.Count);
+            foreach (var channel in channels)
+            {
+                summary.Slice8ChannelCount++;
+                summary.Slice8KeyframeCount += channel.Count;
+                FnvUpdateUInt32(ref slice8Hash, (uint)channel.Type);
+                FnvUpdateUInt32(ref slice8Hash, (uint)channel.Count);
+                FnvUpdateUInt32(ref slice8Hash, channel.FirstFrame);
+                FnvUpdateUInt32(ref slice8Hash, channel.LastFrame);
+            }
+        }
+    }
+
+    private static SafeMotionSummary ReadSafeMotionSummary(byte[] bytes, uint blockAddress, uint nodeCount, bool shortRot, bool bigEndian)
+    {
+        var dataAddress = checked(blockAddress + 8);
+        var imageBase = unchecked(0u - dataAddress);
+        var keyframeAddress = ReadMotionPointer(bytes, dataAddress, imageBase, bigEndian) ?? 0;
+        var keyframeType = (ushort)ReadU16Checked(bytes, checked((int)dataAddress + 8), bigEndian);
+        var tmp = ReadU16Checked(bytes, checked((int)dataAddress + 10), bigEndian);
+
+        var result = new SafeMotionSummary
+        {
+            NodeCount = nodeCount,
+            InterpolationMode = (uint)((tmp >> 6) & 0x3),
+            ShortRot = shortRot,
+            ManualKeyframeTypes = keyframeType,
+        };
+
+        var tableAddress = keyframeAddress;
+        for (uint i = 0; i < nodeCount; i++)
+        {
+            var keyframes = ReadSafeKeyframes(bytes, ref tableAddress, keyframeType, imageBase, shortRot, bigEndian);
+            result.Keyframes.Add(new SafeKeyframesSummary((int)i, keyframes.Type, keyframes.KeyframeCount, keyframes.Channels));
+            result.KeyframeTypes |= keyframes.Type;
+            result.FrameCount = Math.Max(result.FrameCount, keyframes.KeyframeCount);
+        }
+
+        result.KeyframeTypes |= keyframeType;
+        return result;
+    }
+
+    private static SafeKeyframesSummary ReadSafeKeyframes(
+        byte[] bytes,
+        ref uint address,
+        ushort type,
+        uint imageBase,
+        bool shortRot,
+        bool bigEndian)
+    {
+        var channels = ChannelCount(type);
+        var keyframePointerArray = address;
+        var keyframeCountArray = checked(address + (uint)(4 * channels));
+        var resultType = (ushort)0;
+        var keyframeCount = 0u;
+        var resultChannels = new List<SafeKeyframeChannelSummary>();
+
+        foreach (var flag in KeyframeAttributeOrder)
+        {
+            if ((type & flag) == 0)
+            {
+                continue;
+            }
+
+            var setAddress = ReadMotionPointer(bytes, keyframePointerArray, imageBase, bigEndian);
+            if (setAddress is not null)
+            {
+                var frameCount = ReadU32Checked(bytes, checked((int)keyframeCountArray), bigEndian);
+                var firstFrame = 0u;
+                var lastFrame = 0u;
+                if (frameCount > 0)
+                {
+                    firstFrame = ReadFrameAt(bytes, setAddress.Value, flag, shortRot, bigEndian);
+                    var lastAddress = setAddress.Value;
+                    for (uint i = 0; i < frameCount; i++)
+                    {
+                        lastFrame = ReadFrameAt(bytes, lastAddress, flag, shortRot, bigEndian);
+                        lastAddress += flag == KeyframeEulerRotation && shortRot
+                            ? 8u
+                            : KeyframeEntrySize(flag);
+                    }
+
+                    resultType |= flag;
+                    keyframeCount = Math.Max(keyframeCount, lastFrame + 1);
+                    resultChannels.Add(new SafeKeyframeChannelSummary(flag, frameCount, firstFrame, lastFrame));
+                }
+            }
+
+            keyframePointerArray += 4;
+            keyframeCountArray += 4;
+        }
+
+        address = keyframeCountArray;
+        return new SafeKeyframesSummary(-1, resultType, keyframeCount, resultChannels);
+    }
+
+    private static void UpdateSlice7SummaryWithMotionSummary(
+        StagedSa3dSummary summary,
+        ref ulong slice7Hash,
+        SafeMotionSummary motion)
+    {
+        summary.Slice7ParsedMotionCount++;
+        summary.Slice7NodeCount += (int)motion.NodeCount;
+        FnvUpdateUInt32(ref slice7Hash, motion.NodeCount);
+        FnvUpdateUInt32(ref slice7Hash, motion.InterpolationMode);
+        FnvUpdateUInt32(ref slice7Hash, motion.ShortRot ? 1u : 0u);
+        FnvUpdateUInt32(ref slice7Hash, motion.ManualKeyframeTypes);
+        FnvUpdateUInt32(ref slice7Hash, motion.KeyframeTypes);
+        FnvUpdateUInt32(ref slice7Hash, motion.FrameCount);
+
+        foreach (var keyframes in motion.Keyframes.OrderBy(x => x.NodeIndex))
+        {
+            summary.Slice7KeyframeSetCount++;
+            FnvUpdateUInt32(ref slice7Hash, (uint)keyframes.NodeIndex);
+            FnvUpdateUInt32(ref slice7Hash, keyframes.Type);
+            FnvUpdateUInt32(ref slice7Hash, keyframes.KeyframeCount);
+            FnvUpdateUInt32(ref slice7Hash, (uint)keyframes.Channels.Count);
+            foreach (var channel in keyframes.Channels)
+            {
+                summary.Slice7ChannelCount++;
+                summary.Slice7KeyframeCount += (int)channel.Count;
+                FnvUpdateUInt32(ref slice7Hash, channel.Type);
+                FnvUpdateUInt32(ref slice7Hash, channel.Count);
+                FnvUpdateUInt32(ref slice7Hash, channel.FirstFrame);
+                FnvUpdateUInt32(ref slice7Hash, channel.LastFrame);
+            }
+        }
+    }
+
+    private static void UpdateSlice8SummaryWithMotionSummary(
+        StagedSa3dSummary summary,
+        ref ulong slice8Hash,
+        SafeMotionSummary motion)
+    {
+        summary.Slice8ParsedAnimationFileCount++;
+        summary.Slice8NodeCount += (int)motion.NodeCount;
+        FnvUpdateUInt32(ref slice8Hash, motion.NodeCount);
+        FnvUpdateUInt32(ref slice8Hash, motion.InterpolationMode);
+        FnvUpdateUInt32(ref slice8Hash, motion.ShortRot ? 1u : 0u);
+        FnvUpdateUInt32(ref slice8Hash, motion.ManualKeyframeTypes);
+        FnvUpdateUInt32(ref slice8Hash, motion.KeyframeTypes);
+        FnvUpdateUInt32(ref slice8Hash, motion.FrameCount);
+
+        foreach (var keyframes in motion.Keyframes.OrderBy(x => x.NodeIndex))
+        {
+            summary.Slice8KeyframeSetCount++;
+            FnvUpdateUInt32(ref slice8Hash, (uint)keyframes.NodeIndex);
+            FnvUpdateUInt32(ref slice8Hash, keyframes.Type);
+            FnvUpdateUInt32(ref slice8Hash, keyframes.KeyframeCount);
+            FnvUpdateUInt32(ref slice8Hash, (uint)keyframes.Channels.Count);
+            foreach (var channel in keyframes.Channels)
+            {
+                summary.Slice8ChannelCount++;
+                summary.Slice8KeyframeCount += (int)channel.Count;
+                FnvUpdateUInt32(ref slice8Hash, channel.Type);
+                FnvUpdateUInt32(ref slice8Hash, channel.Count);
+                FnvUpdateUInt32(ref slice8Hash, channel.FirstFrame);
+                FnvUpdateUInt32(ref slice8Hash, channel.LastFrame);
+            }
+        }
+    }
+
+    private static uint? ReadMotionPointer(byte[] bytes, uint address, uint imageBase, bool bigEndian)
+    {
+        var raw = ReadU32Checked(bytes, checked((int)address), bigEndian);
+        return raw == 0 ? null : unchecked(raw - imageBase);
+    }
+
+    private static uint ReadFrameAt(byte[] bytes, uint address, ushort type, bool shortRot, bool bigEndian)
+    {
+        return type == KeyframeEulerRotation && shortRot
+            ? ReadU16Checked(bytes, checked((int)address), bigEndian)
+            : ReadU32Checked(bytes, checked((int)address), bigEndian);
+    }
+
+    private static uint KeyframeEntrySize(ushort type)
+    {
+        return type switch
+        {
+            KeyframePosition or KeyframeScale or KeyframeVector or KeyframeTarget => 16,
+            KeyframeEulerRotation => 16,
+            KeyframeVertex or KeyframeNormal or KeyframeRoll or KeyframeAngle or KeyframeLightColor or KeyframeIntensity => 8,
+            KeyframeSpot => 24,
+            KeyframePoint => 12,
+            KeyframeQuaternionRotation => 20,
+            _ => 0,
+        };
+    }
+
+    private static int ChannelCount(ushort attributes)
+    {
+        var value = attributes & 0x3FFF;
+        var count = 0;
+        while (value != 0)
+        {
+            count += value & 1;
+            value >>= 1;
+        }
+        return count;
+    }
+
+    private static ushort ReadU16Checked(byte[] bytes, int offset, bool bigEndian)
+    {
+        if (offset < 0 || offset + 2 > bytes.Length)
+        {
+            throw new InvalidOperationException("read beyond end of buffer");
+        }
+        return bigEndian ? ReadU16BigEndian(bytes, offset) : ReadU16LittleEndian(bytes, offset);
+    }
+
+    private static uint ReadU32Checked(byte[] bytes, int offset, bool bigEndian)
+    {
+        if (offset < 0 || offset + 4 > bytes.Length)
+        {
+            throw new InvalidOperationException("read beyond end of buffer");
+        }
+        return bigEndian ? ReadU32BigEndian(bytes, offset) : ReadU32LittleEndian(bytes, offset);
+    }
+
+    private static Slice9NormalizationSummary BuildSlice9NormalizationSummary(SA3D.Modeling.ObjectData.Node root)
+    {
+        var result = new Slice9NormalizationSummary();
+
+        foreach (var node in root.GetTreeNodeEnumerable())
+        {
+            if (node.Attach is null || node.Attach.MeshData.Length == 0)
+            {
+                continue;
+            }
+
+            result.AttachCount++;
+            var meshes = node.Attach.MeshData;
+            result.BufferMeshCount += meshes.Length;
+
+            foreach (var mesh in meshes)
+            {
+                result.BufferVertexCount += mesh.Vertices?.Length ?? 0;
+                result.BufferCornerCount += mesh.Corners?.Length ?? 0;
+                if (mesh.Corners is not null)
+                {
+                    result.BufferTriangleCornerCount += mesh.GetCornerTriangleList().Length;
+                }
+            }
+
+            var weighted = SummarizeBufferMeshesForSlice9(meshes);
+            if (weighted.VertexCount > 0 || weighted.TriangleCornerCount > 0)
+            {
+                result.WeightedMeshCount++;
+                result.WeightedVertexCount += weighted.VertexCount;
+                result.WeightedTriangleSetCount += weighted.TriangleSetCount;
+                result.WeightedTriangleCornerCount += weighted.TriangleCornerCount;
+            }
+        }
+
+        return result;
+    }
+
+    private static Slice9WeightedSummary SummarizeBufferMeshesForSlice9(IEnumerable<BufferMesh> meshes)
+    {
+        var result = new Slice9WeightedSummary();
+        var usedVertices = new SortedSet<ushort>();
+
+        foreach (var mesh in meshes)
+        {
+            if (mesh.Corners is null)
+            {
+                continue;
+            }
+
+            result.TriangleSetCount++;
+            result.TriangleCornerCount += mesh.GetCornerTriangleList().Length;
+            foreach (var corner in mesh.Corners)
+            {
+                usedVertices.Add((ushort)(corner.VertexIndex + mesh.VertexReadOffset));
+            }
+        }
+
+        result.VertexCount = usedVertices.Count;
+        return result;
+    }
+
+    private static void UpdateSlice9Summary(
+        StagedSa3dSummary summary,
+        ref ulong slice9Hash,
+        Slice9NormalizationSummary normalization)
+    {
+        summary.Slice9AttachCount += normalization.AttachCount;
+        summary.Slice9BufferMeshCount += normalization.BufferMeshCount;
+        summary.Slice9BufferVertexCount += normalization.BufferVertexCount;
+        summary.Slice9BufferCornerCount += normalization.BufferCornerCount;
+        summary.Slice9BufferTriangleCornerCount += normalization.BufferTriangleCornerCount;
+        summary.Slice9WeightedMeshCount += normalization.WeightedMeshCount;
+        summary.Slice9WeightedVertexCount += normalization.WeightedVertexCount;
+        summary.Slice9WeightedTriangleSetCount += normalization.WeightedTriangleSetCount;
+        summary.Slice9WeightedTriangleCornerCount += normalization.WeightedTriangleCornerCount;
+
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.AttachCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.BufferMeshCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.BufferVertexCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.BufferCornerCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.BufferTriangleCornerCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.WeightedMeshCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.WeightedVertexCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.WeightedTriangleSetCount);
+        FnvUpdateUInt32(ref slice9Hash, (uint)normalization.WeightedTriangleCornerCount);
+    }
+
+    private static IEnumerable<KeyframeChannelSummary> GetKeyframeChannels(Keyframes keyframes)
+    {
+        if (keyframes.Position.Count > 0) yield return Channel(KeyframeAttributes.Position, keyframes.Position.Keys);
+        if (keyframes.EulerRotation.Count > 0) yield return Channel(KeyframeAttributes.EulerRotation, keyframes.EulerRotation.Keys);
+        if (keyframes.Scale.Count > 0) yield return Channel(KeyframeAttributes.Scale, keyframes.Scale.Keys);
+        if (keyframes.Vector.Count > 0) yield return Channel(KeyframeAttributes.Vector, keyframes.Vector.Keys);
+        if (keyframes.Vertex.Count > 0) yield return Channel(KeyframeAttributes.Vertex, keyframes.Vertex.Keys);
+        if (keyframes.Normal.Count > 0) yield return Channel(KeyframeAttributes.Normal, keyframes.Normal.Keys);
+        if (keyframes.Target.Count > 0) yield return Channel(KeyframeAttributes.Target, keyframes.Target.Keys);
+        if (keyframes.Roll.Count > 0) yield return Channel(KeyframeAttributes.Roll, keyframes.Roll.Keys);
+        if (keyframes.Angle.Count > 0) yield return Channel(KeyframeAttributes.Angle, keyframes.Angle.Keys);
+        if (keyframes.LightColor.Count > 0) yield return Channel(KeyframeAttributes.LightColor, keyframes.LightColor.Keys);
+        if (keyframes.Intensity.Count > 0) yield return Channel(KeyframeAttributes.Intensity, keyframes.Intensity.Keys);
+        if (keyframes.Spot.Count > 0) yield return Channel(KeyframeAttributes.Spot, keyframes.Spot.Keys);
+        if (keyframes.Point.Count > 0) yield return Channel(KeyframeAttributes.Point, keyframes.Point.Keys);
+        if (keyframes.QuaternionRotation.Count > 0) yield return Channel(KeyframeAttributes.QuaternionRotation, keyframes.QuaternionRotation.Keys);
+    }
+
+    private static KeyframeChannelSummary Channel(KeyframeAttributes type, IEnumerable<uint> frames)
+    {
+        var ordered = frames.Order().ToArray();
+        return new KeyframeChannelSummary(type, ordered.Length, ordered.FirstOrDefault(), ordered.LastOrDefault());
+    }
+
+    private readonly record struct KeyframeChannelSummary(KeyframeAttributes Type, int Count, uint FirstFrame, uint LastFrame);
+
+    private const ushort KeyframePosition = 1 << 0;
+    private const ushort KeyframeEulerRotation = 1 << 1;
+    private const ushort KeyframeScale = 1 << 2;
+    private const ushort KeyframeVector = 1 << 3;
+    private const ushort KeyframeVertex = 1 << 4;
+    private const ushort KeyframeNormal = 1 << 5;
+    private const ushort KeyframeTarget = 1 << 6;
+    private const ushort KeyframeRoll = 1 << 7;
+    private const ushort KeyframeAngle = 1 << 8;
+    private const ushort KeyframeLightColor = 1 << 9;
+    private const ushort KeyframeIntensity = 1 << 10;
+    private const ushort KeyframeSpot = 1 << 11;
+    private const ushort KeyframePoint = 1 << 12;
+    private const ushort KeyframeQuaternionRotation = 1 << 13;
+
+    private static readonly ushort[] KeyframeAttributeOrder =
+    [
+        KeyframePosition,
+        KeyframeEulerRotation,
+        KeyframeScale,
+        KeyframeVector,
+        KeyframeVertex,
+        KeyframeNormal,
+        KeyframeTarget,
+        KeyframeRoll,
+        KeyframeAngle,
+        KeyframeLightColor,
+        KeyframeIntensity,
+        KeyframeSpot,
+        KeyframePoint,
+        KeyframeQuaternionRotation,
+    ];
+
+    private sealed class SafeMotionSummary
+    {
+        public uint NodeCount { get; set; }
+        public uint InterpolationMode { get; set; }
+        public bool ShortRot { get; set; }
+        public ushort ManualKeyframeTypes { get; set; }
+        public ushort KeyframeTypes { get; set; }
+        public uint FrameCount { get; set; }
+        public List<SafeKeyframesSummary> Keyframes { get; } = [];
+    }
+
+    private readonly record struct SafeKeyframesSummary(
+        int NodeIndex,
+        ushort Type,
+        uint KeyframeCount,
+        List<SafeKeyframeChannelSummary> Channels);
+
+    private readonly record struct SafeKeyframeChannelSummary(
+        ushort Type,
+        uint Count,
+        uint FirstFrame,
+        uint LastFrame);
+
+    private struct Slice9NormalizationSummary
+    {
+        public int AttachCount { get; set; }
+        public int BufferMeshCount { get; set; }
+        public int BufferVertexCount { get; set; }
+        public int BufferCornerCount { get; set; }
+        public int BufferTriangleCornerCount { get; set; }
+        public int WeightedMeshCount { get; set; }
+        public int WeightedVertexCount { get; set; }
+        public int WeightedTriangleSetCount { get; set; }
+        public int WeightedTriangleCornerCount { get; set; }
+    }
+
+    private struct Slice9WeightedSummary
+    {
+        public int VertexCount { get; set; }
+        public int TriangleSetCount { get; set; }
+        public int TriangleCornerCount { get; set; }
+    }
+
+    private sealed class StagedSa3dSummary
+    {
+        public int Slice3ModelBlockCount { get; set; }
+        public int Slice3ParsedModelCount { get; set; }
+        public int Slice3NodeCount { get; set; }
+        public int Slice3AttachRefCount { get; set; }
+        public int Slice3GraphErrorCount { get; set; }
+        public string Slice3StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+
+        public int Slice4ChunkAttachCount { get; set; }
+        public int Slice4VertexChunkCount { get; set; }
+        public int Slice4VertexCount { get; set; }
+        public int Slice4WeightedVertexChunkCount { get; set; }
+        public string Slice4StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+
+        public int Slice5PolyChunkCount { get; set; }
+        public int Slice5NullPolyChunkCount { get; set; }
+        public int Slice5BitsChunkCount { get; set; }
+        public int Slice5TextureChunkCount { get; set; }
+        public int Slice5MaterialChunkCount { get; set; }
+        public int Slice5MaterialBumpChunkCount { get; set; }
+        public int Slice5StripChunkCount { get; set; }
+        public int Slice5PolyCornerCount { get; set; }
+        public string Slice5StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public string Slice5TypeHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public string Slice5AttributeHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public string Slice5ByteSizeHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public string Slice5StripMetaHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public int Slice6ModelFileCheckCount { get; set; }
+        public int Slice6ParsedModelFileCount { get; set; }
+        public int Slice6NodeCount { get; set; }
+        public int Slice6AttachRefCount { get; set; }
+        public int Slice6ChunkAttachCount { get; set; }
+        public int Slice6PolyChunkCount { get; set; }
+        public string Slice6StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public int Slice7MotionBlockCount { get; set; }
+        public int Slice7ParsedMotionCount { get; set; }
+        public int Slice7NodeCount { get; set; }
+        public int Slice7KeyframeSetCount { get; set; }
+        public int Slice7ChannelCount { get; set; }
+        public int Slice7KeyframeCount { get; set; }
+        public string Slice7StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public int Slice8AnimationFileCheckCount { get; set; }
+        public int Slice8ParsedAnimationFileCount { get; set; }
+        public int Slice8NodeCount { get; set; }
+        public int Slice8KeyframeSetCount { get; set; }
+        public int Slice8ChannelCount { get; set; }
+        public int Slice8KeyframeCount { get; set; }
+        public string Slice8StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+        public int Slice9AttachCount { get; set; }
+        public int Slice9BufferMeshCount { get; set; }
+        public int Slice9BufferVertexCount { get; set; }
+        public int Slice9BufferCornerCount { get; set; }
+        public int Slice9BufferTriangleCornerCount { get; set; }
+        public int Slice9WeightedMeshCount { get; set; }
+        public int Slice9WeightedVertexCount { get; set; }
+        public int Slice9WeightedTriangleSetCount { get; set; }
+        public int Slice9WeightedTriangleCornerCount { get; set; }
+        public string Slice9StructuralHash { get; set; } = ToHex64(FnvOffsetBasis);
+
+        public int DiagnosticCount { get; set; }
+
+        public SortedDictionary<string, JsonElement> ToJsonDictionary()
+        {
+            return new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["slice3_model_block_count"] = JsonSerializer.SerializeToElement(Slice3ModelBlockCount),
+                ["slice3_parsed_model_count"] = JsonSerializer.SerializeToElement(Slice3ParsedModelCount),
+                ["slice3_node_count"] = JsonSerializer.SerializeToElement(Slice3NodeCount),
+                ["slice3_attach_ref_count"] = JsonSerializer.SerializeToElement(Slice3AttachRefCount),
+                ["slice3_graph_error_count"] = JsonSerializer.SerializeToElement(Slice3GraphErrorCount),
+                ["slice3_structural_hash"] = JsonSerializer.SerializeToElement(Slice3StructuralHash),
+                ["slice4_chunk_attach_count"] = JsonSerializer.SerializeToElement(Slice4ChunkAttachCount),
+                ["slice4_vertex_chunk_count"] = JsonSerializer.SerializeToElement(Slice4VertexChunkCount),
+                ["slice4_vertex_count"] = JsonSerializer.SerializeToElement(Slice4VertexCount),
+                ["slice4_weighted_vertex_chunk_count"] = JsonSerializer.SerializeToElement(Slice4WeightedVertexChunkCount),
+                ["slice4_structural_hash"] = JsonSerializer.SerializeToElement(Slice4StructuralHash),
+                ["slice5_poly_chunk_count"] = JsonSerializer.SerializeToElement(Slice5PolyChunkCount),
+                ["slice5_null_poly_chunk_count"] = JsonSerializer.SerializeToElement(Slice5NullPolyChunkCount),
+                ["slice5_bits_chunk_count"] = JsonSerializer.SerializeToElement(Slice5BitsChunkCount),
+                ["slice5_texture_chunk_count"] = JsonSerializer.SerializeToElement(Slice5TextureChunkCount),
+                ["slice5_material_chunk_count"] = JsonSerializer.SerializeToElement(Slice5MaterialChunkCount),
+                ["slice5_material_bump_chunk_count"] = JsonSerializer.SerializeToElement(Slice5MaterialBumpChunkCount),
+                ["slice5_strip_chunk_count"] = JsonSerializer.SerializeToElement(Slice5StripChunkCount),
+                ["slice5_poly_corner_count"] = JsonSerializer.SerializeToElement(Slice5PolyCornerCount),
+                ["slice5_structural_hash"] = JsonSerializer.SerializeToElement(Slice5StructuralHash),
+                ["slice5_type_hash"] = JsonSerializer.SerializeToElement(Slice5TypeHash),
+                ["slice5_attribute_hash"] = JsonSerializer.SerializeToElement(Slice5AttributeHash),
+                ["slice5_byte_size_hash"] = JsonSerializer.SerializeToElement(Slice5ByteSizeHash),
+                ["slice5_strip_meta_hash"] = JsonSerializer.SerializeToElement(Slice5StripMetaHash),
+                ["slice6_model_file_check_count"] = JsonSerializer.SerializeToElement(Slice6ModelFileCheckCount),
+                ["slice6_parsed_model_file_count"] = JsonSerializer.SerializeToElement(Slice6ParsedModelFileCount),
+                ["slice6_node_count"] = JsonSerializer.SerializeToElement(Slice6NodeCount),
+                ["slice6_attach_ref_count"] = JsonSerializer.SerializeToElement(Slice6AttachRefCount),
+                ["slice6_chunk_attach_count"] = JsonSerializer.SerializeToElement(Slice6ChunkAttachCount),
+                ["slice6_poly_chunk_count"] = JsonSerializer.SerializeToElement(Slice6PolyChunkCount),
+                ["slice6_structural_hash"] = JsonSerializer.SerializeToElement(Slice6StructuralHash),
+                ["slice7_motion_block_count"] = JsonSerializer.SerializeToElement(Slice7MotionBlockCount),
+                ["slice7_parsed_motion_count"] = JsonSerializer.SerializeToElement(Slice7ParsedMotionCount),
+                ["slice7_node_count"] = JsonSerializer.SerializeToElement(Slice7NodeCount),
+                ["slice7_keyframe_set_count"] = JsonSerializer.SerializeToElement(Slice7KeyframeSetCount),
+                ["slice7_channel_count"] = JsonSerializer.SerializeToElement(Slice7ChannelCount),
+                ["slice7_keyframe_count"] = JsonSerializer.SerializeToElement(Slice7KeyframeCount),
+                ["slice7_structural_hash"] = JsonSerializer.SerializeToElement(Slice7StructuralHash),
+                ["slice8_animation_file_check_count"] = JsonSerializer.SerializeToElement(Slice8AnimationFileCheckCount),
+                ["slice8_parsed_animation_file_count"] = JsonSerializer.SerializeToElement(Slice8ParsedAnimationFileCount),
+                ["slice8_node_count"] = JsonSerializer.SerializeToElement(Slice8NodeCount),
+                ["slice8_keyframe_set_count"] = JsonSerializer.SerializeToElement(Slice8KeyframeSetCount),
+                ["slice8_channel_count"] = JsonSerializer.SerializeToElement(Slice8ChannelCount),
+                ["slice8_keyframe_count"] = JsonSerializer.SerializeToElement(Slice8KeyframeCount),
+                ["slice8_structural_hash"] = JsonSerializer.SerializeToElement(Slice8StructuralHash),
+                ["slice9_attach_count"] = JsonSerializer.SerializeToElement(Slice9AttachCount),
+                ["slice9_buffer_mesh_count"] = JsonSerializer.SerializeToElement(Slice9BufferMeshCount),
+                ["slice9_buffer_vertex_count"] = JsonSerializer.SerializeToElement(Slice9BufferVertexCount),
+                ["slice9_buffer_corner_count"] = JsonSerializer.SerializeToElement(Slice9BufferCornerCount),
+                ["slice9_buffer_triangle_corner_count"] = JsonSerializer.SerializeToElement(Slice9BufferTriangleCornerCount),
+                ["slice9_weighted_mesh_count"] = JsonSerializer.SerializeToElement(Slice9WeightedMeshCount),
+                ["slice9_weighted_vertex_count"] = JsonSerializer.SerializeToElement(Slice9WeightedVertexCount),
+                ["slice9_weighted_triangle_set_count"] = JsonSerializer.SerializeToElement(Slice9WeightedTriangleSetCount),
+                ["slice9_weighted_triangle_corner_count"] = JsonSerializer.SerializeToElement(Slice9WeightedTriangleCornerCount),
+                ["slice9_structural_hash"] = JsonSerializer.SerializeToElement(Slice9StructuralHash),
+            };
+        }
+    }
+
+    private static string ComputeJsonHash(JsonElement value)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    private const ulong FnvOffsetBasis = 14695981039346656037UL;
+    private const ulong FnvPrime = 1099511628211UL;
+
+    private readonly record struct ScannedNjBlock(uint Offset, uint Header, uint Size, string Role);
+
+    private static IReadOnlyList<ScannedNjBlock> ScanNjBlocks(byte[] bytes)
+    {
+        var result = new List<ScannedNjBlock>();
+        if (bytes.Length < 8)
+        {
+            return result;
+        }
+
+        var sizeBigEndian = CheckBigEndian32(bytes, 4);
+        uint blockAddress = 0;
+        while ((ulong)blockAddress < (ulong)bytes.Length + 8UL)
+        {
+            if ((ulong)blockAddress + 8UL > (ulong)bytes.Length)
+            {
+                break;
+            }
+
+            var header = ReadU32LittleEndian(bytes, checked((int)blockAddress));
+            var size = sizeBigEndian
+                ? ReadU32BigEndian(bytes, checked((int)blockAddress + 4))
+                : ReadU32LittleEndian(bytes, checked((int)blockAddress + 4));
+            if (header == 0 || size == 0)
+            {
+                break;
+            }
+
+            result.Add(new(blockAddress, header, size, GetSkiesNjRole(header)));
+            blockAddress += 8 + size;
+        }
+
+        return result;
+    }
+
+    private static bool CheckBigEndian32(byte[] bytes, int offset)
+    {
+        if (offset < 0 || offset + 4 > bytes.Length)
+        {
+            return false;
+        }
+
+        var little = ReadU32LittleEndian(bytes, offset);
+        var big = ReadU32BigEndian(bytes, offset);
+        var remaining = bytes.Length - offset;
+        var littlePlausible = little > 0 && little <= remaining;
+        var bigPlausible = big > 0 && big <= remaining;
+        return bigPlausible && !littlePlausible;
+    }
+
+    private static string GetSkiesNjRole(uint header)
+    {
+        return header switch
+        {
+            0x4D434A4E => "model",
+            0x4D424A4E => "model",
+            0x4C544A4E => "texture",
+            0x4D444D4E => "animation",
+            0x4D53534E => "animation",
+            0x4D41434E => "animation",
+            _ => "none",
+        };
+    }
+
+    private static void FnvUpdateByte(ref ulong hash, byte value)
+    {
+        hash ^= value;
+        hash *= FnvPrime;
+    }
+
+    private static void FnvUpdateUInt32(ref ulong hash, uint value)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            FnvUpdateByte(ref hash, (byte)((value >> (i * 8)) & 0xFF));
+        }
+    }
+
+    private static void FnvUpdateString(ref ulong hash, string value)
+    {
+        foreach (var c in Encoding.ASCII.GetBytes(value))
+        {
+            FnvUpdateByte(ref hash, c);
+        }
+        FnvUpdateByte(ref hash, 0);
+    }
+
+    private static string ToHex64(ulong value)
+    {
+        return value.ToString("x16", CultureInfo.InvariantCulture);
     }
 
     private static bool TryInvokeParityReportGenerator(
@@ -779,14 +2204,17 @@ internal static class Program
 
         SetPropertyIfPresent(optionsType, instance, "EnableCapture", true);
         SetPropertyIfPresent(optionsType, instance, "CaptureEnabled", true);
-        SetPropertyIfPresent(optionsType, instance, "Address", blockOffset);
+        SetPropertyIfPresent(optionsType, instance, "Address", 0);
         SetPropertyIfPresent(optionsType, instance, "ImageBase", blockOffset);
         SetPropertyIfPresent(optionsType, instance, "IsAnimation", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
         SetPropertyIfPresent(optionsType, instance, "TreatAsAnimation", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
         SetPropertyIfPresent(optionsType, instance, "TryAnimationFallback", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase));
+        SetEnumPropertyIfPresent(optionsType, instance, "ParseAdapter", blockKind.Equals("motion", StringComparison.OrdinalIgnoreCase) ? "AnimationFile" : "ModelFile");
 
         var requestedSlicesProperty = optionsType.GetProperty("RequestedSlices", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (requestedSlicesProperty is not null && requestedSlicesProperty.CanWrite && requestedSlicesProperty.PropertyType == typeof(int[]))
+        if (requestedSlicesProperty is not null
+            && requestedSlicesProperty.CanWrite
+            && requestedSlicesProperty.PropertyType.IsAssignableFrom(typeof(int[])))
         {
             requestedSlicesProperty.SetValue(instance, new[] { requestedSlice });
         }
@@ -796,7 +2224,7 @@ internal static class Program
 
     private static void SetPropertyIfPresent(Type type, object target, string propertyName, object value)
     {
-        var property = type.GetProperty(propertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        var property = type.GetProperty(propertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         if (property is null || !property.CanWrite)
         {
             return;
@@ -810,6 +2238,25 @@ internal static class Program
         catch
         {
             // intentionally swallow: we support a best-effort reflection bridge across branch variants.
+        }
+    }
+
+    private static void SetEnumPropertyIfPresent(Type type, object target, string propertyName, string enumValueName)
+    {
+        var property = type.GetProperty(propertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        if (property is null || !property.CanWrite || !property.PropertyType.IsEnum)
+        {
+            return;
+        }
+
+        try
+        {
+            var value = Enum.Parse(property.PropertyType, enumValueName, ignoreCase: true);
+            property.SetValue(target, value);
+        }
+        catch
+        {
+            // best-effort across parity API variants
         }
     }
 
@@ -1226,6 +2673,7 @@ internal static class Program
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
 }
 
@@ -1353,6 +2801,30 @@ internal sealed class ParserInvocationResult
             Outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
             {
                 ["parser_binding"] = JsonSerializer.SerializeToElement(status),
+            },
+            CollatedSlicePairs = [],
+        };
+    }
+
+    public static ParserInvocationResult NotApplicable(string status)
+    {
+        return new ParserInvocationResult
+        {
+            Invoked = false,
+            Status = status,
+            Outputs = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["parser_binding"] = JsonSerializer.SerializeToElement("not_applicable"),
+                ["status"] = JsonSerializer.SerializeToElement(status),
+            },
+            Structural = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["parser_binding"] = JsonSerializer.SerializeToElement("not_applicable"),
+                ["collated_slice_pairs"] = JsonSerializer.SerializeToElement(0),
+            },
+            Semantic = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["capture_mode"] = JsonSerializer.SerializeToElement("not_applicable"),
             },
             CollatedSlicePairs = [],
         };

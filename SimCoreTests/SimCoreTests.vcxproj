@@ -136,6 +136,10 @@
     <ClCompile Include="test_import_from_qt.cpp" />
     <ClCompile Include="test_pad_poll_isolated_user.cpp" />
     <ClCompile Include="test_sa3dport_stage1.cpp" />
+    <ClCompile Include="test_sa3dport_stage2.cpp" />
+    <ClCompile Include="test_sa3dport_stage3.cpp" />
+    <ClCompile Include="test_sa3dport_stage4.cpp" />
+    <ClCompile Include="test_sa3dport_stage5.cpp" />
     <ClCompile Include="test_satools_parity_poly_parser.cpp" />
     <ClCompile Include="test_simconfig.cpp" />
     <ClCompile Include="test_simcoreDB.cpp" />

@@ -6,4 +6,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\third-party\SA3D.Modeling\src\SA3D.Modeling\SA3D.Modeling.csproj" Condition="Exists('..\..\third-party\SA3D.Modeling\src\SA3D.Modeling\SA3D.Modeling.csproj')" />
+  </ItemGroup>
 </Project>
