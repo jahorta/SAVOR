@@ -4,6 +4,7 @@
 #include "File/Structs/MetaWeightNode.h"
 #include "Structs/Endian.h"
 #include "Structs/EndianStackReader.h"
+#include "Structs/PointerIO.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -254,22 +255,17 @@ private:
     }
 
     [[nodiscard]] bool TryReadPointer(std::uint32_t address, std::uint32_t& value) const {
-        const std::uint32_t raw = ReadUInt(address);
-        if (raw == 0 || raw == UINT32_MAX) {
+        const auto pointer = Sa3Dport::Structs::PointerIO::read_nullable_pointer_add_base(reader_, address, imageBase_);
+        if (!pointer.has_value()) {
             return false;
         }
 
-        value = raw + imageBase_;
+        value = *pointer;
         return static_cast<std::size_t>(value) < data_.size();
     }
 
     [[nodiscard]] std::uint32_t ReadPointer(std::uint32_t address) const {
-        const std::uint32_t raw = ReadUInt(address);
-        if (raw == UINT32_MAX) {
-            return UINT32_MAX;
-        }
-
-        return raw + imageBase_;
+        return Sa3Dport::Structs::PointerIO::read_pointer_add_base(reader_, address, imageBase_);
     }
 
     [[nodiscard]] std::uint32_t ReadUInt(std::uint32_t address) const {

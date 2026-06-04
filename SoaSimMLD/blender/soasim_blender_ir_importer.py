@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import base64
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import bpy
 import mathutils
@@ -48,6 +50,11 @@ class ImportStats:
         self.warnings += 1
         self.warning_messages.append(message)
         print(f"[SoaSim Import Warning] {message}")
+
+
+class TextureLookup(NamedTuple):
+    by_name: dict[str, Image]
+    by_id: dict[int, Image]
 
 
 BLENDER_CUSTOM_INT_MIN = -(2**31)
@@ -117,6 +124,16 @@ def _parse_json(path: str) -> dict[str, Any]:
     return payload
 
 
+def _flip_rgba8_vertically(raw: bytes, width: int, height: int) -> bytes:
+    flipped = bytearray(len(raw))
+    row_stride = width * 4
+    for y in range(height):
+        src = y * row_stride
+        dst = (height - 1 - y) * row_stride
+        flipped[dst : dst + row_stride] = raw[src : src + row_stride]
+    return bytes(flipped)
+
+
 def _decode_rgba8_image(texture: dict[str, Any], image_name: str) -> Image | None:
     width = int(texture.get("width", 0))
     height = int(texture.get("height", 0))
@@ -134,6 +151,7 @@ def _decode_rgba8_image(texture: dict[str, Any], image_name: str) -> Image | Non
     expected_size = width * height * 4
     if len(raw) != expected_size:
         return None
+    has_transparency = any(raw[i] != 255 for i in range(3, len(raw), 4))
 
     image = bpy.data.images.get(image_name)
     if image is None:
@@ -141,24 +159,51 @@ def _decode_rgba8_image(texture: dict[str, Any], image_name: str) -> Image | Non
     else:
         image.scale(width, height)
 
+    raw = _flip_rgba8_vertically(raw, width, height)
     float_pixels = [channel / 255.0 for channel in raw]
     image.pixels = float_pixels
+    image.alpha_mode = "STRAIGHT"
+    image.update()
     image.pack()
+    image["soasim_has_transparency"] = has_transparency
 
     return image
 
 
-def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) -> dict[str, Image]:
+def _read_optional_texture_id(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) -> TextureLookup:
     images_by_name: dict[str, Image] = {}
+    images_by_id: dict[int, Image] = {}
 
     for index, texture in enumerate(textures):
-        texture_name = str(texture.get("textureName", "")).strip() or f"texture_{index:04d}"
+        texture_id = _read_optional_texture_id(texture.get("textureId"))
+        texture_name = str(texture.get("textureName", "")).strip()
+        if not texture_name:
+            texture_name = f"texture_{texture_id}" if texture_id is not None else f"texture_{index:04d}"
         image = _decode_rgba8_image(texture, image_name=texture_name)
         if image is None:
-            stats.warnings += 1
+            stats.add_warning(
+                f"Texture {texture_name} was not decoded as RGBA8 and will not be displayable."
+            )
             continue
 
         image["soasim_texture_name"] = texture_name
+        if texture_id is not None:
+            _set_custom_int_property(
+                image,
+                "soasim_texture_id",
+                texture_id,
+                stats,
+                field_name=f"textures[{index}].textureId",
+            )
         _set_custom_int_property(
             image,
             "soasim_source_offset",
@@ -175,26 +220,327 @@ def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) ->
         )
         image["soasim_encoded_format"] = str(texture.get("encodedFormat", ""))
         images_by_name[texture_name] = image
+        if texture_id is not None:
+            images_by_id[texture_id] = image
         stats.texture_count += 1
 
-    return images_by_name
+    return TextureLookup(by_name=images_by_name, by_id=images_by_id)
+
+
+def _resolve_material_texture(
+    material_data: dict[str, Any],
+    texture_lookup: TextureLookup,
+) -> Image | None:
+    texture_name = str(material_data.get("textureName", "")).strip()
+    if texture_name and texture_name in texture_lookup.by_name:
+        return texture_lookup.by_name[texture_name]
+
+    texture_id = _read_optional_texture_id(material_data.get("textureId"))
+    if texture_id is not None and texture_id in texture_lookup.by_id:
+        return texture_lookup.by_id[texture_id]
+
+    return None
+
+
+def _material_cache_name(material_data: dict[str, Any]) -> str:
+    material_hash = int(material_data.get("materialHash", 0))
+    texture_id = _read_optional_texture_id(material_data.get("textureId"))
+    texture_name = str(material_data.get("textureName", "")).strip()
+    if texture_name:
+        safe_texture_name = "".join(
+            ch if ch.isalnum() or ch in ("_", "-") else "_"
+            for ch in texture_name
+        )
+        return f"SoaMat_{material_hash:016x}_{safe_texture_name}"
+    if texture_id is not None:
+        return f"SoaMat_{material_hash:016x}_tex_{texture_id}"
+    return f"SoaMat_{material_hash:016x}"
+
+
+def _safe_name_part(value: str, fallback: str) -> str:
+    safe_value = "".join(
+        ch if ch.isalnum() or ch in ("_", "-") else "_"
+        for ch in value.strip()
+    ).strip("_")
+    return safe_value or fallback
+
+
+def _hex_name_part(value: Any) -> str:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = 0
+    return f"0x{numeric:X}"
+
+
+def _entry_root_name(entry_index: int, entry_id: int, fxn_name: str) -> str:
+    entry_number = entry_id if entry_id >= 0 else entry_index
+    safe_fxn_name = _safe_name_part(fxn_name, "entry")
+    return f"{entry_number:03d}_{safe_fxn_name}"
+
+
+def _mesh_object_name(mesh_data: dict[str, Any]) -> str:
+    return (
+        f"obj_{_hex_name_part(mesh_data.get('sourceObjectAddress', 0))}"
+        f"_attach_{_hex_name_part(mesh_data.get('sourceAttachOffset', 0))}"
+    )
+
+
+def _node_object_name(entry_name: str, node_idx: int, tree: dict[str, Any]) -> str:
+    base_name = f"{entry_name}_Node_{node_idx}"
+    if node_idx != 0:
+        return base_name
+    return f"{base_name}_obj_{_hex_name_part(tree.get('sourceObjectAddress', 0))}"
+
+
+def _attach_object_name(entry_name: str, node_idx: int, attach_offset: Any) -> str:
+    return f"{entry_name}_Node_{node_idx}_attach_{_hex_name_part(attach_offset)}"
+
+
+def _configure_material_alpha(
+    material: Material,
+    uses_alpha: bool,
+    *,
+    prefer_blended: bool = False,
+) -> None:
+    if hasattr(material, "surface_render_method"):
+        if uses_alpha:
+            preferred_method = "BLENDED" if prefer_blended else "DITHERED"
+            fallback_method = "DITHERED" if prefer_blended else "BLENDED"
+            try:
+                enum_items = material.bl_rna.properties["surface_render_method"].enum_items
+                enum_ids = {item.identifier for item in enum_items}
+                if preferred_method in enum_ids:
+                    material.surface_render_method = preferred_method
+                elif fallback_method in enum_ids:
+                    material.surface_render_method = fallback_method
+            except (AttributeError, KeyError, TypeError):
+                material.surface_render_method = preferred_method
+        else:
+            try:
+                enum_items = material.bl_rna.properties["surface_render_method"].enum_items
+                if any(item.identifier == "OPAQUE" for item in enum_items):
+                    material.surface_render_method = "OPAQUE"
+            except (AttributeError, KeyError, TypeError):
+                pass
+
+    if hasattr(material, "blend_method"):
+        material.blend_method = ("BLEND" if prefer_blended else "HASHED") if uses_alpha else "OPAQUE"
+
+    if hasattr(material, "shadow_method"):
+        material.shadow_method = ("BLEND" if prefer_blended else "HASHED") if uses_alpha else "OPAQUE"
+
+
+def _set_principled_alpha(bsdf: Any, alpha: float) -> None:
+    alpha_input = bsdf.inputs.get("Alpha") if hasattr(bsdf.inputs, "get") else None
+    if alpha_input is not None:
+        alpha_input.default_value = alpha
+
+
+def _set_first_existing_input_default(bsdf: Any, names: tuple[str, ...], value: float) -> None:
+    if not hasattr(bsdf.inputs, "get"):
+        return
+    for name in names:
+        socket = bsdf.inputs.get(name)
+        if socket is not None:
+            socket.default_value = value
+            return
+
+
+def _configure_principled_surface(bsdf: Any, material_data: dict[str, Any]) -> None:
+    no_specular = _read_bool(material_data.get("noSpecular"), False)
+
+    _set_first_existing_input_default(bsdf, ("Metallic",), 0.0)
+    _set_first_existing_input_default(bsdf, ("Roughness",), 1.0)
+    _set_first_existing_input_default(
+        bsdf,
+        ("Specular IOR Level", "Specular", "Specular Tint"),
+        0.0 if no_specular else 0.2,
+    )
+
+
+def _set_material_alpha_value(material: Material, bsdf: Any, alpha: float) -> None:
+    diffuse = list(material.diffuse_color)
+    if len(diffuse) >= 4:
+        diffuse[3] = alpha
+        material.diffuse_color = diffuse
+    _set_principled_alpha(bsdf, alpha)
+
+
+def _configure_texture_extension(image_node: Any) -> None:
+    image_node.extension = "REPEAT"
+
+
+def _read_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def _ensure_link(links: Any, from_socket: Any, to_socket: Any) -> None:
+    for link in links:
+        if link.from_socket == from_socket and link.to_socket == to_socket:
+            return
+    links.new(from_socket, to_socket)
+
+
+def _clear_input_links(links: Any, input_socket: Any) -> None:
+    for link in list(input_socket.links):
+        links.remove(link)
+
+
+def _named_math_node(nodes: Any, name: str, operation: str) -> Any:
+    node = nodes.get(name)
+    if node is None:
+        node = nodes.new(type="ShaderNodeMath")
+        node.name = name
+        node.label = name
+    node.operation = operation
+    node.use_clamp = False
+    return node
+
+
+def _build_sampler_axis(
+    nodes: Any,
+    links: Any,
+    source_socket: Any,
+    *,
+    axis_name: str,
+    clamp_axis: bool,
+    mirror_axis: bool,
+) -> Any:
+    if clamp_axis:
+        max_node = _named_math_node(nodes, f"Soa{axis_name}ClampMin", "MAXIMUM")
+        max_node.inputs[1].default_value = -1.0
+        min_node = _named_math_node(nodes, f"Soa{axis_name}ClampMax", "MINIMUM")
+        min_node.inputs[1].default_value = 1.0
+        _clear_input_links(links, max_node.inputs[0])
+        _clear_input_links(links, min_node.inputs[0])
+        _ensure_link(links, source_socket, max_node.inputs[0])
+        _ensure_link(links, max_node.outputs[0], min_node.inputs[0])
+        return min_node.outputs[0]
+
+    if mirror_axis:
+        mod_node = _named_math_node(nodes, f"Soa{axis_name}MirrorModulo", "MODULO")
+        mod_node.inputs[1].default_value = 2.0
+        sub_node = _named_math_node(nodes, f"Soa{axis_name}MirrorCenter", "SUBTRACT")
+        sub_node.inputs[1].default_value = 1.0
+        abs_node = _named_math_node(nodes, f"Soa{axis_name}MirrorAbs", "ABSOLUTE")
+        inv_node = _named_math_node(nodes, f"Soa{axis_name}MirrorInvert", "SUBTRACT")
+        inv_node.inputs[0].default_value = 1.0
+
+        _clear_input_links(links, mod_node.inputs[0])
+        _clear_input_links(links, sub_node.inputs[0])
+        _clear_input_links(links, abs_node.inputs[0])
+        _clear_input_links(links, inv_node.inputs[1])
+
+        _ensure_link(links, source_socket, mod_node.inputs[0])
+        _ensure_link(links, mod_node.outputs[0], sub_node.inputs[0])
+        _ensure_link(links, sub_node.outputs[0], abs_node.inputs[0])
+        _ensure_link(links, abs_node.outputs[0], inv_node.inputs[1])
+        return inv_node.outputs[0]
+
+    return source_socket
+
+
+def _configure_texture_sampler(
+    nodes: Any,
+    links: Any,
+    image_node: Any,
+    *,
+    clamp_u: bool,
+    clamp_v: bool,
+    mirror_u: bool,
+    mirror_v: bool,
+) -> None:
+    tex_coord = nodes.get("SoaTexCoord")
+    if tex_coord is None:
+        tex_coord = nodes.new(type="ShaderNodeTexCoord")
+        tex_coord.name = "SoaTexCoord"
+
+    separate = nodes.get("SoaUVSeparate")
+    if separate is None:
+        separate = nodes.new(type="ShaderNodeSeparateXYZ")
+        separate.name = "SoaUVSeparate"
+
+    combine = nodes.get("SoaUVCombine")
+    if combine is None:
+        combine = nodes.new(type="ShaderNodeCombineXYZ")
+        combine.name = "SoaUVCombine"
+    combine.inputs["Z"].default_value = 0.0
+
+    _clear_input_links(links, separate.inputs["Vector"])
+    _ensure_link(links, tex_coord.outputs["UV"], separate.inputs["Vector"])
+
+    u_socket = _build_sampler_axis(
+        nodes,
+        links,
+        separate.outputs["X"],
+        axis_name="U",
+        clamp_axis=clamp_u,
+        mirror_axis=mirror_u,
+    )
+    v_socket = _build_sampler_axis(
+        nodes,
+        links,
+        separate.outputs["Y"],
+        axis_name="V",
+        clamp_axis=clamp_v,
+        mirror_axis=mirror_v,
+    )
+
+    _clear_input_links(links, combine.inputs["X"])
+    _clear_input_links(links, combine.inputs["Y"])
+    _clear_input_links(links, image_node.inputs["Vector"])
+    _ensure_link(links, u_socket, combine.inputs["X"])
+    _ensure_link(links, v_socket, combine.inputs["Y"])
+    _ensure_link(links, combine.outputs["Vector"], image_node.inputs["Vector"])
+
+
+def _enable_custom_normals_shading(mesh: Mesh) -> None:
+    if hasattr(mesh, "use_auto_smooth"):
+        mesh.use_auto_smooth = True
+        return
+
+    if len(mesh.polygons) > 0:
+        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+
+
+def _reset_material_nodes(material: Material) -> tuple[Any, Any]:
+    node_tree = material.node_tree
+    assert node_tree is not None
+    node_tree.links.clear()
+    node_tree.nodes.clear()
+
+    bsdf = node_tree.nodes.new(type="ShaderNodeBsdfPrincipled")
+    bsdf.name = "Principled BSDF"
+    output = node_tree.nodes.new(type="ShaderNodeOutputMaterial")
+    output.name = "Material Output"
+    node_tree.links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+    return bsdf, output
 
 
 def _build_material(
     material_data: dict[str, Any],
-    texture_lookup: dict[str, Image],
+    texture_lookup: TextureLookup,
     stats: ImportStats,
     *,
     mesh_field_name: str,
     material_index: int,
 ) -> Material:
-    material_hash = int(material_data.get("materialHash", 0))
-    name = f"SoaMat_{material_hash:016x}"
+    name = _material_cache_name(material_data)
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name=name)
 
     material.use_nodes = True
+    bsdf, output = _reset_material_nodes(material)
     _set_custom_int_property(
         material,
         "soasim_poly_type",
@@ -224,25 +570,29 @@ def _build_material(
         field_name=f"{mesh_field_name}.materials[{material_index}].textureId",
     )
     material["soasim_texture_name"] = str(material_data.get("textureName", ""))
+    chunk_flags = int(material_data.get("chunkFlags", 0))
+    use_texture = _read_bool(material_data.get("useTexture"), True)
+    use_alpha = _read_bool(material_data.get("useAlpha"), False)
+    no_alpha_test = _read_bool(material_data.get("noAlphaTest"), False)
+    double_sided = _read_bool(material_data.get("doubleSided"), False)
+    clamp_u = _read_bool(material_data.get("clampU"), (chunk_flags & 0x4) != 0)
+    clamp_v = _read_bool(material_data.get("clampV"), (chunk_flags & 0x8) != 0)
+    mirror_u = _read_bool(material_data.get("mirrorU"), (chunk_flags & 0x1) != 0)
+    mirror_v = _read_bool(material_data.get("mirrorV"), (chunk_flags & 0x2) != 0)
 
     node_tree = material.node_tree
     assert node_tree is not None
     nodes = node_tree.nodes
     links = node_tree.links
 
-    bsdf = nodes.get("Principled BSDF")
-    if bsdf is None:
-        bsdf = nodes.new(type="ShaderNodeBsdfPrincipled")
+    _configure_principled_surface(bsdf, material_data)
 
-    output = nodes.get("Material Output")
-    if output is None:
-        output = nodes.new(type="ShaderNodeOutputMaterial")
+    material.use_backface_culling = not double_sided
+    if hasattr(material, "use_backface_culling_shadow"):
+        material.use_backface_culling_shadow = material.use_backface_culling
 
-    if not any(link.from_node == bsdf and link.to_node == output for link in links):
-        links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
-
-    texture_name = str(material_data.get("textureName", "")).strip()
-    if texture_name and texture_name in texture_lookup:
+    texture_image = _resolve_material_texture(material_data, texture_lookup)
+    if texture_image is not None:
         image_node = None
         for node in nodes:
             if node.type == "TEX_IMAGE" and node.name == "SoaTexture":
@@ -252,25 +602,133 @@ def _build_material(
             image_node = nodes.new(type="ShaderNodeTexImage")
             image_node.name = "SoaTexture"
 
-        image_node.image = texture_lookup[texture_name]
-        if not any(link.from_node == image_node and link.to_node == bsdf for link in links):
-            links.new(image_node.outputs["Color"], bsdf.inputs["Base Color"])
+        image_node.image = texture_image
+        _configure_texture_extension(image_node)
+        _configure_texture_sampler(
+            nodes,
+            links,
+            image_node,
+            clamp_u=clamp_u,
+            clamp_v=clamp_v,
+            mirror_u=mirror_u,
+            mirror_v=mirror_v,
+        )
+        if use_texture:
+            _ensure_link(links, image_node.outputs["Color"], bsdf.inputs["Base Color"])
+            if use_alpha:
+                _ensure_link(links, image_node.outputs["Alpha"], bsdf.inputs["Alpha"])
+                diffuse = list(material.diffuse_color)
+                if len(diffuse) >= 4:
+                    diffuse[3] = 1.0
+                    material.diffuse_color = diffuse
+                _configure_material_alpha(material, True)
+            else:
+                _clear_input_links(links, bsdf.inputs["Alpha"])
+                _set_material_alpha_value(material, bsdf, 1.0)
+                _configure_material_alpha(material, False)
+        else:
+            _clear_input_links(links, bsdf.inputs["Base Color"])
+            _clear_input_links(links, bsdf.inputs["Alpha"])
+            _set_material_alpha_value(material, bsdf, 0.25)
+            _configure_material_alpha(material, True, prefer_blended=True)
+        material["soasim_texture_bound"] = True
+    else:
+        _clear_input_links(links, bsdf.inputs["Base Color"])
+        _clear_input_links(links, bsdf.inputs["Alpha"])
+        _set_material_alpha_value(material, bsdf, 0.25)
+        _configure_material_alpha(material, True, prefer_blended=True)
+        texture_id = material_data.get("textureId", None)
+        texture_name = str(material_data.get("textureName", "")).strip()
+        if texture_id not in (None, 0xFFFF, "65535") or texture_name:
+            stats.add_warning(
+                (
+                    f"Material {material.name} could not resolve texture "
+                    f"id={texture_id!r} name={texture_name!r}."
+                )
+            )
+        material["soasim_texture_bound"] = False
 
     return material
+
+
+def _read_corner_vertex_index(corner: Any) -> int:
+    if isinstance(corner, dict):
+        return int(corner.get("vertexIndex", 0))
+    return int(corner)
 
 
 def _triangles_from_corners(corners: list[Any]) -> list[tuple[int, int, int]]:
     triangles: list[tuple[int, int, int]] = []
     for i in range(0, len(corners) - 2, 3):
-        a = int(corners[i])
-        b = int(corners[i + 1])
-        c = int(corners[i + 2])
+        a = _read_corner_vertex_index(corners[i])
+        b = _read_corner_vertex_index(corners[i + 1])
+        c = _read_corner_vertex_index(corners[i + 2])
         triangles.append((a, b, c))
     return triangles
 
 
-def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], stats: ImportStats) -> Object:
-    mesh_name = str(mesh_data.get("label", "SoaMesh"))
+def _triangle_has_area(
+    vertices: list[tuple[float, float, float]],
+    tri: tuple[int, int, int],
+) -> bool:
+    if tri[0] == tri[1] or tri[1] == tri[2] or tri[2] == tri[0]:
+        return False
+    if tri[0] < 0 or tri[1] < 0 or tri[2] < 0:
+        return False
+    if tri[0] >= len(vertices) or tri[1] >= len(vertices) or tri[2] >= len(vertices):
+        return False
+
+    a = mathutils.Vector(vertices[tri[0]])
+    b = mathutils.Vector(vertices[tri[1]])
+    c = mathutils.Vector(vertices[tri[2]])
+    return (b - a).cross(c - a).length_squared > 1.0e-10
+
+
+def _triangle_geometry_key(
+    vertices: list[tuple[float, float, float]],
+    tri: tuple[int, int, int],
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return tuple(
+        sorted(
+            (
+                round(vertices[index][0], 6),
+                round(vertices[index][1], 6),
+                round(vertices[index][2], 6),
+            )
+            for index in tri
+        )
+    )
+
+
+def _append_triangle_corner_attributes(
+    triangle_corners: tuple[Any, Any, Any],
+    uv_values: list[tuple[float, float] | None],
+    color_values: list[tuple[float, float, float, float] | None],
+) -> None:
+    for corner in triangle_corners:
+        if not isinstance(corner, dict):
+            uv_values.append(None)
+            color_values.append(None)
+            continue
+
+        if bool(corner.get("hasUv", False)):
+            u = float(corner.get("u", 0.0))
+            v = float(corner.get("v", 0.0))
+            uv_values.append((u, 1.0 - v))
+        else:
+            uv_values.append(None)
+
+        color = corner.get("color", [1.0, 1.0, 1.0, 1.0])
+        if bool(corner.get("hasColor", False)) and len(color) >= 4:
+            color_values.append(
+                (float(color[0]), float(color[1]), float(color[2]), float(color[3]))
+            )
+        else:
+            color_values.append(None)
+
+
+def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats: ImportStats) -> Object:
+    mesh_name = _mesh_object_name(mesh_data)
     mesh_field_name = f"meshes[{mesh_name}]"
 
     vertices_data = mesh_data.get("vertices", [])
@@ -283,12 +741,41 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
 
     triangles: list[tuple[int, int, int]] = []
     poly_material_indices: list[int] = []
+    poly_flat_flags: list[bool] = []
+    uv_values: list[tuple[float, float] | None] = []
+    color_values: list[tuple[float, float, float, float] | None] = []
+    seen_triangle_geometry: set[
+        tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    ] = set()
     for tri_set in mesh_data.get("triangleSets", []):
-        local_triangles = _triangles_from_corners(tri_set.get("corners", []))
+        corners = tri_set.get("corners", [])
         material_index = int(tri_set.get("materialIndex", 0))
-        for tri in local_triangles:
+        material_data = {}
+        if 0 <= material_index < len(mesh_data.get("materials", [])):
+            material_data = mesh_data["materials"][material_index]
+        flat_shading = bool(material_data.get("flatShading", False))
+        for corner_index in range(0, len(corners) - 2, 3):
+            triangle_corners = (
+                corners[corner_index],
+                corners[corner_index + 1],
+                corners[corner_index + 2],
+            )
+            tri = (
+                _read_corner_vertex_index(triangle_corners[0]),
+                _read_corner_vertex_index(triangle_corners[1]),
+                _read_corner_vertex_index(triangle_corners[2]),
+            )
+            if not _triangle_has_area(vertices, tri):
+                continue
+            geometry_key = _triangle_geometry_key(vertices, tri)
+            if geometry_key in seen_triangle_geometry:
+                continue
+            seen_triangle_geometry.add(geometry_key)
+
             triangles.append(tri)
             poly_material_indices.append(material_index)
+            poly_flat_flags.append(flat_shading)
+            _append_triangle_corner_attributes(triangle_corners, uv_values, color_values)
 
     mesh = bpy.data.meshes.new(mesh_name)
     mesh.from_pydata(vertices, [], triangles)
@@ -318,6 +805,25 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: dict[str, Image], sta
             poly.material_index = mat_index
         else:
             stats.warnings += 1
+        if poly_index < len(poly_flat_flags):
+            poly.use_smooth = not poly_flat_flags[poly_index]
+
+    if any(value is not None for value in uv_values) and len(uv_values) == len(mesh.loops):
+        uv_layer = mesh.uv_layers.new(name="SoaUV")
+        for loop_index, uv in enumerate(uv_values):
+            if uv is not None:
+                uv_layer.data[loop_index].uv = uv
+        mesh.uv_layers.active = uv_layer
+
+    if any(value is not None for value in color_values) and len(color_values) == len(mesh.loops):
+        color_layer = mesh.color_attributes.new(
+            name="SoaColor",
+            type="BYTE_COLOR",
+            domain="CORNER",
+        )
+        for loop_index, color in enumerate(color_values):
+            if color is not None:
+                color_layer.data[loop_index].color = color
 
     diagnostics = mesh_data.get("diagnostics", {})
     _set_custom_int_property(
@@ -390,9 +896,37 @@ def _transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
     return mathutils.Matrix.LocRotScale(blender_position, blender_rotation, blender_scale)
 
 
+def _entry_transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
+    position = transform.get("position", [0.0, 0.0, 0.0])
+    rotation_raw = transform.get("rotationRaw", [0.0, 0.0, 0.0])
+    scale = transform.get("scale", [1.0, 1.0, 1.0])
+
+    blender_position = mathutils.Vector((
+        float(position[0]),
+        -float(position[2]),
+        float(position[1]),
+    ))
+    blender_rotation = mathutils.Euler((
+        math.radians(float(rotation_raw[0])),
+        math.radians(float(rotation_raw[2])),
+        math.radians(float(rotation_raw[1])),
+    ), "XYZ").to_quaternion()
+    blender_scale = mathutils.Vector((
+        float(scale[0]),
+        float(scale[2]),
+        float(scale[1]),
+    ))
+    return mathutils.Matrix.LocRotScale(blender_position, blender_rotation, blender_scale)
+
+
 def _apply_transform(obj: Object, transform: dict[str, Any]) -> None:
     obj.rotation_mode = "QUATERNION"
     obj.matrix_basis = _transform_to_matrix(transform)
+
+
+def _apply_entry_transform(obj: Object, transform: dict[str, Any]) -> None:
+    obj.rotation_mode = "QUATERNION"
+    obj.matrix_basis = _entry_transform_to_matrix(transform)
 
 
 def _apply_identity_local_transform(obj: Object) -> None:
@@ -470,12 +1004,12 @@ def import_blender_ir_json(
     object_trees: list[dict[str, Any]] = payload.get("objectTrees", [])
     debug_lines: list[str] = []
 
-    for entry in payload.get("indexEntries", []):
+    for entry_index, entry in enumerate(payload.get("indexEntries", [])):
         transform = entry.get("transform", {})
         entry_id = int(entry.get("sourceEntryId", 0))
         fxn_name = str(entry.get("fxnName", ""))
-        entry_root = _create_empty(f"SoaEntry_{entry_id}")
-        _apply_transform(entry_root, transform)
+        entry_root = _create_empty(_entry_root_name(entry_index, entry_id, fxn_name))
+        _apply_entry_transform(entry_root, transform)
         if emit_parity_debug:
             debug_lines.append(
                 (
@@ -531,42 +1065,10 @@ def import_blender_ir_json(
                 continue
 
             tree = object_trees[ti]
-            tree_root_name = (
-                f"SoaTree_{entry_id}_{slot}_"
-                f"{int(tree.get('sourceObjectAddress', 0))}_"
-                f"{int(tree.get('sourceChunkOffset', 0))}"
-            )
-            tree_root = _create_empty(tree_root_name)
-            _set_parent_with_identity_inverse(tree_root, entry_root)
-            _apply_identity_local_transform(tree_root)
-            _set_custom_int_property(
-                tree_root,
-                "soasim_tree_index",
-                ti,
-                stats,
-                field_name=f"indexEntries[{entry_id}].objectTreeIndices[{slot}]",
-            )
-            _set_custom_int_property(
-                tree_root,
-                "soasim_source_object_address",
-                tree.get("sourceObjectAddress", 0),
-                stats,
-                field_name=f"objectTrees[{ti}].sourceObjectAddress",
-            )
-            _set_custom_int_property(
-                tree_root,
-                "soasim_source_chunk_offset",
-                tree.get("sourceChunkOffset", 0),
-                stats,
-                field_name=f"objectTrees[{ti}].sourceChunkOffset",
-            )
-            root_collection.objects.link(tree_root)
-            stats.object_count += 1
-
             nodes = tree.get("nodes", [])
             node_objects: list[Object | None] = [None] * len(nodes)
             for node_idx, node in enumerate(nodes):
-                node_name = f"{tree_root_name}_Node_{node_idx}"
+                node_name = _node_object_name(entry_root.name, node_idx, tree)
                 node_obj = _create_empty(node_name)
                 _set_custom_int_property(
                     node_obj,
@@ -596,6 +1098,28 @@ def import_blender_ir_json(
                     stats,
                     field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceAttachOffset",
                 )
+                if node_idx == 0:
+                    _set_custom_int_property(
+                        node_obj,
+                        "soasim_tree_index",
+                        ti,
+                        stats,
+                        field_name=f"indexEntries[{entry_id}].objectTreeIndices[{slot}]",
+                    )
+                    _set_custom_int_property(
+                        node_obj,
+                        "soasim_source_object_address",
+                        tree.get("sourceObjectAddress", 0),
+                        stats,
+                        field_name=f"objectTrees[{ti}].sourceObjectAddress",
+                    )
+                    _set_custom_int_property(
+                        node_obj,
+                        "soasim_source_chunk_offset",
+                        tree.get("sourceChunkOffset", 0),
+                        stats,
+                        field_name=f"objectTrees[{ti}].sourceChunkOffset",
+                    )
                 root_collection.objects.link(node_obj)
                 node_objects[node_idx] = node_obj
                 stats.object_count += 1
@@ -607,13 +1131,13 @@ def import_blender_ir_json(
 
                 parent_idx = node.get("parentNodeIndex")
                 if parent_idx is None:
-                    _set_parent_with_identity_inverse(node_obj, tree_root)
+                    _set_parent_with_identity_inverse(node_obj, entry_root)
                 else:
                     pi = int(parent_idx)
                     if 0 <= pi < len(node_objects) and node_objects[pi] is not None:
                         _set_parent_with_identity_inverse(node_obj, node_objects[pi])
                     else:
-                        _set_parent_with_identity_inverse(node_obj, tree_root)
+                        _set_parent_with_identity_inverse(node_obj, entry_root)
                         stats.warnings += 1
                 _apply_transform(node_obj, _resolve_node_transform(node))
                 if emit_parity_debug:
@@ -639,11 +1163,25 @@ def import_blender_ir_json(
                     continue
 
                 source_obj = mesh_objects[mi]
-                attach_name = f"{node_obj.name}_{source_obj.name}"
+                attach_name = _attach_object_name(entry_root.name, node_idx, node.get("sourceAttachOffset", 0))
                 attach_obj = bpy.data.objects.new(attach_name, source_obj.data)
                 _set_parent_with_identity_inverse(attach_obj, node_obj)
                 _apply_identity_local_transform(attach_obj)
                 attach_obj["soasim_mesh_index"] = mi
+                _set_custom_int_property(
+                    attach_obj,
+                    "soasim_node_index",
+                    node_idx,
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].nodeIndex",
+                )
+                _set_custom_int_property(
+                    attach_obj,
+                    "soasim_source_attach_offset",
+                    node.get("sourceAttachOffset", 0),
+                    stats,
+                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceAttachOffset",
+                )
                 root_collection.objects.link(attach_obj)
                 stats.object_count += 1
 

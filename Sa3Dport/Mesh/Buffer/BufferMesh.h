@@ -25,11 +25,32 @@ struct BufferCorner {
     std::uint16_t vertex_index = 0;
     Structs::Color color = Structs::Color(0xFF, 0xFF, 0xFF, 0xFF);
     Structs::Vector2 texcoord {};
+    Structs::Vector3 normal = Structs::Vector3::unit_y();
+    bool has_normal = false;
 };
 
 struct BufferMaterial {
     std::uint32_t texture_index = 0;
-    std::uint32_t flags = 0;
+    float mipmap_distance_multiplier = 1.0f;
+    float specular_exponent = 11.0f;
+    std::uint32_t state_key = 0;
+    std::uint8_t source_blend_mode = 4;
+    std::uint8_t destination_blend_mode = 5;
+    std::uint8_t texture_filtering = 1;
+    bool anisotropic_filtering = false;
+    bool clamp_u = false;
+    bool clamp_v = false;
+    bool mirror_u = false;
+    bool mirror_v = false;
+    bool normal_mapping = false;
+    bool no_lighting = false;
+    bool no_ambient = false;
+    bool no_specular = false;
+    bool flat = false;
+    bool use_alpha = false;
+    bool backface_culling = true;
+    bool no_alpha_test = false;
+    bool use_texture = true;
 };
 
 struct BufferMesh {
@@ -40,6 +61,7 @@ struct BufferMesh {
     bool continue_weight = false;
     bool has_normals = false;
     bool has_colors = false;
+    bool flat_shading = false;
     std::uint16_t vertex_write_offset = 0;
     std::uint16_t vertex_read_offset = 0;
 

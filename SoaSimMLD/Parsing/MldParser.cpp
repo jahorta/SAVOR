@@ -1,7 +1,7 @@
 #include "MldParser.h"
 
 #include "../Export/BlenderIrJsonExporter.h"
-#include "BlenderIrBuilder.h"
+#include "Sa3dBlenderIrBuilder.h"
 #include "../../Compression/Aklz.h"
 #include "../Model/IndexEntry.h"
 #include "../common/ByteUtils.h"
@@ -606,7 +606,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     });
 
     if (options.buildBlenderIntermediateIr) {
-        BlenderIrBuilder blenderIrBuilder{};
+        Sa3dBlenderIrBuilder blenderIrBuilder{};
         result.blenderIrScene = blenderIrBuilder.build(result);
         if (result.blenderIrScene.has_value()) {
             result.blenderIrDiagnostics = result.blenderIrScene->diagnostics;

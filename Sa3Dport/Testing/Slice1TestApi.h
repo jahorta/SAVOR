@@ -13,12 +13,12 @@
 
 namespace Sa3Dport::Testing::Slice1 {
 
-inline constexpr auto kNjcmMagic = File::FileHeaders::kNjcmMagic;
-inline constexpr auto kNjtlMagic = File::FileHeaders::kNjtlMagic;
+inline constexpr auto kNjcmMagic = File::FileHeaders::ToMagic(File::FileHeaders::NJCM);
+inline constexpr auto kNjtlMagic = File::FileHeaders::ToMagic(File::FileHeaders::NJTL);
 
 inline constexpr bool MatchesMagic(const std::array<char, 4>& candidate,
                                    const std::array<char, 4>& expected) {
-    return File::FileHeaders::MatchesMagic(candidate, expected);
+    return File::FileHeaders::MatchesMagic(candidate, File::FileHeaders::FromMagic(expected));
 }
 
 using Endianness = Structs::Endianness;

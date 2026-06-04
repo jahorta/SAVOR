@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Decoding">
+      <UniqueIdentifier>{B6F524C9-524D-4389-8840-F0CF4A3812DE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Encoding">
+      <UniqueIdentifier>{AE827348-1B00-4304-AB69-B103DF5B583F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{4E208F3D-E989-4C45-9E5B-638692DB6735}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parsing">
+      <UniqueIdentifier>{7132EB98-1D5A-494F-B14E-492D845E7D4E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{C576E07E-70F4-40C3-8756-EFB0C9F9E633}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Decoding\GvrDecoder.h">
+      <Filter>Decoding</Filter>
+    </ClInclude>
+    <ClInclude Include="Encoding\GvrEncoder.h">
+      <Filter>Encoding</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\GvmTextureModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\GvmParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="SoaSimGvm.h">
+      <Filter>EntryPoint</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Decoding\GvrDecoder.cpp">
+      <Filter>Decoding</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\GvmTextureModel.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\GvmParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

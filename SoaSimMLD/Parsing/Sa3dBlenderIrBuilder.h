@@ -5,7 +5,7 @@
 
 namespace soasim::mld::parsing {
 
-class BlenderIrBuilder {
+class Sa3dBlenderIrBuilder {
 public:
     [[nodiscard]] model::BlenderIrScene build(const ParseResult& parseResult) const;
 };

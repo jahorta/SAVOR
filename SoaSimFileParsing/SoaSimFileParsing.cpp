@@ -1075,8 +1075,6 @@ void writeBridgeAbComparison(
     const std::vector<std::filesystem::path>& bridgeReportPaths) {
     std::ofstream out(outPath, std::ios::binary);
     out << "mode=sa3d_port_vs_dotnet_sa3d\n";
-    out << "sa3d_port.decoded_chunks=" << sa3dPortParsed.decodedNjcmChunks.size() << "\n";
-    out << "sa3d_port.object_blocks=" << sa3dPortParsed.decodedNjObjectBlocks.size() << "\n";
     out << "sa3d_port.diagnostics=" << sa3dPortParsed.diagnostics.size() << "\n";
     out << "sa3d_port.extracted_nj_blocks=" << sa3dPortParsed.extractedNjBlocks.size() << "\n";
     const auto slice2Probe = buildSlice2Probe(parityBlocks);
@@ -1505,7 +1503,6 @@ int main(int argc, char** argv) {
 
     soasim::sct::SctParser sctParser{};
     soasim::mld::parsing::MldParser mldParser{};
-    soasim::mld::parsing::BlenderIrBuilder builder{};
     soasim::mld::exporting::BlenderIrJsonExporter exporter{};
     std::cout << "[SoaSimFileParsing] Step 3/4: Parsing input files...\n";
 
@@ -1565,7 +1562,9 @@ int main(int argc, char** argv) {
 
                 const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sa3d_port.json");
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);
-                jsonOut << exporter.toJson(builder.build(sa3dPortParsed)).c_str();
+                if (sa3dPortParsed.blenderIrScene.has_value()) {
+                    jsonOut << exporter.toJson(*sa3dPortParsed.blenderIrScene).c_str();
+                }
 
                 std::vector<std::filesystem::path> bridgeReportPaths{};
                 std::vector<std::filesystem::path> blockInputPaths{};
@@ -1617,7 +1616,9 @@ int main(int argc, char** argv) {
 
                 const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".json");
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);
-                jsonOut << exporter.toJson(builder.build(parityParsed)).c_str();
+                if (parityParsed.blenderIrScene.has_value()) {
+                    jsonOut << exporter.toJson(*parityParsed.blenderIrScene).c_str();
+                }
             }
             ++filesProcessed;
             continue;

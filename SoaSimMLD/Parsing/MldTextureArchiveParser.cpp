@@ -1,45 +1,70 @@
 #include "MldTextureArchiveParser.h"
 
+#include "../../SoaSimGvm/SoaSimGvm.h"
+
 #include "../common/ByteUtils.h"
 
 #include <algorithm>
-#include <optional>
+#include <cctype>
 #include <string>
+#include <vector>
 
 namespace soasim::mld::parsing {
 namespace {
 
-constexpr std::uint32_t makeTag(const char a, const char b, const char c, const char d) {
-    return static_cast<std::uint32_t>(a) |
-        (static_cast<std::uint32_t>(b) << 8) |
-        (static_cast<std::uint32_t>(c) << 16) |
-        (static_cast<std::uint32_t>(d) << 24);
+[[nodiscard]] std::string readFixedAsciiName(std::span<const std::uint8_t> bytes,
+    const std::size_t offset,
+    const std::size_t maxLength) {
+    std::string out{};
+    if (offset >= bytes.size()) {
+        return out;
+    }
+
+    const auto end = std::min(bytes.size(), offset + maxLength);
+    for (std::size_t i = offset; i < end; ++i) {
+        const auto ch = bytes[i];
+        if (ch == 0U) {
+            break;
+        }
+        if (std::isprint(static_cast<unsigned char>(ch)) == 0) {
+            break;
+        }
+        out.push_back(static_cast<char>(ch));
+    }
+    return out;
 }
 
-[[nodiscard]] std::uint32_t swapU32(const std::uint32_t value) {
-    return ((value & 0x000000FFU) << 24) |
-        ((value & 0x0000FF00U) << 8) |
-        ((value & 0x00FF0000U) >> 8) |
-        ((value & 0xFF000000U) >> 24);
-}
-
-[[nodiscard]] std::optional<std::size_t> readChunkPayloadSize(std::span<const std::uint8_t> bytes, std::size_t at) {
-    const auto raw = common::readU32AtLE(bytes, at + 0x4);
-    if (!raw.has_value()) {
-        return std::nullopt;
+[[nodiscard]] std::vector<std::string> parseTextureArchiveNames(std::span<const std::uint8_t> bytes,
+    const std::size_t textureTableOffset,
+    std::vector<std::string>& diagnostics) {
+    std::vector<std::string> names{};
+    const auto count = common::readU32AtBE(bytes, textureTableOffset);
+    if (!count.has_value()) {
+        diagnostics.push_back("Texture archive name table count is unreadable.");
+        return names;
     }
 
-    const auto le = static_cast<std::size_t>(*raw);
-    if (at + 8U + le <= bytes.size()) {
-        return le;
+    constexpr std::size_t recordSize = 44U;
+    constexpr std::size_t nameSize = 32U;
+    constexpr std::size_t hardCap = 4096U;
+    if (*count == 0U || *count > hardCap) {
+        diagnostics.push_back("Texture archive name table count is suspicious: " + std::to_string(*count) + ".");
+        return names;
     }
 
-    const auto be = static_cast<std::size_t>(swapU32(*raw));
-    if (at + 8U + be <= bytes.size()) {
-        return be;
+    const std::size_t tableBegin = textureTableOffset + 4U;
+    const std::size_t requiredEnd = tableBegin + (static_cast<std::size_t>(*count) * recordSize);
+    if (requiredEnd > bytes.size()) {
+        diagnostics.push_back("Texture archive name table overruns file bounds.");
+        return names;
     }
 
-    return std::nullopt;
+    names.reserve(*count);
+    for (std::uint32_t i = 0; i < *count; ++i) {
+        names.push_back(readFixedAsciiName(bytes, tableBegin + (static_cast<std::size_t>(i) * recordSize), nameSize));
+    }
+    diagnostics.push_back("Texture archive name table extracted " + std::to_string(names.size()) + " texture name(s).");
+    return names;
 }
 
 } // namespace
@@ -48,84 +73,48 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
     const std::size_t textureTableOffset) {
     model::MldTextureArchive out{};
     out.tableOffset = textureTableOffset;
+    const auto archiveNames = parseTextureArchiveNames(bytes, textureTableOffset, out.diagnostics);
 
-    if (textureTableOffset >= bytes.size()) {
-        out.diagnostics.push_back("Texture table pointer out of bounds.");
-        return out;
+    soasim::gvm::parsing::ParseOptions options{};
+    options.decodeBaseLevel = true;
+    options.keepRawEncodedPayload = false;
+    auto archive = soasim::gvm::parsing::parseGvmArchive(bytes, textureTableOffset, options);
+
+    out.diagnostics.insert(out.diagnostics.end(), archive.diagnostics.begin(), archive.diagnostics.end());
+    out.entries.reserve(archive.textures.size());
+    for (std::size_t i = 0; i < archive.textures.size(); ++i) {
+        const auto& texture = archive.textures[i];
+
+        model::MldTextureEntry entry{};
+        entry.archiveOffset = texture.sourceOffset;
+        entry.gvrDataOffset = texture.sourceOffset;
+        entry.gvrDataSize = texture.sourceSize;
+        entry.hasGlobalIndex = true;
+        entry.globalIndex = static_cast<std::uint32_t>(i);
+        if (i < archiveNames.size()) {
+            entry.textureName = archiveNames[i];
+        }
+        entry.pixelFormat = texture.rawFlags;
+        entry.dataFormat = texture.rawDataFormat;
+        entry.sourceFormat = soasim::gvm::model::to_string(texture.textureFormat);
+        entry.sourcePaletteFormat = soasim::gvm::model::to_string(texture.paletteFormat);
+        entry.width = texture.width;
+        entry.height = texture.height;
+        entry.imageDataOffset = texture.imageDataOffset;
+        entry.imageDataSize = texture.imageDataSize;
+        entry.diagnostics = texture.diagnostics;
+
+        if (texture.decodedBaseLevel.has_value()) {
+            entry.decoded = !texture.decodedBaseLevel->rgba8.empty();
+            entry.width = static_cast<std::uint16_t>(texture.decodedBaseLevel->width);
+            entry.height = static_cast<std::uint16_t>(texture.decodedBaseLevel->height);
+            entry.rgba8 = texture.decodedBaseLevel->rgba8;
+        }
+
+        out.entries.push_back(std::move(entry));
     }
 
-    constexpr std::uint32_t tagGbix = makeTag('G', 'B', 'I', 'X');
-    constexpr std::uint32_t tagGvrt = makeTag('G', 'V', 'R', 'T');
-
-    struct PendingGbix {
-        std::size_t archiveOffset = 0;
-        bool hasGlobalIndex = false;
-        std::uint32_t globalIndex = 0;
-    };
-
-    std::optional<PendingGbix> pendingGbix{};
-    std::size_t cursor = textureTableOffset;
-
-    while (cursor + 8U <= bytes.size()) {
-        const auto maybeTag = common::readU32AtLE(bytes, cursor);
-        if (!maybeTag.has_value()) {
-            break;
-        }
-
-        if (*maybeTag != tagGbix && *maybeTag != tagGvrt) {
-            ++cursor;
-            continue;
-        }
-
-        const auto maybeChunkSize = readChunkPayloadSize(bytes, cursor);
-        if (!maybeChunkSize.has_value()) {
-            ++cursor;
-            continue;
-        }
-
-        const std::size_t chunkEnd = cursor + 8U + *maybeChunkSize;
-        if (*maybeTag == tagGbix) {
-            PendingGbix pending{};
-            pending.archiveOffset = cursor;
-
-            const auto globalRaw = common::readU32AtLE(bytes, cursor + 0x8);
-            if (globalRaw.has_value()) {
-                pending.hasGlobalIndex = true;
-                pending.globalIndex = *globalRaw;
-            }
-            pendingGbix = pending;
-        } else if (*maybeTag == tagGvrt) {
-            model::MldTextureEntry entry{};
-            entry.archiveOffset = pendingGbix.has_value() ? pendingGbix->archiveOffset : cursor;
-            entry.gvrDataOffset = cursor;
-            entry.gvrDataSize = chunkEnd - cursor;
-            if (pendingGbix.has_value()) {
-                entry.hasGlobalIndex = pendingGbix->hasGlobalIndex;
-                entry.globalIndex = pendingGbix->globalIndex;
-            }
-
-            entry.gvrData.assign(bytes.begin() + static_cast<std::ptrdiff_t>(cursor),
-                bytes.begin() + static_cast<std::ptrdiff_t>(chunkEnd));
-
-            if (entry.gvrData.size() >= 0x10U) {
-                const auto payload = std::span<const std::uint8_t>(entry.gvrData.data() + 8U, entry.gvrData.size() - 8U);
-                entry.pixelFormat = payload[0];
-                entry.dataFormat = payload[1];
-                entry.width = static_cast<std::uint16_t>(payload[4] | (static_cast<std::uint16_t>(payload[5]) << 8U));
-                entry.height = static_cast<std::uint16_t>(payload[6] | (static_cast<std::uint16_t>(payload[7]) << 8U));
-                entry.imageDataOffset = 16U;
-                entry.imageDataSize = entry.gvrData.size() - 16U;
-            } else {
-                entry.diagnostics.push_back("GVRT chunk too small for texture header decode.");
-            }
-            out.entries.push_back(std::move(entry));
-            pendingGbix.reset();
-        }
-
-        cursor = chunkEnd;
-    }
-
-    out.diagnostics.push_back("Texture archive parse extracted " + std::to_string(out.entries.size()) + " GVRT texture chunk(s).");
+    out.diagnostics.push_back("Texture archive parse extracted " + std::to_string(out.entries.size()) + " GVR texture chunk(s).");
     return out;
 }
 

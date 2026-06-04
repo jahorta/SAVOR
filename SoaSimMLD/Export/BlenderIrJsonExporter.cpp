@@ -103,10 +103,20 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << ',';
             }
             const auto& v = mesh.vertices[vIdx];
-            out << '{'
-                << "\"position\":[" << v.position.x << ',' << v.position.y << ',' << v.position.z << "],"
-                << "\"hasPosition\":" << (v.hasPosition ? "true" : "false")
-                << '}';
+            out << '{';
+            out << "\"position\":[" << v.position.x << ',' << v.position.y << ',' << v.position.z << ']';
+            out << ",\"hasPosition\":" << (v.hasPosition ? "true" : "false");
+            out << ",\"normal\":[" << v.normal.x << ',' << v.normal.y << ',' << v.normal.z << ']';
+            out << ",\"hasNormal\":" << (v.hasNormal ? "true" : "false");
+            out << ",\"weights\":[";
+            for (std::size_t wi = 0; wi < v.weights.size(); ++wi) {
+                if (wi != 0) {
+                    out << ',';
+                }
+                out << "{\"boneOrNodeIndex\":" << v.weights[wi].boneOrNodeIndex
+                    << ",\"weight\":" << v.weights[wi].weight << '}';
+            }
+            out << "]}";
         }
         out << ']';
 
@@ -120,7 +130,25 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 << "\"polyType\":" << static_cast<unsigned>(material.polyType)
                 << ",\"chunkFlags\":" << static_cast<unsigned>(material.chunkFlags)
                 << ",\"fromCacheReplay\":" << (material.fromCacheReplay ? "true" : "false")
+                << ",\"flatShading\":" << (material.flatShading ? "true" : "false")
                 << ",\"materialStateKey\":" << material.materialStateKey
+                << ",\"useTexture\":" << (material.useTexture ? "true" : "false")
+                << ",\"useAlpha\":" << (material.useAlpha ? "true" : "false")
+                << ",\"noAlphaTest\":" << (material.noAlphaTest ? "true" : "false")
+                << ",\"doubleSided\":" << (material.doubleSided ? "true" : "false")
+                << ",\"clampU\":" << (material.clampU ? "true" : "false")
+                << ",\"clampV\":" << (material.clampV ? "true" : "false")
+                << ",\"mirrorU\":" << (material.mirrorU ? "true" : "false")
+                << ",\"mirrorV\":" << (material.mirrorV ? "true" : "false")
+                << ",\"normalMapping\":" << (material.normalMapping ? "true" : "false")
+                << ",\"noLighting\":" << (material.noLighting ? "true" : "false")
+                << ",\"noAmbient\":" << (material.noAmbient ? "true" : "false")
+                << ",\"noSpecular\":" << (material.noSpecular ? "true" : "false")
+                << ",\"anisotropicFiltering\":" << (material.anisotropicFiltering ? "true" : "false")
+                << ",\"textureFiltering\":" << static_cast<unsigned>(material.textureFiltering)
+                << ",\"sourceAlpha\":" << static_cast<unsigned>(material.sourceAlpha)
+                << ",\"destinationAlpha\":" << static_cast<unsigned>(material.destinationAlpha)
+                << ",\"mipmapDistanceMultiplier\":" << material.mipmapDistanceMultiplier
                 << ",\"textureId\":" << material.textureId
                 << ",\"textureName\":";
             writeJsonString(out, material.textureName);
@@ -146,7 +174,15 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 if (cIdx != 0) {
                     out << ',';
                 }
-                out << ts.corners[cIdx].vertexIndex;
+                const auto& corner = ts.corners[cIdx];
+                out << '{'
+                    << "\"vertexIndex\":" << corner.vertexIndex
+                    << ",\"u\":" << corner.u
+                    << ",\"v\":" << corner.v
+                    << ",\"hasUv\":" << (corner.hasUv ? "true" : "false")
+                    << ",\"color\":[" << corner.colorR << ',' << corner.colorG << ',' << corner.colorB << ',' << corner.colorA << ']'
+                    << ",\"hasColor\":" << (corner.hasColor ? "true" : "false")
+                    << '}';
             }
             out << "]}";
         }
@@ -269,13 +305,28 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         }
         const auto& t = scene.textures[ti];
         out << '{'
-            << "\"sourceOffset\":" << t.sourceOffset
+            << "\"textureId\":";
+        if (t.hasTextureId) {
+            out << t.textureId;
+        } else {
+            out << "null";
+        }
+        out
+            << ",\"hasTextureId\":" << (t.hasTextureId ? "true" : "false")
+            << ",\"sourceOffset\":" << t.sourceOffset
             << ",\"sourceSize\":" << t.sourceSize
             << ",\"encodedFormat\":";
         writeJsonString(out, t.encodedFormat);
         out
             << ",\"textureName\":";
         writeJsonString(out, t.textureName);
+        out << ",\"sourceContainer\":";
+        writeJsonString(out, t.sourceContainer);
+        out << ",\"sourceTextureFormat\":";
+        writeJsonString(out, t.sourceTextureFormat);
+        out << ",\"sourcePaletteFormat\":";
+        writeJsonString(out, t.sourcePaletteFormat);
+        out << ",\"hasDecodedPixels\":" << (t.hasDecodedPixels ? "true" : "false");
         out << ",\"encodedDataBase64\":";
         writeJsonString(out, toBase64(std::span<const std::uint8_t>(t.encodedData.data(), t.encodedData.size())));
         out << ",\"width\":" << t.width
@@ -284,6 +335,14 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         writeJsonString(out, t.pixelFormat);
         out << ",\"pixelDataBase64\":";
         writeJsonString(out, toBase64(std::span<const std::uint8_t>(t.pixelData.data(), t.pixelData.size())));
+        out << ",\"decodeWarnings\":[";
+        for (std::size_t wi = 0; wi < t.decodeWarnings.size(); ++wi) {
+            if (wi != 0) {
+                out << ',';
+            }
+            writeJsonString(out, t.decodeWarnings[wi]);
+        }
+        out << ']';
         out
             << '}';
     }

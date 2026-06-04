@@ -37,6 +37,16 @@ namespace soasim::mld::model {
     };
 }
 
+[[nodiscard]] inline Vec3 degreesToRadians(const Vec3& euler) {
+    constexpr float pi = 3.14159265358979323846F;
+    constexpr float toRadians = pi / 180.0F;
+    return Vec3{
+        .x = euler.x * toRadians,
+        .y = euler.y * toRadians,
+        .z = euler.z * toRadians,
+    };
+}
+
 struct IndexEntry {
     std::size_t tableIndex = 0;
     std::uint32_t entryId = 0;
@@ -126,7 +136,7 @@ inline void countNotZero(U32List& list, std::size_t& count) {
     const auto rotZ = common::readF32AtBE(bytes, entryOffset + 0x58);
     if (rotX.has_value() && rotY.has_value() && rotZ.has_value()) {
         transform.rotationRaw = Vec3{ *rotX, *rotY, *rotZ };
-        transform.rotation = eulerRadiansToQuaternionXYZ(transform.rotationRaw);
+        transform.rotation = eulerRadiansToQuaternionXYZ(degreesToRadians(transform.rotationRaw));
     }
 
     const auto sclX = common::readF32AtBE(bytes, entryOffset + 0x5C);

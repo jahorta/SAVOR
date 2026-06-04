@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Sa3Dport::File {
@@ -31,6 +33,23 @@ struct NJBlockScanResult {
     std::vector<NJBlockInfo> blocks;
     std::vector<std::string> diagnostics;
     ::Sa3Dport::Structs::Endian size_endian = ::Sa3Dport::Structs::Endian::Little;
+};
+
+struct NJBlockPayload {
+    NJBlockScanResult scan;
+    NJBlockInfo block;
+    std::uint32_t data_address = 0;
+    std::uint32_t image_base = 0;
+    ::Sa3Dport::Structs::EndianStackReader reader;
+
+    NJBlockPayload(NJBlockScanResult scan_,
+                   NJBlockInfo block_,
+                   std::span<const std::byte> data)
+        : scan(std::move(scan_)),
+          block(block_),
+          data_address(block.offset + 8u),
+          image_base(0u - data_address),
+          reader(data, scan.size_endian) {}
 };
 
 class NJBlockUtility {
@@ -113,9 +132,20 @@ public:
     [[nodiscard]] static std::optional<std::uint32_t> FindBlockAddress(
         std::span<const NJBlockInfo> blocks,
         std::span<const std::uint32_t> toFind) {
+        const auto block = FindBlock(blocks, toFind);
+        if (block.has_value()) {
+            return block->offset;
+        }
+
+        return std::nullopt;
+    }
+
+    [[nodiscard]] static std::optional<NJBlockInfo> FindBlock(
+        std::span<const NJBlockInfo> blocks,
+        std::span<const std::uint32_t> toFind) {
         for (const NJBlockInfo& block : blocks) {
             if (FileHeaders::Contains(toFind, block.header)) {
-                return block.offset;
+                return block;
             }
         }
 
@@ -128,6 +158,32 @@ public:
         std::span<const std::uint32_t> toFind) {
         const auto blocks = GetBlockAddresses(data, address);
         return FindBlockAddress(blocks, toFind);
+    }
+
+    [[nodiscard]] static std::optional<NJBlockPayload> TryGetBlockPayload(
+        std::span<const std::byte> data,
+        std::uint32_t address,
+        std::span<const std::uint32_t> toFind) {
+        auto scan = ScanBlocks(data, address);
+        const auto block = FindBlock(scan.blocks, toFind);
+        if (!block.has_value()) {
+            return std::nullopt;
+        }
+
+        return NJBlockPayload(std::move(scan), *block, data);
+    }
+
+    [[nodiscard]] static NJBlockPayload RequireBlockPayload(
+        std::span<const std::byte> data,
+        std::uint32_t address,
+        std::span<const std::uint32_t> toFind,
+        const char* errorMessage) {
+        auto payload = TryGetBlockPayload(data, address, toFind);
+        if (!payload.has_value()) {
+            throw std::runtime_error(errorMessage);
+        }
+
+        return std::move(*payload);
     }
 
     [[nodiscard]] static bool CheckBigEndian32(std::span<const std::byte> data, std::uint32_t address) {

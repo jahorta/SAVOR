@@ -86,8 +86,7 @@ namespace Sa3Dport::Mesh::Chunk {
     case PolyChunkType::Volume_Polygon3:
     case PolyChunkType::Volume_Polygon4:
     case PolyChunkType::Volume_Strip:
-        chunk = std::make_shared<PolyChunks::VolumeChunk>(PolyChunks::VolumeChunk::read(reader, address));
-        break;
+        throw std::runtime_error("volume chunks not implemented for this slice");
     default:
         throw std::runtime_error("invalid poly chunk type");
     }

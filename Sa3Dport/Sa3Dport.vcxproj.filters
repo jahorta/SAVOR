@@ -71,6 +71,9 @@
     <ClInclude Include="Mesh\Converters\ChunkBufferConverter.h">
       <Filter>Port\Mesh\Converters</Filter>
     </ClInclude>
+    <ClInclude Include="Mesh\Converters\ActivePolyChunkHelper.h">
+      <Filter>Port\Mesh\Converters</Filter>
+    </ClInclude>
     <ClInclude Include="Mesh\Weighted\WeightedMesh.h">
       <Filter>Port\Mesh\Weighted</Filter>
     </ClInclude>
@@ -138,6 +141,9 @@
       <Filter>Port\Structs</Filter>
     </ClInclude>
     <ClInclude Include="Structs\MatrixUtilities.h">
+      <Filter>Port\Structs</Filter>
+    </ClInclude>
+    <ClInclude Include="Structs\PointerIO.h">
       <Filter>Port\Structs</Filter>
     </ClInclude>
     <ClInclude Include="Structs\PointerLUT.h">

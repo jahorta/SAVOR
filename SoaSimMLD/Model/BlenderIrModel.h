@@ -39,22 +39,47 @@ struct BlenderIrMaterial {
     std::uint8_t polyType = 0;
     std::uint8_t chunkFlags = 0;
     bool fromCacheReplay = false;
+    bool flatShading = false;
     std::uint32_t materialStateKey = 0;
+    bool useTexture = true;
+    bool useAlpha = false;
+    bool noAlphaTest = false;
+    bool doubleSided = false;
+    bool clampU = false;
+    bool clampV = false;
+    bool mirrorU = false;
+    bool mirrorV = false;
+    bool normalMapping = false;
+    bool noLighting = false;
+    bool noAmbient = false;
+    bool noSpecular = false;
+    bool anisotropicFiltering = false;
+    std::uint8_t textureFiltering = 1;
+    std::uint8_t sourceAlpha = 5;
+    std::uint8_t destinationAlpha = 6;
+    float mipmapDistanceMultiplier = 1.0f;
     std::uint16_t textureId = 0xFFFFU;
     std::string textureName{};
     std::uint64_t materialHash = 0;
 };
 
 struct BlenderIrTexture {
+    std::uint32_t textureId = 0xFFFFFFFFU;
+    bool hasTextureId = false;
     std::string textureName{};
     std::size_t sourceOffset = 0;
     std::size_t sourceSize = 0;
     std::string encodedFormat{}; // e.g. "gvr", "png", "dds"
     std::vector<std::uint8_t> encodedData{};
+    std::string sourceContainer{};
+    std::string sourceTextureFormat{};
+    std::string sourcePaletteFormat{};
+    bool hasDecodedPixels = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::string pixelFormat{}; // canonical target, e.g. "rgba8"
     std::vector<std::uint8_t> pixelData{};
+    std::vector<std::string> decodeWarnings{};
 };
 
 struct BlenderIrTriangleSet {

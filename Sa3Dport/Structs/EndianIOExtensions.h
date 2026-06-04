@@ -23,19 +23,16 @@
 
 namespace Sa3Dport::Structs {
 
-enum class Endianness {
-    Little,
-    Big,
-};
+using Endianness = Endian;
 
 [[nodiscard]] inline constexpr Endian to_endian(Endianness endianness) {
-    return endianness == Endianness::Little ? Endian::Little : Endian::Big;
+    return endianness;
 }
 
 class EndianReader {
 public:
     EndianReader(std::span<const std::byte> buffer, Endianness endianness, std::uint32_t imageBase = 0)
-        : buffer_(buffer), endianness_(endianness), imageBase_(imageBase) {}
+        : reader_(buffer, to_endian(endianness)), imageBase_(imageBase) {}
 
     [[nodiscard]] std::size_t Position() const {
         return position_;
@@ -46,22 +43,21 @@ public:
     }
 
     void Seek(std::size_t position) {
-        if (position > buffer_.size()) {
+        if (position > reader_.size()) {
             throw std::out_of_range("seek beyond end of buffer");
         }
         position_ = position;
     }
 
-    [[nodiscard]] std::uint8_t ReadU8() { return ReadIntegral<std::uint8_t>(); }
-    [[nodiscard]] std::int8_t ReadI8() { return ReadIntegral<std::int8_t>(); }
-    [[nodiscard]] std::uint16_t ReadU16() { return ReadIntegral<std::uint16_t>(); }
-    [[nodiscard]] std::int16_t ReadI16() { return ReadIntegral<std::int16_t>(); }
-    [[nodiscard]] std::uint32_t ReadU32() { return ReadIntegral<std::uint32_t>(); }
-    [[nodiscard]] std::int32_t ReadI32() { return ReadIntegral<std::int32_t>(); }
+    [[nodiscard]] std::uint8_t ReadU8() { return ReadAndAdvance<std::uint8_t>(&EndianStackReader::read_u8); }
+    [[nodiscard]] std::int8_t ReadI8() { return ReadAndAdvance<std::int8_t>(&EndianStackReader::read_i8); }
+    [[nodiscard]] std::uint16_t ReadU16() { return ReadAndAdvance<std::uint16_t>(&EndianStackReader::read_u16); }
+    [[nodiscard]] std::int16_t ReadI16() { return ReadAndAdvance<std::int16_t>(&EndianStackReader::read_i16); }
+    [[nodiscard]] std::uint32_t ReadU32() { return ReadAndAdvance<std::uint32_t>(&EndianStackReader::read_u32); }
+    [[nodiscard]] std::int32_t ReadI32() { return ReadAndAdvance<std::int32_t>(&EndianStackReader::read_i32); }
 
     [[nodiscard]] float ReadF32() {
-        const auto bits = ReadIntegral<std::uint32_t>();
-        return std::bit_cast<float>(bits);
+        return ReadAndAdvance<float>(&EndianStackReader::read_float);
     }
 
     [[nodiscard]] std::uint32_t ReadPointerOffset() {
@@ -71,37 +67,14 @@ public:
 
 private:
     template <typename T>
-    [[nodiscard]] T ReadIntegral() {
-        static_assert(std::is_integral_v<T>, "T must be an integral type");
-        constexpr std::size_t kSize = sizeof(T);
-
-        if (position_ + kSize > buffer_.size()) {
-            throw std::out_of_range("read beyond end of buffer");
-        }
-
-        std::array<std::byte, kSize> raw {};
-        std::memcpy(raw.data(), buffer_.data() + position_, kSize);
-        position_ += kSize;
-
-        if ((endianness_ == Endianness::Little && std::endian::native == std::endian::little) ||
-            (endianness_ == Endianness::Big && std::endian::native == std::endian::big)) {
-            T value {};
-            std::memcpy(&value, raw.data(), kSize);
-            return value;
-        }
-
-        std::array<std::byte, kSize> swapped {};
-        for (std::size_t i = 0; i < kSize; ++i) {
-            swapped[i] = raw[kSize - 1 - i];
-        }
-
-        T value {};
-        std::memcpy(&value, swapped.data(), kSize);
+    [[nodiscard]] T ReadAndAdvance(T (EndianStackReader::*read)(std::uint32_t) const) {
+        const auto address = static_cast<std::uint32_t>(position_);
+        T value = (reader_.*read)(address);
+        position_ += sizeof(T);
         return value;
     }
 
-    std::span<const std::byte> buffer_;
-    Endianness endianness_;
+    EndianStackReader reader_;
     std::uint32_t imageBase_ = 0;
     std::size_t position_ = 0;
 };

@@ -13,13 +13,18 @@ struct MldTextureEntry {
     std::size_t gvrDataSize = 0;
     bool hasGlobalIndex = false;
     std::uint32_t globalIndex = 0;
+    std::string textureName{};
     std::uint8_t pixelFormat = 0;
     std::uint8_t dataFormat = 0;
+    std::string sourceFormat{};
+    std::string sourcePaletteFormat{};
     std::uint16_t width = 0;
     std::uint16_t height = 0;
     std::size_t imageDataOffset = 0;
     std::size_t imageDataSize = 0;
     std::vector<std::uint8_t> gvrData{};
+    bool decoded = false;
+    std::vector<std::uint8_t> rgba8{};
     std::vector<std::string> diagnostics{};
 };
 

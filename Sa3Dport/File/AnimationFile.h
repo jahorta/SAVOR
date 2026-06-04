@@ -47,19 +47,13 @@ public:
                                                std::uint32_t nodeCount,
                                                bool shortRot = false,
                                                std::uint32_t address = 0) {
-        const auto scan = NJBlockUtility::ScanBlocks(data, address);
-        const auto blockAddress = NJBlockUtility::FindBlockAddress(scan.blocks, FileHeaders::AnimationBlockHeaders);
-        if (!blockAddress.has_value()) {
-            throw std::runtime_error("NJ animation block not found");
-        }
-
-        const std::uint32_t dataAddress = *blockAddress + 8u;
-        const std::uint32_t imageBase = 0u - dataAddress;
-        const ::Sa3Dport::Structs::EndianStackReader reader(data, scan.size_endian);
+        const auto payload = NJBlockUtility::RequireBlockPayload(
+            data, address, FileHeaders::AnimationBlockHeaders, "NJ animation block not found");
 
         AnimationFile result;
-        result.animation_block_address = *blockAddress;
-        result.animation = Animation::Motion::read(reader, dataAddress, nodeCount, imageBase, shortRot);
+        result.animation_block_address = payload.block.offset;
+        result.animation = Animation::Motion::read(
+            payload.reader, payload.data_address, nodeCount, payload.image_base, shortRot);
         return result;
     }
 };

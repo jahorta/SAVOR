@@ -84,8 +84,8 @@ TEST(Sa3DportStage2, DetectsBigEndianBlockSizesButKeepsHeaderLittleEndian) {
 }
 
 TEST(Sa3DportStage2, DoesNotClassifyGJHeadersForSkiesScope) {
-    constexpr std::uint32_t gjcm = (static_cast<std::uint32_t>(F::FileHeaders::CM) << 16u) | 0x4A47u;
-    constexpr std::uint32_t gjtl = (static_cast<std::uint32_t>(F::FileHeaders::TL) << 16u) | 0x4A47u;
+    constexpr std::uint32_t gjcm = (F::FileHeaders::NJCM & 0xFFFF0000u) | 0x4A47u;
+    constexpr std::uint32_t gjtl = (F::FileHeaders::NJTL & 0xFFFF0000u) | 0x4A47u;
 
     EXPECT_EQ(ClassifyHeader(gjcm), NJBlockRole::None);
     EXPECT_EQ(ClassifyHeader(gjtl), NJBlockRole::None);

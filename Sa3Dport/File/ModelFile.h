@@ -43,34 +43,22 @@ public:
     }
 
     [[nodiscard]] static ModelFile read_nj(std::span<const std::byte> data, std::uint32_t address = 0) {
-        const auto scan = NJBlockUtility::ScanBlocks(data, address);
-        const auto modelBlockAddress = NJBlockUtility::FindBlockAddress(scan.blocks, FileHeaders::ModelBlockHeaders);
-        if (!modelBlockAddress.has_value()) {
-            throw std::runtime_error("NJ model block not found");
-        }
+        const auto payload = NJBlockUtility::RequireBlockPayload(
+            data, address, FileHeaders::ModelBlockHeaders, "NJ model block not found");
 
         ModelFile result;
         result.nj_file = true;
-        result.model_block_address = *modelBlockAddress;
-        result.texture_list_block_address = NJBlockUtility::FindBlockAddress(scan.blocks, FileHeaders::TextureListBlockHeaders);
-
-        const ::Sa3Dport::Structs::EndianStackReader reader(data, scan.size_endian);
-        const std::uint32_t modelAddress = *modelBlockAddress + 8u;
-        std::uint32_t blockHeader = 0;
-        for (const auto& block : scan.blocks) {
-            if (block.offset == *modelBlockAddress) {
-                blockHeader = block.header;
-                break;
-            }
-        }
-        result.format = (blockHeader == FileHeaders::ModelBlockHeaders[0])
+        result.model_block_address = payload.block.offset;
+        result.texture_list_block_address = NJBlockUtility::FindBlockAddress(
+            payload.scan.blocks, FileHeaders::TextureListBlockHeaders);
+        result.format = (payload.block.header == FileHeaders::NJCM)
             ? ObjectData::Enums::ModelFormat::SA2
             : ObjectData::Enums::ModelFormat::SA1;
 
         ObjectData::NodeReadContext context;
-        context.image_base = 0u - modelAddress;
+        context.image_base = payload.image_base;
         context.read_attach = result.format == ObjectData::Enums::ModelFormat::SA2;
-        result.model = ObjectData::Node::read(reader, modelAddress, result.format, context);
+        result.model = ObjectData::Node::read(payload.reader, payload.data_address, result.format, context);
         return result;
     }
 };

@@ -9,6 +9,7 @@
 #include "Structs/FloatIOType.h"
 #include "Structs/Matrix4x4.h"
 #include "Structs/MatrixUtilities.h"
+#include "Structs/PointerIO.h"
 #include "Structs/Quaternion.h"
 #include "Structs/QuaternionUtilities.h"
 #include "Structs/Vector3.h"
@@ -433,11 +434,7 @@ private:
     static std::optional<std::uint32_t> read_pointer(const Structs::EndianStackReader& reader,
                                                      std::uint32_t address,
                                                      std::uint32_t imageBase) {
-        const std::uint32_t raw = reader.read_u32(address);
-        if (raw == 0 || raw == UINT32_MAX) {
-            return std::nullopt;
-        }
-        return raw - imageBase;
+        return Structs::PointerIO::read_nullable_pointer_subtract_base(reader, address, imageBase);
     }
 
     static std::string hex_address(std::uint32_t address) {

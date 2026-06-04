@@ -4,6 +4,7 @@
 #include "ObjectData/Enums/ModelFormat.h"
 #include "Structs/Bounds.h"
 #include "Structs/EndianStackReader.h"
+#include "Structs/PointerIO.h"
 
 #include <cstdint>
 #include <memory>
@@ -48,11 +49,7 @@ protected:
         const Sa3Dport::Structs::EndianStackReader& reader,
         std::uint32_t address,
         std::uint32_t imageBase) {
-        const std::uint32_t raw = reader.read_u32(address);
-        if (raw == 0 || raw == UINT32_MAX) {
-            return std::nullopt;
-        }
-        return raw - imageBase;
+        return Sa3Dport::Structs::PointerIO::read_nullable_pointer_subtract_base(reader, address, imageBase);
     }
 };
 

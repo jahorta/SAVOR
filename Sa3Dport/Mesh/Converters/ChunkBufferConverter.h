@@ -2,6 +2,7 @@
 
 #include "Mesh/Buffer/BufferMesh.h"
 #include "Mesh/Chunk/ChunkAttach.h"
+#include "Mesh/Chunk/PolyChunks/BitsChunk.h"
 #include "Mesh/Chunk/PolyChunks/MaterialBumpChunk.h"
 #include "Mesh/Chunk/PolyChunks/MaterialChunk.h"
 #include "Mesh/Chunk/PolyChunks/StripChunk.h"
@@ -30,6 +31,8 @@ inline std::vector<Buffer::BufferCorner> convert_strip_chunk(
             out.vertex_index = corner.index;
             out.color = hasColor ? corner.color : vertexCache[corner.index].diffuse;
             out.texcoord = corner.texcoord;
+            out.normal = chunk.has_normals() ? corner.normal : vertexCache[corner.index].normal;
+            out.has_normal = chunk.has_normals();
             bufferStrip.push_back(out);
         }
         strips.push_back(std::move(bufferStrip));
@@ -97,17 +100,39 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         }
 
         const auto& chunk = *maybePolyChunk;
+        if (const auto bits = std::dynamic_pointer_cast<Chunk::PolyChunks::BitsChunk>(chunk)) {
+            switch (bits->type) {
+            case Chunk::PolyChunkType::BlendAlpha:
+                material.source_blend_mode = bits->source_alpha();
+                material.destination_blend_mode = bits->destination_alpha();
+                break;
+            case Chunk::PolyChunkType::MipmapDistanceMultiplier:
+                material.mipmap_distance_multiplier = bits->mipmap_distance_multiplier();
+                break;
+            case Chunk::PolyChunkType::SpecularExponent:
+                material.specular_exponent = static_cast<float>(bits->specular_exponent());
+                break;
+            default:
+                break;
+            }
+            continue;
+        }
+
         if (const auto texture = std::dynamic_pointer_cast<Chunk::PolyChunks::TextureChunk>(chunk)) {
             material.texture_index = texture->texture_id();
-            material.flags ^= (texture->mirror_u() ? 0x1u : 0u);
-            material.flags ^= (texture->mirror_v() ? 0x2u : 0u);
-            material.flags ^= (texture->clamp_u() ? 0x4u : 0u);
-            material.flags ^= (texture->clamp_v() ? 0x8u : 0u);
+            material.mipmap_distance_multiplier = texture->mipmap_distance_multiplier();
+            material.texture_filtering = texture->filter_mode();
+            material.anisotropic_filtering = texture->super_sample();
+            material.mirror_u = texture->mirror_u();
+            material.mirror_v = texture->mirror_v();
+            material.clamp_u = texture->clamp_u();
+            material.clamp_v = texture->clamp_v();
             continue;
         }
 
         if (const auto materialChunk = std::dynamic_pointer_cast<Chunk::PolyChunks::MaterialChunk>(chunk)) {
-            material.flags ^= (static_cast<std::uint32_t>(materialChunk->attributes) << 8u);
+            material.source_blend_mode = materialChunk->source_alpha();
+            material.destination_blend_mode = materialChunk->destination_alpha();
             continue;
         }
 
@@ -126,11 +151,21 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         mesh.corners = corners;
         mesh.strippified = true;
         mesh.has_colors = strip->has_colors() || hasVertexColors;
+        mesh.has_normals = hasVertexNormals || strip->has_normals();
+        mesh.flat_shading = strip->flat_shading();
+        mesh.material.flat = strip->flat_shading();
+        mesh.material.no_ambient = strip->ignore_ambient();
+        mesh.material.no_lighting = strip->ignore_light();
+        mesh.material.no_specular = strip->ignore_specular();
+        mesh.material.normal_mapping = strip->environment_mapping();
+        mesh.material.use_texture = strip->texcoord_count() > 0 || strip->environment_mapping();
+        mesh.material.use_alpha = strip->use_alpha();
+        mesh.material.backface_culling = !strip->double_side();
+        mesh.material.no_alpha_test = strip->no_alpha_test();
         mesh.vertex_read_offset = 0;
         if (!pendingVertices.empty()) {
             mesh.vertices = pendingVertices;
             mesh.continue_weight = continueWeight;
-            mesh.has_normals = hasVertexNormals;
             mesh.vertex_write_offset = vertexWriteOffset;
             pendingVertices.clear();
         }

@@ -1,8 +1,6 @@
 #pragma once
 
 #include "../Model/BlenderIrModel.h"
-#include "../Model/NjcmModel.h"
-#include "../Model/NjtlModel.h"
 #include "../Model/MldTextureArchiveModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
@@ -28,22 +26,6 @@ struct ParseDiagnostic {
     std::string message{};
 };
 
-struct NjcmChunkSummary {
-    std::size_t chunkOffset = 0;
-    std::size_t chunkDataSize = 0;
-    bool chunkSizeLittleEndian = true;
-    bool payloadLittleEndian = true;
-    std::uint32_t imageBase = 0;
-    bool usedPof0Fixup = false;
-    std::size_t objectCount = 0;
-    std::size_t attachCount = 0;
-    std::size_t vertexChunkCount = 0;
-    std::size_t polyChunkCount = 0;
-    std::size_t decodedVertexCount = 0;
-    std::size_t decodedTriangleCount = 0;
-    std::size_t score = 0;
-};
-
 struct CoordinatePolicy {
     bool swapYZ = false;
     bool negateX = false;
@@ -63,12 +45,6 @@ struct ParseOptions {
     bool buildBlenderIntermediateIr = true;
     bool exportBlenderIrJson = false;
     std::string blenderIrOutputDir{};
-};
-
-struct DecodedObjectChunkRange {
-    std::uint32_t objectAddress = 0;
-    std::size_t decodedChunkBegin = 0;
-    std::size_t decodedChunkEnd = 0;
 };
 
 struct ParsedRawEntry {
@@ -100,10 +76,6 @@ struct ParseResult {
     std::vector<ParseDiagnostic> diagnostics{};
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
-    std::vector<NjcmChunkSummary> njcmChunks{};
-    std::vector<model::NjcmDecodedChunk> decodedNjcmChunks{};
-    std::vector<model::NjObjectBlockModel> decodedNjObjectBlocks{};
-    std::vector<DecodedObjectChunkRange> decodedObjectChunkRanges{};
     std::vector<ExtractedNjBlock> extractedNjBlocks{};
     std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};
