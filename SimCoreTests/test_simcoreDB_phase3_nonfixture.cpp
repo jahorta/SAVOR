@@ -11,6 +11,9 @@
 
 #include "Common/Events/OutboxRelay.h"
 #include "Common/Migrations/MigrationRunner.h"
+#include "Analysis/QueuedAnalysisDb.h"
+#include "Archive/QueuedArchiveDb.h"
+#include "Authoring/QueuedAuthoringDb.h"
 #include "Execution/QueuedExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
@@ -20,6 +23,8 @@
 #include "Runner/Parallel/SimCoreDB/WorkflowDispatchCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowMaterializationService.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
+#include "State/QueuedStateDb.h"
+#include "UIRead/QueuedUiReadDb.h"
 #include "common/DbPreparer.h"
 #include "common/RecordingExecutionDb.h"
 #include "common/simcoredb_helpers.h"
@@ -1037,6 +1042,46 @@ VALUES(4701, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'queue-test', unixepoch()*
         const auto telemetry = queued_execution_db->GetTelemetrySnapshot();
         EXPECT_GE(telemetry.write_enqueued, static_cast<std::uint64_t>(kThreadCount * kWritesPerThread));
         EXPECT_EQ(telemetry.write_rejected, 0u);
+
+        CleanupPhase4Db(service, temp_dir);
+    }
+
+    TEST(Stage4Queues, DBServiceExposesQueuedFacadesForAllDatabases) {
+        using simcore::db::QueuedArchiveDb;
+        using simcore::db::QueuedAuthoringDb;
+        using simcore::db::QueuedUiReadDb;
+        using simcore::db::analysis::QueuedAnalysisDb;
+        using simcore::db::core::DBService;
+        using simcore::db::execution::QueuedExecutionDb;
+        using simcore::db::execution::workflow::SqliteExecutionDb;
+        using simcore::db::state::QueuedStateDb;
+
+        std::filesystem::path temp_dir;
+        std::unique_ptr<DBService> service;
+        SqliteExecutionDb* raw_execution_db = nullptr;
+        std::string err;
+        ASSERT_TRUE(OpenPhase4ExecutionDb("queued-all-dbs", &temp_dir, &service, &raw_execution_db, &err)) << err;
+
+        auto* execution = dynamic_cast<QueuedExecutionDb*>(service->ExecutionDb());
+        auto* state = dynamic_cast<QueuedStateDb*>(service->StateDb());
+        auto* analysis = dynamic_cast<QueuedAnalysisDb*>(service->AnalysisDb());
+        auto* authoring = dynamic_cast<QueuedAuthoringDb*>(service->AuthoringDb());
+        auto* ui_read = dynamic_cast<QueuedUiReadDb*>(service->UiReadDb());
+        auto* archive = dynamic_cast<QueuedArchiveDb*>(service->ArchiveDb());
+
+        ASSERT_NE(execution, nullptr);
+        ASSERT_NE(state, nullptr);
+        ASSERT_NE(analysis, nullptr);
+        ASSERT_NE(authoring, nullptr);
+        ASSERT_NE(ui_read, nullptr);
+        ASSERT_NE(archive, nullptr);
+
+        EXPECT_TRUE(execution->IsRunning());
+        EXPECT_TRUE(state->IsRunning());
+        EXPECT_TRUE(analysis->IsRunning());
+        EXPECT_TRUE(authoring->IsRunning());
+        EXPECT_TRUE(ui_read->IsRunning());
+        EXPECT_TRUE(archive->IsRunning());
 
         CleanupPhase4Db(service, temp_dir);
     }

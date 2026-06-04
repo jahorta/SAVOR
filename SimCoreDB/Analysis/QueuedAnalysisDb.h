@@ -1,0 +1,164 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "../Common/QueuedDb.h"
+#include "IAnalysisDb.h"
+
+namespace simcore::db::analysis {
+
+class QueuedAnalysisDb final : public simcore::db::IAnalysisDb, private simcore::db::core::QueuedDbExecutor {
+public:
+    explicit QueuedAnalysisDb(
+        simcore::db::IAnalysisDb* inner,
+        simcore::db::core::QueuedDbConfig config = {});
+    ~QueuedAnalysisDb() override;
+
+    QueuedAnalysisDb(const QueuedAnalysisDb&) = delete;
+    QueuedAnalysisDb& operator=(const QueuedAnalysisDb&) = delete;
+
+    bool Start(std::string* error_out = nullptr);
+    void Stop();
+    [[nodiscard]] bool IsRunning() const;
+    [[nodiscard]] simcore::db::core::QueuedDbTelemetrySnapshot GetTelemetrySnapshot() const;
+
+    std::optional<std::int64_t> LookupSeedProbeRunSavestateId(std::int64_t probe_run_id) const override;
+    std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const override;
+    std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const override;
+    std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const override;
+    bool EnsureSeedProbeInputFrame(
+        std::int64_t main_axis_xy_id,
+        std::int64_t cstick_axis_xy_id,
+        std::int64_t trigger_axis_xy_id,
+        std::int64_t* input_frame_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool EnsureSeedProbeUniqueSeedDelta(
+        const RecordSeedProbeUniqueSeedCommand& command,
+        bool* inserted_out = nullptr,
+        std::int64_t* unique_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateSeedProbeSet(
+        const CreateSeedProbeSetCommand& command,
+        std::int64_t* probe_set_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RequestSeedProbeRun(
+        const RequestSeedProbeRunCommand& command,
+        std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateSeedProbeRunForSet(
+        std::int64_t probe_set_id,
+        std::int64_t* probe_run_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<SeedProbeRunSnapshot> GetSeedProbeRun(std::int64_t probe_run_id) const override;
+    bool SetSeedProbeRunNeutralSeed(
+        std::int64_t probe_run_id,
+        std::int64_t neutral_seed_value,
+        std::string* error_out = nullptr) override;
+    bool RecordSeedProbeNeutralSeed(
+        const RecordSeedProbeNeutralSeedCommand& command,
+        std::int64_t* neutral_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecordSeedProbeGridSeed(
+        const RecordSeedProbeGridSeedCommand& command,
+        std::int64_t* grid_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecordSeedProbeUniqueSeed(
+        const RecordSeedProbeUniqueSeedCommand& command,
+        std::int64_t* unique_seed_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecordSeedProbeEncounterProjection(
+        const RecordSeedProbeEncounterProjectionCommand& command,
+        std::int64_t* encounter_projection_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CompleteSeedProbeRun(
+        const CompleteSeedProbeRunCommand& command,
+        std::int64_t* probe_result_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateBattleSet(
+        const CreateBattleSetCommand& command,
+        std::int64_t* battle_set_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool AddBattleSeedCandidate(
+        const AddBattleSeedCandidateCommand& command,
+        std::int64_t* seed_candidate_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateBattleTurnWave(
+        const CreateBattleTurnWaveCommand& command,
+        std::int64_t* wave_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecordBattleTurnJob(
+        const RecordBattleTurnJobCommand& command,
+        std::int64_t* turn_job_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool CreateBattleSelectionPool(
+        const CreateBattleSelectionPoolCommand& command,
+        std::int64_t* selection_pool_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RecordBattleSelectionDecision(
+        const RecordBattleSelectionDecisionCommand& command,
+        std::int64_t* selection_decision_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool UpsertBattleTerminalFollowup(
+        const UpsertBattleTerminalFollowupCommand& command,
+        std::int64_t* terminal_followup_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
+        std::int64_t after_outbox_id,
+        int max_batch_size) override;
+    bool MarkOutboxPublished(
+        std::int64_t outbox_id,
+        types::UtcTimePoint published_at_utc) override;
+    bool MarkOutboxPublishFailure(
+        std::int64_t outbox_id,
+        std::string_view last_error) override;
+    retention::OutboxRetentionPreview PreviewOutboxRetention(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy) const override;
+    bool PurgeOutboxThroughRetentionFloor(
+        const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
+        types::UtcTimePoint now_utc,
+        const retention::OutboxRetentionPolicy& policy,
+        int max_rows,
+        int* rows_deleted_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<SeedProbePayloadRecord> ResolveSeedProbePayload(
+        int event_version,
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<SeedProbePayloadRecord> ResolveSeedProbePayload(
+        const events::EventEnvelope& envelope) const override;
+    std::optional<BattlePayloadRecord> ResolveBattlePayload(
+        int event_version,
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<BattlePayloadRecord> ResolveBattlePayload(
+        const events::EventEnvelope& envelope) const override;
+    std::optional<SpinePayloadRecord> ResolveSpinePayload(
+        int event_version,
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const override;
+    std::optional<SpinePayloadRecord> ResolveSpinePayload(
+        const events::EventEnvelope& envelope) const override;
+
+private:
+    template <typename Result, typename Fn>
+    Result ExecuteRead(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+
+    template <typename Result, typename Fn>
+    Result ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+
+    simcore::db::IAnalysisDb* inner_ = nullptr;
+    simcore::db::core::QueuedDbConfig config_{};
+    mutable std::mutex sqlite_call_mtx_;
+    std::unique_ptr<simcore::db::core::QueuedDbLane> read_lane_;
+    std::unique_ptr<simcore::db::core::QueuedDbLane> write_lane_;
+};
+
+} // namespace simcore::db::analysis

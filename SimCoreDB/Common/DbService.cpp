@@ -94,11 +94,36 @@ bool DBService::Start(std::string* error_out) {
     if (!execution_db_->Start(error_out)) {
         return fail_start("Failed starting Execution queue workers: " + (error_out ? *error_out : std::string{}));
     }
-    state_db_ = std::make_unique<simcore::db::state::SqliteStateDb>(state_sqlite_);
-    analysis_db_ = std::make_unique<simcore::db::analysis::SqliteAnalysisDb>(analysis_sqlite_);
-    authoring_db_ = std::make_unique<simcore::db::SqliteAuthoringDb>(authoring_sqlite_);
-    ui_read_db_ = std::make_unique<simcore::db::SqliteUiReadDb>(ui_read_sqlite_);
-    archive_db_ = std::make_unique<simcore::db::SqliteArchiveDb>(archive_sqlite_);
+
+    sqlite_state_db_ = std::make_unique<simcore::db::state::SqliteStateDb>(state_sqlite_);
+    state_db_ = std::make_unique<simcore::db::state::QueuedStateDb>(sqlite_state_db_.get());
+    if (!state_db_->Start(error_out)) {
+        return fail_start("Failed starting State queue workers: " + (error_out ? *error_out : std::string{}));
+    }
+
+    sqlite_analysis_db_ = std::make_unique<simcore::db::analysis::SqliteAnalysisDb>(analysis_sqlite_);
+    analysis_db_ = std::make_unique<simcore::db::analysis::QueuedAnalysisDb>(sqlite_analysis_db_.get());
+    if (!analysis_db_->Start(error_out)) {
+        return fail_start("Failed starting Analysis queue workers: " + (error_out ? *error_out : std::string{}));
+    }
+
+    sqlite_authoring_db_ = std::make_unique<simcore::db::SqliteAuthoringDb>(authoring_sqlite_);
+    authoring_db_ = std::make_unique<simcore::db::QueuedAuthoringDb>(sqlite_authoring_db_.get());
+    if (!authoring_db_->Start(error_out)) {
+        return fail_start("Failed starting Authoring queue workers: " + (error_out ? *error_out : std::string{}));
+    }
+
+    sqlite_ui_read_db_ = std::make_unique<simcore::db::SqliteUiReadDb>(ui_read_sqlite_);
+    ui_read_db_ = std::make_unique<simcore::db::QueuedUiReadDb>(sqlite_ui_read_db_.get());
+    if (!ui_read_db_->Start(error_out)) {
+        return fail_start("Failed starting UIRead queue workers: " + (error_out ? *error_out : std::string{}));
+    }
+
+    sqlite_archive_db_ = std::make_unique<simcore::db::SqliteArchiveDb>(archive_sqlite_);
+    archive_db_ = std::make_unique<simcore::db::QueuedArchiveDb>(sqlite_archive_db_.get());
+    if (!archive_db_->Start(error_out)) {
+        return fail_start("Failed starting Archive queue workers: " + (error_out ? *error_out : std::string{}));
+    }
 
     running_ = true;
     return true;
@@ -262,10 +287,15 @@ void DBService::CloseConnections() {
 
 void DBService::ResetServices() {
     archive_db_.reset();
+    sqlite_archive_db_.reset();
     ui_read_db_.reset();
+    sqlite_ui_read_db_.reset();
     authoring_db_.reset();
+    sqlite_authoring_db_.reset();
     analysis_db_.reset();
+    sqlite_analysis_db_.reset();
     state_db_.reset();
+    sqlite_state_db_.reset();
     execution_db_.reset();
     sqlite_execution_db_.reset();
 }

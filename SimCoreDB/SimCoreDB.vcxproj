@@ -159,12 +159,15 @@
   <ItemGroup>
     <ClInclude Include="Archive\ArchivePackageService.h" />
     <ClInclude Include="Archive\IArchiveDb.h" />
+    <ClInclude Include="Archive\QueuedArchiveDb.h" />
     <ClInclude Include="Archive\RehydrateExecutor.h" />
     <ClInclude Include="Archive\SqliteArchiveDb.h" />
     <ClInclude Include="Analysis\IAnalysisDb.h" />
+    <ClInclude Include="Analysis\QueuedAnalysisDb.h" />
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
     <ClInclude Include="Analysis\SqliteAnalysisDb.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
+    <ClInclude Include="Authoring\QueuedAuthoringDb.h" />
     <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
     <ClInclude Include="Common\DbService.h" />
@@ -208,8 +211,10 @@
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
     <ClInclude Include="SimCoreDB.h" />
     <ClInclude Include="State\IStateDb.h" />
+    <ClInclude Include="State\QueuedStateDb.h" />
     <ClInclude Include="State\SqliteStateDb.h" />
     <ClInclude Include="UIRead\IUiReadDb.h" />
+    <ClInclude Include="UIRead\QueuedUiReadDb.h" />
     <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" />
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" />
     <ClInclude Include="UIRead\Projectors\BattleProjector.h" />
@@ -221,6 +226,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Archive\ArchivePackageService.cpp" />
+    <ClCompile Include="Archive\QueuedArchiveDb.cpp" />
     <ClCompile Include="Archive\SqliteArchiveDb.cpp" />
     <ClCompile Include="Archive\RehydrateExecutor.cpp" />
     <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
@@ -228,8 +234,10 @@
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Common\DbService.cpp" />
     <ClCompile Include="Common\QueuedDb.cpp" />
+    <ClCompile Include="Analysis\QueuedAnalysisDb.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
+    <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
@@ -253,6 +261,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
     <ClCompile Include="SimCoreDB.cpp" />
+    <ClCompile Include="State\QueuedStateDb.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" />
@@ -261,6 +270,7 @@
     <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" />
     <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
+    <ClCompile Include="UIRead\QueuedUiReadDb.cpp" />
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
   </ItemGroup>
   <ItemGroup>

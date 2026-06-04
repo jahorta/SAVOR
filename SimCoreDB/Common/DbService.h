@@ -7,17 +7,22 @@
 #include <sqlite3.h>
 
 #include "../Analysis/IAnalysisDb.h"
+#include "../Analysis/QueuedAnalysisDb.h"
 #include "../Analysis/SqliteAnalysisDb.h"
 #include "../Archive/IArchiveDb.h"
+#include "../Archive/QueuedArchiveDb.h"
 #include "../Archive/SqliteArchiveDb.h"
 #include "../Authoring/IAuthoringDb.h"
+#include "../Authoring/QueuedAuthoringDb.h"
 #include "../Authoring/SqliteAuthoringDb.h"
 #include "../Execution/IExecutionDb.h"
 #include "../Execution/QueuedExecutionDb.h"
 #include "../Execution/Workflow/SqliteExecutionDb.h"
 #include "../State/IStateDb.h"
+#include "../State/QueuedStateDb.h"
 #include "../State/SqliteStateDb.h"
 #include "../UIRead/IUiReadDb.h"
+#include "../UIRead/QueuedUiReadDb.h"
 #include "../UIRead/SqliteUiReadDb.h"
 #include "DbConfigPaths.h"
 #include "Migrations/MigrationRunner.h"
@@ -68,11 +73,16 @@ private:
 
     std::unique_ptr<simcore::db::execution::workflow::SqliteExecutionDb> sqlite_execution_db_;
     std::unique_ptr<simcore::db::execution::QueuedExecutionDb> execution_db_;
-    std::unique_ptr<simcore::db::state::SqliteStateDb> state_db_;
-    std::unique_ptr<simcore::db::analysis::SqliteAnalysisDb> analysis_db_;
-    std::unique_ptr<simcore::db::SqliteAuthoringDb> authoring_db_;
-    std::unique_ptr<simcore::db::SqliteUiReadDb> ui_read_db_;
-    std::unique_ptr<simcore::db::SqliteArchiveDb> archive_db_;
+    std::unique_ptr<simcore::db::state::SqliteStateDb> sqlite_state_db_;
+    std::unique_ptr<simcore::db::state::QueuedStateDb> state_db_;
+    std::unique_ptr<simcore::db::analysis::SqliteAnalysisDb> sqlite_analysis_db_;
+    std::unique_ptr<simcore::db::analysis::QueuedAnalysisDb> analysis_db_;
+    std::unique_ptr<simcore::db::SqliteAuthoringDb> sqlite_authoring_db_;
+    std::unique_ptr<simcore::db::QueuedAuthoringDb> authoring_db_;
+    std::unique_ptr<simcore::db::SqliteUiReadDb> sqlite_ui_read_db_;
+    std::unique_ptr<simcore::db::QueuedUiReadDb> ui_read_db_;
+    std::unique_ptr<simcore::db::SqliteArchiveDb> sqlite_archive_db_;
+    std::unique_ptr<simcore::db::QueuedArchiveDb> archive_db_;
 };
 
 } // namespace simcore::db::core

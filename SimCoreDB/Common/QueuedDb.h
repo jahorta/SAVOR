@@ -23,6 +23,24 @@ struct QueuedDbLaneTelemetrySnapshot {
     std::uint64_t failed = 0;
 };
 
+struct QueuedDbConfig {
+    std::size_t write_capacity = 4096;
+    std::size_t read_capacity = 4096;
+};
+
+struct QueuedDbTelemetrySnapshot {
+    std::size_t write_depth = 0;
+    std::size_t read_depth = 0;
+    std::uint64_t write_enqueued = 0;
+    std::uint64_t read_enqueued = 0;
+    std::uint64_t write_rejected = 0;
+    std::uint64_t read_rejected = 0;
+    std::uint64_t write_completed = 0;
+    std::uint64_t read_completed = 0;
+    std::uint64_t write_failed = 0;
+    std::uint64_t read_failed = 0;
+};
+
 class QueuedDbLane final {
 public:
     QueuedDbLane(std::string name, std::size_t capacity);

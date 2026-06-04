@@ -124,6 +124,9 @@
     <ClInclude Include="Archive\SqliteArchiveDb.h">
       <Filter>Archive</Filter>
     </ClInclude>
+    <ClInclude Include="Archive\QueuedArchiveDb.h">
+      <Filter>Archive</Filter>
+    </ClInclude>
     <ClInclude Include="Archive\IArchiveDb.h">
       <Filter>Archive</Filter>
     </ClInclude>
@@ -139,7 +142,13 @@
     <ClInclude Include="Authoring\SqliteAuthoringDb.h">
       <Filter>Authoring</Filter>
     </ClInclude>
+    <ClInclude Include="Authoring\QueuedAuthoringDb.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
     <ClInclude Include="State\SqliteStateDb.h">
+      <Filter>State</Filter>
+    </ClInclude>
+    <ClInclude Include="State\QueuedStateDb.h">
       <Filter>State</Filter>
     </ClInclude>
     <ClInclude Include="State\IStateDb.h">
@@ -149,6 +158,9 @@
       <Filter>Archive</Filter>
     </ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisDb.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="Analysis\QueuedAnalysisDb.h">
       <Filter>Analysis</Filter>
     </ClInclude>
     <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h">
@@ -209,6 +221,9 @@
       <Filter>UiRead</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\SqliteUiReadDb.h">
+      <Filter>UiRead</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRead\QueuedUiReadDb.h">
       <Filter>UiRead</Filter>
     </ClInclude>
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h">
@@ -303,10 +318,19 @@
     <ClCompile Include="Archive\SqliteArchiveDb.cpp">
       <Filter>Archive</Filter>
     </ClCompile>
+    <ClCompile Include="Archive\QueuedArchiveDb.cpp">
+      <Filter>Archive</Filter>
+    </ClCompile>
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
+    <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
     <ClCompile Include="State\SqliteStateDb.cpp">
+      <Filter>State</Filter>
+    </ClCompile>
+    <ClCompile Include="State\QueuedStateDb.cpp">
       <Filter>State</Filter>
     </ClCompile>
     <ClCompile Include="Archive\RehydrateExecutor.cpp">
@@ -316,6 +340,9 @@
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="Analysis\QueuedAnalysisDb.cpp">
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\JobProjector.cpp">
@@ -355,6 +382,9 @@
       <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp">
+      <Filter>UiRead</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\QueuedUiReadDb.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp">
