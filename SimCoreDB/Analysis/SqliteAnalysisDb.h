@@ -20,6 +20,12 @@ public:
     std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const override;
     std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const override;
     std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const override;
+    bool EnsureSeedProbeInputFrame(
+        std::int64_t main_axis_xy_id,
+        std::int64_t cstick_axis_xy_id,
+        std::int64_t trigger_axis_xy_id,
+        std::int64_t* input_frame_id_out = nullptr,
+        std::string* error_out = nullptr) override;
     bool EnsureSeedProbeUniqueSeedDelta(
         const RecordSeedProbeUniqueSeedCommand& command,
         bool* inserted_out = nullptr,

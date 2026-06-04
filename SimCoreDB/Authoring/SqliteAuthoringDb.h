@@ -15,6 +15,9 @@ public:
         std::int64_t* seed_probe_spec_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    std::optional<SeedProbeSpecSnapshot> GetSeedProbeSpec(
+        std::int64_t seed_probe_spec_id) const override;
+
     bool SaveTasSpec(
         const SaveTasSpecCommand& command,
         std::int64_t* tas_spec_id_out = nullptr,

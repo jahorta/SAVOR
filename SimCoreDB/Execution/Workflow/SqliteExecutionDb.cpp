@@ -138,6 +138,65 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobPayload(sqlite3
     return view;
 }
 
+bool ResolveWorkflowStepForJobSetAncestry(
+    sqlite3* db,
+    std::int64_t job_set_id,
+    ClaimedExecutionJob* claimed,
+    std::string* error_out) {
+    if (claimed == nullptr) {
+        if (error_out) *error_out = "claimed job output is required";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(db,
+        "WITH RECURSIVE job_set_ancestry(job_set_id, parent_job_set_id, depth) AS ("
+        "  SELECT js.job_set_id, js.parent_job_set_id, 0 "
+        "  FROM exec_job_set js "
+        "  WHERE js.job_set_id=?1 "
+        "  UNION ALL "
+        "  SELECT parent.job_set_id, parent.parent_job_set_id, job_set_ancestry.depth + 1 "
+        "  FROM exec_job_set parent "
+        "  JOIN job_set_ancestry ON parent.job_set_id=job_set_ancestry.parent_job_set_id "
+        "  WHERE job_set_ancestry.parent_job_set_id IS NOT NULL "
+        "    AND job_set_ancestry.depth < 64"
+        ") "
+        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority "
+        "FROM job_set_ancestry a "
+        "JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
+        "ORDER BY a.depth ASC "
+        "LIMIT 1;",
+        -1,
+        &st.st,
+        nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    sqlite3_bind_int64(st.st, 1, job_set_id);
+    const auto rc = sqlite3_step(st.st);
+    if (rc == SQLITE_ROW) {
+        claimed->workflow_instance_id = sqlite3_column_int64(st.st, 0);
+        claimed->workflow_step_id = sqlite3_column_int64(st.st, 1);
+        const auto* step_key = sqlite3_column_text(st.st, 2);
+        const auto* step_kind = sqlite3_column_text(st.st, 3);
+        claimed->workflow_step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
+        claimed->workflow_step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
+        claimed->workflow_step_priority = sqlite3_column_int(st.st, 4);
+        return true;
+    }
+    if (rc != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    if (error_out) {
+        *error_out = "workflow step not found for job_set ancestry job_set_id=" + std::to_string(job_set_id);
+    }
+    return false;
+}
+
 } // namespace
 
 SqliteExecutionDb::SqliteExecutionDb(sqlite3* db)
@@ -285,19 +344,36 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT js.job_set_id, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id), 0) AS total_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j "
-            "         WHERE j.job_set_id=js.job_set_id "
-            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), 0) AS completed_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j "
-            "         WHERE j.job_set_id=js.job_set_id "
-            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')), 0) AS succeeded_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='FAILED'), 0) AS failed_jobs, "
-            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='CANCELED'), 0) AS canceled_jobs, "
-            "js.expected_total "
-            "FROM exec_job_set js "
-            "WHERE js.job_set_id=?1;",
+            "WITH RECURSIVE job_set_descendants(job_set_id, depth) AS ("
+            "  SELECT js.job_set_id, 0 FROM exec_job_set js WHERE js.job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+            "  FROM exec_job_set child "
+            "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+            "  WHERE job_set_descendants.depth < 64"
+            "), "
+            "summary AS ("
+            "  SELECT "
+            "    COUNT(j.job_id) AS total_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED') THEN 1 ELSE 0 END), 0) AS completed_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) AS succeeded_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) AS failed_jobs, "
+            "    COALESCE(SUM(CASE WHEN j.state='CANCELED' THEN 1 ELSE 0 END), 0) AS canceled_jobs "
+            "  FROM job_set_descendants d "
+            "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id"
+            "), "
+            "expected AS ("
+            "  SELECT CASE "
+            "    WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+            "      THEN (SELECT COALESCE(SUM(COALESCE(child.expected_total, 0)), 0) "
+            "            FROM exec_job_set child JOIN job_set_descendants d ON d.job_set_id=child.job_set_id WHERE d.depth > 0) "
+            "    ELSE COALESCE(js.expected_total, 0) "
+            "  END AS expected_total "
+            "  FROM exec_job_set js WHERE js.job_set_id=?1"
+            ") "
+            "SELECT ?1, summary.total_jobs, summary.completed_jobs, summary.succeeded_jobs, "
+            "summary.failed_jobs, summary.canceled_jobs, expected.expected_total "
+            "FROM summary, expected;",
             -1,
             &st.st,
             nullptr)
@@ -321,6 +397,67 @@ std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgre
         details.expected_total = sqlite3_column_int64(st.st, 6);
     }
     return details;
+}
+
+std::vector<ExecutionChildJobSetProgressDetails> SqliteExecutionDb::GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
+    std::vector<ExecutionChildJobSetProgressDetails> rows;
+    if (db_ == nullptr || parent_job_set_id <= 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT js.job_set_id, js.purpose, COALESCE(js.meta_note, ''), "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id), 0) AS total_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j "
+            "         WHERE j.job_set_id=js.job_set_id "
+            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), 0) AS completed_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j "
+            "         WHERE j.job_set_id=js.job_set_id "
+            "           AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')), 0) AS succeeded_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='FAILED'), 0) AS failed_jobs, "
+            "COALESCE((SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=js.job_set_id AND j.state='CANCELED'), 0) AS canceled_jobs, "
+            "js.expected_total "
+            "FROM exec_job_set js "
+            "WHERE js.parent_job_set_id=?1 "
+            "ORDER BY js.job_set_id ASC;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return rows;
+    }
+
+    sqlite3_bind_int64(st.st, 1, parent_job_set_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        ExecutionChildJobSetProgressDetails row{};
+        row.job_set_id = sqlite3_column_int64(st.st, 0);
+        const auto* purpose = sqlite3_column_text(st.st, 1);
+        const auto* meta_note = sqlite3_column_text(st.st, 2);
+        row.purpose = purpose ? reinterpret_cast<const char*>(purpose) : "";
+        row.meta_note = meta_note ? reinterpret_cast<const char*>(meta_note) : "";
+        row.total_jobs = sqlite3_column_int64(st.st, 3);
+        row.completed_jobs = sqlite3_column_int64(st.st, 4);
+        row.succeeded_jobs = sqlite3_column_int64(st.st, 5);
+        row.failed_jobs = sqlite3_column_int64(st.st, 6);
+        row.canceled_jobs = sqlite3_column_int64(st.st, 7);
+        if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
+            row.expected_total = sqlite3_column_int64(st.st, 8);
+        }
+        constexpr std::string_view token = "expected_delta=";
+        const auto pos = row.meta_note.find(token);
+        if (pos != std::string::npos) {
+            const auto start = pos + token.size();
+            try {
+                row.expected_delta = std::stoll(row.meta_note.substr(start));
+            } catch (...) {
+                row.expected_delta = std::nullopt;
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 bool SqliteExecutionDb::CreateJobSet(
@@ -472,80 +609,120 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
     const auto now_utc = CurrentUtcMs(db_);
     const auto lease_expires_at_utc = now_utc + lease_duration_ms;
 
-    Statement claim_st;
-    if (sqlite3_prepare_v2(db_,
-        "UPDATE exec_job "
-            "SET claimed_by_token=?1, lease_expires_at_utc=?2 "
-            "WHERE job_id=("
-            "  SELECT job_id FROM exec_job "
-            "  WHERE state='QUEUED' "
-            "    AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?3) "
-            "  ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
-            "  LIMIT 1"
-            ") "
-            "AND state='QUEUED' "
-            "AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?3) "
-            "RETURNING job_id, job_set_id, savestate_id, program_kind, program_ref_kind, program_ref_id;",
-        -1,
-        &claim_st.st,
-        nullptr)
-        != SQLITE_OK) {
-        rollback();
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return std::nullopt;
-    }
-
-    const auto token = std::string(claimed_by_token);
-    sqlite3_bind_text(claim_st.st, 1, token.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(claim_st.st, 2, lease_expires_at_utc);
-    sqlite3_bind_int64(claim_st.st, 3, now_utc);
-
     ClaimedExecutionJob claimed{};
-    const auto rc = sqlite3_step(claim_st.st);
-    if (rc == SQLITE_ROW) {
-        claimed.job_id = sqlite3_column_int64(claim_st.st, 0);
-        claimed.job_set_id = sqlite3_column_int64(claim_st.st, 1);
-        if (sqlite3_column_type(claim_st.st, 2) != SQLITE_NULL) {
-            claimed.savestate_affinity_key = "savestate:" + std::to_string(sqlite3_column_int64(claim_st.st, 2));
-        }
-        const auto program_kind = sqlite3_column_int(claim_st.st, 3);
-        const auto* program_ref_kind_text = sqlite3_column_text(claim_st.st, 4);
-        const auto program_ref_kind = program_ref_kind_text ? reinterpret_cast<const char*>(program_ref_kind_text) : "";
-        const auto program_ref_id = sqlite3_column_int64(claim_st.st, 5);
-        claimed.program_runtime_affinity_key =
-            std::to_string(program_kind) + ":" + program_ref_kind + ":" + std::to_string(program_ref_id);
-
-        Statement step_st;
-        if (sqlite3_prepare_v2(db_,
-            "SELECT workflow_instance_id, workflow_step_id, step_key, step_kind, priority "
-                "FROM exec_workflow_step "
-                "WHERE job_set_id=?1;",
-            -1,
-            &step_st.st,
-            nullptr)
-            == SQLITE_OK) {
-            sqlite3_bind_int64(step_st.st, 1, claimed.job_set_id);
-            if (sqlite3_step(step_st.st) == SQLITE_ROW) {
-                claimed.workflow_instance_id = sqlite3_column_int64(step_st.st, 0);
-                claimed.workflow_step_id = sqlite3_column_int64(step_st.st, 1);
-                const auto* step_key = sqlite3_column_text(step_st.st, 2);
-                const auto* step_kind = sqlite3_column_text(step_st.st, 3);
-                claimed.workflow_step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
-                claimed.workflow_step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
-                claimed.workflow_step_priority = sqlite3_column_int(step_st.st, 4);
+    {
+        std::int64_t candidate_job_id = 0;
+        {
+            Statement candidate_st;
+            if (sqlite3_prepare_v2(db_,
+                "SELECT job_id, claimed_by_token, lease_expires_at_utc "
+                "FROM exec_job "
+                "WHERE state='QUEUED' "
+                "  AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?1) "
+                "ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
+                "LIMIT 1;",
+                -1,
+                &candidate_st.st,
+                nullptr)
+                != SQLITE_OK) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return std::nullopt;
+            }
+            sqlite3_bind_int64(candidate_st.st, 1, now_utc);
+            const auto rc = sqlite3_step(candidate_st.st);
+            if (rc == SQLITE_ROW) {
+                candidate_job_id = sqlite3_column_int64(candidate_st.st, 0);
+                if (sqlite3_column_type(candidate_st.st, 1) != SQLITE_NULL) {
+                    const auto* token = sqlite3_column_text(candidate_st.st, 1);
+                    if (token != nullptr && token[0] != '\0') {
+                        claimed.previous_claimed_by_token = reinterpret_cast<const char*>(token);
+                    }
+                }
+                if (sqlite3_column_type(candidate_st.st, 2) != SQLITE_NULL) {
+                    claimed.previous_lease_expires_at_utc = sqlite3_column_int64(candidate_st.st, 2);
+                }
+            } else if (rc != SQLITE_DONE) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return std::nullopt;
             }
         }
-    } else if (rc != SQLITE_DONE) {
-        rollback();
-        if (error_out) *error_out = sqlite3_errmsg(db_);
-        return std::nullopt;
+
+        if (candidate_job_id <= 0) {
+            char* commit_error = nullptr;
+            const auto commit_rc = sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, &commit_error);
+            if (commit_rc != SQLITE_OK) {
+                const std::string message = commit_error ? commit_error : sqlite3_errmsg(db_);
+                sqlite3_free(commit_error);
+                rollback();
+                if (error_out) *error_out = message;
+                return std::nullopt;
+            }
+            sqlite3_free(commit_error);
+            return std::nullopt;
+        }
+
+        Statement claim_st;
+        if (sqlite3_prepare_v2(db_,
+            "UPDATE exec_job "
+                "SET claimed_by_token=?1, lease_expires_at_utc=?2 "
+                "WHERE job_id=?3 "
+                "AND state='QUEUED' "
+                "AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?4) "
+                "RETURNING job_id, job_set_id, savestate_id, program_kind, program_ref_kind, program_ref_id;",
+            -1,
+            &claim_st.st,
+            nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return std::nullopt;
+        }
+
+        const auto token = std::string(claimed_by_token);
+        sqlite3_bind_text(claim_st.st, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(claim_st.st, 2, lease_expires_at_utc);
+        sqlite3_bind_int64(claim_st.st, 3, candidate_job_id);
+        sqlite3_bind_int64(claim_st.st, 4, now_utc);
+
+        const auto rc = sqlite3_step(claim_st.st);
+        if (rc == SQLITE_ROW) {
+            claimed.job_id = sqlite3_column_int64(claim_st.st, 0);
+            claimed.job_set_id = sqlite3_column_int64(claim_st.st, 1);
+            if (sqlite3_column_type(claim_st.st, 2) != SQLITE_NULL) {
+                claimed.savestate_affinity_key = "savestate:" + std::to_string(sqlite3_column_int64(claim_st.st, 2));
+            }
+            const auto program_kind = sqlite3_column_int(claim_st.st, 3);
+            const auto* program_ref_kind_text = sqlite3_column_text(claim_st.st, 4);
+            const auto program_ref_kind = program_ref_kind_text ? reinterpret_cast<const char*>(program_ref_kind_text) : "";
+            const auto program_ref_id = sqlite3_column_int64(claim_st.st, 5);
+            claimed.program_runtime_affinity_key =
+                std::to_string(program_kind) + ":" + program_ref_kind + ":" + std::to_string(program_ref_id);
+
+            std::string step_error;
+            if (!ResolveWorkflowStepForJobSetAncestry(db_, claimed.job_set_id, &claimed, &step_error)) {
+                rollback();
+                if (error_out) *error_out = step_error;
+                return std::nullopt;
+            }
+        } else if (rc != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return std::nullopt;
+        }
     }
 
-    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    char* commit_error = nullptr;
+    const auto commit_rc = sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, &commit_error);
+    if (commit_rc != SQLITE_OK) {
+        const std::string message = commit_error ? commit_error : sqlite3_errmsg(db_);
+        sqlite3_free(commit_error);
         rollback();
-        if (error_out) *error_out = sqlite3_errmsg(db_);
+        if (error_out) *error_out = message;
         return std::nullopt;
     }
+    sqlite3_free(commit_error);
 
     if (claimed.job_id <= 0) {
         return std::nullopt;
@@ -668,7 +845,14 @@ bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
     return true;
 }
 
-bool SqliteExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out) {
+bool SqliteExecutionDb::MarkQueuedJobsSuperseded(
+    std::int64_t job_set_id,
+    std::int64_t except_job_id,
+    std::string* error_out,
+    int* rows_superseded_out) {
+    if (rows_superseded_out != nullptr) {
+        *rows_superseded_out = 0;
+    }
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
         return false;
@@ -695,6 +879,9 @@ bool SqliteExecutionDb::MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::i
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
+    }
+    if (rows_superseded_out != nullptr) {
+        *rows_superseded_out = sqlite3_changes(db_);
     }
     return true;
 }

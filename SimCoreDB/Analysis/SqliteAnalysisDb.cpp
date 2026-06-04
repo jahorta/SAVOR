@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <string>
 
 #include "../Common/Events/EventPayloadDispatch.h"
@@ -599,6 +600,123 @@ std::vector<SeedProbeGridSeedRow> SqliteAnalysisDb::ListSeedProbeGridSeeds(std::
     return rows;
 }
 
+bool SqliteAnalysisDb::EnsureSeedProbeInputFrame(
+    std::int64_t main_axis_xy_id,
+    std::int64_t cstick_axis_xy_id,
+    std::int64_t trigger_axis_xy_id,
+    std::int64_t* input_frame_id_out,
+    std::string* error_out) {
+    if (input_frame_id_out != nullptr) {
+        *input_frame_id_out = 0;
+    }
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (main_axis_xy_id < 0 || cstick_axis_xy_id < 0 || trigger_axis_xy_id < 0) {
+        if (error_out) *error_out = "axis ids must be non-negative";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    const auto rollback = [&]() {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    };
+
+    const auto ensure_axis = [&](std::int64_t axis_xy_id, std::string* axis_error) -> bool {
+        const auto axis_x = static_cast<int>((static_cast<std::uint64_t>(axis_xy_id) >> 8) & 0xff);
+        const auto axis_y = static_cast<int>(static_cast<std::uint64_t>(axis_xy_id) & 0xff);
+
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT OR IGNORE INTO sp_axis_xy(axis_xy_id,x,y) VALUES(?1,?2,?3);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (axis_error) *axis_error = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(st.st, 1, axis_xy_id);
+        sqlite3_bind_int(st.st, 2, axis_x);
+        sqlite3_bind_int(st.st, 3, axis_y);
+        if (sqlite3_step(st.st) != SQLITE_DONE) {
+            if (axis_error) *axis_error = sqlite3_errmsg(db_);
+            return false;
+        }
+        return true;
+    };
+
+    if (!ensure_axis(main_axis_xy_id, error_out)
+        || !ensure_axis(cstick_axis_xy_id, error_out)
+        || !ensure_axis(trigger_axis_xy_id, error_out)) {
+        rollback();
+        return false;
+    }
+
+    Statement insert_frame;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT OR IGNORE INTO sp_input_frame(main_axis_xy_id,cstick_axis_xy_id,trigger_axis_xy_id) "
+            "VALUES(?1,?2,?3);",
+            -1,
+            &insert_frame.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(insert_frame.st, 1, main_axis_xy_id);
+    sqlite3_bind_int64(insert_frame.st, 2, cstick_axis_xy_id);
+    sqlite3_bind_int64(insert_frame.st, 3, trigger_axis_xy_id);
+    if (sqlite3_step(insert_frame.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+
+    Statement select_frame;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT input_frame_id FROM sp_input_frame "
+            "WHERE main_axis_xy_id=?1 AND cstick_axis_xy_id=?2 AND trigger_axis_xy_id=?3 "
+            "LIMIT 1;",
+            -1,
+            &select_frame.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+    sqlite3_bind_int64(select_frame.st, 1, main_axis_xy_id);
+    sqlite3_bind_int64(select_frame.st, 2, cstick_axis_xy_id);
+    sqlite3_bind_int64(select_frame.st, 3, trigger_axis_xy_id);
+    if (sqlite3_step(select_frame.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "input frame could not be resolved";
+        rollback();
+        return false;
+    }
+
+    const auto input_frame_id = sqlite3_column_int64(select_frame.st, 0);
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+
+    if (input_frame_id_out != nullptr) {
+        *input_frame_id_out = input_frame_id;
+    }
+    return true;
+}
+
 bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
     const RecordSeedProbeUniqueSeedCommand& command,
     bool* inserted_out,
@@ -869,6 +987,30 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     }
 
     const auto probe_run_id = sqlite3_last_insert_rowid(db_);
+
+    Statement insert_result;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
+            "VALUES(?1,NULL,0,0,'pending',?2);",
+            -1,
+            &insert_result.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
+    sqlite3_bind_int64(insert_result.st, 2, command.requested_at_utc.time_since_epoch().count());
+    if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
     const auto aggregate_id = std::to_string(probe_run_id);
     if (!InsertSeedProbeOutboxEvent(
             db_,
@@ -1046,12 +1188,41 @@ bool SqliteAnalysisDb::SetSeedProbeRunNeutralSeed(
         return false;
     }
     sqlite3_bind_int64(get_result.st, 1, probe_run_id);
-    if (sqlite3_step(get_result.st) != SQLITE_ROW) {
+    auto get_result_step = sqlite3_step(get_result.st);
+    std::int64_t probe_result_id = 0;
+    if (get_result_step == SQLITE_ROW) {
+        probe_result_id = sqlite3_column_int64(get_result.st, 0);
+    } else if (get_result_step == SQLITE_DONE) {
+        Statement insert_result;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO sp_probe_result(probe_run_id,neutral_seed_value,grid_count,unique_count,result_status,recorded_at_utc) "
+                "VALUES(?1,NULL,0,0,'pending',?2);",
+                -1,
+                &insert_result.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(insert_result.st, 1, probe_run_id);
+        sqlite3_bind_int64(insert_result.st, 2, now);
+        if (sqlite3_step(insert_result.st) != SQLITE_DONE) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db_);
+            }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        probe_result_id = sqlite3_last_insert_rowid(db_);
+    } else {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = "probe_run_id does not resolve to probe_result";
         return false;
     }
-    const auto probe_result_id = sqlite3_column_int64(get_result.st, 0);
 
     Statement update_result;
     if (sqlite3_prepare_v2(
@@ -1200,7 +1371,7 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_result_id <= 0 || command.axis_xy_id <= 0 || command.source_family.empty() || command.event_id.empty()) {
+    if (command.probe_result_id <= 0 || command.axis_xy_id < 0 || command.source_family.empty() || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1215,6 +1386,73 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
         }
+        return false;
+    }
+
+    Statement existing_event;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT payload_ref_id FROM sp_outbox_message "
+            "WHERE event_id=?1 "
+            "  AND event_type='AnalysisSeedProbe.GridSeedRecorded.v1' "
+            "  AND payload_ref_kind='grid_seed' "
+            "LIMIT 1;",
+            -1,
+            &existing_event.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(existing_event.st, 1, command.event_id.c_str(), -1, SQLITE_TRANSIENT);
+    const auto existing_event_rc = sqlite3_step(existing_event.st);
+    if (existing_event_rc == SQLITE_ROW) {
+        if (grid_seed_id_out) {
+            *grid_seed_id_out = sqlite3_column_int64(existing_event.st, 0);
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db_);
+            }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        return true;
+    }
+    if (existing_event_rc != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto axis_x = static_cast<int>((static_cast<std::uint64_t>(command.axis_xy_id) >> 8) & 0xff);
+    const auto axis_y = static_cast<int>(static_cast<std::uint64_t>(command.axis_xy_id) & 0xff);
+
+    Statement insert_axis;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT OR IGNORE INTO sp_axis_xy(axis_xy_id,x,y) "
+            "VALUES(?1,?2,?3);",
+            -1,
+            &insert_axis.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(insert_axis.st, 1, command.axis_xy_id);
+    sqlite3_bind_int(insert_axis.st, 2, axis_x);
+    sqlite3_bind_int(insert_axis.st, 3, axis_y);
+    if (sqlite3_step(insert_axis.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
 

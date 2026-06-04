@@ -104,18 +104,27 @@ bool WorkflowRecoveryService::ReconcileInFlightInstances(WorkflowRecoveryResult*
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSelect =
-        "SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, "
+        "WITH RECURSIVE job_set_descendants(workflow_step_id, workflow_instance_id, root_job_set_id, job_set_id, depth) AS ("
+        "  SELECT s.workflow_step_id, s.workflow_instance_id, s.job_set_id, s.job_set_id, 0 "
+        "  FROM exec_workflow_step s "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  WHERE i.state IN ('PENDING','RUNNING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
+        "  UNION ALL "
+        "  SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, child.job_set_id, d.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
+        "  WHERE d.depth < 64"
+        ") "
+        "SELECT d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id, "
         "CASE "
         "  WHEN COALESCE(SUM(CASE WHEN j.state IN ('FAILED','CANCELED') THEN 1 ELSE 0 END), 0) > 0 THEN 'FAILED' "
         "  WHEN COUNT(j.job_id) > 0 "
         "       AND COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE') THEN 1 ELSE 0 END), 0) = COUNT(j.job_id) THEN 'COMPLETED' "
         "  ELSE NULL "
         "END AS terminal_state "
-        "FROM exec_workflow_step s "
-        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "LEFT JOIN exec_job j ON j.job_set_id=s.job_set_id "
-        "WHERE i.state IN ('PENDING','RUNNING') AND s.state IN ('MATERIALIZED','RUNNING') AND s.job_set_id IS NOT NULL "
-        "GROUP BY s.workflow_step_id, s.workflow_instance_id, s.job_set_id;";
+        "FROM job_set_descendants d "
+        "LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
+        "GROUP BY d.workflow_step_id, d.workflow_instance_id, d.root_job_set_id;";
 
     if (sqlite3_prepare_v2(db_, kSelect, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -273,16 +282,26 @@ bool WorkflowRecoveryService::PlanInvariantRemediation(
 
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql =
+        "WITH RECURSIVE step_root AS ("
+        "  SELECT s.job_set_id FROM exec_workflow_step s "
+        "  WHERE s.workflow_instance_id=?1 AND s.workflow_step_id=?2 LIMIT 1"
+        "), "
+        "job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM step_root "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+        "  WHERE job_set_descendants.depth < 64"
+        ") "
         "SELECT "
-        "COALESCE(js.expected_total, 0), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
-        "  AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
-        "FROM exec_workflow_step s "
-        "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
-        "WHERE s.workflow_instance_id=?1 AND s.workflow_step_id=?2 "
-        "LIMIT 1;";
+        "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+        "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
+        "  ELSE (SELECT COALESCE(js.expected_total, 0) FROM exec_job_set js JOIN step_root r ON r.job_set_id=js.job_set_id) END, "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED');";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;

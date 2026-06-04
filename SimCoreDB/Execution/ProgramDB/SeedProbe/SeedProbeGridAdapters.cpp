@@ -1,22 +1,35 @@
 #include "SeedProbeGridAdapters.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 
 #include "../../Execution/Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Phases/RNGSeedDeltaMap.h"
+#include "../../../../SimCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
-#include "../../../../SimCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../../../SimCore/Utils/Hex.h"
 #include "SeedProbeContracts.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
 
 namespace {
+
+std::uint8_t ClampToU8(std::int64_t value, std::uint8_t fallback) {
+    if (value < 0) {
+        return fallback;
+    }
+    if (value > 255) {
+        return 255;
+    }
+    return static_cast<std::uint8_t>(value);
+}
 
 class GridToUniqueTransitionHandler final : public IWorkflowTransitionHandler {
 public:
@@ -34,44 +47,66 @@ public:
     }
 };
 
-void ApplyTerminalJobStateFromResults(
+std::string ApplyTerminalJobStateFromResults(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t job_id,
     const ResultsIni& parsed) {
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    const char* terminal_state = failed ? "FAILED" : "SUCCEEDED";
+    std::ostringstream event;
+    event << "[seedprobe-job-terminal-state] stage=AppendLifecycleEvent phase=Grid"
+          << " job=" << job_id
+          << " terminal_state=" << terminal_state;
     if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
-        return;
+        event << " ok=false error=execution_db_unavailable";
+        return event.str();
     }
 
-    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
-    std::string ignored_error;
-    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+    std::string error;
+    const bool ok = execution_db->JobCommandService()->AppendLifecycleEvent(
         {
             .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
             .job_id = job_id,
             .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
             .requested_by = "seedprobe_result_mapper",
         },
-        &ignored_error);
+        &error);
+    event << " ok=" << (ok ? "true" : "false");
+    if (!ok) {
+        event << " error=" << error;
+    }
+    return event.str();
 }
 
 } // namespace
 
-SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid)
+SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db,
+    SeedProbeGridBlueprintConfig blueprint,
+    SeedProbeGridSpec grid)
     : execution_db_(execution_db)
+    , analysis_db_(analysis_db)
+    , authoring_db_(authoring_db)
     , blueprint_(std::move(blueprint))
     , grid_(grid)
-    , fanout_(BuildFanout()) {
+    , fanout_(BuildFanout(grid_, blueprint_)) {
 }
 
 WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
     WorkflowStepScheduleResult scheduled{};
     const std::int64_t probe_run_id = domain_ref_id;
-    if (execution_db_ && probe_run_id > 0) {
+    const auto resolved_blueprint = ResolveBlueprintForRun(probe_run_id);
+    const auto resolved_grid = ResolveGridSpecForRun(probe_run_id);
+    const auto fanout = BuildFanout(resolved_grid, resolved_blueprint);
+
+    if (execution_db_ != nullptr && probe_run_id > 0) {
         simcore::db::CreateJobSetCommand set_cmd{};
-        set_cmd.program_kind = 3;
+        set_cmd.program_kind = static_cast<std::int32_t>(simcore::PK_SeedProbe);
         set_cmd.purpose = "SeedProbe Grid";
         set_cmd.created_by = std::string("seedprobe_grid_adapter");
-        set_cmd.expected_total = static_cast<std::int32_t>(fanout_.size());
+        set_cmd.expected_total = static_cast<std::int32_t>(fanout.size());
         set_cmd.domain_ref_kind = std::string("sp_probe_run");
         set_cmd.domain_ref_id = probe_run_id;
         set_cmd.meta_note = std::string("phase=Grid");
@@ -80,14 +115,19 @@ WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing
         std::string error;
         if (execution_db_->CreateJobSet(set_cmd, &job_set_id, &error) && job_set_id > 0) {
             scheduled.root_job_set_id = job_set_id;
-            for (const auto& entry : fanout_) {
+            for (const auto& entry : fanout) {
                 simcore::db::EnqueueJobCommand enqueue{};
                 enqueue.job_set_id = job_set_id;
-                enqueue.program_kind = 3;
-                enqueue.program_version = blueprint_.program_version;
+                enqueue.program_kind = static_cast<std::int32_t>(simcore::PK_SeedProbe);
+                enqueue.program_version = resolved_blueprint.program_version;
                 enqueue.program_ref_kind = "sp_probe_run";
                 enqueue.program_ref_id = probe_run_id;
-                enqueue.fingerprint = FingerprintFor(blueprint_, probe_run_id, entry.frame_hex, "grid", entry.domain_ref_id);
+                enqueue.fingerprint = FingerprintFor(
+                    resolved_blueprint,
+                    probe_run_id,
+                    entry.frame_hex,
+                    entry.family.c_str(),
+                    entry.domain_ref_id);
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
                 enqueue.input_ini = "";
@@ -96,21 +136,12 @@ WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing
         }
     }
 
-    const auto it = std::find_if(
-        fanout_.begin(),
-        fanout_.end(),
-        [domain_ref_id](const GridFanoutEntry& entry) { return entry.domain_ref_id == domain_ref_id; });
-    if (it != fanout_.end()) {
-        scheduled.persistence = it->persistence;
-        return scheduled;
-    }
-
-    JobPersistenceRecord fallback{};
-    fallback.program_ref_kind = "sp_probe_run";
-    fallback.program_ref_id = blueprint_.probe_id;
-    fallback.program_version = blueprint_.program_version;
-    fallback.fingerprint = FingerprintFor(blueprint_, probe_run_id, /*frame_hex*/"", "grid", domain_ref_id);
-    scheduled.persistence = std::move(fallback);
+    JobPersistenceRecord persisted{};
+    persisted.program_ref_kind = "sp_probe_run";
+    persisted.program_ref_id = probe_run_id;
+    persisted.program_version = resolved_blueprint.program_version;
+    persisted.fingerprint = FingerprintFor(resolved_blueprint, probe_run_id, /*frame_hex*/ "", "grid", domain_ref_id);
+    scheduled.persistence = std::move(persisted);
     return scheduled;
 }
 
@@ -130,8 +161,7 @@ std::int64_t SeedProbeGridJobPersistenceAdapter::DecodeDomainRefId(const JobPers
     const auto segment = persisted.fingerprint.substr(begin, end - begin);
     try {
         return std::stoll(segment);
-    }
-    catch (...) {
+    } catch (...) {
         return 0;
     }
 }
@@ -147,7 +177,7 @@ std::string SeedProbeGridJobPersistenceAdapter::FingerprintFor(
     const char* family,
     std::int64_t grid_ref) {
     std::string fingerprint = "PK=3;PV=" + std::to_string(blueprint.program_version)
-        + ";probe_run_id=" + std::to_string(probe_run_id)
+        + ";phase=grid;probe_run_id=" + std::to_string(probe_run_id)
         + ";family=" + family
         + ";grid_ref=" + std::to_string(grid_ref)
         + ";run_ms=" + std::to_string(blueprint.run_ms)
@@ -158,91 +188,86 @@ std::string SeedProbeGridJobPersistenceAdapter::FingerprintFor(
     return fingerprint;
 }
 
-std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout() const {
+std::vector<GridFanoutEntry> SeedProbeGridJobPersistenceAdapter::BuildFanout(
+    const SeedProbeGridSpec& grid,
+    const SeedProbeGridBlueprintConfig& blueprint) const {
     std::vector<GridFanoutEntry> entries;
-    InputPlan collection{};
+    const int samples_per_axis = std::max(grid.samples_per_axis, 1);
+    entries.reserve(static_cast<std::size_t>(samples_per_axis * samples_per_axis * 3));
 
-    // Reserve storage for all entries
-    entries.reserve(grid_.samples_per_axis * grid_.samples_per_axis * 3);
+    auto add_family = [&entries, &blueprint](std::vector<simcore::GCInputFrame> frames, const char* family) {
+        for (auto& frame : frames) {
+            auto frame_hex = frame.to_frame_hex();
+            const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
 
-    // Reserve storage for each family
-    collection.reserve(grid_.samples_per_axis * grid_.samples_per_axis);
+            JobPersistenceRecord record{};
+            record.program_ref_kind = "sp_probe_run";
+            record.program_ref_id = blueprint.probe_id;
+            record.program_version = blueprint.program_version;
+            record.fingerprint = FingerprintFor(blueprint, blueprint.probe_id, frame_hex, family, next_ref);
 
-    // Build out main grid
-    collection.append_range(simcore::build_grid_main(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
-    for (simcore::GCInputFrame& frame : collection) {
-        auto frame_hex = frame.to_frame_hex();
-        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
-
-        JobPersistenceRecord record{};
-        record.program_ref_kind = "sp_probe_run";
-        record.program_ref_id = blueprint_.probe_id;
-        record.program_version = blueprint_.program_version;
-        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "main", next_ref);
-
-        entries.push_back(GridFanoutEntry{
-            .domain_ref_id = next_ref,
-            .frame = frame,
-            .frame_hex = frame_hex,
-            .family = "main",
-            .persistence = std::move(record)
+            entries.push_back(GridFanoutEntry{
+                .domain_ref_id = next_ref,
+                .frame = frame,
+                .frame_hex = frame_hex,
+                .family = family,
+                .persistence = std::move(record),
             });
-    }
+        }
+    };
 
-    // Build out cstick grid
-    collection.clear();
-    collection.append_range(simcore::build_grid_cstick(grid_.samples_per_axis, grid_.min_value, grid_.max_value));
-    for (simcore::GCInputFrame& frame : collection) {
-        auto frame_hex = frame.to_frame_hex();
-        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
-
-        JobPersistenceRecord record{};
-        record.program_ref_kind = "sp_probe_run";
-        record.program_ref_id = blueprint_.probe_id;
-        record.program_version = blueprint_.program_version;
-        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "cstick", next_ref);
-
-        entries.push_back(GridFanoutEntry{
-            .domain_ref_id = next_ref,
-            .frame = frame,
-            .frame_hex = frame_hex,
-            .family = "cstick",
-            .persistence = std::move(record)
-            });
-    }
-
-    //Build out trigger grid
-    collection.clear();
-    collection.append_range(simcore::build_grid_trig(
-        grid_.samples_per_axis,
-        grid_.ignore_trigger_minmax ? 0 : grid_.min_value,
-        grid_.ignore_trigger_minmax ? 255 : grid_.max_value,
-        grid_.cap_trigger_top));
-    for (simcore::GCInputFrame& frame : collection) {
-        auto frame_hex = frame.to_frame_hex();
-        const auto next_ref = static_cast<std::int64_t>(entries.size()) + 1;
-
-        JobPersistenceRecord record{};
-        record.program_ref_kind = "sp_probe_run";
-        record.program_ref_id = blueprint_.probe_id;
-        record.program_version = blueprint_.program_version;
-        record.fingerprint = FingerprintFor(blueprint_, blueprint_.probe_id, frame_hex, "trigger", next_ref);
-
-        entries.push_back(GridFanoutEntry{
-            .domain_ref_id = next_ref,
-            .frame = frame,
-            .frame_hex = frame_hex,
-            .family = "trigger",
-            .persistence = std::move(record)
-            });
-    }
-    
-
-
+    add_family(simcore::build_grid_main(samples_per_axis, grid.min_value, grid.max_value), "main");
+    add_family(simcore::build_grid_cstick(samples_per_axis, grid.min_value, grid.max_value), "cstick");
+    add_family(
+        simcore::build_grid_trig(
+            samples_per_axis,
+            grid.ignore_trigger_minmax ? 0 : grid.min_value,
+            grid.ignore_trigger_minmax ? 255 : grid.max_value,
+            grid.cap_trigger_top),
+        "trigger");
     return entries;
 }
 
-SeedProbeRuntimeInitAdapter::SeedProbeRuntimeInitAdapter(simcore::db::IExecutionDb* execution_db, const simcore::db::IAnalysisDb* analysis_db)
+SeedProbeGridBlueprintConfig SeedProbeGridJobPersistenceAdapter::ResolveBlueprintForRun(std::int64_t probe_run_id) const {
+    auto resolved = blueprint_;
+    resolved.probe_id = probe_run_id;
+    const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, probe_run_id);
+    if (timing.has_value()) {
+        resolved.run_ms = timing->run_ms;
+        resolved.vi_stall_ms = timing->vi_stall_ms;
+    }
+    return resolved;
+}
+
+SeedProbeGridSpec SeedProbeGridJobPersistenceAdapter::ResolveGridSpecForRun(std::int64_t probe_run_id) const {
+    auto resolved = grid_;
+    if (analysis_db_ == nullptr || authoring_db_ == nullptr || probe_run_id <= 0) {
+        return resolved;
+    }
+
+    const auto probe_run = analysis_db_->GetSeedProbeRun(probe_run_id);
+    if (!probe_run.has_value()) {
+        return resolved;
+    }
+
+    const auto spec = authoring_db_->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
+    if (!spec.has_value()) {
+        return resolved;
+    }
+
+    if (spec->samples_per_axis > 0) {
+        resolved.samples_per_axis = spec->samples_per_axis;
+    }
+    resolved.min_value = ClampToU8(spec->min_value, resolved.min_value);
+    resolved.max_value = ClampToU8(spec->max_value, resolved.max_value);
+    resolved.cap_trigger_top = spec->cap_trigger_top;
+    resolved.ignore_trigger_minmax = spec->ignore_trigger_minmax;
+    return resolved;
+}
+
+SeedProbeRuntimeInitAdapter::SeedProbeRuntimeInitAdapter(
+    simcore::db::IExecutionDb* execution_db,
+    const simcore::db::IAnalysisDb* analysis_db)
     : execution_db_(execution_db)
     , analysis_db_(analysis_db) {
 }
@@ -293,10 +318,11 @@ std::optional<simcore::PSJob> SeedProbeRuntimeInitAdapter::MaterializePsJob(
     return job;
 }
 
-SeedProbeGridResultMapper::SeedProbeGridResultMapper(simcore::db::IExecutionDb* execution_db, simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context)
+SeedProbeGridResultMapper::SeedProbeGridResultMapper(
+    simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAnalysisDb* analysis_db)
     : execution_db_(execution_db)
-    , analysis_db_(analysis_db)
-    , lookup_context_(std::move(lookup_context)) {
+    , analysis_db_(analysis_db) {
 }
 
 std::string SeedProbeGridResultMapper::BuildResultIniFromPrResult(std::int64_t /*job_id*/, const simcore::PRResult& result) const {
@@ -317,14 +343,14 @@ std::string SeedProbeGridResultMapper::BuildResultIniFromPrResult(std::int64_t /
 ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const {
     ResultMapPayload payload{};
     const auto parsed_result = ResultsIni::from_section(IniDoc::parse(result_ini));
-    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed_result);
+    payload.event_lines.push_back(ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed_result));
 
-    if (analysis_db_ == nullptr || !lookup_context_) {
+    if (analysis_db_ == nullptr) {
         payload.result_kind = "analysisseedprobe.unavailable";
         return payload;
     }
 
-    const auto context = lookup_context_(job_id);
+    const auto context = ResolveContextFromJob(job_id);
     if (!context.has_value()) {
         payload.result_kind = "analysisseedprobe.context_missing";
         return payload;
@@ -337,17 +363,19 @@ ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id
     }
 
     const auto observed_seed = static_cast<std::int64_t>(parsed_result.rng_seed);
-    const auto seed_delta = static_cast<std::int64_t>(observed_seed - static_cast<std::int64_t>(context->neutral_seed));
+    const auto seed_delta = static_cast<std::int64_t>(observed_seed - context->neutral_seed);
 
     if (context->phase == SeedProbeWorkflowPhase::Grid) {
         simcore::db::RecordSeedProbeGridSeedCommand cmd{};
         cmd.probe_result_id = context->probe_result_id;
-        cmd.source_family = FamilyLabel(parsed->get_family());
-        cmd.axis_xy_id = AxisXYId(*parsed);
+        cmd.source_family = NormalizeFamilyLabel(context->source_family.empty()
+            ? FamilyLabel(static_cast<simcore::ElementFamily>(parsed->get_family()))
+            : context->source_family);
+        cmd.axis_xy_id = AxisXYId(*parsed, cmd.source_family);
         cmd.seed_value = observed_seed;
         cmd.seed_delta = seed_delta;
         cmd.recorded_at_utc = simcore::db::types::UtcNow();
-        cmd.event_id = EventId(job_id, "grid");
+        cmd.event_id = EventId(context->probe_result_id, job_id, "grid");
         cmd.correlation_id = context->correlation_id;
         cmd.causation_id = context->causation_id;
 
@@ -380,8 +408,51 @@ bool SeedProbeGridResultMapper::ShouldRequeueOnFailure(SeedProbeWorkflowPhase ph
     return phase == SeedProbeWorkflowPhase::Grid;
 }
 
-std::string SeedProbeGridResultMapper::EventId(std::int64_t job_id, const char* phase_label) {
-    return "seedprobe-job-" + std::to_string(job_id) + "-" + phase_label;
+std::optional<GridResultContext> SeedProbeGridResultMapper::ResolveContextFromJob(std::int64_t job_id) const {
+    if (execution_db_ == nullptr || analysis_db_ == nullptr || job_id <= 0) {
+        return std::nullopt;
+    }
+
+    const auto job = execution_db_->GetJob(job_id);
+    if (!job.has_value() || job->program_ref_kind != "sp_probe_run") {
+        return std::nullopt;
+    }
+
+    const auto probe_result_id = analysis_db_->LookupSeedProbeResultId(job->program_ref_id);
+    const auto neutral_seed = analysis_db_->LookupSeedProbeNeutralSeed(job->program_ref_id);
+    const auto frame_hex = fingerprint_value(job->fingerprint, "frame");
+    if (!probe_result_id.has_value() || !neutral_seed.has_value() || !frame_hex.has_value() || frame_hex->empty()) {
+        return std::nullopt;
+    }
+
+    GridResultContext context{};
+    context.phase = fingerprint_value(job->fingerprint, "phase").value_or("grid") == "unique"
+        ? SeedProbeWorkflowPhase::Unique
+        : SeedProbeWorkflowPhase::Grid;
+    context.probe_result_id = *probe_result_id;
+    context.neutral_seed = *neutral_seed;
+    context.observed_seed = 0;
+    context.frame_hex = *frame_hex;
+    context.source_family = NormalizeFamilyLabel(fingerprint_value(job->fingerprint, "family").value_or(""));
+    context.correlation_id = "seedprobe-run-" + std::to_string(job->program_ref_id);
+    context.causation_id = "job-" + std::to_string(job_id);
+    if (const auto expected_delta = fingerprint_value(job->fingerprint, "expected_delta"); expected_delta.has_value()) {
+        try {
+            context.expected_delta = std::stoll(*expected_delta);
+        } catch (...) {
+            context.expected_delta = 0;
+        }
+    }
+    return context;
+}
+
+std::string SeedProbeGridResultMapper::EventId(
+    std::int64_t probe_result_id,
+    std::int64_t job_id,
+    const char* phase_label) {
+    return "seedprobe-result-" + std::to_string(probe_result_id)
+        + "-job-" + std::to_string(job_id)
+        + "-" + phase_label;
 }
 
 std::optional<simcore::GCInputFrame> SeedProbeGridResultMapper::ParseFrame(const std::string& frame_hex) {
@@ -399,23 +470,48 @@ std::optional<simcore::GCInputFrame> SeedProbeGridResultMapper::ParseFrame(const
     return frame;
 }
 
-std::string SeedProbeGridResultMapper::FamilyLabel(std::uint8_t family) {
-    switch (static_cast<simcore::SeedFamily>(family)) {
-    case simcore::SeedFamily::Main: return "main";
-    case simcore::SeedFamily::CStick: return "cstick";
-    case simcore::SeedFamily::Triggers: return "trigger";
+std::string SeedProbeGridResultMapper::FamilyLabel(simcore::ElementFamily family) {
+    switch (family) {
+    case simcore::ElementFamily::Main: return "MAIN";
+    case simcore::ElementFamily::CStick: return "CSTICK";
+    case simcore::ElementFamily::Triggers: return "TRIGGER";
+    case simcore::ElementFamily::Neutral: return "NEUTRAL";
     }
-    return "unknown";
+    return "UNKNOWN";
 }
 
-std::int64_t SeedProbeGridResultMapper::AxisXYId(const simcore::GCInputFrame& frame) {
-    const auto family = static_cast<simcore::SeedFamily>(frame.get_family());
-    switch (family) {
-    case simcore::SeedFamily::Main:
+std::string SeedProbeGridResultMapper::NormalizeFamilyLabel(const std::string& family) {
+    std::string normalized;
+    normalized.reserve(family.size());
+    for (const char ch : family) {
+        normalized.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+    }
+    if (normalized == "MAIN" || normalized == "JSTICK") {
+        return "MAIN";
+    }
+    if (normalized == "CSTICK" || normalized == "C-STICK") {
+        return "CSTICK";
+    }
+    if (normalized == "TRIGGER" || normalized == "TRIGGERS") {
+        return "TRIGGER";
+    }
+    if (normalized == "NEUTRAL") {
+        return "NEUTRAL";
+    }
+    return normalized;
+}
+
+std::int64_t SeedProbeGridResultMapper::AxisXYId(const simcore::GCInputFrame& frame, const std::string& source_family) {
+    const auto family = NormalizeFamilyLabel(source_family.empty()
+        ? FamilyLabel(static_cast<simcore::ElementFamily>(frame.get_family()))
+        : source_family);
+    if (family == "MAIN") {
         return static_cast<std::int64_t>((static_cast<std::uint16_t>(frame.main_x) << 8) | frame.main_y);
-    case simcore::SeedFamily::CStick:
+    }
+    if (family == "CSTICK") {
         return static_cast<std::int64_t>((static_cast<std::uint16_t>(frame.c_x) << 8) | frame.c_y);
-    case simcore::SeedFamily::Triggers:
+    }
+    if (family == "TRIGGER") {
         return static_cast<std::int64_t>((static_cast<std::uint16_t>(frame.trig_l) << 8) | frame.trig_r);
     }
     return 0;
@@ -426,13 +522,18 @@ ProgramKindDescriptor BuildSeedProbeGridDescriptor(
     simcore::db::IAnalysisDb* analysis_db,
     SeedProbeGridBlueprintConfig blueprint,
     SeedProbeGridSpec grid,
-    SeedProbeGridResultMapper::ContextLookupFn lookup_context) {
+    simcore::db::IAuthoringDb* authoring_db) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = simcore::PK_SeedProbe;
     descriptor.program_name = "SeedProbe";
-    descriptor.job_persistence = std::make_shared<SeedProbeGridJobPersistenceAdapter>(execution_db, std::move(blueprint), grid);
+    descriptor.job_persistence = std::make_shared<SeedProbeGridJobPersistenceAdapter>(
+        execution_db,
+        analysis_db,
+        authoring_db,
+        std::move(blueprint),
+        grid);
     descriptor.runtime_init = std::make_shared<SeedProbeRuntimeInitAdapter>(execution_db, analysis_db);
-    descriptor.result_mapper = std::make_shared<SeedProbeGridResultMapper>(execution_db, analysis_db, std::move(lookup_context));
+    descriptor.result_mapper = std::make_shared<SeedProbeGridResultMapper>(execution_db, analysis_db);
     descriptor.workflow_transition = std::make_shared<GridToUniqueTransitionHandler>();
     descriptor.supports_workflow_orchestration = true;
     return descriptor;

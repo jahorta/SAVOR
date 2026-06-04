@@ -26,6 +26,12 @@ public:
     bool SkipStep(const simcore::db::execution::workflow::WorkflowSkipStepCommand&, std::string*) override { return true; }
     bool CancelWorkflowInstance(const simcore::db::execution::workflow::WorkflowCancelInstanceCommand&, std::string*) override { return true; }
     bool ResumeWorkflowInstance(const simcore::db::execution::workflow::WorkflowResumeInstanceCommand&, std::string*) override { return true; }
+    bool CompleteWorkflowInstance(
+        const simcore::db::execution::workflow::WorkflowCompleteInstanceCommand& command,
+        std::string*) override {
+        complete_workflow_instance_calls.push_back(command);
+        return true;
+    }
     bool PauseWorkflowInstance(const simcore::db::execution::workflow::WorkflowPauseInstanceCommand&, std::string*) override { return true; }
     bool TerminalFailWorkflowInstance(const simcore::db::execution::workflow::WorkflowTerminalFailInstanceCommand&, std::string*) override { return true; }
 
@@ -48,6 +54,12 @@ public:
         blocked_calls.push_back(command);
         return true;
     }
+    bool MarkStepReady(
+        const simcore::db::execution::workflow::WorkflowMarkStepReadyCommand& command,
+        std::string*) override {
+        ready_calls.push_back(command);
+        return true;
+    }
     bool AppendStepInputEvent(
         const simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand& command,
         std::string*) override {
@@ -64,9 +76,11 @@ public:
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepTerminalCommand> terminal_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowMarkStepReadyCommand> ready_calls;
     std::vector<simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand> input_events;
     std::vector<simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand> lifecycle_events;
     std::vector<simcore::db::execution::workflow::WorkflowCreateInstanceCommand> create_workflow_instance_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowCompleteInstanceCommand> complete_workflow_instance_calls;
 
 private:
     std::int64_t next_workflow_instance_id_ = 100;

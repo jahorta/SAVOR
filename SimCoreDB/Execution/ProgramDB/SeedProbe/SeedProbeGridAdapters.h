@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "../ProgramKindDescriptor.h"
 #include "../../../Analysis/IAnalysisDb.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "../../IExecutionDb.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
 
@@ -44,7 +44,12 @@ struct GridFanoutEntry {
 
 class SeedProbeGridJobPersistenceAdapter final : public IJobPersistenceAdapter {
 public:
-    SeedProbeGridJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db, SeedProbeGridBlueprintConfig blueprint, SeedProbeGridSpec grid);
+    SeedProbeGridJobPersistenceAdapter(
+        simcore::db::IExecutionDb* execution_db,
+        simcore::db::IAnalysisDb* analysis_db,
+        simcore::db::IAuthoringDb* authoring_db,
+        SeedProbeGridBlueprintConfig blueprint,
+        SeedProbeGridSpec grid);
 
     WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
@@ -53,9 +58,15 @@ public:
 
 private:
     static std::string FingerprintFor(const SeedProbeGridBlueprintConfig& blueprint, std::int64_t probe_run_id, const std::string& frame_hex, const char* family, std::int64_t grid_ref);
-    std::vector<GridFanoutEntry> BuildFanout() const;
+    std::vector<GridFanoutEntry> BuildFanout(
+        const SeedProbeGridSpec& grid,
+        const SeedProbeGridBlueprintConfig& blueprint) const;
+    SeedProbeGridBlueprintConfig ResolveBlueprintForRun(std::int64_t probe_run_id) const;
+    SeedProbeGridSpec ResolveGridSpecForRun(std::int64_t probe_run_id) const;
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
+    simcore::db::IAnalysisDb* analysis_db_ = nullptr;
+    simcore::db::IAuthoringDb* authoring_db_ = nullptr;
     SeedProbeGridBlueprintConfig blueprint_{};
     SeedProbeGridSpec grid_{};
     std::vector<GridFanoutEntry> fanout_{};
@@ -85,6 +96,7 @@ struct GridResultContext {
     std::int64_t neutral_seed = 0;
     std::uint32_t observed_seed = 0;
     std::string frame_hex;
+    std::string source_family;
     std::string correlation_id;
     std::string causation_id;
     std::int64_t expected_delta = 0;
@@ -92,9 +104,7 @@ struct GridResultContext {
 
 class SeedProbeGridResultMapper final : public IResultMapper {
 public:
-    using ContextLookupFn = std::function<std::optional<GridResultContext>(std::int64_t job_id)>;
-
-    SeedProbeGridResultMapper(simcore::db::IExecutionDb* execution_db, simcore::db::IAnalysisDb* analysis_db, ContextLookupFn lookup_context);
+    SeedProbeGridResultMapper(simcore::db::IExecutionDb* execution_db, simcore::db::IAnalysisDb* analysis_db);
 
     std::string BuildResultIniFromPrResult(std::int64_t job_id, const simcore::PRResult& result) const override;
     ResultMapPayload MapPrimaryResult(std::int64_t job_id, const std::string& result_ini) const override;
@@ -103,14 +113,15 @@ public:
     static bool ShouldRequeueOnFailure(SeedProbeWorkflowPhase phase);
 
 private:
-    static std::string EventId(std::int64_t job_id, const char* phase_label);
+    std::optional<GridResultContext> ResolveContextFromJob(std::int64_t job_id) const;
+    static std::string EventId(std::int64_t probe_result_id, std::int64_t job_id, const char* phase_label);
     static std::optional<simcore::GCInputFrame> ParseFrame(const std::string& frame_hex);
-    static std::string FamilyLabel(std::uint8_t family);
-    static std::int64_t AxisXYId(const simcore::GCInputFrame& frame);
+    static std::string FamilyLabel(simcore::ElementFamily family);
+    static std::string NormalizeFamilyLabel(const std::string& family);
+    static std::int64_t AxisXYId(const simcore::GCInputFrame& frame, const std::string& source_family);
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
-    ContextLookupFn lookup_context_{};
 };
 
 ProgramKindDescriptor BuildSeedProbeGridDescriptor(
@@ -118,6 +129,6 @@ ProgramKindDescriptor BuildSeedProbeGridDescriptor(
     simcore::db::IAnalysisDb* analysis_db,
     SeedProbeGridBlueprintConfig blueprint,
     SeedProbeGridSpec grid,
-    SeedProbeGridResultMapper::ContextLookupFn lookup_context);
+    simcore::db::IAuthoringDb* authoring_db = nullptr);
 
 } // namespace simcore::db::execution::programdb::seedprobe

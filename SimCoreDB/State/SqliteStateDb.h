@@ -46,6 +46,11 @@ public:
         std::string_view output_path,
         std::string* error_out = nullptr) const override;
 
+    std::optional<std::string> MaterializeSavestateToPath(
+        std::int64_t savestate_id,
+        std::string_view output_path,
+        std::string* error_out = nullptr) const override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

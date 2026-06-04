@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -38,23 +39,59 @@ std::optional<std::int64_t> ParseExpectedDeltaFromFingerprint(const std::string&
     }
 }
 
-void ApplyTerminalJobState(
+std::int64_t AxisXYId(std::uint8_t x, std::uint8_t y) {
+    return static_cast<std::int64_t>((static_cast<std::uint16_t>(x) << 8) | y);
+}
+
+std::string BuildUniqueFingerprint(
+    const SeedProbeGridBlueprintConfig& blueprint,
+    std::int64_t probe_run_id,
+    const std::string& frame_hex = {},
+    std::optional<std::int64_t> probe_result_id = std::nullopt,
+    std::optional<std::int64_t> expected_delta = std::nullopt) {
+    std::string fingerprint = "PK=3;PV=" + std::to_string(blueprint.program_version)
+        + ";phase=unique;probe_run_id=" + std::to_string(probe_run_id)
+        + ";run_ms=" + std::to_string(blueprint.run_ms)
+        + ";vi=" + std::to_string(blueprint.vi_stall_ms);
+    if (probe_result_id.has_value()) {
+        fingerprint += ";probe_result_id=" + std::to_string(*probe_result_id);
+    }
+    if (expected_delta.has_value()) {
+        fingerprint += ";expected_delta=" + std::to_string(*expected_delta);
+    }
+    if (!frame_hex.empty()) {
+        fingerprint += ";frame=" + frame_hex;
+    }
+    return fingerprint;
+}
+
+std::string ApplyTerminalJobState(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t job_id,
     const std::optional<std::string>& terminal_state) {
+    std::ostringstream event;
+    event << "[seedprobe-job-terminal-state] stage=AppendLifecycleEvent phase=Unique"
+          << " job=" << job_id
+          << " terminal_state=" << terminal_state.value_or("");
     if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
-        return;
+        event << " ok=false error=execution_db_unavailable";
+        return event.str();
     }
 
-    std::string ignored_error;
-    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+    std::string error;
+    const bool ok = execution_db->JobCommandService()->AppendLifecycleEvent(
         {
             .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
             .job_id = job_id,
             .terminal_state = terminal_state,
             .requested_by = "seedprobe_result_mapper",
         },
-        &ignored_error);
+        &error);
+    event << " ok=" << (ok ? "true" : "false");
+    if (!ok) {
+        event << " error=" << error;
+    }
+    return event.str();
 }
 
 } // namespace
@@ -68,7 +105,6 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
 
     if (context.step_key == "Unique") {
         decision.should_advance = true;
-        decision.next_step_key = "Done";
         return decision;
     }
 
@@ -92,21 +128,24 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
 SeedProbeUniqueJobPersistenceAdapter::SeedProbeUniqueJobPersistenceAdapter(
     simcore::db::IExecutionDb* execution_db,
     simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db,
     SeedProbeGridBlueprintConfig blueprint,
     UniqueIni unique_ini)
     : execution_db_(execution_db)
     , analysis_db_(analysis_db)
+    , authoring_db_(authoring_db)
     , blueprint_(std::move(blueprint))
     , unique_ini_(unique_ini) {
 }
 
 WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
     WorkflowStepScheduleResult scheduled{};
+    const auto resolved_blueprint = ResolveBlueprintForRun(domain_ref_id);
     auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = "sp_probe_run";
     persisted.program_ref_id = domain_ref_id;
-    persisted.program_version = blueprint_.program_version;
-    persisted.fingerprint = "PK=3;phase=unique;probe_run_id=" + std::to_string(domain_ref_id);
+    persisted.program_version = resolved_blueprint.program_version;
+    persisted.fingerprint = BuildUniqueFingerprint(resolved_blueprint, domain_ref_id);
 
     if (execution_db_ == nullptr || analysis_db_ == nullptr || domain_ref_id <= 0) {
         return scheduled;
@@ -165,9 +204,17 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
     }
     scheduled.root_job_set_id = root_job_set_id;
 
+    std::int64_t planned_frames = 0;
+    std::int64_t child_sets_created = 0;
+    std::int64_t child_sets_failed = 0;
+    std::int64_t child_expected_total = 0;
+    std::int64_t jobs_enqueued = 0;
+    std::int64_t jobs_failed = 0;
     for (auto& sample : planned.samples) {
         std::int64_t child_job_set_id = 0;
         const auto child_expected = static_cast<int>(sample.frames.size());
+        planned_frames += child_expected;
+        child_expected_total += child_expected;
         if (!execution_db_->CreateJobSet(
                 {
                     .parent_job_set_id = root_job_set_id,
@@ -182,32 +229,67 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
                 &child_job_set_id,
                 &error)
             || child_job_set_id <= 0) {
+            ++child_sets_failed;
+            jobs_failed += child_expected;
             continue;
         }
+        ++child_sets_created;
 
         for (auto& frame : sample.frames) {
             auto frame_hex = frame.to_frame_hex();
             simcore::db::EnqueueJobCommand enqueue{};
             enqueue.job_set_id = child_job_set_id;
             enqueue.program_kind = 3;
-            enqueue.program_version = blueprint_.program_version;
+            enqueue.program_version = resolved_blueprint.program_version;
             enqueue.program_ref_kind = "sp_probe_run";
             enqueue.program_ref_id = domain_ref_id;
-            enqueue.fingerprint = "PK=3;phase=unique;probe_run_id=" + std::to_string(domain_ref_id)
-                + ";probe_result_id=" + std::to_string(probe_result_id)
-                + ";expected_delta=" + std::to_string(sample.target_delta)
-                + ";frame=" + frame_hex;
+            enqueue.fingerprint = BuildUniqueFingerprint(
+                resolved_blueprint,
+                domain_ref_id,
+                frame_hex,
+                probe_result_id,
+                sample.target_delta);
             enqueue.priority = 0;
             enqueue.max_attempts = 2;
-            (void)execution_db_->EnqueueJob(enqueue, nullptr, &error);
+            std::int64_t job_id = 0;
+            if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
+                ++jobs_enqueued;
+            } else {
+                ++jobs_failed;
+            }
         }
     }
+
+    std::ostringstream event;
+    event << "[seedprobe-unique-enqueue-summary]"
+          << " root_job_set=" << root_job_set_id
+          << " planned_samples=" << planned.samples.size()
+          << " planned_frames=" << planned_frames
+          << " child_sets_created=" << child_sets_created
+          << " child_sets_failed=" << child_sets_failed
+          << " child_expected_total=" << child_expected_total
+          << " jobs_enqueued=" << jobs_enqueued
+          << " jobs_failed=" << jobs_failed;
+    if (!error.empty()) {
+        event << " last_error=" << error;
+    }
+    scheduled.event_lines.push_back(event.str());
 
     return scheduled;
 }
 
 std::int64_t SeedProbeUniqueJobPersistenceAdapter::DecodeDomainRefId(const JobPersistenceRecord& persisted) const {
     return persisted.program_ref_id;
+}
+
+SeedProbeGridBlueprintConfig SeedProbeUniqueJobPersistenceAdapter::ResolveBlueprintForRun(std::int64_t probe_run_id) const {
+    auto resolved = blueprint_;
+    const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, probe_run_id);
+    if (timing.has_value()) {
+        resolved.run_ms = timing->run_ms;
+        resolved.vi_stall_ms = timing->vi_stall_ms;
+    }
+    return resolved;
 }
 
 SeedProbeUniqueRuntimeInitAdapter::SeedProbeUniqueRuntimeInitAdapter(
@@ -280,25 +362,25 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     ResultMapPayload payload{};
     payload.result_kind = "analysisseedprobe.unique.unavailable";
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
     const auto job = execution_db_->GetJob(job_id);
     if (!job.has_value() || job->program_ref_kind != "sp_probe_run") {
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
 
     const auto neutral_seed = analysis_db_->LookupSeedProbeNeutralSeed(job->program_ref_id);
     if (!neutral_seed.has_value()) {
         payload.result_kind = "analysisseedprobe.unique.missing_neutral";
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
     const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
     if (failed) {
         payload.result_kind = "analysisseedprobe.unique.failure";
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
 
@@ -309,41 +391,71 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     const auto probe_result_id = analysis_db_->LookupSeedProbeResultId(job->program_ref_id);
     if (!probe_result_id.has_value()) {
         payload.result_kind = "analysisseedprobe.unique.missing_probe_result";
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
+        return payload;
+    }
+
+    std::string error;
+    const auto input_frame = parse_frame_hex_or_null(fingerprint_value(job->fingerprint, "frame"));
+    if (!input_frame.has_value()) {
+        payload.result_kind = "analysisseedprobe.unique.missing_frame";
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
+        return payload;
+    }
+
+    std::int64_t input_frame_id = 0;
+    if (!analysis_db_->EnsureSeedProbeInputFrame(
+            AxisXYId(input_frame->main_x, input_frame->main_y),
+            AxisXYId(input_frame->c_x, input_frame->c_y),
+            AxisXYId(input_frame->trig_l, input_frame->trig_r),
+            &input_frame_id,
+            &error)
+        || input_frame_id <= 0) {
+        payload.result_kind = "analysisseedprobe.unique.input_frame_error";
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
 
     RecordSeedProbeUniqueSeedCommand cmd{};
     cmd.probe_result_id = *probe_result_id;
-    cmd.input_frame_id = 1;
+    cmd.input_frame_id = input_frame_id;
     cmd.seed_value = parsed.rng_seed;
     cmd.seed_delta = observed_delta;
     cmd.recorded_at_utc = simcore::db::types::UtcNow();
-    cmd.event_id = "seedprobe-unique-" + std::to_string(job_id);
+    cmd.event_id = "seedprobe-result-" + std::to_string(*probe_result_id)
+        + "-job-" + std::to_string(job_id)
+        + "-unique";
     cmd.correlation_id = "seedprobe-run-" + std::to_string(job->program_ref_id);
     cmd.causation_id = "job-" + std::to_string(job_id);
 
     bool inserted = false;
     std::int64_t unique_seed_id = 0;
-    std::string error;
     if (!analysis_db_->EnsureSeedProbeUniqueSeedDelta(cmd, &inserted, &unique_seed_id, &error)) {
         payload.result_kind = "analysisseedprobe.unique.error";
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
         return payload;
     }
 
     if (inserted) {
         payload.result_kind = "analysisseedprobe.unique.winner";
         payload.result_ref_id = unique_seed_id;
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUCCEEDED_WINNER"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUCCEEDED_WINNER")));
     } else {
         payload.result_kind = "analysisseedprobe.unique.superseded";
         payload.result_ref_id = unique_seed_id;
-        ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUPERSEDED"));
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUPERSEDED")));
     }
 
     if (matched_expected_delta) {
-        (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr);
+        int rows_superseded = 0;
+        (void)execution_db_->MarkQueuedJobsSuperseded(job->job_set_id, job_id, nullptr, &rows_superseded);
+        std::ostringstream event;
+        event << "[seedprobe-superseded] job_set=" << job->job_set_id
+              << " job=" << job_id
+              << " expected_delta=" << *expected_delta
+              << " observed_delta=" << observed_delta
+              << " superseded=" << rows_superseded;
+        payload.event_lines.push_back(event.str());
     }
     return payload;
 }
@@ -357,7 +469,8 @@ ProgramKindDescriptor BuildSeedProbeUniqueDescriptor(
     simcore::db::IAnalysisDb* analysis_db,
     SeedProbeGridBlueprintConfig blueprint,
     UniqueIni unique_ini,
-    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate) {
+    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate,
+    simcore::db::IAuthoringDb* authoring_db) {
     if (!completion_gate) {
         completion_gate = [](const WorkflowTransitionContext&) { return true; };
     }
@@ -368,6 +481,7 @@ ProgramKindDescriptor BuildSeedProbeUniqueDescriptor(
     descriptor.job_persistence = std::make_shared<SeedProbeUniqueJobPersistenceAdapter>(
         execution_db,
         analysis_db,
+        authoring_db,
         std::move(blueprint),
         unique_ini);
     descriptor.runtime_init = std::make_shared<SeedProbeUniqueRuntimeInitAdapter>(execution_db, analysis_db);

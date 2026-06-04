@@ -4,6 +4,7 @@
 #include <future>
 #include <fstream>
 #include <thread>
+#include <utility>
 
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -19,6 +20,7 @@
 #include "Runner/Parallel/SimCoreDB/WorkflowMaterializationService.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
 #include "common/DbPreparer.h"
+#include "common/RecordingExecutionDb.h"
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
@@ -296,6 +298,7 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         EXPECT_GE(telemetry.last_materialization_latency_ms, 0);
         EXPECT_GE(telemetry.max_materialization_latency_ms, 0);
         EXPECT_GE(telemetry.dispatch_attempt_count, 0);
+        EXPECT_GE(telemetry.dispatch_success_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_rate_basis_points, 0);
     }
@@ -354,61 +357,262 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         EXPECT_GT(progress_seen.load(), 0);
         EXPECT_GT(telemetry.progress_batch_count, 0);
         EXPECT_GT(telemetry.max_progress_batch_size, 0);
+        EXPECT_GE(telemetry.results_received_count, 1);
     }
 
-    TEST(Stage3Phase3DispatchGuard, DISABLED_ClaimedJobsAreNotDispatchedBeforeMaterialization) {
-#if 0
+    TEST(Stage3Phase3DispatchGuard, ClaimedJobsMoveThroughMaterializedQueueBeforeDispatch) {
         using namespace simcore::runner::parallel::simcoredb;
+        using namespace simcore::db::execution::programdb;
 
-        WorkflowSchedulerAdapter scheduler([](const WorkflowReadyStep& step) {
-            return ScheduledJobSet{
-                .job_set_id = 15000 + step.workflow_step_id,
-                .workflow_step_id = step.workflow_step_id,
-            };
-            });
+        class QueueClaimExecutionDb final : public RecordingExecutionDb {
+        public:
+            std::vector<simcore::db::ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+                std::string_view,
+                int requested_jobs,
+                std::int64_t,
+                std::string* error_out = nullptr) override {
+                if (error_out) {
+                    error_out->clear();
+                }
+                std::vector<simcore::db::ClaimedExecutionJob> out;
+                while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
+                    out.push_back(claims.front());
+                    claims.erase(claims.begin());
+                }
+                return out;
+            }
 
-        std::vector<ClaimedJobSeed> claimed{
-            ClaimedJobSeed{
-                .step = WorkflowReadyStep{
-                    .workflow_instance_id = 1,
-                    .workflow_step_id = 2,
-                    .step_key = "Neutral",
-                    .step_kind = "seedprobe.neutral",
-                    .priority = 1,
-                },
-                .job_set_id = 42,
-                .job_id = 4242,
-            },
+            std::vector<simcore::db::ClaimedExecutionJob> claims;
         };
 
-        WorkflowMaterializationService materialization(
-            &scheduler,
-            [&]() { return claimed; },
-            [](std::int64_t job_id, const WorkflowReadyStep&) -> std::optional<simcore::PSJob> {
+        class QueueRuntime final : public IRuntimeInitAdapter {
+        public:
+            RuntimeInitRequest BuildRuntimeInit(std::int64_t) const override {
+                return RuntimeInitRequest{
+                    .savestate_ref_kind = "test_savestate",
+                    .savestate_ref_id = 123,
+                    .bootstrap_profile = "test.runtime",
+                };
+            }
+
+            std::optional<simcore::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest&) const override {
                 simcore::PSJob job{};
+                job.payload.push_back(7);
+                job.payload.push_back(static_cast<std::uint8_t>(job_id & 0xff));
                 (void)job_id;
                 return job;
-            },
-            {},
-            {});
+            }
+        };
+
+        ProgramKindDescriptor descriptor{};
+        descriptor.program_kind = 7;
+        descriptor.program_name = "QueueRuntime";
+        descriptor.runtime_init = std::make_shared<QueueRuntime>();
+
+        ProgramKindRegistry registry;
+        ASSERT_TRUE(registry.Register(descriptor));
+        ASSERT_TRUE(registry.RegisterForStepKind("test.step", descriptor));
+
+        QueueClaimExecutionDb execution_db;
+        JobMaterializationService materialization(&execution_db, &registry);
+        materialization.ResetForStart();
 
         int dispatch_calls = 0;
         WorkflowDispatchCoordinator dispatch(
             &materialization,
-            [&](std::size_t, const ClaimedJobRecord&) {
+            [&](std::size_t, const ClaimedJobRecord& job) {
                 ++dispatch_calls;
+                EXPECT_EQ(job.job_id, 4242);
+                EXPECT_EQ(job.program_kind, 7);
+                EXPECT_TRUE(job.payload.has_value());
+                EXPECT_TRUE(job.affinity.program_runtime_affinity_key.has_value());
+                if (job.affinity.program_runtime_affinity_key.has_value()) {
+                    EXPECT_EQ(*job.affinity.program_runtime_affinity_key, "test.runtime");
+                }
                 return true;
             });
 
         const auto now = std::chrono::steady_clock::now();
-        EXPECT_EQ(materialization.ClaimJobs(now), 1u);
         EXPECT_FALSE(dispatch.DispatchNextEligibleForWorker(0, std::nullopt, now));
         EXPECT_EQ(dispatch_calls, 0);
 
-        EXPECT_TRUE(materialization.MaterializeClaimedJobPayload(now));
-        EXPECT_TRUE(dispatch.DispatchNextEligibleForWorker(0, std::nullopt, now));
+        std::atomic<bool> stop_requested{ false };
+        std::thread materializer([&]() {
+            materialization.MaterializeClaimedJobPayloadLoop(stop_requested);
+        });
+
+        execution_db.claims.push_back(simcore::db::ClaimedExecutionJob{
+            .job_id = 4242,
+            .job_set_id = 42,
+            .workflow_instance_id = 1,
+            .workflow_step_id = 2,
+            .workflow_step_key = "Neutral",
+            .workflow_step_kind = "test.step",
+            .workflow_step_priority = 1,
+        });
+
+        EXPECT_EQ(materialization.ClaimJobs(1, now), 1u);
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        while (dispatch_calls == 0 && std::chrono::steady_clock::now() < deadline) {
+            (void)dispatch.DispatchNextEligibleForWorker(0, std::nullopt, std::chrono::steady_clock::now());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        stop_requested.store(true);
+        materialization.StopMaterializationLoop();
+        if (materializer.joinable()) {
+            materializer.join();
+        }
+
         EXPECT_EQ(dispatch_calls, 1);
-#endif
+    }
+
+    TEST(Stage3Phase3DispatchGuard, MaterializedReadySetPrioritizesWorkerAffinity) {
+        using namespace simcore::runner::parallel::simcoredb;
+        using namespace simcore::db::execution::programdb;
+
+        class QueueClaimExecutionDb final : public RecordingExecutionDb {
+        public:
+            std::vector<simcore::db::ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+                std::string_view,
+                int requested_jobs,
+                std::int64_t,
+                std::string* error_out = nullptr) override {
+                if (error_out) {
+                    error_out->clear();
+                }
+                std::vector<simcore::db::ClaimedExecutionJob> out;
+                while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
+                    out.push_back(claims.front());
+                    claims.erase(claims.begin());
+                }
+                return out;
+            }
+
+            std::vector<simcore::db::ClaimedExecutionJob> claims;
+        };
+
+        class AffinityRuntime final : public IRuntimeInitAdapter {
+        public:
+            AffinityRuntime(std::int64_t savestate_ref_id, std::string bootstrap_profile)
+                : savestate_ref_id_(savestate_ref_id)
+                , bootstrap_profile_(std::move(bootstrap_profile)) {
+            }
+
+            RuntimeInitRequest BuildRuntimeInit(std::int64_t) const override {
+                return RuntimeInitRequest{
+                    .savestate_ref_kind = "test_savestate",
+                    .savestate_ref_id = savestate_ref_id_,
+                    .bootstrap_profile = bootstrap_profile_,
+                };
+            }
+
+            std::optional<simcore::PSJob> MaterializePsJob(std::int64_t job_id, const RuntimeInitRequest&) const override {
+                simcore::PSJob job{};
+                job.payload.push_back(static_cast<std::uint8_t>(job_id & 0xff));
+                return job;
+            }
+
+        private:
+            std::int64_t savestate_ref_id_ = 0;
+            std::string bootstrap_profile_;
+        };
+
+        const auto register_program = [](
+            ProgramKindRegistry& registry,
+            std::int32_t program_kind,
+            const std::string& step_kind,
+            std::int64_t savestate_ref_id,
+            const std::string& bootstrap_profile) {
+            ProgramKindDescriptor descriptor{};
+            descriptor.program_kind = program_kind;
+            descriptor.program_name = step_kind;
+            descriptor.runtime_init = std::make_shared<AffinityRuntime>(savestate_ref_id, bootstrap_profile);
+            ASSERT_TRUE(registry.Register(descriptor));
+            ASSERT_TRUE(registry.RegisterForStepKind(step_kind, descriptor));
+        };
+
+        ProgramKindRegistry registry;
+        register_program(registry, 7, "test.program7", 111, "old-runtime");
+        register_program(registry, 8, "test.program8", 123, "other-runtime");
+        register_program(registry, 9, "test.program9", 333, "warm-runtime");
+        register_program(registry, 10, "test.program10", 444, "cold-runtime");
+
+        QueueClaimExecutionDb execution_db;
+        execution_db.claims = {
+            simcore::db::ClaimedExecutionJob{
+                .job_id = 1001,
+                .job_set_id = 1,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 1,
+                .workflow_step_key = "Program7",
+                .workflow_step_kind = "test.program7",
+                .workflow_step_priority = 1,
+            },
+            simcore::db::ClaimedExecutionJob{
+                .job_id = 1002,
+                .job_set_id = 1,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 2,
+                .workflow_step_key = "Program8",
+                .workflow_step_kind = "test.program8",
+                .workflow_step_priority = 1,
+            },
+            simcore::db::ClaimedExecutionJob{
+                .job_id = 1003,
+                .job_set_id = 1,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 3,
+                .workflow_step_key = "Program9",
+                .workflow_step_kind = "test.program9",
+                .workflow_step_priority = 1,
+            },
+            simcore::db::ClaimedExecutionJob{
+                .job_id = 1004,
+                .job_set_id = 1,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 4,
+                .workflow_step_key = "Program10",
+                .workflow_step_kind = "test.program10",
+                .workflow_step_priority = 1,
+            },
+        };
+
+        JobMaterializationService materialization(&execution_db, &registry);
+        materialization.ResetForStart();
+        const auto now = std::chrono::steady_clock::now();
+        EXPECT_EQ(materialization.ClaimJobs(4, now), 4u);
+        EXPECT_TRUE(materialization.MaterializeClaimedJobPayload(now));
+
+        ClaimedJobRecord selected{};
+        EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
+            MaterializedJobSelectionAffinity{
+                .savestate_affinity_key = std::string("123"),
+                .program_kind = 7,
+                .program_runtime_affinity_key = std::string("old-runtime"),
+            },
+            &selected));
+        EXPECT_EQ(selected.job_id, 1002);
+        EXPECT_EQ(selected.program_kind, 8);
+
+        EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
+            MaterializedJobSelectionAffinity{
+                .program_kind = 7,
+                .program_runtime_affinity_key = std::string("cold-runtime"),
+            },
+            &selected));
+        EXPECT_EQ(selected.job_id, 1001);
+        EXPECT_EQ(selected.program_kind, 7);
+
+        EXPECT_TRUE(materialization.TrySelectMaterializedJobForWorker(
+            MaterializedJobSelectionAffinity{
+                .program_kind = 99,
+                .program_runtime_affinity_key = std::string("warm-runtime"),
+            },
+            &selected));
+        EXPECT_EQ(selected.job_id, 1003);
+        EXPECT_EQ(selected.program_kind, 9);
     }
 
     TEST(Stage3Phase3Contracts, DedupeIsolationIsScopedPerCoordinatorBridgeInstance) {

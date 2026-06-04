@@ -102,6 +102,12 @@ struct IStateDb {
         std::string_view output_path,
         std::string* error_out = nullptr) const = 0;
 
+    // Materializes the artifact backing a savestate to an explicit destination path.
+    virtual std::optional<std::string> MaterializeSavestateToPath(
+        std::int64_t savestate_id,
+        std::string_view output_path,
+        std::string* error_out = nullptr) const = 0;
+
     // Reads unpublished outbox rows in ascending outbox cursor order.
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

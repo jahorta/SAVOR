@@ -74,11 +74,20 @@ public:
         }
         return it->second;
     }
-    bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) override {
+    bool MarkQueuedJobsSuperseded(
+        std::int64_t job_set_id,
+        std::int64_t except_job_id,
+        std::string* error_out = nullptr,
+        int* rows_superseded_out = nullptr) override {
+        int rows = 0;
         for (auto& [job_id, job] : jobs_) {
             if (job.job_set_id == job_set_id && job.job_id != except_job_id && job.state == "QUEUED") {
                 job.state = "SUPERSEDED";
+                ++rows;
             }
+        }
+        if (rows_superseded_out) {
+            *rows_superseded_out = rows;
         }
         if (error_out) {
             error_out->clear();

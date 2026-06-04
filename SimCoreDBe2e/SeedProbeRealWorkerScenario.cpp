@@ -5,12 +5,19 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <iostream>
+#include <iterator>
+#include <mutex>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbeContracts.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
@@ -40,7 +47,7 @@ namespace {
 constexpr std::int64_t kSeedProbeAverageUniqueCountEstimate = 25;
 
 std::int64_t ComputeSeedProbeTimeoutMs(std::int64_t baseline_timeout_ms) {
-    const std::int64_t grid_probe_count = static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * 2 * 3;
+    const std::int64_t grid_probe_count = static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * 3;
     const std::int64_t multiplier = 1 + grid_probe_count + kSeedProbeAverageUniqueCountEstimate;
     return baseline_timeout_ms * multiplier;
 }
@@ -79,15 +86,167 @@ bool IsInteractiveStdout() {
 #endif
 }
 
+simcore::db::execution::programdb::seedprobe::ResultsIni BuildSeedProbeResultsIni(const simcore::PRResult& result) {
+    simcore::db::execution::programdb::seedprobe::ResultsIni parsed{};
+    parsed.w_err = result.ps.w_err;
+    if (parsed.w_err == 0) {
+        result.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, parsed.dw_err);
+    }
+    if (result.ps.ok) {
+        result.ps.ctx.get(simcore::keys::seed::RNG_SEED, parsed.rng_seed);
+        result.ps.ctx.get(simcore::keys::core::VI_FIRST, parsed.vi_start);
+        result.ps.ctx.get(simcore::keys::core::VI_LAST, parsed.vi_end);
+    }
+    return parsed;
+}
+
+std::string FormatSeedProbeResultEventLine(const simcore::PRResult& result) {
+    const auto parsed = BuildSeedProbeResultsIni(result);
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+
+    std::ostringstream oss;
+    if (!failed) {
+        oss << "[seedprobe-result] job=" << result.job_id
+            << " worker=" << result.worker_id
+            << " rng_seed=" << parsed.rng_seed
+            << " vi=" << parsed.vi_start << "-" << parsed.vi_end;
+        return oss.str();
+    }
+
+    oss << "[seedprobe-error] job=" << result.job_id
+        << " worker=" << result.worker_id
+        << " failed cause=";
+    if (parsed.w_err != 0) {
+        oss << "w_err=" << simcore::WErrToString(parsed.w_err) << "(" << parsed.w_err << ")";
+    } else {
+        oss << "dw_err=" << simcore::RunToBpOutcomeToString(parsed.dw_err) << "(" << parsed.dw_err << ")";
+    }
+    oss << " w_err=" << simcore::WErrToString(parsed.w_err) << "(" << parsed.w_err << ")"
+        << " dw_err=" << simcore::RunToBpOutcomeToString(parsed.dw_err) << "(" << parsed.dw_err << ")";
+    return oss.str();
+}
+
+std::string FormatProgressDetails(
+    std::int64_t job_set_id,
+    const simcore::db::execution::workflow::ExecutionJobSetProgressDetails& row) {
+    const std::int64_t total = row.total_jobs;
+    const std::int64_t done = row.completed_jobs;
+    const std::int64_t ok = row.succeeded_jobs;
+    const std::int64_t fail = row.failed_jobs;
+    const std::int64_t can = row.canceled_jobs;
+    const std::int64_t remaining = std::max<std::int64_t>(0, total - ok - fail - can);
+
+    std::ostringstream progress;
+    progress << "job_set=" << job_set_id
+             << " progress done=" << done << "/" << total;
+    if (row.expected_total.has_value()) {
+        progress << " expected_total=" << *row.expected_total;
+    }
+    progress << " ok=" << ok
+             << " fail=" << fail
+             << " can=" << can
+             << " remaining=" << remaining;
+    return progress.str();
+}
+
+std::vector<std::string> BuildNewFailedStepEventLines(
+    const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph,
+    std::unordered_set<std::int64_t>* emitted_failed_step_ids) {
+    std::vector<std::string> lines;
+    if (emitted_failed_step_ids == nullptr) {
+        return lines;
+    }
+
+    for (const auto& step : graph.steps) {
+        if (step.state != simcore::db::execution::workflow::WorkflowStepState::Failed) {
+            continue;
+        }
+        if (!emitted_failed_step_ids->insert(step.workflow_step_id).second) {
+            continue;
+        }
+
+        std::ostringstream oss;
+        oss << "[seedprobe-step-failed] key=" << step.step_key
+            << " kind=" << step.step_kind
+            << " workflow_step_id=" << step.workflow_step_id;
+        if (step.job_set_id.has_value()) {
+            oss << " job_set=" << *step.job_set_id;
+        }
+        if (step.blocked_reason.has_value() && !step.blocked_reason->empty()) {
+            oss << " reason=" << *step.blocked_reason;
+        }
+        lines.push_back(oss.str());
+    }
+    return lines;
+}
+
+std::vector<std::string> BuildNewMaterializedStepEventLines(
+    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph,
+    std::unordered_set<std::int64_t>* emitted_materialized_step_ids) {
+    std::vector<std::string> lines;
+    if (execution_db == nullptr || emitted_materialized_step_ids == nullptr) {
+        return lines;
+    }
+
+    for (const auto& step : graph.steps) {
+        if (!step.job_set_id.has_value()) {
+            continue;
+        }
+        if (step.state != simcore::db::execution::workflow::WorkflowStepState::Materialized
+            && step.state != simcore::db::execution::workflow::WorkflowStepState::Running
+            && step.state != simcore::db::execution::workflow::WorkflowStepState::Completed) {
+            continue;
+        }
+        if (!emitted_materialized_step_ids->insert(step.workflow_step_id).second) {
+            continue;
+        }
+
+        const auto job_set_id = *step.job_set_id;
+        const auto details = execution_db->GetJobSetProgress(job_set_id);
+        std::ostringstream oss;
+        oss << "[seedprobe-step-materialized] key=" << step.step_key
+            << " kind=" << step.step_kind
+            << " workflow_step_id=" << step.workflow_step_id
+            << " state=" << ToString(step.state)
+            << " job_set=" << job_set_id;
+        if (details.has_value()) {
+            oss << " total=" << details->total_jobs
+                << " done=" << details->completed_jobs
+                << " ok=" << details->succeeded_jobs
+                << " fail=" << details->failed_jobs
+                << " can=" << details->canceled_jobs;
+            if (details->expected_total.has_value()) {
+                oss << " expected_total=" << *details->expected_total;
+            }
+        } else {
+            oss << " progress=unavailable";
+        }
+
+        const auto child_rows = execution_db->GetChildJobSetProgress(job_set_id);
+        if (!child_rows.empty()) {
+            std::int64_t child_total = 0;
+            std::int64_t child_expected = 0;
+            for (const auto& child : child_rows) {
+                child_total += child.total_jobs;
+                child_expected += child.expected_total.value_or(0);
+            }
+            oss << " child_job_sets=" << child_rows.size()
+                << " child_total=" << child_total
+                << " child_expected_total=" << child_expected;
+        }
+        lines.push_back(oss.str());
+    }
+    return lines;
+}
+
 std::string FormatCoordinatorTelemetryLine(const WorkflowCoordinatorTelemetry& telemetry, size_t active_workers) {
     std::ostringstream oss;
     oss << "workers=" << active_workers
-        << " scans=" << telemetry.ready_scan_count
-        << " enqueued=" << telemetry.ready_steps_enqueued
-        << " materialized=" << telemetry.materialization_count
-        << " dispatch=" << telemetry.dispatch_attempt_count
-        << " miss=" << telemetry.dispatch_miss_count
-        << " progress_batches=" << telemetry.progress_batch_count;
+        << " dispatch=" << telemetry.dispatch_success_count
+        << " dispatch_miss=" << telemetry.dispatch_miss_count
+        << " progress_batches=" << telemetry.progress_batch_count
+        << " results_received=" << telemetry.results_received_count;
     return oss.str();
 }
 
@@ -204,22 +363,41 @@ std::vector<std::string> FormatActiveJobSetLines(
         return { step_label.str(), "job_set progress unavailable" };
     }
 
-    const auto& row = *details;
-    const std::int64_t total = row.total_jobs;
-    const std::int64_t done = row.completed_jobs;
-    const std::int64_t ok = row.succeeded_jobs;
-    const std::int64_t fail = row.failed_jobs;
-    const std::int64_t can = row.canceled_jobs;
-    const std::int64_t remaining = std::max<std::int64_t>(0, total - ok - fail - can);
+    std::vector<std::string> lines{ step_label.str(), FormatProgressDetails(job_set_id, *details) };
+    const auto child_rows = execution_db->GetChildJobSetProgress(job_set_id);
+    if (!child_rows.empty()) {
+        std::size_t active_children = 0;
+        const simcore::db::execution::workflow::ExecutionChildJobSetProgressDetails* selected_child = nullptr;
+        for (const auto& child : child_rows) {
+            if (child.completed_jobs < child.total_jobs) {
+                ++active_children;
+                if (selected_child == nullptr) {
+                    selected_child = &child;
+                }
+            }
+        }
 
-    std::ostringstream progress;
-    progress << "job_set=" << job_set_id
-             << " progress done=" << done << "/" << total
-             << " ok=" << ok
-             << " fail=" << fail
-             << " can=" << can
-             << " remaining=" << remaining;
-    return { step_label.str(), progress.str() };
+        std::ostringstream child_rollup;
+        child_rollup << "child_job_sets=" << child_rows.size()
+                     << " active=" << active_children;
+        lines.push_back(child_rollup.str());
+
+        if (selected_child != nullptr) {
+            const auto child_remaining = std::max<std::int64_t>(0, selected_child->total_jobs - selected_child->completed_jobs);
+            std::ostringstream child;
+            child << "active_child_job_set=" << selected_child->job_set_id;
+            if (selected_child->expected_delta.has_value()) {
+                child << " expected_delta=" << *selected_child->expected_delta;
+            }
+            child << " done=" << selected_child->completed_jobs << "/" << selected_child->total_jobs
+                  << " ok=" << selected_child->succeeded_jobs
+                  << " fail=" << selected_child->failed_jobs
+                  << " can=" << selected_child->canceled_jobs
+                  << " remaining=" << child_remaining;
+            lines.push_back(child.str());
+        }
+    }
+    return lines;
 }
 
 std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
@@ -304,15 +482,19 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     simcore::db::execution::programdb::ProgramKindRegistry program_kind_registry;
+    simcore::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig phase_config{};
+    phase_config.authoring_db = db_service->AuthoringDb();
     simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
         &program_kind_registry,
         execution_db,
-        db_service->AnalysisDb());
+        db_service->AnalysisDb(),
+        std::move(phase_config));
 
     DBWorkflowWorkerCoordinator coordinator = BuildDbBackedWorkflowCoordinator(
         execution_db,
+        db_service->StateDb(),
         DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 1,
+            .desired_workers = 5,
             .controller_sleep_ms = static_cast<uint32_t>(options.poll_ms),
             .worker_exe_path = worker_exe.string(),
             .iso_path = options.iso_path.string(),
@@ -322,6 +504,41 @@ bool RunSeedProbeRealWorkerSmoke(
         },
         CoordinatorIntegrationConfig{},
         &program_kind_registry);
+
+    std::mutex event_lines_mtx;
+    std::deque<std::string> pending_event_lines;
+    std::mutex seen_result_mtx;
+    std::unordered_map<std::uint64_t, simcore::PRResult> seen_results_by_job_id;
+    auto enqueue_event_line = [&](std::string line) {
+        std::lock_guard<std::mutex> lock(event_lines_mtx);
+        pending_event_lines.push_back(std::move(line));
+    };
+    auto drain_event_lines = [&]() {
+        std::vector<std::string> lines;
+        std::lock_guard<std::mutex> lock(event_lines_mtx);
+        while (!pending_event_lines.empty()) {
+            lines.push_back(std::move(pending_event_lines.front()));
+            pending_event_lines.pop_front();
+        }
+        return lines;
+    };
+    coordinator.SetResultCallback([&](const simcore::PRResult& result) {
+        {
+            std::lock_guard<std::mutex> lock(seen_result_mtx);
+            const auto [it, inserted] = seen_results_by_job_id.try_emplace(result.job_id, result);
+            if (!inserted) {
+                std::ostringstream duplicate;
+                duplicate << "[seedprobe-result-duplicate] job=" << result.job_id
+                          << " first_worker=" << it->second.worker_id
+                          << " current_worker=" << result.worker_id;
+                enqueue_event_line(duplicate.str());
+            }
+        }
+        enqueue_event_line(FormatSeedProbeResultEventLine(result));
+    });
+    coordinator.SetResultMapEventCallback([&](const std::string& line) {
+        enqueue_event_line(line);
+    });
 
     coordinator.Start();
     auto* ui_read_db = db_service->UiReadDb();
@@ -340,6 +557,8 @@ bool RunSeedProbeRealWorkerSmoke(
     bool reached_completed = false;
     bool saw_terminal_failure = false;
     bool timed_out = false;
+    std::unordered_set<std::int64_t> emitted_failed_step_ids;
+    std::unordered_set<std::int64_t> emitted_materialized_step_ids;
     std::vector<std::string> latest_lines;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(timeout_ms)) {
         (void)ui_read_db->ListProjectionSubscriptions("Execution", "exec_outbox_message");
@@ -349,10 +568,34 @@ bool RunSeedProbeRealWorkerSmoke(
         const auto telemetry = coordinator.SnapshotTelemetry();
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
         latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.SnapshotWorkers(), graph);
+        std::vector<std::string> event_lines = drain_event_lines();
+        if (graph.has_value()) {
+            auto materialized_step_lines = BuildNewMaterializedStepEventLines(
+                execution_db,
+                *graph,
+                &emitted_materialized_step_ids);
+            event_lines.insert(
+                event_lines.end(),
+                std::make_move_iterator(materialized_step_lines.begin()),
+                std::make_move_iterator(materialized_step_lines.end()));
+            auto failed_step_lines = BuildNewFailedStepEventLines(*graph, &emitted_failed_step_ids);
+            event_lines.insert(
+                event_lines.end(),
+                std::make_move_iterator(failed_step_lines.begin()),
+                std::make_move_iterator(failed_step_lines.end()));
+        }
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
+            for (const auto& line : event_lines) {
+                progress_renderer.WriteEventLine(std::cout, line);
+            }
             progress_renderer.Render(std::cout);
-        } else if (ticks_since_snapshot >= 10 || poll_count == 1) {
+        } else {
+            for (const auto& line : event_lines) {
+                std::cout << line << '\n';
+            }
+        }
+        if (!interactive_stdout && (ticks_since_snapshot >= 10 || poll_count == 1)) {
             ticks_since_snapshot = 0;
             std::cout << "[seedprobe] ";
             for (std::size_t i = 0; i < latest_lines.size(); ++i) {
@@ -387,6 +630,14 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     coordinator.Stop();
+    const auto final_event_lines = drain_event_lines();
+    for (const auto& line : final_event_lines) {
+        if (interactive_stdout) {
+            progress_renderer.WriteEventLine(std::cout, line);
+        } else {
+            std::cout << line << '\n';
+        }
+    }
 
     if (poll_count == 0) {
         if (error_out) *error_out = "UiReadDB polling loop did not execute";
@@ -400,6 +651,19 @@ bool RunSeedProbeRealWorkerSmoke(
     }
     if (latest_lines.empty()) {
         latest_lines.push_back("workflow=unavailable");
+    }
+    if (final_graph.has_value()) {
+        auto final_failed_step_lines = BuildNewFailedStepEventLines(*final_graph, &emitted_failed_step_ids);
+        if (interactive_stdout) {
+            progress_renderer.SetLines(latest_lines);
+            for (const auto& line : final_failed_step_lines) {
+                progress_renderer.WriteEventLine(std::cout, line);
+            }
+        } else {
+            for (const auto& line : final_failed_step_lines) {
+                std::cout << line << '\n';
+            }
+        }
     }
 
     std::string final_status = "success";

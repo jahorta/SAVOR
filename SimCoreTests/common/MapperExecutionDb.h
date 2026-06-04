@@ -18,7 +18,7 @@ public:
     bool CreateJobSet(const simcore::db::CreateJobSetCommand&, std::int64_t*, std::string*) override { return false; }
     bool EnqueueJob(const simcore::db::EnqueueJobCommand&, std::int64_t*, std::string*) override { return false; }
     std::optional<simcore::db::ExecutionJobRecord> GetJob(std::int64_t) const override { return std::nullopt; }
-    bool MarkQueuedJobsSuperseded(std::int64_t, std::int64_t, std::string*) override { return false; }
+    bool MarkQueuedJobsSuperseded(std::int64_t, std::int64_t, std::string*, int*) override { return false; }
     simcore::db::retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<simcore::db::retention::OutboxSubscriptionSnapshot>&,
         simcore::db::types::UtcTimePoint,

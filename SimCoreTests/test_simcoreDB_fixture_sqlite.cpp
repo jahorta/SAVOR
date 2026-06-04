@@ -39,6 +39,7 @@
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
+#include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
 #include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
@@ -641,6 +642,8 @@ INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expe
 VALUES(10, 1, 'workflow', unixepoch()*1000, 1);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
 VALUES(100, 1, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 10, 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(101, 1, 'next', 'seedprobe.next', 'WAITING', 0, 0, 1, unixepoch()*1000);
 INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
 VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000);
 )SQL"));
@@ -676,6 +679,140 @@ VALUES(1000, 10, 1, 1, 'seedprobe_spec', 44, 'fp-1', 0, 'SUCCEEDED', 0, 1, unixe
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
     EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state, ready_at_utc FROM exec_workflow_step WHERE workflow_step_id=101;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "READY");
+    EXPECT_NE(sqlite3_column_type(st, 1), SQLITE_NULL);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceMarksNextStepReadyFromTerminalJob) {
+    using namespace simcore::db::execution::workflow;
+
+    const simcore::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = simcore::db::migrations::MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(simcore::db::migrations::ApplyContextMigrations(db_, simcore::db::migrations::MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(2, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
+VALUES(20, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(200, 2, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 20, 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(201, 2, 'next', 'seedprobe.next', 'WAITING', 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000);
+)SQL"));
+
+    simcore::db::execution::programdb::ProgramKindRegistry registry;
+    simcore::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "seedprobe.neutral";
+    descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
+    SqliteWorkflowOrchestrationQueryService query_service(db_);
+    SqliteWorkflowOrchestrationCommandService command_service(db_);
+    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+
+    const auto terminal_ready = query_service.ListTerminalReadyStepSnapshots(10);
+    ASSERT_EQ(terminal_ready.size(), 1u);
+    EXPECT_EQ(terminal_ready.front().workflow_step_id, 200);
+    EXPECT_EQ(terminal_ready.front().expected_total, 1);
+    EXPECT_EQ(terminal_ready.front().discovered_total, 1);
+    EXPECT_EQ(terminal_ready.front().terminal_total, 1);
+
+    WorkflowTerminalAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForTerminalJob(2000, &result, &err)) << err;
+    EXPECT_TRUE(result.snapshot_found);
+    EXPECT_TRUE(result.gate_can_transition);
+    EXPECT_TRUE(result.step_marked_terminal);
+    EXPECT_TRUE(result.transition_evaluated);
+    EXPECT_TRUE(result.advanced_next_step);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT source.state, next.state "
+        "FROM exec_workflow_step source "
+        "JOIN exec_workflow_step next ON next.workflow_instance_id=source.workflow_instance_id AND next.step_key='next' "
+        "WHERE source.workflow_step_id=200;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "READY");
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceCompletesWorkflowWhenFinalStepHasNoNextStep) {
+    using namespace simcore::db::execution::workflow;
+
+    class FinalStepTransitionHandler final : public simcore::db::execution::programdb::IWorkflowTransitionHandler {
+    public:
+        simcore::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
+            const simcore::db::execution::programdb::WorkflowTransitionContext&) const override {
+            simcore::db::execution::programdb::WorkflowTransitionDecision decision{};
+            decision.should_advance = true;
+            return decision;
+        }
+    };
+
+    const simcore::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = simcore::db::migrations::MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(simcore::db::migrations::ApplyContextMigrations(db_, simcore::db::migrations::MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(3, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
+VALUES(30, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(300, 3, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 30, 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixepoch()*1000);
+)SQL"));
+
+    simcore::db::execution::programdb::ProgramKindRegistry registry;
+    simcore::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "seedprobe.unique";
+    descriptor.workflow_transition = std::make_shared<FinalStepTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.unique", descriptor));
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
+    SqliteWorkflowOrchestrationQueryService query_service(db_);
+    SqliteWorkflowOrchestrationCommandService command_service(db_);
+    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+
+    WorkflowTerminalAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForTerminalJob(3000, &result, &err)) << err;
+    EXPECT_TRUE(result.snapshot_found);
+    EXPECT_TRUE(result.gate_can_transition);
+    EXPECT_TRUE(result.step_marked_terminal);
+    EXPECT_TRUE(result.transition_evaluated);
+    EXPECT_FALSE(result.advanced_next_step);
+    EXPECT_TRUE(result.workflow_completed);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT i.state, s.state "
+        "FROM exec_workflow_instance i "
+        "JOIN exec_workflow_step s ON s.workflow_instance_id=i.workflow_instance_id "
+        "WHERE i.workflow_instance_id=3 AND s.workflow_step_id=300;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "COMPLETED");
     sqlite3_finalize(st);
 }
 
@@ -1242,6 +1379,189 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='job' AND payload_ref_id=601;", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobCommitsAfterReturningClaimedRow) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1699, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1701, 7, 'stage3d-claim', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1700, 1699, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1701, 8, 0, 2, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1702, 1701, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-claim-regression", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, 1702);
+    EXPECT_EQ(claimed->job_set_id, 1701);
+    EXPECT_EQ(claimed->workflow_instance_id, 1699);
+    EXPECT_EQ(claimed->workflow_step_id, 1700);
+    EXPECT_EQ(claimed->workflow_step_key, "Neutral");
+    EXPECT_EQ(claimed->workflow_step_kind, "seedprobe.neutral");
+    EXPECT_EQ(claimed->workflow_step_priority, 8);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=1702;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "worker-claim-regression");
+    EXPECT_NE(sqlite3_column_type(st, 1), SQLITE_NULL);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobResolvesWorkflowStepThroughJobSetAncestry) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1799, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1801, NULL, 7, 'stage3d-root', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1802, 1801, 7, 'stage3d-child', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1803, 1802, 7, 'stage3d-grandchild', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1800, 1799, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 1801, 9, 0, 2, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1804, 1803, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim-ancestry', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-claim-ancestry", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, 1804);
+    EXPECT_EQ(claimed->job_set_id, 1803);
+    EXPECT_EQ(claimed->workflow_instance_id, 1799);
+    EXPECT_EQ(claimed->workflow_step_id, 1800);
+    EXPECT_EQ(claimed->workflow_step_key, "Unique");
+    EXPECT_EQ(claimed->workflow_step_kind, "seedprobe.unique");
+    EXPECT_EQ(claimed->workflow_step_priority, 9);
+
+    const auto snapshot = execution_db.WorkflowQueryService()->GetStepTerminalSnapshotForJob(1804);
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->workflow_instance_id, 1799);
+    EXPECT_EQ(snapshot->workflow_step_id, 1800);
+    EXPECT_EQ(snapshot->job_set_id, 1801);
+    EXPECT_EQ(snapshot->step_key, "Unique");
+    EXPECT_EQ(snapshot->step_kind, "seedprobe.unique");
+}
+
+TEST_F(SqliteDbFixture, Stage3dJobSetTreeProgressAndTerminalSnapshotIncludeChildJobSets) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1899, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(1901, NULL, 7, 'stage3d-root', 2, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
+VALUES(1902, 1901, 7, 'stage3d-child-a', 2, 'expected_delta=11', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, expected_total, meta_note, created_at_utc)
+VALUES(1903, 1901, 7, 'stage3d-child-b', 1, 'expected_delta=22', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1900, 1899, 'Unique', 'seedprobe.unique', 'MATERIALIZED', 1901, 9, 0, 2, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(1904, 1902, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-a1', 5, 'SUCCEEDED_WINNER', 0, 3, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(1905, 1902, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-a2', 5, 'SUPERSEDED', 0, 3, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1906, 1903, 7, 1, 'seed_probe', 33, 'fp-stage3d-tree-b1', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    const auto progress = execution_db.GetJobSetProgress(1901);
+    ASSERT_TRUE(progress.has_value());
+    EXPECT_EQ(progress->job_set_id, 1901);
+    EXPECT_EQ(progress->expected_total, 3);
+    EXPECT_EQ(progress->total_jobs, 3);
+    EXPECT_EQ(progress->completed_jobs, 2);
+    EXPECT_EQ(progress->succeeded_jobs, 2);
+    EXPECT_EQ(progress->failed_jobs, 0);
+
+    const auto children = execution_db.GetChildJobSetProgress(1901);
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_EQ(children[0].job_set_id, 1902);
+    ASSERT_TRUE(children[0].expected_delta.has_value());
+    EXPECT_EQ(*children[0].expected_delta, 11);
+    EXPECT_EQ(children[0].completed_jobs, 2);
+    EXPECT_EQ(children[1].job_set_id, 1903);
+    ASSERT_TRUE(children[1].expected_delta.has_value());
+    EXPECT_EQ(*children[1].expected_delta, 22);
+    EXPECT_EQ(children[1].completed_jobs, 0);
+
+    const auto snapshot = execution_db.WorkflowQueryService()->GetStepTerminalSnapshotForJob(1904);
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->job_set_id, 1901);
+    EXPECT_EQ(snapshot->expected_total, 3);
+    EXPECT_EQ(snapshot->discovered_total, 3);
+    EXPECT_EQ(snapshot->terminal_total, 2);
+    EXPECT_EQ(snapshot->failed_total, 0);
+}
+
+TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobFailsAndRollsBackWhenJobSetAncestryHasNoWorkflowStep) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1811, NULL, 7, 'stage3d-orphan-root', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1812, 1811, 7, 'stage3d-orphan-child', unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1813, 1812, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim-orphan', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-claim-orphan", 30000, &claim_error);
+    EXPECT_FALSE(claimed.has_value());
+    EXPECT_NE(claim_error.find("workflow step not found for job_set ancestry"), std::string::npos) << claim_error;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=1813;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_type(st, 0), SQLITE_NULL);
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
     sqlite3_finalize(st);
 }
 
@@ -2161,6 +2481,444 @@ VALUES(3802, 3801, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*10
 
     EXPECT_GE(input_count, 100);
     EXPECT_EQ(terminal_count, 1);
+}
+
+TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerprints) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb::seedprobe;
+    using namespace simcore::db::execution::workflow;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+
+    std::string err;
+    std::int64_t seed_probe_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "timing regression",
+            .priority = 1,
+            .run_ms = 12345,
+            .vi_stall_ms = 678,
+            .samples_per_axis = 1,
+            .min_value = 47,
+            .max_value = 207,
+            .cap_trigger_top = true,
+            .ignore_trigger_minmax = true,
+            .combo_attempts_per_target = 1,
+            .combo_sampler_tries = 1,
+            .auto_schedule_battle_run = false,
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.authoring.seedprobe.timing",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        &seed_probe_spec_id,
+        &err))
+        << err;
+
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "timing probe set",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "default",
+            .segment_source_kind = "manual",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.set.timing",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        &probe_set_id,
+        &err))
+        << err;
+
+    std::int64_t probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77,
+            .seed_probe_spec_id = seed_probe_spec_id,
+            .codec_version = 1,
+            .status = "queued",
+            .requested_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.run.timing",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        &probe_run_id,
+        &err))
+        << err;
+
+    SqliteExecutionDb execution_db(db_);
+    auto read_first_job_fingerprint = [&](std::int64_t job_set_id) {
+        sqlite3_stmt* st = nullptr;
+        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            db_,
+            "SELECT fingerprint FROM exec_job WHERE job_set_id=?1 ORDER BY job_id LIMIT 1;",
+            -1,
+            &st,
+            nullptr));
+        sqlite3_bind_int64(st, 1, job_set_id);
+        EXPECT_EQ(SQLITE_ROW, sqlite3_step(st));
+        std::string fingerprint;
+        if (const auto* text = sqlite3_column_text(st, 0)) {
+            fingerprint = reinterpret_cast<const char*>(text);
+        }
+        sqlite3_finalize(st);
+        return fingerprint;
+    };
+    auto expect_timing = [](const std::string& fingerprint) {
+        EXPECT_NE(fingerprint.find(";run_ms=12345"), std::string::npos) << fingerprint;
+        EXPECT_NE(fingerprint.find(";vi=678"), std::string::npos) << fingerprint;
+    };
+
+    auto neutral = BuildSeedProbeNeutralDescriptor(&execution_db, analysis_db, authoring_db);
+    const auto neutral_scheduled = neutral.job_persistence->EncodeForQueueing(probe_run_id);
+    ASSERT_GT(neutral_scheduled.root_job_set_id, 0);
+    expect_timing(neutral_scheduled.persistence.fingerprint);
+    expect_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
+
+    SeedProbeGridSpec grid_spec{};
+    grid_spec.samples_per_axis = 1;
+    auto grid = BuildSeedProbeGridDescriptor(
+        &execution_db,
+        analysis_db,
+        SeedProbeGridBlueprintConfig{},
+        grid_spec,
+        authoring_db);
+    const auto grid_scheduled = grid.job_persistence->EncodeForQueueing(probe_run_id);
+    ASSERT_GT(grid_scheduled.root_job_set_id, 0);
+    expect_timing(grid_scheduled.persistence.fingerprint);
+    expect_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
+
+    auto unique = BuildSeedProbeUniqueDescriptor(
+        &execution_db,
+        analysis_db,
+        SeedProbeGridBlueprintConfig{},
+        UniqueIni{},
+        {},
+        authoring_db);
+    const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(probe_run_id);
+    expect_timing(unique_scheduled.persistence.fingerprint);
+}
+
+TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobFingerprintWithoutInjectedContext) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    std::string err;
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "grid mapper fallback probe set",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "default",
+            .segment_source_kind = "manual",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.set.grid_mapper_fallback",
+            .correlation_id = "test.seedprobe.grid_mapper_fallback",
+            .causation_id = "test",
+        },
+        &probe_set_id,
+        &err))
+        << err;
+
+    std::int64_t probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77,
+            .seed_probe_spec_id = 1,
+            .codec_version = 1,
+            .status = "queued",
+            .requested_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.run.grid_mapper_fallback",
+            .correlation_id = "test.seedprobe.grid_mapper_fallback",
+            .causation_id = "test",
+        },
+        &probe_run_id,
+        &err))
+        << err;
+    ASSERT_TRUE(analysis_db->LookupSeedProbeResultId(probe_run_id).has_value());
+    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
+    ASSERT_EQ(analysis_db->LookupSeedProbeNeutralSeed(probe_run_id), 1000);
+
+    std::int64_t job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 3,
+            .purpose = "SeedProbe Grid",
+            .created_by = std::string("test"),
+            .expected_total = 1,
+            .domain_ref_kind = std::string("sp_probe_run"),
+            .domain_ref_id = probe_run_id,
+            .meta_note = std::string("phase=Grid"),
+        },
+        &job_set_id,
+        &err))
+        << err;
+
+    auto frame = simcore::GCInputFrame::new_stk_main(128, 128);
+    const auto fingerprint = std::string("PK=3;PV=1;probe_run_id=")
+        + std::to_string(probe_run_id)
+        + ";family=main;grid_ref=1;run_ms=1;vi=1;frame="
+        + frame.to_frame_hex();
+
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = job_set_id,
+            .program_kind = 3,
+            .program_version = 1,
+            .program_ref_kind = "sp_probe_run",
+            .program_ref_id = probe_run_id,
+            .fingerprint = fingerprint,
+            .priority = 0,
+            .max_attempts = 1,
+        },
+        &job_id,
+        &err))
+        << err;
+
+    SeedProbeGridResultMapper mapper(execution_db, analysis_db);
+    const auto payload = mapper.MapPrimaryResult(
+        job_id,
+        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1255\nvi_start=1\nvi_end=2\n");
+    ASSERT_EQ(payload.result_kind, "analysisseedprobe.grid_seed");
+    ASSERT_GT(payload.result_ref_id, 0);
+
+    const auto replay_payload = mapper.MapPrimaryResult(
+        job_id,
+        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1255\nvi_start=1\nvi_end=2\n");
+    ASSERT_EQ(replay_payload.result_kind, "analysisseedprobe.grid_seed");
+    EXPECT_EQ(replay_payload.result_ref_id, payload.result_ref_id);
+
+    const auto rows = analysis_db->ListSeedProbeGridSeeds(probe_run_id);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows.front().source_family, "MAIN");
+    EXPECT_EQ(rows.front().axis_x, 128);
+    EXPECT_EQ(rows.front().axis_y, 128);
+    EXPECT_EQ(rows.front().seed_value, 1255);
+    EXPECT_EQ(rows.front().seed_delta, 255);
+}
+
+TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSupersedesMatchingChildSet) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    std::string err;
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "unique mapper supersede probe set",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "default",
+            .segment_source_kind = "manual",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.set.unique_mapper_supersede",
+            .correlation_id = "test.seedprobe.unique_mapper_supersede",
+            .causation_id = "test",
+        },
+        &probe_set_id,
+        &err))
+        << err;
+
+    std::int64_t probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77,
+            .seed_probe_spec_id = 1,
+            .codec_version = 1,
+            .status = "queued",
+            .requested_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.run.unique_mapper_supersede",
+            .correlation_id = "test.seedprobe.unique_mapper_supersede",
+            .causation_id = "test",
+        },
+        &probe_run_id,
+        &err))
+        << err;
+    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
+    ASSERT_TRUE(analysis_db->LookupSeedProbeResultId(probe_run_id).has_value());
+
+    std::int64_t root_job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 3,
+            .purpose = "SeedProbe Unique",
+            .created_by = std::string("test"),
+            .expected_total = 2,
+            .domain_ref_kind = std::string("sp_probe_run"),
+            .domain_ref_id = probe_run_id,
+            .meta_note = std::string("phase=Unique"),
+        },
+        &root_job_set_id,
+        &err))
+        << err;
+
+    std::int64_t child_job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .parent_job_set_id = root_job_set_id,
+            .program_kind = 3,
+            .purpose = "SeedProbe Unique Delta",
+            .created_by = std::string("test"),
+            .expected_total = 2,
+            .domain_ref_kind = std::string("sp_probe_run"),
+            .domain_ref_id = probe_run_id,
+            .meta_note = std::string("expected_delta=4"),
+        },
+        &child_job_set_id,
+        &err))
+        << err;
+
+    auto frame = simcore::GCInputFrame::new_stk_main(120, 136);
+    const auto fingerprint = std::string("PK=3;PV=1;phase=unique;probe_run_id=")
+        + std::to_string(probe_run_id)
+        + ";run_ms=1;vi=1;probe_result_id="
+        + std::to_string(*analysis_db->LookupSeedProbeResultId(probe_run_id))
+        + ";expected_delta=4;frame="
+        + frame.to_frame_hex();
+
+    std::int64_t winner_job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = child_job_set_id,
+            .program_kind = 3,
+            .program_version = 1,
+            .program_ref_kind = "sp_probe_run",
+            .program_ref_id = probe_run_id,
+            .fingerprint = fingerprint + ";case=winner",
+            .priority = 0,
+            .max_attempts = 1,
+        },
+        &winner_job_id,
+        &err))
+        << err;
+
+    std::int64_t sibling_job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = child_job_set_id,
+            .program_kind = 3,
+            .program_version = 1,
+            .program_ref_kind = "sp_probe_run",
+            .program_ref_id = probe_run_id,
+            .fingerprint = fingerprint + ";case=sibling",
+            .priority = 0,
+            .max_attempts = 1,
+        },
+        &sibling_job_id,
+        &err))
+        << err;
+
+    SeedProbeUniqueResultMapper mapper(execution_db, analysis_db);
+    const auto payload = mapper.MapPrimaryResult(
+        winner_job_id,
+        "[SeedProbe.Results]\nw_err=0\ndw_err=0\nrng_seed=1004\nvi_start=1\nvi_end=2\n");
+
+    ASSERT_EQ(payload.result_kind, "analysisseedprobe.unique.winner");
+    ASSERT_GT(payload.result_ref_id, 0);
+    ASSERT_EQ(payload.event_lines.size(), 1u);
+    EXPECT_NE(payload.event_lines.front().find("[seedprobe-superseded]"), std::string::npos);
+    EXPECT_NE(payload.event_lines.front().find("expected_delta=4"), std::string::npos);
+    EXPECT_NE(payload.event_lines.front().find("observed_delta=4"), std::string::npos);
+    EXPECT_NE(payload.event_lines.front().find("superseded=1"), std::string::npos);
+
+    const auto winner_job = execution_db->GetJob(winner_job_id);
+    const auto sibling_job = execution_db->GetJob(sibling_job_id);
+    ASSERT_TRUE(winner_job.has_value());
+    ASSERT_TRUE(sibling_job.has_value());
+    EXPECT_EQ(winner_job->state, "SUCCEEDED_WINNER");
+    EXPECT_EQ(sibling_job->state, "SUPERSEDED");
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT f.main_axis_xy_id, f.cstick_axis_xy_id, f.trigger_axis_xy_id "
+        "FROM sp_unique_seed u "
+        "JOIN sp_input_frame f ON f.input_frame_id=u.input_frame_id "
+        "WHERE u.unique_seed_id=?1;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int64(st, 1, payload.result_ref_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), (120 << 8) | 136);
+    EXPECT_EQ(sqlite3_column_int64(st, 1), (128 << 8) | 128);
+    EXPECT_EQ(sqlite3_column_int64(st, 2), 0);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
+    auto* state_db = db_service_->StateDb();
+    ASSERT_NE(state_db, nullptr);
+
+    const auto source_path = temp_root_ / "source.sav";
+    {
+        std::ofstream out(source_path, std::ios::binary);
+        out << "savestate-bytes";
+    }
+    ASSERT_TRUE(std::filesystem::exists(source_path));
+
+    std::string err;
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-db-materialize-savestate-test",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+            .compression_kind = 0,
+            .filename = source_path.string(),
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.state.artifact.materialize_savestate",
+            .correlation_id = "test.state.materialize_savestate",
+            .causation_id = "test",
+        },
+        &artifact_id,
+        &err))
+        << err;
+
+    std::int64_t savestate_id = 0;
+    ASSERT_TRUE(state_db->CreateSavestate(
+        {
+            .artifact_id = artifact_id,
+            .savestate_type = "TRANSITION",
+            .note = "materialize test",
+            .is_complete = true,
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.state.savestate.materialize_savestate",
+            .correlation_id = "test.state.materialize_savestate",
+            .causation_id = "test",
+        },
+        &savestate_id,
+        &err))
+        << err;
+
+    const auto destination_path = temp_root_ / "worker" / "savestate" / "current.sav";
+    const auto materialized = state_db->MaterializeSavestateToPath(savestate_id, destination_path.string(), &err);
+    ASSERT_TRUE(materialized.has_value()) << err;
+    EXPECT_EQ(std::filesystem::path(*materialized), destination_path);
+    ASSERT_TRUE(std::filesystem::exists(destination_path));
+
+    std::ifstream in(destination_path, std::ios::binary);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    EXPECT_EQ(buffer.str(), "savestate-bytes");
 }
 
 }

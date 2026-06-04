@@ -96,6 +96,19 @@ struct WorkflowReadyStepRecord {
     std::optional<std::int64_t> input_ref_id;
 };
 
+struct WorkflowStepTerminalSnapshot {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::int64_t job_set_id = 0;
+    std::string workflow_kind;
+    std::string step_key;
+    std::string step_kind;
+    int expected_total = 0;
+    int discovered_total = 0;
+    int terminal_total = 0;
+    int failed_total = 0;
+};
+
 struct WorkflowRetryStepCommand {
     std::int64_t workflow_step_id = 0;
     std::string requested_by;
@@ -114,6 +127,11 @@ struct WorkflowCancelInstanceCommand {
 };
 
 struct WorkflowResumeInstanceCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::string requested_by;
+};
+
+struct WorkflowCompleteInstanceCommand {
     std::int64_t workflow_instance_id = 0;
     std::string requested_by;
 };
@@ -147,6 +165,12 @@ struct WorkflowMarkStepTerminalCommand {
 struct WorkflowMarkStepBlockedCommand {
     std::int64_t workflow_step_id = 0;
     std::optional<std::string> blocked_reason;
+    std::string requested_by;
+};
+
+struct WorkflowMarkStepReadyCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::string step_key;
     std::string requested_by;
 };
 
@@ -202,6 +226,8 @@ struct IWorkflowOrchestrationQueryService {
 
     virtual std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const = 0;
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const = 0;
+    virtual std::optional<WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const = 0;
+    virtual std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const = 0;
     virtual std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const = 0;
 };
@@ -217,11 +243,13 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) = 0;
     virtual bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) = 0;
     virtual bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) = 0;
+    virtual bool CompleteWorkflowInstance(const WorkflowCompleteInstanceCommand& command, std::string* error_out) = 0;
     virtual bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) = 0;
     virtual bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
+    virtual bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) = 0;
     virtual bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) = 0;
     virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
 };

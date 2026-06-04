@@ -2,10 +2,13 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 
+#include "../../../Analysis/IAnalysisDb.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "../../../../SimCore/DB/DBCore/DbResult.h"
 #include "../../../../SimCore/Utils/Hex.h"
 #include "../../../../SimCore/Utils/IniDoc.h"
@@ -14,6 +17,45 @@
 #include "../../../../SimCore/Runner/Script/PhaseScriptVM.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
+
+struct SeedProbeTimingConfig {
+    uint32_t run_ms = 0;
+    uint32_t vi_stall_ms = 0;
+};
+
+static inline uint32_t clamp_to_u32(std::int64_t value) {
+    if (value <= 0) {
+        return 0;
+    }
+    if (value > static_cast<std::int64_t>(std::numeric_limits<uint32_t>::max())) {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    return static_cast<uint32_t>(value);
+}
+
+static inline std::optional<SeedProbeTimingConfig> resolve_timing_from_authoring_spec(
+    const simcore::db::IAnalysisDb* analysis_db,
+    const simcore::db::IAuthoringDb* authoring_db,
+    std::int64_t probe_run_id) {
+    if (analysis_db == nullptr || authoring_db == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+
+    const auto probe_run = analysis_db->GetSeedProbeRun(probe_run_id);
+    if (!probe_run.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto spec = authoring_db->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
+    if (!spec.has_value()) {
+        return std::nullopt;
+    }
+
+    return SeedProbeTimingConfig{
+        .run_ms = clamp_to_u32(spec->run_ms),
+        .vi_stall_ms = clamp_to_u32(spec->vi_stall_ms),
+    };
+}
 
 struct GridIni {
     static constexpr const char* SECTION_NAME = "SeedProbe.Grid";

@@ -4,6 +4,7 @@
 
 #include "../../IExecutionDb.h"
 #include "../../../Analysis/IAnalysisDb.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "../ProgramKindDescriptor.h"
 
 namespace simcore::db::execution::programdb::seedprobe {
@@ -12,7 +13,8 @@ class NeutralProbeJobPersistenceAdapter final : public IJobPersistenceAdapter {
 public:
     NeutralProbeJobPersistenceAdapter(
         simcore::db::IExecutionDb* execution_db,
-        simcore::db::IAnalysisDb* analysis_db);
+        simcore::db::IAnalysisDb* analysis_db,
+        simcore::db::IAuthoringDb* authoring_db = nullptr);
 
     WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
@@ -20,6 +22,7 @@ public:
 private:
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
+    simcore::db::IAuthoringDb* authoring_db_ = nullptr;
 };
 
 class RequiredSavestateRuntimeInitAdapter final : public IRuntimeInitAdapter {
@@ -58,6 +61,7 @@ public:
 
 ProgramKindDescriptor BuildSeedProbeNeutralDescriptor(
     simcore::db::IExecutionDb* execution_db,
-    simcore::db::IAnalysisDb* analysis_db);
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db = nullptr);
 
 } // namespace simcore::db::execution::programdb::seedprobe

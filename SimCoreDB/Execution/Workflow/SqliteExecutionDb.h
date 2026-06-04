@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -24,6 +25,12 @@ struct ExecutionJobSetProgressDetails {
     std::int64_t failed_jobs = 0;
     std::int64_t canceled_jobs = 0;
     std::optional<std::int64_t> expected_total;
+};
+
+struct ExecutionChildJobSetProgressDetails : ExecutionJobSetProgressDetails {
+    std::optional<std::int64_t> expected_delta;
+    std::string purpose;
+    std::string meta_note;
 };
 
 class SqliteExecutionDb final : public simcore::db::IExecutionDb {
@@ -66,7 +73,12 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
     std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const;
-    bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) override;
+    std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const;
+    bool MarkQueuedJobsSuperseded(
+        std::int64_t job_set_id,
+        std::int64_t except_job_id,
+        std::string* error_out = nullptr,
+        int* rows_superseded_out = nullptr) override;
     retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
         types::UtcTimePoint now_utc,

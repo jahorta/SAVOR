@@ -24,8 +24,6 @@ public:
         std::chrono::steady_clock::time_point now);
 
 private:
-    static bool BetterDispatchPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs);
-
     JobMaterializationService* materialization_service_ = nullptr;
     DispatchToWorkerFn dispatch_to_worker_;
 };

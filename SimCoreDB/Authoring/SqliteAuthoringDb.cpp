@@ -341,6 +341,52 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
     return true;
 }
 
+std::optional<SeedProbeSpecSnapshot> SqliteAuthoringDb::GetSeedProbeSpec(std::int64_t seed_probe_spec_id) const {
+    if (db_ == nullptr || seed_probe_spec_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT s.seed_probe_spec_id,s.name,s.priority,s.run_ms,s.vi_stall_ms,"
+            "g.samples_per_axis,g.min_value,g.max_value,g.cap_trigger_top,g.ignore_trigger_min_max,"
+            "u.combo_attempts_per_target,u.combo_sampler_tries,s.auto_schedule_battle_run "
+            "FROM au_seed_probe_spec s "
+            "JOIN au_seed_probe_grid_spec g ON g.seed_probe_grid_spec_id=s.grid_spec_id "
+            "JOIN au_seed_probe_unique_spec u ON u.seed_probe_unique_spec_id=s.unique_spec_id "
+            "WHERE s.seed_probe_spec_id=?1 LIMIT 1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, seed_probe_spec_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    SeedProbeSpecSnapshot snapshot{};
+    snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 0);
+    if (const auto* text = sqlite3_column_text(st.st, 1)) {
+        snapshot.name = reinterpret_cast<const char*>(text);
+    }
+    snapshot.priority = sqlite3_column_int(st.st, 2);
+    snapshot.run_ms = sqlite3_column_int64(st.st, 3);
+    snapshot.vi_stall_ms = sqlite3_column_int64(st.st, 4);
+    snapshot.samples_per_axis = sqlite3_column_int(st.st, 5);
+    snapshot.min_value = sqlite3_column_int64(st.st, 6);
+    snapshot.max_value = sqlite3_column_int64(st.st, 7);
+    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 8) != 0;
+    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 9) != 0;
+    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 10);
+    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 11);
+    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 12) != 0;
+    return snapshot;
+}
+
 bool SqliteAuthoringDb::SaveTasSpec(
     const SaveTasSpecCommand& command,
     std::int64_t* tas_spec_id_out,

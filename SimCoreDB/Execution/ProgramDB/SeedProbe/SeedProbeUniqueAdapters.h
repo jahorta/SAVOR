@@ -7,6 +7,7 @@
 #include "../ProgramKindDescriptor.h"
 #include "SeedProbeContracts.h"
 #include "SeedProbeGridAdapters.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "../../../Analysis/IAnalysisDb.h"
 #include "../../IExecutionDb.h"
 
@@ -28,6 +29,7 @@ public:
     SeedProbeUniqueJobPersistenceAdapter(
         simcore::db::IExecutionDb* execution_db,
         simcore::db::IAnalysisDb* analysis_db,
+        simcore::db::IAuthoringDb* authoring_db,
         SeedProbeGridBlueprintConfig blueprint,
         UniqueIni unique_ini);
 
@@ -37,8 +39,11 @@ public:
 private:
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IAnalysisDb* analysis_db_ = nullptr;
+    simcore::db::IAuthoringDb* authoring_db_ = nullptr;
     SeedProbeGridBlueprintConfig blueprint_{};
     UniqueIni unique_ini_{};
+
+    SeedProbeGridBlueprintConfig ResolveBlueprintForRun(std::int64_t probe_run_id) const;
 };
 
 class SeedProbeUniqueRuntimeInitAdapter final : public IRuntimeInitAdapter {
@@ -69,6 +74,7 @@ ProgramKindDescriptor BuildSeedProbeUniqueDescriptor(
     simcore::db::IAnalysisDb* analysis_db,
     SeedProbeGridBlueprintConfig blueprint,
     UniqueIni unique_ini,
-    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate = {});
+    SeedProbeUniqueTransitionHandler::CompletionGateFn completion_gate = {},
+    simcore::db::IAuthoringDb* authoring_db = nullptr);
 
 } // namespace simcore::db::execution::programdb::seedprobe

@@ -1,6 +1,5 @@
 #include "WorkflowDispatchCoordinator.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace simcore::runner::parallel::simcoredb {
@@ -20,54 +19,25 @@ bool WorkflowDispatchCoordinator::DispatchNextEligibleForWorker(
         return false;
     }
 
-    auto eligible = materialization_service_->ListByState(ClaimedJobLifecycleState::EligibleForDispatch);
-    if (eligible.empty()) {
+    ClaimedJobRecord candidate{};
+    if (!materialization_service_->TrySelectMaterializedJobForWorker(
+        MaterializedJobSelectionAffinity{
+            .savestate_affinity_key = worker_savestate_affinity,
+        },
+        &candidate)) {
         return false;
     }
 
-    std::stable_sort(eligible.begin(), eligible.end(), [&](const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs) {
-        const bool lhs_savestate_match = worker_savestate_affinity.has_value()
-            && lhs.affinity.savestate_affinity_key.has_value()
-            && lhs.affinity.savestate_affinity_key.value() == worker_savestate_affinity.value();
-        const bool rhs_savestate_match = worker_savestate_affinity.has_value()
-            && rhs.affinity.savestate_affinity_key.has_value()
-            && rhs.affinity.savestate_affinity_key.value() == worker_savestate_affinity.value();
-        if (lhs_savestate_match != rhs_savestate_match) {
-            return lhs_savestate_match;
-        }
-
-        return BetterDispatchPriority(lhs, rhs);
-    });
-
-    for (const auto& candidate : eligible) {
-        if (!candidate.payload.has_value()) {
-            continue;
-        }
-        const bool sent = dispatch_to_worker_(worker_idx, candidate);
-        if (!sent) {
-            continue;
-        }
-        (void)materialization_service_->MarkDispatched(candidate.job_id, now);
-        return true;
+    if (!candidate.payload.has_value()) {
+        return false;
     }
-
-    return false;
-}
-
-bool WorkflowDispatchCoordinator::BetterDispatchPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs) {
-    const bool lhs_savestate = lhs.affinity.savestate_affinity_key.has_value() && !lhs.affinity.savestate_affinity_key->empty();
-    const bool rhs_savestate = rhs.affinity.savestate_affinity_key.has_value() && !rhs.affinity.savestate_affinity_key->empty();
-    if (lhs_savestate != rhs_savestate) {
-        return lhs_savestate;
+    const bool sent = dispatch_to_worker_(worker_idx, candidate);
+    if (!sent) {
+        (void)materialization_service_->RequeueMaterializedJob(candidate.job_id);
+        return false;
     }
-
-    const bool lhs_runtime = lhs.affinity.program_runtime_affinity_key.has_value() && !lhs.affinity.program_runtime_affinity_key->empty();
-    const bool rhs_runtime = rhs.affinity.program_runtime_affinity_key.has_value() && !rhs.affinity.program_runtime_affinity_key->empty();
-    if (lhs_runtime != rhs_runtime) {
-        return lhs_runtime;
-    }
-
-    return lhs.claim_sequence < rhs.claim_sequence;
+    (void)materialization_service_->MarkDispatched(candidate.job_id, now);
+    return true;
 }
 
 } // namespace simcore::runner::parallel::simcoredb

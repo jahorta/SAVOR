@@ -667,6 +667,28 @@ std::optional<std::string> SqliteStateDb::MaterializeArtifactToPath(
         error_out);
 }
 
+std::optional<std::string> SqliteStateDb::MaterializeSavestateToPath(
+    std::int64_t savestate_id,
+    std::string_view output_path,
+    std::string* error_out) const {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return std::nullopt;
+    }
+    if (savestate_id <= 0 || output_path.empty()) {
+        if (error_out) *error_out = "savestate_id and output_path are required";
+        return std::nullopt;
+    }
+
+    const auto savestate_ref = ResolveSavestateRef(db_, savestate_id);
+    if (!savestate_ref.has_value() || savestate_ref->artifact_id <= 0) {
+        if (error_out) *error_out = "savestate_id not found";
+        return std::nullopt;
+    }
+
+    return MaterializeArtifactToPath(savestate_ref->artifact_id, output_path, error_out);
+}
+
 std::vector<events::EventEnvelope> SqliteStateDb::ReadUnpublishedOutboxBatch(
     std::int64_t after_outbox_id,
     int max_batch_size) {

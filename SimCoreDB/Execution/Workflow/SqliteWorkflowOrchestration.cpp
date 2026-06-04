@@ -100,6 +100,26 @@ std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int index) {
     return text ? std::optional<std::string>(reinterpret_cast<const char*>(text)) : std::optional<std::string>("");
 }
 
+std::optional<WorkflowStepTerminalSnapshot> ReadStepTerminalSnapshot(sqlite3_stmt* st) {
+    WorkflowStepTerminalSnapshot snapshot{};
+    snapshot.workflow_instance_id = sqlite3_column_int64(st, 0);
+    snapshot.workflow_step_id = sqlite3_column_int64(st, 1);
+    snapshot.job_set_id = sqlite3_column_int64(st, 2);
+
+    const auto* workflow_kind = sqlite3_column_text(st, 3);
+    const auto* step_key = sqlite3_column_text(st, 4);
+    const auto* step_kind = sqlite3_column_text(st, 5);
+    snapshot.workflow_kind = workflow_kind ? reinterpret_cast<const char*>(workflow_kind) : "";
+    snapshot.step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
+    snapshot.step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
+
+    snapshot.expected_total = sqlite3_column_int(st, 6);
+    snapshot.discovered_total = sqlite3_column_int(st, 7);
+    snapshot.terminal_total = sqlite3_column_int(st, 8);
+    snapshot.failed_total = sqlite3_column_int(st, 9);
+    return snapshot;
+}
+
 } // namespace
 
 SqliteWorkflowOrchestrationQueryService::SqliteWorkflowOrchestrationQueryService(sqlite3* db)
@@ -172,6 +192,132 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
         rows.push_back(std::move(row));
     }
 
+    return rows;
+}
+
+std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryService::GetStepTerminalSnapshotForJob(
+    std::int64_t job_id) const {
+    if (job_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "WITH RECURSIVE job_set_ancestry(job_set_id, parent_job_set_id, depth) AS ("
+        "  SELECT js.job_set_id, js.parent_job_set_id, 0 "
+        "  FROM exec_job source "
+        "  JOIN exec_job_set js ON js.job_set_id=source.job_set_id "
+        "  WHERE source.job_id=?1 "
+        "  UNION ALL "
+        "  SELECT parent.job_set_id, parent.parent_job_set_id, job_set_ancestry.depth + 1 "
+        "  FROM exec_job_set parent "
+        "  JOIN job_set_ancestry ON parent.job_set_id=job_set_ancestry.parent_job_set_id "
+        "  WHERE job_set_ancestry.parent_job_set_id IS NOT NULL "
+        "    AND job_set_ancestry.depth < 64"
+        "), "
+        "step_root AS ("
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind "
+        "  FROM job_set_ancestry a "
+        "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  ORDER BY a.depth ASC LIMIT 1"
+        "), "
+        "job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM step_root "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+        "  WHERE job_set_descendants.depth < 64"
+        ") "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+        "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
+        "  ELSE COALESCE(root_js.expected_total, 0) END, "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED') "
+        "FROM step_root r "
+        "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id;",
+        &st,
+        nullptr)) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return ReadStepTerminalSnapshot(st.st);
+}
+
+std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryService::ListTerminalReadyStepSnapshots(
+    std::size_t limit) const {
+    std::vector<WorkflowStepTerminalSnapshot> rows;
+    if (limit == 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "WITH RECURSIVE step_root AS ("
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind "
+        "  FROM exec_workflow_step s "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  WHERE i.state IN ('PENDING','RUNNING') "
+        "    AND s.state IN ('MATERIALIZED','RUNNING') "
+        "    AND s.job_set_id IS NOT NULL "
+        "), "
+        "job_set_descendants(workflow_instance_id, workflow_step_id, root_job_set_id, workflow_kind, step_key, step_kind, job_set_id, depth) AS ("
+        "  SELECT workflow_instance_id, workflow_step_id, job_set_id, workflow_kind, step_key, step_kind, job_set_id, 0 "
+        "  FROM step_root "
+        "  UNION ALL "
+        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind, child.job_set_id, d.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
+        "  WHERE d.depth < 64"
+        "), "
+        "expected_summary AS ("
+        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind, "
+        "    CASE WHEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN 1 ELSE 0 END), 0) > 0 "
+        "      THEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN COALESCE(js.expected_total, 0) ELSE 0 END), 0) "
+        "      ELSE COALESCE(MAX(CASE WHEN d.depth=0 THEN js.expected_total ELSE NULL END), 0) END AS expected_total "
+        "  FROM job_set_descendants d "
+        "  LEFT JOIN exec_job_set js ON js.job_set_id=d.job_set_id "
+        "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind "
+        "), "
+        "job_summary AS ("
+        "  SELECT d.workflow_step_id, "
+        "    COUNT(j.job_id) AS discovered_total, "
+        "    COALESCE(SUM(CASE WHEN j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED') THEN 1 ELSE 0 END), 0) AS terminal_total, "
+        "    COALESCE(SUM(CASE WHEN j.state='FAILED' THEN 1 ELSE 0 END), 0) AS failed_total "
+        "  FROM job_set_descendants d "
+        "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
+        "  GROUP BY d.workflow_step_id "
+        ") "
+        "SELECT e.workflow_instance_id, e.workflow_step_id, e.root_job_set_id, e.workflow_kind, e.step_key, e.step_kind, "
+        "e.expected_total, j.discovered_total, j.terminal_total, j.failed_total "
+        "FROM expected_summary e "
+        "JOIN job_summary j ON j.workflow_step_id=e.workflow_step_id "
+        "WHERE e.expected_total > 0 "
+        "  AND j.discovered_total > 0 "
+        "  AND e.expected_total = j.discovered_total "
+        "  AND j.terminal_total >= j.discovered_total "
+        "ORDER BY e.workflow_step_id ASC "
+        "LIMIT ?1;",
+        &st,
+        nullptr)) {
+        return rows;
+    }
+
+    sqlite3_bind_int64(st.st, 1, static_cast<sqlite3_int64>(limit));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        auto snapshot = ReadStepTerminalSnapshot(st.st);
+        if (snapshot.has_value()) {
+            rows.push_back(*snapshot);
+        }
+    }
     return rows;
 }
 
@@ -663,6 +809,93 @@ bool SqliteWorkflowOrchestrationCommandService::ResumeWorkflowInstance(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::CompleteWorkflowInstance(
+    const WorkflowCompleteInstanceCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement current;
+    if (!Prepare(db_,
+        "SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=?1;",
+        &current,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(current.st, 1, command.workflow_instance_id);
+    if (sqlite3_step(current.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow instance not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const std::string current_state = reinterpret_cast<const char*>(sqlite3_column_text(current.st, 0));
+    if (current_state == "COMPLETED") {
+        if (!Exec(db_, "COMMIT;", error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        return true;
+    }
+    if (current_state == "FAILED" || current_state == "CANCELED") {
+        if (error_out) *error_out = "complete precondition failed (instance already terminal)";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement st;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_instance "
+        "SET state='COMPLETED', completed_at_utc=?2 "
+        "WHERE workflow_instance_id=?1 "
+        "  AND state IN ('PENDING','RUNNING') "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM exec_workflow_step "
+        "    WHERE workflow_instance_id=?1 "
+        "      AND state NOT IN ('COMPLETED','FAILED','SKIPPED')"
+        "  );",
+        &st,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(st.st, 2, NowUtc());
+
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "complete precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!EmitLifecycleEvent(
+            command.workflow_instance_id,
+            std::nullopt,
+            "Execution.WorkflowInstanceCompleted.v1",
+            "completed",
+            error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::PauseWorkflowInstance(
     const WorkflowPauseInstanceCommand& command,
     std::string* error_out) {
@@ -1041,6 +1274,98 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepBlocked(
             Exec(db_, "ROLLBACK;", nullptr);
             return false;
         }
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
+    const WorkflowMarkStepReadyCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+    if (command.step_key.empty()) {
+        if (error_out) *error_out = "step_key is required";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_step_id, state, job_set_id "
+        "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND step_key=?2;",
+        &read,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(read.st, 2, command.step_key.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    const auto workflow_step_id = sqlite3_column_int64(read.st, 0);
+    const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 1));
+    const auto existing_job_set_id = ColumnInt64Optional(read.st, 2);
+
+    if (state == "READY" && !existing_job_set_id.has_value()) {
+        if (!Exec(db_, "COMMIT;", error_out)) {
+            Exec(db_, "ROLLBACK;", nullptr);
+            return false;
+        }
+        return true;
+    }
+    if (state != "WAITING" || existing_job_set_id.has_value()) {
+        if (error_out) *error_out = "ready precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_step "
+        "SET state='READY', ready_at_utc=?3, blocked_reason=NULL "
+        "WHERE workflow_instance_id=?1 AND step_key=?2 AND state='WAITING' AND job_set_id IS NULL;",
+        &update,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(update.st, 2, command.step_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update.st, 3, NowUtc());
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "ready precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!EmitLifecycleEvent(
+        command.workflow_instance_id,
+        workflow_step_id,
+        "Execution.WorkflowStepReady.v1",
+        "ready",
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
     }
 
     if (!Exec(db_, "COMMIT;", error_out)) {

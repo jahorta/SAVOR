@@ -11,19 +11,20 @@ void RegisterSeedProbePhaseDescriptors(
         return;
     }
 
-    auto neutral = BuildSeedProbeNeutralDescriptor(execution_db, analysis_db);
+    auto neutral = BuildSeedProbeNeutralDescriptor(execution_db, analysis_db, config.authoring_db);
     auto grid = BuildSeedProbeGridDescriptor(
         execution_db,
         analysis_db,
         config.blueprint,
         config.grid,
-        std::move(config.grid_context_lookup));
+        config.authoring_db);
     auto unique = BuildSeedProbeUniqueDescriptor(
         execution_db,
         analysis_db,
         config.blueprint,
         config.unique,
-        std::move(config.unique_completion_gate));
+        std::move(config.unique_completion_gate),
+        config.authoring_db);
 
     (void)registry->Register(neutral);
     (void)registry->RegisterForStepKind("seedprobe.neutral", neutral);

@@ -388,8 +388,7 @@ TEST(Stage3cSeedProbeProgramDB, BuildsPhaseSpecificDescriptors) {
         nullptr,
         nullptr,
         SeedProbeGridBlueprintConfig{},
-        SeedProbeGridSpec{},
-        [](std::int64_t) -> std::optional<GridResultContext> { return std::nullopt; });
+        SeedProbeGridSpec{});
     auto unique = BuildSeedProbeUniqueDescriptor(nullptr, nullptr, SeedProbeGridBlueprintConfig{}, UniqueIni{});
 
     EXPECT_NE(dynamic_cast<NeutralProbeJobPersistenceAdapter*>(neutral.job_persistence.get()), nullptr);
@@ -415,7 +414,6 @@ TEST(Stage3cSeedProbeProgramDB, RegistryDispatchesAdaptersByWorkflowStepKind) {
 
     ProgramKindRegistry registry;
     SeedProbePhaseRegistrationConfig config{};
-    config.grid_context_lookup = [](std::int64_t) -> std::optional<GridResultContext> { return std::nullopt; };
     RegisterSeedProbePhaseDescriptors(&registry, nullptr, nullptr, std::move(config));
 
     const auto* neutral = registry.FindForStepKind("seedprobe.neutral");
@@ -892,6 +890,71 @@ TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputE
     const auto telemetry = coordinator.SnapshotTelemetry();
     EXPECT_GE(telemetry.input_complete_count, 1);
     EXPECT_GE(telemetry.last_input_latency_ms, 0);
+}
+
+TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndMarksSameJobSet) {
+    using namespace simcore::runner::parallel::simcoredb;
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::workflow;
+
+    class CountingPersistenceAdapter final : public IJobPersistenceAdapter {
+    public:
+        WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+            ++encode_calls;
+            WorkflowStepScheduleResult result{};
+            result.root_job_set_id = 17000 + domain_ref_id;
+            result.persistence.program_ref_kind = "test.domain";
+            result.persistence.program_ref_id = domain_ref_id;
+            result.persistence.fingerprint = "test";
+            return result;
+        }
+
+        std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override {
+            return persisted.program_ref_id;
+        }
+
+        mutable std::atomic<int> encode_calls{ 0 };
+    };
+
+    RecordingExecutionDb execution_db;
+    ProgramKindRegistry registry;
+    auto persistence = std::make_shared<CountingPersistenceAdapter>();
+    ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 7;
+    descriptor.program_name = "test.step";
+    descriptor.job_persistence = persistence;
+    ASSERT_TRUE(registry.RegisterForStepKind("test.step", descriptor));
+
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 0,
+            .controller_sleep_ms = 1,
+        },
+        CoordinatorIntegrationConfig{},
+        &registry);
+
+    coordinator.EnqueueReadyStep({
+        .workflow_instance_id = 301,
+        .workflow_step_id = 302,
+        .step_key = "Only",
+        .step_kind = "test.step",
+        .priority = 1,
+        .input_ref_id = 44,
+    });
+
+    coordinator.Start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (execution_db.command_service.materialized_calls.empty()
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    coordinator.Stop();
+
+    EXPECT_EQ(persistence->encode_calls.load(), 1);
+    ASSERT_EQ(execution_db.command_service.materialized_calls.size(), 1u);
+    EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 302);
+    EXPECT_EQ(execution_db.command_service.materialized_calls.front().job_set_id, 17044);
 }
 
 TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMaterializesStep) {

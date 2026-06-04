@@ -48,7 +48,7 @@ bool SeedStateSavestate(
                 .sha256 = "simcoredbe2e-" + savestate_file.filename().string(),
                 .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(savestate_file)),
                 .compression_kind = 0,
-                .filename = savestate_file.filename().string(),
+                .filename = std::filesystem::absolute(savestate_file).string(),
                 .file_ext = savestate_file.extension().string(),
                 .artifact_kind = "SAV",
                 .created_at_utc = UtcNow(),

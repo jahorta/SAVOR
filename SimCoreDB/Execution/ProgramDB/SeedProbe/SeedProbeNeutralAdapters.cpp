@@ -1,5 +1,7 @@
 #include "SeedProbeNeutralAdapters.h"
 
+#include <sstream>
+
 #include "../../Execution/Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SimCore/Runner/IPC/Wire.h"
@@ -18,37 +20,50 @@ constexpr const char* kSavestateRefKind = "savestate";
 constexpr const char* kNeutralBootstrapProfile = "seedprobe.neutral.required_savestate";
 constexpr const char* kNeutralResultKind = "seedprobe.neutral_seed";
 
-std::string BuildNeutralFingerprint(std::int64_t probe_id) {
-    return fingerprint_for(probe_id, simcore::GCInputFrame{}.to_frame_hex(), 0, 0);
+std::string BuildNeutralFingerprint(std::int64_t probe_id, SeedProbeTimingConfig timing) {
+    return fingerprint_for(probe_id, simcore::GCInputFrame{}.to_frame_hex(), timing.run_ms, timing.vi_stall_ms);
 }
 
-void ApplyTerminalJobStateFromResults(
+std::string ApplyTerminalJobStateFromResults(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t job_id,
     const ResultsIni& parsed) {
+    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
+    const char* terminal_state = failed ? "FAILED" : "SUCCEEDED";
+    std::ostringstream event;
+    event << "[seedprobe-job-terminal-state] stage=AppendLifecycleEvent phase=Neutral"
+          << " job=" << job_id
+          << " terminal_state=" << terminal_state;
     if (execution_db == nullptr || execution_db->JobCommandService() == nullptr || job_id <= 0) {
-        return;
+        event << " ok=false error=execution_db_unavailable";
+        return event.str();
     }
 
-    const bool failed = parsed.w_err != 0 || parsed.dw_err != 0;
-    std::string ignored_error;
-    (void)execution_db->JobCommandService()->AppendLifecycleEvent(
+    std::string error;
+    const bool ok = execution_db->JobCommandService()->AppendLifecycleEvent(
         {
             .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobCompleted,
             .job_id = job_id,
             .terminal_state = failed ? std::optional<std::string>("FAILED") : std::optional<std::string>("SUCCEEDED"),
             .requested_by = "seedprobe_result_mapper",
         },
-        &ignored_error);
+        &error);
+    event << " ok=" << (ok ? "true" : "false");
+    if (!ok) {
+        event << " error=" << error;
+    }
+    return event.str();
 }
 
 } // namespace
 
 NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
     simcore::db::IExecutionDb* execution_db,
-    simcore::db::IAnalysisDb* analysis_db)
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db)
     : execution_db_(execution_db)
-    , analysis_db_(analysis_db) {
+    , analysis_db_(analysis_db)
+    , authoring_db_(authoring_db) {
 }
 
 WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
@@ -56,7 +71,8 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
     auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = kProgramRefKind;
     persisted.program_version = kProgramVersion;
-    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id);
+    const auto timing = resolve_timing_from_authoring_spec(analysis_db_, authoring_db_, domain_ref_id).value_or(SeedProbeTimingConfig{});
+    persisted.fingerprint = BuildNeutralFingerprint(domain_ref_id, timing);
     persisted.program_ref_id = domain_ref_id;
     std::int64_t probe_run_id = domain_ref_id;
 
@@ -151,7 +167,7 @@ ResultMapPayload NeutralSeedResultMapper::MapPrimaryResult(std::int64_t job_id, 
     ResultMapPayload payload{};
     payload.result_kind = kNeutralResultKind;
     const auto parsed = ResultsIni::from_section(IniDoc::parse(result_ini));
-    ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed);
+    payload.event_lines.push_back(ApplyTerminalJobStateFromResults(execution_db_, job_id, parsed));
 
     if (execution_db_ == nullptr || analysis_db_ == nullptr) {
         return payload;
@@ -215,11 +231,12 @@ WorkflowTransitionDecision NeutralToGridTransitionHandler::EvaluateTransition(co
 
 ProgramKindDescriptor BuildSeedProbeNeutralDescriptor(
     simcore::db::IExecutionDb* execution_db,
-    simcore::db::IAnalysisDb* analysis_db) {
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = simcore::PK_SeedProbe;
     descriptor.program_name = "SeedProbe";
-    descriptor.job_persistence = std::make_shared<NeutralProbeJobPersistenceAdapter>(execution_db, analysis_db);
+    descriptor.job_persistence = std::make_shared<NeutralProbeJobPersistenceAdapter>(execution_db, analysis_db, authoring_db);
     descriptor.runtime_init = std::make_shared<RequiredSavestateRuntimeInitAdapter>(execution_db, analysis_db);
     descriptor.result_mapper = std::make_shared<NeutralSeedResultMapper>(execution_db, analysis_db);
     descriptor.workflow_transition = std::make_shared<NeutralToGridTransitionHandler>();

@@ -21,6 +21,7 @@
 #include "../../../../SimCoreDB/Execution/ProgramDB/ProgramKindRegistry.h"
 #include "../../../../SimCoreDB/Execution/Workflow/AdapterChainOrchestrator.h"
 #include "../../../../SimCoreDB/Execution/Workflow/WorkflowOrchestration.h"
+#include "../../../../SimCoreDB/State/IStateDb.h"
 #include "WorkflowCoordinatorBridge.h"
 #include "WorkflowIntegrationMode.h"
 #include "WorkflowSchedulerAdapter.h"
@@ -52,10 +53,12 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t max_materialization_latency_ms = 0;
     std::int64_t stale_claim_count = 0;
     std::int64_t dispatch_attempt_count = 0;
+    std::int64_t dispatch_success_count = 0;
     std::int64_t dispatch_miss_count = 0;
     std::int64_t dispatch_miss_rate_basis_points = 0;
     std::int64_t progress_batch_count = 0;
     std::int64_t max_progress_batch_size = 0;
+    std::int64_t results_received_count = 0;
     std::int64_t workflow_created_signal_count = 0;
     std::int64_t materialization_failure_count = 0;
     std::int64_t payload_materialization_failure_count = 0;
@@ -66,6 +69,7 @@ public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
     using ProgressCallback = std::function<void(const simcore::PRProgress&)>;
     using ResultCallback = std::function<void(const simcore::PRResult&)>;
+    using ResultMapEventCallback = std::function<void(const std::string&)>;
 
     DBWorkflowWorkerCoordinator(
         simcore::db::IExecutionDb* execution_db,
@@ -73,7 +77,8 @@ public:
         CoordinatorIntegrationConfig integration_cfg,
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
         ReadyStepPersistFn persist_materialization_fn = {},
-        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr);
+        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr,
+        simcore::db::IStateDb* state_db = nullptr);
 
     DBWorkflowWorkerCoordinator(
         simcore::db::IExecutionDb* execution_db,
@@ -83,7 +88,8 @@ public:
         WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
         ReadyStepPersistFn persist_materialization_fn = {},
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry = nullptr,
-        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr);
+        simcore::db::execution::workflow::StepCompletionGateService* step_completion_gate = nullptr,
+        simcore::db::IStateDb* state_db = nullptr);
 
     ~DBWorkflowWorkerCoordinator();
 
@@ -108,6 +114,7 @@ public:
     size_t ActiveWorkerCount() const;
     void SetProgressCallback(ProgressCallback callback);
     void SetResultCallback(ResultCallback callback);
+    void SetResultMapEventCallback(ResultMapEventCallback callback);
     void EnqueueProgressForTest(const simcore::PRProgress& progress);
     void EnqueueResultForTest(const simcore::PRResult& result);
 
@@ -120,11 +127,16 @@ private:
         size_t id = 0;
         std::unique_ptr<simcore::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
+        bool start_attempted = false;
         std::optional<uint64_t> in_flight_job_id;
+        std::optional<std::int32_t> loaded_program_kind;
+        std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
     };
     struct DispatchableWorkerInfo {
         size_t worker_idx = 0;
+        std::optional<std::int32_t> loaded_program_kind;
+        std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
     };
     struct DispatchedJobContext {
@@ -132,9 +144,13 @@ private:
         std::int64_t job_set_id = 0;
     };
 
-    void CoordinatorLoop();
+    void WorkflowStepCoordinatorLoop();
+    void WorkerJobCoordinatorLoop();
     void DrainProgressLoop();
     void DrainResultsLoop();
+    void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
+    void ReconcileWorkerPool();
+    void ReconcileTerminalWorkflowSteps();
     bool StartWorkerSlot(size_t worker_idx);
     void StopWorkerSlot(WorkerSlot& slot);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
@@ -143,12 +159,13 @@ private:
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
     std::string ReadyDedupKey(std::int64_t workflow_step_id) const;
     std::optional<ScheduledJobSet> MaterializeWorkflowStepInternal(const WorkflowReadyStep& step);
+    void HandlePayloadMaterializationFailures();
+    bool EnsureWorkerProgramForJob(size_t worker_idx, const ClaimedJobRecord& claimed_job);
     bool DispatchClaimedJobToWorker(size_t worker_idx, const ClaimedJobRecord& claimed_job);
     bool DispatchNextEligibleForWorker(
         size_t worker_idx,
-        const std::optional<std::string>& worker_savestate_affinity,
+        const MaterializedJobSelectionAffinity& worker_affinity,
         std::chrono::steady_clock::time_point now);
-    static bool BetterDispatchPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs);
     void EmitAdapterTraceEvent(
         const WorkflowReadyStep& step,
         const std::string& stage,
@@ -165,12 +182,18 @@ private:
         const WorkflowReadyStep& step,
         const std::string& stage,
         const std::string& reason) const;
+    void EmitDurableEventLine(const std::string& line) const;
     void MaybeTerminalFailStepInStrictSmokeMode(const WorkflowReadyStep& step, const std::string& requested_by) const;
 
     void RegisterWorkerSlotTelemetry(const WorkerSlot& slot);
     void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
+    std::optional<std::string> PrepareWorkerSavestatePathForJob(
+        size_t worker_idx,
+        const ClaimedJobRecord& claimed_job,
+        bool force_rematerialize);
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
+    simcore::db::IStateDb* state_db_ = nullptr;
     DBWorkflowWorkerCoordinatorConfig worker_cfg_{};
     CoordinatorIntegrationConfig integration_cfg_{};
     std::function<ScheduledJobSet(const WorkflowReadyStep&)> schedule_ready_step_fn_;
@@ -184,11 +207,14 @@ private:
     WorkflowCoordinatorBridge workflow_bridge_;
     ProgressCallback progress_callback_;
     ResultCallback result_callback_;
+    ResultMapEventCallback result_map_event_callback_;
 
     std::atomic<bool> stop_{ false };
     std::atomic<bool> paused_{ false };
     std::atomic<uint64_t> epoch_{ 1 };
-    std::thread coordinator_thread_;
+    std::thread workflow_step_thread_;
+    std::thread worker_job_thread_;
+    std::thread job_materializer_thread_;
     std::thread progress_drainer_thread_;
     std::thread results_drainer_thread_;
 
@@ -218,9 +244,11 @@ private:
     std::atomic<std::int64_t> max_materialization_latency_ms_{ 0 };
     std::atomic<std::int64_t> stale_claim_count_{ 0 };
     std::atomic<std::int64_t> dispatch_attempt_count_{ 0 };
+    std::atomic<std::int64_t> dispatch_success_count_{ 0 };
     std::atomic<std::int64_t> dispatch_miss_count_{ 0 };
     std::atomic<std::int64_t> progress_batch_count_{ 0 };
     std::atomic<std::int64_t> max_progress_batch_size_{ 0 };
+    std::atomic<std::int64_t> results_received_count_{ 0 };
     std::atomic<std::int64_t> workflow_created_signal_count_{ 0 };
     std::atomic<std::int64_t> materialization_failure_count_{ 0 };
     std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };

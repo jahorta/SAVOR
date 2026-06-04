@@ -20,10 +20,12 @@ namespace simcore::runner::parallel::simcoredb {
 
 enum class ClaimedJobLifecycleState {
     Claimed = 0,
-    PayloadMaterialized = 1,
-    EligibleForDispatch = 2,
-    Dispatched = 3,
-    Expired = 4,
+    Materializing = 1,
+    Materialized = 2,
+    MaterializationFailed = 3,
+    Dispatching = 4,
+    Dispatched = 5,
+    Expired = 6,
 };
 
 struct ClaimedJobAffinity {
@@ -35,6 +37,8 @@ struct ClaimedJobRecord {
     WorkflowReadyStep step{};
     std::int64_t job_set_id = 0;
     std::int64_t job_id = 0;
+    std::int32_t program_kind = 0;
+    simcore::db::execution::programdb::RuntimeInitRequest runtime_init{};
     ClaimedJobAffinity affinity{};
     std::uint64_t claim_sequence = 0;
     std::chrono::steady_clock::time_point claimed_at{};
@@ -50,20 +54,34 @@ struct ClaimedJobSeed {
     ClaimedJobAffinity affinity{};
 };
 
+struct MaterializedJobSelectionAffinity {
+    std::optional<std::string> savestate_affinity_key;
+    std::optional<std::int32_t> program_kind;
+    std::optional<std::string> program_runtime_affinity_key;
+};
+
 class JobMaterializationService {
 public:
     using BuildJobPayloadFn = std::function<std::optional<simcore::PSJob>(std::int64_t job_id, const WorkflowReadyStep&)>;
     using ClaimJobsFn = std::function<std::vector<ClaimedJobSeed>(std::size_t max_claims)>;
     using ResolveAffinityFn = std::function<ClaimedJobAffinity(const ClaimedJobRecord&)>;
+    using EventCallback = std::function<void(const std::string&)>;
 
     JobMaterializationService(
         simcore::db::IExecutionDb* execution_db,
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry
     );
 
+    void ResetForStart();
+    void StopMaterializationLoop();
+    void SetEventCallback(EventCallback callback);
     std::size_t ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now);
     bool MaterializeClaimedJobPayload(std::chrono::steady_clock::time_point now);
-    void MaterializeClaimedJobPayloadLoop();
+    void MaterializeClaimedJobPayloadLoop(const std::atomic<bool>& stop_requested);
+    bool TrySelectMaterializedJobForWorker(
+        const MaterializedJobSelectionAffinity& worker_affinity,
+        ClaimedJobRecord* job_out);
+    bool RequeueMaterializedJob(std::int64_t job_id);
 
     std::vector<ClaimedJobRecord> ListByState(ClaimedJobLifecycleState state) const;
     bool MarkDispatched(std::int64_t job_id, std::chrono::steady_clock::time_point now);
@@ -73,16 +91,22 @@ public:
     std::size_t CountBufferedJobs() const;
 
 private:
-    static bool BetterClaimPriority(const ClaimedJobRecord& lhs, const ClaimedJobRecord& rhs);
+    static bool BetterMaterializedDispatchCandidate(
+        const ClaimedJobRecord& lhs,
+        const ClaimedJobRecord& rhs,
+        const MaterializedJobSelectionAffinity& worker_affinity);
+    bool MaterializeClaimedJobRecord(const ClaimedJobRecord& queued_record, std::chrono::steady_clock::time_point now);
 
     
     std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };    
     mutable std::mutex mutex_;
     TSQueue<ClaimedJobRecord> claimed_jobs_q_;
     std::unordered_map<std::string, ClaimedJobRecord> claimed_jobs_;
+    std::unordered_map<std::string, ClaimedJobRecord> materialized_jobs_;
     std::uint64_t claim_sequence_counter_ = 0;
     simcore::db::IExecutionDb* execution_db;
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry;
+    EventCallback event_callback_;
 };
 
 } // namespace simcore::runner::parallel::simcoredb

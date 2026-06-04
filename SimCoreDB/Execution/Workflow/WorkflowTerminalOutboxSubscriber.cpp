@@ -234,18 +234,43 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForJob(
     StepTerminalContextSnapshot* snapshot_out,
     std::string* error_out) const {
     constexpr const char* kSql =
-        "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
-        "COALESCE(js.expected_total, 0), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
-        "  AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
-        "FROM exec_job source "
-        "JOIN exec_workflow_step s ON s.job_set_id=source.job_set_id "
-        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
-        "WHERE source.job_id=?1 "
-        "LIMIT 1;";
+        "WITH RECURSIVE job_set_ancestry(job_set_id, parent_job_set_id, depth) AS ("
+        "  SELECT js.job_set_id, js.parent_job_set_id, 0 "
+        "  FROM exec_job source "
+        "  JOIN exec_job_set js ON js.job_set_id=source.job_set_id "
+        "  WHERE source.job_id=?1 "
+        "  UNION ALL "
+        "  SELECT parent.job_set_id, parent.parent_job_set_id, job_set_ancestry.depth + 1 "
+        "  FROM exec_job_set parent "
+        "  JOIN job_set_ancestry ON parent.job_set_id=job_set_ancestry.parent_job_set_id "
+        "  WHERE job_set_ancestry.parent_job_set_id IS NOT NULL "
+        "    AND job_set_ancestry.depth < 64"
+        "), "
+        "step_root AS ("
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind "
+        "  FROM job_set_ancestry a "
+        "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  ORDER BY a.depth ASC LIMIT 1"
+        "), "
+        "job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM step_root "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+        "  WHERE job_set_descendants.depth < 64"
+        ") "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+        "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
+        "  ELSE COALESCE(root_js.expected_total, 0) END, "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED') "
+        "FROM step_root r "
+        "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id;";
     return LoadStepTerminalSnapshot(db_, kSql, job_id, snapshot_out, error_out);
 }
 
@@ -254,17 +279,30 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForStep(
     StepTerminalContextSnapshot* snapshot_out,
     std::string* error_out) const {
     constexpr const char* kSql =
-        "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
-        "COALESCE(js.expected_total, 0), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
-        "  AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
-        "FROM exec_workflow_step s "
-        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
-        "WHERE s.workflow_step_id=?1 "
-        "LIMIT 1;";
+        "WITH RECURSIVE step_root AS ("
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind "
+        "  FROM exec_workflow_step s "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  WHERE s.workflow_step_id=?1 LIMIT 1"
+        "), "
+        "job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM step_root "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+        "  WHERE job_set_descendants.depth < 64"
+        ") "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+        "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
+        "  ELSE COALESCE(root_js.expected_total, 0) END, "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED') "
+        "FROM step_root r "
+        "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id;";
     return LoadStepTerminalSnapshot(db_, kSql, workflow_step_id, snapshot_out, error_out);
 }
 
@@ -273,18 +311,31 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForWorkflowEvent(
     StepTerminalContextSnapshot* snapshot_out,
     std::string* error_out) const {
     constexpr const char* kSql =
-        "SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
-        "COALESCE(js.expected_total, 0), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id "
-        "  AND j.state IN ('SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED') "
-        "FROM exec_workflow_event source "
-        "JOIN exec_workflow_step s ON s.workflow_step_id=source.workflow_step_id "
-        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
-        "LEFT JOIN exec_job_set js ON js.job_set_id=s.job_set_id "
-        "WHERE source.workflow_event_id=?1 "
-        "LIMIT 1;";
+        "WITH RECURSIVE step_root AS ("
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind "
+        "  FROM exec_workflow_event source "
+        "  JOIN exec_workflow_step s ON s.workflow_step_id=source.workflow_step_id "
+        "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "  WHERE source.workflow_event_id=?1 LIMIT 1"
+        "), "
+        "job_set_descendants(job_set_id, depth) AS ("
+        "  SELECT job_set_id, 0 FROM step_root "
+        "  UNION ALL "
+        "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+        "  FROM exec_job_set child "
+        "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+        "  WHERE job_set_descendants.depth < 64"
+        ") "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
+        "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
+        "  ELSE COALESCE(root_js.expected_total, 0) END, "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+        "  WHERE j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE','FAILED','CANCELED')), "
+        "(SELECT COUNT(1) FROM exec_job j JOIN job_set_descendants d ON d.job_set_id=j.job_set_id WHERE j.state='FAILED') "
+        "FROM step_root r "
+        "LEFT JOIN exec_job_set root_js ON root_js.job_set_id=r.job_set_id;";
     return LoadStepTerminalSnapshot(db_, kSql, workflow_event_id, snapshot_out, error_out);
 }
 
@@ -390,6 +441,19 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
     const auto event_message = advanced
         ? std::optional<std::string>("transition_advanced")
         : terminal.transition.has_value() ? terminal.transition->blocked_reason : std::optional<std::string>("transition_blocked");
+
+    if (advanced && terminal.transition->next_step_key.has_value()) {
+        if (!command_service_->MarkStepReady(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .step_key = *terminal.transition->next_step_key,
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+    }
 
     if (!command_service_->AppendLifecycleEvent(
         {

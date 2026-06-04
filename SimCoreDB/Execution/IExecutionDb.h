@@ -76,6 +76,8 @@ struct ClaimedExecutionJob {
     int workflow_step_priority = 0;
     std::optional<std::string> savestate_affinity_key;
     std::optional<std::string> program_runtime_affinity_key;
+    std::optional<std::string> previous_claimed_by_token;
+    std::optional<std::int64_t> previous_lease_expires_at_utc;
 };
 
 struct IExecutionDb {
@@ -143,7 +145,11 @@ struct IExecutionDb {
         return true;
     }
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
-    virtual bool MarkQueuedJobsSuperseded(std::int64_t job_set_id, std::int64_t except_job_id, std::string* error_out = nullptr) = 0;
+    virtual bool MarkQueuedJobsSuperseded(
+        std::int64_t job_set_id,
+        std::int64_t except_job_id,
+        std::string* error_out = nullptr,
+        int* rows_superseded_out = nullptr) = 0;
 
 
     virtual retention::OutboxRetentionPreview PreviewOutboxRetention(

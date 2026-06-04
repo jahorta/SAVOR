@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ProgramKindRegistry.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "SeedProbeGridAdapters.h"
 #include "SeedProbeNeutralAdapters.h"
 #include "SeedProbeUniqueAdapters.h"
@@ -8,10 +9,10 @@
 namespace simcore::db::execution::programdb::seedprobe {
 
 struct SeedProbePhaseRegistrationConfig {
+    simcore::db::IAuthoringDb* authoring_db = nullptr;
     SeedProbeGridBlueprintConfig blueprint{};
     SeedProbeGridSpec grid{};
     UniqueIni unique{};
-    SeedProbeGridResultMapper::ContextLookupFn grid_context_lookup{};
     SeedProbeUniqueTransitionHandler::CompletionGateFn unique_completion_gate{};
 };
 

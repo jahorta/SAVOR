@@ -37,6 +37,22 @@ struct SaveSeedProbeSpecCommand {
     std::string causation_id;
 };
 
+struct SeedProbeSpecSnapshot {
+    std::int64_t seed_probe_spec_id = 0;
+    std::string name;
+    int priority = 0;
+    std::int64_t run_ms = 0;
+    std::int64_t vi_stall_ms = 0;
+    int samples_per_axis = 0;
+    std::int64_t min_value = 0;
+    std::int64_t max_value = 0;
+    bool cap_trigger_top = false;
+    bool ignore_trigger_minmax = false;
+    int combo_attempts_per_target = 0;
+    int combo_sampler_tries = 0;
+    bool auto_schedule_battle_run = false;
+};
+
 struct SaveTasSpecCommand {
     std::string base_name;
     int priority = 0;
@@ -128,6 +144,9 @@ struct IAuthoringDb {
         const SaveSeedProbeSpecCommand& command,
         std::int64_t* seed_probe_spec_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<SeedProbeSpecSnapshot> GetSeedProbeSpec(
+        std::int64_t seed_probe_spec_id) const = 0;
 
     virtual bool SaveTasSpec(
         const SaveTasSpecCommand& command,

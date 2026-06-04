@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "../../../SimCore/Runner/Script/PhaseScriptVM.h"
 
@@ -23,6 +24,7 @@ struct JobPersistenceRecord {
 struct WorkflowStepScheduleResult {
     JobPersistenceRecord persistence;
     std::int64_t root_job_set_id = 0;
+    std::vector<std::string> event_lines;
 };
 
 struct RuntimeInitRequest {
@@ -39,6 +41,7 @@ struct ResultArtifactRef {
 struct ResultMapPayload {
     std::string result_kind;
     std::int64_t result_ref_id = 0;
+    std::vector<std::string> event_lines;
 };
 
 struct IResultPayloadWriter {

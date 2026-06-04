@@ -33,6 +33,11 @@ public:
         cv_.notify_all();
     }
 
+    void reset() {
+        { std::lock_guard<std::mutex> lk(m_); q_.clear(); closed_ = false; }
+        cv_.notify_all();
+    }
+
     size_t size() const {
         std::lock_guard<std::mutex> lk(m_);
         return q_.size();

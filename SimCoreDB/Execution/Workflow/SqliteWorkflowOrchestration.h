@@ -22,6 +22,8 @@ public:
 
     std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const override;
+    std::optional<WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const override;
+    std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const override;
     std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const override;
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const override;
 
@@ -41,11 +43,13 @@ public:
     bool SkipStep(const WorkflowSkipStepCommand& command, std::string* error_out) override;
     bool CancelWorkflowInstance(const WorkflowCancelInstanceCommand& command, std::string* error_out) override;
     bool ResumeWorkflowInstance(const WorkflowResumeInstanceCommand& command, std::string* error_out) override;
+    bool CompleteWorkflowInstance(const WorkflowCompleteInstanceCommand& command, std::string* error_out) override;
     bool PauseWorkflowInstance(const WorkflowPauseInstanceCommand& command, std::string* error_out) override;
     bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) override;
     bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override;
     bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;
+    bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) override;
     bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) override;
     bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override;
 

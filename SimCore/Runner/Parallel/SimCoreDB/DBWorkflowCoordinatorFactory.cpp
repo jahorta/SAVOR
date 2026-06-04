@@ -6,6 +6,7 @@ namespace simcore::runner::parallel::simcoredb {
 
 DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
     simcore::db::IExecutionDb* execution_db,
+    simcore::db::IStateDb* state_db,
     DBWorkflowWorkerCoordinatorConfig worker_cfg,
     CoordinatorIntegrationConfig integration_cfg,
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
@@ -25,7 +26,9 @@ DBWorkflowWorkerCoordinator BuildDbBackedWorkflowCoordinator(
         std::move(worker_cfg),
         integration_cfg,
         program_kind_registry,
-        std::move(persist_materialization_fn));
+        std::move(persist_materialization_fn),
+        nullptr,
+        state_db);
 }
 
 } // namespace simcore::runner::parallel::simcoredb

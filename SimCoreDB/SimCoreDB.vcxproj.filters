@@ -79,6 +79,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -244,6 +247,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp">
