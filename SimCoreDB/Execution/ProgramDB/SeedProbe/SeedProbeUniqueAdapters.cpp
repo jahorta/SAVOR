@@ -141,6 +141,7 @@ SeedProbeUniqueJobPersistenceAdapter::SeedProbeUniqueJobPersistenceAdapter(
 WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
     WorkflowStepScheduleResult scheduled{};
     const auto resolved_blueprint = ResolveBlueprintForRun(domain_ref_id);
+    const auto resolved_unique = ResolveUniqueSpecForRun(domain_ref_id);
     auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = "sp_probe_run";
     persisted.program_ref_id = domain_ref_id;
@@ -182,8 +183,8 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
 
     auto planned = simcore::PlanJCTComboSamples(
         grid,
-        static_cast<std::uint32_t>(std::max(unique_ini_.combo_attempts_per_target, 1)),
-        static_cast<std::uint32_t>(std::max(unique_ini_.combo_sampler_tries, 1)));
+        static_cast<std::uint32_t>(std::max(resolved_unique.combo_attempts_per_target, 1)),
+        static_cast<std::uint32_t>(std::max(resolved_unique.combo_sampler_tries, 1)));
 
     std::int64_t root_job_set_id = 0;
     std::string error;
@@ -263,6 +264,8 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
     std::ostringstream event;
     event << "[seedprobe-unique-enqueue-summary]"
           << " root_job_set=" << root_job_set_id
+          << " combo_attempts_per_target=" << resolved_unique.combo_attempts_per_target
+          << " combo_sampler_tries=" << resolved_unique.combo_sampler_tries
           << " planned_samples=" << planned.samples.size()
           << " planned_frames=" << planned_frames
           << " child_sets_created=" << child_sets_created
@@ -288,6 +291,31 @@ SeedProbeGridBlueprintConfig SeedProbeUniqueJobPersistenceAdapter::ResolveBluepr
     if (timing.has_value()) {
         resolved.run_ms = timing->run_ms;
         resolved.vi_stall_ms = timing->vi_stall_ms;
+    }
+    return resolved;
+}
+
+UniqueIni SeedProbeUniqueJobPersistenceAdapter::ResolveUniqueSpecForRun(std::int64_t probe_run_id) const {
+    auto resolved = unique_ini_;
+    if (analysis_db_ == nullptr || authoring_db_ == nullptr || probe_run_id <= 0) {
+        return resolved;
+    }
+
+    const auto probe_run = analysis_db_->GetSeedProbeRun(probe_run_id);
+    if (!probe_run.has_value()) {
+        return resolved;
+    }
+
+    const auto spec = authoring_db_->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
+    if (!spec.has_value()) {
+        return resolved;
+    }
+
+    if (spec->combo_attempts_per_target > 0) {
+        resolved.combo_attempts_per_target = spec->combo_attempts_per_target;
+    }
+    if (spec->combo_sampler_tries > 0) {
+        resolved.combo_sampler_tries = spec->combo_sampler_tries;
     }
     return resolved;
 }

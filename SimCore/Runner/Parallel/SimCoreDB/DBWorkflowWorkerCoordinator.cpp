@@ -1,7 +1,6 @@
 #include "DBWorkflowWorkerCoordinator.h"
 
 #include "../../../../SimCoreDB/Execution/Workflow/WorkflowTerminalAdvancementService.h"
-#include "../../../../SimCoreDB/Execution/Workflow/SqliteExecutionDb.h"
 
 #include <algorithm>
 #include <chrono>
@@ -306,8 +305,8 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
     for (const auto& line : scheduled.event_lines) {
         EmitDurableEventLine(line);
     }
-    if (auto* sqlite_execution_db = dynamic_cast<simcore::db::execution::workflow::SqliteExecutionDb*>(execution_db_)) {
-        const auto details = sqlite_execution_db->GetJobSetProgress(scheduled.job_set_id);
+    if (execution_db_ != nullptr) {
+        const auto details = execution_db_->GetJobSetProgress(scheduled.job_set_id);
         if (details.has_value()) {
             std::ostringstream line;
             line << "[seedprobe-materialization-counts]"
@@ -320,7 +319,7 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
             if (details->expected_total.has_value()) {
                 line << " expected_total=" << *details->expected_total;
             }
-            const auto child_rows = sqlite_execution_db->GetChildJobSetProgress(scheduled.job_set_id);
+            const auto child_rows = execution_db_->GetChildJobSetProgress(scheduled.job_set_id);
             if (!child_rows.empty()) {
                 std::int64_t child_total = 0;
                 std::int64_t child_expected = 0;

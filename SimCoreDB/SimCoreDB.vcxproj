@@ -185,10 +185,12 @@
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
+    <ClInclude Include="Common\QueuedDb.h" />
     <ClInclude Include="Common\Types\TypedIds.h" />
     <ClInclude Include="Common\Types\UtcTimestamp.h" />
     <ClInclude Include="Execution\IExecutionDb.h" />
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
+    <ClInclude Include="Execution\QueuedExecutionDb.h" />
     <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h" />
     <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h" />
     <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h" />
@@ -225,10 +227,12 @@
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Common\DbService.cpp" />
+    <ClCompile Include="Common\QueuedDb.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
+    <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp" />

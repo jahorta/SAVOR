@@ -11,6 +11,7 @@
 
 #include "Common/Events/OutboxRelay.h"
 #include "Common/Migrations/MigrationRunner.h"
+#include "Execution/QueuedExecutionDb.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
@@ -975,6 +976,71 @@ VALUES
         CleanupPhase4Db(service, temp_dir);
     }
 
+    TEST(Stage4Queues, DBServiceExecutionDbSerializesConcurrentWorkflowLifecycleWrites) {
+        using simcore::db::core::DBService;
+        using simcore::db::execution::QueuedExecutionDb;
+        using simcore::db::execution::workflow::SqliteExecutionDb;
+
+        std::filesystem::path temp_dir;
+        std::unique_ptr<DBService> service;
+        SqliteExecutionDb* raw_execution_db = nullptr;
+        std::string err;
+        ASSERT_TRUE(OpenPhase4ExecutionDb("queued-execution", &temp_dir, &service, &raw_execution_db, &err)) << err;
+
+        auto* queued_execution_db = dynamic_cast<QueuedExecutionDb*>(service->ExecutionDb());
+        ASSERT_NE(queued_execution_db, nullptr);
+        ASSERT_NE(queued_execution_db->WorkflowCommandService(), nullptr);
+
+        ASSERT_TRUE(raw_execution_db->ValidationExecuteSql(R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(4701, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'queue-test', unixepoch()*1000, unixepoch()*1000);
+)SQL", &err))
+            << err;
+
+        constexpr int kThreadCount = 8;
+        constexpr int kWritesPerThread = 25;
+        std::atomic<int> failures{0};
+        std::vector<std::thread> threads;
+        threads.reserve(kThreadCount);
+        for (int thread_idx = 0; thread_idx < kThreadCount; ++thread_idx) {
+            threads.emplace_back([&, thread_idx]() {
+                for (int write_idx = 0; write_idx < kWritesPerThread; ++write_idx) {
+                    std::string write_err;
+                    const bool ok = queued_execution_db->WorkflowCommandService()->AppendLifecycleEvent(
+                        {
+                            .workflow_instance_id = 4701,
+                            .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+                            .message = std::string("thread=") + std::to_string(thread_idx) + " write=" + std::to_string(write_idx),
+                            .requested_by = "queue-test",
+                        },
+                        &write_err);
+                    if (!ok) {
+                        ++failures;
+                    }
+                }
+            });
+        }
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        EXPECT_EQ(failures.load(), 0);
+
+        std::int64_t event_count = 0;
+        ASSERT_TRUE(raw_execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=4701 AND event_kind='Execution.WorkflowTransitionEvaluated.v1';",
+            &event_count,
+            &err))
+            << err;
+        EXPECT_EQ(event_count, kThreadCount * kWritesPerThread);
+
+        const auto telemetry = queued_execution_db->GetTelemetrySnapshot();
+        EXPECT_GE(telemetry.write_enqueued, static_cast<std::uint64_t>(kThreadCount * kWritesPerThread));
+        EXPECT_EQ(telemetry.write_rejected, 0u);
+
+        CleanupPhase4Db(service, temp_dir);
+    }
+
     TEST(Stage4Recovery, ClaimedJobMaterializationIsIdempotentAcrossRestart) {
         using simcore::db::core::DBService;
         using simcore::db::execution::workflow::SqliteExecutionDb;
@@ -1005,7 +1071,7 @@ VALUES(4203, 1, 'workflow', 1, unixepoch()*1000);
             MakePhase4DbPaths(temp_dir),
             MigrationSourceOptions{ .source_kind = MigrationSourceKind::Embedded });
         ASSERT_TRUE(restarted->Start(&err)) << err;
-        auto* restarted_execution = dynamic_cast<SqliteExecutionDb*>(restarted->ExecutionDb());
+        auto* restarted_execution = restarted->RawExecutionDbForValidation();
         ASSERT_NE(restarted_execution, nullptr);
 
         ASSERT_TRUE(restarted_execution->WorkflowCommandService()->MarkStepMaterialized(

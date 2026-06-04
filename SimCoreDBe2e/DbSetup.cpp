@@ -114,7 +114,7 @@ bool SeedAuthoringSpec(
 
 bool SeedExecutionWorkflow(
     simcore::db::IAnalysisDb* analysis_db,
-    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    simcore::db::IExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
     std::int64_t* workflow_instance_id_out,

@@ -1,39 +1,59 @@
 #pragma once
 
-#include <cstdint>
+#include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
-#include <sqlite3.h>
+#include "../Common/QueuedDb.h"
+#include "IExecutionDb.h"
+#include "Jobs/JobEventOrchestration.h"
+#include "Workflow/WorkflowOrchestration.h"
 
-#include "../IExecutionDb.h"
-#include "../Jobs/JobEventOrchestration.h"
-#include "SqliteWorkflowOrchestration.h"
+namespace simcore::db::execution {
 
-namespace simcore::db::execution::workflow {
+struct ExecutionQueueConfig {
+    std::size_t write_capacity = 4096;
+    std::size_t read_capacity = 4096;
+};
 
-class SqliteWorkflowOrchestrationQueryService;
-class SqliteWorkflowOrchestrationCommandService;
-struct WorkflowInvariantRemediationCommand;
+struct ExecutionQueueTelemetrySnapshot {
+    std::size_t write_depth = 0;
+    std::size_t read_depth = 0;
+    std::uint64_t write_enqueued = 0;
+    std::uint64_t read_enqueued = 0;
+    std::uint64_t write_rejected = 0;
+    std::uint64_t read_rejected = 0;
+    std::uint64_t write_completed = 0;
+    std::uint64_t read_completed = 0;
+    std::uint64_t write_failed = 0;
+    std::uint64_t read_failed = 0;
+};
 
-class SqliteExecutionDb final : public simcore::db::IExecutionDb {
+class QueuedExecutionDb final : public simcore::db::IExecutionDb, private simcore::db::core::QueuedDbExecutor {
 public:
-    explicit SqliteExecutionDb(sqlite3* db);
-    bool ValidationExecuteSql(std::string_view sql, std::string* error_out = nullptr) const;
-    bool ValidationQueryInt(std::string_view sql, std::int64_t* value_out, std::string* error_out = nullptr) const;
-    bool ValidationQueryText(std::string_view sql, std::string* value_out, std::string* error_out = nullptr) const;
-    bool ValidationExecuteInvariantRemediation(
-        const WorkflowInvariantRemediationCommand& command,
-        bool* reopened_out,
-        std::string* error_out = nullptr);
+    explicit QueuedExecutionDb(
+        simcore::db::IExecutionDb* inner,
+        ExecutionQueueConfig config = {});
+    ~QueuedExecutionDb() override;
 
-    IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
-    IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
+    QueuedExecutionDb(const QueuedExecutionDb&) = delete;
+    QueuedExecutionDb& operator=(const QueuedExecutionDb&) = delete;
+
+    bool Start(std::string* error_out = nullptr);
+    void Stop();
+    [[nodiscard]] bool IsRunning() const;
+    [[nodiscard]] ExecutionQueueTelemetrySnapshot GetTelemetrySnapshot() const;
+
+    workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override;
+    workflow::IWorkflowOrchestrationCommandService* WorkflowCommandService() override;
     jobs::IJobEventCommandService* JobCommandService() override;
+
     bool CreateWorkflowInstance(
-        const WorkflowCreateInstanceCommand& command,
+        const workflow::WorkflowCreateInstanceCommand& command,
         std::int64_t* workflow_instance_id_out = nullptr,
         std::string* error_out = nullptr) override;
     bool CreateJobSet(const CreateJobSetCommand& command, std::int64_t* job_set_id_out = nullptr, std::string* error_out = nullptr) override;
@@ -64,10 +84,12 @@ public:
         std::int64_t except_job_id,
         std::string* error_out = nullptr,
         int* rows_superseded_out = nullptr) override;
+
     retention::OutboxRetentionPreview PreviewOutboxRetention(
         const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
         types::UtcTimePoint now_utc,
         const retention::OutboxRetentionPolicy& policy) const override;
+
     bool PurgeOutboxThroughRetentionFloor(
         const std::vector<retention::OutboxSubscriptionSnapshot>& subscriptions,
         types::UtcTimePoint now_utc,
@@ -75,13 +97,16 @@ public:
         int max_rows,
         int* rows_deleted_out = nullptr,
         std::string* error_out = nullptr) override;
+
     bool PurgeWorkflowHandlerDedupeOlderThan(
         std::int64_t last_seen_at_utc_exclusive,
         int max_rows,
         int* rows_deleted_out = nullptr,
         std::string* error_out = nullptr) override;
+
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         const events::EventEnvelope& envelope) const override;
+
     std::optional<events::ExecutionWorkflowJobPayloadView> ResolveExecutionWorkflowJobPayload(
         std::string_view event_type,
         int event_version,
@@ -89,10 +114,25 @@ public:
         std::int64_t payload_ref_id) const override;
 
 private:
-    sqlite3* db_ = nullptr;
-    std::unique_ptr<SqliteWorkflowOrchestrationQueryService> query_service_;
-    std::unique_ptr<SqliteWorkflowOrchestrationCommandService> command_service_;
-    std::unique_ptr<jobs::SqliteJobEventCommandService> job_command_service_;
+    class QueuedWorkflowQueryService;
+    class QueuedWorkflowCommandService;
+    class QueuedJobCommandService;
+
+    template <typename Result, typename Fn>
+    Result ExecuteRead(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+
+    template <typename Result, typename Fn>
+    Result ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+
+    simcore::db::IExecutionDb* inner_ = nullptr;
+    ExecutionQueueConfig config_{};
+
+    mutable std::mutex sqlite_call_mtx_;
+    std::unique_ptr<core::QueuedDbLane> read_lane_;
+    std::unique_ptr<core::QueuedDbLane> write_lane_;
+    std::unique_ptr<QueuedWorkflowQueryService> workflow_query_service_;
+    std::unique_ptr<QueuedWorkflowCommandService> workflow_command_service_;
+    std::unique_ptr<QueuedJobCommandService> job_command_service_;
 };
 
-} // namespace simcore::db::execution::workflow
+} // namespace simcore::db::execution

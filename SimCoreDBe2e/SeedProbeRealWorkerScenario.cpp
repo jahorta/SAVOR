@@ -7,9 +7,9 @@
 #include <cstdio>
 #include <deque>
 #include <iostream>
-#include <iterator>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -45,6 +45,19 @@ using ::WorkerStateKind;
 namespace {
 
 constexpr std::int64_t kSeedProbeAverageUniqueCountEstimate = 25;
+
+enum class DurableLineSeverity {
+    Info,
+    Warning,
+    Error,
+};
+
+struct DurableLine {
+    DurableLineCategory category = DurableLineCategory::Debug;
+    DurableLineSeverity severity = DurableLineSeverity::Info;
+    std::string tag;
+    std::string text;
+};
 
 std::int64_t ComputeSeedProbeTimeoutMs(std::int64_t baseline_timeout_ms) {
     const std::int64_t grid_probe_count = static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * 3;
@@ -84,6 +97,79 @@ bool IsInteractiveStdout() {
 #else
     return ::isatty(fileno(stdout)) != 0;
 #endif
+}
+
+std::string ExtractDurableTag(std::string_view line) {
+    if (line.empty() || line.front() != '[') {
+        return {};
+    }
+    const auto close = line.find(']');
+    if (close == std::string_view::npos || close <= 1) {
+        return {};
+    }
+    return std::string(line.substr(1, close - 1));
+}
+
+bool ContainsToken(std::string_view line, std::string_view token) {
+    return line.find(token) != std::string_view::npos;
+}
+
+DurableLine ClassifyDurableLine(std::string line) {
+    DurableLine durable{};
+    durable.tag = ExtractDurableTag(line);
+    durable.text = std::move(line);
+
+    const auto& tag = durable.tag;
+    const auto text = std::string_view(durable.text);
+    if (tag == "seedprobe-result") {
+        durable.category = DurableLineCategory::Result;
+    } else if (tag == "seedprobe-error" || tag == "seedprobe-step-failed" || tag == "seedprobe-result-map-failed") {
+        durable.category = DurableLineCategory::Failure;
+        durable.severity = DurableLineSeverity::Error;
+    } else if (tag == "seedprobe-result-duplicate"
+        || tag == "seedprobe-result-no-context"
+        || tag == "seedprobe-result-worker-mismatch"
+        || tag == "seedprobe-dispatch-requeue") {
+        durable.category = tag == "seedprobe-dispatch-requeue" ? DurableLineCategory::Dispatch : DurableLineCategory::Warning;
+        durable.severity = DurableLineSeverity::Warning;
+    } else if (tag == "seedprobe-dispatch-invalid") {
+        durable.category = DurableLineCategory::Dispatch;
+        durable.severity = DurableLineSeverity::Error;
+    } else if (tag == "seedprobe-step-materialized") {
+        durable.category = DurableLineCategory::Workflow;
+    } else if (tag == "seedprobe-unique-enqueue-summary" || tag == "seedprobe-materialization-counts") {
+        durable.category = DurableLineCategory::Materialization;
+    } else if (tag == "seedprobe-superseded") {
+        durable.category = ContainsToken(text, " superseded=0")
+            ? DurableLineCategory::Debug
+            : DurableLineCategory::Supersede;
+    } else if (tag == "seedprobe-claim-batch") {
+        durable.category = DurableLineCategory::Claim;
+    } else if (tag == "seedprobe-claim") {
+        durable.category = DurableLineCategory::Claim;
+    } else if (tag == "seedprobe-dispatch") {
+        durable.category = DurableLineCategory::Dispatch;
+    } else if (tag == "seedprobe-terminal-advance") {
+        durable.category = DurableLineCategory::Workflow;
+        if (ContainsToken(text, " status=failed")) {
+            durable.severity = DurableLineSeverity::Error;
+        }
+    } else if (tag == "seedprobe-job-terminal-state") {
+        durable.category = DurableLineCategory::Debug;
+        if (ContainsToken(text, " ok=false")) {
+            durable.severity = DurableLineSeverity::Error;
+        }
+    } else {
+        durable.category = DurableLineCategory::Debug;
+    }
+    return durable;
+}
+
+bool ShouldDisplayDurableLine(const DurableLine& line, std::uint32_t mask) {
+    if (line.severity == DurableLineSeverity::Error || line.severity == DurableLineSeverity::Warning) {
+        return true;
+    }
+    return (mask & DurableLineBit(line.category)) != 0;
 }
 
 simcore::db::execution::programdb::seedprobe::ResultsIni BuildSeedProbeResultsIni(const simcore::PRResult& result) {
@@ -128,7 +214,7 @@ std::string FormatSeedProbeResultEventLine(const simcore::PRResult& result) {
 
 std::string FormatProgressDetails(
     std::int64_t job_set_id,
-    const simcore::db::execution::workflow::ExecutionJobSetProgressDetails& row) {
+    const simcore::db::ExecutionJobSetProgressDetails& row) {
     const std::int64_t total = row.total_jobs;
     const std::int64_t done = row.completed_jobs;
     const std::int64_t ok = row.succeeded_jobs;
@@ -181,7 +267,7 @@ std::vector<std::string> BuildNewFailedStepEventLines(
 }
 
 std::vector<std::string> BuildNewMaterializedStepEventLines(
-    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    simcore::db::IExecutionDb* execution_db,
     const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph,
     std::unordered_set<std::int64_t>* emitted_materialized_step_ids) {
     std::vector<std::string> lines;
@@ -319,7 +405,7 @@ std::string FormatWorkflowStateLine(const simcore::db::execution::workflow::Work
 }
 
 std::vector<std::string> FormatActiveJobSetLines(
-    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    simcore::db::IExecutionDb* execution_db,
     const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
     (void)execution_db;
     using simcore::db::execution::workflow::WorkflowStepState;
@@ -367,7 +453,7 @@ std::vector<std::string> FormatActiveJobSetLines(
     const auto child_rows = execution_db->GetChildJobSetProgress(job_set_id);
     if (!child_rows.empty()) {
         std::size_t active_children = 0;
-        const simcore::db::execution::workflow::ExecutionChildJobSetProgressDetails* selected_child = nullptr;
+        const simcore::db::ExecutionChildJobSetProgressDetails* selected_child = nullptr;
         for (const auto& child : child_rows) {
             if (child.completed_jobs < child.total_jobs) {
                 ++active_children;
@@ -407,7 +493,7 @@ std::size_t CountActiveWorkers(const std::vector<WorkerSnapshot>& workers) {
 }
 
 std::vector<std::string> BuildProgressLines(
-    simcore::db::execution::workflow::SqliteExecutionDb* execution_db,
+    simcore::db::IExecutionDb* execution_db,
     const WorkflowCoordinatorTelemetry& telemetry,
     const std::vector<WorkerSnapshot>& worker_snapshot,
     const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
@@ -463,9 +549,9 @@ bool RunSeedProbeRealWorkerSmoke(
         return false;
     }
 
-    auto* execution_db = dynamic_cast<simcore::db::execution::workflow::SqliteExecutionDb*>(db_service->ExecutionDb());
+    auto* execution_db = db_service->ExecutionDb();
     if (execution_db == nullptr) {
-        if (error_out) *error_out = "DBService execution db is not sqlite-backed";
+        if (error_out) *error_out = "DBService execution db unavailable";
         return false;
     }
 
@@ -506,21 +592,36 @@ bool RunSeedProbeRealWorkerSmoke(
         &program_kind_registry);
 
     std::mutex event_lines_mtx;
-    std::deque<std::string> pending_event_lines;
+    std::deque<DurableLine> pending_event_lines;
     std::mutex seen_result_mtx;
     std::unordered_map<std::uint64_t, simcore::PRResult> seen_results_by_job_id;
     auto enqueue_event_line = [&](std::string line) {
+        auto durable = ClassifyDurableLine(std::move(line));
+        if (!ShouldDisplayDurableLine(durable, options.durable_line_mask)) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(event_lines_mtx);
-        pending_event_lines.push_back(std::move(line));
+        pending_event_lines.push_back(std::move(durable));
     };
     auto drain_event_lines = [&]() {
-        std::vector<std::string> lines;
+        std::vector<DurableLine> lines;
         std::lock_guard<std::mutex> lock(event_lines_mtx);
         while (!pending_event_lines.empty()) {
             lines.push_back(std::move(pending_event_lines.front()));
             pending_event_lines.pop_front();
         }
         return lines;
+    };
+    auto append_event_lines = [&](std::vector<DurableLine>* dest, std::vector<std::string> raw_lines) {
+        if (dest == nullptr) {
+            return;
+        }
+        for (auto& line : raw_lines) {
+            auto durable = ClassifyDurableLine(std::move(line));
+            if (ShouldDisplayDurableLine(durable, options.durable_line_mask)) {
+                dest->push_back(std::move(durable));
+            }
+        }
     };
     coordinator.SetResultCallback([&](const simcore::PRResult& result) {
         {
@@ -568,31 +669,25 @@ bool RunSeedProbeRealWorkerSmoke(
         const auto telemetry = coordinator.SnapshotTelemetry();
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
         latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.SnapshotWorkers(), graph);
-        std::vector<std::string> event_lines = drain_event_lines();
+        std::vector<DurableLine> event_lines = drain_event_lines();
         if (graph.has_value()) {
             auto materialized_step_lines = BuildNewMaterializedStepEventLines(
                 execution_db,
                 *graph,
                 &emitted_materialized_step_ids);
-            event_lines.insert(
-                event_lines.end(),
-                std::make_move_iterator(materialized_step_lines.begin()),
-                std::make_move_iterator(materialized_step_lines.end()));
+            append_event_lines(&event_lines, std::move(materialized_step_lines));
             auto failed_step_lines = BuildNewFailedStepEventLines(*graph, &emitted_failed_step_ids);
-            event_lines.insert(
-                event_lines.end(),
-                std::make_move_iterator(failed_step_lines.begin()),
-                std::make_move_iterator(failed_step_lines.end()));
+            append_event_lines(&event_lines, std::move(failed_step_lines));
         }
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
             for (const auto& line : event_lines) {
-                progress_renderer.WriteEventLine(std::cout, line);
+                progress_renderer.WriteEventLine(std::cout, line.text);
             }
             progress_renderer.Render(std::cout);
         } else {
             for (const auto& line : event_lines) {
-                std::cout << line << '\n';
+                std::cout << line.text << '\n';
             }
         }
         if (!interactive_stdout && (ticks_since_snapshot >= 10 || poll_count == 1)) {
@@ -633,9 +728,9 @@ bool RunSeedProbeRealWorkerSmoke(
     const auto final_event_lines = drain_event_lines();
     for (const auto& line : final_event_lines) {
         if (interactive_stdout) {
-            progress_renderer.WriteEventLine(std::cout, line);
+            progress_renderer.WriteEventLine(std::cout, line.text);
         } else {
-            std::cout << line << '\n';
+            std::cout << line.text << '\n';
         }
     }
 
@@ -654,14 +749,16 @@ bool RunSeedProbeRealWorkerSmoke(
     }
     if (final_graph.has_value()) {
         auto final_failed_step_lines = BuildNewFailedStepEventLines(*final_graph, &emitted_failed_step_ids);
+        std::vector<DurableLine> final_failed_durable_lines;
+        append_event_lines(&final_failed_durable_lines, std::move(final_failed_step_lines));
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
-            for (const auto& line : final_failed_step_lines) {
-                progress_renderer.WriteEventLine(std::cout, line);
+            for (const auto& line : final_failed_durable_lines) {
+                progress_renderer.WriteEventLine(std::cout, line.text);
             }
         } else {
-            for (const auto& line : final_failed_step_lines) {
-                std::cout << line << '\n';
+            for (const auto& line : final_failed_durable_lines) {
+                std::cout << line.text << '\n';
             }
         }
     }

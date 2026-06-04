@@ -76,6 +76,9 @@
     <ClInclude Include="Common\DbConfigPaths.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\QueuedDb.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -163,6 +166,9 @@
     <ClInclude Include="Execution\IExecutionDb.h">
       <Filter>Execution</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\QueuedExecutionDb.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\Projectors\JobProjector.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -246,6 +252,9 @@
     <ClCompile Include="Common\DbService.cpp">
       <Filter>Common</Filter>
     </ClCompile>
+    <ClCompile Include="Common\QueuedDb.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
@@ -316,6 +325,9 @@
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\QueuedExecutionDb.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp">

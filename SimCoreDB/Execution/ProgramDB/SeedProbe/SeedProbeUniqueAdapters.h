@@ -44,6 +44,7 @@ private:
     UniqueIni unique_ini_{};
 
     SeedProbeGridBlueprintConfig ResolveBlueprintForRun(std::int64_t probe_run_id) const;
+    UniqueIni ResolveUniqueSpecForRun(std::int64_t probe_run_id) const;
 };
 
 class SeedProbeUniqueRuntimeInitAdapter final : public IRuntimeInitAdapter {

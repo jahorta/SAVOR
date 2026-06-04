@@ -175,7 +175,7 @@ inline bool OpenPhase4ExecutionDb(
         return false;
     }
 
-    auto* execution_db = dynamic_cast<simcore::db::execution::workflow::SqliteExecutionDb*>(service->ExecutionDb());
+    auto* execution_db = service->RawExecutionDbForValidation();
     if (execution_db == nullptr || execution_db->WorkflowCommandService() == nullptr || execution_db->WorkflowQueryService() == nullptr) {
         if (error_out != nullptr) {
             *error_out = "execution db services unavailable";

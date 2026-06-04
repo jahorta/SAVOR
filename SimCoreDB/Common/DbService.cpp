@@ -89,7 +89,11 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed applying Archive migrations: " + (error_out ? *error_out : std::string{}));
     }
 
-    execution_db_ = std::make_unique<simcore::db::execution::workflow::SqliteExecutionDb>(execution_sqlite_);
+    sqlite_execution_db_ = std::make_unique<simcore::db::execution::workflow::SqliteExecutionDb>(execution_sqlite_);
+    execution_db_ = std::make_unique<simcore::db::execution::QueuedExecutionDb>(sqlite_execution_db_.get());
+    if (!execution_db_->Start(error_out)) {
+        return fail_start("Failed starting Execution queue workers: " + (error_out ? *error_out : std::string{}));
+    }
     state_db_ = std::make_unique<simcore::db::state::SqliteStateDb>(state_sqlite_);
     analysis_db_ = std::make_unique<simcore::db::analysis::SqliteAnalysisDb>(analysis_sqlite_);
     authoring_db_ = std::make_unique<simcore::db::SqliteAuthoringDb>(authoring_sqlite_);
@@ -117,6 +121,10 @@ bool DBService::IsRunning() const {
 
 simcore::db::IExecutionDb* DBService::ExecutionDb() {
     return execution_db_.get();
+}
+
+simcore::db::execution::workflow::SqliteExecutionDb* DBService::RawExecutionDbForValidation() {
+    return sqlite_execution_db_.get();
 }
 
 simcore::db::IStateDb* DBService::StateDb() {
@@ -259,6 +267,7 @@ void DBService::ResetServices() {
     analysis_db_.reset();
     state_db_.reset();
     execution_db_.reset();
+    sqlite_execution_db_.reset();
 }
 
 } // namespace simcore::db::core

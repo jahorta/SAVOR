@@ -1,8 +1,124 @@
 #include "Cli.h"
 
+#include <algorithm>
+#include <cctype>
 #include <iostream>
+#include <sstream>
 
 namespace simcore::e2e {
+namespace {
+
+std::string LowerAscii(std::string value) {
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+bool ApplyDurableLineToken(const std::string& raw_token, std::uint32_t* mask, std::string* error_out) {
+    if (mask == nullptr) {
+        return false;
+    }
+    const auto token = LowerAscii(raw_token);
+    if (token.empty()) {
+        return true;
+    }
+
+    if (token == "quiet" || token == "none") {
+        *mask = kDurableLineQuietMask;
+        return true;
+    }
+    if (token == "normal" || token == "default") {
+        *mask = kDurableLineNormalMask;
+        return true;
+    }
+    if (token == "verbose") {
+        *mask = kDurableLineVerboseMask;
+        return true;
+    }
+    if (token == "all") {
+        *mask = kDurableLineAllMask;
+        return true;
+    }
+
+    const auto add = [&](DurableLineCategory category) {
+        *mask |= DurableLineBit(category);
+    };
+    if (token == "result" || token == "results") {
+        add(DurableLineCategory::Result);
+    } else if (token == "failure" || token == "failures" || token == "error" || token == "errors") {
+        add(DurableLineCategory::Failure);
+    } else if (token == "warning" || token == "warnings") {
+        add(DurableLineCategory::Warning);
+    } else if (token == "workflow" || token == "terminal") {
+        add(DurableLineCategory::Workflow);
+    } else if (token == "materialization" || token == "materialize" || token == "summary") {
+        add(DurableLineCategory::Materialization);
+    } else if (token == "claim" || token == "claims") {
+        add(DurableLineCategory::Claim);
+    } else if (token == "dispatch" || token == "dispatches") {
+        add(DurableLineCategory::Dispatch);
+    } else if (token == "supersede" || token == "superseded") {
+        add(DurableLineCategory::Supersede);
+    } else if (token == "worker" || token == "workers") {
+        add(DurableLineCategory::Worker);
+    } else if (token == "adapter" || token == "adapters") {
+        add(DurableLineCategory::Adapter);
+    } else if (token == "db" || token == "database") {
+        add(DurableLineCategory::Db);
+    } else if (token == "debug" || token == "diagnostic" || token == "diagnostics") {
+        add(DurableLineCategory::Debug);
+    } else {
+        if (error_out) *error_out = "unknown durable line category: " + raw_token;
+        return false;
+    }
+    return true;
+}
+
+bool ParseDurableLineMask(const std::string& value, std::uint32_t* mask_out, std::string* error_out) {
+    if (mask_out == nullptr) {
+        return false;
+    }
+
+    const auto mode = LowerAscii(value);
+    if (mode == "quiet" || mode == "none") {
+        *mask_out = kDurableLineQuietMask;
+        return true;
+    }
+    if (mode == "normal" || mode == "default") {
+        *mask_out = kDurableLineNormalMask;
+        return true;
+    }
+    if (mode == "verbose") {
+        *mask_out = kDurableLineVerboseMask;
+        return true;
+    }
+    if (mode == "all") {
+        *mask_out = kDurableLineAllMask;
+        return true;
+    }
+
+    std::uint32_t mask = 0;
+    std::string token;
+    std::stringstream ss(value);
+    while (std::getline(ss, token, ',')) {
+        token.erase(token.begin(), std::find_if(token.begin(), token.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }));
+        token.erase(std::find_if(token.rbegin(), token.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }).base(), token.end());
+        if (!ApplyDurableLineToken(token, &mask, error_out)) {
+            return false;
+        }
+    }
+    *mask_out = mask;
+    return true;
+}
+
+} // namespace
 
 std::filesystem::path ResolveWorkerExePath(const char* argv0) {
     const auto exe_path = std::filesystem::absolute(std::filesystem::path(argv0));
@@ -42,7 +158,10 @@ void PrintUsage() {
               << " [--poll-ms 100]"
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
-              << " [--worker-dir-root <path>]\n\n";
+              << " [--worker-dir-root <path>]"
+              << " [--durable-lines normal]\n\n";
+    std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
+    std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
 }
 
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out) {
@@ -93,6 +212,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--worker-dir-root", &v)) return false;
             options.worker_dir_root = std::filesystem::path(v);
+        } else if (arg == "--durable-lines" || arg == "--debug-durable-lines") {
+            std::string v;
+            if (!require_value(arg.c_str(), &v)) return false;
+            if (!ParseDurableLineMask(v, &options.durable_line_mask, error_out)) return false;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);

@@ -66,6 +66,22 @@ struct ExecutionJobRecord {
     std::int64_t queued_at_utc = 0;
 };
 
+struct ExecutionJobSetProgressDetails {
+    std::int64_t job_set_id = 0;
+    std::int64_t total_jobs = 0;
+    std::int64_t completed_jobs = 0;
+    std::int64_t succeeded_jobs = 0;
+    std::int64_t failed_jobs = 0;
+    std::int64_t canceled_jobs = 0;
+    std::optional<std::int64_t> expected_total;
+};
+
+struct ExecutionChildJobSetProgressDetails : ExecutionJobSetProgressDetails {
+    std::optional<std::int64_t> expected_delta;
+    std::string purpose;
+    std::string meta_note;
+};
+
 struct ClaimedExecutionJob {
     std::int64_t job_id = 0;
     std::int64_t job_set_id = 0;
@@ -145,6 +161,14 @@ struct IExecutionDb {
         return true;
     }
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
+    virtual std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const {
+        (void)job_set_id;
+        return std::nullopt;
+    }
+    virtual std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const {
+        (void)parent_job_set_id;
+        return {};
+    }
     virtual bool MarkQueuedJobsSuperseded(
         std::int64_t job_set_id,
         std::int64_t except_job_id,

@@ -7,10 +7,56 @@
 
 namespace simcore::e2e {
 
+enum class DurableLineCategory : std::uint32_t {
+    Result = 1u << 0,
+    Failure = 1u << 1,
+    Warning = 1u << 2,
+    Workflow = 1u << 3,
+    Materialization = 1u << 4,
+    Claim = 1u << 5,
+    Dispatch = 1u << 6,
+    Supersede = 1u << 7,
+    Worker = 1u << 8,
+    Adapter = 1u << 9,
+    Db = 1u << 10,
+    Debug = 1u << 11,
+};
+
+constexpr std::uint32_t DurableLineBit(DurableLineCategory category) {
+    return static_cast<std::uint32_t>(category);
+}
+
+constexpr std::uint32_t kDurableLineQuietMask = 0;
+constexpr std::uint32_t kDurableLineNormalMask =
+    DurableLineBit(DurableLineCategory::Result)
+    | DurableLineBit(DurableLineCategory::Workflow)
+    | DurableLineBit(DurableLineCategory::Materialization)
+    | DurableLineBit(DurableLineCategory::Supersede);
+constexpr std::uint32_t kDurableLineVerboseMask =
+    kDurableLineNormalMask
+    | DurableLineBit(DurableLineCategory::Claim)
+    | DurableLineBit(DurableLineCategory::Worker)
+    | DurableLineBit(DurableLineCategory::Adapter)
+    | DurableLineBit(DurableLineCategory::Db);
+constexpr std::uint32_t kDurableLineAllMask =
+    DurableLineBit(DurableLineCategory::Result)
+    | DurableLineBit(DurableLineCategory::Failure)
+    | DurableLineBit(DurableLineCategory::Warning)
+    | DurableLineBit(DurableLineCategory::Workflow)
+    | DurableLineBit(DurableLineCategory::Materialization)
+    | DurableLineBit(DurableLineCategory::Claim)
+    | DurableLineBit(DurableLineCategory::Dispatch)
+    | DurableLineBit(DurableLineCategory::Supersede)
+    | DurableLineBit(DurableLineCategory::Worker)
+    | DurableLineBit(DurableLineCategory::Adapter)
+    | DurableLineBit(DurableLineCategory::Db)
+    | DurableLineBit(DurableLineCategory::Debug);
+
 struct CliOptions {
     std::string scenario = "seedprobe_real_worker_smoke";
     std::int64_t timeout_ms = 30000;
     std::int64_t poll_ms = 100;
+    std::uint32_t durable_line_mask = kDurableLineNormalMask;
     std::filesystem::path savestate_file;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;

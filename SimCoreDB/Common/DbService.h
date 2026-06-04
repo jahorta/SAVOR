@@ -13,6 +13,7 @@
 #include "../Authoring/IAuthoringDb.h"
 #include "../Authoring/SqliteAuthoringDb.h"
 #include "../Execution/IExecutionDb.h"
+#include "../Execution/QueuedExecutionDb.h"
 #include "../Execution/Workflow/SqliteExecutionDb.h"
 #include "../State/IStateDb.h"
 #include "../State/SqliteStateDb.h"
@@ -40,6 +41,7 @@ public:
     [[nodiscard]] bool IsRunning() const;
 
     simcore::db::IExecutionDb* ExecutionDb();
+    simcore::db::execution::workflow::SqliteExecutionDb* RawExecutionDbForValidation();
     simcore::db::IStateDb* StateDb();
     simcore::db::IAnalysisDb* AnalysisDb();
     simcore::db::IAuthoringDb* AuthoringDb();
@@ -64,7 +66,8 @@ private:
     sqlite3* ui_read_sqlite_ = nullptr;
     sqlite3* archive_sqlite_ = nullptr;
 
-    std::unique_ptr<simcore::db::execution::workflow::SqliteExecutionDb> execution_db_;
+    std::unique_ptr<simcore::db::execution::workflow::SqliteExecutionDb> sqlite_execution_db_;
+    std::unique_ptr<simcore::db::execution::QueuedExecutionDb> execution_db_;
     std::unique_ptr<simcore::db::state::SqliteStateDb> state_db_;
     std::unique_ptr<simcore::db::analysis::SqliteAnalysisDb> analysis_db_;
     std::unique_ptr<simcore::db::SqliteAuthoringDb> authoring_db_;

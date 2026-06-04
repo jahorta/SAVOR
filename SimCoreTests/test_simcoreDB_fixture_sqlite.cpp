@@ -2593,6 +2593,55 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     expect_timing(grid_scheduled.persistence.fingerprint);
     expect_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
 
+    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
+    const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
+    ASSERT_TRUE(probe_result_id.has_value());
+    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
+        {
+            .probe_result_id = *probe_result_id,
+            .source_family = "MAIN",
+            .axis_xy_id = 0x8080,
+            .seed_value = 1001,
+            .seed_delta = 1,
+            .recorded_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.main",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        nullptr,
+        &err))
+        << err;
+    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
+        {
+            .probe_result_id = *probe_result_id,
+            .source_family = "CSTICK",
+            .axis_xy_id = 0x8181,
+            .seed_value = 1002,
+            .seed_delta = 2,
+            .recorded_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.cstick",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        nullptr,
+        &err))
+        << err;
+    ASSERT_TRUE(analysis_db->RecordSeedProbeGridSeed(
+        {
+            .probe_result_id = *probe_result_id,
+            .source_family = "TRIGGER",
+            .axis_xy_id = 0x8282,
+            .seed_value = 1004,
+            .seed_delta = 4,
+            .recorded_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.trigger",
+            .correlation_id = "test.seedprobe.timing",
+            .causation_id = "test",
+        },
+        nullptr,
+        &err))
+        << err;
+
     auto unique = BuildSeedProbeUniqueDescriptor(
         &execution_db,
         analysis_db,
@@ -2602,6 +2651,28 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         authoring_db);
     const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(probe_run_id);
     expect_timing(unique_scheduled.persistence.fingerprint);
+    ASSERT_GT(unique_scheduled.root_job_set_id, 0);
+    ASSERT_FALSE(unique_scheduled.event_lines.empty());
+    EXPECT_NE(unique_scheduled.event_lines.back().find("combo_attempts_per_target=1"), std::string::npos)
+        << unique_scheduled.event_lines.back();
+    EXPECT_NE(unique_scheduled.event_lines.back().find("combo_sampler_tries=1"), std::string::npos)
+        << unique_scheduled.event_lines.back();
+
+    sqlite3_stmt* child_st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1), COALESCE(MAX(expected_total), 0) "
+        "FROM exec_job_set WHERE parent_job_set_id=?1;",
+        -1,
+        &child_st,
+        nullptr));
+    sqlite3_bind_int64(child_st, 1, unique_scheduled.root_job_set_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(child_st));
+    const int child_count = sqlite3_column_int(child_st, 0);
+    const int max_child_expected = sqlite3_column_int(child_st, 1);
+    sqlite3_finalize(child_st);
+    EXPECT_GT(child_count, 0);
+    EXPECT_LE(max_child_expected, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobFingerprintWithoutInjectedContext) {
