@@ -25,7 +25,10 @@ namespace simcore::keys::battle {
   X(APPLIED_INPUTPLAN_COUNT,  0x033B, "battle.inputplan.applied_frame_count") \
   X(APPLIED_INPUTPLAN,        0x033C, "battle.inputplan.applied_frames") \
   X(APPLIED_INPUTPLAN_VI_DURATIONS,0x033E, "battle.inputplan.applied_vi_durations") \
-  X(APPLIED_INPUTPLAN_TURN_BLOB,0x033F, "battle.inputplan.applied_turn_blob")
+  X(APPLIED_INPUTPLAN_TURN_BLOB,0x033F, "battle.inputplan.applied_turn_blob") \
+  X(INPUT_PLAYBACK_ERR,       0x0340, "battle.input.playback_err") \
+  X(INPUT_RETRY_COUNT,        0x0341, "battle.input.retry_count") \
+  X(INPUT_PLAYBACK_UNACKED,   0x0342, "battle.input.unacked_count")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr simcore::keys::KeyId NAME = static_cast<simcore::keys::KeyId>(ID); \
 static_assert(NAME >= simcore::keys::BATTLE_MIN && NAME <= simcore::keys::BATTLE_MAX, "battle key out of range");

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -33,6 +34,9 @@ namespace simcore::runner::parallel::simcoredb {
 struct DBWorkflowWorkerCoordinatorConfig {
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
+    uint32_t worker_start_timeout_ms = 10000;
+    uint32_t worker_start_retry_backoff_ms = 1000;
+    uint32_t max_worker_start_attempts = 3;
     std::string worker_exe_path;
     std::string iso_path;
     std::string dolphin_base_dir;
@@ -128,6 +132,10 @@ private:
         std::unique_ptr<simcore::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
         bool start_attempted = false;
+        uint32_t start_attempts = 0;
+        bool start_retry_exhausted_logged = false;
+        std::chrono::steady_clock::time_point next_start_after{};
+        std::string last_start_error;
         std::optional<uint64_t> in_flight_job_id;
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
@@ -152,6 +160,7 @@ private:
     void ReconcileWorkerPool();
     void ReconcileTerminalWorkflowSteps();
     bool StartWorkerSlot(size_t worker_idx);
+    void ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlot& slot);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
     void ReleaseWorkerByResult(const simcore::PRResult& result);

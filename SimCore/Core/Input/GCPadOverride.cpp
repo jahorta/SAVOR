@@ -37,6 +37,27 @@ namespace simcore {
     void GCPadOverride::setFrame(const GCInputFrame& f) {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_cur = f;
+        m_sequence = 0;
+        m_plan_index = 0;
+        m_callback_count = 0;
+    }
+
+    void GCPadOverride::publishPlaybackFrame(uint64_t sequence, uint32_t plan_index, const GCInputFrame& f) {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_cur = f;
+        m_sequence = sequence;
+        m_plan_index = plan_index;
+        m_callback_count = 0;
+    }
+
+    GCPadOverride::PollStats GCPadOverride::getPollStats() const {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        return PollStats{
+            .sequence = m_sequence,
+            .plan_index = m_plan_index,
+            .callback_count = m_callback_count,
+            .frame = m_cur,
+        };
     }
 
     void GCPadOverride::install() {
@@ -59,7 +80,13 @@ namespace simcore {
             -> std::optional<ControlState>
             {
                 GCInputFrame f{};
-                { std::lock_guard<std::mutex> lk(m_mtx); f = m_cur; }
+                {
+                    std::lock_guard<std::mutex> lk(m_mtx);
+                    f = m_cur;
+                    if (m_sequence != 0) {
+                        ++m_callback_count;
+                    }
+                }
 
                 auto is = [&](uint16_t bit) { return (f.buttons & bit) ? 1.0 : 0.0; };
                 // Buttons group

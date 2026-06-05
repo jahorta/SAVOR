@@ -306,43 +306,72 @@ namespace simcore {
     void PhaseScriptVM::op_apply_battle_inputplan_frames(PSContext& ctx) {
         auto itC = ctx.find(keys::battle::INPUTPLAN_FRAME_COUNT);
         auto itT = ctx.find(keys::battle::INPUTPLAN);
-        if (itC == ctx.end() || itT == ctx.end()) return;
+        ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(0);
+        ctx[keys::battle::INPUT_PLAYBACK_UNACKED] = uint32_t(0);
+        if (itC == ctx.end() || itT == ctx.end()) {
+            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(1);
+            return;
+        }
         const auto* counts_s = std::get_if<std::string>(&itC->second);
         const auto* table_s = std::get_if<std::string>(&itT->second);
-        if (!counts_s || !table_s) return;
+        if (!counts_s || !table_s || counts_s->size() < sizeof(uint32_t)) {
+            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
+            return;
+        }
         const uint8_t* counts = (const uint8_t*)counts_s->data();
         const uint8_t* frames = (const uint8_t*)table_s->data();
         if (counts == 0) { ctx[keys::core::PLAN_DONE] = uint32_t(1); return; }
         const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         host_.setEnableAllBreakpoints(false);
-        uint32_t idx;
-        const uint32_t count = *(const uint32_t*)(counts);
-        simcore::InputPlan applied_plan{}; applied_plan.reserve(count);
-        std::vector<uint32_t> vi_durations{}; vi_durations.reserve(count);
+        uint32_t count = 0;
+        std::memcpy(&count, counts, sizeof(uint32_t));
+        if (table_s->size() < static_cast<size_t>(count) * sizeof(GCInputFrame)) {
+            host_.setEnableAllBreakpoints(true);
+            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
+            return;
+        }
+        simcore::InputPlan plan{}; plan.reserve(count);
         uint32_t rand{ 0 };
         host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG before inputs %X", rand);
-        for (idx = 0; idx < count; idx++) {
-            wait_for_visual_debug_gate();
-            GCInputFrame f{}; std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame)); applied_plan.push_back(f);
-            const uint32_t vi_before = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-            SCLOGDX(SC_TAGS("VM","input"), "setting input [%d]: %s", idx, DescribeFrameCompact(f).c_str());
-            host_.setInput(f);
-            host_.stepOneFrameBlocking();
-            const uint32_t vi_after = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
-            vi_durations.push_back((vi_after >= vi_before) ? (vi_after - vi_before) : 0u);
+        for (uint32_t idx = 0; idx < count; idx++) {
+            GCInputFrame f{};
+            std::memcpy(&f, frames + (idx * sizeof(GCInputFrame)), sizeof(GCInputFrame));
+            plan.push_back(f);
         }
+        uint32_t retry_count = 0;
+        ctx.get(keys::battle::INPUT_RETRY_COUNT, retry_count);
+        std::string playback_label = std::format("battle_turn_attempt_{}", retry_count);
+        const auto playback = host_.playInputTapeBlocking(
+            plan,
+            DolphinWrapper::InputTapePlaybackOptions{
+                .max_unacked_replays = 2,
+                .safe_mode = retry_count > 0,
+                .label = playback_label.c_str(),
+            });
         host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG after inputs %X", rand);
         host_.setEnableAllBreakpoints(true);
+        ctx[keys::battle::INPUT_PLAYBACK_UNACKED] = playback.unacked_count;
+        if (!playback.ok) {
+            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(3);
+            ctx[keys::core::PLAN_DONE] = uint32_t(0);
+            SCLOGDX(SC_TAGS("vm", "input"),
+                "[VM] input playback failed attempt=%u failed_index=%u unacked=%u",
+                retry_count,
+                playback.failed_index,
+                playback.unacked_count);
+            return;
+        }
         const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         uint32_t turn_number = 0;
         if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(keys::battle::ACTIVE_TURN, turn_number);
         std::string turn_blob; (void)ctx.get(keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
-        simcore::inputtape::TurnChunk chunk{}; chunk.turn_number = turn_number; chunk.vi_start = apply_vi_start; chunk.vi_end = apply_vi_end; chunk.frames = applied_plan; chunk.vi_durations = vi_durations;
+        simcore::inputtape::TurnChunk chunk{}; chunk.turn_number = turn_number; chunk.vi_start = apply_vi_start; chunk.vi_end = apply_vi_end; chunk.frames = playback.attempted_frames; chunk.vi_durations = playback.vi_durations;
         (void)simcore::inputtape::append_turn_chunk(turn_blob, chunk);
         ctx[keys::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
-        if (idx >= count) ctx[keys::core::PLAN_DONE] = uint32_t(1);
+        ctx[keys::battle::APPLIED_INPUTPLAN_COUNT] = static_cast<uint32_t>(playback.attempted_frames.size());
+        ctx[keys::core::PLAN_DONE] = uint32_t(1);
         uint32_t cur_turn_plans = 0;
         ctx.get(keys::battle::NUM_TURN_PLANS, cur_turn_plans);
         ctx[keys::battle::NUM_TURN_PLANS] = cur_turn_plans > 0 ? cur_turn_plans - 1 : 0;

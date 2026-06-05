@@ -17,10 +17,14 @@ namespace phase::battle::turnrunner {
     static constexpr simcore::keys::KeyId DW_Outcome = simcore::keys::core::DW_RUN_OUTCOME_CODE;
     static constexpr simcore::keys::KeyId Battle_Outcome = simcore::keys::battle::BATTLE_OUTCOME;
 
+    static const std::string LabelStartAttempt = "START_ATTEMPT";
     static const std::string LabelAdvanceToTurnInput = "ADV_TO_TURN_INPUT";
     static const std::string LabelTurnInputs = "AFTER_PRELUDE";
     static const std::string LabelApplyTurn = "APPLY_TURN";
+    static const std::string LabelConfirmTurnReady = "CONFIRM_TURN_READY";
     static const std::string LabelRunAppliedInputs = "RUN_APPLIED_INPUTS";
+    static const std::string LabelRetryInput = "RETRY_INPUT";
+    static const std::string LabelRetryExhausted = "RETRY_EXHAUSTED";
 
     static const std::string LabelRetReachedNext = "RET_NEXT_TURN";
     static const std::string LabelRetVictory = "RET_SUCCESS";
@@ -30,7 +34,7 @@ namespace phase::battle::turnrunner {
     static const std::string LabelRetDWErr = "RET_DW_RUN_ERROR";
     static const std::string LabelRetOutOfTurns = "RET_OUT_OF_TURNS";
 
-    inline simcore::PhaseScript MakeBattleTurnRunnerProgram(uint32_t long_timeout = 120000)
+    inline simcore::PhaseScript MakeBattleTurnRunnerProgram(uint32_t long_timeout = 120000, uint32_t gate_timeout = 20000)
     {
         using simcore::battle::Outcome;
 
@@ -41,8 +45,10 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpArmBpsFromPredTable());
         ps.ops.push_back(simcore::OpLoadSnapshot());
         ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(simcore::OpSetU32(simcore::keys::battle::INPUT_RETRY_COUNT, 0u));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
+        ps.ops.push_back(simcore::OpLabel(LabelStartAttempt));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, 1u, LabelTurnInputs));
 
         // Turn 1 path: apply initial input only if caller supplied it.
@@ -73,11 +79,22 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::PLAN_MATERIALIZE_ERR, simcore::PSCmp::NE, 0u, LabelRetMaterializeFail));
 
         ps.ops.push_back(simcore::OpApplyPlanFrameFrom(simcore::keys::battle::ACTIVE_TURN));
-        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PLAN_DONE, simcore::PSCmp::EQ, 1u, LabelRunAppliedInputs));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::INPUT_PLAYBACK_ERR, simcore::PSCmp::NE, 0u, LabelRetryInput));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PLAN_DONE, simcore::PSCmp::EQ, 1u, LabelConfirmTurnReady));
         ps.ops.push_back(simcore::OpGoto(LabelApplyTurn));
 
-        // ============  Label Advance To Turn Input  ===================
-        // Run one segment after applying this turn
+        // ============  Label Confirm Turn Ready  ===================
+        // Require the game to accept the applied turn and finish instruction generation before normal post-input wait.
+        ps.ops.push_back(simcore::OpLabel(LabelConfirmTurnReady));
+        ps.ops.push_back(simcore::OpSetTimeoutToMS(gate_timeout));
+        ps.ops.push_back(simcore::OpRunUntilBp());
+        ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0u, LabelRetryInput));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRetryInput));
+        ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(simcore::OpGoto(LabelRunAppliedInputs));
+
+        // ============  Label Run Applied Inputs  ===================
+        // Run one segment after the turn-ready gate.
         ps.ops.push_back(simcore::OpLabel(LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpRunUntilBp());
         ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0u, LabelRetDWErr));
@@ -90,6 +107,20 @@ namespace phase::battle::turnrunner {
 
         // Keep running until one of the terminals above.
         ps.ops.push_back(simcore::OpGoto(LabelRunAppliedInputs));
+
+        // ============  Label Retry Input  ===================
+        // Retry once from the per-job baseline, using the same materialized plan in safe playback mode.
+        ps.ops.push_back(simcore::OpLabel(LabelRetryInput));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::battle::INPUT_RETRY_COUNT, simcore::PSCmp::GE, 1u, LabelRetryExhausted));
+        ps.ops.push_back(simcore::OpAddU32(simcore::keys::battle::INPUT_RETRY_COUNT, 1u));
+        ps.ops.push_back(simcore::OpLoadSnapshot());
+        ps.ops.push_back(simcore::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(simcore::OpGoto(LabelStartAttempt));
+
+        ps.ops.push_back(simcore::OpLabel(LabelRetryExhausted));
+        ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0u, LabelRetDWErr));
+        ps.ops.push_back(simcore::OpSetU32(DW_Outcome, static_cast<uint32_t>(simcore::RunToBpOutcome::Aborted)));
+        ps.ops.push_back(simcore::OpGoto(LabelRetDWErr));
 
         // ============  Label Return Reached Next  ===================
         // return labels read ending RNG before returning if there are more turns

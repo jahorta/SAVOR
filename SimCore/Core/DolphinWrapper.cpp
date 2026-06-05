@@ -666,6 +666,136 @@ namespace simcore {
             f.buttons, f.main_x, f.main_y, f.c_x, f.c_y, f.trig_l, f.trig_r);
     }
 
+    DolphinWrapper::InputTapePlaybackResult DolphinWrapper::playInputTapeBlocking(
+        const InputPlan& plan,
+        const InputTapePlaybackOptions& options)
+    {
+        InputTapePlaybackResult result{};
+        if (!m_system_pad_is_inited) {
+            result.failed_index = 0;
+            SCLOGDX(SC_TAGS("input"), "[input-tape] label=%s not_started reason=pad_not_initialized", options.label);
+            return result;
+        }
+
+        const GCInputFrame neutral = GCPadOverride::NeutralFrame();
+        auto is_neutral = [&neutral](const GCInputFrame& f) {
+            return f == neutral;
+            };
+
+        InputPlan playback_plan;
+        playback_plan.reserve(options.safe_mode ? plan.size() * 2u : plan.size());
+        if (options.safe_mode) {
+            bool previous_was_active = false;
+            for (const auto& frame : plan) {
+                const bool active = !is_neutral(frame);
+                playback_plan.push_back(frame);
+                if (active) {
+                    playback_plan.push_back(frame);
+                }
+                else if (previous_was_active) {
+                    playback_plan.push_back(frame);
+                }
+                previous_was_active = active;
+            }
+        }
+        else {
+            playback_plan = plan;
+        }
+
+        SCLOGDX(SC_TAGS("input"),
+            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u",
+            options.label,
+            plan.size(),
+            playback_plan.size(),
+            options.safe_mode ? 1u : 0u,
+            options.max_unacked_replays);
+
+        result.attempted_frames.reserve(playback_plan.size());
+        result.vi_durations.reserve(playback_plan.size());
+
+        for (uint32_t idx = 0; idx < playback_plan.size(); ++idx) {
+            const GCInputFrame& frame = playback_plan[idx];
+            bool acknowledged = false;
+            for (uint32_t replay = 0; replay <= options.max_unacked_replays; ++replay) {
+                const uint64_t sequence = ++m_input_playback_sequence;
+                const uint32_t vi_before = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
+                const uint32_t pc_before = getPC();
+                m_pad.publishPlaybackFrame(sequence, idx, frame);
+
+                SCLOGDX(SC_TAGS("input"),
+                    "[input-tape] label=%s publish seq=%llu idx=%u replay=%u vi_before=%u pc_before=%08X frame=%s",
+                    options.label,
+                    static_cast<unsigned long long>(sequence),
+                    idx,
+                    replay,
+                    vi_before,
+                    pc_before,
+                    DescribeFrameCompact(frame).c_str());
+
+                const bool step_ok = stepOneFrameBlocking();
+                const auto stats = m_pad.getPollStats();
+                const uint32_t vi_after = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
+                const uint32_t pc_after = getPC();
+                const uint32_t vi_delta = (vi_after >= vi_before) ? (vi_after - vi_before) : 0u;
+                result.attempted_frames.push_back(frame);
+                result.vi_durations.push_back(vi_delta);
+
+                SCLOGDX(SC_TAGS("input"),
+                    "[input-tape] label=%s ack seq=%llu idx=%u replay=%u step_ok=%u callbacks=%u vi_after=%u vi_delta=%u pc_after=%08X",
+                    options.label,
+                    static_cast<unsigned long long>(sequence),
+                    idx,
+                    replay,
+                    step_ok ? 1u : 0u,
+                    stats.callback_count,
+                    vi_after,
+                    vi_delta,
+                    pc_after);
+
+                if (!step_ok) {
+                    result.failed_index = idx;
+                    SCLOGDX(SC_TAGS("input"),
+                        "[input-tape] label=%s failed seq=%llu idx=%u reason=step_failed",
+                        options.label,
+                        static_cast<unsigned long long>(sequence),
+                        idx);
+                    return result;
+                }
+
+                if (stats.sequence == sequence && stats.callback_count > 0) {
+                    acknowledged = true;
+                    break;
+                }
+
+                ++result.unacked_count;
+                SCLOGDX(SC_TAGS("input"),
+                    "[input-tape] label=%s unacked seq=%llu idx=%u replay=%u callbacks=%u",
+                    options.label,
+                    static_cast<unsigned long long>(sequence),
+                    idx,
+                    replay,
+                    stats.callback_count);
+            }
+
+            if (!acknowledged) {
+                result.failed_index = idx;
+                SCLOGDX(SC_TAGS("input"),
+                    "[input-tape] label=%s failed idx=%u reason=unacked_after_replays",
+                    options.label,
+                    idx);
+                return result;
+            }
+        }
+
+        result.ok = true;
+        SCLOGDX(SC_TAGS("input"),
+            "[input-tape] label=%s complete attempted_frames=%zu unacked_replays=%u",
+            options.label,
+            result.attempted_frames.size(),
+            result.unacked_count);
+        return result;
+    }
+
     // -- Frame Advancing --------------------------------
 
     bool DolphinWrapper::stepOneFrameBlocking(int timeout_ms)

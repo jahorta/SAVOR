@@ -426,6 +426,7 @@ namespace simcore {
             CloseHandle(hProcess); hProcess = NULL; 
         }
 
+        if (hJob) { CloseHandle(hJob); hJob = NULL; }
         if (hThread) { CloseHandle(hThread); hThread = NULL; }
         {
             std::lock_guard<std::mutex> lock(visual_pipe_m_);

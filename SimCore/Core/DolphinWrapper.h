@@ -75,6 +75,24 @@ namespace simcore {
         void setInput(const GCInputFrame& f);
         size_t remainingInputs() const { return (m_cursor < m_plan.size()) ? (m_plan.size() - m_cursor) : 0; }
 
+        struct InputTapePlaybackOptions {
+            uint32_t max_unacked_replays = 2;
+            bool safe_mode = false;
+            const char* label = "input_tape";
+        };
+
+        struct InputTapePlaybackResult {
+            bool ok = false;
+            uint32_t failed_index = UINT32_MAX;
+            uint32_t unacked_count = 0;
+            InputPlan attempted_frames;
+            std::vector<uint32_t> vi_durations;
+        };
+
+        InputTapePlaybackResult playInputTapeBlocking(
+            const InputPlan& plan,
+            const InputTapePlaybackOptions& options = {});
+
         bool stepOneFrameBlocking(int timeout_ms = 1000);
 
         // Returns an approximate VI field count since the last reset.
@@ -190,6 +208,7 @@ namespace simcore {
 
         InputPlan m_plan;
         size_t m_cursor = 0;
+        uint64_t m_input_playback_sequence = 0;
 
         bool waitForPausedCoreState(uint32_t timeout_ms, uint32_t poll_rate = 10);
 

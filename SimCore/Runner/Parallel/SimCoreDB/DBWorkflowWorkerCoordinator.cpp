@@ -1431,6 +1431,8 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
 
 void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
     std::lock_guard<std::mutex> lock(workers_mtx_);
+    const auto now = std::chrono::steady_clock::now();
+    const auto max_start_attempts = std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
     while (workers_.size() < worker_cfg_.desired_workers) {
         const auto worker_idx = workers_.size();
         auto slot = std::make_unique<WorkerSlot>();
@@ -1442,7 +1444,43 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
 
     for (size_t worker_idx = 0; worker_idx < workers_.size(); ++worker_idx) {
         auto& slot = *workers_[worker_idx];
-        if (slot.start_attempted || slot.ready.load()) {
+        if (slot.ready.load()) {
+            continue;
+        }
+        if (slot.in_flight_job_id.has_value()) {
+            continue;
+        }
+        if (slot.start_attempted) {
+            if (slot.start_attempts >= max_start_attempts) {
+                if (!slot.start_retry_exhausted_logged) {
+                    std::ostringstream line;
+                    line << "[workflow-worker-restart-exhausted]"
+                         << " worker=" << worker_idx
+                         << " attempts=" << slot.start_attempts
+                         << " max_attempts=" << max_start_attempts;
+                    if (!slot.last_start_error.empty()) {
+                        line << " last_error=" << slot.last_start_error;
+                    }
+                    EmitDurableEventLine(line.str());
+                    slot.start_retry_exhausted_logged = true;
+                }
+                continue;
+            }
+            if (now < slot.next_start_after) {
+                continue;
+            }
+            std::ostringstream line;
+            line << "[workflow-worker-restart]"
+                 << " worker=" << worker_idx
+                 << " next_attempt=" << (slot.start_attempts + 1)
+                 << " max_attempts=" << max_start_attempts;
+            if (!slot.last_start_error.empty()) {
+                line << " last_error=" << slot.last_start_error;
+            }
+            EmitDurableEventLine(line.str());
+            ResetWorkerSlotRuntime(slot);
+        }
+        if (slot.start_attempted) {
             continue;
         }
         (void)StartWorkerSlot(worker_idx);
@@ -1465,14 +1503,37 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
 
     auto& slot = *workers_[worker_idx];
     slot.start_attempted = true;
+    slot.ready.store(false);
+    slot.start_retry_exhausted_logged = false;
+    const auto attempt = slot.start_attempts + 1;
+    slot.start_attempts = attempt;
+    const auto schedule_retry = [&](const std::string& error) {
+        slot.ready.store(false);
+        slot.last_start_error = error;
+        slot.next_start_after = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
+        slot.loaded_program_kind.reset();
+        slot.loaded_program_runtime_affinity_key.reset();
+        slot.loaded_savestate_affinity_key.reset();
+        if (slot.worker) {
+            slot.worker->stop();
+        }
+        std::ostringstream line;
+        line << "[workflow-worker-start-failed]"
+             << " worker=" << worker_idx
+             << " attempt=" << attempt
+             << " max_attempts=" << std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts)
+             << " error=" << error;
+        EmitDurableEventLine(line.str());
+        MarkWorkerError(slot, error);
+        return false;
+    };
 
     std::filesystem::path runtime_worker_exe;
     std::string runtime_error;
     if (!EnsureWorkflowWorkerRuntimeSlot(worker_idx, worker_cfg_, &runtime_worker_exe, &runtime_error)) {
-        slot.ready.store(false);
         RegisterWorkerSlotTelemetry(slot);
-        MarkWorkerError(slot, "worker runtime setup failed: " + runtime_error);
-        return false;
+        return schedule_retry("worker runtime setup failed: " + runtime_error);
     }
 
     simcore::ProcStartParams ps{};
@@ -1487,20 +1548,38 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     ps.vm_control = true;
 
     if (!slot.worker->start(ps, &results_q_)) {
-        slot.ready.store(false);
         RegisterWorkerSlotTelemetry(slot);
-        MarkWorkerError(slot, "ProcessWorker.start failed");
-        return false;
+        return schedule_retry("ProcessWorker.start failed");
     }
 
-    slot.ready.store(slot.worker->wait_ready(0));
+    slot.ready.store(slot.worker->wait_ready(worker_cfg_.worker_start_timeout_ms));
     RegisterWorkerSlotTelemetry(slot);
     if (!slot.ready.load()) {
         std::ostringstream error;
         error << "wait_ready failed err=" << slot.worker->ready_error();
-        MarkWorkerError(slot, error.str());
+        return schedule_retry(error.str());
     }
+    slot.start_attempts = 0;
+    slot.next_start_after = {};
+    slot.last_start_error.clear();
+    slot.start_retry_exhausted_logged = false;
     return slot.ready.load();
+}
+
+void DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
+    slot.ready.store(false);
+    slot.start_attempted = false;
+    slot.in_flight_job_id.reset();
+    slot.loaded_program_kind.reset();
+    slot.loaded_program_runtime_affinity_key.reset();
+    slot.loaded_savestate_affinity_key.reset();
+    if (slot.worker) {
+        slot.worker->stop();
+    }
+    slot.worker = std::make_unique<simcore::ProcessWorker>();
+    slot.worker->set_progress_queue(&progress_q_);
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Spawning);
+    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
 }
 
 void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
