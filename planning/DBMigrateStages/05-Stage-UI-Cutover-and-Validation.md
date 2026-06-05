@@ -20,7 +20,7 @@ The first UI cutover pass is intentionally read-focused and follows this order:
    - Remaining work: backfill/projection validation, parity checks against expected seed probe data, and removal of any dead legacy seed-probe list/detail fallbacks.
 2. Jobs detail view.
    - Current status: job list and artifact references are backed by UIRead; job detail summary fields are projected through `ui_job_summary` and `ui_job_detail`.
-   - Remaining work: expose an explicit UIRead detail contract, wire the detail pane to those projected fields, and decide whether job events, VM KV payload text, results INI, and decoded progress become UIRead projection columns/tables or stay behind a separate artifact/event lookup.
+   - Remaining work: expose an explicit UIRead detail contract, wire the detail pane to those projected fields, remove legacy `vm_kv`/raw-input parsing from Qt2 detail paths, and project any non-execution/non-workflow detail from the owning durable context instead.
 3. Job sets detail views.
    - Current status: job-set summaries are derived from `ui_job_summary` aggregation. There is not yet a dedicated job-set read model for parent, purpose, expected total, or full family tree semantics.
    - Remaining work: expose a current-capability detail contract, stop treating fabricated parent/purpose fields as authoritative, then add a typed job-set projection when hierarchy and expected-total parity become required.
@@ -33,6 +33,7 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 - Qt2 should treat UIRead as read-only. UIRead writes remain internal projector operations; Qt2 command paths should write to their owning context services and rely on outbox projection to refresh read models.
 - State artifact creation now updates UIRead through the State outbox and artifact projector. The artifact browser cutover is therefore a command-to-State plus projection-to-UIRead flow, not a synchronous UIRead update from the Qt2 artifact service.
 - The first attached-source projection coverage is validated by focused SQLite fixture tests for artifact summary projection across separate State and UIRead database files.
+- Qt2 and UIRead projections should not derive domain detail by parsing raw legacy `vm_kv`, raw `input_ini`, results INI, or job-event payload text. Execution-owned fields can come from Execution/UI workflow tables; authored/analysis/state details must come from Authoring, Analysis, and State respectively.
 - Remaining operational gap: add a Qt2-visible projection health/status surface for subscription lag, last error, and recovery guidance.
 
 ---
@@ -72,7 +73,10 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 
 1. Replace direct data queries with read-model gateway calls.
 2. Replace direct writes with command handlers invoking context services.
-3. Replace INI-derived output reads with typed read-model fields for seed probe/battle result screens.
+3. Replace raw `vm_kv`, `input_ini`, job-event payload, and INI-derived output reads with typed read-model fields for seed probe/battle result screens.
+   - Execution/UI workflow projections should expose only operational details such as job state, attempts, timing, leases, workflow step state, and errors.
+   - Authoring, Analysis, and State remain the source of truth for authored specs, predicates, plans, analysis results, artifacts, savestates, and lineage.
+   - Raw execution input may be exposed only as an explicitly labeled diagnostic view, not as the normal domain detail model.
 4. Add feature flags:
    - `UseNewUIRead`
    - `UseNewExecutionWrites`

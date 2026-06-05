@@ -195,6 +195,12 @@ Field usage expectations:
 
 ## UIRead projectors
 
+Projection source-of-truth rule:
+- Execution-derived projections are limited to execution/workflow operational state: job state, attempts, timing, leases, job artifacts, workflow step state, and execution errors.
+- Domain details must be projected from their owning durable context rather than reconstructed from raw execution inputs or outputs.
+- Do not use legacy `vm_kv`, raw `input_ini`, results INI, or job-event payload text as the normal source for UI domain fields. If retained, raw execution input/output text is diagnostic execution data only.
+- Use Authoring for specs/plans/predicates/templates/presets/settings, Analysis for seed probe and battle facts/results, and State for artifacts/savestates/lineage.
+
 ### `JobProjector`
 Consumes:
 - `Execution.*`

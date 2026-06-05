@@ -75,6 +75,17 @@ This document captures the finalized architecture decisions for the database spl
   - Treat source outbox rows as append-only integration logs for subscribers (subscriber progress is tracked outside producer contexts).
   - Add retention/cleanup policy based on subscriber progress (or explicit TTL + rebuild guarantees).
 
+### D9. UI detail source-of-truth boundaries
+- **Decision:** Move Qt2 and UIRead projections away from raw `vm_kv`, raw `input_ini`, or ad hoc INI parsing as the primary way to derive UI detail fields.
+- **Rule:** UIRead may project Execution and workflow operational fields from Execution DB. Any projected information that is not execution/workflow state must come from the owning durable context:
+  - Authoring DB for authored specs, plans, predicates, templates, presets, and settings.
+  - Analysis DB for seed probe facts/results, battle exploration facts/results, lineage, and derived analysis summaries.
+  - State DB for artifacts, savestates, TAS variants, and artifact lineage.
+- **Implications:**
+  - `exec_job.input_ini` remains an execution implementation detail for worker materialization/debugging, not the UI source of truth.
+  - Legacy `vm_kv` naming should be retired from Qt2-facing APIs and DTOs during cutover.
+  - If Qt2 needs a raw-input debug panel, expose it explicitly as diagnostic execution data rather than mixing it into domain detail models.
+
 ---
 
 ## Target Bounded Contexts and Datastores
@@ -102,6 +113,7 @@ This document captures the finalized architecture decisions for the database spl
 - No cross-DB foreign keys assumed.
 - Strong auditability: every derivation should have event provenance.
 - Any data required for future reasoning should be in durable analysis tables.
+- UI-facing domain detail fields should be projected from their source-of-truth context, not reparsed from raw execution input/output payloads.
 
 ---
 
