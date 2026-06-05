@@ -11,6 +11,32 @@ Move `SoaSimQt2` to the new architecture safely with measurable correctness and 
 
 ---
 
+## Current Cutover Slice Order
+
+The first UI cutover pass is intentionally read-focused and follows this order:
+
+1. Seed probe views.
+   - Current status: `SeedProbeController` already reads directly from `IUiReadDb` for run list, summary, delta points, and unique values.
+   - Remaining work: backfill/projection validation, parity checks against expected seed probe data, and removal of any dead legacy seed-probe list/detail fallbacks.
+2. Jobs detail view.
+   - Current status: job list and artifact references are backed by UIRead; job detail summary fields are projected through `ui_job_summary` and `ui_job_detail`.
+   - Remaining work: expose an explicit UIRead detail contract, wire the detail pane to those projected fields, and decide whether job events, VM KV payload text, results INI, and decoded progress become UIRead projection columns/tables or stay behind a separate artifact/event lookup.
+3. Job sets detail views.
+   - Current status: job-set summaries are derived from `ui_job_summary` aggregation. There is not yet a dedicated job-set read model for parent, purpose, expected total, or full family tree semantics.
+   - Remaining work: expose a current-capability detail contract, stop treating fabricated parent/purpose fields as authoritative, then add a typed job-set projection when hierarchy and expected-total parity become required.
+
+This order supersedes any older implication that all Stage 5 UI surfaces must cut over at once.
+
+## Current Implementation Notes
+
+- `DBService` now starts an attached-source UIRead projection service that opens the UIRead database, attaches the source context databases, and replays source outbox streams through the existing projectors.
+- Qt2 should treat UIRead as read-only. UIRead writes remain internal projector operations; Qt2 command paths should write to their owning context services and rely on outbox projection to refresh read models.
+- State artifact creation now updates UIRead through the State outbox and artifact projector. The artifact browser cutover is therefore a command-to-State plus projection-to-UIRead flow, not a synchronous UIRead update from the Qt2 artifact service.
+- The first attached-source projection coverage is validated by focused SQLite fixture tests for artifact summary projection across separate State and UIRead database files.
+- Remaining operational gap: add a Qt2-visible projection health/status surface for subscription lag, last error, and recovery guidance.
+
+---
+
 ## 5.1 UIRead Coverage Requirements
 
 ### Must-have projections before cutover

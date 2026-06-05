@@ -297,7 +297,11 @@ bool SqliteStateDb::StoreArtifact(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO state_artifact(sha256,size_bytes,compression_kind,filename,file_ext,artifact_kind,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
+            "VALUES(?1,?2,?3,?4,?5,?6,?7) "
+            "ON CONFLICT(sha256) DO UPDATE SET "
+            "size_bytes=excluded.size_bytes,compression_kind=excluded.compression_kind,"
+            "filename=excluded.filename,file_ext=excluded.file_ext,artifact_kind=excluded.artifact_kind "
+            "RETURNING artifact_id;",
             -1,
             &insert_artifact.st,
             nullptr)
@@ -315,7 +319,7 @@ bool SqliteStateDb::StoreArtifact(
     sqlite3_bind_text(insert_artifact.st, 6, command.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_artifact.st, 7, command.created_at_utc.time_since_epoch().count());
 
-    if (sqlite3_step(insert_artifact.st) != SQLITE_DONE) {
+    if (sqlite3_step(insert_artifact.st) != SQLITE_ROW) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
         }
@@ -323,7 +327,9 @@ bool SqliteStateDb::StoreArtifact(
         return false;
     }
 
-    const auto artifact_id = sqlite3_last_insert_rowid(db_);
+    const auto artifact_id = sqlite3_column_int64(insert_artifact.st, 0);
+    sqlite3_finalize(insert_artifact.st);
+    insert_artifact.st = nullptr;
     const auto aggregate_id = std::to_string(artifact_id);
     if (!InsertStateOutboxEvent(
             db_,

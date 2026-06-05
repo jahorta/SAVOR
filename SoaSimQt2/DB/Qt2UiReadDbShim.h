@@ -383,7 +383,6 @@ inline JobSetLite ToJobSetLite(const UiJobSetSummary& row) {
     JobSetLite out{};
     out.job_set_id = row.job_set_id;
     out.program_kind = row.program_kind;
-    out.purpose = "Job set " + std::to_string(row.job_set_id);
     out.created_at = row.created_at_utc;
     out.total_jobs = row.total_jobs;
     out.completed_jobs = row.completed_jobs;
@@ -391,6 +390,41 @@ inline JobSetLite ToJobSetLite(const UiJobSetSummary& row) {
     out.failed_jobs = row.failed_jobs;
     out.canceled_jobs = row.canceled_jobs;
     return out;
+}
+
+inline IniDoc ToJobDetailIniDoc(const UiJobDetail& row) {
+    IniDoc doc{};
+    auto& summary = doc.ensure_section("ui_job_summary");
+    summary.set("job_id", std::to_string(row.summary.job_id));
+    summary.set("job_set_id", std::to_string(row.summary.job_set_id));
+    summary.set("program_kind", std::to_string(row.summary.program_kind));
+    summary.set("state", row.summary.state);
+    summary.set("priority", std::to_string(row.summary.priority));
+    summary.set("attempts", std::to_string(row.summary.attempts));
+    summary.set("max_attempts", std::to_string(row.summary.max_attempts));
+    summary.set("queued_at_utc", std::to_string(row.summary.queued_at_utc));
+    if (row.summary.started_at_utc.has_value()) {
+        summary.set("started_at_utc", std::to_string(*row.summary.started_at_utc));
+    }
+    if (row.summary.ended_at_utc.has_value()) {
+        summary.set("ended_at_utc", std::to_string(*row.summary.ended_at_utc));
+    }
+    if (!row.summary.error_code.empty()) {
+        summary.set("error_code", row.summary.error_code);
+    }
+    if (!row.summary.error_text.empty()) {
+        summary.set("error_text", row.summary.error_text);
+    }
+
+    auto& detail = doc.ensure_section("ui_job_detail");
+    detail.set("fingerprint", row.fingerprint);
+    if (row.claimed_by_token.has_value()) {
+        detail.set("claimed_by_token", *row.claimed_by_token);
+    }
+    if (row.lease_expires_at_utc.has_value()) {
+        detail.set("lease_expires_at_utc", std::to_string(*row.lease_expires_at_utc));
+    }
+    return doc;
 }
 
 inline ObjectRefLite ToObjectRefLite(const UiArtifactSummary& row) {
@@ -452,8 +486,16 @@ public:
         return qt2shim::ReadyFuture(JobEventsRepo::GetLatestPayloadByJobs(ids, "PROGRESS"));
     }
 
-    static std::future<DbResult<IniDoc>> FetchJobVmKvIniAsync(std::int64_t) {
-        return qt2shim::ReadyFuture(DbResult<IniDoc>::Ok(IniDoc{}));
+    static std::future<DbResult<IniDoc>> FetchJobVmKvIniAsync(std::int64_t job_id) {
+        auto* db = qt2shim::UiRead();
+        if (db == nullptr) {
+            return qt2shim::ReadyFuture(DbResult<IniDoc>::Err(qt2shim::NotMigrated("UIRead startup")));
+        }
+        const auto detail = db->GetJobDetail(job_id);
+        if (!detail.has_value()) {
+            return qt2shim::ReadyFuture(DbResult<IniDoc>::Err({ DbErrorKind::NotFound, 0, "job not found" }));
+        }
+        return qt2shim::ReadyFuture(DbResult<IniDoc>::Ok(qt2shim::ToJobDetailIniDoc(*detail)));
     }
 
     static std::future<DbResult<IniDoc>> FetchJobResultsIniAsync(std::int64_t) {
@@ -575,7 +617,13 @@ struct JobsRepo {
 
 struct JobSetsRepo {
     static DbResult<std::optional<std::int64_t>> GetParent(std::int64_t) { return DbResult<std::optional<std::int64_t>>::Ok(std::nullopt); }
-    static DbResult<JobSetRow> Get(std::int64_t job_set_id) { return DbResult<JobSetRow>::Ok({ job_set_id, std::nullopt, 0, "Job set " + std::to_string(job_set_id) }); }
+    static DbResult<JobSetRow> Get(std::int64_t job_set_id) {
+        auto* db = qt2shim::UiRead();
+        if (db == nullptr) return DbResult<JobSetRow>::Err(qt2shim::NotMigrated("UIRead startup"));
+        const auto detail = db->GetJobSetDetail(job_set_id, 0);
+        if (!detail.has_value()) return DbResult<JobSetRow>::Err({ DbErrorKind::NotFound, 0, "job set not found" });
+        return DbResult<JobSetRow>::Ok({ job_set_id, std::nullopt, detail->summary.program_kind, {} });
+    }
     static std::future<DbResult<Page<JobSetLite>>> ListRecentAsync(const JobSetsListScope& scope, std::optional<KeysetCursor> before, int limit) {
         PagedQuery<> q{};
         q.before = before;

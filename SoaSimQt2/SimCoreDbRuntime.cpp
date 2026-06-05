@@ -163,4 +163,26 @@ simcore::db::IUiReadDb* SimCoreDbRuntime::uiReadDb() {
     return service_ != nullptr ? service_->UiReadDb() : nullptr;
 }
 
+simcore::db::IStateDb* SimCoreDbRuntime::stateDb() {
+    return service_ != nullptr ? service_->StateDb() : nullptr;
+}
+
+simcore::db::IAuthoringDb* SimCoreDbRuntime::authoringDb() {
+    return service_ != nullptr ? service_->AuthoringDb() : nullptr;
+}
+
+simcore::db::IExecutionDb* SimCoreDbRuntime::executionDb() {
+    return service_ != nullptr ? service_->ExecutionDb() : nullptr;
+}
+
+simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* SimCoreDbRuntime::workflowQueryService() {
+    auto* db = executionDb();
+    return db != nullptr ? db->WorkflowQueryService() : nullptr;
+}
+
+simcore::db::execution::workflow::IWorkflowOrchestrationCommandService* SimCoreDbRuntime::workflowCommandService() {
+    auto* db = executionDb();
+    return db != nullptr ? db->WorkflowCommandService() : nullptr;
+}
+
 } // namespace soasimqt2

@@ -14,6 +14,25 @@ types::UtcTimePoint FromEpochMillis(std::int64_t value) {
     return types::UtcTimePoint{ std::chrono::milliseconds(value) };
 }
 
+std::string ColumnText(sqlite3_stmt* st, int column) {
+    const auto* text = sqlite3_column_text(st, column);
+    return text == nullptr ? std::string{} : reinterpret_cast<const char*>(text);
+}
+
+std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int column) {
+    if (sqlite3_column_type(st, column) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return ColumnText(st, column);
+}
+
+std::optional<std::int64_t> ColumnInt64Optional(sqlite3_stmt* st, int column) {
+    if (sqlite3_column_type(st, column) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(st, column);
+}
+
 bool IsSubscriptionKeyValid(
     const std::string& projector_name,
     const std::string& source_context,
@@ -130,6 +149,98 @@ UiJobSummary ReadJobSummaryRow(sqlite3_stmt* st) {
     return row;
 }
 
+UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
+    UiJobDetail row{};
+    row.summary = ReadJobSummaryRow(st);
+    row.fingerprint = ColumnText(st, 12);
+    row.claimed_by_token = ColumnTextOptional(st, 13);
+    if (sqlite3_column_type(st, 14) != SQLITE_NULL) {
+        row.lease_expires_at_utc = sqlite3_column_int64(st, 14);
+    }
+    return row;
+}
+
+UiJobSetSummary ReadJobSetSummaryRow(sqlite3_stmt* st) {
+    UiJobSetSummary row{};
+    row.job_set_id = sqlite3_column_int64(st, 0);
+    row.program_kind = sqlite3_column_int(st, 1);
+    row.created_at_utc = sqlite3_column_int64(st, 2);
+    row.total_jobs = sqlite3_column_int64(st, 3);
+    row.completed_jobs = sqlite3_column_int64(st, 4);
+    row.succeeded_jobs = sqlite3_column_int64(st, 5);
+    row.failed_jobs = sqlite3_column_int64(st, 6);
+    row.canceled_jobs = sqlite3_column_int64(st, 7);
+    return row;
+}
+
+UiWorkflowInstanceSummary ReadWorkflowInstanceRow(sqlite3_stmt* st) {
+    UiWorkflowInstanceSummary row{};
+    row.workflow_instance_id = sqlite3_column_int64(st, 0);
+    row.workflow_kind = ColumnText(st, 1);
+    row.state = ColumnText(st, 2);
+    row.root_scope_kind = ColumnText(st, 3);
+    row.root_scope_id = ColumnInt64Optional(st, 4);
+    row.created_by = ColumnText(st, 5);
+    row.blocked_step_count = sqlite3_column_int64(st, 6);
+    row.failed_step_count = sqlite3_column_int64(st, 7);
+    row.created_at_utc = sqlite3_column_int64(st, 8);
+    row.started_at_utc = ColumnInt64Optional(st, 9);
+    row.completed_at_utc = ColumnInt64Optional(st, 10);
+    row.failure_code = ColumnText(st, 11);
+    row.failure_text = ColumnText(st, 12);
+    return row;
+}
+
+UiWorkflowStepSummary ReadWorkflowStepRow(sqlite3_stmt* st) {
+    UiWorkflowStepSummary row{};
+    row.workflow_step_id = sqlite3_column_int64(st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st, 1);
+    row.step_key = ColumnText(st, 2);
+    row.step_kind = ColumnText(st, 3);
+    row.state = ColumnText(st, 4);
+    row.blocked_reason = ColumnText(st, 5);
+    row.job_set_id = ColumnInt64Optional(st, 6);
+    row.job_count = sqlite3_column_int64(st, 7);
+    row.job_completed_count = sqlite3_column_int64(st, 8);
+    row.job_failed_count = sqlite3_column_int64(st, 9);
+    row.priority = sqlite3_column_int(st, 10);
+    row.attempts = sqlite3_column_int(st, 11);
+    row.max_attempts = sqlite3_column_int(st, 12);
+    row.ready_at_utc = ColumnInt64Optional(st, 13);
+    row.started_at_utc = ColumnInt64Optional(st, 14);
+    row.completed_at_utc = ColumnInt64Optional(st, 15);
+    row.failed_at_utc = ColumnInt64Optional(st, 16);
+    row.created_at_utc = sqlite3_column_int64(st, 17);
+    return row;
+}
+
+UiWorkflowEdgeSummary ReadWorkflowEdgeRow(sqlite3_stmt* st) {
+    UiWorkflowEdgeSummary row{};
+    row.workflow_edge_id = sqlite3_column_int64(st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st, 1);
+    row.from_step_id = sqlite3_column_int64(st, 2);
+    row.to_step_id = sqlite3_column_int64(st, 3);
+    row.condition_kind = ColumnText(st, 4);
+    row.condition_value = ColumnText(st, 5);
+    row.created_at_utc = sqlite3_column_int64(st, 6);
+    return row;
+}
+
+UiWorkflowAlertSummary ReadWorkflowAlertRow(sqlite3_stmt* st) {
+    UiWorkflowAlertSummary row{};
+    row.workflow_alert_id = sqlite3_column_int64(st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st, 1);
+    row.workflow_step_id = ColumnInt64Optional(st, 2);
+    row.alert_kind = ColumnText(st, 3);
+    row.alert_code = ColumnText(st, 4);
+    row.message = ColumnText(st, 5);
+    row.is_active = sqlite3_column_int(st, 6) != 0;
+    row.first_seen_at_utc = sqlite3_column_int64(st, 7);
+    row.last_seen_at_utc = sqlite3_column_int64(st, 8);
+    row.cleared_at_utc = ColumnInt64Optional(st, 9);
+    return row;
+}
+
 } // namespace
 
 SqliteUiReadDb::SqliteUiReadDb(sqlite3* db)
@@ -237,6 +348,31 @@ std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) c
     return row;
 }
 
+std::optional<UiJobDetail> SqliteUiReadDb::GetJobDetail(std::int64_t job_id) const {
+    if (db_ == nullptr || job_id <= 0) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT s.job_id,s.job_set_id,s.program_kind,s.state,s.priority,s.queued_at_utc,"
+        "s.started_at_utc,s.ended_at_utc,COALESCE(s.error_code,''),"
+        "COALESCE(d.attempts,0),COALESCE(d.max_attempts,0),COALESCE(d.error_text,''),"
+        "COALESCE(d.fingerprint,''),d.claimed_by_token,d.lease_expires_at_utc "
+        "FROM ui_job_summary s LEFT JOIN ui_job_detail d ON d.job_id=s.job_id "
+        "WHERE s.job_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st, 1, job_id);
+    std::optional<UiJobDetail> row;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        row = ReadJobDetailRow(st);
+    }
+    sqlite3_finalize(st);
+    return row;
+}
+
 std::vector<UiJobArtifact> SqliteUiReadDb::ListJobArtifacts(std::int64_t job_id) const {
     std::vector<UiJobArtifact> rows;
     if (db_ == nullptr || job_id <= 0) {
@@ -305,16 +441,7 @@ UiReadPage<UiJobSetSummary> SqliteUiReadDb::ListJobSets(
     sqlite3_bind_int(st, 9, query.limit);
 
     while (sqlite3_step(st) == SQLITE_ROW) {
-        UiJobSetSummary row{};
-        row.job_set_id = sqlite3_column_int64(st, 0);
-        row.program_kind = sqlite3_column_int(st, 1);
-        row.created_at_utc = sqlite3_column_int64(st, 2);
-        row.total_jobs = sqlite3_column_int64(st, 3);
-        row.completed_jobs = sqlite3_column_int64(st, 4);
-        row.succeeded_jobs = sqlite3_column_int64(st, 5);
-        row.failed_jobs = sqlite3_column_int64(st, 6);
-        row.canceled_jobs = sqlite3_column_int64(st, 7);
-        page.items.push_back(std::move(row));
+        page.items.push_back(ReadJobSetSummaryRow(st));
     }
     sqlite3_finalize(st);
 
@@ -325,6 +452,46 @@ UiReadPage<UiJobSetSummary> SqliteUiReadDb::ListJobSets(
         page.next = UiReadListCursor{ last.created_at_utc, last.job_set_id };
     }
     return page;
+}
+
+std::optional<UiJobSetDetail> SqliteUiReadDb::GetJobSetDetail(
+    std::int64_t job_set_id,
+    int jobs_limit) const {
+    if (db_ == nullptr || job_set_id <= 0) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT job_set_id,MIN(program_kind),MIN(queued_at_utc),COUNT(*),"
+        "SUM(CASE WHEN state IN ('COMPLETED','DONE','SUCCEEDED') THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='SUCCEEDED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='FAILED' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN state='CANCELED' THEN 1 ELSE 0 END) "
+        "FROM ui_job_summary WHERE job_set_id=?1 GROUP BY job_set_id;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st, 1, job_set_id);
+    std::optional<UiJobSetDetail> detail;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        detail = UiJobSetDetail{};
+        detail->summary = ReadJobSetSummaryRow(st);
+        detail->hierarchy_projection_available = false;
+    }
+    sqlite3_finalize(st);
+
+    if (!detail.has_value()) {
+        return std::nullopt;
+    }
+
+    if (jobs_limit > 0) {
+        UiReadJobListQuery query{};
+        query.job_set_id = job_set_id;
+        query.limit = jobs_limit;
+        detail->jobs = ListJobs(query).items;
+    }
+    return detail;
 }
 
 UiReadPage<UiArtifactSummary> SqliteUiReadDb::ListArtifacts(
@@ -385,6 +552,162 @@ UiReadPage<UiArtifactSummary> SqliteUiReadDb::ListArtifacts(
         page.next = UiReadListCursor{ last.created_at_utc, last.artifact_id };
     }
     return page;
+}
+
+bool SqliteUiReadDb::UpsertArtifactSummary(
+    const UiArtifactSummary& summary,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out != nullptr) *error_out = "database handle is null";
+        return false;
+    }
+    if (summary.artifact_id <= 0 || summary.sha256.empty() || summary.filename.empty()) {
+        if (error_out != nullptr) *error_out = "artifact_id, sha256, and filename are required";
+        return false;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "INSERT INTO ui_artifact_browser(artifact_id,sha256,size_bytes,artifact_kind,filename,created_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6) "
+        "ON CONFLICT(artifact_id) DO UPDATE SET "
+        "sha256=excluded.sha256,size_bytes=excluded.size_bytes,artifact_kind=excluded.artifact_kind,"
+        "filename=excluded.filename,created_at_utc=excluded.created_at_utc;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    sqlite3_bind_int64(st, 1, summary.artifact_id);
+    sqlite3_bind_text(st, 2, summary.sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, static_cast<sqlite3_int64>(summary.size_bytes));
+    sqlite3_bind_text(st, 4, summary.artifact_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, summary.filename.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 6, summary.created_at_utc);
+
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    if (!ok && error_out != nullptr) {
+        *error_out = sqlite3_errmsg(db_);
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+UiReadPage<UiWorkflowInstanceSummary> SqliteUiReadDb::ListWorkflowInstances(
+    const UiWorkflowInstanceListQuery& query) const {
+    UiReadPage<UiWorkflowInstanceSummary> page{};
+    if (db_ == nullptr || query.limit <= 0) {
+        return page;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,COALESCE(created_by,''),"
+        "blocked_step_count,failed_step_count,created_at_utc,started_at_utc,completed_at_utc,"
+        "COALESCE(failure_code,''),COALESCE(failure_text,'') "
+        "FROM ui_workflow_instance "
+        "WHERE (?1=1 OR state=?2) "
+        "AND (?3=1 OR workflow_kind=?4) "
+        "AND (?5=0 OR created_at_utc < ?6 OR (created_at_utc=?6 AND workflow_instance_id < ?7)) "
+        "AND (?8=0 OR created_at_utc > ?9 OR (created_at_utc=?9 AND workflow_instance_id > ?10)) "
+        "ORDER BY created_at_utc DESC, workflow_instance_id DESC LIMIT ?11;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return page;
+    }
+
+    sqlite3_bind_int(st, 1, query.state.empty() ? 1 : 0);
+    sqlite3_bind_text(st, 2, query.state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 3, query.workflow_kind.empty() ? 1 : 0);
+    sqlite3_bind_text(st, 4, query.workflow_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 5, query.before.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 6, query.before.value_or(UiReadListCursor{}).primary);
+    sqlite3_bind_int64(st, 7, query.before.value_or(UiReadListCursor{}).secondary);
+    sqlite3_bind_int(st, 8, query.after.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 9, query.after.value_or(UiReadListCursor{}).primary);
+    sqlite3_bind_int64(st, 10, query.after.value_or(UiReadListCursor{}).secondary);
+    sqlite3_bind_int(st, 11, query.limit);
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        page.items.push_back(ReadWorkflowInstanceRow(st));
+    }
+    sqlite3_finalize(st);
+
+    if (!page.items.empty()) {
+        const auto& first = page.items.front();
+        const auto& last = page.items.back();
+        page.prev = UiReadListCursor{ first.created_at_utc, first.workflow_instance_id };
+        page.next = UiReadListCursor{ last.created_at_utc, last.workflow_instance_id };
+    }
+    return page;
+}
+
+std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
+    std::int64_t workflow_instance_id) const {
+    if (db_ == nullptr || workflow_instance_id <= 0) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* inst = nullptr;
+    constexpr const char* kInstanceSql =
+        "SELECT workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,COALESCE(created_by,''),"
+        "blocked_step_count,failed_step_count,created_at_utc,started_at_utc,completed_at_utc,"
+        "COALESCE(failure_code,''),COALESCE(failure_text,'') "
+        "FROM ui_workflow_instance WHERE workflow_instance_id=?1;";
+    if (sqlite3_prepare_v2(db_, kInstanceSql, -1, &inst, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(inst, 1, workflow_instance_id);
+    std::optional<UiWorkflowDetail> detail;
+    if (sqlite3_step(inst) == SQLITE_ROW) {
+        detail = UiWorkflowDetail{};
+        detail->instance = ReadWorkflowInstanceRow(inst);
+    }
+    sqlite3_finalize(inst);
+    if (!detail.has_value()) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* steps = nullptr;
+    constexpr const char* kStepsSql =
+        "SELECT workflow_step_id,workflow_instance_id,step_key,step_kind,state,COALESCE(blocked_reason,''),job_set_id,"
+        "job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,"
+        "ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc "
+        "FROM ui_workflow_step WHERE workflow_instance_id=?1 ORDER BY created_at_utc ASC, workflow_step_id ASC;";
+    if (sqlite3_prepare_v2(db_, kStepsSql, -1, &steps, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(steps, 1, workflow_instance_id);
+        while (sqlite3_step(steps) == SQLITE_ROW) {
+            detail->steps.push_back(ReadWorkflowStepRow(steps));
+        }
+    }
+    sqlite3_finalize(steps);
+
+    sqlite3_stmt* edges = nullptr;
+    constexpr const char* kEdgesSql =
+        "SELECT workflow_edge_id,workflow_instance_id,from_step_id,to_step_id,"
+        "COALESCE(condition_kind,''),COALESCE(condition_value,''),created_at_utc "
+        "FROM ui_workflow_edge WHERE workflow_instance_id=?1 ORDER BY created_at_utc ASC, workflow_edge_id ASC;";
+    if (sqlite3_prepare_v2(db_, kEdgesSql, -1, &edges, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(edges, 1, workflow_instance_id);
+        while (sqlite3_step(edges) == SQLITE_ROW) {
+            detail->edges.push_back(ReadWorkflowEdgeRow(edges));
+        }
+    }
+    sqlite3_finalize(edges);
+
+    sqlite3_stmt* alerts = nullptr;
+    constexpr const char* kAlertsSql =
+        "SELECT workflow_alert_id,workflow_instance_id,workflow_step_id,alert_kind,COALESCE(alert_code,''),"
+        "message,is_active,first_seen_at_utc,last_seen_at_utc,cleared_at_utc "
+        "FROM ui_workflow_alert WHERE workflow_instance_id=?1 ORDER BY is_active DESC, last_seen_at_utc DESC, workflow_alert_id DESC;";
+    if (sqlite3_prepare_v2(db_, kAlertsSql, -1, &alerts, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(alerts, 1, workflow_instance_id);
+        while (sqlite3_step(alerts) == SQLITE_ROW) {
+            detail->alerts.push_back(ReadWorkflowAlertRow(alerts));
+        }
+    }
+    sqlite3_finalize(alerts);
+
+    return detail;
 }
 
 UiSeedProbeRunPage SqliteUiReadDb::ListSeedProbeRuns(

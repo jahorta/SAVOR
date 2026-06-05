@@ -1,18 +1,14 @@
 #include "ArtifactsController.h"
 
-#include "DB/DBCore/ObjectStore.h"
-#include "Utils/Hash.h"
-
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
 
-#include <exception>
 #include <algorithm>
+#include <exception>
 #include <utility>
 
-using simcore::db::Compression;
-using simcore::db::DataService;
-using simcore::db::ObjectStore;
+using soasimqt2::db::ArtifactImportRequest;
+using soasimqt2::db::SimCoreDbArtifactService;
 
 namespace {
 constexpr auto kSettingsGroup = "ArtifactsPane";
@@ -67,13 +63,13 @@ ArtifactsController::ArtifactsController(QObject* parent)
                 if (!state_.page.items.empty()) {
                     bool foundSelection = false;
                     for (const auto& item : state_.page.items) {
-                        if (item.id == state_.selectedArtifactId) {
+                        if (item.artifact_id == state_.selectedArtifactId) {
                             foundSelection = true;
                             break;
                         }
                     }
                     if (!foundSelection) {
-                        state_.selectedArtifactId = state_.page.items.front().id;
+                        state_.selectedArtifactId = state_.page.items.front().artifact_id;
                     }
                 } else {
                     state_.selectedArtifactId = 0;
@@ -99,11 +95,7 @@ ArtifactsController::ArtifactsController(QObject* parent)
         try {
             const auto result = importWatcher_.result();
             if (result.ok) {
-                const bool deduped = result.value.filename.size() >= 10
-                    && result.value.filename.rfind(" [deduped]") == (result.value.filename.size() - 10);
-                state_.infoMessage = deduped
-                    ? QStringLiteral("Imported artifact %1 (deduped).").arg(result.value.id)
-                    : QStringLiteral("Imported artifact %1.").arg(result.value.id);
+                state_.infoMessage = QStringLiteral("Imported artifact %1.").arg(result.value.artifact_id);
                 state_.errorMessage.clear();
                 before_.reset();
                 after_.reset();
@@ -217,7 +209,7 @@ void ArtifactsController::selectArtifact(qint64 artifactId)
     emitStateChanged();
 }
 
-void ArtifactsController::importArtifact(const QString& sourcePath, const QString& filename, Compression compression)
+void ArtifactsController::importArtifact(const QString& sourcePath, const QString& filename, const QString& artifactKind)
 {
     if (state_.importBusy || sourcePath.isEmpty() || filename.trimmed().isEmpty()) {
         return;
@@ -233,20 +225,16 @@ void ArtifactsController::importArtifact(const QString& sourcePath, const QStrin
     state_.importBusy = true;
     state_.selectedFilePath = sourcePath;
     state_.errorMessage.clear();
-    state_.infoMessage = QStringLiteral("Importing artifact…");
-    importWatcher_.setFuture(runAsync([source = sourcePath.toStdString(), outputName = filename.trimmed().toStdString(), compression]() {
-        const std::string sha = hash::sha256_of_file(source);
-        bool existed = false;
-        if (!sha.empty()) {
-            const auto existing = ObjectStore::GetByShaAsync(sha).get();
-            existed = existing.ok;
-        }
-
-        auto result = ObjectStore::FinalizeFromFileAsync(source, compression, outputName).get();
-        if (result.ok && existed) {
-            result.value.filename += " [deduped]";
-        }
-        return result;
+    state_.infoMessage = QStringLiteral("Importing artifact...");
+    importWatcher_.setFuture(runAsync([source = sourcePath.toStdString(),
+                                        outputName = filename.trimmed().toStdString(),
+                                        kind = artifactKind.trimmed().toStdString()]() {
+        return SimCoreDbArtifactService::ImportArtifact(ArtifactImportRequest{
+            .source_path = source,
+            .filename = outputName,
+            .artifact_kind = kind,
+            .compression_kind = 0,
+        });
     }));
     emitStateChanged();
 }
@@ -268,16 +256,16 @@ void ArtifactsController::materializeSelectedArtifact(const QString& outputPath)
     state_.exportBusy = true;
     state_.selectedFilePath = outputPath;
     state_.errorMessage.clear();
-    state_.infoMessage = QStringLiteral("Materializing artifact…");
-    materializeWatcher_.setFuture(runAsync([artifactId = artifact->id, path = outputPath.toStdString()]() {
-        return ObjectStore::MaterializeToPathAsync(artifactId, path).get();
+    state_.infoMessage = QStringLiteral("Materializing artifact...");
+    materializeWatcher_.setFuture(runAsync([artifactId = artifact->artifact_id, path = outputPath.toStdString()]() {
+        return SimCoreDbArtifactService::MaterializeArtifactToPath(artifactId, path);
     }));
     emitStateChanged();
 }
 
 void ArtifactsController::refreshRootsState()
 {
-    state_.rootsReady = ObjectStore::Ready();
+    state_.rootsReady = SimCoreDbArtifactService::StorageReady();
     if (!state_.rootsReady && state_.errorMessage.isEmpty()) {
         state_.infoMessage = QStringLiteral("ObjectStore roots are unset. Artifacts view/actions are disabled until storage is configured.");
     }
@@ -300,15 +288,16 @@ void ArtifactsController::kickPageFetch()
     pendingPageFetch_ = false;
     state_.loading = true;
     state_.errorMessage.clear();
-    PagedQuery<> query;
+
+    simcore::db::UiReadArtifactListQuery query{};
     query.before = before_;
     query.after = after_;
     query.limit = fetchPageLimit_;
+    query.search = fetchSearch_.toStdString();
+    query.extension = fetchExtension_.toStdString();
 
-    const QString search = fetchSearch_;
-    const QString extension = fetchExtension_;
-    pageWatcher_.setFuture(runAsync([query, search, extension]() {
-        return DataService::FetchObjectRefsPage(query, search.toStdString(), extension.toStdString()).get();
+    pageWatcher_.setFuture(runAsync([query]() {
+        return SimCoreDbArtifactService::ListArtifacts(query);
     }));
     emitStateChanged();
 }
@@ -356,10 +345,10 @@ QString ArtifactsController::normalizedExtension(const QString& extension) const
     return QStringLiteral(".") + trimmed;
 }
 
-const simcore::db::ObjectRefLite* ArtifactsController::selectedArtifact() const
+const simcore::db::UiArtifactSummary* ArtifactsController::selectedArtifact() const
 {
     for (const auto& artifact : state_.page.items) {
-        if (artifact.id == state_.selectedArtifactId) {
+        if (artifact.artifact_id == state_.selectedArtifactId) {
             return &artifact;
         }
     }

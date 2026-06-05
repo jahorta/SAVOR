@@ -66,7 +66,7 @@ private:
     QLabel* inspectorIdValue_ = nullptr;
     QLabel* inspectorFilenameValue_ = nullptr;
     QLabel* inspectorSizeValue_ = nullptr;
-    QLabel* inspectorCompressionValue_ = nullptr;
+    QLabel* inspectorKindValue_ = nullptr;
     QLabel* inspectorCreatedValue_ = nullptr;
     QTextEdit* inspectorShaText_ = nullptr;
     QPushButton* exportButton_ = nullptr;

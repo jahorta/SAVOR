@@ -32,12 +32,24 @@ public:
         const UiReadJobListQuery& query) const override;
     std::optional<UiJobSummary> GetJobSummary(
         std::int64_t job_id) const override;
+    std::optional<UiJobDetail> GetJobDetail(
+        std::int64_t job_id) const override;
     std::vector<UiJobArtifact> ListJobArtifacts(
         std::int64_t job_id) const override;
     UiReadPage<UiJobSetSummary> ListJobSets(
         const UiReadJobSetListQuery& query) const override;
+    std::optional<UiJobSetDetail> GetJobSetDetail(
+        std::int64_t job_set_id,
+        int jobs_limit) const override;
     UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const override;
+    bool UpsertArtifactSummary(
+        const UiArtifactSummary& summary,
+        std::string* error_out = nullptr) override;
+    UiReadPage<UiWorkflowInstanceSummary> ListWorkflowInstances(
+        const UiWorkflowInstanceListQuery& query) const override;
+    std::optional<UiWorkflowDetail> GetWorkflowDetail(
+        std::int64_t workflow_instance_id) const override;
 
     UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const override;

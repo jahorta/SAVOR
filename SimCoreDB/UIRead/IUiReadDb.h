@@ -128,6 +128,13 @@ struct UiJobSummary {
     std::string error_text;
 };
 
+struct UiJobDetail {
+    UiJobSummary summary;
+    std::string fingerprint;
+    std::optional<std::string> claimed_by_token;
+    std::optional<std::int64_t> lease_expires_at_utc;
+};
+
 struct UiJobArtifact {
     std::int64_t artifact_id = 0;
     std::string role_kind;
@@ -146,6 +153,12 @@ struct UiJobSetSummary {
     std::int64_t succeeded_jobs = 0;
     std::int64_t failed_jobs = 0;
     std::int64_t canceled_jobs = 0;
+};
+
+struct UiJobSetDetail {
+    UiJobSetSummary summary;
+    std::vector<UiJobSummary> jobs;
+    bool hierarchy_projection_available = false;
 };
 
 struct UiReadJobSetListQuery {
@@ -172,6 +185,81 @@ struct UiReadArtifactListQuery {
     std::string extension;
 };
 
+struct UiWorkflowInstanceListQuery {
+    std::optional<UiReadListCursor> before;
+    std::optional<UiReadListCursor> after;
+    int limit = 50;
+    std::string state;
+    std::string workflow_kind;
+};
+
+struct UiWorkflowInstanceSummary {
+    std::int64_t workflow_instance_id = 0;
+    std::string workflow_kind;
+    std::string state;
+    std::string root_scope_kind;
+    std::optional<std::int64_t> root_scope_id;
+    std::string created_by;
+    std::int64_t blocked_step_count = 0;
+    std::int64_t failed_step_count = 0;
+    std::int64_t created_at_utc = 0;
+    std::optional<std::int64_t> started_at_utc;
+    std::optional<std::int64_t> completed_at_utc;
+    std::string failure_code;
+    std::string failure_text;
+};
+
+struct UiWorkflowStepSummary {
+    std::int64_t workflow_step_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::string step_key;
+    std::string step_kind;
+    std::string state;
+    std::string blocked_reason;
+    std::optional<std::int64_t> job_set_id;
+    std::int64_t job_count = 0;
+    std::int64_t job_completed_count = 0;
+    std::int64_t job_failed_count = 0;
+    int priority = 0;
+    int attempts = 0;
+    int max_attempts = 1;
+    std::optional<std::int64_t> ready_at_utc;
+    std::optional<std::int64_t> started_at_utc;
+    std::optional<std::int64_t> completed_at_utc;
+    std::optional<std::int64_t> failed_at_utc;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiWorkflowEdgeSummary {
+    std::int64_t workflow_edge_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t from_step_id = 0;
+    std::int64_t to_step_id = 0;
+    std::string condition_kind;
+    std::string condition_value;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiWorkflowAlertSummary {
+    std::int64_t workflow_alert_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> workflow_step_id;
+    std::string alert_kind;
+    std::string alert_code;
+    std::string message;
+    bool is_active = false;
+    std::int64_t first_seen_at_utc = 0;
+    std::int64_t last_seen_at_utc = 0;
+    std::optional<std::int64_t> cleared_at_utc;
+};
+
+struct UiWorkflowDetail {
+    UiWorkflowInstanceSummary instance;
+    std::vector<UiWorkflowStepSummary> steps;
+    std::vector<UiWorkflowEdgeSummary> edges;
+    std::vector<UiWorkflowAlertSummary> alerts;
+};
+
 struct IUiReadDb {
     virtual ~IUiReadDb() = default;
 
@@ -183,14 +271,31 @@ struct IUiReadDb {
     virtual std::optional<UiJobSummary> GetJobSummary(
         std::int64_t job_id) const = 0;
 
+    virtual std::optional<UiJobDetail> GetJobDetail(
+        std::int64_t job_id) const = 0;
+
     virtual std::vector<UiJobArtifact> ListJobArtifacts(
         std::int64_t job_id) const = 0;
 
     virtual UiReadPage<UiJobSetSummary> ListJobSets(
         const UiReadJobSetListQuery& query) const = 0;
 
+    virtual std::optional<UiJobSetDetail> GetJobSetDetail(
+        std::int64_t job_set_id,
+        int jobs_limit) const = 0;
+
     virtual UiReadPage<UiArtifactSummary> ListArtifacts(
         const UiReadArtifactListQuery& query) const = 0;
+
+    virtual bool UpsertArtifactSummary(
+        const UiArtifactSummary& summary,
+        std::string* error_out = nullptr) = 0;
+
+    virtual UiReadPage<UiWorkflowInstanceSummary> ListWorkflowInstances(
+        const UiWorkflowInstanceListQuery& query) const = 0;
+
+    virtual std::optional<UiWorkflowDetail> GetWorkflowDetail(
+        std::int64_t workflow_instance_id) const = 0;
 
     virtual UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const = 0;

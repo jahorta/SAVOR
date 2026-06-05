@@ -187,6 +187,10 @@
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
+    <ClInclude Include="DB\SimCoreDbArtifactService.h" />
+    <ClInclude Include="DB\SimCoreDbAuthoringService.h" />
+    <ClInclude Include="DB\SimCoreDbServiceResult.h" />
+    <ClInclude Include="DB\SimCoreDbWorkflowService.h" />
     <ClInclude Include="SimCoreDbRuntime.h" />
     <QtRcc Include="SoaSimQt2.qrc" />
     <ClCompile Include="GUI\MainWindow.cpp" />

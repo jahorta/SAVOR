@@ -221,6 +221,7 @@
     <ClInclude Include="State\SqliteStateDb.h" />
     <ClInclude Include="UIRead\IUiReadDb.h" />
     <ClInclude Include="UIRead\QueuedUiReadDb.h" />
+    <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h" />
     <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" />
     <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" />
     <ClInclude Include="UIRead\Projectors\BattleProjector.h" />
@@ -275,6 +276,7 @@
     <ClCompile Include="SimCoreDB.cpp" />
     <ClCompile Include="State\QueuedStateDb.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />
+    <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp" />
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" />

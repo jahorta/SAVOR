@@ -95,6 +95,9 @@ bool UiOutboxRelayCoordinator::RelayStateOutbox(
     }
 
     ArtifactProjector artifact_projector(db_);
+    if (!artifact_projector.EnsureSqlFunctions(error_out)) {
+        return false;
+    }
     const auto project_artifacts = [&artifact_projector](const events::EventEnvelope&, std::string* handler_error) {
         return artifact_projector.ProjectAll(handler_error);
     };

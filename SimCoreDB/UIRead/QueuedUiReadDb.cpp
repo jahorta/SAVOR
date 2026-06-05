@@ -113,6 +113,15 @@ std::optional<UiJobSummary> QueuedUiReadDb::GetJobSummary(
         std::nullopt);
 }
 
+std::optional<UiJobDetail> QueuedUiReadDb::GetJobDetail(
+    std::int64_t job_id) const {
+    return ExecuteRead<std::optional<UiJobDetail>>(
+        [this, job_id]() {
+            return inner_ != nullptr ? inner_->GetJobDetail(job_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::vector<UiJobArtifact> QueuedUiReadDb::ListJobArtifacts(
     std::int64_t job_id) const {
     return ExecuteRead<std::vector<UiJobArtifact>>(
@@ -131,6 +140,16 @@ UiReadPage<UiJobSetSummary> QueuedUiReadDb::ListJobSets(
         {});
 }
 
+std::optional<UiJobSetDetail> QueuedUiReadDb::GetJobSetDetail(
+    std::int64_t job_set_id,
+    int jobs_limit) const {
+    return ExecuteRead<std::optional<UiJobSetDetail>>(
+        [this, job_set_id, jobs_limit]() {
+            return inner_ != nullptr ? inner_->GetJobSetDetail(job_set_id, jobs_limit) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 UiReadPage<UiArtifactSummary> QueuedUiReadDb::ListArtifacts(
     const UiReadArtifactListQuery& query) const {
     return ExecuteRead<UiReadPage<UiArtifactSummary>>(
@@ -138,6 +157,35 @@ UiReadPage<UiArtifactSummary> QueuedUiReadDb::ListArtifacts(
             return inner_ != nullptr ? inner_->ListArtifacts(query) : UiReadPage<UiArtifactSummary>{};
         },
         {});
+}
+
+bool QueuedUiReadDb::UpsertArtifactSummary(
+    const UiArtifactSummary& summary,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, summary, error_out]() {
+            return inner_ != nullptr ? inner_->UpsertArtifactSummary(summary, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+UiReadPage<UiWorkflowInstanceSummary> QueuedUiReadDb::ListWorkflowInstances(
+    const UiWorkflowInstanceListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiWorkflowInstanceSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListWorkflowInstances(query) : UiReadPage<UiWorkflowInstanceSummary>{};
+        },
+        {});
+}
+
+std::optional<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetail(
+    std::int64_t workflow_instance_id) const {
+    return ExecuteRead<std::optional<UiWorkflowDetail>>(
+        [this, workflow_instance_id]() {
+            return inner_ != nullptr ? inner_->GetWorkflowDetail(workflow_instance_id) : std::nullopt;
+        },
+        std::nullopt);
 }
 
 UiSeedProbeRunPage QueuedUiReadDb::ListSeedProbeRuns(

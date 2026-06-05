@@ -3540,4 +3540,137 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
     EXPECT_EQ(buffer.str(), "savestate-bytes");
 }
 
+TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
+    auto* state_db = db_service_->StateDb();
+    auto* ui_read_db = db_service_->UiReadDb();
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(ui_read_db, nullptr);
+
+    const auto first_path = temp_root_ / "first.sav";
+    const auto second_path = temp_root_ / "second.sav";
+    {
+        std::ofstream out(first_path, std::ios::binary);
+        out << "duplicate-artifact-bytes";
+    }
+    {
+        std::ofstream out(second_path, std::ios::binary);
+        out << "duplicate-artifact-bytes";
+    }
+
+    std::string err;
+    std::int64_t first_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-db-dedupe-artifact-test",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(first_path)),
+            .compression_kind = 0,
+            .filename = first_path.string(),
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.state.artifact.dedupe.first",
+            .correlation_id = "test.state.artifact.dedupe",
+            .causation_id = "test",
+        },
+        &first_artifact_id,
+        &err))
+        << err;
+
+    std::int64_t second_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-db-dedupe-artifact-test",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(second_path)),
+            .compression_kind = 0,
+            .filename = second_path.string(),
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.state.artifact.dedupe.second",
+            .correlation_id = "test.state.artifact.dedupe",
+            .causation_id = "test",
+        },
+        &second_artifact_id,
+        &err))
+        << err;
+    EXPECT_EQ(second_artifact_id, first_artifact_id);
+
+    const auto destination_path = temp_root_ / "materialized" / "dedupe.sav";
+    const auto materialized = state_db->MaterializeArtifactToPath(first_artifact_id, destination_path.string(), &err);
+    ASSERT_TRUE(materialized.has_value()) << err;
+    ASSERT_TRUE(std::filesystem::exists(destination_path));
+
+    simcore::db::UiReadArtifactListQuery query{};
+    query.search = "second";
+    query.limit = 10;
+    ASSERT_TRUE(db_service_->RunUiReadProjectionOnce(&err)) << err;
+    const auto page = ui_read_db->ListArtifacts(query);
+    ASSERT_EQ(page.items.size(), 1);
+    EXPECT_EQ(page.items.front().artifact_id, first_artifact_id);
+    EXPECT_EQ(page.items.front().filename, "second.sav");
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateStateDatabaseForArtifactSummary) {
+    namespace migrations = simcore::db::migrations;
+
+    const auto separate_root = temp_root_ / "separate";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+
+    simcore::db::DbConfigPaths config_paths{};
+    config_paths.execution_db_path = separate_root / "execution.sqlite";
+    config_paths.state_db_path = separate_root / "state.sqlite";
+    config_paths.analysis_db_path = separate_root / "analysis.sqlite";
+    config_paths.authoring_db_path = separate_root / "authoring.sqlite";
+    config_paths.ui_read_db_path = separate_root / "uiread.sqlite";
+    config_paths.archive_db_path = separate_root / "archive.sqlite";
+
+    simcore::db::core::DBService service(
+        config_paths,
+        migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+
+    std::string err;
+    ASSERT_TRUE(service.Start(&err)) << err;
+
+    const auto source_path = separate_root / "attached-source.sav";
+    {
+        std::ofstream out(source_path, std::ios::binary);
+        out << "attached-state-artifact";
+    }
+
+    auto* state_db = service.StateDb();
+    auto* ui_read_db = service.UiReadDb();
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(ui_read_db, nullptr);
+
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-db-attached-projection-test",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+            .compression_kind = 0,
+            .filename = source_path.string(),
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = simcore::db::types::UtcNow(),
+            .event_id = "test.state.artifact.attached_projection",
+            .correlation_id = "test.state.artifact.attached_projection",
+            .causation_id = "test",
+        },
+        &artifact_id,
+        &err))
+        << err;
+
+    ASSERT_TRUE(service.RunUiReadProjectionOnce(&err)) << err;
+
+    simcore::db::UiReadArtifactListQuery query{};
+    query.search = "attached-source";
+    query.limit = 10;
+    const auto page = ui_read_db->ListArtifacts(query);
+    ASSERT_EQ(page.items.size(), 1);
+    EXPECT_EQ(page.items.front().artifact_id, artifact_id);
+    EXPECT_EQ(page.items.front().filename, "attached-source.sav");
+
+    service.Stop();
+}
+
 }

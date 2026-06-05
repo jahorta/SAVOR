@@ -23,6 +23,11 @@ public:
 
     simcore::db::core::DBService* service();
     simcore::db::IUiReadDb* uiReadDb();
+    simcore::db::IStateDb* stateDb();
+    simcore::db::IAuthoringDb* authoringDb();
+    simcore::db::IExecutionDb* executionDb();
+    simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* workflowQueryService();
+    simcore::db::execution::workflow::IWorkflowOrchestrationCommandService* workflowCommandService();
 
 private:
     SimCoreDbRuntime() = default;

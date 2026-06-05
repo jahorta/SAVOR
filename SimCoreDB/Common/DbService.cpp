@@ -1,5 +1,7 @@
 #include "DbService.h"
 
+#include <chrono>
+#include <filesystem>
 #include <utility>
 
 namespace simcore::db::core {
@@ -125,6 +127,23 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed starting Archive queue workers: " + (error_out ? *error_out : std::string{}));
     }
 
+    ui_read_projection_service_ = std::make_unique<simcore::db::uiread::projectors::AttachedUiReadProjectionService>(
+        simcore::db::uiread::projectors::AttachedUiReadProjectionConfig{
+            .ui_read_db_path = config_paths_.ui_read_db_path,
+            .execution_db_path = config_paths_.execution_db_path,
+            .state_db_path = config_paths_.state_db_path,
+            .analysis_db_path = config_paths_.analysis_db_path,
+            .authoring_db_path = config_paths_.authoring_db_path,
+            .archive_db_path = config_paths_.archive_db_path,
+            .max_batch_size = 100,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::milliseconds{ 250 },
+            .include_archive = true,
+        });
+    if (!ui_read_projection_service_->Start(error_out)) {
+        return fail_start("Failed starting UIRead projection service: " + (error_out ? *error_out : std::string{}));
+    }
+
     running_ = true;
     return true;
 }
@@ -170,6 +189,16 @@ simcore::db::IUiReadDb* DBService::UiReadDb() {
 
 simcore::db::IArchiveDb* DBService::ArchiveDb() {
     return archive_db_.get();
+}
+
+bool DBService::RunUiReadProjectionOnce(std::string* error_out) {
+    if (ui_read_projection_service_ == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "UIRead projection service is not running";
+        }
+        return false;
+    }
+    return ui_read_projection_service_->RunOnce(error_out);
 }
 
 bool DBService::OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out) {
@@ -286,6 +315,7 @@ void DBService::CloseConnections() {
 }
 
 void DBService::ResetServices() {
+    ui_read_projection_service_.reset();
     archive_db_.reset();
     sqlite_archive_db_.reset();
     ui_read_db_.reset();

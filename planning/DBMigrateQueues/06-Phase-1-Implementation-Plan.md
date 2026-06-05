@@ -1,14 +1,25 @@
 # DBMigrateQueues 06 — Phase 1 Implementation Plan (Framework Skeleton)
 
 ## Status
-Draft v0.1 (implementation playbook)
+Draft v0.2 (facade-first implementation playbook)
 
 ## Purpose
-Define exactly how to build the first production-grade framework slice: queue abstractions, workers, buses, lifecycle wiring, and baseline observability.
+Define exactly how to build and harden the first production-grade framework slice: queued facades, queue workers, lifecycle wiring, and baseline observability.
+
+## Current Implementation Decision
+
+Phase 1 proceeds through queued facades over existing DB interfaces before introducing a full command/query bus:
+
+- `DBService` owns the concrete SQLite adapters and wraps them with queued facades.
+- Existing context interfaces stay stable so current workflow, projector, archive, and UI code can migrate without broad callsite rewrites.
+- SQLite adapters remain the SQL, transaction, and outbox write boundary.
+- CQRS envelope/bus/handler pieces are deferred until a specific path needs stronger replay, idempotency, cross-process durability, or operation-level scaling than the facade model provides.
+
+This narrows Phase 1 from "build every bus and handler abstraction first" to "stabilize the queue substrate in production-shaped code, then pull CQRS features forward selectively."
 
 ## Phase 1 Scope (from Phase Plan)
-- Add queue/worker/bus abstractions and lifecycle wiring.
-- Add concrete handlers for selected first context slice.
+- Add queued facade primitives and lifecycle wiring.
+- Preserve existing context interfaces while routing calls through read/write lanes.
 - Add baseline metrics and structured logging.
 
 Exit criteria:
@@ -18,7 +29,7 @@ Exit criteria:
 ## Implementation Outcomes
 By the end of Phase 1, we should have:
 1. Reusable queue + worker components with clear lifecycle semantics.
-2. One fully wired context slice proving command, query, and outbox flows.
+2. One fully wired context slice proving queued read, write, and outbox flows.
 3. Structured observability sufficient to debug routing, latency, retries, and stuck work.
 
 ## Workstream A — Shared Queue/Worker Framework
@@ -45,10 +56,12 @@ Expose common health state:
 - retry counters
 - last error summary
 
-## Workstream B — Bus and Handler Contracts
+## Workstream B — Facade Contracts and CQRS Extension Points
+
+The immediate work is facade hardening. Command/query buses remain extension points for later operation-specific promotion.
 
 ### B1. Command bus behavior
-Implement bus responsibilities:
+When a path is promoted beyond the facade, implement bus responsibilities:
 - envelope validation
 - idempotency pre-check hook
 - ordering-key assignment/validation
@@ -56,17 +69,23 @@ Implement bus responsibilities:
 - return accepted/rejected envelope response
 
 ### B2. Query bus behavior
-Implement query responsibilities:
+When a path is promoted beyond the facade, implement query responsibilities:
 - envelope validation
 - context/lane routing
 - asynchronous execution via read queue
 - typed result mapping and standardized failure reporting
 
 ### B3. Handler contracts
-Define handler interfaces and adapter boundaries:
+For promoted paths, define handler interfaces and adapter boundaries:
 - command handlers call `I<Context>CommandDb`
 - query handlers call `I<Context>QueryDb`
 - no SQL in handlers; DB adapters remain transaction/SQL owners
+
+### B4. Facade result semantics
+Harden current facade behavior before adding bus layers:
+- distinguish queue rejection from successful domain `false`/empty/`nullopt` results
+- preserve existing method semantics for normal execution
+- expose enough error text and telemetry for callers/tests to identify backpressure or stopped-lane failures
 
 ## Workstream C — First Context Slice Wiring
 
@@ -75,12 +94,22 @@ Use the same context chosen for early framework proving (can be a subset of Anal
 
 ### C2. Wire component graph
 For selected context:
-- command bus -> write queue -> write worker -> command handlers -> DB adapter
-- query bus -> read queue -> read worker -> query handlers -> DB adapter
+- context interface -> queued facade -> write queue -> write worker -> DB adapter
+- context interface -> queued facade -> read queue -> read worker -> DB adapter
 - outbox publisher worker -> DB outbox methods -> publisher -> mark success/failure
 
 ### C3. Lifecycle integration
 Ensure context service owns child components and exposes unified startup/shutdown behavior.
+
+### C4. UIRead projection lifecycle
+`DBService` owns the UIRead projection worker alongside the queued facades. The worker:
+- opens its own UIRead SQLite connection,
+- attaches source context database files,
+- runs `UiOutboxRelayCoordinator` against source outbox streams,
+- advances `ui_projection_subscription` state in UIRead,
+- keeps Qt2 on read-only UIRead access.
+
+This is the SQLite3 implementation of the outbox projection decision. It replaces the temporary synchronous State-to-UIRead shortcut and keeps producer contexts responsible for publishing source events while UIRead remains a projection target.
 
 ## Workstream D — Observability Baseline
 
@@ -133,7 +162,7 @@ Phase 1 closes only when:
 
 ## Suggested Execution Order
 1. Build shared queue/worker core (A).
-2. Implement command/query bus contracts (B).
+2. Harden facade result/error semantics and CQRS extension points (B).
 3. Wire first context slice and outbox worker (C).
 4. Add logs/metrics/stuck detection (D).
 5. Lock in automated validation (E).
@@ -147,8 +176,8 @@ Phase 1 closes only when:
   - **Mitigation:** require mandatory fields in logging helpers and metric labels.
 
 ## Exit Artifacts
-1. Shared queue/worker/bus abstractions implemented.
-2. First context slice fully wired.
+1. Shared queue/worker/facade abstractions implemented.
+2. First context slice fully wired through queued facades.
 3. Baseline metrics/logging implemented and reviewed.
 4. End-to-end local/integration tests pass.
 5. Lifecycle behavior documented with examples.

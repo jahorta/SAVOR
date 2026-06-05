@@ -30,8 +30,8 @@ QVariant ArtifactsBrowserTableModel::headerData(int section, Qt::Orientation ori
     switch (section) {
     case 0: return QStringLiteral("ID");
     case 1: return QStringLiteral("Filename");
-    case 2: return QStringLiteral("Size");
-    case 3: return QStringLiteral("Compression");
+    case 2: return QStringLiteral("Kind");
+    case 3: return QStringLiteral("Size");
     case 4: return QStringLiteral("SHA-256");
     case 5: return QStringLiteral("Created");
     default: return {};
@@ -44,8 +44,8 @@ QVariant ArtifactsBrowserTableModel::data(const QModelIndex& index, int role) co
         return {};
     }
 
-    const simcore::db::ObjectRefLite& artifact = rows_[index.row()].artifact;
-    if (role == Qt::TextAlignmentRole && (index.column() == 0 || index.column() == 2 || index.column() == 5)) {
+    const simcore::db::UiArtifactSummary& artifact = rows_[index.row()].artifact;
+    if (role == Qt::TextAlignmentRole && (index.column() == 0 || index.column() == 3 || index.column() == 5)) {
         return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
     }
     if (role == Qt::ToolTipRole && index.column() == 4) {
@@ -56,15 +56,15 @@ QVariant ArtifactsBrowserTableModel::data(const QModelIndex& index, int role) co
     }
 
     switch (index.column()) {
-    case 0: return artifact.id;
+    case 0: return artifact.artifact_id;
     case 1: return QString::fromStdString(artifact.filename);
-    case 2: return formatSize(artifact.size);
-    case 3: return compressionLabel(artifact.compression);
+    case 2: return QString::fromStdString(artifact.artifact_kind);
+    case 3: return formatSize(static_cast<qint64>(artifact.size_bytes));
     case 4: {
         const QString sha = QString::fromStdString(artifact.sha256);
         return sha.size() > 12 ? QStringLiteral("%1...").arg(sha.left(12)) : sha;
     }
-    case 5: return formatCreatedAt(artifact.created_at);
+    case 5: return formatCreatedAt(artifact.created_at_utc);
     default: return {};
     }
 }
@@ -98,18 +98,7 @@ QString ArtifactsBrowserTableModel::formatSize(qint64 size)
         : QStringLiteral("%1 %2").arg(value, 0, 'f', 1).arg(QString::fromLatin1(units[unit]));
 }
 
-QString ArtifactsBrowserTableModel::formatCreatedAt(qint64 epochSeconds)
+QString ArtifactsBrowserTableModel::formatCreatedAt(qint64 epochMilliseconds)
 {
-    return QDateTime::fromSecsSinceEpoch(epochSeconds).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-}
-
-QString ArtifactsBrowserTableModel::compressionLabel(simcore::db::Compression compression)
-{
-    switch (compression) {
-    case simcore::db::Compression::None: return QStringLiteral("None");
-    case simcore::db::Compression::Zstd: return QStringLiteral("Zstd");
-    case simcore::db::Compression::lz4: return QStringLiteral("LZ4");
-    }
-
-    return QStringLiteral("Unknown");
+    return QDateTime::fromMSecsSinceEpoch(epochMilliseconds).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
 }

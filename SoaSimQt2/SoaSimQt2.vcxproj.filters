@@ -58,6 +58,9 @@
     <Filter Include="GUI\Widgets\VisualReplay">
       <UniqueIdentifier>{354d8c69-ffaf-4ea9-bc49-e4a7c83d8399}</UniqueIdentifier>
     </Filter>
+    <Filter Include="DB">
+      <UniqueIdentifier>{22712b76-2522-41b1-b291-83e88bdb6a5b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <QtRcc Include="SoaSimQt2.qrc">
@@ -337,6 +340,18 @@
     </ClInclude>
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbAuthoringService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbArtifactService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbServiceResult.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbWorkflowService.h">
+      <Filter>DB</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

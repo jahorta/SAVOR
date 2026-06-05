@@ -1,5 +1,8 @@
 #include "BattleRunSettingsPage.h"
 
+#include "DB/SimCoreDbAuthoringService.h"
+#include "DB/SimCoreDbWorkflowService.h"
+
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QVBoxLayout>
 
@@ -17,4 +20,3 @@ BattleRunSettingsPage::BattleRunSettingsPage(QWidget* parent)
     layout->addWidget(detail);
     layout->addStretch();
 }
-

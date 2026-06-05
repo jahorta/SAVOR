@@ -6,9 +6,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QString>
 
-#include "DB/DBCore/ObjectStore.h"
-#include "DB/Querying/DataService.h"
-#include "DB/Querying/PagedQuery.h"
+#include "DB/SimCoreDbArtifactService.h"
 
 #include <optional>
 
@@ -20,7 +18,7 @@ public:
     explicit ArtifactsController(QObject* parent = nullptr);
 
     struct ViewState {
-        Page<simcore::db::ObjectRefLite> page;
+        simcore::db::UiReadPage<simcore::db::UiArtifactSummary> page;
         QString search;
         QString extension;
         QString errorMessage;
@@ -44,16 +42,16 @@ public:
     void requestNextPage();
     void requestPreviousPage();
     void selectArtifact(qint64 artifactId);
-    void importArtifact(const QString& sourcePath, const QString& filename, simcore::db::Compression compression = simcore::db::Compression::None);
+    void importArtifact(const QString& sourcePath, const QString& filename, const QString& artifactKind);
     void materializeSelectedArtifact(const QString& outputPath);
 
 signals:
     void stateChanged();
 
 private:
-    using ObjectPageResult = simcore::db::DbResult<Page<simcore::db::ObjectRefLite>>;
-    using ObjectRowResult = simcore::db::DbResult<simcore::db::ObjectRefRow>;
-    using VoidResult = simcore::db::DbResult<void>;
+    using ObjectPageResult = soasimqt2::db::ServiceResult<simcore::db::UiReadPage<simcore::db::UiArtifactSummary>>;
+    using ObjectRowResult = soasimqt2::db::ServiceResult<simcore::db::UiArtifactSummary>;
+    using VoidResult = soasimqt2::db::ServiceResult<void>;
 
     void refreshRootsState();
     void kickPageFetch();
@@ -62,14 +60,14 @@ private:
     void persistSettings() const;
     void syncFetchStateFromView();
     QString normalizedExtension(const QString& extension) const;
-    const simcore::db::ObjectRefLite* selectedArtifact() const;
+    const simcore::db::UiArtifactSummary* selectedArtifact() const;
 
     ViewState state_;
     QString fetchSearch_;
     QString fetchExtension_;
     int fetchPageLimit_ = 100;
-    std::optional<KeysetCursor> before_;
-    std::optional<KeysetCursor> after_;
+    std::optional<simcore::db::UiReadListCursor> before_;
+    std::optional<simcore::db::UiReadListCursor> after_;
     bool initialLoadStarted_ = false;
     bool pendingPageFetch_ = false;
     QFutureWatcher<ObjectPageResult> pageWatcher_;

@@ -85,7 +85,7 @@ void ArtifactsPage::handleExportRequested()
     const auto& state = controller_->viewState();
     QString defaultName = QStringLiteral("artifact.bin");
     for (const auto& artifact : state.page.items) {
-        if (artifact.id == state.selectedArtifactId) {
+        if (artifact.artifact_id == state.selectedArtifactId) {
             defaultName = QString::fromStdString(artifact.filename);
             break;
         }
@@ -117,12 +117,17 @@ void ArtifactsPage::openImportDialog(const ImportRequest& request)
     sourceEdit->setReadOnly(true);
     QLabel* filenameLabel = new QLabel(QStringLiteral("Filename"), &dialog);
     QLineEdit* filenameEdit = new QLineEdit(request.defaultName, &dialog);
-    QLabel* compressionLabel = new QLabel(QStringLiteral("Compression"), &dialog);
-    QComboBox* compressionCombo = new QComboBox(&dialog);
-    compressionCombo->addItem(QStringLiteral("None"), static_cast<int>(simcore::db::Compression::None));
+    QLabel* kindLabel = new QLabel(QStringLiteral("Kind"), &dialog);
+    QComboBox* kindCombo = new QComboBox(&dialog);
+    kindCombo->addItem(QStringLiteral("Auto"), QString());
+    kindCombo->addItem(QStringLiteral("DTM"), QStringLiteral("DTM"));
+    kindCombo->addItem(QStringLiteral("DTMINI"), QStringLiteral("DTMINI"));
+    kindCombo->addItem(QStringLiteral("SAV"), QStringLiteral("SAV"));
+    kindCombo->addItem(QStringLiteral("LOG"), QStringLiteral("LOG"));
+    kindCombo->addItem(QStringLiteral("OTHER"), QStringLiteral("OTHER"));
 
     QLabel* hint = new QLabel(
-        QStringLiteral("Review the source and destination filename before importing. Compression support is currently limited to object-store formats available in Qt."),
+        QStringLiteral("Review the source filename and object kind before importing."),
         &dialog);
     hint->setWordWrap(true);
 
@@ -130,8 +135,8 @@ void ArtifactsPage::openImportDialog(const ImportRequest& request)
     layout->addWidget(sourceEdit);
     layout->addWidget(filenameLabel);
     layout->addWidget(filenameEdit);
-    layout->addWidget(compressionLabel);
-    layout->addWidget(compressionCombo);
+    layout->addWidget(kindLabel);
+    layout->addWidget(kindCombo);
     layout->addWidget(hint);
 
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -154,7 +159,7 @@ void ArtifactsPage::openImportDialog(const ImportRequest& request)
     controller_->importArtifact(
         request.sourcePath,
         filenameEdit->text().trimmed(),
-        static_cast<simcore::db::Compression>(compressionCombo->currentData().toInt()));
+        kindCombo->currentData().toString());
 }
 
 void ArtifactsPage::createWidgets()
@@ -268,7 +273,7 @@ void ArtifactsPage::createWidgets()
     inspectorFilenameValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
     inspectorFilenameValue_->setWordWrap(true);
     inspectorSizeValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
-    inspectorCompressionValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
+    inspectorKindValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
     inspectorCreatedValue_ = new QLabel(QStringLiteral("--"), inspectorPanel);
     inspectorGrid->addWidget(new QLabel(QStringLiteral("ID"), inspectorPanel), 0, 0);
     inspectorGrid->addWidget(inspectorIdValue_, 0, 1);
@@ -276,8 +281,8 @@ void ArtifactsPage::createWidgets()
     inspectorGrid->addWidget(inspectorFilenameValue_, 1, 1);
     inspectorGrid->addWidget(new QLabel(QStringLiteral("Size"), inspectorPanel), 2, 0);
     inspectorGrid->addWidget(inspectorSizeValue_, 2, 1);
-    inspectorGrid->addWidget(new QLabel(QStringLiteral("Compression"), inspectorPanel), 3, 0);
-    inspectorGrid->addWidget(inspectorCompressionValue_, 3, 1);
+    inspectorGrid->addWidget(new QLabel(QStringLiteral("Kind"), inspectorPanel), 3, 0);
+    inspectorGrid->addWidget(inspectorKindValue_, 3, 1);
     inspectorGrid->addWidget(new QLabel(QStringLiteral("Created"), inspectorPanel), 4, 0);
     inspectorGrid->addWidget(inspectorCreatedValue_, 4, 1);
     inspectorLayout->addLayout(inspectorGrid);
@@ -337,7 +342,7 @@ void ArtifactsPage::wireSignals()
             return;
         }
         if (const auto* row = tableModel_->rowAt(current.row())) {
-            controller_->selectArtifact(row->artifact.id);
+            controller_->selectArtifact(row->artifact.artifact_id);
         }
     });
 
@@ -396,7 +401,7 @@ void ArtifactsPage::refreshModel()
         QSignalBlocker blocker(selectionModel);
         bool matchedSelection = false;
         for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
-            if (rows[row].artifact.id == state.selectedArtifactId) {
+            if (rows[row].artifact.artifact_id == state.selectedArtifactId) {
                 selectFlatRow(artifactsTable_, row);
                 matchedSelection = true;
                 break;
@@ -417,9 +422,9 @@ void ArtifactsPage::updateInspector()
 {
     const auto& state = controller_->viewState();
     const ScrollAreaScrollSnapshot inspectorShaScrollSnapshot = captureScrollAreaScrollSnapshot(inspectorShaText_);
-    const simcore::db::ObjectRefLite* selected = nullptr;
+    const simcore::db::UiArtifactSummary* selected = nullptr;
     for (const auto& artifact : state.page.items) {
-        if (artifact.id == state.selectedArtifactId) {
+        if (artifact.artifact_id == state.selectedArtifactId) {
             selected = &artifact;
             break;
         }
@@ -430,7 +435,7 @@ void ArtifactsPage::updateInspector()
         inspectorIdValue_->setText(QStringLiteral("--"));
         inspectorFilenameValue_->setText(QStringLiteral("--"));
         inspectorSizeValue_->setText(QStringLiteral("--"));
-        inspectorCompressionValue_->setText(QStringLiteral("--"));
+        inspectorKindValue_->setText(QStringLiteral("--"));
         inspectorCreatedValue_->setText(QStringLiteral("--"));
         inspectorShaText_->clear();
         restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
@@ -438,12 +443,12 @@ void ArtifactsPage::updateInspector()
         return;
     }
 
-    inspectorSummary_->setText(QStringLiteral("Artifact %1 is ready for inspection or materialization.").arg(selected->id));
-    inspectorIdValue_->setText(QString::number(selected->id));
+    inspectorSummary_->setText(QStringLiteral("Artifact %1 is ready for inspection or materialization.").arg(selected->artifact_id));
+    inspectorIdValue_->setText(QString::number(selected->artifact_id));
     inspectorFilenameValue_->setText(QString::fromStdString(selected->filename));
-    inspectorSizeValue_->setText(ArtifactsBrowserTableModel::formatSize(selected->size));
-    inspectorCompressionValue_->setText(ArtifactsBrowserTableModel::compressionLabel(selected->compression));
-    inspectorCreatedValue_->setText(ArtifactsBrowserTableModel::formatCreatedAt(selected->created_at));
+    inspectorSizeValue_->setText(ArtifactsBrowserTableModel::formatSize(static_cast<qint64>(selected->size_bytes)));
+    inspectorKindValue_->setText(QString::fromStdString(selected->artifact_kind));
+    inspectorCreatedValue_->setText(ArtifactsBrowserTableModel::formatCreatedAt(selected->created_at_utc));
     inspectorShaText_->setPlainText(QString::fromStdString(selected->sha256));
     restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
     exportButton_->setEnabled(state.rootsReady && !state.exportBusy && !state.importBusy);

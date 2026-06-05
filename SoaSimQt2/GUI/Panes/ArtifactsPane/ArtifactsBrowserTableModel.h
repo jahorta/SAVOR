@@ -2,7 +2,7 @@
 
 #include <QtCore/QAbstractTableModel>
 
-#include "DB/Querying/IdRepoListDTO.h"
+#include "UIRead/IUiReadDb.h"
 
 #include <vector>
 
@@ -10,7 +10,7 @@ class ArtifactsBrowserTableModel final : public QAbstractTableModel
 {
 public:
     struct Row {
-        simcore::db::ObjectRefLite artifact;
+        simcore::db::UiArtifactSummary artifact;
     };
 
     explicit ArtifactsBrowserTableModel(QObject* parent = nullptr);
@@ -24,8 +24,7 @@ public:
     const Row* rowAt(int row) const;
 
     static QString formatSize(qint64 size);
-    static QString formatCreatedAt(qint64 epochSeconds);
-    static QString compressionLabel(simcore::db::Compression compression);
+    static QString formatCreatedAt(qint64 epochMilliseconds);
 
 private:
     std::vector<Row> rows_;

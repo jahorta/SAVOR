@@ -23,6 +23,7 @@
 #include "../State/SqliteStateDb.h"
 #include "../UIRead/IUiReadDb.h"
 #include "../UIRead/QueuedUiReadDb.h"
+#include "../UIRead/Projectors/AttachedUiReadProjectionService.h"
 #include "../UIRead/SqliteUiReadDb.h"
 #include "DbConfigPaths.h"
 #include "Migrations/MigrationRunner.h"
@@ -52,6 +53,7 @@ public:
     simcore::db::IAuthoringDb* AuthoringDb();
     simcore::db::IUiReadDb* UiReadDb();
     simcore::db::IArchiveDb* ArchiveDb();
+    bool RunUiReadProjectionOnce(std::string* error_out = nullptr);
 
 private:
     bool OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out);
@@ -81,6 +83,7 @@ private:
     std::unique_ptr<simcore::db::QueuedAuthoringDb> authoring_db_;
     std::unique_ptr<simcore::db::SqliteUiReadDb> sqlite_ui_read_db_;
     std::unique_ptr<simcore::db::QueuedUiReadDb> ui_read_db_;
+    std::unique_ptr<simcore::db::uiread::projectors::AttachedUiReadProjectionService> ui_read_projection_service_;
     std::unique_ptr<simcore::db::SqliteArchiveDb> sqlite_archive_db_;
     std::unique_ptr<simcore::db::QueuedArchiveDb> archive_db_;
 };

@@ -244,6 +244,9 @@
     <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h">
       <Filter>UiRead</Filter>
     </ClInclude>
+    <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
+      <Filter>UiRead</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -424,6 +427,9 @@
       <Filter>Analysis</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp">
+      <Filter>UiRead</Filter>
+    </ClCompile>
+    <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp">

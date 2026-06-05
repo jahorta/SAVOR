@@ -11,6 +11,8 @@ class ArtifactProjector {
 public:
     explicit ArtifactProjector(sqlite3* db);
 
+    bool EnsureSqlFunctions(std::string* error_out = nullptr) const;
+
     bool ProjectFromOutbox(const std::string& projector_name, int max_batch_size, std::string* error_out, int max_attempts = 5);
 
     bool ProjectAll(std::string* error_out);
