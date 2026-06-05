@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
@@ -49,6 +50,13 @@ std::optional<int> ColumnIntOptional(sqlite3_stmt* st, int index) {
 std::string ColumnText(sqlite3_stmt* st, int index) {
     const auto* text = sqlite3_column_text(st, index);
     return text ? reinterpret_cast<const char*>(text) : "";
+}
+
+std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return ColumnText(st, index);
 }
 
 std::vector<std::uint8_t> ColumnBlob(sqlite3_stmt* st, int index) {
@@ -219,6 +227,69 @@ bool TryReadTemplateByBattleRunSpec(sqlite3* db, std::int64_t battle_run_spec_id
     }
 
     return false;
+}
+
+bool TryReadWorkflowGraphPayload(sqlite3* db, std::int64_t workflow_graph_revision_id, AuthoringPayloadRecord* out) {
+    if (db == nullptr || out == nullptr || workflow_graph_revision_id <= 0) {
+        return false;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT workflow_graph_id, workflow_graph_revision_id "
+        "FROM au_workflow_graph_revision "
+        "WHERE workflow_graph_revision_id=?1;";
+    if (sqlite3_prepare_v2(db, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(st.st, 1, workflow_graph_revision_id);
+    if (sqlite3_step(st.st) == SQLITE_ROW) {
+        out->workflow_graph_id = sqlite3_column_int64(st.st, 0);
+        out->workflow_graph_revision_id = sqlite3_column_int64(st.st, 1);
+        return true;
+    }
+
+    return false;
+}
+
+bool InsertWorkflowGraphOutboxEvent(
+    sqlite3* db,
+    const SaveWorkflowGraphCommand& command,
+    std::int64_t workflow_graph_id,
+    std::int64_t workflow_graph_revision_id,
+    std::string* error_out) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO au_outbox_message("
+            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+            "VALUES(?1,'Authoring.WorkflowGraphSaved.v1',1,'Authoring','workflow_graph',?2,?3,?4,?5,'authoring_event',?6);",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+
+    const auto aggregate_id = std::to_string(workflow_graph_id);
+    sqlite3_bind_text(st.st, 1, command.event_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 3, command.correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 4, command.causation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 5, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(st.st, 6, workflow_graph_revision_id);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db);
+        }
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace
@@ -1555,6 +1626,485 @@ bool SqliteAuthoringDb::SaveTemplate(
     return true;
 }
 
+bool SqliteAuthoringDb::SaveWorkflowGraph(
+    const SaveWorkflowGraphCommand& command,
+    SaveWorkflowGraphResult* result_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.name.empty() || command.graph_hash.empty() || command.event_id.empty()) {
+        if (error_out) *error_out = "workflow graph name, graph_hash, and event_id are required";
+        return false;
+    }
+    if (command.nodes.empty()) {
+        if (error_out) *error_out = "workflow graph must contain at least one node";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto rollback = [&]() { (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); };
+
+    std::int64_t workflow_graph_id = command.workflow_graph_id.value_or(0);
+    std::optional<std::int64_t> parent_revision_id = command.parent_revision_id;
+
+    if (workflow_graph_id > 0) {
+        Statement read_graph;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT active_revision_id FROM au_workflow_graph WHERE workflow_graph_id=?1;",
+                -1,
+                &read_graph.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(read_graph.st, 1, workflow_graph_id);
+        if (sqlite3_step(read_graph.st) != SQLITE_ROW) {
+            rollback();
+            if (error_out) *error_out = "workflow graph not found";
+            return false;
+        }
+        if (!parent_revision_id.has_value()) {
+            parent_revision_id = ColumnInt64Optional(read_graph.st, 0);
+        }
+
+        Statement update_graph;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE au_workflow_graph SET name=?1, description=?2 WHERE workflow_graph_id=?3;",
+                -1,
+                &update_graph.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_text(update_graph.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+        if (command.description.empty()) sqlite3_bind_null(update_graph.st, 2);
+        else sqlite3_bind_text(update_graph.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(update_graph.st, 3, workflow_graph_id);
+        if (sqlite3_step(update_graph.st) != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    } else {
+        Statement insert_graph;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_workflow_graph(name,description,created_at_utc) "
+                "VALUES(?1,?2,?3);",
+                -1,
+                &insert_graph.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        sqlite3_bind_text(insert_graph.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+        if (command.description.empty()) sqlite3_bind_null(insert_graph.st, 2);
+        else sqlite3_bind_text(insert_graph.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(insert_graph.st, 3, ToEpochMillis(command.created_at_utc));
+        if (sqlite3_step(insert_graph.st) != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        workflow_graph_id = sqlite3_last_insert_rowid(db_);
+    }
+
+    int graph_version = command.graph_version;
+    if (graph_version <= 0) {
+        Statement version_st;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT COALESCE(MAX(graph_version),0)+1 FROM au_workflow_graph_revision WHERE workflow_graph_id=?1;",
+                -1,
+                &version_st.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(version_st.st, 1, workflow_graph_id);
+        if (sqlite3_step(version_st.st) == SQLITE_ROW) {
+            graph_version = sqlite3_column_int(version_st.st, 0);
+        } else {
+            graph_version = 1;
+        }
+    }
+
+    Statement insert_revision;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_workflow_graph_revision("
+            "workflow_graph_id,graph_version,graph_hash,parent_revision_id,status,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,'active',?5);",
+            -1,
+            &insert_revision.st,
+            nullptr)
+        != SQLITE_OK) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(insert_revision.st, 1, workflow_graph_id);
+    sqlite3_bind_int(insert_revision.st, 2, graph_version);
+    sqlite3_bind_text(insert_revision.st, 3, command.graph_hash.c_str(), -1, SQLITE_TRANSIENT);
+    if (parent_revision_id.has_value()) sqlite3_bind_int64(insert_revision.st, 4, parent_revision_id.value());
+    else sqlite3_bind_null(insert_revision.st, 4);
+    sqlite3_bind_int64(insert_revision.st, 5, ToEpochMillis(command.created_at_utc));
+    if (sqlite3_step(insert_revision.st) != SQLITE_DONE) {
+        rollback();
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    const auto workflow_graph_revision_id = sqlite3_last_insert_rowid(db_);
+    std::unordered_map<std::string, std::int64_t> node_id_by_key;
+    node_id_by_key.reserve(command.nodes.size());
+
+    for (int node_ordinal = 0; node_ordinal < static_cast<int>(command.nodes.size()); ++node_ordinal) {
+        const auto& node = command.nodes[static_cast<std::size_t>(node_ordinal)];
+        if (node.node_key.empty() || node.unit_kind.empty()) {
+            rollback();
+            if (error_out) *error_out = "workflow graph node_key and unit_kind are required";
+            return false;
+        }
+        if (node_id_by_key.find(node.node_key) != node_id_by_key.end()) {
+            rollback();
+            if (error_out) *error_out = "duplicate workflow graph node_key: " + node.node_key;
+            return false;
+        }
+
+        Statement insert_node;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_workflow_graph_revision_node("
+                "workflow_graph_revision_id,node_key,unit_kind,display_name,authored_ref_kind,authored_ref_id,ordinal) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7);",
+                -1,
+                &insert_node.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        sqlite3_bind_int64(insert_node.st, 1, workflow_graph_revision_id);
+        sqlite3_bind_text(insert_node.st, 2, node.node_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_node.st, 3, node.unit_kind.c_str(), -1, SQLITE_TRANSIENT);
+        if (node.display_name.empty()) sqlite3_bind_null(insert_node.st, 4);
+        else sqlite3_bind_text(insert_node.st, 4, node.display_name.c_str(), -1, SQLITE_TRANSIENT);
+        if (node.authored_ref_kind.has_value()) sqlite3_bind_text(insert_node.st, 5, node.authored_ref_kind->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_node.st, 5);
+        if (node.authored_ref_id.has_value()) sqlite3_bind_int64(insert_node.st, 6, node.authored_ref_id.value());
+        else sqlite3_bind_null(insert_node.st, 6);
+        sqlite3_bind_int(insert_node.st, 7, node_ordinal);
+        if (sqlite3_step(insert_node.st) != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        const auto workflow_graph_revision_node_id = sqlite3_last_insert_rowid(db_);
+        node_id_by_key.emplace(node.node_key, workflow_graph_revision_node_id);
+
+        for (int input_ordinal = 0; input_ordinal < static_cast<int>(node.inputs.size()); ++input_ordinal) {
+            const auto& input = node.inputs[static_cast<std::size_t>(input_ordinal)];
+            if (input.input_key.empty() || input.data_kind.empty()) {
+                rollback();
+                if (error_out) *error_out = "workflow graph input_key and data_kind are required";
+                return false;
+            }
+            Statement insert_input;
+            if (sqlite3_prepare_v2(
+                    db_,
+                    "INSERT INTO au_workflow_graph_revision_node_input("
+                    "workflow_graph_revision_node_id,input_key,data_kind,display_name,required,ordinal) "
+                    "VALUES(?1,?2,?3,?4,?5,?6);",
+                    -1,
+                    &insert_input.st,
+                    nullptr)
+                != SQLITE_OK) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return false;
+            }
+            sqlite3_bind_int64(insert_input.st, 1, workflow_graph_revision_node_id);
+            sqlite3_bind_text(insert_input.st, 2, input.input_key.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(insert_input.st, 3, input.data_kind.c_str(), -1, SQLITE_TRANSIENT);
+            if (input.display_name.empty()) sqlite3_bind_null(insert_input.st, 4);
+            else sqlite3_bind_text(insert_input.st, 4, input.display_name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(insert_input.st, 5, input.required ? 1 : 0);
+            sqlite3_bind_int(insert_input.st, 6, input_ordinal);
+            if (sqlite3_step(insert_input.st) != SQLITE_DONE) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return false;
+            }
+        }
+
+        for (int output_ordinal = 0; output_ordinal < static_cast<int>(node.possible_outputs.size()); ++output_ordinal) {
+            const auto& output = node.possible_outputs[static_cast<std::size_t>(output_ordinal)];
+            if (output.output_key.empty() || output.data_kind.empty()) {
+                rollback();
+                if (error_out) *error_out = "workflow graph output_key and data_kind are required";
+                return false;
+            }
+            Statement insert_output;
+            if (sqlite3_prepare_v2(
+                    db_,
+                    "INSERT INTO au_workflow_graph_revision_node_output("
+                    "workflow_graph_revision_node_id,output_key,data_kind,display_name,ordinal) "
+                    "VALUES(?1,?2,?3,?4,?5);",
+                    -1,
+                    &insert_output.st,
+                    nullptr)
+                != SQLITE_OK) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return false;
+            }
+            sqlite3_bind_int64(insert_output.st, 1, workflow_graph_revision_node_id);
+            sqlite3_bind_text(insert_output.st, 2, output.output_key.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(insert_output.st, 3, output.data_kind.c_str(), -1, SQLITE_TRANSIENT);
+            if (output.display_name.empty()) sqlite3_bind_null(insert_output.st, 4);
+            else sqlite3_bind_text(insert_output.st, 4, output.display_name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(insert_output.st, 5, output_ordinal);
+            if (sqlite3_step(insert_output.st) != SQLITE_DONE) {
+                rollback();
+                if (error_out) *error_out = sqlite3_errmsg(db_);
+                return false;
+            }
+        }
+    }
+
+    for (int edge_ordinal = 0; edge_ordinal < static_cast<int>(command.edges.size()); ++edge_ordinal) {
+        const auto& edge = command.edges[static_cast<std::size_t>(edge_ordinal)];
+        const auto from_it = node_id_by_key.find(edge.from_node_key);
+        const auto to_it = node_id_by_key.find(edge.to_node_key);
+        if (edge.output_key.empty() || edge.input_key.empty() || from_it == node_id_by_key.end() || to_it == node_id_by_key.end()) {
+            rollback();
+            if (error_out) *error_out = "workflow graph edge references unknown node or empty port";
+            return false;
+        }
+
+        Statement insert_edge;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_workflow_graph_revision_edge("
+                "workflow_graph_revision_id,from_revision_node_id,output_key,to_revision_node_id,input_key,guard_kind,guard_value,ordinal) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
+                -1,
+                &insert_edge.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(insert_edge.st, 1, workflow_graph_revision_id);
+        sqlite3_bind_int64(insert_edge.st, 2, from_it->second);
+        sqlite3_bind_text(insert_edge.st, 3, edge.output_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(insert_edge.st, 4, to_it->second);
+        sqlite3_bind_text(insert_edge.st, 5, edge.input_key.c_str(), -1, SQLITE_TRANSIENT);
+        if (edge.guard_kind.has_value()) sqlite3_bind_text(insert_edge.st, 6, edge.guard_kind->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_edge.st, 6);
+        if (edge.guard_value.has_value()) sqlite3_bind_text(insert_edge.st, 7, edge.guard_value->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_edge.st, 7);
+        sqlite3_bind_int(insert_edge.st, 8, edge_ordinal);
+        if (sqlite3_step(insert_edge.st) != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    if (command.make_active) {
+        Statement update_active;
+        if (sqlite3_prepare_v2(
+                db_,
+                "UPDATE au_workflow_graph SET active_revision_id=?1 WHERE workflow_graph_id=?2;",
+                -1,
+                &update_active.st,
+                nullptr)
+            != SQLITE_OK) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(update_active.st, 1, workflow_graph_revision_id);
+        sqlite3_bind_int64(update_active.st, 2, workflow_graph_id);
+        if (sqlite3_step(update_active.st) != SQLITE_DONE) {
+            rollback();
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    if (!InsertWorkflowGraphOutboxEvent(db_, command, workflow_graph_id, workflow_graph_revision_id, error_out)) {
+        rollback();
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        rollback();
+        return false;
+    }
+
+    if (result_out) {
+        result_out->workflow_graph_id = workflow_graph_id;
+        result_out->workflow_graph_revision_id = workflow_graph_revision_id;
+    }
+    return true;
+}
+
+std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
+    std::int64_t workflow_graph_id) const {
+    if (db_ == nullptr || workflow_graph_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement graph_st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
+            "r.graph_version,r.graph_hash,r.status "
+            "FROM au_workflow_graph g "
+            "JOIN au_workflow_graph_revision r ON r.workflow_graph_revision_id=g.active_revision_id "
+            "WHERE g.workflow_graph_id=?1;",
+            -1,
+            &graph_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(graph_st.st, 1, workflow_graph_id);
+    if (sqlite3_step(graph_st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    WorkflowGraphSnapshot out{};
+    out.workflow_graph_id = sqlite3_column_int64(graph_st.st, 0);
+    out.workflow_graph_revision_id = sqlite3_column_int64(graph_st.st, 1);
+    out.parent_revision_id = ColumnInt64Optional(graph_st.st, 2);
+    out.name = ColumnText(graph_st.st, 3);
+    out.description = ColumnText(graph_st.st, 4);
+    out.graph_version = sqlite3_column_int(graph_st.st, 5);
+    out.graph_hash = ColumnText(graph_st.st, 6);
+    out.status = ColumnText(graph_st.st, 7);
+
+    Statement node_st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT workflow_graph_revision_node_id,node_key,unit_kind,COALESCE(display_name,''),authored_ref_kind,authored_ref_id "
+            "FROM au_workflow_graph_revision_node WHERE workflow_graph_revision_id=?1 ORDER BY ordinal ASC, workflow_graph_revision_node_id ASC;",
+            -1,
+            &node_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(node_st.st, 1, out.workflow_graph_revision_id);
+
+    while (sqlite3_step(node_st.st) == SQLITE_ROW) {
+        WorkflowGraphNodeSnapshot node{};
+        node.workflow_graph_revision_node_id = sqlite3_column_int64(node_st.st, 0);
+        node.node_key = ColumnText(node_st.st, 1);
+        node.unit_kind = ColumnText(node_st.st, 2);
+        node.display_name = ColumnText(node_st.st, 3);
+        node.authored_ref_kind = ColumnTextOptional(node_st.st, 4);
+        node.authored_ref_id = ColumnInt64Optional(node_st.st, 5);
+
+        Statement input_st;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT input_key,data_kind,COALESCE(display_name,''),required "
+                "FROM au_workflow_graph_revision_node_input WHERE workflow_graph_revision_node_id=?1 ORDER BY ordinal ASC, workflow_graph_revision_node_input_id ASC;",
+                -1,
+                &input_st.st,
+                nullptr)
+            != SQLITE_OK) {
+            return std::nullopt;
+        }
+        sqlite3_bind_int64(input_st.st, 1, node.workflow_graph_revision_node_id);
+        while (sqlite3_step(input_st.st) == SQLITE_ROW) {
+            node.inputs.push_back(WorkflowGraphNodeInputSnapshot{
+                .input_key = ColumnText(input_st.st, 0),
+                .data_kind = ColumnText(input_st.st, 1),
+                .display_name = ColumnText(input_st.st, 2),
+                .required = sqlite3_column_int(input_st.st, 3) != 0,
+            });
+        }
+
+        Statement output_st;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT output_key,data_kind,COALESCE(display_name,'') "
+                "FROM au_workflow_graph_revision_node_output WHERE workflow_graph_revision_node_id=?1 ORDER BY ordinal ASC, workflow_graph_revision_node_output_id ASC;",
+                -1,
+                &output_st.st,
+                nullptr)
+            != SQLITE_OK) {
+            return std::nullopt;
+        }
+        sqlite3_bind_int64(output_st.st, 1, node.workflow_graph_revision_node_id);
+        while (sqlite3_step(output_st.st) == SQLITE_ROW) {
+            node.possible_outputs.push_back(WorkflowGraphNodeOutputSnapshot{
+                .output_key = ColumnText(output_st.st, 0),
+                .data_kind = ColumnText(output_st.st, 1),
+                .display_name = ColumnText(output_st.st, 2),
+            });
+        }
+
+        out.nodes.push_back(std::move(node));
+    }
+
+    Statement edge_st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT e.workflow_graph_revision_edge_id,fn.node_key,e.output_key,tn.node_key,e.input_key,e.guard_kind,e.guard_value "
+            "FROM au_workflow_graph_revision_edge e "
+            "JOIN au_workflow_graph_revision_node fn ON fn.workflow_graph_revision_node_id=e.from_revision_node_id "
+            "JOIN au_workflow_graph_revision_node tn ON tn.workflow_graph_revision_node_id=e.to_revision_node_id "
+            "WHERE e.workflow_graph_revision_id=?1 ORDER BY e.ordinal ASC, e.workflow_graph_revision_edge_id ASC;",
+            -1,
+            &edge_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(edge_st.st, 1, out.workflow_graph_revision_id);
+    while (sqlite3_step(edge_st.st) == SQLITE_ROW) {
+        out.edges.push_back(WorkflowGraphEdgeSnapshot{
+            .workflow_graph_revision_edge_id = sqlite3_column_int64(edge_st.st, 0),
+            .from_node_key = ColumnText(edge_st.st, 1),
+            .output_key = ColumnText(edge_st.st, 2),
+            .to_node_key = ColumnText(edge_st.st, 3),
+            .input_key = ColumnText(edge_st.st, 4),
+            .guard_kind = ColumnTextOptional(edge_st.st, 5),
+            .guard_value = ColumnTextOptional(edge_st.st, 6),
+        });
+    }
+
+    return out;
+}
+
 std::vector<events::EventEnvelope> SqliteAuthoringDb::ReadUnpublishedOutboxBatch(
     std::int64_t after_outbox_id,
     int max_batch_size) {
@@ -1779,6 +2329,9 @@ std::optional<AuthoringPayloadRecord> SqliteAuthoringDb::ResolveAuthoringPayload
         else if (event_type == "Authoring.BattleRunSpecSaved.v1") {
             effective_ref_kind = "battle_run_spec";
         }
+        else if (event_type == "Authoring.WorkflowGraphSaved.v1") {
+            effective_ref_kind = "workflow_graph";
+        }
         else {
             effective_ref_kind = "template";
         }
@@ -1801,6 +2354,13 @@ std::optional<AuthoringPayloadRecord> SqliteAuthoringDb::ResolveAuthoringPayload
 
     if (effective_ref_kind == "battle_run_spec") {
         if (!TryReadTemplateByBattleRunSpec(db_, payload_ref_id, &payload)) {
+            return std::nullopt;
+        }
+        return payload;
+    }
+
+    if (effective_ref_kind == "workflow_graph") {
+        if (!TryReadWorkflowGraphPayload(db_, payload_ref_id, &payload)) {
             return std::nullopt;
         }
         return payload;

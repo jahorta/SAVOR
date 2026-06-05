@@ -19,11 +19,13 @@
 
 Workflow composition is a design-time/control-plane concern, not an Analysis DB writer.
 
-- The Qt2 Workflow Builder and SimCoreDB composition registry describe reusable workflow units, their required inputs, their possible outputs, and their internal step kinds.
+- The Qt2 Workflow Builder and SimCoreDB composition registry describe reusable workflow units, their required input ports, their possible output ports, and their internal step kinds.
 - Composition validation answers only whether a downstream unit can potentially be satisfied by an upstream unit or by an external input binding.
 - Composition does not create Analysis DB, State DB, or UIRead rows.
-- Authored records such as battle plans, predicates, workflow templates, and user-selected source artifacts should exist before workflow submission.
-- Execution DB owns submitted workflow instances, steps, dependency edges, selected unit kinds, and input/output binding metadata.
+- Authored records such as battle plans, predicates, and workflow templates should exist before workflow submission. Source artifacts may already exist in State/Archive, but selecting them for a workflow is an instance-specific submission binding.
+- Authoring DB owns reusable workflow graph templates as logical graph identities with immutable revisions. A revision contains graph nodes, required input port definitions, possible output port definitions, edges, guards, and optional refs to other authored records.
+- External input values are not part of the authored workflow graph. Source artifacts, savestates, prior analysis output refs, and other run-specific bindings are supplied at submission time and belong to the workflow instance/runtime path.
+- Execution DB owns submitted workflow instances and only the concrete runtime steps that have actually been instantiated from a specific authored graph revision.
 - Program descriptors/adapters own step-specific materialization and result mapping. Any Analysis DB rows needed for a step are created lazily by the descriptor path when that step is materialized or when its results are mapped.
 - Runtime transition handling advances downstream steps only when actual produced output refs exist. A unit's possible output is not a promise that the output will be produced.
 

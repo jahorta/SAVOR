@@ -50,6 +50,8 @@ This file is meant to be actively updated each iteration.
    - Decision: composition contracts use `possible_outputs`, not guaranteed/provided outputs. Downstream compatibility is design-time only; runtime advancement requires actual produced refs.
 21. **Analysis row creation ownership**
    - Decision: Qt2/workflow composition must not pre-create Analysis DB rows. Program descriptors/adapters create Analysis rows lazily during materialization or result mapping for steps that actually run.
+22. **Workflow graph storage boundary**
+   - Decision: reusable workflow graph templates live in Authoring DB as logical graph identities with immutable revisions. External input values are instance-specific and must not be stored in authored workflow graphs.
 
 ## Priority A (blockers)
 
@@ -108,3 +110,4 @@ For each question:
 - Decider evidence contract is standardized (`evidence_ref`) and milestone retrieval mode is DB-query-only.
 - Completion invariant remediation path is standardized through pause + invariant event + reconciliation/repair + reopen-or-fail policy.
 - Workflow composition output semantics are standardized around `possible_outputs`, and Analysis rows are created lazily by program descriptors/adapters instead of by the composition layer.
+- Workflow graph storage is standardized around Authoring-owned graph identities, immutable graph revisions, and instance-specific submission bindings.

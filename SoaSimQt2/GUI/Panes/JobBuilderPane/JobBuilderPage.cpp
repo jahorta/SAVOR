@@ -1,5 +1,6 @@
 #include "JobBuilderPage.h"
 
+#include "DB/SimCoreDbAuthoringService.h"
 #include "DB/SimCoreDbWorkflowService.h"
 
 #include <QtCore/QDateTime>
@@ -15,6 +16,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <unordered_map>
 
@@ -47,6 +49,29 @@ QString portListText(const std::vector<simcore::db::execution::workflow::Workflo
     return lines.join(QStringLiteral("\n"));
 }
 
+std::string workflowGraphHash(
+    const std::vector<simcore::db::execution::workflow::WorkflowCompositionNode>& nodes,
+    const std::vector<simcore::db::execution::workflow::WorkflowUnitOutputBinding>& bindings)
+{
+    std::string content;
+    for (const auto& node : nodes) {
+        content += "node:" + node.node_key + ":" + node.unit_kind + "\n";
+    }
+    for (const auto& binding : bindings) {
+        content += "edge:" + binding.from_node_key + "." + binding.output_key
+            + ">" + binding.to_node_key + "." + binding.input_key + "\n";
+    }
+
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const auto ch : content) {
+        hash ^= static_cast<unsigned char>(ch);
+        hash *= 1099511628211ull;
+    }
+    std::ostringstream out;
+    out << "fnv1a64-" << std::hex << hash;
+    return out.str();
+}
+
 } // namespace
 
 JobBuilderPage::JobBuilderPage(QWidget* parent)
@@ -73,9 +98,11 @@ void JobBuilderPage::createWidgets()
     addUnitButton_ = new QPushButton(QStringLiteral("Add Unit"), toolbar);
     removeNodeButton_ = new QPushButton(QStringLiteral("Remove"), toolbar);
     clearButton_ = new QPushButton(QStringLiteral("Clear"), toolbar);
+    saveGraphButton_ = new QPushButton(QStringLiteral("Save Graph"), toolbar);
     addUnitButton_->setObjectName("jobsPrimaryButton");
     removeNodeButton_->setObjectName("jobsSecondaryButton");
     clearButton_->setObjectName("jobsSecondaryButton");
+    saveGraphButton_->setObjectName("jobsPrimaryButton");
 
     externalDtmCheck_ = new QCheckBox(QStringLiteral("DTM artifact"), toolbar);
     externalSavestateCheck_ = new QCheckBox(QStringLiteral("Savestate"), toolbar);
@@ -85,6 +112,7 @@ void JobBuilderPage::createWidgets()
     toolbarLayout->addWidget(addUnitButton_);
     toolbarLayout->addWidget(removeNodeButton_);
     toolbarLayout->addWidget(clearButton_);
+    toolbarLayout->addWidget(saveGraphButton_);
     toolbarLayout->addSpacing(12);
     toolbarLayout->addWidget(new QLabel(QStringLiteral("External inputs"), toolbar));
     toolbarLayout->addWidget(externalDtmCheck_);
@@ -124,6 +152,7 @@ void JobBuilderPage::createWidgets()
     connect(addUnitButton_, &QPushButton::clicked, this, &JobBuilderPage::addSelectedUnit);
     connect(removeNodeButton_, &QPushButton::clicked, this, &JobBuilderPage::removeSelectedNode);
     connect(clearButton_, &QPushButton::clicked, this, &JobBuilderPage::clearComposition);
+    connect(saveGraphButton_, &QPushButton::clicked, this, &JobBuilderPage::saveGraph);
     connect(externalDtmCheck_, &QCheckBox::toggled, this, [this]() {
         rebuildBindings();
         refreshPreview();
@@ -191,6 +220,73 @@ void JobBuilderPage::clearComposition()
     rebuildBindings();
     refreshCompositionList();
     refreshPreview();
+}
+
+void JobBuilderPage::saveGraph()
+{
+    if (nodes_.empty()) {
+        postStatusMessage(QStringLiteral("Add at least one workflow unit before saving."), StatusToast::Severity::Warn);
+        return;
+    }
+
+    rebuildBindings();
+
+    soasimqt2::db::WorkflowGraphDraft draft{};
+    const auto stamp = QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+    draft.name = "Qt2 workflow graph " + std::to_string(stamp);
+    draft.description = "Authored from Qt2 Workflow Builder";
+    draft.graph_version = 1;
+    draft.graph_hash = workflowGraphHash(nodes_, outputBindings_);
+
+    for (const auto& node : nodes_) {
+        const auto* unit = findUnit(node.unit_kind);
+        if (unit == nullptr) {
+            postStatusMessage(QStringLiteral("Cannot save graph with unknown workflow unit."), StatusToast::Severity::Error);
+            return;
+        }
+
+        simcore::db::SaveWorkflowGraphNodeCommand node_command{};
+        node_command.node_key = node.node_key;
+        node_command.unit_kind = node.unit_kind;
+        node_command.display_name = unit->display_name;
+        for (const auto& input : unit->required_inputs) {
+            node_command.inputs.push_back(simcore::db::SaveWorkflowGraphNodeInputCommand{
+                .input_key = input.key,
+                .data_kind = input.data_kind,
+                .display_name = input.display_name,
+                .required = input.required,
+            });
+        }
+        for (const auto& output : unit->possible_outputs) {
+            node_command.possible_outputs.push_back(simcore::db::SaveWorkflowGraphNodeOutputCommand{
+                .output_key = output.key,
+                .data_kind = output.data_kind,
+                .display_name = output.display_name,
+            });
+        }
+        draft.nodes.push_back(std::move(node_command));
+    }
+
+    for (const auto& binding : outputBindings_) {
+        draft.edges.push_back(simcore::db::SaveWorkflowGraphEdgeCommand{
+            .from_node_key = binding.from_node_key,
+            .output_key = binding.output_key,
+            .to_node_key = binding.to_node_key,
+            .input_key = binding.input_key,
+        });
+    }
+
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::SaveWorkflowGraph(draft);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+
+    postStatusMessage(
+        QStringLiteral("Saved workflow graph %1 revision %2")
+            .arg(static_cast<qint64>(result.value.workflow_graph_id))
+            .arg(static_cast<qint64>(result.value.workflow_graph_revision_id)),
+        StatusToast::Severity::Info);
 }
 
 void JobBuilderPage::rebuildBindings()

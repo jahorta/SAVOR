@@ -81,6 +81,8 @@ struct AuthoringPayloadRecord {
     std::int64_t template_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
+    std::int64_t workflow_graph_id = 0;
+    std::int64_t workflow_graph_revision_id = 0;
 };
 
 struct SaveSeedProbeSpecCommand {
@@ -243,6 +245,59 @@ struct SaveTemplateCommand {
     std::string causation_id;
 };
 
+struct SaveWorkflowGraphNodeInputCommand {
+    std::string input_key;
+    std::string data_kind;
+    std::string display_name;
+    bool required = true;
+};
+
+struct SaveWorkflowGraphNodeOutputCommand {
+    std::string output_key;
+    std::string data_kind;
+    std::string display_name;
+};
+
+struct SaveWorkflowGraphNodeCommand {
+    std::string node_key;
+    std::string unit_kind;
+    std::string display_name;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::vector<SaveWorkflowGraphNodeInputCommand> inputs;
+    std::vector<SaveWorkflowGraphNodeOutputCommand> possible_outputs;
+};
+
+struct SaveWorkflowGraphEdgeCommand {
+    std::string from_node_key;
+    std::string output_key;
+    std::string to_node_key;
+    std::string input_key;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+};
+
+struct SaveWorkflowGraphCommand {
+    std::optional<std::int64_t> workflow_graph_id;
+    std::optional<std::int64_t> parent_revision_id;
+    std::string name;
+    std::string description;
+    int graph_version = 1;
+    std::string graph_hash;
+    bool make_active = true;
+    std::vector<SaveWorkflowGraphNodeCommand> nodes;
+    std::vector<SaveWorkflowGraphEdgeCommand> edges;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct SaveWorkflowGraphResult {
+    std::int64_t workflow_graph_id = 0;
+    std::int64_t workflow_graph_revision_id = 0;
+};
+
 struct BattleRunSpecSnapshot {
     std::int64_t battle_run_spec_id = 0;
     std::string name;
@@ -326,6 +381,53 @@ struct ExplorerSettingsSnapshot {
     std::optional<std::int64_t> default_predicate_set_id;
 };
 
+struct WorkflowGraphNodeInputSnapshot {
+    std::string input_key;
+    std::string data_kind;
+    std::string display_name;
+    bool required = true;
+};
+
+struct WorkflowGraphNodeOutputSnapshot {
+    std::string output_key;
+    std::string data_kind;
+    std::string display_name;
+};
+
+struct WorkflowGraphNodeSnapshot {
+    std::int64_t workflow_graph_revision_node_id = 0;
+    std::string node_key;
+    std::string unit_kind;
+    std::string display_name;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::vector<WorkflowGraphNodeInputSnapshot> inputs;
+    std::vector<WorkflowGraphNodeOutputSnapshot> possible_outputs;
+};
+
+struct WorkflowGraphEdgeSnapshot {
+    std::int64_t workflow_graph_revision_edge_id = 0;
+    std::string from_node_key;
+    std::string output_key;
+    std::string to_node_key;
+    std::string input_key;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+};
+
+struct WorkflowGraphSnapshot {
+    std::int64_t workflow_graph_id = 0;
+    std::int64_t workflow_graph_revision_id = 0;
+    std::optional<std::int64_t> parent_revision_id;
+    std::string name;
+    std::string description;
+    int graph_version = 1;
+    std::string graph_hash;
+    std::string status;
+    std::vector<WorkflowGraphNodeSnapshot> nodes;
+    std::vector<WorkflowGraphEdgeSnapshot> edges;
+};
+
 struct IAuthoringDb {
     virtual ~IAuthoringDb() = default;
 
@@ -400,6 +502,14 @@ struct IAuthoringDb {
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual bool SaveWorkflowGraph(
+        const SaveWorkflowGraphCommand& command,
+        SaveWorkflowGraphResult* result_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
+        std::int64_t workflow_graph_id) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

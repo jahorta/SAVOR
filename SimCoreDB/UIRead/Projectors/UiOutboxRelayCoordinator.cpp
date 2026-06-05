@@ -263,6 +263,7 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
         { { "Authoring.PredicateSpecSaved.v1", 1 }, no_op },
         { { "Authoring.SettingsSaved.v1", 1 }, no_op },
         { { "Authoring.TemplateSaved.v1", 1 }, no_op },
+        { { "Authoring.WorkflowGraphSaved.v1", 1 }, no_op },
     };
 
     return RelayWithConfig(

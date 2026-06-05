@@ -82,6 +82,14 @@ public:
         std::int64_t* template_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    bool SaveWorkflowGraph(
+        const SaveWorkflowGraphCommand& command,
+        SaveWorkflowGraphResult* result_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
+        std::int64_t workflow_graph_id) const override;
+
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

@@ -34,6 +34,7 @@ private:
     void addSelectedUnit();
     void removeSelectedNode();
     void clearComposition();
+    void saveGraph();
     void rebuildBindings();
     void refreshUnitList();
     void refreshCompositionList();
@@ -60,5 +61,6 @@ private:
     QPushButton* addUnitButton_ = nullptr;
     QPushButton* removeNodeButton_ = nullptr;
     QPushButton* clearButton_ = nullptr;
+    QPushButton* saveGraphButton_ = nullptr;
     QPlainTextEdit* previewText_ = nullptr;
 };

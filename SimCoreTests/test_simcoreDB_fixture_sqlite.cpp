@@ -2575,6 +2575,204 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(decisions[0].decision_reason.value_or(""), "best delta vi");
 }
 
+TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExternalInputs) {
+    using namespace simcore::db;
+    std::string err;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    ASSERT_NE(authoring_db, nullptr);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000123));
+
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "canonical-start-to-battle",
+            .description = "TAS -> seed probe -> battle chain",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-canonical-start-to-battle",
+            .nodes = {
+                {
+                    .node_key = "tas_1",
+                    .unit_kind = "tas_movie",
+                    .display_name = "TAS Movie",
+                    .inputs = {
+                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                    },
+                },
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe_chain",
+                    .display_name = "Seed Probe Chain",
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                    },
+                },
+                {
+                    .node_key = "battle_1",
+                    .unit_kind = "battle_chain",
+                    .display_name = "Battle Chain",
+                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_id = 77,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                    },
+                },
+            },
+            .edges = {
+                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+            },
+            .created_at_utc = now,
+            .event_id = "au-workflow-graph",
+            .correlation_id = "au-workflow-graph",
+        },
+        &saved,
+        &err)) << err;
+    ASSERT_GT(saved.workflow_graph_id, 0);
+    ASSERT_GT(saved.workflow_graph_revision_id, 0);
+
+    const auto graph = authoring_db->GetWorkflowGraph(saved.workflow_graph_id);
+    ASSERT_TRUE(graph.has_value());
+    EXPECT_EQ(graph->name, "canonical-start-to-battle");
+    EXPECT_EQ(graph->workflow_graph_revision_id, saved.workflow_graph_revision_id);
+    ASSERT_EQ(graph->nodes.size(), 3u);
+    ASSERT_EQ(graph->edges.size(), 3u);
+    EXPECT_EQ(graph->nodes[0].inputs[0].data_kind, "state_artifact.dtm_artifact_id");
+    EXPECT_EQ(graph->nodes[1].possible_outputs[0].data_kind, "analysis.input_frame_set_id");
+    EXPECT_EQ(graph->nodes[2].authored_ref_kind.value_or(""), "authoring.template");
+    EXPECT_EQ(graph->nodes[2].authored_ref_id.value_or(0), 77);
+    EXPECT_EQ(graph->edges[2].from_node_key, "probe_1");
+
+    sqlite3_stmt* input_binding_column_count = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM pragma_table_info('au_workflow_graph_revision_node_input') "
+        "WHERE name IN ('value','ref_id','artifact_id','savestate_id','analysis_id','payload_ref_id');",
+        -1,
+        &input_binding_column_count,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(input_binding_column_count));
+    EXPECT_EQ(sqlite3_column_int64(input_binding_column_count, 0), 0);
+    sqlite3_finalize(input_binding_column_count);
+
+    sqlite3_stmt* outbox = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT aggregate_kind,payload_ref_kind,payload_ref_id FROM au_outbox_message WHERE event_type='Authoring.WorkflowGraphSaved.v1';",
+        -1,
+        &outbox,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(outbox));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(outbox, 0)), "workflow_graph");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(outbox, 1)), "authoring_event");
+    EXPECT_EQ(sqlite3_column_int64(outbox, 2), saved.workflow_graph_revision_id);
+    sqlite3_finalize(outbox);
+
+    const auto payload = authoring_db->ResolveAuthoringPayload(
+        "Authoring.WorkflowGraphSaved.v1",
+        1,
+        "authoring_event",
+        saved.workflow_graph_revision_id);
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_EQ(payload->workflow_graph_id, saved.workflow_graph_id);
+    EXPECT_EQ(payload->workflow_graph_revision_id, saved.workflow_graph_revision_id);
+    EXPECT_EQ(payload->template_id, 0);
+
+    SaveWorkflowGraphResult revised{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .workflow_graph_id = saved.workflow_graph_id,
+            .parent_revision_id = saved.workflow_graph_revision_id,
+            .name = "canonical-start-to-battle",
+            .description = "TAS -> seed probe -> battle chain",
+            .graph_version = 2,
+            .graph_hash = "graph-hash-canonical-start-to-battle-v2",
+            .nodes = {
+                {
+                    .node_key = "tas_1",
+                    .unit_kind = "tas_movie",
+                    .display_name = "TAS Movie",
+                    .inputs = {
+                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                    },
+                },
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe_chain",
+                    .display_name = "Seed Probe Chain",
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                    },
+                },
+                {
+                    .node_key = "battle_1",
+                    .unit_kind = "battle_chain",
+                    .display_name = "Battle Chain",
+                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_id = 88,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                    },
+                },
+            },
+            .edges = {
+                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+            },
+            .created_at_utc = now,
+            .event_id = "au-workflow-graph-v2",
+            .correlation_id = "au-workflow-graph",
+            .causation_id = "au-workflow-graph",
+        },
+        &revised,
+        &err)) << err;
+    EXPECT_EQ(revised.workflow_graph_id, saved.workflow_graph_id);
+    EXPECT_NE(revised.workflow_graph_revision_id, saved.workflow_graph_revision_id);
+
+    const auto active_graph = authoring_db->GetWorkflowGraph(saved.workflow_graph_id);
+    ASSERT_TRUE(active_graph.has_value());
+    EXPECT_EQ(active_graph->workflow_graph_revision_id, revised.workflow_graph_revision_id);
+    EXPECT_EQ(active_graph->parent_revision_id.value_or(0), saved.workflow_graph_revision_id);
+    EXPECT_EQ(active_graph->nodes[2].authored_ref_id.value_or(0), 88);
+
+    sqlite3_stmt* revision_counts = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT "
+        "(SELECT COUNT(1) FROM au_workflow_graph WHERE workflow_graph_id=?1),"
+        "(SELECT COUNT(1) FROM au_workflow_graph_revision WHERE workflow_graph_id=?1);",
+        -1,
+        &revision_counts,
+        nullptr));
+    sqlite3_bind_int64(revision_counts, 1, saved.workflow_graph_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(revision_counts));
+    EXPECT_EQ(sqlite3_column_int64(revision_counts, 0), 1);
+    EXPECT_EQ(sqlite3_column_int64(revision_counts, 1), 2);
+    sqlite3_finalize(revision_counts);
+}
+
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {
     using namespace simcore::db;
     using namespace simcore::db::analysis;

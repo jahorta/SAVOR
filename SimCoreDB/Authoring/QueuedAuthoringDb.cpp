@@ -271,6 +271,27 @@ bool QueuedAuthoringDb::SaveTemplate(
         error_out);
 }
 
+bool QueuedAuthoringDb::SaveWorkflowGraph(
+    const SaveWorkflowGraphCommand& command,
+    SaveWorkflowGraphResult* result_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, result_out, error_out]() {
+            return inner_ != nullptr ? inner_->SaveWorkflowGraph(command, result_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraph(
+    std::int64_t workflow_graph_id) const {
+    return ExecuteRead<std::optional<WorkflowGraphSnapshot>>(
+        [this, workflow_graph_id]() {
+            return inner_ != nullptr ? inner_->GetWorkflowGraph(workflow_graph_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::vector<events::EventEnvelope> QueuedAuthoringDb::ReadUnpublishedOutboxBatch(
     std::int64_t after_outbox_id,
     int max_batch_size) {

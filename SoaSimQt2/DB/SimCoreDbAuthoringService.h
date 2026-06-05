@@ -85,6 +85,15 @@ struct TemplateDraft {
     std::optional<std::int64_t> explorer_settings_id;
 };
 
+struct WorkflowGraphDraft {
+    std::string name;
+    std::string description;
+    int graph_version = 1;
+    std::string graph_hash;
+    std::vector<simcore::db::SaveWorkflowGraphNodeCommand> nodes;
+    std::vector<simcore::db::SaveWorkflowGraphEdgeCommand> edges;
+};
+
 class SimCoreDbAuthoringService {
 public:
     static ServiceResult<std::int64_t> EnsureAddressProgram(const AddressProgramDraft& draft) {
@@ -295,6 +304,50 @@ public:
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::SaveWorkflowGraphResult>("SimCoreDB authoring database is not running");
+        }
+        if (draft.name.empty() || draft.graph_hash.empty()) {
+            return Invalid<simcore::db::SaveWorkflowGraphResult>("workflow graph name and hash are required");
+        }
+        if (draft.nodes.empty()) {
+            return Invalid<simcore::db::SaveWorkflowGraphResult>("workflow graph must contain at least one node");
+        }
+
+        const auto now = simcore::db::types::UtcNow();
+        simcore::db::SaveWorkflowGraphCommand command{};
+        command.name = draft.name;
+        command.description = draft.description;
+        command.graph_version = draft.graph_version;
+        command.graph_hash = draft.graph_hash;
+        command.nodes = draft.nodes;
+        command.edges = draft.edges;
+        command.created_at_utc = now;
+        command.event_id = NextEventId("Authoring.WorkflowGraphSaved");
+        command.correlation_id = command.event_id;
+
+        simcore::db::SaveWorkflowGraphResult result{};
+        std::string error;
+        if (!db->SaveWorkflowGraph(command, &result, &error)) {
+            return Failed<simcore::db::SaveWorkflowGraphResult>(error);
+        }
+        return ServiceResult<simcore::db::SaveWorkflowGraphResult>::Ok(result);
+    }
+
+    static ServiceResult<simcore::db::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_graph_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::WorkflowGraphSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetWorkflowGraph(workflow_graph_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::WorkflowGraphSnapshot>("workflow graph not found");
+        }
+        return ServiceResult<simcore::db::WorkflowGraphSnapshot>::Ok(*snapshot);
     }
 
 private:
