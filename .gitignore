@@ -1,7 +1,12 @@
 .vs/
+.codex/
 /build*/
 /out*/
 /x64/
+**/x64/
+**/bin/
+**/obj/
+**/*.blend
 *.user
 *.VC.db
 *.VC.opendb
@@ -47,6 +52,10 @@
 /SoaSimMLD/x64/
 /SoaSimSCT/x64/
 /SoaSimFileParsing/x64/
+/SoaSimFileParsing/blender_ir/
+/SoaSimFileParsing/inputs_mld_only/
+/SoaSimMLD/blender/debug_node118_materials.py
 /Compression/x64/
 /SoaSimQt3D/x64/Debug
+/tools/sa3d_ref_runner/obj/
 /tools/sa3d_ref_runner/obj/Debug/net8.0
