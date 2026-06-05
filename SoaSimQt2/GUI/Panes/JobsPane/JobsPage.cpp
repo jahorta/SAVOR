@@ -202,6 +202,16 @@ void JobsPage::createWidgets()
 
     eventsText_ = createReadOnlyTextEdit();
     payloadText_ = createReadOnlyTextEdit();
+    QWidget* inputIniTab = new QWidget(inspectorTabs_);
+    QVBoxLayout* inputIniLayout = new QVBoxLayout(inputIniTab);
+    inputIniLayout->setContentsMargins(8, 8, 8, 8);
+    QHBoxLayout* inputIniActions = new QHBoxLayout();
+    loadInputIniButton_ = new QPushButton(QStringLiteral("Load Input INI"), inputIniTab);
+    loadInputIniButton_->setObjectName("jobsSecondaryButton");
+    inputIniActions->addWidget(loadInputIniButton_);
+    inputIniActions->addStretch();
+    inputIniLayout->addLayout(inputIniActions);
+    inputIniLayout->addWidget(payloadText_, 1);
     progressText_ = createReadOnlyTextEdit();
     resultsText_ = createReadOnlyTextEdit();
     QWidget* artifactsTab = new QWidget(inspectorTabs_);
@@ -212,7 +222,7 @@ void JobsPage::createWidgets()
     artifactsLayout->addWidget(artifactsTable_);
     inspectorTabs_->addTab(overviewTab, QStringLiteral("Overview"));
     inspectorTabs_->addTab(eventsText_, QStringLiteral("Events"));
-    inspectorTabs_->addTab(payloadText_, QStringLiteral("Payload"));
+    inspectorTabs_->addTab(inputIniTab, QStringLiteral("Input INI"));
     inspectorTabs_->addTab(artifactsTab, QStringLiteral("Artifacts"));
     inspectorTabs_->addTab(progressText_, QStringLiteral("Progress"));
     inspectorTabs_->addTab(resultsText_, QStringLiteral("Results"));
@@ -261,6 +271,7 @@ void JobsPage::wireSignals()
     connect(autoRefreshCheck_, &QCheckBox::toggled, controller_, &JobsController::setAutoRefreshEnabled);
     connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), controller_, &JobsController::setRefreshSeconds);
     connect(jobsTable_, &QWidget::customContextMenuRequested, this, &JobsPage::showJobsContextMenu);
+    connect(loadInputIniButton_, &QPushButton::clicked, controller_, &JobsController::loadSelectedJobInputIni);
 
     connect(jobsTable_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, [this](const QModelIndex& current, const QModelIndex&) {
         if (!current.isValid()) {
@@ -314,10 +325,14 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     const bool canReplayVisual = actionsEnabled && isFinished;
     const bool canRequeue = actionsEnabled && row->state != QStringLiteral("QUEUED") && row->state != QStringLiteral("CLAIMED") && row->state != QStringLiteral("RUNNING") && row->state != QStringLiteral("FAILED");
     const bool canRestart = actionsEnabled && row->state == QStringLiteral("FAILED");
-    const bool canCancel = actionsEnabled && row->state != QStringLiteral("SUCCEEDED") && row->state != QStringLiteral("CANCELED") && row->state != QStringLiteral("SUCCEEDED_WINNER") && row->state != QStringLiteral("SUCCEEDED_DUPLICATE");
+    const bool canCancel = actionsEnabled
+        && (row->state == QStringLiteral("QUEUED")
+            || row->state == QStringLiteral("INTERRUPTED")
+            || row->state == QStringLiteral("CLAIMED"));
 
     QMenu menu(jobsTable_);
     QAction* refreshDetailAction = menu.addAction(QStringLiteral("Refresh detail"));
+    QAction* loadInputIniAction = menu.addAction(QStringLiteral("Load input INI"));
     menu.addSeparator();
     QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     menu.addSeparator();
@@ -328,6 +343,7 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* tagsAction = menu.addAction(QStringLiteral("Edit tags..."));
 
     refreshDetailAction->setEnabled(actionsEnabled);
+    loadInputIniAction->setEnabled(actionsEnabled);
     replayVisualAction->setEnabled(canReplayVisual);
     requeueAction->setEnabled(canRequeue);
     restartAction->setEnabled(canRestart);
@@ -337,6 +353,8 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
     if (chosen == refreshDetailAction) {
         controller_->refreshSelectedJobDetail();
+    } else if (chosen == loadInputIniAction) {
+        controller_->loadSelectedJobInputIni();
     } else if (chosen == replayVisualAction) {
         emit visualReplayRequested(row->jobId);
     } else if (chosen == requeueAction) {
@@ -355,12 +373,24 @@ void JobsPage::handleRestartRequested()
 {
     const auto& state = controller_->viewState();
     if (state.selectedJobId <= 0) return;
+    if (!state.detail.inputIniLoaded) {
+        controller_->loadSelectedJobInputIni();
+        emit statusToastRequested(StatusToast{
+            StatusToast::Severity::Info,
+            QStringLiteral("Loading input INI for job %1. Open restart again after it loads.").arg(state.selectedJobId),
+            QString(),
+            1,
+            QDateTime{},
+            4000
+        });
+        return;
+    }
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Restart Failed Job"));
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can optionally edit the current job INI first."), &dialog));
+    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can edit the loaded input INI first."), &dialog));
     QPlainTextEdit* iniEdit = new QPlainTextEdit(&dialog);
-    iniEdit->setPlainText(state.detail.payloadText);
+    iniEdit->setPlainText(state.detail.inputIniText);
     layout->addWidget(iniEdit, 1);
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save INI & Restart"));
@@ -482,6 +512,7 @@ void JobsPage::updateInspector()
         inspectorSummary_->setText(QStringLiteral("Select a job to inspect details."));
         overviewPriorityValue_->setText(QStringLiteral("--")); overviewQueuedValue_->setText(QStringLiteral("--")); overviewSelectionHint_->setText(QStringLiteral("No jobs match the current filters."));
         eventsText_->clear(); payloadText_->clear(); progressText_->clear(); resultsText_->clear(); artifactsModel_->setArtifacts({});
+        loadInputIniButton_->setEnabled(false);
         return;
     }
 
@@ -502,7 +533,14 @@ void JobsPage::updateInspector()
         eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.ts).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(event.payload_preview.has_value() ? QStringLiteral("  %1").arg(QString::fromStdString(*event.payload_preview)) : QString());
     }
     eventsText_->setPlainText(eventLines.join('\n'));
-    payloadText_->setPlainText(state.detail.payloadText);
+    if (state.detail.inputIniLoading) {
+        payloadText_->setPlainText(QStringLiteral("Loading input INI..."));
+    } else if (state.detail.inputIniLoaded) {
+        payloadText_->setPlainText(state.detail.inputIniText);
+    } else {
+        payloadText_->setPlainText(QStringLiteral("Input INI is loaded on request."));
+    }
+    loadInputIniButton_->setEnabled(!state.actionsBusy && !state.detail.inputIniLoading && state.selectedJobId > 0);
     progressText_->setPlainText(state.detail.decodedProgressText);
     resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);

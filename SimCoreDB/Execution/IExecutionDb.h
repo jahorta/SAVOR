@@ -67,6 +67,15 @@ struct ExecutionJobRecord {
     std::string input_ini;
 };
 
+struct ExecutionJobEventRecord {
+    std::int64_t job_event_id = 0;
+    std::int64_t job_id = 0;
+    std::string event_kind;
+    std::int64_t event_ts_utc = 0;
+    std::string message;
+    std::optional<std::int64_t> artifact_id;
+};
+
 struct ExecutionJobSetProgressDetails {
     std::int64_t job_set_id = 0;
     std::int64_t total_jobs = 0;
@@ -162,6 +171,46 @@ struct IExecutionDb {
         return true;
     }
     virtual std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const = 0;
+    virtual std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const {
+        (void)job_id;
+        (void)limit;
+        return {};
+    }
+    virtual std::optional<std::string> GetJobInputIni(std::int64_t job_id, std::string* error_out = nullptr) const {
+        const auto job = GetJob(job_id);
+        if (!job.has_value()) {
+            if (error_out) {
+                *error_out = "job not found";
+            }
+            return std::nullopt;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return job->input_ini;
+    }
+    virtual bool RequeueJob(std::int64_t job_id, std::string* error_out = nullptr) {
+        (void)job_id;
+        if (error_out) {
+            *error_out = "requeue job is not supported by this execution db";
+        }
+        return false;
+    }
+    virtual bool RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override = std::nullopt, std::string* error_out = nullptr) {
+        (void)job_id;
+        (void)input_ini_override;
+        if (error_out) {
+            *error_out = "restart job is not supported by this execution db";
+        }
+        return false;
+    }
+    virtual bool CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out = nullptr) {
+        (void)job_id;
+        if (error_out) {
+            *error_out = "cancel job is not supported by this execution db";
+        }
+        return false;
+    }
     virtual std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const {
         (void)job_set_id;
         return std::nullopt;

@@ -86,6 +86,7 @@ private:
     QTextEdit* eventsText_ = nullptr;
     QTextEdit* progressText_ = nullptr;
     QTextEdit* payloadText_ = nullptr;
+    QPushButton* loadInputIniButton_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     ArtifactsTableView* artifactsTable_ = nullptr;
 

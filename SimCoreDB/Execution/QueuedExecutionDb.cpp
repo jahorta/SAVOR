@@ -415,6 +415,50 @@ std::optional<ExecutionJobRecord> QueuedExecutionDb::GetJob(std::int64_t job_id)
         std::nullopt);
 }
 
+std::vector<ExecutionJobEventRecord> QueuedExecutionDb::ListJobEvents(std::int64_t job_id, int limit) const {
+    return ExecuteRead<std::vector<ExecutionJobEventRecord>>(
+        [this, job_id, limit]() {
+            return inner_ != nullptr ? inner_->ListJobEvents(job_id, limit) : std::vector<ExecutionJobEventRecord>{};
+        },
+        {});
+}
+
+std::optional<std::string> QueuedExecutionDb::GetJobInputIni(std::int64_t job_id, std::string* error_out) const {
+    return ExecuteRead<std::optional<std::string>>(
+        [this, job_id, error_out]() {
+            return inner_ != nullptr ? inner_->GetJobInputIni(job_id, error_out) : std::nullopt;
+        },
+        std::nullopt,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueJob(std::int64_t job_id, std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, job_id, error_out]() {
+            return inner_ != nullptr ? inner_->RequeueJob(job_id, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override, std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, job_id, input_ini_override, error_out]() {
+            return inner_ != nullptr ? inner_->RestartFailedJob(job_id, input_ini_override, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, job_id, error_out]() {
+            return inner_ != nullptr ? inner_->CancelQueuedOrClaimedJob(job_id, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<ExecutionJobSetProgressDetails> QueuedExecutionDb::GetJobSetProgress(std::int64_t job_set_id) const {
     return ExecuteRead<std::optional<ExecutionJobSetProgressDetails>>(
         [this, job_set_id]() {

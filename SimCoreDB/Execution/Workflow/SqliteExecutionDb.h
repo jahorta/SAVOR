@@ -57,6 +57,11 @@ public:
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
+    std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const override;
+    std::optional<std::string> GetJobInputIni(std::int64_t job_id, std::string* error_out = nullptr) const override;
+    bool RequeueJob(std::int64_t job_id, std::string* error_out = nullptr) override;
+    bool RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override = std::nullopt, std::string* error_out = nullptr) override;
+    bool CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out = nullptr) override;
     std::optional<ExecutionJobSetProgressDetails> GetJobSetProgress(std::int64_t job_set_id) const override;
     std::vector<ExecutionChildJobSetProgressDetails> GetChildJobSetProgress(std::int64_t parent_job_set_id) const override;
     bool MarkQueuedJobsSuperseded(

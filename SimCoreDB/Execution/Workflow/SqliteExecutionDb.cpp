@@ -5,6 +5,8 @@
 #include "SqliteWorkflowOrchestration.h"
 #include "WorkflowRecoveryService.h"
 
+#include <sstream>
+
 namespace simcore::db::execution::workflow {
 namespace {
 
@@ -37,6 +39,116 @@ std::int64_t CurrentUtcMs(sqlite3* db) {
 
 std::int64_t NowUtcMillis() {
     return types::UtcNow().time_since_epoch().count();
+}
+
+bool ExecuteSql(sqlite3* db, const char* sql, std::string* error_out) {
+    char* sqlite_error = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &sqlite_error);
+    if (rc != SQLITE_OK) {
+        if (error_out) {
+            *error_out = sqlite_error ? sqlite_error : sqlite3_errmsg(db);
+        }
+        sqlite3_free(sqlite_error);
+        return false;
+    }
+    sqlite3_free(sqlite_error);
+    return true;
+}
+
+bool Commit(sqlite3* db, std::string* error_out) {
+    return ExecuteSql(db, "COMMIT;", error_out);
+}
+
+void Rollback(sqlite3* db) {
+    (void)sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+}
+
+bool InsertJobActionEventAndOutbox(
+    sqlite3* db,
+    std::int64_t job_id,
+    std::int64_t job_set_id,
+    const char* event_type,
+    const char* message,
+    std::string* error_out) {
+    const auto now = CurrentUtcMs(db);
+    Statement job_event;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO exec_job_event(job_id,event_kind,event_ts_utc,message,artifact_id) "
+            "VALUES(?1,?2,?3,?4,NULL);",
+            -1,
+            &job_event.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(job_event.st, 1, job_id);
+    sqlite3_bind_text(job_event.st, 2, event_type, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(job_event.st, 3, now);
+    sqlite3_bind_text(job_event.st, 4, message, -1, SQLITE_STATIC);
+    if (sqlite3_step(job_event.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    const auto job_event_id = sqlite3_last_insert_rowid(db);
+
+    std::ostringstream event_id;
+    event_id << "execution-" << event_type << "-" << job_id << "-" << job_event_id;
+    const auto event_id_value = event_id.str();
+    const auto aggregate_id = std::to_string(job_id);
+    const auto correlation_id = "job-set-" + std::to_string(job_set_id);
+    const auto causation_id = std::string("job-action-") + message + "-" + std::to_string(job_id);
+
+    Statement outbox;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO exec_outbox_message("
+            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+            "VALUES(?1,?2,1,'Execution','job',?3,?4,?5,?6,'job',?7);",
+            -1,
+            &outbox.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_text(outbox.st, 1, event_id_value.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 2, event_type, -1, SQLITE_STATIC);
+    sqlite3_bind_text(outbox.st, 3, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 4, correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(outbox.st, 5, causation_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(outbox.st, 6, now);
+    sqlite3_bind_int64(outbox.st, 7, job_id);
+    if (sqlite3_step(outbox.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    return true;
+}
+
+struct JobStateForAction {
+    std::int64_t job_set_id = 0;
+    std::string state;
+};
+
+std::optional<JobStateForAction> GetJobStateForAction(sqlite3* db, std::int64_t job_id, std::string* error_out) {
+    Statement st;
+    if (sqlite3_prepare_v2(db, "SELECT job_set_id,state FROM exec_job WHERE job_id=?1;", -1, &st.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    const auto rc = sqlite3_step(st.st);
+    if (rc != SQLITE_ROW) {
+        if (error_out) *error_out = rc == SQLITE_DONE ? "job not found" : sqlite3_errmsg(db);
+        return std::nullopt;
+    }
+    JobStateForAction row{};
+    row.job_set_id = sqlite3_column_int64(st.st, 0);
+    const auto* state = sqlite3_column_text(st.st, 1);
+    row.state = state != nullptr ? reinterpret_cast<const char*>(state) : "";
+    return row;
 }
 
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowEventPayload(sqlite3* db, std::int64_t payload_ref_id) {
@@ -340,6 +452,226 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     const auto* input_ini = sqlite3_column_text(st.st, 13);
     row.input_ini = input_ini == nullptr ? "" : reinterpret_cast<const char*>(input_ini);
     return row;
+}
+
+std::vector<ExecutionJobEventRecord> SqliteExecutionDb::ListJobEvents(std::int64_t job_id, int limit) const {
+    std::vector<ExecutionJobEventRecord> rows;
+    if (db_ == nullptr || job_id <= 0) {
+        return rows;
+    }
+    if (limit <= 0) {
+        limit = 128;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT job_event_id,job_id,event_kind,event_ts_utc,COALESCE(message,''),artifact_id "
+            "FROM exec_job_event "
+            "WHERE job_id=?1 "
+            "ORDER BY job_event_id DESC "
+            "LIMIT ?2;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    sqlite3_bind_int(st.st, 2, limit);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        ExecutionJobEventRecord row{};
+        row.job_event_id = sqlite3_column_int64(st.st, 0);
+        row.job_id = sqlite3_column_int64(st.st, 1);
+        const auto* kind = sqlite3_column_text(st.st, 2);
+        const auto* message = sqlite3_column_text(st.st, 4);
+        row.event_kind = kind != nullptr ? reinterpret_cast<const char*>(kind) : "";
+        row.event_ts_utc = sqlite3_column_int64(st.st, 3);
+        row.message = message != nullptr ? reinterpret_cast<const char*>(message) : "";
+        if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
+            row.artifact_id = sqlite3_column_int64(st.st, 5);
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::optional<std::string> SqliteExecutionDb::GetJobInputIni(std::int64_t job_id, std::string* error_out) const {
+    const auto job = GetJob(job_id);
+    if (!job.has_value()) {
+        if (error_out) *error_out = "job not found";
+        return std::nullopt;
+    }
+    if (error_out) error_out->clear();
+    return job->input_ini;
+}
+
+bool SqliteExecutionDb::RequeueJob(std::int64_t job_id, std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const auto job = GetJobStateForAction(db_, job_id, error_out);
+    if (!job.has_value()) {
+        Rollback(db_);
+        return false;
+    }
+    if (job->state == "QUEUED" || job->state == "CLAIMED" || job->state == "RUNNING" || job->state == "FAILED") {
+        Rollback(db_);
+        if (error_out) *error_out = "job cannot be requeued from state " + job->state;
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
+            "WHERE job_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (!InsertJobActionEventAndOutbox(db_, job_id, job->job_set_id, "Execution.JobQueued.v1", "REQUEUE", error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteExecutionDb::RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override, std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const auto job = GetJobStateForAction(db_, job_id, error_out);
+    if (!job.has_value()) {
+        Rollback(db_);
+        return false;
+    }
+    if (job->state != "FAILED") {
+        Rollback(db_);
+        if (error_out) *error_out = "restart requires FAILED job";
+        return false;
+    }
+
+    const char* sql = input_ini_override.has_value()
+        ? "UPDATE exec_job "
+          "SET state='QUEUED', attempts=0, claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL, input_ini=?2 "
+          "WHERE job_id=?1;"
+        : "UPDATE exec_job "
+          "SET state='QUEUED', attempts=0, claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
+          "WHERE job_id=?1;";
+    Statement st;
+    if (sqlite3_prepare_v2(db_, sql, -1, &st.st, nullptr) != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (input_ini_override.has_value()) {
+        sqlite3_bind_text(st.st, 2, input_ini_override->c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (!InsertJobActionEventAndOutbox(db_, job_id, job->job_set_id, "Execution.JobQueued.v1", "RESTART", error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteExecutionDb::CancelQueuedOrClaimedJob(std::int64_t job_id, std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const auto job = GetJobStateForAction(db_, job_id, error_out);
+    if (!job.has_value()) {
+        Rollback(db_);
+        return false;
+    }
+    if (job->state != "QUEUED" && job->state != "INTERRUPTED" && job->state != "CLAIMED") {
+        Rollback(db_);
+        if (error_out) *error_out = "job cannot be canceled from state " + job->state;
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE exec_job "
+            "SET state='CANCELED', claimed_by_token=NULL, lease_expires_at_utc=NULL, ended_at_utc=?2 "
+            "WHERE job_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    sqlite3_bind_int64(st.st, 2, CurrentUtcMs(db_));
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (!InsertJobActionEventAndOutbox(db_, job_id, job->job_set_id, "Execution.JobCompleted.v1", "CANCEL", error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    return true;
 }
 
 std::optional<ExecutionJobSetProgressDetails> SqliteExecutionDb::GetJobSetProgress(std::int64_t job_set_id) const {

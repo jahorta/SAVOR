@@ -25,13 +25,15 @@ public:
 
     struct JobDetailState {
         qint64 jobId = 0;
-        QString payloadText;
+        QString inputIniText;
         QString resultsText;
         QString decodedProgressText;
         std::vector<JobEventLite> events;
         std::vector<simcore::db::ArtifactRefLite> artifacts;
         bool loading = false;
         bool loaded = false;
+        bool inputIniLoading = false;
+        bool inputIniLoaded = false;
     };
 
     struct ViewState {
@@ -64,6 +66,7 @@ public:
     void requestPreviousPage();
     void selectJob(qint64 jobId);
     void refreshSelectedJobDetail();
+    void loadSelectedJobInputIni();
     void requeueSelectedJob();
     void replaySelectedJobVisually();
     void cancelSelectedJob();
@@ -80,16 +83,16 @@ private:
     };
     using JobPageResult = simcore::db::DbResult<JobPageBundle>;
     struct JobDetailBundle {
-        QString payloadText;
         QString resultsText;
         QString decodedProgressText;
         std::vector<JobEventLite> events;
         std::vector<simcore::db::ArtifactRefLite> artifacts;
     };
     using JobDetailResult = simcore::db::DbResult<JobDetailBundle>;
+    using InputIniResult = simcore::db::DbResult<QString>;
     using VoidResult = simcore::db::DbResult<void>;
 
-    enum class Operation { FetchKinds, FetchPage, FetchDetail, Requeue, ReplayVisual, Cancel, Restart };
+    enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, ReplayVisual, Cancel, Restart };
 
     void kickKindsFetch();
     void kickPageFetch();
@@ -114,15 +117,18 @@ private:
     bool pageInFlight_ = false;
     bool pendingPageFetch_ = false;
     bool detailInFlight_ = false;
+    bool inputIniInFlight_ = false;
     bool requeueInFlight_ = false;
     bool replayVisualInFlight_ = false;
     bool cancelInFlight_ = false;
     bool restartInFlight_ = false;
     qint64 detailRequestJobId_ = 0;
+    qint64 inputIniRequestJobId_ = 0;
     qint64 actionJobId_ = 0;
     QFutureWatcher<ProgramKindsResult> kindsWatcher_;
     QFutureWatcher<JobPageResult> pageWatcher_;
     QFutureWatcher<JobDetailResult> detailWatcher_;
+    QFutureWatcher<InputIniResult> inputIniWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;
     QFutureWatcher<VoidResult> replayVisualWatcher_;
     QFutureWatcher<VoidResult> cancelWatcher_;

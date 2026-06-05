@@ -344,6 +344,9 @@
     <ClInclude Include="DB\SimCoreDbAuthoringService.h">
       <Filter>DB</Filter>
     </ClInclude>
+    <ClInclude Include="DB\SimCoreDbJobService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
     <ClInclude Include="DB\SimCoreDbArtifactService.h">
       <Filter>DB</Filter>
     </ClInclude>

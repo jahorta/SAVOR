@@ -1,5 +1,7 @@
 #include "JobsController.h"
 
+#include "DB/SimCoreDbJobService.h"
+
 #include <QtCore/QSettings>
 #include <QtCore/QTimer>
 
@@ -7,8 +9,8 @@
 #include <algorithm>
 #include <utility>
 
-using simcore::db::DataService;
 using simcore::db::ProgramKindKV;
+using soasimqt2::db::SimCoreDbJobService;
 
 namespace {
 constexpr auto kSettingsGroup = "JobsPane";
@@ -123,7 +125,6 @@ JobsController::JobsController(QObject* parent)
             state_.detail.loading = false;
             if (result.ok && state_.selectedJobId == detailRequestJobId_) {
                 state_.detail.jobId = detailRequestJobId_;
-                state_.detail.payloadText = result.value.payloadText;
                 state_.detail.resultsText = result.value.resultsText;
                 state_.detail.decodedProgressText = result.value.decodedProgressText;
                 state_.detail.events = std::move(result.value.events);
@@ -138,6 +139,27 @@ JobsController::JobsController(QObject* parent)
             detailInFlight_ = false;
             state_.detail = {};
             state_.errorMessage = describeException("Job detail failed");
+        }
+        emitStateChanged();
+    });
+
+    connect(&inputIniWatcher_, &QFutureWatcher<InputIniResult>::finished, this, [this]() {
+        try {
+            const auto result = inputIniWatcher_.result();
+            inputIniInFlight_ = false;
+            state_.detail.inputIniLoading = false;
+            if (result.ok && state_.selectedJobId == inputIniRequestJobId_) {
+                state_.detail.jobId = inputIniRequestJobId_;
+                state_.detail.inputIniText = result.value;
+                state_.detail.inputIniLoaded = true;
+                state_.errorMessage.clear();
+            } else if (!result.ok) {
+                state_.errorMessage = QStringLiteral("Input INI failed: %1").arg(QString::fromStdString(result.error.message));
+            }
+        } catch (...) {
+            inputIniInFlight_ = false;
+            state_.detail.inputIniLoading = false;
+            state_.errorMessage = describeException("Input INI failed");
         }
         emitStateChanged();
     });
@@ -285,7 +307,7 @@ void JobsController::requeueSelectedJob()
     actionJobId_ = job->job_id;
     requeueInFlight_ = true;
     setBusy(Operation::Requeue, true);
-    requeueWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::RequeueJobAsync(jobId).get(); }));
+    requeueWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return SimCoreDbJobService::RequeueJob(jobId); }));
 }
 
 void JobsController::cancelSelectedJob()
@@ -295,7 +317,7 @@ void JobsController::cancelSelectedJob()
     actionJobId_ = job->job_id;
     cancelInFlight_ = true;
     setBusy(Operation::Cancel, true);
-    cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::CancelJobAsync(jobId).get(); }));
+    cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return SimCoreDbJobService::CancelJob(jobId); }));
 }
 
 void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
@@ -306,11 +328,11 @@ void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride
     restartInFlight_ = true;
     setBusy(Operation::Restart, true);
     restartWatcher_.setFuture(runDataServiceCall([jobId = job->job_id, iniOverride]() {
+        std::optional<std::string> overrideText;
         if (iniOverride.has_value()) {
-            auto setResult = DataService::SetJobVmKvAsync(jobId, iniOverride->toStdString()).get();
-            if (!setResult.ok) return setResult;
+            overrideText = iniOverride->toStdString();
         }
-        return DataService::RestartFailedJobAsync(jobId).get();
+        return SimCoreDbJobService::RestartFailedJob(jobId, std::move(overrideText));
     }));
 }
 
@@ -321,7 +343,9 @@ void JobsController::replaySelectedJobVisually()
     actionJobId_ = job->job_id;
     replayVisualInFlight_ = true;
     setBusy(Operation::ReplayVisual, true);
-    replayVisualWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return DataService::ReplayJobVisuallyAsync(jobId).get(); }));
+    replayVisualWatcher_.setFuture(runDataServiceCall([]() {
+        return VoidResult::Err({ simcore::db::DbErrorKind::Unavailable, 0, "visual replay is not migrated to the Qt2 execution runtime" });
+    }));
 }
 
 void JobsController::kickKindsFetch()
@@ -329,7 +353,7 @@ void JobsController::kickKindsFetch()
     if (kindsInFlight_) return;
     kindsInFlight_ = true;
     setBusy(Operation::FetchKinds, true);
-    kindsWatcher_.setFuture(runDataServiceCall([]() { return DataService::ListProgramKindsAsync().get(); }));
+    kindsWatcher_.setFuture(runDataServiceCall([]() { return SimCoreDbJobService::ListProgramKinds(); }));
 }
 
 void JobsController::kickPageFetch()
@@ -343,14 +367,14 @@ void JobsController::kickPageFetch()
     state_.errorMessage.clear();
     PagedQuery<> query; query.before = before_; query.after = after_; query.limit = fetchPageLimit_;
     pageWatcher_.setFuture(runDataServiceCall([scope = fetchScope_, query]() -> JobPageResult {
-        auto pageResult = DataService::FetchJobsPageAsync(scope, query.before, query.after, query.limit).get();
+        auto pageResult = SimCoreDbJobService::FetchJobsPage(scope, query.before, query.after, query.limit);
         if (!pageResult.ok) return JobPageResult::Err(pageResult.error);
         JobPageBundle bundle{};
         bundle.page = pageResult.value;
         std::vector<int64_t> ids;
         ids.reserve(bundle.page.items.size());
         for (const JobLite& job : bundle.page.items) ids.push_back(job.job_id);
-        auto progressResult = DataService::BulkLatestProgressByJobsAsync(ids).get();
+        auto progressResult = SimCoreDbJobService::BulkLatestProgressByJobs(ids);
         if (!progressResult.ok) return JobPageResult::Err(progressResult.error);
         for (const auto& item : progressResult.value) {
             if (item.payload.has_value()) {
@@ -378,23 +402,31 @@ void JobsController::kickDetailFetch(qint64 jobId, bool force)
         JobDetailBundle bundle{};
         JobEventsListScope scope{}; scope.job_id = jobId;
         PagedQuery<> query; query.limit = 128;
-        auto eventsResult = DataService::FetchJobEventsPage(scope, query).get();
+        auto eventsResult = SimCoreDbJobService::FetchJobEventsPage(scope, query);
         if (!eventsResult.ok) return JobDetailResult::Err(eventsResult.error);
         bundle.events = eventsResult.value.items;
 
-        auto payloadResult = DataService::FetchJobVmKvIniAsync(jobId).get();
-        if (payloadResult.ok) bundle.payloadText = QString::fromStdString(payloadResult.value.to_string_preserve_order());
-
-        auto resultsResult = DataService::FetchJobResultsIniAsync(jobId).get();
-        if (resultsResult.ok) bundle.resultsText = QString::fromStdString(resultsResult.value.to_string_preserve_order());
-
-        auto decodedResult = DataService::FetchDecodedProgressAsync(jobId).get();
-        if (decodedResult.ok) bundle.decodedProgressText = QString::fromStdString(decodedResult.value);
-
-        auto artifactsResult = DataService::FetchJobArtifactRefsAsync(jobId).get();
+        auto artifactsResult = SimCoreDbJobService::FetchJobArtifactRefs(jobId);
         if (artifactsResult.ok) bundle.artifacts = std::move(artifactsResult.value);
 
         return JobDetailResult::Ok(std::move(bundle));
+    }));
+    emitStateChanged();
+}
+
+void JobsController::loadSelectedJobInputIni()
+{
+    if (state_.selectedJobId <= 0 || inputIniInFlight_) return;
+    inputIniInFlight_ = true;
+    inputIniRequestJobId_ = state_.selectedJobId;
+    state_.detail.jobId = state_.selectedJobId;
+    state_.detail.inputIniLoading = true;
+    state_.errorMessage.clear();
+    const qint64 jobId = state_.selectedJobId;
+    inputIniWatcher_.setFuture(runDataServiceCall([jobId]() -> InputIniResult {
+        auto result = SimCoreDbJobService::FetchJobInputIni(jobId);
+        if (!result.ok) return InputIniResult::Err(result.error);
+        return InputIniResult::Ok(QString::fromStdString(result.value));
     }));
     emitStateChanged();
 }
@@ -412,7 +444,7 @@ bool JobsController::canAutoRefresh() const
 
 bool JobsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
+    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
 }
 
 const JobLite* JobsController::selectedJob() const
@@ -426,7 +458,7 @@ QString JobsController::programKindLabel(int id) const { return state_.programNa
 void JobsController::emitStateChanged()
 {
     state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
-    state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || anyWorkInFlight();
+    state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || inputIniInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }
 

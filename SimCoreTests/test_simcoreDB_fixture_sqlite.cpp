@@ -1595,6 +1595,119 @@ VALUES(801, 701, 1, 1, 'seed_probe', 10, 'fp-stage3d-801', 5, 'QUEUED', 0, 3, un
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage5ExecutionJobActionsUpdateExecutionAndEmitProjectorOutboxEvents) {
+    using namespace simcore::db::execution::jobs;
+
+    std::string err;
+
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(execution_db, nullptr);
+    std::int64_t job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 1,
+            .purpose = "job-actions",
+            .created_by = std::string("stage5-test"),
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+        },
+        &job_set_id,
+        &err))
+        << err;
+
+    std::int64_t restart_job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = job_set_id,
+            .program_kind = 1,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 10,
+            .fingerprint = "fp-job-action-restart",
+            .priority = 5,
+            .max_attempts = 3,
+            .input_ini = "[Job]\nmode=old\n",
+        },
+        &restart_job_id,
+        &err))
+        << err;
+    std::int64_t cancel_job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = job_set_id,
+            .program_kind = 1,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 11,
+            .fingerprint = "fp-job-action-cancel",
+            .priority = 5,
+            .max_attempts = 3,
+            .input_ini = "[Job]\nmode=cancel\n",
+        },
+        &cancel_job_id,
+        &err))
+        << err;
+    std::int64_t requeue_job_id = 0;
+    ASSERT_TRUE(execution_db->EnqueueJob(
+        {
+            .job_set_id = job_set_id,
+            .program_kind = 1,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 12,
+            .fingerprint = "fp-job-action-requeue",
+            .priority = 5,
+            .max_attempts = 3,
+            .input_ini = "[Job]\nmode=requeue\n",
+        },
+        &requeue_job_id,
+        &err))
+        << err;
+
+    auto* job_commands = execution_db->JobCommandService();
+    ASSERT_NE(job_commands, nullptr);
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = restart_job_id, .terminal_state = std::string("FAILED") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = requeue_job_id, .terminal_state = std::string("CANCELED") }, &err)) << err;
+
+    ASSERT_TRUE(execution_db->RestartFailedJob(restart_job_id, std::string("[Job]\nmode=new\n"), &err)) << err;
+    ASSERT_TRUE(execution_db->CancelQueuedOrClaimedJob(cancel_job_id, &err)) << err;
+    ASSERT_TRUE(execution_db->RequeueJob(requeue_job_id, &err)) << err;
+
+    const auto restarted = execution_db->GetJob(restart_job_id);
+    const auto canceled = execution_db->GetJob(cancel_job_id);
+    const auto requeued = execution_db->GetJob(requeue_job_id);
+    ASSERT_TRUE(restarted.has_value());
+    ASSERT_TRUE(canceled.has_value());
+    ASSERT_TRUE(requeued.has_value());
+    EXPECT_EQ(restarted->state, "QUEUED");
+    EXPECT_EQ(restarted->attempts, 0);
+    EXPECT_EQ(restarted->input_ini, "[Job]\nmode=new\n");
+    EXPECT_EQ(canceled->state, "CANCELED");
+    EXPECT_EQ(requeued->state, "QUEUED");
+
+    const auto input_ini = execution_db->GetJobInputIni(restart_job_id, &err);
+    ASSERT_TRUE(input_ini.has_value()) << err;
+    EXPECT_EQ(*input_ini, "[Job]\nmode=new\n");
+
+    const auto restart_events = execution_db->ListJobEvents(restart_job_id, 10);
+    ASSERT_GE(restart_events.size(), 2u);
+    EXPECT_EQ(restart_events.front().event_kind, "Execution.JobQueued.v1");
+    EXPECT_EQ(restart_events.front().message, "RESTART");
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_outbox_message "
+        "WHERE payload_ref_kind='job' "
+        "AND event_type IN ('Execution.JobQueued.v1','Execution.JobCompleted.v1');",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 5);
+    sqlite3_finalize(st);
+
+    err.clear();
+    EXPECT_FALSE(execution_db->CancelQueuedOrClaimedJob(cancel_job_id, &err));
+    EXPECT_NE(err.find("job cannot be canceled from state CANCELED"), std::string::npos);
+}
+
 TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobCommitsAfterReturningClaimedRow) {
     using namespace simcore::db::execution::workflow;
     using namespace simcore::db::migrations;
