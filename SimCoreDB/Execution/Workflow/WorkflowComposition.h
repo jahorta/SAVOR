@@ -1,0 +1,121 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace simcore::db::execution::workflow {
+
+enum class WorkflowPortDirection {
+    Input = 0,
+    Output = 1,
+};
+
+struct WorkflowPortDefinition {
+    std::string key;
+    std::string data_kind;
+    std::string display_name;
+    bool required = true;
+};
+
+struct WorkflowUnitDefinition {
+    std::string unit_kind;
+    std::string display_name;
+    std::string description;
+    std::vector<WorkflowPortDefinition> required_inputs;
+    std::vector<WorkflowPortDefinition> possible_outputs;
+    std::vector<std::string> internal_step_kinds;
+};
+
+struct WorkflowExternalInputBinding {
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::optional<std::int64_t> ref_id;
+};
+
+struct WorkflowUnitOutputBinding {
+    std::string from_node_key;
+    std::string output_key;
+    std::string to_node_key;
+    std::string input_key;
+};
+
+struct WorkflowCompositionNode {
+    std::string node_key;
+    std::string unit_kind;
+};
+
+struct WorkflowCompositionSpec {
+    std::vector<WorkflowCompositionNode> nodes;
+    std::vector<WorkflowExternalInputBinding> external_inputs;
+    std::vector<WorkflowUnitOutputBinding> output_bindings;
+};
+
+struct WorkflowCompositionIssue {
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string message;
+};
+
+struct WorkflowCompositionPreviewNode {
+    std::string node_key;
+    std::string unit_kind;
+    std::vector<std::string> resolved_inputs;
+    std::vector<std::string> possible_outputs;
+};
+
+struct WorkflowCompositionPreview {
+    bool valid = false;
+    std::vector<WorkflowCompositionPreviewNode> nodes;
+    std::vector<WorkflowCompositionIssue> issues;
+};
+
+class WorkflowUnitRegistry {
+public:
+    bool RegisterUnit(WorkflowUnitDefinition definition, std::string* error_out);
+    const WorkflowUnitDefinition* Find(std::string_view unit_kind) const;
+    std::vector<WorkflowUnitDefinition> ListUnits() const;
+
+private:
+    std::unordered_map<std::string, WorkflowUnitDefinition> units_;
+};
+
+WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry();
+
+class WorkflowCompositionService {
+public:
+    explicit WorkflowCompositionService(const WorkflowUnitRegistry* registry);
+
+    WorkflowCompositionPreview Preview(const WorkflowCompositionSpec& composition) const;
+    std::vector<WorkflowUnitDefinition> ListUnitsCompatibleWith(
+        const std::vector<WorkflowPortDefinition>& available_outputs) const;
+
+private:
+    const WorkflowUnitDefinition* FindNodeUnit(const WorkflowCompositionNode& node) const;
+    const WorkflowPortDefinition* FindInput(
+        const WorkflowUnitDefinition& unit,
+        std::string_view input_key) const;
+    const WorkflowPortDefinition* FindOutput(
+        const WorkflowUnitDefinition& unit,
+        std::string_view output_key) const;
+    bool OutputBindingMatches(
+        const WorkflowCompositionSpec& composition,
+        const WorkflowCompositionNode& node,
+        const WorkflowPortDefinition& input,
+        std::string* resolved_label_out,
+        WorkflowCompositionIssue* issue_out) const;
+    bool ExternalBindingMatches(
+        const WorkflowCompositionSpec& composition,
+        const WorkflowCompositionNode& node,
+        const WorkflowPortDefinition& input,
+        std::string* resolved_label_out) const;
+
+    const WorkflowUnitRegistry* registry_ = nullptr;
+};
+
+} // namespace simcore::db::execution::workflow

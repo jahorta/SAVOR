@@ -69,6 +69,7 @@
 6. **Result mapping ownership:** mapper returns payloads to context-owned writers.
 7. **Dedupe persistence:** dedicated dedupe tables per service.
 8. **Completion trigger invariant:** only mark step complete after all jobs in step job set are terminal.
+9. **Workflow composition ownership:** composition validates required inputs against possible outputs, while program descriptors/adapters lazily create Analysis rows only when a step actually materializes or maps real results.
 
 ## Seed Probe pilot guidance
 

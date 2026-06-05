@@ -9,6 +9,7 @@
 #include "SimCoreDbRuntime.h"
 #include "DB/SimCoreDbAuthoringService.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
+#include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowInstanceBuilder.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "UIRead/IUiReadDb.h"
@@ -35,6 +36,22 @@ struct WorkflowStartRequest {
 
 class SimCoreDbWorkflowService {
 public:
+    using WorkflowUnitDefinition = simcore::db::execution::workflow::WorkflowUnitDefinition;
+    using WorkflowCompositionSpec = simcore::db::execution::workflow::WorkflowCompositionSpec;
+    using WorkflowCompositionPreview = simcore::db::execution::workflow::WorkflowCompositionPreview;
+
+    static ServiceResult<std::vector<WorkflowUnitDefinition>> ListWorkflowUnits() {
+        const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+        return ServiceResult<std::vector<WorkflowUnitDefinition>>::Ok(registry.ListUnits());
+    }
+
+    static ServiceResult<WorkflowCompositionPreview> PreviewComposition(
+        const WorkflowCompositionSpec& composition) {
+        const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+        const simcore::db::execution::workflow::WorkflowCompositionService service(&registry);
+        return ServiceResult<WorkflowCompositionPreview>::Ok(service.Preview(composition));
+    }
+
     static ServiceResult<simcore::db::UiReadPage<simcore::db::UiWorkflowInstanceSummary>> ListWorkflowInstances(
         const WorkflowListRequest& request) {
         auto* db = UiReadDb();

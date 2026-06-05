@@ -34,6 +34,9 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 - State artifact creation now updates UIRead through the State outbox and artifact projector. The artifact browser cutover is therefore a command-to-State plus projection-to-UIRead flow, not a synchronous UIRead update from the Qt2 artifact service.
 - The first attached-source projection coverage is validated by focused SQLite fixture tests for artifact summary projection across separate State and UIRead database files.
 - Qt2 and UIRead projections should not derive domain detail by parsing raw legacy `vm_kv`, raw `input_ini`, results INI, or job-event payload text. Execution-owned fields can come from Execution/UI workflow tables; authored/analysis/state details must come from Authoring, Analysis, and State respectively.
+- Qt2 Workflow Builder is a composition and submission surface. It may bind authored plans, predicates, source artifacts, savestates, and prior analysis outputs, but it must not pre-create Analysis DB rows for downstream steps.
+- Workflow composition contracts expose required inputs and possible outputs. Possible outputs are only compatibility hints until a running step produces an actual typed reference.
+- Program descriptors/adapters own lazy Analysis DB row creation during step materialization/result mapping. Downstream dependent steps should be readied only when their required actual refs exist; otherwise they remain blocked, skipped, or failed according to the transition policy.
 - Remaining operational gap: add a Qt2-visible projection health/status surface for subscription lag, last error, and recovery guidance.
 
 ---

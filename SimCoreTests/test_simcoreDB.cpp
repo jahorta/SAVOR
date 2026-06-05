@@ -33,6 +33,7 @@
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
 #include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
+#include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowEngine.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
 #include "Execution/Workflow/WorkflowModeProvider.h"
@@ -135,6 +136,88 @@ TEST(Stage3cSeedProbeDefinition, RegistryRejectsInvalidContractDefinition) {
     EXPECT_NE(err.find("invalid workflow definition"), std::string::npos);
     EXPECT_NE(err.find("seedprobe.missing.contract"), std::string::npos);
     EXPECT_NE(err.find("Grid"), std::string::npos);
+}
+
+TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
+    using namespace simcore::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const auto* tas = registry.Find("tas_movie");
+    const auto* seed_probe = registry.Find("seed_probe_chain");
+    const auto* battle = registry.Find("battle_chain");
+    ASSERT_NE(tas, nullptr);
+    ASSERT_NE(seed_probe, nullptr);
+    ASSERT_NE(battle, nullptr);
+
+    ASSERT_EQ(tas->possible_outputs.size(), 1u);
+    EXPECT_EQ(tas->possible_outputs[0].data_kind, "state.savestate_id");
+    ASSERT_EQ(seed_probe->required_inputs.size(), 1u);
+    EXPECT_EQ(seed_probe->required_inputs[0].data_kind, "state.savestate_id");
+    ASSERT_EQ(seed_probe->possible_outputs.size(), 1u);
+    EXPECT_EQ(seed_probe->possible_outputs[0].data_kind, "analysis.input_frame_set_id");
+    ASSERT_EQ(battle->required_inputs.size(), 2u);
+    EXPECT_EQ(battle->required_inputs[0].data_kind, "state.savestate_id");
+    EXPECT_EQ(battle->required_inputs[1].data_kind, "analysis.input_frame_set_id");
+}
+
+TEST(Stage5WorkflowComposition, ValidatesTasSeedProbeBattleCompatibility) {
+    using namespace simcore::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const WorkflowCompositionService service(&registry);
+
+    WorkflowCompositionSpec composition;
+    composition.nodes = {
+        { .node_key = "tas_1", .unit_kind = "tas_movie" },
+        { .node_key = "probe_1", .unit_kind = "seed_probe_chain" },
+        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+    };
+    composition.external_inputs = {
+        { .node_key = "tas_1", .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .ref_id = 10 },
+    };
+    composition.output_bindings = {
+        { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+        { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+        { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+    };
+
+    const auto preview = service.Preview(composition);
+    EXPECT_TRUE(preview.valid);
+    EXPECT_TRUE(preview.issues.empty());
+    ASSERT_EQ(preview.nodes.size(), 3u);
+    EXPECT_EQ(preview.nodes[2].resolved_inputs.size(), 2u);
+}
+
+TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
+    using namespace simcore::db::execution::workflow;
+
+    const auto registry = BuildDefaultWorkflowUnitRegistry();
+    const WorkflowCompositionService service(&registry);
+
+    WorkflowCompositionSpec unresolved;
+    unresolved.nodes = {
+        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+    };
+    auto preview = service.Preview(unresolved);
+    EXPECT_FALSE(preview.valid);
+    ASSERT_EQ(preview.issues.size(), 2u);
+
+    WorkflowCompositionSpec mismatched;
+    mismatched.nodes = {
+        { .node_key = "probe_1", .unit_kind = "seed_probe_chain" },
+        { .node_key = "battle_1", .unit_kind = "battle_chain" },
+    };
+    mismatched.external_inputs = {
+        { .node_key = "probe_1", .input_key = "entry_savestate", .data_kind = "state.savestate_id", .ref_id = 99 },
+    };
+    mismatched.output_bindings = {
+        { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+    };
+
+    preview = service.Preview(mismatched);
+    EXPECT_FALSE(preview.valid);
+    ASSERT_FALSE(preview.issues.empty());
+    EXPECT_NE(preview.issues[0].message.find("type mismatch"), std::string::npos);
 }
 
 TEST(Stage3cWorkflowEngine, ResolveReadinessAndRecoveryTransitions) {

@@ -1,20 +1,383 @@
 #include "JobBuilderPage.h"
 
+#include "DB/SimCoreDbWorkflowService.h"
+
+#include <QtCore/QDateTime>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QFrame>
+#include <QtWidgets/QGridLayout>
+#include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
+
+#include <algorithm>
+#include <sstream>
+#include <unordered_map>
+
+namespace {
+
+QFrame* createPanel(const QString& title, QWidget* parent, QVBoxLayout** bodyLayout = nullptr)
+{
+    auto* frame = new QFrame(parent);
+    frame->setObjectName("jobsSurfacePanel");
+    auto* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+    auto* titleLabel = new QLabel(title, frame);
+    titleLabel->setObjectName("panelTitle");
+    layout->addWidget(titleLabel);
+    if (bodyLayout) {
+        *bodyLayout = layout;
+    }
+    return frame;
+}
+
+QString portListText(const std::vector<simcore::db::execution::workflow::WorkflowPortDefinition>& ports)
+{
+    QStringList lines;
+    for (const auto& port : ports) {
+        lines << QStringLiteral("%1 (%2)")
+            .arg(QString::fromStdString(port.display_name))
+            .arg(QString::fromStdString(port.data_kind));
+    }
+    return lines.join(QStringLiteral("\n"));
+}
+
+} // namespace
 
 JobBuilderPage::JobBuilderPage(QWidget* parent)
     : QWidget(parent)
 {
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(24, 24, 24, 24);
-    auto* title = new QLabel(QStringLiteral("Job Builder is waiting for SimCoreDB authoring commands."), this);
-    title->setObjectName("sectionTitle");
-    auto* detail = new QLabel(QStringLiteral("Legacy job creation is disabled during the UIRead cutover."), this);
-    detail->setObjectName("sectionDescription");
-    detail->setWordWrap(true);
-    layout->addWidget(title);
-    layout->addWidget(detail);
-    layout->addStretch();
+    createWidgets();
+    loadUnits();
+    rebuildBindings();
+    refreshPreview();
 }
 
+void JobBuilderPage::createWidgets()
+{
+    auto* rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(10);
+
+    auto* toolbar = new QFrame(this);
+    toolbar->setObjectName("jobsToolbarPanel");
+    auto* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(12, 10, 12, 10);
+    toolbarLayout->setSpacing(10);
+
+    addUnitButton_ = new QPushButton(QStringLiteral("Add Unit"), toolbar);
+    removeNodeButton_ = new QPushButton(QStringLiteral("Remove"), toolbar);
+    clearButton_ = new QPushButton(QStringLiteral("Clear"), toolbar);
+    addUnitButton_->setObjectName("jobsPrimaryButton");
+    removeNodeButton_->setObjectName("jobsSecondaryButton");
+    clearButton_->setObjectName("jobsSecondaryButton");
+
+    externalDtmCheck_ = new QCheckBox(QStringLiteral("DTM artifact"), toolbar);
+    externalSavestateCheck_ = new QCheckBox(QStringLiteral("Savestate"), toolbar);
+    externalInputFramesCheck_ = new QCheckBox(QStringLiteral("Input frames"), toolbar);
+    externalSavestateCheck_->setChecked(true);
+
+    toolbarLayout->addWidget(addUnitButton_);
+    toolbarLayout->addWidget(removeNodeButton_);
+    toolbarLayout->addWidget(clearButton_);
+    toolbarLayout->addSpacing(12);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("External inputs"), toolbar));
+    toolbarLayout->addWidget(externalDtmCheck_);
+    toolbarLayout->addWidget(externalSavestateCheck_);
+    toolbarLayout->addWidget(externalInputFramesCheck_);
+    toolbarLayout->addStretch();
+    rootLayout->addWidget(toolbar);
+
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setChildrenCollapsible(false);
+
+    QVBoxLayout* unitLayout = nullptr;
+    auto* unitPanel = createPanel(QStringLiteral("Workflow Units"), splitter, &unitLayout);
+    unitList_ = new QListWidget(unitPanel);
+    unitLayout->addWidget(unitList_, 1);
+
+    QVBoxLayout* compositionLayout = nullptr;
+    auto* compositionPanel = createPanel(QStringLiteral("Composition"), splitter, &compositionLayout);
+    compositionList_ = new QListWidget(compositionPanel);
+    compositionLayout->addWidget(compositionList_, 1);
+
+    QVBoxLayout* previewLayout = nullptr;
+    auto* previewPanel = createPanel(QStringLiteral("Preview"), splitter, &previewLayout);
+    previewText_ = new QPlainTextEdit(previewPanel);
+    previewText_->setReadOnly(true);
+    previewText_->setMinimumWidth(360);
+    previewLayout->addWidget(previewText_, 1);
+
+    splitter->addWidget(unitPanel);
+    splitter->addWidget(compositionPanel);
+    splitter->addWidget(previewPanel);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(2, 2);
+    rootLayout->addWidget(splitter, 1);
+
+    connect(addUnitButton_, &QPushButton::clicked, this, &JobBuilderPage::addSelectedUnit);
+    connect(removeNodeButton_, &QPushButton::clicked, this, &JobBuilderPage::removeSelectedNode);
+    connect(clearButton_, &QPushButton::clicked, this, &JobBuilderPage::clearComposition);
+    connect(externalDtmCheck_, &QCheckBox::toggled, this, [this]() {
+        rebuildBindings();
+        refreshPreview();
+    });
+    connect(externalSavestateCheck_, &QCheckBox::toggled, this, [this]() {
+        rebuildBindings();
+        refreshPreview();
+    });
+    connect(externalInputFramesCheck_, &QCheckBox::toggled, this, [this]() {
+        rebuildBindings();
+        refreshPreview();
+    });
+}
+
+void JobBuilderPage::loadUnits()
+{
+    const auto result = soasimqt2::db::SimCoreDbWorkflowService::ListWorkflowUnits();
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    units_ = result.value;
+    refreshUnitList();
+}
+
+void JobBuilderPage::addSelectedUnit()
+{
+    const auto* item = unitList_ != nullptr ? unitList_->currentItem() : nullptr;
+    if (item == nullptr) {
+        return;
+    }
+
+    const auto unitKind = item->data(Qt::UserRole).toString().toStdString();
+    if (findUnit(unitKind) == nullptr) {
+        return;
+    }
+
+    WorkflowCompositionNode node{};
+    node.unit_kind = unitKind;
+    node.node_key = unitKind + "_" + std::to_string(nextNodeOrdinal_++);
+    nodes_.push_back(std::move(node));
+
+    rebuildBindings();
+    refreshCompositionList();
+    refreshPreview();
+}
+
+void JobBuilderPage::removeSelectedNode()
+{
+    const int row = compositionList_ != nullptr ? compositionList_->currentRow() : -1;
+    if (row < 0 || row >= static_cast<int>(nodes_.size())) {
+        return;
+    }
+    nodes_.erase(nodes_.begin() + row);
+    rebuildBindings();
+    refreshCompositionList();
+    refreshPreview();
+}
+
+void JobBuilderPage::clearComposition()
+{
+    nodes_.clear();
+    externalInputs_.clear();
+    outputBindings_.clear();
+    rebuildBindings();
+    refreshCompositionList();
+    refreshPreview();
+}
+
+void JobBuilderPage::rebuildBindings()
+{
+    externalInputs_.clear();
+    outputBindings_.clear();
+
+    std::unordered_map<std::string, std::pair<std::string, std::string>> latestOutputByKind;
+    for (const auto& node : nodes_) {
+        const auto* unit = findUnit(node.unit_kind);
+        if (unit == nullptr) {
+            continue;
+        }
+
+        for (const auto& input : unit->required_inputs) {
+            const auto outputIt = latestOutputByKind.find(input.data_kind);
+            if (outputIt != latestOutputByKind.end()) {
+                outputBindings_.push_back(WorkflowUnitOutputBinding{
+                    .from_node_key = outputIt->second.first,
+                    .output_key = outputIt->second.second,
+                    .to_node_key = node.node_key,
+                    .input_key = input.key,
+                });
+                continue;
+            }
+            if (externalInputEnabled(input.data_kind)) {
+                externalInputs_.push_back(WorkflowExternalInputBinding{
+                    .node_key = node.node_key,
+                    .input_key = input.key,
+                    .data_kind = input.data_kind,
+                    .ref_id = externalInputRefId(input.data_kind),
+                });
+            }
+        }
+
+        for (const auto& output : unit->possible_outputs) {
+            latestOutputByKind[output.data_kind] = { node.node_key, output.key };
+        }
+    }
+}
+
+void JobBuilderPage::refreshUnitList()
+{
+    if (unitList_ == nullptr) {
+        return;
+    }
+    unitList_->clear();
+    for (const auto& unit : units_) {
+        auto* item = new QListWidgetItem(describeUnit(unit), unitList_);
+        item->setData(Qt::UserRole, QString::fromStdString(unit.unit_kind));
+    }
+    if (unitList_->count() > 0) {
+        unitList_->setCurrentRow(0);
+    }
+}
+
+void JobBuilderPage::refreshCompositionList()
+{
+    if (compositionList_ == nullptr) {
+        return;
+    }
+    compositionList_->clear();
+    for (const auto& node : nodes_) {
+        compositionList_->addItem(describeNode(node));
+    }
+}
+
+void JobBuilderPage::refreshPreview()
+{
+    if (previewText_ == nullptr) {
+        return;
+    }
+
+    simcore::db::execution::workflow::WorkflowCompositionSpec spec{};
+    spec.nodes = nodes_;
+    spec.external_inputs = externalInputs_;
+    spec.output_bindings = outputBindings_;
+
+    const auto result = soasimqt2::db::SimCoreDbWorkflowService::PreviewComposition(spec);
+    if (!result.ok) {
+        previewText_->setPlainText(QString::fromStdString(result.error.message));
+        return;
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("Status: %1").arg(result.value.valid ? QStringLiteral("ready") : QStringLiteral("needs inputs"));
+    lines << QString();
+
+    if (result.value.nodes.empty()) {
+        lines << QStringLiteral("No workflow units selected.");
+    }
+
+    for (const auto& node : result.value.nodes) {
+        const auto* unit = findUnit(node.unit_kind);
+        lines << QStringLiteral("[%1] %2")
+            .arg(QString::fromStdString(node.node_key))
+            .arg(unit != nullptr ? QString::fromStdString(unit->display_name) : QString::fromStdString(node.unit_kind));
+
+        if (!node.resolved_inputs.empty()) {
+            lines << QStringLiteral("  Inputs");
+            for (const auto& input : node.resolved_inputs) {
+                lines << QStringLiteral("    %1").arg(QString::fromStdString(input));
+            }
+        }
+
+        if (!node.possible_outputs.empty()) {
+            lines << QStringLiteral("  Possible outputs");
+            for (const auto& output : node.possible_outputs) {
+                lines << QStringLiteral("    %1").arg(QString::fromStdString(output));
+            }
+        }
+        lines << QString();
+    }
+
+    if (!result.value.issues.empty()) {
+        lines << QStringLiteral("Issues");
+        for (const auto& issue : result.value.issues) {
+            lines << QStringLiteral("  %1.%2: %3")
+                .arg(QString::fromStdString(issue.node_key))
+                .arg(QString::fromStdString(issue.input_key))
+                .arg(QString::fromStdString(issue.message));
+        }
+    }
+
+    previewText_->setPlainText(lines.join(QStringLiteral("\n")));
+}
+
+void JobBuilderPage::postStatusMessage(const QString& text, StatusToast::Severity severity)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+    emit statusToastRequested(StatusToast{ severity, text, {}, 1, QDateTime{}, 4000 });
+}
+
+const JobBuilderPage::WorkflowUnitDefinition* JobBuilderPage::findUnit(const std::string& unit_kind) const
+{
+    const auto it = std::find_if(units_.begin(), units_.end(), [&](const auto& unit) {
+        return unit.unit_kind == unit_kind;
+    });
+    return it == units_.end() ? nullptr : &*it;
+}
+
+QString JobBuilderPage::describeUnit(const WorkflowUnitDefinition& unit) const
+{
+    QString text = QString::fromStdString(unit.display_name);
+    if (!unit.required_inputs.empty()) {
+        text += QStringLiteral("\nInputs:\n%1").arg(portListText(unit.required_inputs));
+    }
+    if (!unit.possible_outputs.empty()) {
+        text += QStringLiteral("\nPossible outputs:\n%1").arg(portListText(unit.possible_outputs));
+    }
+    return text;
+}
+
+QString JobBuilderPage::describeNode(const WorkflowCompositionNode& node) const
+{
+    const auto* unit = findUnit(node.unit_kind);
+    return QStringLiteral("%1  %2")
+        .arg(QString::fromStdString(node.node_key))
+        .arg(unit != nullptr ? QString::fromStdString(unit->display_name) : QString::fromStdString(node.unit_kind));
+}
+
+bool JobBuilderPage::externalInputEnabled(const std::string& data_kind) const
+{
+    if (data_kind == "state.savestate_id") {
+        return externalSavestateCheck_ != nullptr && externalSavestateCheck_->isChecked();
+    }
+    if (data_kind == "state_artifact.dtm_artifact_id") {
+        return externalDtmCheck_ != nullptr && externalDtmCheck_->isChecked();
+    }
+    if (data_kind == "analysis.input_frame_set_id") {
+        return externalInputFramesCheck_ != nullptr && externalInputFramesCheck_->isChecked();
+    }
+    return false;
+}
+
+qint64 JobBuilderPage::externalInputRefId(const std::string& data_kind) const
+{
+    if (data_kind == "state.savestate_id") {
+        return 0;
+    }
+    if (data_kind == "state_artifact.dtm_artifact_id") {
+        return 0;
+    }
+    if (data_kind == "analysis.input_frame_set_id") {
+        return 0;
+    }
+    return 0;
+}

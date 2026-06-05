@@ -15,6 +15,20 @@
 - Supervises per-run/per-step in-memory state contexts.
 - Invokes orchestration command service for authoritative step state transitions.
 
+### Workflow composition contract
+
+Workflow composition is a design-time/control-plane concern, not an Analysis DB writer.
+
+- The Qt2 Workflow Builder and SimCoreDB composition registry describe reusable workflow units, their required inputs, their possible outputs, and their internal step kinds.
+- Composition validation answers only whether a downstream unit can potentially be satisfied by an upstream unit or by an external input binding.
+- Composition does not create Analysis DB, State DB, or UIRead rows.
+- Authored records such as battle plans, predicates, workflow templates, and user-selected source artifacts should exist before workflow submission.
+- Execution DB owns submitted workflow instances, steps, dependency edges, selected unit kinds, and input/output binding metadata.
+- Program descriptors/adapters own step-specific materialization and result mapping. Any Analysis DB rows needed for a step are created lazily by the descriptor path when that step is materialized or when its results are mapped.
+- Runtime transition handling advances downstream steps only when actual produced output refs exist. A unit's possible output is not a promise that the output will be produced.
+
+Example: a battle chain may have a possible terminal savestate output that can feed a dungeon explorer. If no tested battle branch reaches victory, the dungeon explorer remains blocked or skipped and no dungeon-analysis rows are created.
+
 ## 2. Step Input Aggregation Service (new)
 
 - Subscribes to step input requests.
@@ -51,6 +65,13 @@ Control plane invokes adapters in this order:
 2. Job claimed -> `IRuntimeInitAdapter` (pre-warm)
 3. Job terminal -> `IResultMapper`
 4. Step terminal -> `IWorkflowTransitionHandler`
+
+Descriptor division of duties:
+
+- `IJobPersistenceAdapter` may create or resolve step-specific Analysis rows required to queue the concrete jobs for that step.
+- `IResultMapper` persists produced facts through the owning context DBs after execution has produced real results.
+- `IWorkflowTransitionHandler` decides which possible outputs became actual outputs and whether dependent steps can be readied.
+- The composition layer never pre-allocates downstream Analysis rows for speculative branches.
 
 ## 4. Execution Coordinator / Worker Pool
 

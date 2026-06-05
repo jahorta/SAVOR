@@ -206,6 +206,7 @@
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowInstanceBuilder.h" />
     <ClInclude Include="Execution\Workflow\WorkflowInstanceValidator.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowComposition.h" />
     <ClInclude Include="Execution\Workflow\WorkflowEngine.h" />
     <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
     <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h" />
@@ -264,6 +265,7 @@
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowInstanceBuilder.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowInstanceValidator.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp" />

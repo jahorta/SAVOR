@@ -130,6 +130,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowInstanceValidator.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowComposition.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Archive\SqliteArchiveDb.h">
       <Filter>Archive</Filter>
     </ClInclude>
@@ -337,6 +340,9 @@
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowInstanceValidator.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp">

@@ -46,6 +46,10 @@ This file is meant to be actively updated each iteration.
    - Decision: coordinator dispatches per open worker slot and passes worker-loaded `savestate_id` affinity hint into dispatch selection.
 19. **Claim scope**
    - Decision: claiming is global across in-flight workflows and not restricted to the currently dequeued workflow step.
+20. **Workflow composition output semantics**
+   - Decision: composition contracts use `possible_outputs`, not guaranteed/provided outputs. Downstream compatibility is design-time only; runtime advancement requires actual produced refs.
+21. **Analysis row creation ownership**
+   - Decision: Qt2/workflow composition must not pre-create Analysis DB rows. Program descriptors/adapters create Analysis rows lazily during materialization or result mapping for steps that actually run.
 
 ## Priority A (blockers)
 
@@ -57,7 +61,7 @@ This file is meant to be actively updated each iteration.
 2. **Composable workflow definition source**
    - Definitions source is **code registry** for now.
    - Add a dedicated validation service to gate workflow definitions before use.
-   - We should add per-step contracts (`required_inputs`, `provided_outputs`) and validator rules to ensure downstream requirements are satisfiable by prior outputs.
+   - We should add per-step contracts (`required_inputs`, `possible_outputs`) and validator rules to ensure downstream requirements are potentially satisfiable by prior possible outputs.
    - We should support grouped workflows for common sequential pipelines (e.g., grouped Seed Probe workflow).
 
 ## Priority B (important)
@@ -103,3 +107,4 @@ For each question:
 - Result mapping ownership and dedupe persistence strategy are now explicitly defined.
 - Decider evidence contract is standardized (`evidence_ref`) and milestone retrieval mode is DB-query-only.
 - Completion invariant remediation path is standardized through pause + invariant event + reconciliation/repair + reopen-or-fail policy.
+- Workflow composition output semantics are standardized around `possible_outputs`, and Analysis rows are created lazily by program descriptors/adapters instead of by the composition layer.
