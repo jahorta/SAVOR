@@ -22,6 +22,7 @@
 #include "Common/Events/OutboxRelay.h"
 #include "SimCoreDB.h"
 #include "Analysis/SqliteAnalysisDb.h"
+#include "Authoring/SqliteAuthoringDb.h"
 #include "Archive/SqliteArchiveDb.h"
 #include "Archive/ArchivePackageService.h"
 #include "Archive/RehydrateExecutor.h"
@@ -50,6 +51,7 @@
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
 #include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
+#include "Runner/Breakpoints/BPRegistry.h"
 
 #include "common/RecordingExecutionDb.h"
 #include "common/AlwaysAdvanceTransitionHandler.h"
@@ -202,6 +204,106 @@ TEST_F(SqliteDbFixture, Stage5WorkflowInstanceBuilderCreatesAndPersistsDefinitio
     EXPECT_EQ(ready_count, 1);
     EXPECT_EQ(lifecycle_count, 2);
     EXPECT_EQ(outbox_count, 2);
+}
+
+TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentChildren) {
+    using namespace simcore::db::execution::workflow;
+
+    SqliteExecutionDb execution_db(db_);
+    WorkflowDefinitionRegistry registry;
+    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
+    WorkflowInstanceBuilder builder(&registry, nullptr);
+
+    std::int64_t workflow_instance_id = 0;
+    std::string error;
+    ASSERT_TRUE(builder.CreateWorkflowInstance(
+        {
+            .workflow_kind = "SEED_PROBE_CHAIN",
+            .root_scope_kind = "run",
+            .root_scope_id = 9002,
+            .input_ref_kind = std::string("sp_probe_run"),
+            .input_ref_id = 9002,
+            .created_by = "sqlite-fixture",
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+            .available_inputs = { "sp_probe_run.probe_run_id" },
+        },
+        execution_db.WorkflowCommandService(),
+        &workflow_instance_id,
+        &error)) << error;
+
+    const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    const auto parent_it = std::find_if(
+        graph->steps.begin(),
+        graph->steps.end(),
+        [](const auto& step) { return step.step_key == "Neutral"; });
+    ASSERT_NE(parent_it, graph->steps.end());
+
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->AppendDynamicSteps(
+        {
+            .workflow_instance_id = workflow_instance_id,
+            .parent_workflow_step_id = parent_it->workflow_step_id,
+            .steps = {
+                {
+                    .step_key = "BattleTurn/t001/w010",
+                    .step_kind = "battle.single_turn",
+                    .input_ref_kind = std::string("analysis_battle.wave_id"),
+                    .input_ref_id = 10,
+                    .priority = 5,
+                    .max_attempts = 2,
+                },
+                {
+                    .step_key = "BattleTurn/t001/w011",
+                    .step_kind = "battle.single_turn",
+                    .input_ref_kind = std::string("analysis_battle.wave_id"),
+                    .input_ref_id = 11,
+                    .priority = 5,
+                    .max_attempts = 2,
+                },
+            },
+            .requested_by = "test",
+        },
+        &error)) << error;
+
+    const auto with_dynamic = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(with_dynamic.has_value());
+    EXPECT_EQ(with_dynamic->steps.size(), graph->steps.size() + 2);
+    EXPECT_EQ(with_dynamic->edges.size(), graph->edges.size() + 2);
+    EXPECT_EQ(std::count_if(
+        with_dynamic->steps.begin(),
+        with_dynamic->steps.end(),
+        [](const auto& step) { return step.step_kind == "battle.single_turn" && step.state == WorkflowStepState::Ready; }), 2);
+
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->AppendDynamicSteps(
+        {
+            .workflow_instance_id = workflow_instance_id,
+            .parent_workflow_step_id = parent_it->workflow_step_id,
+            .steps = {
+                {
+                    .step_key = "BattleTurn/t001/w010",
+                    .step_kind = "battle.single_turn",
+                    .input_ref_kind = std::string("analysis_battle.wave_id"),
+                    .input_ref_id = 10,
+                    .priority = 5,
+                    .max_attempts = 2,
+                },
+                {
+                    .step_key = "BattleTurn/t001/w011",
+                    .step_kind = "battle.single_turn",
+                    .input_ref_kind = std::string("analysis_battle.wave_id"),
+                    .input_ref_id = 11,
+                    .priority = 5,
+                    .max_attempts = 2,
+                },
+            },
+            .requested_by = "test-retry",
+        },
+        &error)) << error;
+
+    const auto after_retry = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(after_retry.has_value());
+    EXPECT_EQ(after_retry->steps.size(), with_dynamic->steps.size());
+    EXPECT_EQ(after_retry->edges.size(), with_dynamic->edges.size());
 }
 
 TEST_F(SqliteDbFixture, Stage3cReadinessGuardRequiresStage3bWorkflowSchemaVersion) {
@@ -1341,6 +1443,65 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage3cNoWorkDoneStepCompletesWorkflowFromReadyState) {
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, root_scope_kind, state, created_by, created_at_utc)
+VALUES(15001, 'SEED_PROBE_CHAIN', 'manual', 'RUNNING', 'stage3c-done-test', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, completed_at_utc, created_at_utc, ready_at_utc)
+VALUES
+  (15002, 15001, 'Neutral', 'seedprobe.neutral', 'COMPLETED', 10, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
+  (15003, 15001, 'Grid', 'seedprobe.grid', 'COMPLETED', 8, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
+  (15004, 15001, 'Unique', 'seedprobe.unique', 'COMPLETED', 7, 1, 2, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000),
+  (15005, 15001, 'Done', 'seedprobe.done', 'READY', 1, 0, 1, NULL, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    DBWorkflowWorkerCoordinator coordinator(
+        &execution_db,
+        DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 0,
+            .controller_sleep_ms = 1,
+        },
+        CoordinatorIntegrationConfig{});
+
+    auto read_text = [&](const std::string& sql) -> std::string {
+        sqlite3_stmt* st = nullptr;
+        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr));
+        std::string value;
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            const auto* text = sqlite3_column_text(st, 0);
+            value = text ? reinterpret_cast<const char*>(text) : "";
+        }
+        sqlite3_finalize(st);
+        return value;
+    };
+    auto read_int = [&](const std::string& sql) -> int {
+        sqlite3_stmt* st = nullptr;
+        EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr));
+        int value = 0;
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            value = sqlite3_column_int(st, 0);
+        }
+        sqlite3_finalize(st);
+        return value;
+    };
+
+    coordinator.Start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (read_text("SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=15001;") != "COMPLETED"
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    coordinator.Stop();
+
+    EXPECT_EQ(read_text("SELECT state FROM exec_workflow_step WHERE workflow_step_id=15005;"), "COMPLETED");
+    EXPECT_EQ(read_text("SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=15001;"), "COMPLETED");
+    EXPECT_GE(read_int("SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_instance_id=15001 AND event_kind='Execution.WorkflowInstanceCompleted.v1';"), 1);
+}
+
 TEST_F(SqliteDbFixture, Stage3dExecutionJobCommandServiceEmitsEventsOneThroughEight) {
     using namespace simcore::db::execution::jobs;
     using namespace simcore::db::execution::workflow;
@@ -1379,6 +1540,58 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='job' AND payload_ref_id=601;", -1, &st, nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job_event WHERE job_id=601;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 7);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT message FROM exec_job_event WHERE job_id=601 AND event_kind='Execution.JobProgressed.v1';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "50%");
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dExecutionJobProgressEventsAreRepeatableAndDoNotDemoteTerminalJobs) {
+    using namespace simcore::db::execution::jobs;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(701, 1, 'progress-repeat', unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(801, 701, 1, 1, 'seed_probe', 10, 'fp-stage3d-801', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
+    auto* job_commands = execution_db.JobCommandService();
+    ASSERT_NE(job_commands, nullptr);
+
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("first progress") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("second progress") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobCompleted, .job_id = 801, .terminal_state = std::string("SUCCEEDED") }, &err)) << err;
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent({ .kind = JobLifecycleEventKind::JobProgressed, .job_id = 801, .message = std::string("late progress") }, &err)) << err;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_job_event WHERE job_id=801 AND event_kind='Execution.JobProgressed.v1';", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_outbox_message WHERE event_type='Execution.JobProgressed.v1' AND payload_ref_kind='job' AND payload_ref_id=801;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT state FROM exec_job WHERE job_id=801;", -1, &st, nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "SUCCEEDED");
     sqlite3_finalize(st);
 }
 
@@ -1758,7 +1971,7 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .entry_savestate_id = 101,
             .battle_run_spec_id = 202,
             .explorer_settings_id = 303,
-            .status = "ACTIVE",
+            .status = simcore::db::BattleSetStatus::Active,
             .created_at_utc = now,
             .event_id = "ab-event-30",
             .correlation_id = "ab-corr-1",
@@ -1775,8 +1988,8 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .battle_set_id = battle_set_id,
             .source_unique_seed_id = 444,
             .seed_value = 555,
-            .source_kind = "SP_UNIQUE",
-            .candidate_status = "PENDING",
+            .source_kind = simcore::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+            .candidate_status = simcore::db::BattleSeedCandidateStatus::Pending,
             .created_at_utc = now,
             .event_id = "ab-event-31",
             .correlation_id = "ab-corr-1",
@@ -1792,7 +2005,7 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .battle_set_id = battle_set_id,
             .turn_index = 1,
             .seed_candidate_id = seed_candidate_id,
-            .status = "RUNNING",
+            .status = simcore::db::BattleTurnWaveStatus::Running,
             .created_at_utc = now,
             .event_id = "ab-event-32",
             .correlation_id = "ab-corr-1",
@@ -1810,9 +2023,9 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .plan_id = 9001,
             .fake_attacks_this_turn = 2,
             .fake_attacks_used_before = 1,
-            .job_state = "COMPLETED",
+            .job_state = simcore::db::BattleTurnJobState::Completed,
             .has_results = true,
-            .battle_outcome = 1,
+            .battle_outcome = simcore::battle::Outcome::Defeat,
             .recorded_at_utc = now,
             .event_id = "ab-event-33",
             .correlation_id = "ab-corr-1",
@@ -1828,7 +2041,7 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .battle_set_id = battle_set_id,
             .turn_index = 1,
             .pool_name = "pool-a",
-            .criterion_kind = "MAX_VI",
+            .criterion_kind = simcore::db::BattleSelectionCriterionKind::MaxVi,
             .created_at_utc = now,
             .event_id = "ab-event-34",
             .correlation_id = "ab-corr-1",
@@ -1843,7 +2056,7 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
         {
             .selection_pool_id = selection_pool_id,
             .turn_job_id = turn_job_id,
-            .decision_kind = "WINNER",
+            .decision_kind = simcore::db::BattleSelectionDecisionKind::Winner,
             .decision_reason = std::string("best vi"),
             .created_at_utc = now,
             .event_id = "ab-event-35",
@@ -1859,7 +2072,7 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
         {
             .turn_job_id = turn_job_id,
             .is_victory = true,
-            .manual_followup_status = "RECORDED",
+            .manual_followup_status = simcore::db::BattleManualFollowupStatus::Recorded,
             .recorded_dtm_artifact_id = 777,
             .note = std::string("stage3d"),
             .updated_at_utc = now,
@@ -1912,6 +2125,341 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
     ASSERT_TRUE(payload_36.has_value());
     EXPECT_EQ(payload_36->battle_set_id, battle_set_id);
     EXPECT_EQ(payload_36->turn_job_id, turn_job_id);
+}
+
+TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
+    using namespace simcore::db;
+    using namespace simcore::db::analysis;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Authoring, embedded_options, &err)) << err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::AnalysisBattle, embedded_options, &err)) << err;
+
+    SqliteAuthoringDb authoring_db(db_);
+    SqliteAnalysisDb analysis_db(db_);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+
+    std::int64_t battle_run_spec_id = 0;
+    ASSERT_TRUE(authoring_db.SaveBattleRunSpec(
+        {
+            .name = "single-turn-run",
+            .priority = 7,
+            .run_ms = 35000,
+            .vi_stall_ms = 1200,
+            .progress_enable = true,
+            .use_single_turn_runner = true,
+            .auto_wave_trigger_enable = true,
+            .min_fake_attacks = 1,
+            .max_fake_attacks = 3,
+            .created_at_utc = now,
+            .event_id = "au-battle-run-spec",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-1",
+        },
+        &battle_run_spec_id,
+        &err)) << err;
+
+    std::int64_t plan_id = 0;
+    ASSERT_TRUE(authoring_db.SavePlan(
+        {
+            .name = "single-turn-plan",
+            .fingerprint = "plan-fp-1",
+            .num_turns = 2,
+            .created_at_utc = now,
+            .event_id = "au-plan",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-2",
+        },
+        &plan_id,
+        &err)) << err;
+
+    std::int64_t plan_turn_id = 0;
+    ASSERT_TRUE(authoring_db.SaveBattlePlanTurn(
+        {
+            .plan_id = plan_id,
+            .turn_index = 1,
+            .actions = {
+                {
+                    .actor_slot = 0,
+                    .macro = soa::battle::actions::BattleAction::Attack,
+                    .target_kind = simcore::db::BattlePlanTargetKind::MultipleEnemies,
+                    .target_slot = 2,
+                    .ordinal = 0,
+                },
+                {
+                    .actor_slot = 1,
+                    .macro = soa::battle::actions::BattleAction::UseItem,
+                    .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
+                    .item_id = 99,
+                    .ordinal = 1,
+                },
+            },
+            .created_at_utc = now,
+            .event_id = "au-plan-turn",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-3",
+        },
+        &plan_turn_id,
+        &err)) << err;
+    ASSERT_GT(plan_turn_id, 0);
+
+    std::int64_t lhs_address_program_id = 0;
+    ASSERT_TRUE(authoring_db.EnsureAddressProgram(
+        {
+            .program_version = 1,
+            .prog_bytes = { 0x00 },
+            .derived_buffer_version = 1,
+            .derived_buffer_schema_hash = std::string("derived-hash"),
+            .soa_structs_hash = std::string("soa-hash"),
+            .description = "fixture lhs address program",
+        },
+        &lhs_address_program_id,
+        &err)) << err;
+    ASSERT_GT(lhs_address_program_id, 0);
+
+    std::int64_t duplicate_address_program_id = 0;
+    ASSERT_TRUE(authoring_db.EnsureAddressProgram(
+        {
+            .program_version = 1,
+            .prog_bytes = { 0x00 },
+            .derived_buffer_version = 1,
+            .derived_buffer_schema_hash = std::string("derived-hash"),
+            .soa_structs_hash = std::string("soa-hash"),
+            .description = "duplicate description is not identity",
+        },
+        &duplicate_address_program_id,
+        &err)) << err;
+    EXPECT_EQ(duplicate_address_program_id, lhs_address_program_id);
+
+    const auto address_program = authoring_db.GetAddressProgram(lhs_address_program_id);
+    ASSERT_TRUE(address_program.has_value());
+    EXPECT_EQ(address_program->program_version, 1);
+    EXPECT_EQ(address_program->prog_bytes, std::vector<std::uint8_t>({ 0x00 }));
+    EXPECT_EQ(address_program->derived_buffer_version.value_or(0), 1);
+    EXPECT_EQ(address_program->derived_buffer_schema_hash.value_or(""), "derived-hash");
+    EXPECT_EQ(address_program->soa_structs_hash.value_or(""), "soa-hash");
+
+    std::int64_t predicate_spec_id = 0;
+    ASSERT_TRUE(authoring_db.SavePredicateSpec(
+        {
+            .name = "battle-hp-check",
+            .breakpoint_id = bp::battle::EndTurn,
+            .lhs_kind = simcore::db::PredicateOperandKind::Memory,
+            .lhs_value = 0x1000,
+            .rhs_kind = simcore::db::PredicateOperandKind::Literal,
+            .rhs_value = 0,
+            .cmp_op = simcore::db::PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = 0xff,
+            .lhs_address_program_id = lhs_address_program_id,
+            .abort_on_fail = true,
+            .created_at_utc = now,
+            .event_id = "au-predicate",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-4",
+        },
+        &predicate_spec_id,
+        &err)) << err;
+
+    std::int64_t predicate_set_id = 0;
+    ASSERT_TRUE(authoring_db.SavePredicateSet(
+        {
+            .predicate_spec_ids = { predicate_spec_id },
+            .created_at_utc = now,
+        },
+        &predicate_set_id,
+        &err)) << err;
+
+    std::int64_t explorer_settings_id = 0;
+    ASSERT_TRUE(authoring_db.SaveExplorerSettings(
+        {
+            .name = "battle-explorer",
+            .description = "fixture settings",
+            .default_plan_id = plan_id,
+            .default_predicate_set_id = predicate_set_id,
+            .created_at_utc = now,
+            .event_id = "au-settings",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-5",
+        },
+        &explorer_settings_id,
+        &err)) << err;
+
+    const auto run_spec = authoring_db.GetBattleRunSpec(battle_run_spec_id);
+    ASSERT_TRUE(run_spec.has_value());
+    EXPECT_TRUE(run_spec->use_single_turn_runner);
+    EXPECT_EQ(run_spec->max_fake_attacks, 3);
+
+    const auto plan = authoring_db.GetBattlePlan(plan_id);
+    ASSERT_TRUE(plan.has_value());
+    ASSERT_EQ(plan->turns.size(), 1);
+    EXPECT_EQ(plan->turns[0].turn_index, 1);
+    ASSERT_EQ(plan->turns[0].actions.size(), 2);
+    EXPECT_EQ(plan->turns[0].actions[0].macro, soa::battle::actions::BattleAction::Attack);
+    EXPECT_EQ(plan->turns[0].actions[0].target_kind, simcore::db::BattlePlanTargetKind::MultipleEnemies);
+    EXPECT_EQ(plan->turns[0].actions[0].target_slot.value_or(-1), 2);
+    EXPECT_EQ(plan->turns[0].actions[1].macro, soa::battle::actions::BattleAction::UseItem);
+    EXPECT_EQ(plan->turns[0].actions[1].target_kind, simcore::db::BattlePlanTargetKind::SameAsOtherPC);
+    EXPECT_EQ(plan->turns[0].actions[1].item_id.value_or(-1), 99);
+
+    const auto predicate_set = authoring_db.GetPredicateSet(predicate_set_id);
+    ASSERT_TRUE(predicate_set.has_value());
+    ASSERT_EQ(predicate_set->predicates.size(), 1);
+    EXPECT_EQ(predicate_set->predicates[0].name, "battle-hp-check");
+    EXPECT_EQ(predicate_set->predicates[0].breakpoint_id, bp::battle::EndTurn);
+    EXPECT_EQ(predicate_set->predicates[0].width, 2);
+    EXPECT_EQ(predicate_set->predicates[0].lhs_address_program_id.value_or(0), lhs_address_program_id);
+    EXPECT_FALSE(predicate_set->predicates[0].rhs_address_program_id.has_value());
+    EXPECT_TRUE(predicate_set->predicates[0].abort_on_fail);
+
+    const auto explorer_settings = authoring_db.GetExplorerSettings(explorer_settings_id);
+    ASSERT_TRUE(explorer_settings.has_value());
+    EXPECT_EQ(explorer_settings->default_plan_id.value_or(0), plan_id);
+    EXPECT_EQ(explorer_settings->default_predicate_set_id.value_or(0), predicate_set_id);
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleSet(
+        {
+            .name = "battle-set-roundtrip",
+            .entry_savestate_id = 501,
+            .battle_run_spec_id = battle_run_spec_id,
+            .explorer_settings_id = explorer_settings_id,
+            .status = simcore::db::BattleSetStatus::Active,
+            .created_at_utc = now,
+            .event_id = "ab-roundtrip-1",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-1",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db.AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .source_unique_seed_id = 2001,
+            .seed_value = 7777,
+            .source_kind = simcore::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+            .candidate_status = simcore::db::BattleSeedCandidateStatus::Pending,
+            .created_at_utc = now,
+            .event_id = "ab-roundtrip-2",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-2",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = simcore::db::BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .event_id = "ab-roundtrip-3",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-3",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t turn_job_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 88001,
+            .plan_id = plan_id,
+            .fake_attacks_this_turn = 2,
+            .fake_attacks_used_before = 1,
+            .job_state = simcore::db::BattleTurnJobState::Completed,
+            .started_at_utc = now,
+            .ended_at_utc = now,
+            .has_results = true,
+            .vi_start = 100,
+            .vi_end = 125,
+            .delta_vi = 25,
+            .rng_seed = 7777,
+            .battle_outcome = simcore::battle::Outcome::Defeat,
+            .pred_passed = 1,
+            .pred_total = 1,
+            .pred_abort_run = 0,
+            .output_savestate_id = 9501,
+            .recorded_at_utc = now,
+            .event_id = "ab-roundtrip-4",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-4",
+        },
+        &turn_job_id,
+        &err)) << err;
+
+    std::int64_t selection_pool_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleSelectionPool(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .pool_name = "turn-1-results",
+            .criterion_kind = simcore::db::BattleSelectionCriterionKind::ViDelta,
+            .created_at_utc = now,
+            .event_id = "ab-roundtrip-5",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-5",
+        },
+        &selection_pool_id,
+        &err)) << err;
+
+    std::int64_t selection_decision_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleSelectionDecision(
+        {
+            .selection_pool_id = selection_pool_id,
+            .turn_job_id = turn_job_id,
+            .decision_kind = simcore::db::BattleSelectionDecisionKind::Winner,
+            .decision_reason = std::string("best delta vi"),
+            .created_at_utc = now,
+            .event_id = "ab-roundtrip-6",
+            .correlation_id = "ab-corr",
+            .causation_id = "ab-cause-6",
+        },
+        &selection_decision_id,
+        &err)) << err;
+
+    const auto battle_set = analysis_db.GetBattleSet(battle_set_id);
+    ASSERT_TRUE(battle_set.has_value());
+    EXPECT_EQ(battle_set->battle_run_spec_id, battle_run_spec_id);
+    EXPECT_EQ(battle_set->explorer_settings_id, explorer_settings_id);
+
+    const auto candidates = analysis_db.ListBattleSeedCandidates(battle_set_id);
+    ASSERT_EQ(candidates.size(), 1);
+    EXPECT_EQ(candidates[0].source_unique_seed_id.value_or(0), 2001);
+    EXPECT_EQ(candidates[0].seed_value, 7777);
+
+    const auto wave = analysis_db.GetBattleTurnWave(wave_id);
+    ASSERT_TRUE(wave.has_value());
+    EXPECT_EQ(wave->seed_candidate_id, seed_candidate_id);
+    EXPECT_EQ(wave->status, simcore::db::BattleTurnWaveStatus::Ready);
+
+    const auto waves = analysis_db.ListBattleTurnWaves(battle_set_id);
+    ASSERT_EQ(waves.size(), 1);
+    EXPECT_EQ(waves[0].wave_id, wave_id);
+
+    const auto turn_job = analysis_db.GetBattleTurnJobForExecJob(88001);
+    ASSERT_TRUE(turn_job.has_value());
+    EXPECT_EQ(turn_job->turn_job_id, turn_job_id);
+    EXPECT_EQ(turn_job->plan_id, plan_id);
+    EXPECT_EQ(turn_job->delta_vi.value_or(0), 25);
+    EXPECT_EQ(turn_job->output_savestate_id.value_or(0), 9501);
+
+    const auto turn_jobs = analysis_db.ListBattleTurnJobsForWave(wave_id);
+    ASSERT_EQ(turn_jobs.size(), 1);
+    EXPECT_EQ(turn_jobs[0].exec_job_id.value_or(0), 88001);
+
+    const auto decisions = analysis_db.ListBattleSelectionDecisionsForPool(selection_pool_id);
+    ASSERT_EQ(decisions.size(), 1);
+    EXPECT_EQ(decisions[0].selection_decision_id, selection_decision_id);
+    EXPECT_EQ(decisions[0].decision_kind, simcore::db::BattleSelectionDecisionKind::Winner);
+    EXPECT_EQ(decisions[0].decision_reason.value_or(""), "best delta vi");
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {

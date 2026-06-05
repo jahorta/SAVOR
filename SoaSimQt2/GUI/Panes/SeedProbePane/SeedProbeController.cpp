@@ -4,25 +4,21 @@
 #include <QtCore/QSettings>
 
 #include "Core/Input/InputPlanFmt.h"
-#include "DB/DBCore/ObjectStore.h"
-#include "DB/SavestateRepo.h"
+#include "SimCoreDbRuntime.h"
 
 #include <algorithm>
 #include <cmath>
 #include <exception>
-#include <unordered_map>
+#include <string>
+#include <utility>
 
 using simcore::DescribeFrameCompact;
-using simcore::ElementFamily;
 using simcore::GCInputFrame;
-using simcore::db::DataService;
-using simcore::db::DeltaSeedRepo;
-using simcore::db::DeltaSeedRow;
-using simcore::db::ObjectStore;
-using simcore::db::SavestateRepo;
-using simcore::db::SeedProbeLite;
-using simcore::db::SeedProbeRepo;
-using simcore::db::SeedProbeRow;
+using simcore::db::UiReadSeedProbeRunListCursor;
+using simcore::db::UiReadSeedProbeRunListQuery;
+using simcore::db::UiSeedProbeDeltaPoint;
+using simcore::db::UiSeedProbeRunSummary;
+using simcore::db::UiSeedProbeUniqueValue;
 
 namespace {
 constexpr auto kSettingsGroup = "SeedProbePane";
@@ -44,7 +40,7 @@ QString describeException(const char* prefix)
 }
 
 template <typename AsyncCall>
-auto runDataServiceCall(AsyncCall&& asyncCall)
+auto runAsyncFetch(AsyncCall&& asyncCall)
 {
     return QtConcurrent::run([call = std::forward<AsyncCall>(asyncCall)]() mutable {
         return call();
@@ -56,9 +52,9 @@ QString hex32(quint32 value)
     return QStringLiteral("0x%1").arg(value, 8, 16, QChar('0'));
 }
 
-QString neutralSeedText(const SeedProbeRow& probe)
+QString neutralSeedText(const std::optional<std::int64_t>& neutralSeed)
 {
-    return probe.neutral_seed >= 0 ? hex32(static_cast<quint32>(probe.neutral_seed)) : QStringLiteral("n/a");
+    return neutralSeed.has_value() ? hex32(static_cast<quint32>(*neutralSeed)) : QStringLiteral("n/a");
 }
 
 int inferSpan(const std::vector<int>& coords)
@@ -79,7 +75,7 @@ int inferSpan(const std::vector<int>& coords)
     return best > 1 ? best : 2;
 }
 
-SeedProbeController::GridView buildGrid(const std::vector<DeltaSeedRow>& rows, ElementFamily family, int minNeg, int maxPos)
+SeedProbeController::GridView buildGrid(const std::vector<UiSeedProbeDeltaPoint>& rows, const char* family, int minNeg, int maxPos)
 {
     SeedProbeController::GridView view;
     std::vector<int> xs;
@@ -89,26 +85,15 @@ SeedProbeController::GridView buildGrid(const std::vector<DeltaSeedRow>& rows, E
     std::vector<RawPoint> raw;
     raw.reserve(rows.size());
 
-    for (const DeltaSeedRow& row : rows) {
-        const ElementFamily fam = static_cast<ElementFamily>(row.input.get_family());
-        if (fam != family) {
+    for (const UiSeedProbeDeltaPoint& row : rows) {
+        if (row.source_family != family) {
             continue;
         }
 
         RawPoint point{};
-        point.delta = row.seed_delta;
-        if (fam == ElementFamily::Main) {
-            point.x = row.input.main_x;
-            point.y = row.input.main_y;
-        } else if (fam == ElementFamily::CStick) {
-            point.x = row.input.c_x;
-            point.y = row.input.c_y;
-        } else if (fam == ElementFamily::Triggers) {
-            point.x = row.input.trig_l;
-            point.y = row.input.trig_r;
-        } else {
-            continue;
-        }
+        point.delta = static_cast<int>(row.seed_delta);
+        point.x = row.axis_x;
+        point.y = row.axis_y;
         raw.push_back(point);
         xs.push_back(point.x);
         ys.push_back(point.y);
@@ -129,64 +114,47 @@ SeedProbeController::GridView buildGrid(const std::vector<DeltaSeedRow>& rows, E
     return view;
 }
 
-QVector<int> buildLegend(const std::vector<DeltaSeedRow>& rows)
+QVector<int> buildLegend(const std::vector<UiSeedProbeDeltaPoint>& rows)
 {
     QVector<int> values;
     values.reserve(static_cast<int>(rows.size()));
-    for (const DeltaSeedRow& row : rows) {
-        values.push_back(row.seed_delta);
+    for (const UiSeedProbeDeltaPoint& row : rows) {
+        values.push_back(static_cast<int>(row.seed_delta));
     }
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
     return values;
 }
 
-QVector<SeedProbeController::UniqueSeedRow> buildUniqueRows(const SeedProbeRow& probe, const std::vector<DeltaSeedRow>& uniqueRows)
+QVector<SeedProbeController::UniqueSeedRow> buildUniqueRows(const UiSeedProbeRunSummary& summary, const std::vector<UiSeedProbeUniqueValue>& uniqueRows)
 {
     QVector<SeedProbeController::UniqueSeedRow> rows;
-    if (probe.neutral_seed < 0) {
+    if (!summary.neutral_seed_value.has_value()) {
         rows.push_back({ QStringLiteral("Unique results require a neutral seed."), QStringLiteral("n/a") });
         return rows;
     }
 
-    const quint32 neutral = static_cast<quint32>(probe.neutral_seed);
-    DeltaSeedRow neutralRow{};
-    neutralRow.input = GCInputFrame{};
-    std::unordered_map<quint32, const DeltaSeedRow*> latestBySeed;
-    for (const DeltaSeedRow& row : uniqueRows) {
-        const quint32 seed = static_cast<quint32>(static_cast<quint64>(neutral) + static_cast<qint64>(row.seed_delta));
-        auto it = latestBySeed.find(seed);
-        if (it == latestBySeed.end() || row.id > it->second->id) {
-            latestBySeed[seed] = &row;
-        }
-    }
-
-    std::vector<std::pair<quint32, const DeltaSeedRow*>> ordered;
-    ordered.reserve(latestBySeed.size() + 1);
-    for (const auto& item : latestBySeed) {
-        ordered.emplace_back(item.first, item.second);
-    }
-    ordered.emplace_back(neutral, &neutralRow);
-    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    rows.reserve(static_cast<int>(ordered.size()));
-    for (const auto& item : ordered) {
-        rows.push_back({ QString::fromStdString(DescribeFrameCompact(item.second->input)), hex32(item.first) });
+    rows.reserve(static_cast<int>(uniqueRows.size()) + 1);
+    rows.push_back({ QString::fromStdString(DescribeFrameCompact(GCInputFrame{})), hex32(static_cast<quint32>(*summary.neutral_seed_value)) });
+    for (const UiSeedProbeUniqueValue& row : uniqueRows) {
+        GCInputFrame frame{};
+        frame.main_x = static_cast<std::uint8_t>(row.main_x);
+        frame.main_y = static_cast<std::uint8_t>(row.main_y);
+        frame.c_x = static_cast<std::uint8_t>(row.cstick_x);
+        frame.c_y = static_cast<std::uint8_t>(row.cstick_y);
+        frame.trig_l = static_cast<std::uint8_t>(row.trigger_x);
+        frame.trig_r = static_cast<std::uint8_t>(row.trigger_y);
+        rows.push_back({ QString::fromStdString(DescribeFrameCompact(frame)), hex32(static_cast<quint32>(row.seed_value)) });
     }
     return rows;
 }
 
 QString resolveSavestateLabel(qint64 probeId, qint64 savestateId)
 {
-    const auto savestateResult = SavestateRepo::GetByProbeId(probeId);
-    if (savestateResult.ok && savestateResult.value.has_value()) {
-        const auto objectResult = ObjectStore::Get(savestateResult.value->object_ref_id);
-        if (objectResult.ok && !objectResult.value.filename.empty()) {
-            return QString::fromStdString(objectResult.value.filename);
-        }
-    }
+    (void)probeId;
     return QString::number(savestateId);
 }
+
 }
 
 SeedProbeController::SeedProbeController(QObject* parent)
@@ -225,7 +193,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
             } else {
                 state_.page = {};
                 state_.probeRows.clear();
-                state_.errorMessage = QStringLiteral("Seed probes failed: %1").arg(QString::fromStdString(result.error.message));
+                state_.errorMessage = QStringLiteral("Seed probes failed: %1").arg(result.errorMessage);
             }
         } catch (...) {
             pageInFlight_ = false;
@@ -259,7 +227,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
                     }
                 }
             } else {
-                state_.errorMessage = QStringLiteral("Seed probe refresh failed: %1").arg(QString::fromStdString(result.error.message));
+                state_.errorMessage = QStringLiteral("Seed probe refresh failed: %1").arg(result.errorMessage);
             }
         } catch (...) {
             runningRefreshInFlight_ = false;
@@ -275,10 +243,10 @@ SeedProbeController::SeedProbeController(QObject* parent)
             state_.loadingDetail = false;
             if (result.ok && detailRequestProbeId_ == state_.selectedProbeId) {
                 state_.lastRefresh = QDateTime::currentDateTime();
-                state_.neutralSeedText = neutralSeedText(result.value.probe);
-                state_.probeIdText = QString::number(result.value.probe.id);
-                state_.statusText = QString::fromStdString(result.value.probe.status);
-                state_.codecVersionText = QString::number(result.value.probe.codec_version);
+                state_.neutralSeedText = neutralSeedText(result.value.summary.neutral_seed_value);
+                state_.probeIdText = QString::number(result.value.summary.probe_run_id);
+                state_.statusText = QString::fromStdString(result.value.summary.status);
+                state_.codecVersionText = QString::number(result.value.summary.codec_version);
                 state_.savestateText = result.value.savestateText;
                 state_.mainGrid = result.value.mainGrid;
                 state_.cStickGrid = result.value.cStickGrid;
@@ -287,7 +255,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
                 state_.uniqueRows = result.value.uniqueRows;
                 state_.errorMessage.clear();
             } else if (!result.ok) {
-                state_.errorMessage = QStringLiteral("Seed probe detail failed: %1").arg(QString::fromStdString(result.error.message));
+                state_.errorMessage = QStringLiteral("Seed probe detail failed: %1").arg(result.errorMessage);
             }
         } catch (...) {
             detailInFlight_ = false;
@@ -492,35 +460,36 @@ void SeedProbeController::kickPageFetch()
     state_.loadingList = true;
     state_.errorMessage.clear();
 
-    PagedQuery<> query;
+    UiReadSeedProbeRunListQuery query;
     query.before = before_;
     query.after = after_;
     query.limit = fetchPageLimit_;
+    query.search = fetchSearch_.toStdString();
+    query.only_completed = fetchOnlyDone_;
 
-    pageWatcher_.setFuture(runDataServiceCall([search = fetchSearch_, onlyDone = fetchOnlyDone_, query]() -> ListBundleResult {
-        auto pageResult = DataService::FetchSeedProbesPage(query, search.toStdString(), onlyDone).get();
-        if (!pageResult.ok) {
-            return ListBundleResult::Err(pageResult.error);
+    pageWatcher_.setFuture(runAsyncFetch([query]() -> ListBundleResult {
+        auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
+        if (uiReadDb == nullptr) {
+            ListBundleResult result;
+            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            return result;
         }
 
         ListBundle bundle{};
-        bundle.page = pageResult.value;
+        bundle.page = uiReadDb->ListSeedProbeRuns(query);
         bundle.rows.reserve(static_cast<int>(bundle.page.items.size()));
-        for (const SeedProbeLite& item : bundle.page.items) {
+        for (const UiSeedProbeRunSummary& item : bundle.page.items) {
             ProbeSummary row{};
-            row.probeId = item.id;
+            row.probeId = item.probe_run_id;
             row.status = QString::fromStdString(item.status);
-            row.savestateId = item.savestate_id;
-            const auto savestateResult = SavestateRepo::Get(item.savestate_id);
-            if (savestateResult.ok && savestateResult.value.has_value()) {
-                const auto objectResult = ObjectStore::Get(savestateResult.value->object_ref_id);
-                if (objectResult.ok) {
-                    row.filename = QString::fromStdString(objectResult.value.filename);
-                }
-            }
+            row.savestateId = item.entry_savestate_id;
+            row.filename = resolveSavestateLabel(row.probeId, row.savestateId);
             bundle.rows.push_back(row);
         }
-        return ListBundleResult::Ok(std::move(bundle));
+        ListBundleResult result;
+        result.ok = true;
+        result.value = std::move(bundle);
+        return result;
     }));
     emitStateChanged();
 }
@@ -538,36 +507,41 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
     detailRequestProbeId_ = probeId;
     state_.loadingDetail = true;
 
-    detailWatcher_.setFuture(runDataServiceCall([probeId]() -> DetailBundleResult {
-        const auto probeResult = SeedProbeRepo::GetAsync(probeId).get();
-        if (!probeResult.ok) {
-            return DetailBundleResult::Err(probeResult.error);
+    detailWatcher_.setFuture(runAsyncFetch([probeId]() -> DetailBundleResult {
+        auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
+        if (uiReadDb == nullptr) {
+            DetailBundleResult result;
+            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            return result;
         }
-        const auto gridResult = DeltaSeedRepo::ListGridForProbeAsync(probeId).get();
-        if (!gridResult.ok) {
-            return DetailBundleResult::Err(gridResult.error);
+        const auto summary = uiReadDb->GetSeedProbeRunSummary(probeId);
+        if (!summary.has_value()) {
+            DetailBundleResult result;
+            result.errorMessage = QStringLiteral("Seed probe run %1 was not found in UIRead").arg(probeId);
+            return result;
         }
-        const auto uniqueResult = DeltaSeedRepo::ListUniqueForProbeAsync(probeId).get();
-        if (!uniqueResult.ok) {
-            return DetailBundleResult::Err(uniqueResult.error);
-        }
+        const auto gridRows = uiReadDb->ListSeedProbeDeltaPoints(probeId);
+        const auto uniqueRows = uiReadDb->ListSeedProbeUniqueValues(probeId);
 
         int minNeg = 0;
         int maxPos = 0;
-        for (const DeltaSeedRow& row : gridResult.value) {
-            minNeg = std::min(minNeg, row.seed_delta);
-            maxPos = std::max(maxPos, row.seed_delta);
+        for (const UiSeedProbeDeltaPoint& row : gridRows) {
+            minNeg = std::min(minNeg, static_cast<int>(row.seed_delta));
+            maxPos = std::max(maxPos, static_cast<int>(row.seed_delta));
         }
 
         DetailBundle bundle{};
-        bundle.probe = probeResult.value;
-        bundle.savestateText = resolveSavestateLabel(probeId, probeResult.value.savestate_id);
-        bundle.mainGrid = buildGrid(gridResult.value, ElementFamily::Main, minNeg, maxPos);
-        bundle.cStickGrid = buildGrid(gridResult.value, ElementFamily::CStick, minNeg, maxPos);
-        bundle.triggerGrid = buildGrid(gridResult.value, ElementFamily::Triggers, minNeg, maxPos);
-        bundle.legendDeltas = buildLegend(gridResult.value);
-        bundle.uniqueRows = buildUniqueRows(probeResult.value, uniqueResult.value);
-        return DetailBundleResult::Ok(std::move(bundle));
+        bundle.summary = *summary;
+        bundle.savestateText = resolveSavestateLabel(probeId, summary->entry_savestate_id);
+        bundle.mainGrid = buildGrid(gridRows, "MAIN", minNeg, maxPos);
+        bundle.cStickGrid = buildGrid(gridRows, "CSTICK", minNeg, maxPos);
+        bundle.triggerGrid = buildGrid(gridRows, "TRIGGER", minNeg, maxPos);
+        bundle.legendDeltas = buildLegend(gridRows);
+        bundle.uniqueRows = buildUniqueRows(*summary, uniqueRows);
+        DetailBundleResult result;
+        result.ok = true;
+        result.value = std::move(bundle);
+        return result;
     }));
     emitStateChanged();
 }
@@ -585,17 +559,28 @@ void SeedProbeController::kickRunningRefresh(const QVector<qint64>& probeIds)
     }
 
     runningRefreshInFlight_ = true;
-    runningRefreshWatcher_.setFuture(runDataServiceCall([probeIds]() -> RunningProbeUpdateResult {
+    runningRefreshWatcher_.setFuture(runAsyncFetch([probeIds]() -> RunningProbeUpdateResult {
+        auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
+        if (uiReadDb == nullptr) {
+            RunningProbeUpdateResult result;
+            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            return result;
+        }
         QVector<RunningProbeUpdate> updates;
         updates.reserve(probeIds.size());
         for (qint64 probeId : probeIds) {
-            const auto probeResult = SeedProbeRepo::GetAsync(probeId).get();
-            if (!probeResult.ok) {
-                return RunningProbeUpdateResult::Err(probeResult.error);
+            const auto summary = uiReadDb->GetSeedProbeRunSummary(probeId);
+            if (!summary.has_value()) {
+                RunningProbeUpdateResult result;
+                result.errorMessage = QStringLiteral("Seed probe run %1 was not found in UIRead").arg(probeId);
+                return result;
             }
-            updates.push_back({ probeId, QString::fromStdString(probeResult.value.status) });
+            updates.push_back({ probeId, QString::fromStdString(summary->status) });
         }
-        return RunningProbeUpdateResult::Ok(std::move(updates));
+        RunningProbeUpdateResult result;
+        result.ok = true;
+        result.value = std::move(updates);
+        return result;
     }));
 }
 

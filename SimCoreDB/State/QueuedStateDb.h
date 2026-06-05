@@ -44,6 +44,11 @@ public:
         const CreateTasVariantCommand& command,
         std::int64_t* tas_variant_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<TasVariantRecord> GetTasVariant(
+        std::int64_t tas_variant_id) const override;
+    bool UpdateTasVariantProducedSavestate(
+        const UpdateTasVariantProducedSavestateCommand& command,
+        std::string* error_out = nullptr) override;
     std::optional<std::string> MaterializeArtifactToDirectory(
         std::int64_t artifact_id,
         std::string_view output_directory,

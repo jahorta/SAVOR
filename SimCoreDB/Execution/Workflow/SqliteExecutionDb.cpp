@@ -307,7 +307,7 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     Statement st;
     if (sqlite3_prepare_v2(db_,
         "SELECT job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, "
-        "savestate_id, fingerprint, state "
+        "savestate_id, fingerprint, state, priority, attempts, max_attempts, queued_at_utc, input_ini "
         "FROM exec_job WHERE job_id=?1;",
         -1,
         &st.st,
@@ -333,6 +333,12 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     }
     row.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 7));
     row.state = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 8));
+    row.priority = sqlite3_column_int(st.st, 9);
+    row.attempts = sqlite3_column_int(st.st, 10);
+    row.max_attempts = sqlite3_column_int(st.st, 11);
+    row.queued_at_utc = sqlite3_column_int64(st.st, 12);
+    const auto* input_ini = sqlite3_column_text(st.st, 13);
+    row.input_ini = input_ini == nullptr ? "" : reinterpret_cast<const char*>(input_ini);
     return row;
 }
 

@@ -21,9 +21,11 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
+#include "UIRead/IUiReadDb.h"
 
 #include "Cli.h"
 #include "DbSetup.h"
+#include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
 
 #ifdef _WIN32
@@ -121,7 +123,7 @@ DurableLine ClassifyDurableLine(std::string line) {
 
     const auto& tag = durable.tag;
     const auto text = std::string_view(durable.text);
-    if (tag == "seedprobe-result") {
+    if (tag == "seedprobe-result" || tag == "seedprobe-uiread") {
         durable.category = DurableLineCategory::Result;
     } else if (tag == "seedprobe-error" || tag == "seedprobe-step-failed" || tag == "seedprobe-result-map-failed") {
         durable.category = DurableLineCategory::Failure;
@@ -498,6 +500,9 @@ std::vector<std::string> BuildProgressLines(
     const std::vector<WorkerSnapshot>& worker_snapshot,
     const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
     std::vector<std::string> lines;
+    lines.push_back("");
+    lines.push_back("Coordinator Telemetry");
+    lines.push_back("");
     lines.push_back(FormatCoordinatorTelemetryLine(telemetry, worker_snapshot.size()));
     if (CountActiveWorkers(worker_snapshot) > 1) {
         lines.push_back(FormatWorkerRollupLine(worker_snapshot));
@@ -512,6 +517,116 @@ std::vector<std::string> BuildProgressLines(
     const auto job_lines = FormatActiveJobSetLines(execution_db, *graph);
     lines.insert(lines.end(), job_lines.begin(), job_lines.end());
     return lines;
+}
+
+bool RefreshSeedProbeUiReadProjection(
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IUiReadDb* ui_read_db,
+    std::int64_t probe_run_id,
+    std::string* error_out) {
+    if (analysis_db == nullptr || ui_read_db == nullptr || probe_run_id <= 0) {
+        if (error_out) *error_out = "analysis/ui read db unavailable";
+        return false;
+    }
+
+    const auto run = analysis_db->GetSeedProbeRun(probe_run_id);
+    if (!run.has_value()) {
+        if (error_out) *error_out = "seed probe run not found";
+        return false;
+    }
+
+    const auto neutral = analysis_db->LookupSeedProbeNeutralSeed(probe_run_id);
+    const auto grid_rows = analysis_db->ListSeedProbeGridSeeds(probe_run_id);
+    const auto unique_rows = analysis_db->ListSeedProbeUniqueSeeds(probe_run_id);
+
+    simcore::db::UiSeedProbeRunSummary summary{};
+    summary.probe_run_id = run->probe_run_id;
+    summary.probe_set_id = run->probe_set_id;
+    summary.entry_savestate_id = run->entry_savestate_id;
+    summary.seed_probe_spec_id = run->seed_probe_spec_id;
+    summary.codec_version = run->codec_version;
+    summary.status = run->status;
+    summary.neutral_seed_value = neutral;
+    summary.grid_count = static_cast<int>(grid_rows.size());
+    summary.unique_count = static_cast<int>(unique_rows.size());
+    summary.requested_at_utc = run->requested_at_utc.time_since_epoch().count();
+    if (run->completed_at_utc.has_value()) {
+        summary.completed_at_utc = run->completed_at_utc->time_since_epoch().count();
+    }
+    if (!ui_read_db->UpsertSeedProbeRunSummary(summary, error_out)) {
+        return false;
+    }
+
+    std::vector<simcore::db::UiSeedProbeDeltaPoint> points;
+    points.reserve(grid_rows.size());
+    for (const auto& row : grid_rows) {
+        points.push_back(simcore::db::UiSeedProbeDeltaPoint{
+            .delta_point_id = row.grid_seed_id,
+            .probe_run_id = probe_run_id,
+            .source_family = row.source_family,
+            .axis_x = row.axis_x,
+            .axis_y = row.axis_y,
+            .seed_value = row.seed_value,
+            .seed_delta = row.seed_delta,
+            });
+    }
+    if (!ui_read_db->ReplaceSeedProbeDeltaPoints(probe_run_id, points, error_out)) {
+        return false;
+    }
+
+    std::vector<simcore::db::UiSeedProbeUniqueValue> values;
+    values.reserve(unique_rows.size());
+    for (const auto& row : unique_rows) {
+        values.push_back(simcore::db::UiSeedProbeUniqueValue{
+            .unique_value_id = row.unique_seed_id,
+            .probe_run_id = probe_run_id,
+            .seed_value = row.seed_value,
+            .seed_delta = row.seed_delta,
+            .main_x = row.main_x,
+            .main_y = row.main_y,
+            .cstick_x = row.cstick_x,
+            .cstick_y = row.cstick_y,
+            .trigger_x = row.trigger_x,
+            .trigger_y = row.trigger_y,
+            });
+    }
+    return ui_read_db->ReplaceSeedProbeUniqueValues(probe_run_id, values, error_out);
+}
+
+std::optional<std::string> BuildSeedProbeUiReadLine(
+    simcore::db::IUiReadDb* ui_read_db,
+    std::int64_t probe_run_id,
+    const std::string& previous_line) {
+    if (ui_read_db == nullptr || probe_run_id <= 0) {
+        return std::nullopt;
+    }
+
+    const auto summary = ui_read_db->GetSeedProbeRunSummary(probe_run_id);
+    if (!summary.has_value()) {
+        return std::nullopt;
+    }
+    const auto deltas = ui_read_db->ListSeedProbeDeltaPoints(probe_run_id);
+    const auto uniques = ui_read_db->ListSeedProbeUniqueValues(probe_run_id);
+
+    std::ostringstream oss;
+    oss << "[seedprobe-uiread] probe_run=" << summary->probe_run_id
+        << " status=" << summary->status
+        << " neutral=";
+    if (summary->neutral_seed_value.has_value()) {
+        oss << *summary->neutral_seed_value;
+    } else {
+        oss << "null";
+    }
+    oss << " grid=" << summary->grid_count
+        << " unique=" << summary->unique_count
+        << " delta_rows=" << deltas.size()
+        << " unique_rows=" << uniques.size();
+
+    auto line = oss.str();
+    if (line == previous_line) {
+        return std::nullopt;
+    }
+    return line;
 }
 
 } // namespace
@@ -556,12 +671,14 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     std::int64_t workflow_instance_id = 0;
+    std::int64_t probe_run_id = 0;
     if (!SeedExecutionWorkflow(
             db_service->AnalysisDb(),
             execution_db,
             savestate_id,
             seed_probe_spec_id,
             &workflow_instance_id,
+            &probe_run_id,
             &err)) {
         if (error_out) *error_out = "failed seeding execution workflow rows: " + err;
         return false;
@@ -591,11 +708,18 @@ bool RunSeedProbeRealWorkerSmoke(
         CoordinatorIntegrationConfig{},
         &program_kind_registry);
 
+    DurableLogFile durable_log;
+    if (!durable_log.Open(options, options.scenario, error_out)) {
+        return false;
+    }
+    std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
+
     std::mutex event_lines_mtx;
     std::deque<DurableLine> pending_event_lines;
     std::mutex seen_result_mtx;
     std::unordered_map<std::uint64_t, simcore::PRResult> seen_results_by_job_id;
     auto enqueue_event_line = [&](std::string line) {
+        durable_log.AppendLine(line);
         auto durable = ClassifyDurableLine(std::move(line));
         if (!ShouldDisplayDurableLine(durable, options.durable_line_mask)) {
             return;
@@ -617,6 +741,7 @@ bool RunSeedProbeRealWorkerSmoke(
             return;
         }
         for (auto& line : raw_lines) {
+            durable_log.AppendLine(line);
             auto durable = ClassifyDurableLine(std::move(line));
             if (ShouldDisplayDurableLine(durable, options.durable_line_mask)) {
                 dest->push_back(std::move(durable));
@@ -660,6 +785,7 @@ bool RunSeedProbeRealWorkerSmoke(
     bool timed_out = false;
     std::unordered_set<std::int64_t> emitted_failed_step_ids;
     std::unordered_set<std::int64_t> emitted_materialized_step_ids;
+    std::string latest_ui_read_line;
     std::vector<std::string> latest_lines;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(timeout_ms)) {
         (void)ui_read_db->ListProjectionSubscriptions("Execution", "exec_outbox_message");
@@ -678,6 +804,15 @@ bool RunSeedProbeRealWorkerSmoke(
             append_event_lines(&event_lines, std::move(materialized_step_lines));
             auto failed_step_lines = BuildNewFailedStepEventLines(*graph, &emitted_failed_step_ids);
             append_event_lines(&event_lines, std::move(failed_step_lines));
+        }
+        if (RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
+            if (auto ui_line = BuildSeedProbeUiReadLine(ui_read_db, probe_run_id, latest_ui_read_line); ui_line.has_value()) {
+                latest_ui_read_line = *ui_line;
+                append_event_lines(&event_lines, { *ui_line });
+            }
+        } else if (!err.empty()) {
+            append_event_lines(&event_lines, { "[seedprobe-error] uiread_refresh_failed error=" + err });
+            err.clear();
         }
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
@@ -741,6 +876,12 @@ bool RunSeedProbeRealWorkerSmoke(
 
     const auto final_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     const auto final_telemetry = coordinator.SnapshotTelemetry();
+    if (RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
+        if (auto ui_line = BuildSeedProbeUiReadLine(ui_read_db, probe_run_id, std::string{}); ui_line.has_value()) {
+            durable_log.AppendLine(*ui_line);
+            std::cout << *ui_line << '\n';
+        }
+    }
     if (final_graph.has_value()) {
         latest_lines = BuildProgressLines(execution_db, final_telemetry, coordinator.SnapshotWorkers(), final_graph);
     }

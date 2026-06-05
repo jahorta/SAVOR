@@ -26,6 +26,8 @@ struct WorkflowDefinition {
 };
 
 WorkflowDefinition BuildSeedProbeChainDefinition();
+WorkflowDefinition BuildTasMovieChainDefinition();
+WorkflowDefinition BuildTasMovieSeedProbeChainDefinition();
 bool ValidateWorkflowDefinition(const WorkflowDefinition& definition, std::string* error_out);
 
 class WorkflowDefinitionRegistry {
@@ -33,6 +35,7 @@ public:
     bool RegisterDefinition(WorkflowDefinition definition, std::string* error_out);
     const WorkflowDefinition* Find(std::string_view workflow_kind) const;
     bool RegisterSeedProbeDefaults(std::string* error_out);
+    bool RegisterTasMovieDefaults(std::string* error_out);
 
 private:
     std::unordered_map<std::string, WorkflowDefinition> definitions_;

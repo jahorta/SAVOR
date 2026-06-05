@@ -89,7 +89,6 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
     case JobLifecycleEventKind::JobLeaseRenewed:
         break;
     case JobLifecycleEventKind::JobProgressed:
-        state = "RUNNING";
         break;
     case JobLifecycleEventKind::JobCompleted:
         if (!command.terminal_state.has_value() || command.terminal_state->empty()) {
@@ -208,6 +207,39 @@ bool SqliteJobEventCommandService::AppendLifecycleEvent(const JobLifecycleEventC
         return false;
     }
 
+    std::optional<std::int64_t> job_event_id;
+    if (command.kind != JobLifecycleEventKind::JobSetCreated) {
+        Statement job_event;
+        if (!Prepare(db,
+            "INSERT INTO exec_job_event(job_id,event_kind,event_ts_utc,message,artifact_id) "
+            "VALUES(?1,?2,?3,?4,?5);",
+            &job_event,
+            error_out)) {
+            rollback();
+            return false;
+        }
+
+        const auto ts = NowUtc(db);
+        sqlite3_bind_int64(job_event.st, 1, command.job_id);
+        sqlite3_bind_text(job_event.st, 2, ToEventType(command.kind), -1, SQLITE_STATIC);
+        sqlite3_bind_int64(job_event.st, 3, ts);
+        if (command.message.has_value()) {
+            sqlite3_bind_text(job_event.st, 4, command.message->c_str(), -1, SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_null(job_event.st, 4);
+        }
+        if (command.artifact_id.has_value()) {
+            sqlite3_bind_int64(job_event.st, 5, *command.artifact_id);
+        } else {
+            sqlite3_bind_null(job_event.st, 5);
+        }
+        if (!StepDone(db, job_event.st, error_out)) {
+            rollback();
+            return false;
+        }
+        job_event_id = sqlite3_last_insert_rowid(db);
+    }
+
     std::int64_t payload_ref_id = job_set_id;
     const char* payload_ref_kind = "job_set";
     const auto ts = NowUtc(db);
@@ -219,6 +251,9 @@ bool SqliteJobEventCommandService::AppendLifecycleEvent(const JobLifecycleEventC
 
     std::ostringstream event_id;
     event_id << "execution-" << ToEventType(command.kind) << "-" << payload_ref_id;
+    if (job_event_id.has_value()) {
+        event_id << "-" << *job_event_id;
+    }
     const auto event_id_value = event_id.str();
     const auto aggregate_kind = command.kind == JobLifecycleEventKind::JobSetCreated ? "job_set" : "job";
     const auto aggregate_id = std::to_string(command.kind == JobLifecycleEventKind::JobSetCreated ? job_set_id : command.job_id);

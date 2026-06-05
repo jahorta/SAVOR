@@ -23,10 +23,22 @@
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp">
       <Filter>Scenarios</Filter>
     </ClCompile>
+    <ClCompile Include="TasMovieRealWorkerScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleSingleTurnScenario.cpp">
+      <Filter>Scenarios</Filter>
+    </ClCompile>
     <ClCompile Include="DbSetup.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
     <ClCompile Include="Cli.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="CoordinatorProgress.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="DurableLogFile.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
     <ClCompile Include="MultiLineProgressRenderer.cpp">
@@ -40,10 +52,22 @@
     <ClInclude Include="Cli.h">
       <Filter>Helpers</Filter>
     </ClInclude>
+    <ClInclude Include="CoordinatorProgress.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
     <ClInclude Include="DbSetup.h">
       <Filter>Helpers</Filter>
     </ClInclude>
+    <ClInclude Include="DurableLogFile.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
     <ClInclude Include="SeedProbeRealWorkerScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="TasMovieRealWorkerScenario.h">
+      <Filter>Scenarios</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleSingleTurnScenario.h">
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">

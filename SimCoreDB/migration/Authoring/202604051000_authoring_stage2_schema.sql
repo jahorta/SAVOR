@@ -96,10 +96,49 @@ CREATE TABLE IF NOT EXISTS au_battle_plan_action (
     macro INTEGER NOT NULL,
     target_kind INTEGER NOT NULL,
     target_slot INTEGER NULL,
+    target_mask_bits INTEGER NULL,
+    target_single_slot INTEGER NULL,
+    target_same_as_actor_slot INTEGER NULL,
+    target_expr_ini TEXT NULL,
     item_id INTEGER NULL,
     ordinal INTEGER NOT NULL,
     FOREIGN KEY(plan_turn_id) REFERENCES au_battle_plan_turn(plan_turn_id)
 );
+
+CREATE TABLE IF NOT EXISTS au_turn_action_preset (
+    action_preset_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    macro INTEGER NOT NULL,
+    target_kind INTEGER NOT NULL,
+    item_id INTEGER NULL,
+    target_mask_bits INTEGER NULL,
+    target_single_slot INTEGER NULL,
+    target_same_as_actor_slot INTEGER NULL,
+    target_expr_ini TEXT NULL,
+    flags INTEGER NOT NULL DEFAULT 0,
+    created_at_utc INTEGER NOT NULL,
+    updated_at_utc INTEGER NULL,
+    CONSTRAINT uq_au_turn_action_preset_name UNIQUE (name)
+);
+
+CREATE TABLE IF NOT EXISTS au_address_program (
+    address_program_id INTEGER PRIMARY KEY,
+    program_version INTEGER NOT NULL,
+    prog_bytes BLOB NOT NULL,
+    derived_buffer_version INTEGER NULL,
+    derived_buffer_schema_hash TEXT NULL,
+    soa_structs_hash TEXT NULL,
+    description TEXT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_au_address_program_nk
+    ON au_address_program(
+        program_version,
+        prog_bytes,
+        COALESCE(derived_buffer_version, 0),
+        COALESCE(derived_buffer_schema_hash, ''),
+        COALESCE(soa_structs_hash, '')
+    );
 
 CREATE TABLE IF NOT EXISTS au_predicate_spec (
     predicate_spec_id INTEGER PRIMARY KEY,
@@ -112,8 +151,12 @@ CREATE TABLE IF NOT EXISTS au_predicate_spec (
     cmp_op TEXT NOT NULL,
     flag_mask INTEGER NULL,
     value_mask INTEGER NULL,
+    lhs_address_program_id INTEGER NULL,
+    rhs_address_program_id INTEGER NULL,
     abort_on_fail INTEGER NOT NULL CHECK(abort_on_fail IN (0, 1)),
     created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(lhs_address_program_id) REFERENCES au_address_program(address_program_id),
+    FOREIGN KEY(rhs_address_program_id) REFERENCES au_address_program(address_program_id),
     CONSTRAINT uq_au_predicate_spec_name UNIQUE (name)
 );
 

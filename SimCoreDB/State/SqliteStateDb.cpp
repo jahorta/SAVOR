@@ -620,6 +620,117 @@ bool SqliteStateDb::CreateTasVariant(
     return true;
 }
 
+std::optional<TasVariantRecord> SqliteStateDb::GetTasVariant(
+    std::int64_t tas_variant_id) const {
+    if (db_ == nullptr || tas_variant_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT tas_variant_id,name,base_dtm_artifact_id,dtmini_artifact_id,mutation_mode,rtc_value,"
+            "bookmark_name,insert_frame_count,parent_tas_variant_id,produced_savestate_id,created_at_utc "
+            "FROM state_tas_movie_variant WHERE tas_variant_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, tas_variant_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    TasVariantRecord row{};
+    row.tas_variant_id = sqlite3_column_int64(st.st, 0);
+    const auto* name = sqlite3_column_text(st.st, 1);
+    row.name = name == nullptr ? "" : reinterpret_cast<const char*>(name);
+    row.base_dtm_artifact_id = sqlite3_column_int64(st.st, 2);
+    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
+        row.dtmini_artifact_id = sqlite3_column_int64(st.st, 3);
+    }
+    const auto* mode = sqlite3_column_text(st.st, 4);
+    row.mutation_mode = mode == nullptr ? "" : reinterpret_cast<const char*>(mode);
+    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
+        row.rtc_value = sqlite3_column_int64(st.st, 5);
+    }
+    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
+        row.bookmark_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+    }
+    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
+        row.insert_frame_count = sqlite3_column_int64(st.st, 7);
+    }
+    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
+        row.parent_tas_variant_id = sqlite3_column_int64(st.st, 8);
+    }
+    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
+        row.produced_savestate_id = sqlite3_column_int64(st.st, 9);
+    }
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
+    return row;
+}
+
+bool SqliteStateDb::UpdateTasVariantProducedSavestate(
+    const UpdateTasVariantProducedSavestateCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.tas_variant_id <= 0 || command.produced_savestate_id <= 0 || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    Statement update_variant;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE state_tas_movie_variant SET produced_savestate_id=?2 WHERE tas_variant_id=?1;",
+            -1,
+            &update_variant.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update_variant.st, 1, command.tas_variant_id);
+    sqlite3_bind_int64(update_variant.st, 2, command.produced_savestate_id);
+    if (sqlite3_step(update_variant.st) != SQLITE_DONE || sqlite3_changes(db_) <= 0) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (!InsertStateOutboxEvent(
+            db_,
+            command.event_id,
+            "State.TasVariantProducedSavestateSet.v1",
+            "tas_variant",
+            std::to_string(command.tas_variant_id),
+            command.correlation_id,
+            command.causation_id,
+            command.updated_at_utc.time_since_epoch().count(),
+            "tas_variant",
+            command.tas_variant_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
+}
+
 std::optional<std::string> SqliteStateDb::MaterializeArtifactToDirectory(
     std::int64_t artifact_id,
     std::string_view output_directory,

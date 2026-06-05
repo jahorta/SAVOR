@@ -1,9 +1,11 @@
 #include "GUI/MainWindow.h"
-#include "DB/DBCore/DbService.h"
+#include "SimCoreDbRuntime.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
 #include <QtCore/QSettings>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMessageBox>
 
 namespace {
 constexpr auto kSettingsGroup = "Settings";
@@ -16,11 +18,16 @@ void initializeDatabase()
     const QString dbRoot = settings.value(kDbRootKey).toString().trimmed();
     settings.endGroup();
 
-    if (!dbRoot.isEmpty()) {
-        simcore::db::DBService::instance().set_database_root(dbRoot.toStdString());
+    const QString resolvedRoot = dbRoot.isEmpty()
+        ? QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("simcoredb"))
+        : dbRoot;
+    std::string error;
+    if (!soasimqt2::SimCoreDbRuntime::instance().start(resolvedRoot.toStdString(), &error)) {
+        QMessageBox::critical(
+            nullptr,
+            QStringLiteral("SimCoreDB startup failed"),
+            QString::fromStdString(error));
     }
-
-    simcore::db::DBService::instance().start();
 }
 }
 
@@ -34,7 +41,7 @@ int main(int argc, char *argv[])
 
     initializeDatabase();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
-        simcore::db::DBService::instance().stop();
+        soasimqt2::SimCoreDbRuntime::instance().stop();
     });
 
     MainWindow window;

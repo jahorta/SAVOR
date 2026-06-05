@@ -193,7 +193,7 @@ PresetEditorDialog::PresetEditorDialog(const soa::battle::ctx::BattleContext* co
     showAllKindsCheck_ = new QCheckBox(QStringLiteral("Show all enemy kinds"), targetBox);
     enemyKindCombo_ = new QComboBox(targetBox);
     quantifierCombo_ = new QComboBox(targetBox);
-    quantifierCombo_->addItems(QStringList{ QStringLiteral("All"), QStringLiteral("Any"), QStringLiteral("First") });
+    quantifierCombo_->addItems(QStringList{ QStringLiteral("Any"), QStringLiteral("First") });
     targetLayout->addWidget(showAllKindsCheck_);
     targetLayout->addWidget(new QLabel(QStringLiteral("Enemy kind"), targetBox));
     targetLayout->addWidget(enemyKindCombo_);

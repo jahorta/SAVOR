@@ -158,6 +158,7 @@ private:
     void PollReadyStepsFromDb();
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
     std::string ReadyDedupKey(std::int64_t workflow_step_id) const;
+    bool CompleteNoWorkWorkflowStep(const WorkflowReadyStep& step) const;
     std::optional<ScheduledJobSet> MaterializeWorkflowStepInternal(const WorkflowReadyStep& step);
     void HandlePayloadMaterializationFailures();
     bool EnsureWorkerProgramForJob(size_t worker_idx, const ClaimedJobRecord& claimed_job);

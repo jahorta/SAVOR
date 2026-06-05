@@ -32,7 +32,34 @@ types::UtcTimePoint FromEpochMillis(std::int64_t value) {
     return types::UtcTimePoint{ std::chrono::milliseconds(value) };
 }
 
+std::optional<std::int64_t> ColumnInt64Optional(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(st, index);
+}
 
+std::optional<int> ColumnIntOptional(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int(st, index);
+}
+
+std::string ColumnText(sqlite3_stmt* st, int index) {
+    const auto* text = sqlite3_column_text(st, index);
+    return text ? reinterpret_cast<const char*>(text) : "";
+}
+
+std::vector<std::uint8_t> ColumnBlob(sqlite3_stmt* st, int index) {
+    const auto* blob = sqlite3_column_blob(st, index);
+    const int size = sqlite3_column_bytes(st, index);
+    if (blob == nullptr || size <= 0) {
+        return {};
+    }
+    const auto* first = static_cast<const std::uint8_t*>(blob);
+    return std::vector<std::uint8_t>(first, first + size);
+}
 
 
 
@@ -587,6 +614,39 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
     return true;
 }
 
+std::optional<BattleRunSpecSnapshot> SqliteAuthoringDb::GetBattleRunSpec(
+    std::int64_t battle_run_spec_id) const {
+    if (db_ == nullptr || battle_run_spec_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT battle_run_spec_id,name,priority,run_ms,vi_stall_ms,progress_enable,use_single_turn_runner,"
+        "auto_wave_trigger_enable,min_fake_attacks,max_fake_attacks "
+        "FROM au_battle_run_spec WHERE battle_run_spec_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, battle_run_spec_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    BattleRunSpecSnapshot out{};
+    out.battle_run_spec_id = sqlite3_column_int64(st.st, 0);
+    out.name = ColumnText(st.st, 1);
+    out.priority = sqlite3_column_int(st.st, 2);
+    out.run_ms = sqlite3_column_int64(st.st, 3);
+    out.vi_stall_ms = sqlite3_column_int64(st.st, 4);
+    out.progress_enable = sqlite3_column_int(st.st, 5) != 0;
+    out.use_single_turn_runner = sqlite3_column_int(st.st, 6) != 0;
+    out.auto_wave_trigger_enable = sqlite3_column_int(st.st, 7) != 0;
+    out.min_fake_attacks = sqlite3_column_int(st.st, 8);
+    out.max_fake_attacks = sqlite3_column_int(st.st, 9);
+    return out;
+}
+
 bool SqliteAuthoringDb::SavePlan(
     const SavePlanCommand& command,
     std::int64_t* plan_id_out,
@@ -663,6 +723,361 @@ bool SqliteAuthoringDb::SavePlan(
     return true;
 }
 
+bool SqliteAuthoringDb::SaveBattlePlanTurn(
+    const SaveBattlePlanTurnCommand& command,
+    std::int64_t* plan_turn_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.plan_id <= 0 || command.turn_index < 0 || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    Statement upsert_turn;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_battle_plan_turn(plan_id,turn_index) VALUES(?1,?2) "
+            "ON CONFLICT(plan_id, turn_index) DO NOTHING;",
+            -1,
+            &upsert_turn.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(upsert_turn.st, 1, command.plan_id);
+    sqlite3_bind_int(upsert_turn.st, 2, command.turn_index);
+    if (sqlite3_step(upsert_turn.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    Statement read_turn;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT plan_turn_id FROM au_battle_plan_turn WHERE plan_id=?1 AND turn_index=?2;",
+            -1,
+            &read_turn.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read_turn.st, 1, command.plan_id);
+    sqlite3_bind_int(read_turn.st, 2, command.turn_index);
+    if (sqlite3_step(read_turn.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "battle plan turn not found after upsert";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto plan_turn_id = sqlite3_column_int64(read_turn.st, 0);
+
+    if (command.replace_existing_actions) {
+        Statement del;
+        if (sqlite3_prepare_v2(
+                db_,
+                "DELETE FROM au_battle_plan_action WHERE plan_turn_id=?1;",
+                -1,
+                &del.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(del.st, 1, plan_turn_id);
+        if (sqlite3_step(del.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+
+    for (const auto& action : command.actions) {
+        Statement insert_action;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_battle_plan_action("
+                "plan_turn_id,actor_slot,macro,target_kind,target_slot,target_mask_bits,target_single_slot,target_same_as_actor_slot,target_expr_ini,item_id,ordinal) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);",
+                -1,
+                &insert_action.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(insert_action.st, 1, plan_turn_id);
+        sqlite3_bind_int(insert_action.st, 2, action.actor_slot);
+        sqlite3_bind_int(insert_action.st, 3, static_cast<int>(action.macro));
+        sqlite3_bind_int(insert_action.st, 4, static_cast<int>(action.target_kind));
+        if (action.target_slot.has_value()) sqlite3_bind_int(insert_action.st, 5, *action.target_slot);
+        else sqlite3_bind_null(insert_action.st, 5);
+        if (action.target_mask_bits.has_value()) sqlite3_bind_int(insert_action.st, 6, *action.target_mask_bits);
+        else sqlite3_bind_null(insert_action.st, 6);
+        if (action.target_single_slot.has_value()) sqlite3_bind_int(insert_action.st, 7, *action.target_single_slot);
+        else sqlite3_bind_null(insert_action.st, 7);
+        if (action.target_same_as_actor_slot.has_value()) sqlite3_bind_int(insert_action.st, 8, *action.target_same_as_actor_slot);
+        else sqlite3_bind_null(insert_action.st, 8);
+        if (action.target_expr_ini.has_value()) sqlite3_bind_text(insert_action.st, 9, action.target_expr_ini->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(insert_action.st, 9);
+        if (action.item_id.has_value()) sqlite3_bind_int(insert_action.st, 10, *action.item_id);
+        else sqlite3_bind_null(insert_action.st, 10);
+        sqlite3_bind_int(insert_action.st, 11, action.ordinal);
+        if (sqlite3_step(insert_action.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+
+    if (!InsertAuthoringOutboxEvent(
+            db_,
+            command.event_id,
+            "Authoring.PlanSaved.v1",
+            std::to_string(command.plan_id),
+            command.correlation_id,
+            command.causation_id,
+            ToEpochMillis(command.created_at_utc),
+            command.plan_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (plan_turn_id_out) {
+        *plan_turn_id_out = plan_turn_id;
+    }
+    return true;
+}
+
+std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
+    std::int64_t plan_id) const {
+    if (db_ == nullptr || plan_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement plan_st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT plan_id,name,fingerprint,num_turns FROM au_battle_plan WHERE plan_id=?1;",
+            -1,
+            &plan_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(plan_st.st, 1, plan_id);
+    if (sqlite3_step(plan_st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    BattlePlanSnapshot out{};
+    out.plan_id = sqlite3_column_int64(plan_st.st, 0);
+    out.name = ColumnText(plan_st.st, 1);
+    out.fingerprint = ColumnText(plan_st.st, 2);
+    out.num_turns = sqlite3_column_int(plan_st.st, 3);
+
+    Statement turn_st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT plan_turn_id, plan_id, turn_index FROM au_battle_plan_turn WHERE plan_id=?1 ORDER BY turn_index ASC;",
+            -1,
+            &turn_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int64(turn_st.st, 1, plan_id);
+    while (sqlite3_step(turn_st.st) == SQLITE_ROW) {
+        BattlePlanTurnSnapshot turn{};
+        turn.plan_turn_id = sqlite3_column_int64(turn_st.st, 0);
+        turn.plan_id = sqlite3_column_int64(turn_st.st, 1);
+        turn.turn_index = sqlite3_column_int(turn_st.st, 2);
+
+        Statement action_st;
+        if (sqlite3_prepare_v2(
+                db_,
+                "SELECT plan_action_id,plan_turn_id,actor_slot,macro,target_kind,target_slot,target_mask_bits,target_single_slot,target_same_as_actor_slot,target_expr_ini,item_id,ordinal "
+                "FROM au_battle_plan_action WHERE plan_turn_id=?1 ORDER BY ordinal ASC, plan_action_id ASC;",
+                -1,
+                &action_st.st,
+                nullptr)
+            == SQLITE_OK) {
+            sqlite3_bind_int64(action_st.st, 1, turn.plan_turn_id);
+            while (sqlite3_step(action_st.st) == SQLITE_ROW) {
+                BattlePlanActionSnapshot action{};
+                action.plan_action_id = sqlite3_column_int64(action_st.st, 0);
+                action.plan_turn_id = sqlite3_column_int64(action_st.st, 1);
+                action.actor_slot = sqlite3_column_int(action_st.st, 2);
+                action.macro = static_cast<BattlePlanActionMacro>(sqlite3_column_int(action_st.st, 3));
+                action.target_kind = static_cast<BattlePlanTargetKind>(sqlite3_column_int(action_st.st, 4));
+                action.target_slot = ColumnIntOptional(action_st.st, 5);
+                action.target_mask_bits = ColumnIntOptional(action_st.st, 6);
+                action.target_single_slot = ColumnIntOptional(action_st.st, 7);
+                action.target_same_as_actor_slot = ColumnIntOptional(action_st.st, 8);
+                if (sqlite3_column_type(action_st.st, 9) != SQLITE_NULL) {
+                    action.target_expr_ini = ColumnText(action_st.st, 9);
+                }
+                action.item_id = ColumnIntOptional(action_st.st, 10);
+                action.ordinal = sqlite3_column_int(action_st.st, 11);
+                turn.actions.push_back(std::move(action));
+            }
+        }
+        out.turns.push_back(std::move(turn));
+    }
+
+    return out;
+}
+
+bool SqliteAuthoringDb::EnsureAddressProgram(
+    const EnsureAddressProgramCommand& command,
+    std::int64_t* address_program_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.program_version <= 0 || command.prog_bytes.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    Statement select_existing;
+    constexpr const char* kSelectSql =
+        "SELECT address_program_id FROM au_address_program "
+        "WHERE program_version=?1 AND prog_bytes=?2 "
+        "AND COALESCE(derived_buffer_version,0)=COALESCE(?3,0) "
+        "AND COALESCE(derived_buffer_schema_hash,'')=COALESCE(?4,'') "
+        "AND COALESCE(soa_structs_hash,'')=COALESCE(?5,'') "
+        "LIMIT 1;";
+    if (sqlite3_prepare_v2(db_, kSelectSql, -1, &select_existing.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int(select_existing.st, 1, command.program_version);
+    sqlite3_bind_blob(
+        select_existing.st,
+        2,
+        command.prog_bytes.data(),
+        static_cast<int>(command.prog_bytes.size()),
+        SQLITE_TRANSIENT);
+    if (command.derived_buffer_version.has_value()) sqlite3_bind_int(select_existing.st, 3, *command.derived_buffer_version);
+    else sqlite3_bind_null(select_existing.st, 3);
+    if (command.derived_buffer_schema_hash.has_value()) {
+        sqlite3_bind_text(select_existing.st, 4, command.derived_buffer_schema_hash->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(select_existing.st, 4);
+    }
+    if (command.soa_structs_hash.has_value()) {
+        sqlite3_bind_text(select_existing.st, 5, command.soa_structs_hash->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(select_existing.st, 5);
+    }
+
+    if (sqlite3_step(select_existing.st) == SQLITE_ROW) {
+        if (address_program_id_out) {
+            *address_program_id_out = sqlite3_column_int64(select_existing.st, 0);
+        }
+        return true;
+    }
+
+    Statement insert_program;
+    constexpr const char* kInsertSql =
+        "INSERT INTO au_address_program("
+        "program_version,prog_bytes,derived_buffer_version,derived_buffer_schema_hash,soa_structs_hash,description) "
+        "VALUES(?1,?2,?3,?4,?5,?6);";
+    if (sqlite3_prepare_v2(db_, kInsertSql, -1, &insert_program.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int(insert_program.st, 1, command.program_version);
+    sqlite3_bind_blob(
+        insert_program.st,
+        2,
+        command.prog_bytes.data(),
+        static_cast<int>(command.prog_bytes.size()),
+        SQLITE_TRANSIENT);
+    if (command.derived_buffer_version.has_value()) sqlite3_bind_int(insert_program.st, 3, *command.derived_buffer_version);
+    else sqlite3_bind_null(insert_program.st, 3);
+    if (command.derived_buffer_schema_hash.has_value()) {
+        sqlite3_bind_text(insert_program.st, 4, command.derived_buffer_schema_hash->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(insert_program.st, 4);
+    }
+    if (command.soa_structs_hash.has_value()) {
+        sqlite3_bind_text(insert_program.st, 5, command.soa_structs_hash->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(insert_program.st, 5);
+    }
+    if (command.description.empty()) sqlite3_bind_null(insert_program.st, 6);
+    else sqlite3_bind_text(insert_program.st, 6, command.description.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(insert_program.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (address_program_id_out) {
+        *address_program_id_out = sqlite3_last_insert_rowid(db_);
+    }
+    return true;
+}
+
+std::optional<AddressProgramSnapshot> SqliteAuthoringDb::GetAddressProgram(
+    std::int64_t address_program_id) const {
+    if (db_ == nullptr || address_program_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT address_program_id,program_version,prog_bytes,derived_buffer_version,"
+        "derived_buffer_schema_hash,soa_structs_hash,description "
+        "FROM au_address_program WHERE address_program_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, address_program_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    AddressProgramSnapshot out{};
+    out.address_program_id = sqlite3_column_int64(st.st, 0);
+    out.program_version = sqlite3_column_int(st.st, 1);
+    out.prog_bytes = ColumnBlob(st.st, 2);
+    out.derived_buffer_version = ColumnIntOptional(st.st, 3);
+    const auto* derived_hash = sqlite3_column_text(st.st, 4);
+    out.derived_buffer_schema_hash = derived_hash
+        ? std::optional<std::string>(reinterpret_cast<const char*>(derived_hash))
+        : std::nullopt;
+    const auto* structs_hash = sqlite3_column_text(st.st, 5);
+    out.soa_structs_hash = structs_hash
+        ? std::optional<std::string>(reinterpret_cast<const char*>(structs_hash))
+        : std::nullopt;
+    out.description = ColumnText(st.st, 6);
+    return out;
+}
+
 bool SqliteAuthoringDb::SavePredicateSpec(
     const SavePredicateSpecCommand& command,
     std::int64_t* predicate_spec_id_out,
@@ -672,10 +1087,11 @@ bool SqliteAuthoringDb::SavePredicateSpec(
         return false;
     }
     if (command.name.empty()
-        || command.breakpoint_name.empty()
-        || command.lhs_kind.empty()
-        || command.rhs_kind.empty()
-        || command.cmp_op.empty()
+        || command.breakpoint_id == 0
+        || bp::BPRegistry::find(command.breakpoint_id) == nullptr
+        || command.lhs_kind == PredicateOperandKind::Unknown
+        || command.rhs_kind == PredicateOperandKind::Unknown
+        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
         || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
@@ -692,8 +1108,9 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_predicate_spec("
-            "name,breakpoint_name,lhs_kind,lhs_value,rhs_kind,rhs_value,cmp_op,flag_mask,value_mask,abort_on_fail,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);",
+            "name,breakpoint_name,breakpoint_id,lhs_kind,lhs_value,rhs_kind,rhs_value,cmp_op,width,flag_mask,value_mask,"
+            "lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15);",
             -1,
             &insert_spec.st,
             nullptr)
@@ -704,24 +1121,39 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 2, command.breakpoint_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 3, command.lhs_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_spec.st, 4, command.lhs_value);
-    sqlite3_bind_text(insert_spec.st, 5, command.rhs_kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_spec.st, 6, command.rhs_value);
-    sqlite3_bind_text(insert_spec.st, 7, command.cmp_op.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(command.breakpoint_id));
+    const auto lhs_kind = ToDbString(command.lhs_kind);
+    const auto rhs_kind = ToDbString(command.rhs_kind);
+    const auto cmp_op = ToDbString(command.cmp_op);
+    sqlite3_bind_text(insert_spec.st, 4, lhs_kind.data(), static_cast<int>(lhs_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_spec.st, 5, command.lhs_value);
+    sqlite3_bind_text(insert_spec.st, 6, rhs_kind.data(), static_cast<int>(rhs_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_spec.st, 7, command.rhs_value);
+    sqlite3_bind_text(insert_spec.st, 8, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_spec.st, 9, command.width);
     if (command.flag_mask.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 8, command.flag_mask.value());
+        sqlite3_bind_int64(insert_spec.st, 10, command.flag_mask.value());
     } else {
-        sqlite3_bind_null(insert_spec.st, 8);
+        sqlite3_bind_null(insert_spec.st, 10);
     }
     if (command.value_mask.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 9, command.value_mask.value());
+        sqlite3_bind_int64(insert_spec.st, 11, command.value_mask.value());
     } else {
-        sqlite3_bind_null(insert_spec.st, 9);
+        sqlite3_bind_null(insert_spec.st, 11);
     }
-    sqlite3_bind_int(insert_spec.st, 10, command.abort_on_fail ? 1 : 0);
-    sqlite3_bind_int64(insert_spec.st, 11, ToEpochMillis(command.created_at_utc));
+    if (command.lhs_address_program_id.has_value()) {
+        sqlite3_bind_int64(insert_spec.st, 12, *command.lhs_address_program_id);
+    } else {
+        sqlite3_bind_null(insert_spec.st, 12);
+    }
+    if (command.rhs_address_program_id.has_value()) {
+        sqlite3_bind_int64(insert_spec.st, 13, *command.rhs_address_program_id);
+    } else {
+        sqlite3_bind_null(insert_spec.st, 13);
+    }
+    sqlite3_bind_int(insert_spec.st, 14, command.abort_on_fail ? 1 : 0);
+    sqlite3_bind_int64(insert_spec.st, 15, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -759,6 +1191,167 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     return true;
+}
+
+std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
+    std::int64_t predicate_spec_id) const {
+    if (db_ == nullptr || predicate_spec_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT predicate_spec_id,name,breakpoint_id,lhs_kind,lhs_value,rhs_kind,rhs_value,cmp_op,"
+        "width,flag_mask,value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail "
+        "FROM au_predicate_spec WHERE predicate_spec_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    PredicateSpecSnapshot out{};
+    out.predicate_spec_id = sqlite3_column_int64(st.st, 0);
+    out.name = ColumnText(st.st, 1);
+    out.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
+    out.lhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 3));
+    out.lhs_value = sqlite3_column_int64(st.st, 4);
+    out.rhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 5));
+    out.rhs_value = sqlite3_column_int64(st.st, 6);
+    out.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 7));
+    out.width = sqlite3_column_int(st.st, 8);
+    out.flag_mask = ColumnInt64Optional(st.st, 9);
+    out.value_mask = ColumnInt64Optional(st.st, 10);
+    out.lhs_address_program_id = ColumnInt64Optional(st.st, 11);
+    out.rhs_address_program_id = ColumnInt64Optional(st.st, 12);
+    out.abort_on_fail = sqlite3_column_int(st.st, 13) != 0;
+    return out;
+}
+
+bool SqliteAuthoringDb::SavePredicateSet(
+    const SavePredicateSetCommand& command,
+    std::int64_t* predicate_set_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    Statement insert_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_predicate_set(created_at_utc) VALUES(?1);",
+            -1,
+            &insert_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(insert_set.st, 1, ToEpochMillis(command.created_at_utc));
+    if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    const auto predicate_set_id = sqlite3_last_insert_rowid(db_);
+
+    for (int ordinal = 0; ordinal < static_cast<int>(command.predicate_spec_ids.size()); ++ordinal) {
+        Statement insert_item;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_predicate_set_item(predicate_set_id,predicate_spec_id,ordinal) VALUES(?1,?2,?3);",
+                -1,
+                &insert_item.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        sqlite3_bind_int64(insert_item.st, 1, predicate_set_id);
+        sqlite3_bind_int64(insert_item.st, 2, command.predicate_spec_ids[ordinal]);
+        sqlite3_bind_int(insert_item.st, 3, ordinal);
+        if (sqlite3_step(insert_item.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (predicate_set_id_out) {
+        *predicate_set_id_out = predicate_set_id;
+    }
+    return true;
+}
+
+std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
+    std::int64_t predicate_set_id) const {
+    if (db_ == nullptr || predicate_set_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement exists;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT predicate_set_id FROM au_predicate_set WHERE predicate_set_id=?1;",
+            -1,
+            &exists.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(exists.st, 1, predicate_set_id);
+    if (sqlite3_step(exists.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    PredicateSetSnapshot out{};
+    out.predicate_set_id = predicate_set_id;
+
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT ps.predicate_spec_id,ps.name,ps.breakpoint_id,ps.lhs_kind,ps.lhs_value,ps.rhs_kind,ps.rhs_value,"
+        "ps.cmp_op,ps.width,ps.flag_mask,ps.value_mask,ps.lhs_address_program_id,ps.rhs_address_program_id,ps.abort_on_fail "
+        "FROM au_predicate_set_item item "
+        "JOIN au_predicate_spec ps ON ps.predicate_spec_id=item.predicate_spec_id "
+        "WHERE item.predicate_set_id=?1 ORDER BY item.ordinal ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int64(st.st, 1, predicate_set_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        PredicateSpecSnapshot pred{};
+        pred.predicate_spec_id = sqlite3_column_int64(st.st, 0);
+        pred.name = ColumnText(st.st, 1);
+        pred.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
+        pred.lhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 3));
+        pred.lhs_value = sqlite3_column_int64(st.st, 4);
+        pred.rhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 5));
+        pred.rhs_value = sqlite3_column_int64(st.st, 6);
+        pred.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 7));
+        pred.width = sqlite3_column_int(st.st, 8);
+        pred.flag_mask = ColumnInt64Optional(st.st, 9);
+        pred.value_mask = ColumnInt64Optional(st.st, 10);
+        pred.lhs_address_program_id = ColumnInt64Optional(st.st, 11);
+        pred.rhs_address_program_id = ColumnInt64Optional(st.st, 12);
+        pred.abort_on_fail = sqlite3_column_int(st.st, 13) != 0;
+        out.predicates.push_back(std::move(pred));
+    }
+    return out;
 }
 
 bool SqliteAuthoringDb::SaveExplorerSettings(
@@ -843,6 +1436,37 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
     }
 
     return true;
+}
+
+std::optional<ExplorerSettingsSnapshot> SqliteAuthoringDb::GetExplorerSettings(
+    std::int64_t explorer_settings_id) const {
+    if (db_ == nullptr || explorer_settings_id <= 0) {
+        return std::nullopt;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT explorer_settings_id,name,description,default_plan_id,default_predicate_set_id "
+            "FROM au_explorer_settings WHERE explorer_settings_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, explorer_settings_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    ExplorerSettingsSnapshot out{};
+    out.explorer_settings_id = sqlite3_column_int64(st.st, 0);
+    out.name = ColumnText(st.st, 1);
+    out.description = ColumnText(st.st, 2);
+    out.default_plan_id = ColumnInt64Optional(st.st, 3);
+    out.default_predicate_set_id = ColumnInt64Optional(st.st, 4);
+    return out;
 }
 
 bool SqliteAuthoringDb::SaveTemplate(

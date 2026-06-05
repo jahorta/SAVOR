@@ -10,12 +10,245 @@
 #include "../Common/Events/EventPayloadViews.h"
 #include "../Common/Types/UtcTimestamp.h"
 #include "../Common/Retention/OutboxRetention.h"
+#include "../../SimCore/Phases/Programs/BattleRunner/BattleOutcome.h"
 
 namespace simcore::db {
 
 using SeedProbePayloadRecord = events::AnalysisSeedProbePayloadView;
 using BattlePayloadRecord = events::AnalysisBattlePayloadView;
 using SpinePayloadRecord = events::AnalysisSpinePayloadView;
+using BattleTurnOutcome = simcore::battle::Outcome;
+
+enum class BattleSetStatus {
+    Unknown = 0,
+    Active,
+    Victory,
+    Completed,
+    NoSurvivors,
+    Failed,
+};
+
+enum class BattleSeedCandidateSourceKind {
+    Unknown = 0,
+    SeedProbeUnique,
+    Manual,
+    Synthetic,
+};
+
+enum class BattleSeedCandidateStatus {
+    Unknown = 0,
+    Pending,
+    Ready,
+    Selected,
+    Rejected,
+};
+
+enum class BattleTurnWaveStatus {
+    Unknown = 0,
+    Ready,
+    Running,
+    ContextProbing,
+    Completed,
+    NoSurvivors,
+    Selected,
+};
+
+enum class BattleContextProbeStatus {
+    Unknown = 0,
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+};
+
+enum class BattleTurnJobState {
+    Unknown = 0,
+    Queued,
+    Running,
+    Completed,
+    Succeeded,
+    Failed,
+};
+
+enum class BattleSelectionCriterionKind {
+    Unknown = 0,
+    MaxVi,
+    ViDelta,
+    BestFakeAttacksByRngSeed,
+};
+
+enum class BattleSelectionDecisionKind {
+    Unknown = 0,
+    Winner,
+    Duplicate,
+    Rejected,
+};
+
+enum class BattleManualFollowupStatus {
+    Unknown = 0,
+    Unreviewed,
+    Recorded,
+};
+
+inline std::string_view ToDbString(BattleSetStatus value) {
+    switch (value) {
+    case BattleSetStatus::Active: return "ACTIVE";
+    case BattleSetStatus::Victory: return "VICTORY";
+    case BattleSetStatus::Completed: return "COMPLETED";
+    case BattleSetStatus::NoSurvivors: return "NO_SURVIVORS";
+    case BattleSetStatus::Failed: return "FAILED";
+    default: return "";
+    }
+}
+
+inline BattleSetStatus ParseBattleSetStatus(std::string_view value) {
+    if (value == "ACTIVE") return BattleSetStatus::Active;
+    if (value == "VICTORY") return BattleSetStatus::Victory;
+    if (value == "COMPLETED" || value == "COMPLETE") return BattleSetStatus::Completed;
+    if (value == "NO_SURVIVORS") return BattleSetStatus::NoSurvivors;
+    if (value == "FAILED") return BattleSetStatus::Failed;
+    return BattleSetStatus::Unknown;
+}
+
+inline std::string_view ToDbString(BattleSeedCandidateSourceKind value) {
+    switch (value) {
+    case BattleSeedCandidateSourceKind::SeedProbeUnique: return "SP_UNIQUE";
+    case BattleSeedCandidateSourceKind::Manual: return "MANUAL";
+    case BattleSeedCandidateSourceKind::Synthetic: return "SYNTHETIC";
+    default: return "";
+    }
+}
+
+inline BattleSeedCandidateSourceKind ParseBattleSeedCandidateSourceKind(std::string_view value) {
+    if (value == "SP_UNIQUE") return BattleSeedCandidateSourceKind::SeedProbeUnique;
+    if (value == "MANUAL") return BattleSeedCandidateSourceKind::Manual;
+    if (value == "SYNTHETIC") return BattleSeedCandidateSourceKind::Synthetic;
+    return BattleSeedCandidateSourceKind::Unknown;
+}
+
+inline std::string_view ToDbString(BattleSeedCandidateStatus value) {
+    switch (value) {
+    case BattleSeedCandidateStatus::Pending: return "PENDING";
+    case BattleSeedCandidateStatus::Ready: return "READY";
+    case BattleSeedCandidateStatus::Selected: return "SELECTED";
+    case BattleSeedCandidateStatus::Rejected: return "REJECTED";
+    default: return "";
+    }
+}
+
+inline BattleSeedCandidateStatus ParseBattleSeedCandidateStatus(std::string_view value) {
+    if (value == "PENDING") return BattleSeedCandidateStatus::Pending;
+    if (value == "READY") return BattleSeedCandidateStatus::Ready;
+    if (value == "SELECTED") return BattleSeedCandidateStatus::Selected;
+    if (value == "REJECTED") return BattleSeedCandidateStatus::Rejected;
+    return BattleSeedCandidateStatus::Unknown;
+}
+
+inline std::string_view ToDbString(BattleTurnWaveStatus value) {
+    switch (value) {
+    case BattleTurnWaveStatus::Ready: return "READY";
+    case BattleTurnWaveStatus::Running: return "RUNNING";
+    case BattleTurnWaveStatus::ContextProbing: return "CONTEXT_PROBING";
+    case BattleTurnWaveStatus::Completed: return "COMPLETED";
+    case BattleTurnWaveStatus::NoSurvivors: return "NO_SURVIVORS";
+    case BattleTurnWaveStatus::Selected: return "SELECTED";
+    default: return "";
+    }
+}
+
+inline BattleTurnWaveStatus ParseBattleTurnWaveStatus(std::string_view value) {
+    if (value == "READY") return BattleTurnWaveStatus::Ready;
+    if (value == "RUNNING") return BattleTurnWaveStatus::Running;
+    if (value == "CONTEXT_PROBING") return BattleTurnWaveStatus::ContextProbing;
+    if (value == "COMPLETED") return BattleTurnWaveStatus::Completed;
+    if (value == "NO_SURVIVORS") return BattleTurnWaveStatus::NoSurvivors;
+    if (value == "SELECTED") return BattleTurnWaveStatus::Selected;
+    return BattleTurnWaveStatus::Unknown;
+}
+
+inline std::string_view ToDbString(BattleContextProbeStatus value) {
+    switch (value) {
+    case BattleContextProbeStatus::Queued: return "QUEUED";
+    case BattleContextProbeStatus::Running: return "RUNNING";
+    case BattleContextProbeStatus::Succeeded: return "SUCCEEDED";
+    case BattleContextProbeStatus::Failed: return "FAILED";
+    default: return "";
+    }
+}
+
+inline BattleContextProbeStatus ParseBattleContextProbeStatus(std::string_view value) {
+    if (value == "QUEUED") return BattleContextProbeStatus::Queued;
+    if (value == "RUNNING") return BattleContextProbeStatus::Running;
+    if (value == "SUCCEEDED") return BattleContextProbeStatus::Succeeded;
+    if (value == "FAILED") return BattleContextProbeStatus::Failed;
+    return BattleContextProbeStatus::Unknown;
+}
+
+inline std::string_view ToDbString(BattleTurnJobState value) {
+    switch (value) {
+    case BattleTurnJobState::Queued: return "QUEUED";
+    case BattleTurnJobState::Running: return "RUNNING";
+    case BattleTurnJobState::Completed: return "COMPLETED";
+    case BattleTurnJobState::Succeeded: return "SUCCEEDED";
+    case BattleTurnJobState::Failed: return "FAILED";
+    default: return "";
+    }
+}
+
+inline BattleTurnJobState ParseBattleTurnJobState(std::string_view value) {
+    if (value == "QUEUED") return BattleTurnJobState::Queued;
+    if (value == "RUNNING") return BattleTurnJobState::Running;
+    if (value == "COMPLETED") return BattleTurnJobState::Completed;
+    if (value == "SUCCEEDED") return BattleTurnJobState::Succeeded;
+    if (value == "FAILED") return BattleTurnJobState::Failed;
+    return BattleTurnJobState::Unknown;
+}
+
+inline std::string_view ToDbString(BattleSelectionCriterionKind value) {
+    switch (value) {
+    case BattleSelectionCriterionKind::MaxVi: return "MAX_VI";
+    case BattleSelectionCriterionKind::ViDelta: return "VI_DELTA";
+    case BattleSelectionCriterionKind::BestFakeAttacksByRngSeed: return "BEST_FAKE_ATTACKS_BY_RNG_SEED";
+    default: return "";
+    }
+}
+
+inline BattleSelectionCriterionKind ParseBattleSelectionCriterionKind(std::string_view value) {
+    if (value == "MAX_VI") return BattleSelectionCriterionKind::MaxVi;
+    if (value == "VI_DELTA") return BattleSelectionCriterionKind::ViDelta;
+    if (value == "BEST_FAKE_ATTACKS_BY_RNG_SEED") return BattleSelectionCriterionKind::BestFakeAttacksByRngSeed;
+    return BattleSelectionCriterionKind::Unknown;
+}
+
+inline std::string_view ToDbString(BattleSelectionDecisionKind value) {
+    switch (value) {
+    case BattleSelectionDecisionKind::Winner: return "WINNER";
+    case BattleSelectionDecisionKind::Duplicate: return "DUPLICATE";
+    case BattleSelectionDecisionKind::Rejected: return "REJECTED";
+    default: return "";
+    }
+}
+
+inline BattleSelectionDecisionKind ParseBattleSelectionDecisionKind(std::string_view value) {
+    if (value == "WINNER") return BattleSelectionDecisionKind::Winner;
+    if (value == "DUPLICATE") return BattleSelectionDecisionKind::Duplicate;
+    if (value == "REJECTED") return BattleSelectionDecisionKind::Rejected;
+    return BattleSelectionDecisionKind::Unknown;
+}
+
+inline std::string_view ToDbString(BattleManualFollowupStatus value) {
+    switch (value) {
+    case BattleManualFollowupStatus::Unreviewed: return "UNREVIEWED";
+    case BattleManualFollowupStatus::Recorded: return "RECORDED";
+    default: return "";
+    }
+}
+
+inline BattleManualFollowupStatus ParseBattleManualFollowupStatus(std::string_view value) {
+    if (value == "UNREVIEWED") return BattleManualFollowupStatus::Unreviewed;
+    if (value == "RECORDED") return BattleManualFollowupStatus::Recorded;
+    return BattleManualFollowupStatus::Unknown;
+}
 
 struct CreateSeedProbeSetCommand {
     std::string name;
@@ -55,10 +288,22 @@ struct RecordSeedProbeNeutralSeedCommand {
 
 struct SeedProbeRunSnapshot {
     std::int64_t probe_run_id = 0;
+    std::int64_t probe_set_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t entry_savestate_id = 0;
     int codec_version = 0;
     std::string status;
+    types::UtcTimePoint requested_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct SetSeedProbeRunEntrySavestateCommand {
+    std::int64_t probe_run_id = 0;
+    std::int64_t entry_savestate_id = 0;
+    types::UtcTimePoint updated_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
 };
 
 struct RecordSeedProbeGridSeedCommand {
@@ -74,12 +319,26 @@ struct RecordSeedProbeGridSeedCommand {
 };
 
 struct SeedProbeGridSeedRow {
+    std::int64_t grid_seed_id = 0;
     std::int64_t probe_result_id = 0;
     std::string source_family;
     std::int32_t axis_x = 0;
     std::int32_t axis_y = 0;
     std::int64_t seed_value = 0;
     std::int64_t seed_delta = 0;
+};
+
+struct SeedProbeUniqueSeedRow {
+    std::int64_t unique_seed_id = 0;
+    std::int64_t probe_result_id = 0;
+    std::int64_t seed_value = 0;
+    std::int64_t seed_delta = 0;
+    std::int32_t main_x = 0;
+    std::int32_t main_y = 0;
+    std::int32_t cstick_x = 0;
+    std::int32_t cstick_y = 0;
+    std::int32_t trigger_x = 0;
+    std::int32_t trigger_y = 0;
 };
 
 struct RecordSeedProbeUniqueSeedCommand {
@@ -126,7 +385,7 @@ struct CreateBattleSetCommand {
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
-    std::string status;
+    BattleSetStatus status = BattleSetStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string event_id;
     std::string correlation_id;
@@ -137,8 +396,8 @@ struct AddBattleSeedCandidateCommand {
     std::int64_t battle_set_id = 0;
     std::optional<std::int64_t> source_unique_seed_id;
     std::int64_t seed_value = 0;
-    std::string source_kind;
-    std::string candidate_status;
+    BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
+    BattleSeedCandidateStatus candidate_status = BattleSeedCandidateStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string event_id;
     std::string correlation_id;
@@ -149,9 +408,10 @@ struct CreateBattleTurnWaveCommand {
     std::int64_t battle_set_id = 0;
     int turn_index = 0;
     std::optional<std::int64_t> parent_wave_id;
+    std::optional<std::int64_t> parent_turn_job_id;
     std::int64_t seed_candidate_id = 0;
     std::optional<std::int64_t> selection_pool_id;
-    std::string status;
+    BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
     std::string event_id;
@@ -165,7 +425,7 @@ struct RecordBattleTurnJobCommand {
     std::int64_t plan_id = 0;
     int fake_attacks_this_turn = 0;
     int fake_attacks_used_before = 0;
-    std::string job_state;
+    BattleTurnJobState job_state = BattleTurnJobState::Unknown;
     std::optional<types::UtcTimePoint> started_at_utc;
     std::optional<types::UtcTimePoint> ended_at_utc;
     bool has_results = false;
@@ -173,12 +433,13 @@ struct RecordBattleTurnJobCommand {
     std::optional<int> vi_end;
     std::optional<int> delta_vi;
     std::optional<std::int64_t> rng_seed;
-    std::optional<int> battle_outcome;
+    std::optional<BattleTurnOutcome> battle_outcome;
     std::optional<int> plan_materialize_err;
     std::optional<int> pred_passed;
     std::optional<int> pred_total;
     std::optional<int> pred_abort_run;
     std::optional<std::int64_t> output_savestate_id;
+    std::optional<std::int64_t> applied_input_artifact_id;
     std::optional<types::UtcTimePoint> recorded_at_utc;
     std::string event_id;
     std::string correlation_id;
@@ -189,7 +450,7 @@ struct CreateBattleSelectionPoolCommand {
     std::int64_t battle_set_id = 0;
     int turn_index = 0;
     std::string pool_name;
-    std::string criterion_kind;
+    BattleSelectionCriterionKind criterion_kind = BattleSelectionCriterionKind::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string event_id;
     std::string correlation_id;
@@ -199,7 +460,7 @@ struct CreateBattleSelectionPoolCommand {
 struct RecordBattleSelectionDecisionCommand {
     std::int64_t selection_pool_id = 0;
     std::int64_t turn_job_id = 0;
-    std::string decision_kind;
+    BattleSelectionDecisionKind decision_kind = BattleSelectionDecisionKind::Unknown;
     std::optional<std::string> decision_reason;
     types::UtcTimePoint created_at_utc{};
     std::string event_id;
@@ -210,7 +471,7 @@ struct RecordBattleSelectionDecisionCommand {
 struct UpsertBattleTerminalFollowupCommand {
     std::int64_t turn_job_id = 0;
     bool is_victory = false;
-    std::string manual_followup_status;
+    BattleManualFollowupStatus manual_followup_status = BattleManualFollowupStatus::Unknown;
     std::optional<std::int64_t> recorded_dtm_artifact_id;
     std::optional<std::int64_t> recorded_dtmini_artifact_id;
     std::optional<std::int64_t> recorded_sav_artifact_id;
@@ -221,6 +482,104 @@ struct UpsertBattleTerminalFollowupCommand {
     std::string causation_id;
 };
 
+struct BattleSetSnapshot {
+    std::int64_t battle_set_id = 0;
+    std::string name;
+    std::int64_t entry_savestate_id = 0;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
+    BattleSetStatus status = BattleSetStatus::Unknown;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct BattleSeedCandidateRow {
+    std::int64_t seed_candidate_id = 0;
+    std::int64_t battle_set_id = 0;
+    std::optional<std::int64_t> source_unique_seed_id;
+    std::int64_t seed_value = 0;
+    BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
+    BattleSeedCandidateStatus candidate_status = BattleSeedCandidateStatus::Unknown;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct BattleTurnWaveSnapshot {
+    std::int64_t wave_id = 0;
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::optional<std::int64_t> parent_wave_id;
+    std::optional<std::int64_t> parent_turn_job_id;
+    std::int64_t seed_candidate_id = 0;
+    std::optional<std::int64_t> selection_pool_id;
+    BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> completed_at_utc;
+};
+
+struct CreateBattleContextProbeCommand {
+    std::int64_t wave_id = 0;
+    std::int64_t source_savestate_id = 0;
+    BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct CompleteBattleContextProbeCommand {
+    std::int64_t exec_job_id = 0;
+    BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
+    std::optional<std::string> context_blob;
+    std::optional<int> context_version;
+    types::UtcTimePoint recorded_at_utc{};
+};
+
+struct BattleContextProbeSnapshot {
+    std::int64_t context_probe_id = 0;
+    std::int64_t wave_id = 0;
+    std::int64_t source_savestate_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
+    std::optional<std::string> context_blob;
+    std::optional<int> context_version;
+    std::optional<types::UtcTimePoint> recorded_at_utc;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct BattleTurnJobSnapshot {
+    std::int64_t turn_job_id = 0;
+    std::int64_t wave_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t plan_id = 0;
+    int fake_attacks_this_turn = 0;
+    int fake_attacks_used_before = 0;
+    BattleTurnJobState job_state = BattleTurnJobState::Unknown;
+    std::optional<types::UtcTimePoint> started_at_utc;
+    std::optional<types::UtcTimePoint> ended_at_utc;
+    bool has_results = false;
+    std::optional<int> vi_start;
+    std::optional<int> vi_end;
+    std::optional<int> delta_vi;
+    std::optional<std::int64_t> rng_seed;
+    std::optional<BattleTurnOutcome> battle_outcome;
+    std::optional<int> plan_materialize_err;
+    std::optional<int> pred_passed;
+    std::optional<int> pred_total;
+    std::optional<int> pred_abort_run;
+    std::optional<std::int64_t> output_savestate_id;
+    std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<types::UtcTimePoint> recorded_at_utc;
+};
+
+struct BattleSelectionDecisionRow {
+    std::int64_t selection_decision_id = 0;
+    std::int64_t selection_pool_id = 0;
+    std::int64_t turn_job_id = 0;
+    BattleSelectionDecisionKind decision_kind = BattleSelectionDecisionKind::Unknown;
+    std::optional<std::string> decision_reason;
+    types::UtcTimePoint created_at_utc{};
+};
+
 struct IAnalysisDb {
     virtual ~IAnalysisDb() = default;
 
@@ -228,6 +587,8 @@ struct IAnalysisDb {
     virtual std::optional<std::int64_t> LookupSeedProbeResultId(std::int64_t probe_run_id) const = 0;
     virtual std::optional<std::int64_t> LookupSeedProbeNeutralSeed(std::int64_t probe_run_id) const = 0;
     virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
+    virtual std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const = 0;
+    virtual std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const = 0;
     virtual bool EnsureSeedProbeInputFrame(
         std::int64_t main_axis_xy_id,
         std::int64_t cstick_axis_xy_id,
@@ -261,6 +622,10 @@ struct IAnalysisDb {
     virtual bool SetSeedProbeRunNeutralSeed(
         std::int64_t probe_run_id,
         std::int64_t neutral_seed_value,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool SetSeedProbeRunEntrySavestate(
+        const SetSeedProbeRunEntrySavestateCommand& command,
         std::string* error_out = nullptr) = 0;
 
     virtual bool RecordSeedProbeNeutralSeed(
@@ -303,12 +668,40 @@ struct IAnalysisDb {
         std::int64_t* wave_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool CreateBattleContextProbe(
+        const CreateBattleContextProbeCommand& command,
+        std::int64_t* context_probe_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool SetBattleContextProbeExecJobId(
+        std::int64_t context_probe_id,
+        std::int64_t exec_job_id,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool CompleteBattleContextProbe(
+        const CompleteBattleContextProbeCommand& command,
+        std::string* error_out = nullptr) = 0;
+
     virtual bool RecordBattleTurnJob(
         const RecordBattleTurnJobCommand& command,
         std::int64_t* turn_job_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool SetBattleTurnJobExecJobId(
+        std::int64_t turn_job_id,
+        std::int64_t exec_job_id,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool UpdateBattleTurnJobResult(
+        const RecordBattleTurnJobCommand& command,
+        std::string* error_out = nullptr) = 0;
+
     virtual bool CreateBattleSelectionPool(
+        const CreateBattleSelectionPoolCommand& command,
+        std::int64_t* selection_pool_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool EnsureBattleSelectionPool(
         const CreateBattleSelectionPoolCommand& command,
         std::int64_t* selection_pool_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
@@ -322,6 +715,30 @@ struct IAnalysisDb {
         const UpsertBattleTerminalFollowupCommand& command,
         std::int64_t* terminal_followup_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual bool UpdateBattleSetStatus(
+        std::int64_t battle_set_id,
+        BattleSetStatus status,
+        std::optional<types::UtcTimePoint> completed_at_utc,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool UpdateBattleTurnWaveStatus(
+        std::int64_t wave_id,
+        BattleTurnWaveStatus status,
+        std::optional<types::UtcTimePoint> completed_at_utc,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<BattleSetSnapshot> GetBattleSet(std::int64_t battle_set_id) const = 0;
+    virtual std::vector<BattleSeedCandidateRow> ListBattleSeedCandidates(std::int64_t battle_set_id) const = 0;
+    virtual std::optional<BattleSeedCandidateRow> GetBattleSeedCandidate(std::int64_t seed_candidate_id) const = 0;
+    virtual std::optional<BattleTurnWaveSnapshot> GetBattleTurnWave(std::int64_t wave_id) const = 0;
+    virtual std::vector<BattleTurnWaveSnapshot> ListBattleTurnWaves(std::int64_t battle_set_id) const = 0;
+    virtual std::optional<BattleContextProbeSnapshot> GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const = 0;
+    virtual std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const = 0;
+    virtual std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const = 0;
+    virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const = 0;
+    virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const = 0;
+    virtual std::vector<BattleSelectionDecisionRow> ListBattleSelectionDecisionsForPool(std::int64_t selection_pool_id) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

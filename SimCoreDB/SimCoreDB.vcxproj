@@ -178,6 +178,10 @@
     <ClInclude Include="Common\Events\EventPayloadViews.h" />
     <ClInclude Include="Common\Events\EventPayloadResolvers.h" />
     <ClInclude Include="Common\Events\OutboxRelay.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
     <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
@@ -185,6 +189,8 @@
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.h" />
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.h" />
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
     <ClInclude Include="Common\Migrations\MigrationContext.h" />
     <ClInclude Include="Common\Migrations\MigrationRunner.h" />
@@ -241,10 +247,16 @@
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp" />
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.cpp" />
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
     <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
     <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp" />
@@ -281,6 +293,8 @@
     <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
     <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
+    <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql" />
+    <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
@@ -293,6 +307,7 @@
     <None Include="migration\UIRead\202604051400_uiread_stage3e_projection_subscription.sql" />
     <None Include="migration\UIRead\202604051500_uiread_stage3f_projection_checkpoint_retire.sql" />
     <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql" />
+    <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

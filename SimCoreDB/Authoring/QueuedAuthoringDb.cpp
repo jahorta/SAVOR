@@ -133,6 +133,15 @@ bool QueuedAuthoringDb::SaveBattleRunSpec(
         error_out);
 }
 
+std::optional<BattleRunSpecSnapshot> QueuedAuthoringDb::GetBattleRunSpec(
+    std::int64_t battle_run_spec_id) const {
+    return ExecuteRead<std::optional<BattleRunSpecSnapshot>>(
+        [this, battle_run_spec_id]() {
+            return inner_ != nullptr ? inner_->GetBattleRunSpec(battle_run_spec_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 bool QueuedAuthoringDb::SavePlan(
     const SavePlanCommand& command,
     std::int64_t* plan_id_out,
@@ -143,6 +152,48 @@ bool QueuedAuthoringDb::SavePlan(
         },
         false,
         error_out);
+}
+
+bool QueuedAuthoringDb::SaveBattlePlanTurn(
+    const SaveBattlePlanTurnCommand& command,
+    std::int64_t* plan_turn_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, plan_turn_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->SaveBattlePlanTurn(command, plan_turn_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattlePlanSnapshot> QueuedAuthoringDb::GetBattlePlan(
+    std::int64_t plan_id) const {
+    return ExecuteRead<std::optional<BattlePlanSnapshot>>(
+        [this, plan_id]() {
+            return inner_ != nullptr ? inner_->GetBattlePlan(plan_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedAuthoringDb::EnsureAddressProgram(
+    const EnsureAddressProgramCommand& command,
+    std::int64_t* address_program_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, address_program_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->EnsureAddressProgram(command, address_program_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<AddressProgramSnapshot> QueuedAuthoringDb::GetAddressProgram(
+    std::int64_t address_program_id) const {
+    return ExecuteRead<std::optional<AddressProgramSnapshot>>(
+        [this, address_program_id]() {
+            return inner_ != nullptr ? inner_->GetAddressProgram(address_program_id) : std::nullopt;
+        },
+        std::nullopt);
 }
 
 bool QueuedAuthoringDb::SavePredicateSpec(
@@ -157,6 +208,36 @@ bool QueuedAuthoringDb::SavePredicateSpec(
         error_out);
 }
 
+std::optional<PredicateSpecSnapshot> QueuedAuthoringDb::GetPredicateSpec(
+    std::int64_t predicate_spec_id) const {
+    return ExecuteRead<std::optional<PredicateSpecSnapshot>>(
+        [this, predicate_spec_id]() {
+            return inner_ != nullptr ? inner_->GetPredicateSpec(predicate_spec_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedAuthoringDb::SavePredicateSet(
+    const SavePredicateSetCommand& command,
+    std::int64_t* predicate_set_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, predicate_set_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->SavePredicateSet(command, predicate_set_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<PredicateSetSnapshot> QueuedAuthoringDb::GetPredicateSet(
+    std::int64_t predicate_set_id) const {
+    return ExecuteRead<std::optional<PredicateSetSnapshot>>(
+        [this, predicate_set_id]() {
+            return inner_ != nullptr ? inner_->GetPredicateSet(predicate_set_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 bool QueuedAuthoringDb::SaveExplorerSettings(
     const SaveExplorerSettingsCommand& command,
     std::int64_t* explorer_settings_id_out,
@@ -167,6 +248,15 @@ bool QueuedAuthoringDb::SaveExplorerSettings(
         },
         false,
         error_out);
+}
+
+std::optional<ExplorerSettingsSnapshot> QueuedAuthoringDb::GetExplorerSettings(
+    std::int64_t explorer_settings_id) const {
+    return ExecuteRead<std::optional<ExplorerSettingsSnapshot>>(
+        [this, explorer_settings_id]() {
+            return inner_ != nullptr ? inner_->GetExplorerSettings(explorer_settings_id) : std::nullopt;
+        },
+        std::nullopt);
 }
 
 bool QueuedAuthoringDb::SaveTemplate(

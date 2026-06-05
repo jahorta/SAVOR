@@ -103,6 +103,8 @@ struct WorkflowStepTerminalSnapshot {
     std::string workflow_kind;
     std::string step_key;
     std::string step_kind;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
     int expected_total = 0;
     int discovered_total = 0;
     int terminal_total = 0;
@@ -171,6 +173,24 @@ struct WorkflowMarkStepBlockedCommand {
 struct WorkflowMarkStepReadyCommand {
     std::int64_t workflow_instance_id = 0;
     std::string step_key;
+    std::string requested_by;
+};
+
+struct WorkflowAppendDynamicStepSpec {
+    std::string step_key;
+    std::string step_kind;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+    int priority = 0;
+    int max_attempts = 1;
+};
+
+struct WorkflowAppendDynamicStepsCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> parent_workflow_step_id;
+    std::vector<WorkflowAppendDynamicStepSpec> steps;
     std::string requested_by;
 };
 
@@ -250,6 +270,7 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) = 0;
+    virtual bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) = 0;
     virtual bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) = 0;
     virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
 };

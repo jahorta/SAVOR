@@ -1,9 +1,9 @@
 #include "SettingsPage.h"
 
 #include "DB/DBCore/DbSnapshotService.h"
-#include "DB/DBCore/DbService.h"
 #include "DB/Querying/DataService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "SimCoreDbRuntime.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
@@ -429,7 +429,7 @@ void SettingsPage::loadState()
 
 void SettingsPage::refreshActiveRoot()
 {
-    activeRoot_ = normalizePath(QString::fromStdString(simcore::db::DBService::instance().database_root().string()));
+    activeRoot_ = normalizePath(QString::fromStdString(soasimqt2::SimCoreDbRuntime::instance().root().string()));
     activeRootValueLabel_->setText(activeRoot_.isEmpty() ? "(unknown)" : activeRoot_);
 }
 
@@ -486,7 +486,7 @@ void SettingsPage::handleMoveDatabaseClicked()
         QStringLiteral("Moving database storage to %1…").arg(targetRoot),
         [target = targetRoot.toStdString()]() {
             std::string error;
-            const bool ok = simcore::db::DBService::instance().relocate_database_root(target, true, error);
+            const bool ok = soasimqt2::SimCoreDbRuntime::instance().relocateRoot(target, true, &error);
             return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
         });
 }
@@ -530,7 +530,7 @@ void SettingsPage::handleResetDatabaseClicked()
         QStringLiteral("Deleting and remaking database storage at %1…").arg(activeRoot_),
         []() {
             std::string error;
-            const bool ok = simcore::db::DBService::instance().reset_database_root(error);
+            const bool ok = soasimqt2::SimCoreDbRuntime::instance().resetRoot(&error);
             return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
         });
 }
@@ -553,9 +553,9 @@ void SettingsPage::handleUseExistingDatabaseClicked()
         return;
     }
 
-    const QFileInfo dbFile(QDir(targetRoot).filePath(QStringLiteral("SoaSimDB.sqlite3")));
+    const QFileInfo dbFile(QDir(targetRoot).filePath(QStringLiteral("ui_read.db")));
     if (!dbFile.exists() || !dbFile.isFile()) {
-        setStatus(StatusKind::Warning, "The selected directory does not contain SoaSimDB.sqlite3.");
+        setStatus(StatusKind::Warning, "The selected directory does not contain ui_read.db.");
         return;
     }
 
@@ -575,7 +575,7 @@ void SettingsPage::handleUseExistingDatabaseClicked()
         QStringLiteral("Switching active database root to %1…").arg(targetRoot),
         [target = targetRoot.toStdString()]() {
             std::string error;
-            const bool ok = simcore::db::DBService::instance().switch_database_root(target, error);
+            const bool ok = soasimqt2::SimCoreDbRuntime::instance().switchRoot(target, &error);
             return StorageResult{ ok, ok ? QString() : QString::fromStdString(error) };
         });
 }

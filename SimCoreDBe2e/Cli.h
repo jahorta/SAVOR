@@ -58,6 +58,7 @@ struct CliOptions {
     std::int64_t poll_ms = 100;
     std::uint32_t durable_line_mask = kDurableLineNormalMask;
     std::filesystem::path savestate_file;
+    std::filesystem::path dtm_file;
     std::filesystem::path iso_path;
     std::filesystem::path dolphin_base_dir;
     std::optional<std::filesystem::path> migration_root;

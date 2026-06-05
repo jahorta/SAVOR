@@ -27,6 +27,38 @@ public:
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] core::QueuedDbTelemetrySnapshot GetTelemetrySnapshot() const;
 
+    std::vector<UiProgramKind> ListProgramKinds() const override;
+    UiReadPage<UiJobSummary> ListJobs(
+        const UiReadJobListQuery& query) const override;
+    std::optional<UiJobSummary> GetJobSummary(
+        std::int64_t job_id) const override;
+    std::vector<UiJobArtifact> ListJobArtifacts(
+        std::int64_t job_id) const override;
+    UiReadPage<UiJobSetSummary> ListJobSets(
+        const UiReadJobSetListQuery& query) const override;
+    UiReadPage<UiArtifactSummary> ListArtifacts(
+        const UiReadArtifactListQuery& query) const override;
+
+    UiSeedProbeRunPage ListSeedProbeRuns(
+        const UiReadSeedProbeRunListQuery& query) const override;
+    std::optional<UiSeedProbeRunSummary> GetSeedProbeRunSummary(
+        std::int64_t probe_run_id) const override;
+    std::vector<UiSeedProbeDeltaPoint> ListSeedProbeDeltaPoints(
+        std::int64_t probe_run_id) const override;
+    std::vector<UiSeedProbeUniqueValue> ListSeedProbeUniqueValues(
+        std::int64_t probe_run_id) const override;
+    bool UpsertSeedProbeRunSummary(
+        const UiSeedProbeRunSummary& summary,
+        std::string* error_out = nullptr) override;
+    bool ReplaceSeedProbeDeltaPoints(
+        std::int64_t probe_run_id,
+        const std::vector<UiSeedProbeDeltaPoint>& points,
+        std::string* error_out = nullptr) override;
+    bool ReplaceSeedProbeUniqueValues(
+        std::int64_t probe_run_id,
+        const std::vector<UiSeedProbeUniqueValue>& values,
+        std::string* error_out = nullptr) override;
+
     std::optional<UiProjectionSubscription> GetProjectionSubscription(
         const std::string& projector_name,
         const std::string& source_context,

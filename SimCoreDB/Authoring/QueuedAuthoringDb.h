@@ -43,18 +43,42 @@ public:
         const SaveBattleRunSpecCommand& command,
         std::int64_t* battle_run_spec_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<BattleRunSpecSnapshot> GetBattleRunSpec(
+        std::int64_t battle_run_spec_id) const override;
     bool SavePlan(
         const SavePlanCommand& command,
         std::int64_t* plan_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool SaveBattlePlanTurn(
+        const SaveBattlePlanTurnCommand& command,
+        std::int64_t* plan_turn_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<BattlePlanSnapshot> GetBattlePlan(
+        std::int64_t plan_id) const override;
+    bool EnsureAddressProgram(
+        const EnsureAddressProgramCommand& command,
+        std::int64_t* address_program_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<AddressProgramSnapshot> GetAddressProgram(
+        std::int64_t address_program_id) const override;
     bool SavePredicateSpec(
         const SavePredicateSpecCommand& command,
         std::int64_t* predicate_spec_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<PredicateSpecSnapshot> GetPredicateSpec(
+        std::int64_t predicate_spec_id) const override;
+    bool SavePredicateSet(
+        const SavePredicateSetCommand& command,
+        std::int64_t* predicate_set_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+    std::optional<PredicateSetSnapshot> GetPredicateSet(
+        std::int64_t predicate_set_id) const override;
     bool SaveExplorerSettings(
         const SaveExplorerSettingsCommand& command,
         std::int64_t* explorer_settings_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<ExplorerSettingsSnapshot> GetExplorerSettings(
+        std::int64_t explorer_settings_id) const override;
     bool SaveTemplate(
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,

@@ -5,7 +5,7 @@
 
 namespace simcore::db::events {
 
-inline constexpr std::array<std::string_view, 59> kEventCatalogV1{ {
+inline constexpr std::array<std::string_view, 60> kEventCatalogV1{ {
     "Execution.JobSetCreated.v1",
     "Execution.JobQueued.v1",
     "Execution.JobClaimed.v1",
@@ -35,6 +35,7 @@ inline constexpr std::array<std::string_view, 59> kEventCatalogV1{ {
     "State.SavestateCreated.v1",
     "State.SavestateDerived.v1",
     "State.TasVariantCreated.v1",
+    "State.TasVariantProducedSavestateSet.v1",
     "AnalysisSpine.RunCreated.v1",
     "AnalysisSpine.StateRefRegistered.v1",
     "AnalysisSpine.LineageEdgeAdded.v1",

@@ -29,6 +29,8 @@ public:
         std::string workflow_kind;
         std::string step_key;
         std::string step_kind;
+        std::optional<std::string> input_ref_kind;
+        std::optional<std::int64_t> input_ref_id;
         StepCompletionSnapshot completion;
         int failed_total = 0;
     };

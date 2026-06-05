@@ -151,6 +151,7 @@ void PrintUsage() {
     std::cout << "Usage:\n";
     std::cout << "  SimCoreDBe2e"
               << " --savestate-file <path>"
+              << " [--dtm-file <path>]"
               << " --iso <path>"
               << " --dolphin-base-dir <path>"
               << " [--scenario seedprobe_real_worker_smoke]"
@@ -162,6 +163,9 @@ void PrintUsage() {
               << " [--durable-lines normal]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
+    std::cout << "Scenarios: seedprobe_real_worker_smoke, tasmovie_real_worker_smoke, "
+              << "tasmovie_seedprobe_real_worker_smoke, battle_single_turn_setup, "
+              << "battle_single_turn_real_worker_smoke\n\n";
 }
 
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out) {
@@ -192,6 +196,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--savestate-file", &v)) return false;
             options.savestate_file = std::filesystem::path(v);
+        } else if (arg == "--dtm-file") {
+            std::string v;
+            if (!require_value("--dtm-file", &v)) return false;
+            options.dtm_file = std::filesystem::path(v);
         } else if (arg == "--migration-root") {
             std::string v;
             if (!require_value("--migration-root", &v)) return false;
@@ -225,12 +233,28 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
     }
 
-    if (options.savestate_file.empty()) {
+    const bool is_tasmovie = options.scenario == "tasmovie_real_worker_smoke"
+        || options.scenario == "tasmovie_seedprobe_real_worker_smoke";
+    const bool is_tasmovie_seedprobe = options.scenario == "tasmovie_seedprobe_real_worker_smoke";
+
+    if (!is_tasmovie && options.savestate_file.empty()) {
         if (error_out) *error_out = "--savestate-file is required";
         return false;
     }
-    if (!std::filesystem::exists(options.savestate_file)) {
+    if (!options.savestate_file.empty() && !std::filesystem::exists(options.savestate_file)) {
         if (error_out) *error_out = "savestate file does not exist: " + options.savestate_file.string();
+        return false;
+    }
+    if (is_tasmovie && options.dtm_file.empty()) {
+        if (error_out) *error_out = "--dtm-file is required for TasMovie scenarios";
+        return false;
+    }
+    if (!options.dtm_file.empty() && !std::filesystem::exists(options.dtm_file)) {
+        if (error_out) *error_out = "DTM file does not exist: " + options.dtm_file.string();
+        return false;
+    }
+    if (is_tasmovie_seedprobe && options.savestate_file.empty()) {
+        if (error_out) *error_out = "--savestate-file is required as the placeholder SeedProbe run state for the chained TasMovie scenario";
         return false;
     }
     if (options.iso_path.empty() || !std::filesystem::exists(options.iso_path)) {

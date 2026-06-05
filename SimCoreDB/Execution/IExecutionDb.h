@@ -64,6 +64,7 @@ struct ExecutionJobRecord {
     int attempts = 0;
     int max_attempts = 1;
     std::int64_t queued_at_utc = 0;
+    std::string input_ini;
 };
 
 struct ExecutionJobSetProgressDetails {

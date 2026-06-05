@@ -105,6 +105,7 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
 
     if (context.step_key == "Unique") {
         decision.should_advance = true;
+        decision.next_step_key = "Done";
         return decision;
     }
 

@@ -3,9 +3,11 @@
 #include <string>
 
 #include "Cli.h"
+#include "BattleSingleTurnScenario.h"
 #include "Common/DbService.h"
 #include "DbSetup.h"
 #include "SeedProbeRealWorkerScenario.h"
+#include "TasMovieRealWorkerScenario.h"
 
 int main(int argc, char** argv) {
     using namespace simcore::e2e;
@@ -22,6 +24,9 @@ int main(int argc, char** argv) {
 
     const std::map<std::string, bool (*)(const CliOptions&, const char*, DBService*, std::string*)> scenarios{
         { "seedprobe_real_worker_smoke", &RunSeedProbeRealWorkerSmoke },
+        { "tasmovie_real_worker_smoke", &RunTasMovieRealWorkerSmoke },
+        { "tasmovie_seedprobe_real_worker_smoke", &RunTasMovieSeedProbeRealWorkerSmoke },
+        { "battle_single_turn_real_worker_smoke", &RunBattleSingleTurnRealWorkerScenario },
     };
 
     const auto it = scenarios.find(options.scenario);

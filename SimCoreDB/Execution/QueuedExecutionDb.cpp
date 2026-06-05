@@ -174,6 +174,12 @@ public:
         });
     }
 
+    bool AppendDynamicSteps(const workflow::WorkflowAppendDynamicStepsCommand& command, std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->AppendDynamicSteps(cmd, err);
+        });
+    }
+
     bool AppendStepInputEvent(const workflow::WorkflowAppendStepInputEventCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->AppendStepInputEvent(cmd, err);

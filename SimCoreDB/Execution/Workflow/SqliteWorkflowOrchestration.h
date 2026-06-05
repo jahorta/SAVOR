@@ -50,6 +50,7 @@ public:
     bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;
     bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) override;
+    bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) override;
     bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) override;
     bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override;
 

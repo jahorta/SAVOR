@@ -7,9 +7,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QVector>
 
-#include "DB/DeltaSeedRepo.h"
-#include "DB/Querying/DataService.h"
-#include "DB/SeedProbeRepo.h"
+#include "UIRead/IUiReadDb.h"
 
 #include <optional>
 #include <vector>
@@ -52,7 +50,7 @@ public:
 
     struct ViewState {
         QVector<ProbeSummary> probeRows;
-        Page<simcore::db::SeedProbeLite> page;
+        simcore::db::UiSeedProbeRunPage page;
         QString search;
         bool onlyDone = false;
         bool autoRefresh = true;
@@ -97,18 +95,26 @@ signals:
 
 private:
     struct ListBundle {
-        Page<simcore::db::SeedProbeLite> page;
+        simcore::db::UiSeedProbeRunPage page;
         QVector<ProbeSummary> rows;
     };
-    using ListBundleResult = simcore::db::DbResult<ListBundle>;
+    struct ListBundleResult {
+        bool ok = false;
+        ListBundle value;
+        QString errorMessage;
+    };
     struct RunningProbeUpdate {
         qint64 probeId = 0;
         QString statusText;
     };
-    using RunningProbeUpdateResult = simcore::db::DbResult<QVector<RunningProbeUpdate>>;
+    struct RunningProbeUpdateResult {
+        bool ok = false;
+        QVector<RunningProbeUpdate> value;
+        QString errorMessage;
+    };
 
     struct DetailBundle {
-        simcore::db::SeedProbeRow probe;
+        simcore::db::UiSeedProbeRunSummary summary;
         QString savestateText;
         GridView mainGrid;
         GridView cStickGrid;
@@ -116,7 +122,11 @@ private:
         QVector<int> legendDeltas;
         QVector<UniqueSeedRow> uniqueRows;
     };
-    using DetailBundleResult = simcore::db::DbResult<DetailBundle>;
+    struct DetailBundleResult {
+        bool ok = false;
+        DetailBundle value;
+        QString errorMessage;
+    };
 
     void kickPageFetch();
     void kickDetailFetch(qint64 probeId, bool force = false);
@@ -131,8 +141,8 @@ private:
     QString fetchSearch_;
     bool fetchOnlyDone_ = false;
     int fetchPageLimit_ = 50;
-    std::optional<KeysetCursor> before_;
-    std::optional<KeysetCursor> after_;
+    std::optional<simcore::db::UiReadSeedProbeRunListCursor> before_;
+    std::optional<simcore::db::UiReadSeedProbeRunListCursor> after_;
     bool initialLoadStarted_ = false;
     bool pageInFlight_ = false;
     bool pendingPageFetch_ = false;

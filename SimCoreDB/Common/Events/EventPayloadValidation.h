@@ -319,6 +319,13 @@ inline bool ValidateStateArtifactPayloadV1(const EventEnvelope& envelope, std::s
         }
         return true;
     }
+    if (envelope.event_type == "State.TasVariantProducedSavestateSet.v1") {
+        if (envelope.payload_ref_kind != "tas_variant" && envelope.payload_ref_kind != "tas-variant") {
+            if (error_out) *error_out = "payload_ref_kind must be tas_variant for State.TasVariantProducedSavestateSet.v1";
+            return false;
+        }
+        return true;
+    }
 
     if (error_out) *error_out = "unsupported State event_type";
     return false;

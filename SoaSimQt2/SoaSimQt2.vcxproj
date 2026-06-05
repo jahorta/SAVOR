@@ -83,7 +83,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>_DEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
@@ -103,7 +103,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)SimCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SimCore;$(SolutionDir)SimCoreDB;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
@@ -121,31 +121,13 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.cpp" />
-    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp" />
-    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp" />
-    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp" />
+    <ClCompile Include="SimCoreDbRuntime.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
-    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.cpp" />
-    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp" />
@@ -168,7 +150,6 @@
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
-    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
@@ -180,30 +161,11 @@
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h" />
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
-    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h" />
     <ClInclude Include="GUI\Common\StatusToast.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h" />
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h" />
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h" />
-    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
-    <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
-    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h" />
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h" />
-    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsReplicationDialog.h" />
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
@@ -225,15 +187,16 @@
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
-    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
-    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
-    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
+    <ClInclude Include="SimCoreDbRuntime.h" />
     <QtRcc Include="SoaSimQt2.qrc" />
     <ClCompile Include="GUI\MainWindow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SimCoreWorker\SimCoreWorker.vcxproj">
       <Project>{41DB0E12-AB09-4BC8-9647-1D8713A6A73E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SimCoreDB\SimCoreDB.vcxproj">
+      <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SimCore\SimCore.vcxproj">
       <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>

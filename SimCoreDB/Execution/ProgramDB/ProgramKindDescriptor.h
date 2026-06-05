@@ -31,6 +31,8 @@ struct RuntimeInitRequest {
     std::string savestate_ref_kind;
     std::int64_t savestate_ref_id = 0;
     std::string bootstrap_profile;
+    simcore::DBuf derived_buffer_type = simcore::DBuf::DK_None;
+    std::int64_t default_timeout_ms = 10000;
 };
 
 struct ResultArtifactRef {
@@ -55,12 +57,25 @@ struct WorkflowTransitionContext {
     std::int64_t job_set_id = 0;
     std::string workflow_kind;
     std::string step_key;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
 };
 
 struct WorkflowTransitionDecision {
     bool should_advance = false;
     std::optional<std::string> blocked_reason;
     std::optional<std::string> next_step_key;
+    struct DynamicStep {
+        std::string step_key;
+        std::string step_kind;
+        std::optional<std::string> input_ref_kind;
+        std::optional<std::int64_t> input_ref_id;
+        std::optional<std::string> guard_kind;
+        std::optional<std::string> guard_value;
+        int priority = 0;
+        int max_attempts = 1;
+    };
+    std::vector<DynamicStep> spawn_steps;
 };
 
 struct IJobPersistenceAdapter {

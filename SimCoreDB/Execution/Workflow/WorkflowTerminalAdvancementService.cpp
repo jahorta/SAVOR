@@ -56,6 +56,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .job_set_id = snapshot.job_set_id,
         .workflow_kind = snapshot.workflow_kind,
         .step_key = snapshot.step_key,
+        .input_ref_kind = snapshot.input_ref_kind,
+        .input_ref_id = snapshot.input_ref_id,
     };
 
     const auto terminal = orchestrator_->OnStepTerminal(snapshot.step_kind, context, completion, nullptr);
@@ -129,7 +131,31 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         : terminal.transition.has_value() ? terminal.transition->blocked_reason : std::optional<std::string>("transition_blocked");
 
     if (advanced) {
-        if (terminal.transition->next_step_key.has_value()) {
+        if (!terminal.transition->spawn_steps.empty()) {
+            WorkflowAppendDynamicStepsCommand append{};
+            append.workflow_instance_id = snapshot.workflow_instance_id;
+            append.parent_workflow_step_id = snapshot.workflow_step_id;
+            append.requested_by = "workflow_terminal_advancement";
+            append.steps.reserve(terminal.transition->spawn_steps.size());
+            for (const auto& step : terminal.transition->spawn_steps) {
+                append.steps.push_back(WorkflowAppendDynamicStepSpec{
+                    .step_key = step.step_key,
+                    .step_kind = step.step_kind,
+                    .input_ref_kind = step.input_ref_kind,
+                    .input_ref_id = step.input_ref_id,
+                    .guard_kind = step.guard_kind,
+                    .guard_value = step.guard_value,
+                    .priority = step.priority,
+                    .max_attempts = step.max_attempts,
+                });
+            }
+            if (!command_service_->AppendDynamicSteps(append, &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
+            result.spawned_step_count = static_cast<int>(append.steps.size());
+            result.advanced_next_step = result.spawned_step_count > 0;
+        } else if (terminal.transition->next_step_key.has_value()) {
             if (!command_service_->MarkStepReady(
                 {
                     .workflow_instance_id = snapshot.workflow_instance_id,

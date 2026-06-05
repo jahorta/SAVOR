@@ -4,13 +4,9 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
-#include <memory>
 #include <vector>
 
-#include "Runner/Parallel/DB/DBWorkerCoordinator.h"
-#include "Runner/Parallel/DB/DBWorkerCoordinatorConfig.h"
-
-class QSettings;
+struct WorkerSnapshot {};
 
 class CoordinatorController : public QObject
 {
@@ -18,7 +14,7 @@ class CoordinatorController : public QObject
 
 public:
     explicit CoordinatorController(QObject* parent = nullptr);
-    ~CoordinatorController() override;
+    ~CoordinatorController() override = default;
 
     bool isRunning() const;
     bool isPaused() const;
@@ -27,11 +23,9 @@ public:
     int eventBufferCapacity() const;
     bool startPaused() const;
     bool restartFailedJobsAutomatically() const;
-
     QString isoPath() const;
     QString dolphinBaseDir() const;
     QString validationMessage() const;
-
     const std::vector<WorkerSnapshot>& snapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
     QStringList takeVisualLiveLogLineUpdates();
@@ -65,29 +59,16 @@ signals:
     void visualLiveLogLinesReady(const QStringList& lines);
 
 private:
-    static constexpr int kMinTargetWorkers = 1;
-    static constexpr int kMaxTargetWorkers = static_cast<int>(simcore::WorkerCoordinator::kMaxNonVisualWorkers);
-    static constexpr int kMinEventBufferCapacity = 8;
-
-    void loadSettings();
-    void persistString(const char* key, const QString& value);
-    void persistInt(const char* key, int value);
     void updateValidationMessage();
-    void updateSnapshotCache();
-    WorkerCoordinatorConfig buildConfig() const;
 
-    std::unique_ptr<simcore::WorkerCoordinator> coordinator_;
-    std::vector<WorkerSnapshot> snapshotCache_;
-    std::vector<WorkerSnapshot> visualSnapshotCache_;
-    size_t visualLiveLogLinesConsumed_ = 0;
-
-    int targetWorkers_ = kMinTargetWorkers;
+    std::vector<WorkerSnapshot> emptySnapshots_;
+    int targetWorkers_ = 1;
     int eventBufferCapacity_ = 64;
-    bool paused_ = false;
+    bool paused_ = true;
     bool startPaused_ = true;
     bool restartFailedJobsAutomatically_ = true;
-    quintptr visualRenderWidgetHandle_ = 0;
     QString isoPath_;
     QString dolphinBaseDir_;
     QString validationMessage_;
 };
+

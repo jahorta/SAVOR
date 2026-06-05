@@ -447,6 +447,24 @@ TEST(Stage3cSeedProbeProgramDB, UniqueTransitionBlocksWhenCompletionGateFails) {
     EXPECT_EQ(decision.next_step_key.value_or(""), "Unique");
 }
 
+TEST(Stage3cSeedProbeProgramDB, UniqueTransitionAdvancesToDoneTerminalStep) {
+    using namespace simcore::db::execution::programdb::seedprobe;
+
+    SeedProbeUniqueTransitionHandler handler([](const auto&) { return true; });
+    const simcore::db::execution::programdb::WorkflowTransitionContext context{
+        .workflow_instance_id = 77,
+        .workflow_step_id = 503,
+        .job_set_id = 9003,
+        .workflow_kind = "SEED_PROBE_CHAIN",
+        .step_key = "Unique",
+    };
+
+    const auto decision = handler.EvaluateTransition(context);
+    EXPECT_TRUE(decision.should_advance);
+    EXPECT_EQ(decision.next_step_key.value_or(""), "Done");
+    EXPECT_FALSE(decision.blocked_reason.has_value());
+}
+
 TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     using namespace simcore::db::execution::programdb;
     using namespace simcore::db::execution::workflow;

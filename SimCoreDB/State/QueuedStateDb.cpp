@@ -135,6 +135,26 @@ bool QueuedStateDb::CreateTasVariant(
         error_out);
 }
 
+std::optional<TasVariantRecord> QueuedStateDb::GetTasVariant(
+    std::int64_t tas_variant_id) const {
+    return ExecuteRead<std::optional<TasVariantRecord>>(
+        [this, tas_variant_id]() {
+            return inner_ != nullptr ? inner_->GetTasVariant(tas_variant_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+bool QueuedStateDb::UpdateTasVariantProducedSavestate(
+    const UpdateTasVariantProducedSavestateCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->UpdateTasVariantProducedSavestate(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<std::string> QueuedStateDb::MaterializeArtifactToDirectory(
     std::int64_t artifact_id,
     std::string_view output_directory,

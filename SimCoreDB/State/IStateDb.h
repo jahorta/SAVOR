@@ -67,6 +67,29 @@ struct CreateTasVariantCommand {
     std::string causation_id;
 };
 
+struct TasVariantRecord {
+    std::int64_t tas_variant_id = 0;
+    std::string name;
+    std::int64_t base_dtm_artifact_id = 0;
+    std::optional<std::int64_t> dtmini_artifact_id;
+    std::string mutation_mode;
+    std::optional<std::int64_t> rtc_value;
+    std::optional<std::string> bookmark_name;
+    std::optional<std::int64_t> insert_frame_count;
+    std::optional<std::int64_t> parent_tas_variant_id;
+    std::optional<std::int64_t> produced_savestate_id;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct UpdateTasVariantProducedSavestateCommand {
+    std::int64_t tas_variant_id = 0;
+    std::int64_t produced_savestate_id = 0;
+    types::UtcTimePoint updated_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
 struct IStateDb {
     virtual ~IStateDb() = default;
 
@@ -88,6 +111,13 @@ struct IStateDb {
     virtual bool CreateTasVariant(
         const CreateTasVariantCommand& command,
         std::int64_t* tas_variant_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<TasVariantRecord> GetTasVariant(
+        std::int64_t tas_variant_id) const = 0;
+
+    virtual bool UpdateTasVariantProducedSavestate(
+        const UpdateTasVariantProducedSavestateCommand& command,
         std::string* error_out = nullptr) = 0;
 
     // Materializes an artifact to a directory using "<sha256><file_ext>" from state_artifact.

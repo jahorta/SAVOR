@@ -46,6 +46,10 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
     };
 }
 
+bool IsNoWorkWorkflowStep(const WorkflowReadyStep& step) {
+    return step.step_kind == "seedprobe.done";
+}
+
 } // namespace
 
 DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
@@ -492,7 +496,10 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
     }
 
     simcore::PSInit init{};
-    init.default_timeout_ms = 10000;
+    init.default_timeout_ms = claimed_job.runtime_init.default_timeout_ms > 0
+        ? static_cast<uint32_t>(claimed_job.runtime_init.default_timeout_ms)
+        : 10000;
+    init.derived_buffer_type = claimed_job.runtime_init.derived_buffer_type;
     if (claimed_job.runtime_init.savestate_ref_id > 0) {
         const auto savestate_path = PrepareWorkerSavestatePathForJob(worker_idx, claimed_job, needs_savestate);
         if (!savestate_path.has_value()) {
@@ -785,6 +792,13 @@ void DBWorkflowWorkerCoordinator::ProcessReadyWorkflowStep(const WorkflowReadySt
         return;
     }
 
+    if (IsNoWorkWorkflowStep(step)) {
+        if (CompleteNoWorkWorkflowStep(step)) {
+            queue_cv_.notify_all();
+        }
+        return;
+    }
+
     const auto aggregation = input_aggregation_service_.Evaluate(
         step,
         std::chrono::steady_clock::now(),
@@ -836,6 +850,99 @@ void DBWorkflowWorkerCoordinator::ProcessReadyWorkflowStep(const WorkflowReadySt
     queue_cv_.notify_one();
 }
 
+bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReadyStep& step) const {
+    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+        return false;
+    }
+
+    auto* commands = execution_db_->WorkflowCommandService();
+    std::string error;
+    (void)commands->AppendStepInputEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.WorkflowStepInputComplete.v1",
+            .source_key = std::nullopt,
+            .request_id = std::nullopt,
+            .message = std::optional<std::string>("no-work-step"),
+            .requested_by = "workflow_no_work_step",
+        },
+        &error);
+
+    if (!commands->MarkStepTerminal(
+        {
+            .workflow_step_id = step.workflow_step_id,
+            .terminal_state = "COMPLETED",
+            .requested_by = "workflow_no_work_step",
+        },
+        &error)) {
+        EmitWorkflowFailureEvents(
+            step,
+            "CompleteNoWorkStep",
+            error.empty() ? "mark terminal failed" : error);
+        return false;
+    }
+
+    if (!commands->AppendLifecycleEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+            .message = std::optional<std::string>("transition_evaluated"),
+            .requested_by = "workflow_no_work_step",
+        },
+        &error)) {
+        EmitWorkflowFailureEvents(
+            step,
+            "CompleteNoWorkStep",
+            error.empty() ? "append transition evaluation failed" : error);
+        return false;
+    }
+
+    if (!commands->AppendLifecycleEvent(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .workflow_step_id = step.workflow_step_id,
+            .event_kind = "Execution.WorkflowTransitionAdvanced.v1",
+            .message = std::optional<std::string>("transition_advanced"),
+            .requested_by = "workflow_no_work_step",
+        },
+        &error)) {
+        EmitWorkflowFailureEvents(
+            step,
+            "CompleteNoWorkStep",
+            error.empty() ? "append transition advanced failed" : error);
+        return false;
+    }
+
+    if (!commands->CompleteWorkflowInstance(
+        {
+            .workflow_instance_id = step.workflow_instance_id,
+            .requested_by = "workflow_no_work_step",
+        },
+        &error)) {
+        EmitWorkflowFailureEvents(
+            step,
+            "CompleteNoWorkStep",
+            error.empty() ? "complete workflow failed" : error);
+        return false;
+    }
+
+    std::ostringstream line;
+    line << "[seedprobe-terminal-advance]"
+         << " step=" << step.step_key
+         << " kind=" << step.step_kind
+         << " workflow_step_id=" << step.workflow_step_id
+         << " status=workflow_completed"
+         << " step_terminal=true"
+         << " gate=true"
+         << " next_step=false"
+         << " workflow_completed=true"
+         << " no_work=true";
+    EmitDurableEventLine(line.str());
+    return true;
+}
+
 void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
     constexpr std::size_t kMaxBatchSize = 64;
     simcore::PRProgress progress;
@@ -853,8 +960,29 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
         if (batch_size > prev_max) {
             max_progress_batch_size_.store(batch_size);
         }
-        if (progress_callback_) {
-            for (const auto& item : batch) {
+        for (const auto& item : batch) {
+            if (execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr && item.job_id > 0) {
+                std::ostringstream message;
+                message << "worker=" << item.worker_id << " progress=" << item.text;
+                std::string error;
+                if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
+                        {
+                            .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobProgressed,
+                            .job_id = static_cast<std::int64_t>(item.job_id),
+                            .message = message.str(),
+                            .requested_by = "workflow_progress_drainer",
+                        },
+                        &error)) {
+                    std::ostringstream line;
+                    line << "[workflow-progress-persist-failed] job=" << item.job_id
+                         << " worker=" << item.worker_id;
+                    if (!error.empty()) {
+                        line << " error=" << error;
+                    }
+                    EmitDurableEventLine(line.str());
+                }
+            }
+            if (progress_callback_) {
                 progress_callback_(item);
             }
         }

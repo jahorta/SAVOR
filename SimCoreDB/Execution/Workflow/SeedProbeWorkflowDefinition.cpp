@@ -34,6 +34,80 @@ WorkflowDefinition BuildSeedProbeChainDefinition() {
             .required_inputs = { "seedprobe.grid.seed_evidence" },
             .provided_outputs = { "general.input_frame_list" },
             .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Done",
+            .step_kind = "seedprobe.done",
+            .dependencies = { "Unique" },
+            .required_inputs = { "general.input_frame_list" },
+            .provided_outputs = {},
+            .max_attempts = 1 },
+    };
+    return definition;
+}
+
+WorkflowDefinition BuildTasMovieChainDefinition() {
+    WorkflowDefinition definition;
+    definition.workflow_kind = "TAS_MOVIE_CHAIN";
+    definition.initial_inputs = { "state_artifact.artifact_id" };
+    definition.steps = {
+        WorkflowStepDefinition{
+            .step_key = "TasMovie",
+            .step_kind = "tasmovie.play",
+            .dependencies = {},
+            .required_inputs = { "state_artifact.artifact_id" },
+            .provided_outputs = { "state.savestate_id" },
+            .max_attempts = 1 },
+        WorkflowStepDefinition{
+            .step_key = "Done",
+            .step_kind = "seedprobe.done",
+            .dependencies = { "TasMovie" },
+            .required_inputs = { "state.savestate_id" },
+            .provided_outputs = {},
+            .max_attempts = 1 },
+    };
+    return definition;
+}
+
+WorkflowDefinition BuildTasMovieSeedProbeChainDefinition() {
+    WorkflowDefinition definition;
+    definition.workflow_kind = "TAS_MOVIE_SEED_PROBE_CHAIN";
+    definition.initial_inputs = { "sp_probe_run.probe_run_id" };
+    definition.steps = {
+        WorkflowStepDefinition{
+            .step_key = "TasMovie",
+            .step_kind = "tasmovie.play",
+            .dependencies = {},
+            .required_inputs = { "sp_probe_run.probe_run_id" },
+            .provided_outputs = { "state.savestate_id" },
+            .max_attempts = 1 },
+        WorkflowStepDefinition{
+            .step_key = "Neutral",
+            .step_kind = "seedprobe.neutral",
+            .dependencies = { "TasMovie" },
+            .required_inputs = { "state.savestate_id" },
+            .provided_outputs = { "seedprobe.neutral.seed_context" },
+            .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Grid",
+            .step_kind = "seedprobe.grid",
+            .dependencies = { "Neutral" },
+            .required_inputs = { "seedprobe.neutral.seed_context" },
+            .provided_outputs = { "seedprobe.grid.seed_evidence" },
+            .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Unique",
+            .step_kind = "seedprobe.unique",
+            .dependencies = { "Grid" },
+            .required_inputs = { "seedprobe.grid.seed_evidence" },
+            .provided_outputs = { "general.input_frame_list" },
+            .max_attempts = 2 },
+        WorkflowStepDefinition{
+            .step_key = "Done",
+            .step_kind = "seedprobe.done",
+            .dependencies = { "Unique" },
+            .required_inputs = { "general.input_frame_list" },
+            .provided_outputs = {},
+            .max_attempts = 1 },
     };
     return definition;
 }
@@ -191,6 +265,11 @@ const WorkflowDefinition* WorkflowDefinitionRegistry::Find(std::string_view work
 
 bool WorkflowDefinitionRegistry::RegisterSeedProbeDefaults(std::string* error_out) {
     return RegisterDefinition(BuildSeedProbeChainDefinition(), error_out);
+}
+
+bool WorkflowDefinitionRegistry::RegisterTasMovieDefaults(std::string* error_out) {
+    return RegisterDefinition(BuildTasMovieChainDefinition(), error_out)
+        && RegisterDefinition(BuildTasMovieSeedProbeChainDefinition(), error_out);
 }
 
 } // namespace simcore::db::execution::workflow

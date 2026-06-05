@@ -87,6 +87,130 @@ core::QueuedDbTelemetrySnapshot QueuedUiReadDb::GetTelemetrySnapshot() const {
     return BuildTelemetrySnapshot(write_lane_.get(), read_lane_.get());
 }
 
+std::vector<UiProgramKind> QueuedUiReadDb::ListProgramKinds() const {
+    return ExecuteRead<std::vector<UiProgramKind>>(
+        [this]() {
+            return inner_ != nullptr ? inner_->ListProgramKinds() : std::vector<UiProgramKind>{};
+        },
+        {});
+}
+
+UiReadPage<UiJobSummary> QueuedUiReadDb::ListJobs(
+    const UiReadJobListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiJobSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListJobs(query) : UiReadPage<UiJobSummary>{};
+        },
+        {});
+}
+
+std::optional<UiJobSummary> QueuedUiReadDb::GetJobSummary(
+    std::int64_t job_id) const {
+    return ExecuteRead<std::optional<UiJobSummary>>(
+        [this, job_id]() {
+            return inner_ != nullptr ? inner_->GetJobSummary(job_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<UiJobArtifact> QueuedUiReadDb::ListJobArtifacts(
+    std::int64_t job_id) const {
+    return ExecuteRead<std::vector<UiJobArtifact>>(
+        [this, job_id]() {
+            return inner_ != nullptr ? inner_->ListJobArtifacts(job_id) : std::vector<UiJobArtifact>{};
+        },
+        {});
+}
+
+UiReadPage<UiJobSetSummary> QueuedUiReadDb::ListJobSets(
+    const UiReadJobSetListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiJobSetSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListJobSets(query) : UiReadPage<UiJobSetSummary>{};
+        },
+        {});
+}
+
+UiReadPage<UiArtifactSummary> QueuedUiReadDb::ListArtifacts(
+    const UiReadArtifactListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiArtifactSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListArtifacts(query) : UiReadPage<UiArtifactSummary>{};
+        },
+        {});
+}
+
+UiSeedProbeRunPage QueuedUiReadDb::ListSeedProbeRuns(
+    const UiReadSeedProbeRunListQuery& query) const {
+    return ExecuteRead<UiSeedProbeRunPage>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListSeedProbeRuns(query) : UiSeedProbeRunPage{};
+        },
+        {});
+}
+
+std::optional<UiSeedProbeRunSummary> QueuedUiReadDb::GetSeedProbeRunSummary(
+    std::int64_t probe_run_id) const {
+    return ExecuteRead<std::optional<UiSeedProbeRunSummary>>(
+        [this, probe_run_id]() {
+            return inner_ != nullptr ? inner_->GetSeedProbeRunSummary(probe_run_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<UiSeedProbeDeltaPoint> QueuedUiReadDb::ListSeedProbeDeltaPoints(
+    std::int64_t probe_run_id) const {
+    return ExecuteRead<std::vector<UiSeedProbeDeltaPoint>>(
+        [this, probe_run_id]() {
+            return inner_ != nullptr ? inner_->ListSeedProbeDeltaPoints(probe_run_id) : std::vector<UiSeedProbeDeltaPoint>{};
+        },
+        {});
+}
+
+std::vector<UiSeedProbeUniqueValue> QueuedUiReadDb::ListSeedProbeUniqueValues(
+    std::int64_t probe_run_id) const {
+    return ExecuteRead<std::vector<UiSeedProbeUniqueValue>>(
+        [this, probe_run_id]() {
+            return inner_ != nullptr ? inner_->ListSeedProbeUniqueValues(probe_run_id) : std::vector<UiSeedProbeUniqueValue>{};
+        },
+        {});
+}
+
+bool QueuedUiReadDb::UpsertSeedProbeRunSummary(
+    const UiSeedProbeRunSummary& summary,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, summary, error_out]() {
+            return inner_ != nullptr ? inner_->UpsertSeedProbeRunSummary(summary, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedUiReadDb::ReplaceSeedProbeDeltaPoints(
+    std::int64_t probe_run_id,
+    const std::vector<UiSeedProbeDeltaPoint>& points,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, probe_run_id, points, error_out]() {
+            return inner_ != nullptr ? inner_->ReplaceSeedProbeDeltaPoints(probe_run_id, points, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedUiReadDb::ReplaceSeedProbeUniqueValues(
+    std::int64_t probe_run_id,
+    const std::vector<UiSeedProbeUniqueValue>& values,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, probe_run_id, values, error_out]() {
+            return inner_ != nullptr ? inner_->ReplaceSeedProbeUniqueValues(probe_run_id, values, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<UiProjectionSubscription> QueuedUiReadDb::GetProjectionSubscription(
     const std::string& projector_name,
     const std::string& source_context,

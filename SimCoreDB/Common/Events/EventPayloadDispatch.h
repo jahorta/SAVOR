@@ -74,11 +74,12 @@ inline constexpr std::array<EventDispatchBinding, 42> kPayloadDispatchBindingsV1
     { { "Authoring.TemplateSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
 } };
 
-inline constexpr std::array<EventDispatchBinding, 9> kStateArchiveDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 10> kStateArchiveDispatchBindingsV1{ {
     { { "State.ArtifactStored.v1", 1 }, PayloadResolverContract::StateArtifactV1 },
     { { "State.SavestateCreated.v1", 1 }, PayloadResolverContract::StateArtifactV1 },
     { { "State.SavestateDerived.v1", 1 }, PayloadResolverContract::StateArtifactV1 },
     { { "State.TasVariantCreated.v1", 1 }, PayloadResolverContract::StateArtifactV1 },
+    { { "State.TasVariantProducedSavestateSet.v1", 1 }, PayloadResolverContract::StateArtifactV1 },
     { { "Archive.PackageCreated.v1", 1 }, PayloadResolverContract::ArchivePackageV1 },
     { { "Archive.PackageIndexed.v1", 1 }, PayloadResolverContract::ArchivePackageV1 },
     { { "Archive.RehydrateRequested.v1", 1 }, PayloadResolverContract::ArchivePackageV1 },

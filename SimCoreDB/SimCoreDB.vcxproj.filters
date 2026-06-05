@@ -28,6 +28,15 @@
     <Filter Include="Programs\SeedProbe">
       <UniqueIdentifier>{744dfdbb-bcbb-4ed7-8766-99b4dfa4decf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Programs\TasMovie">
+      <UniqueIdentifier>{a7b719d2-7ac1-4a33-bd1d-4b252ea21d03}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Programs\BattleSingleTurn">
+      <UniqueIdentifier>{1be744f1-7571-4b65-a2fd-34830d667874}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Programs\BattleContext">
+      <UniqueIdentifier>{69766586-b762-48aa-82f2-d7c1d55f19d8}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Events">
       <UniqueIdentifier>{eaea1d7f-82da-49fe-bf80-63b3b74e5ba4}</UniqueIdentifier>
     </Filter>
@@ -208,6 +217,24 @@
     <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h">
       <Filter>Programs\SeedProbe</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h">
+      <Filter>Programs\TasMovie</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.h">
+      <Filter>Programs\TasMovie</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h">
+      <Filter>Programs\BattleSingleTurn</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h">
+      <Filter>Programs\BattleSingleTurn</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h">
+      <Filter>Programs\BattleContext</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h">
+      <Filter>Programs\BattleContext</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\Projectors\BattleProjector.h">
       <Filter>Analysis</Filter>
     </ClInclude>
@@ -369,6 +396,24 @@
     <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp">
       <Filter>Programs\SeedProbe</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp">
+      <Filter>Programs\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.cpp">
+      <Filter>Programs\TasMovie</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp">
+      <Filter>Programs\BattleSingleTurn</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp">
+      <Filter>Programs\BattleSingleTurn</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp">
+      <Filter>Programs\BattleContext</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp">
+      <Filter>Programs\BattleContext</Filter>
+    </ClCompile>
     <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp">
       <Filter>State</Filter>
     </ClCompile>
@@ -426,6 +471,12 @@
     <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
+    <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
@@ -460,6 +511,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>
