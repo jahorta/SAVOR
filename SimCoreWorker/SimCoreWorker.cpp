@@ -148,13 +148,9 @@ int main(int argc, char** argv)
 
     auto sys_dsp = std::filesystem::path(exe_dir_w()) / "Sys" / "GC" / "dsp_coef.bin";
     if (!std::filesystem::exists(sys_dsp)) {
-        std::filesystem::copy(std::filesystem::path(qtbase) / "Sys", std::filesystem::path(exe_dir_w()) / "Sys", std::filesystem::copy_options::recursive);
-    }
-
-    if (!std::filesystem::exists(sys_dsp)) {
         WireReady wr{}; wr.tag = MSG_READY; wr.ok = 0; wr.error = WERR_SysMissing;
         (void)write_all(hOut, &wr, sizeof(wr));
-        SCLOGE("[Worker %zu] Missing Sys beside exe (%ws). Ensure parent copied from --qtbase.", worker_id, sys_dsp.c_str());
+        SCLOGE("[Worker %zu] Missing Sys beside exe (%ws). Ensure coordinator materialized the worker runtime.", worker_id, sys_dsp.c_str());
         return WERR_SysMissing;
     }
 

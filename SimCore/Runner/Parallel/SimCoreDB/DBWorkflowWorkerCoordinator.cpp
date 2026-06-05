@@ -5,10 +5,14 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <system_error>
 #include <utility>
 
 #include "../../../../SimCoreDB/Execution/Jobs/JobEventOrchestration.h"
+#include "../../../Utils/Hash.h"
+#include "../../../Utils/ModulePath.h"
 
 namespace simcore::runner::parallel::simcoredb {
 namespace {
@@ -48,6 +52,273 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
 
 bool IsNoWorkWorkflowStep(const WorkflowReadyStep& step) {
     return step.step_kind == "seedprobe.done";
+}
+
+std::filesystem::path WeaklyCanonicalOrAbsolute(const std::filesystem::path& path) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (!ec) {
+        return canonical;
+    }
+    auto absolute = std::filesystem::absolute(path, ec);
+    return ec ? path : absolute;
+}
+
+std::string FileStamp(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        return "missing";
+    }
+    const auto write_time = std::filesystem::last_write_time(path, ec);
+    const auto ticks = ec ? 0 : write_time.time_since_epoch().count();
+    return std::to_string(size) + ":" + std::to_string(ticks);
+}
+
+bool CopyTree(const std::filesystem::path& src, const std::filesystem::path& dst, std::string* error_out) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) {
+        if (error_out) *error_out = "create runtime Sys directory failed: " + ec.message();
+        return false;
+    }
+
+    for (fs::recursive_directory_iterator it(src, ec), end; !ec && it != end; ++it) {
+        const auto& from = it->path();
+        const auto rel = fs::relative(from, src, ec);
+        if (ec) {
+            break;
+        }
+        const auto to = dst / rel;
+        if (it->is_directory(ec)) {
+            fs::create_directories(to, ec);
+        } else if (it->is_regular_file(ec)) {
+            fs::create_directories(to.parent_path(), ec);
+            if (!ec) {
+                fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+            }
+        }
+        if (ec) {
+            break;
+        }
+    }
+
+    if (ec) {
+        if (error_out) *error_out = "copy runtime Sys failed: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+std::string WorkerRuntimeFingerprint(
+    const std::filesystem::path& source_worker_exe,
+    const std::filesystem::path& dolphin_base_dir) {
+    const auto canonical_exe = WeaklyCanonicalOrAbsolute(source_worker_exe);
+    const auto canonical_base = WeaklyCanonicalOrAbsolute(dolphin_base_dir);
+    const auto dsp_coef = canonical_base / "Sys" / "GC" / "dsp_coef.bin";
+
+    std::ostringstream input;
+    input << "worker_exe=" << canonical_exe.string() << "\n";
+    input << "worker_exe_stamp=" << FileStamp(canonical_exe) << "\n";
+    input << "dolphin_base=" << canonical_base.string() << "\n";
+    input << "dsp_coef_stamp=" << FileStamp(dsp_coef) << "\n";
+
+    const auto input_text = input.str();
+    const auto digest = ::hash::sha256(input_text.data(), input_text.size());
+    return digest.empty() ? "unknown-runtime" : digest.substr(0, 16);
+}
+
+std::string ExpectedWorkerRuntimeManifest(
+    size_t worker_idx,
+    const std::filesystem::path& source_worker_exe,
+    const std::filesystem::path& dolphin_base_dir,
+    const std::string& fingerprint,
+    const std::string& exe_materialization) {
+    std::ostringstream manifest;
+    manifest << "simcore_worker_runtime_manifest_version=1\n";
+    manifest << "slot_id=" << worker_idx << "\n";
+    manifest << "fingerprint=" << fingerprint << "\n";
+    manifest << "source_worker_exe=" << WeaklyCanonicalOrAbsolute(source_worker_exe).string() << "\n";
+    manifest << "source_worker_exe_stamp=" << FileStamp(source_worker_exe) << "\n";
+    manifest << "dolphin_base_dir=" << WeaklyCanonicalOrAbsolute(dolphin_base_dir).string() << "\n";
+    manifest << "dsp_coef_stamp=" << FileStamp(dolphin_base_dir / "Sys" / "GC" / "dsp_coef.bin") << "\n";
+    manifest << "exe_materialization=" << exe_materialization << "\n";
+    return manifest.str();
+}
+
+bool ReadFileToString(const std::filesystem::path& path, std::string* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    *out = buffer.str();
+    return true;
+}
+
+bool WriteStringToFile(const std::filesystem::path& path, const std::string& text, std::string* error_out) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (error_out) *error_out = "open runtime manifest failed: " + path.string();
+        return false;
+    }
+    out << text;
+    if (!out) {
+        if (error_out) *error_out = "write runtime manifest failed: " + path.string();
+        return false;
+    }
+    return true;
+}
+
+bool MaterializeWorkerExe(
+    const std::filesystem::path& source_worker_exe,
+    const std::filesystem::path& runtime_worker_exe,
+    std::string* exe_materialization,
+    std::string* error_out) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_hard_link(source_worker_exe, runtime_worker_exe, ec);
+    if (!ec) {
+        if (exe_materialization) *exe_materialization = "hardlink";
+        return true;
+    }
+
+    const auto hardlink_error = ec.message();
+    ec.clear();
+    fs::copy_file(source_worker_exe, runtime_worker_exe, fs::copy_options::overwrite_existing, ec);
+    if (!ec) {
+        if (exe_materialization) *exe_materialization = "copy_after_hardlink_failed:" + hardlink_error;
+        return true;
+    }
+
+    if (error_out) {
+        *error_out = "materialize worker exe failed; hardlink=" + hardlink_error + "; copy=" + ec.message();
+    }
+    return false;
+}
+
+void PruneStaleWorkerRuntimeFingerprints(
+    const std::filesystem::path& runtime_cache_root,
+    const std::string& active_fingerprint) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_directory(runtime_cache_root, ec) || ec) {
+        return;
+    }
+
+    for (fs::directory_iterator it(runtime_cache_root, ec), end; !ec && it != end; ++it) {
+        if (!it->is_directory(ec)) {
+            continue;
+        }
+        const auto fingerprint_dir = it->path();
+        if (fingerprint_dir.filename().string() == active_fingerprint) {
+            continue;
+        }
+
+        bool owns_dir = false;
+        std::error_code child_ec;
+        for (fs::directory_iterator child(fingerprint_dir, child_ec), child_end; !child_ec && child != child_end; ++child) {
+            if (fs::exists(child->path() / "worker-runtime.manifest", child_ec) && !child_ec) {
+                owns_dir = true;
+                break;
+            }
+        }
+        if (owns_dir) {
+            fs::remove_all(fingerprint_dir, ec);
+            ec.clear();
+        }
+    }
+}
+
+bool EnsureWorkflowWorkerRuntimeSlot(
+    size_t worker_idx,
+    const DBWorkflowWorkerCoordinatorConfig& worker_cfg,
+    std::filesystem::path* runtime_worker_exe_out,
+    std::string* error_out) {
+    namespace fs = std::filesystem;
+    const fs::path source_worker_exe = worker_cfg.worker_exe_path;
+    const fs::path dolphin_base_dir = worker_cfg.dolphin_base_dir;
+    const fs::path source_sys = dolphin_base_dir / "Sys";
+    const fs::path source_dsp_coef = source_sys / "GC" / "dsp_coef.bin";
+
+    std::error_code ec;
+    if (!fs::is_regular_file(source_worker_exe, ec) || ec) {
+        if (error_out) *error_out = "source SimCoreWorker.exe missing: " + source_worker_exe.string();
+        return false;
+    }
+    if (!fs::is_directory(source_sys, ec) || ec || !fs::is_regular_file(source_dsp_coef, ec) || ec) {
+        if (error_out) *error_out = "Dolphin base Sys is missing or incomplete: " + source_sys.string();
+        return false;
+    }
+
+    const auto fingerprint = WorkerRuntimeFingerprint(source_worker_exe, dolphin_base_dir);
+    const fs::path runtime_cache_root = utils::getExecutablePath() / ".worker-runtime";
+    PruneStaleWorkerRuntimeFingerprints(runtime_cache_root, fingerprint);
+
+    const fs::path slot_root = runtime_cache_root / fingerprint / ("slot-" + std::to_string(worker_idx));
+    const fs::path runtime_worker_exe = slot_root / "SimCoreWorker.exe";
+    const fs::path runtime_sys = slot_root / "Sys";
+    const fs::path manifest_path = slot_root / "worker-runtime.manifest";
+
+    std::string existing_manifest;
+    if (ReadFileToString(manifest_path, &existing_manifest)
+        && fs::is_regular_file(runtime_worker_exe, ec) && !ec
+        && fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) && !ec) {
+        const auto expected_hardlink_manifest = ExpectedWorkerRuntimeManifest(
+            worker_idx,
+            source_worker_exe,
+            dolphin_base_dir,
+            fingerprint,
+            "hardlink");
+        if (existing_manifest == expected_hardlink_manifest
+            || existing_manifest.find("simcore_worker_runtime_manifest_version=1\n") == 0) {
+            if (runtime_worker_exe_out) *runtime_worker_exe_out = runtime_worker_exe;
+            return true;
+        }
+    }
+
+    fs::remove_all(slot_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "clear stale worker runtime slot failed: " + ec.message();
+        return false;
+    }
+    fs::create_directories(slot_root, ec);
+    if (ec) {
+        if (error_out) *error_out = "create worker runtime slot failed: " + ec.message();
+        return false;
+    }
+
+    std::string exe_materialization;
+    if (!MaterializeWorkerExe(source_worker_exe, runtime_worker_exe, &exe_materialization, error_out)) {
+        return false;
+    }
+    if (!CopyTree(source_sys, runtime_sys, error_out)) {
+        return false;
+    }
+
+    const auto manifest = ExpectedWorkerRuntimeManifest(
+        worker_idx,
+        source_worker_exe,
+        dolphin_base_dir,
+        fingerprint,
+        exe_materialization);
+    if (!WriteStringToFile(manifest_path, manifest, error_out)) {
+        return false;
+    }
+
+    if (!fs::is_regular_file(runtime_worker_exe, ec) || ec
+        || !fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) || ec) {
+        if (error_out) *error_out = "worker runtime validation failed: " + slot_root.string();
+        return false;
+    }
+
+    if (runtime_worker_exe_out) *runtime_worker_exe_out = runtime_worker_exe;
+    return true;
 }
 
 } // namespace
@@ -1194,9 +1465,19 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
 
     auto& slot = *workers_[worker_idx];
     slot.start_attempted = true;
+
+    std::filesystem::path runtime_worker_exe;
+    std::string runtime_error;
+    if (!EnsureWorkflowWorkerRuntimeSlot(worker_idx, worker_cfg_, &runtime_worker_exe, &runtime_error)) {
+        slot.ready.store(false);
+        RegisterWorkerSlotTelemetry(slot);
+        MarkWorkerError(slot, "worker runtime setup failed: " + runtime_error);
+        return false;
+    }
+
     simcore::ProcStartParams ps{};
     ps.worker_id = worker_idx;
-    ps.exe_path = worker_cfg_.worker_exe_path;
+    ps.exe_path = runtime_worker_exe.string();
     ps.iso_path = worker_cfg_.iso_path;
     ps.dolphin_base_dir = worker_cfg_.dolphin_base_dir;
 
