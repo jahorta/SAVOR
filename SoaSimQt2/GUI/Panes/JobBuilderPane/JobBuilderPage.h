@@ -1,15 +1,12 @@
 #pragma once
 
-#include <vector>
-
+#include <QtCore/QPointer>
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
-#include "Execution/Workflow/WorkflowComposition.h"
 
-class QListWidget;
-class QPlainTextEdit;
 class QPushButton;
+class WorkflowGraphEditorWindow;
 
 class JobBuilderPage final : public QWidget
 {
@@ -22,36 +19,10 @@ signals:
     void statusToastRequested(StatusToast toast);
 
 private:
-    using WorkflowUnitDefinition = simcore::db::execution::workflow::WorkflowUnitDefinition;
-    using WorkflowCompositionNode = simcore::db::execution::workflow::WorkflowCompositionNode;
-    using WorkflowUnitOutputBinding = simcore::db::execution::workflow::WorkflowUnitOutputBinding;
-
     void createWidgets();
-    void loadUnits();
-    void addSelectedUnit();
-    void removeSelectedNode();
-    void clearComposition();
-    void saveGraph();
-    void rebuildBindings();
-    void refreshUnitList();
-    void refreshCompositionList();
-    void refreshPreview();
+    void openWorkflowGraphEditor();
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
 
-    const WorkflowUnitDefinition* findUnit(const std::string& unit_kind) const;
-    QString describeUnit(const WorkflowUnitDefinition& unit) const;
-    QString describeNode(const WorkflowCompositionNode& node) const;
-
-    std::vector<WorkflowUnitDefinition> units_;
-    std::vector<WorkflowCompositionNode> nodes_;
-    std::vector<WorkflowUnitOutputBinding> outputBindings_;
-    int nextNodeOrdinal_ = 1;
-
-    QListWidget* unitList_ = nullptr;
-    QListWidget* compositionList_ = nullptr;
-    QPushButton* addUnitButton_ = nullptr;
-    QPushButton* removeNodeButton_ = nullptr;
-    QPushButton* clearButton_ = nullptr;
-    QPushButton* saveGraphButton_ = nullptr;
-    QPlainTextEdit* previewText_ = nullptr;
+    QPushButton* newGraphButton_ = nullptr;
+    QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
 };

@@ -34,7 +34,8 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 - State artifact creation now updates UIRead through the State outbox and artifact projector. The artifact browser cutover is therefore a command-to-State plus projection-to-UIRead flow, not a synchronous UIRead update from the Qt2 artifact service.
 - The first attached-source projection coverage is validated by focused SQLite fixture tests for artifact summary projection across separate State and UIRead database files.
 - Qt2 and UIRead projections should not derive domain detail by parsing raw legacy `vm_kv`, raw `input_ini`, results INI, or job-event payload text. Execution-owned fields can come from Execution/UI workflow tables; authored/analysis/state details must come from Authoring, Analysis, and State respectively.
-- Qt2 Workflow Builder is a composition, authoring, and submission surface. It saves reusable workflow graphs to Authoring as logical graphs with immutable revisions containing required input port definitions, possible output port definitions, edges, guards, and optional refs to other authored records.
+- Qt2 authoring uses modeless top-level editor windows for reusable authoring records. The main panes are browsers/libraries; `New`, `Edit`, and `Duplicate` actions open independent editor windows for predicates, battle plans, and workflow graphs. These windows must not block the rest of Qt2, and dirty-close handling should prompt before discarding unsaved edits.
+- Qt2 Workflow Builder is an authoring surface only. It saves reusable workflow graphs to Authoring as logical graphs with immutable revisions containing required input port definitions, possible output port definitions, edges, guards, and optional refs to other authored records. Workflow submission/instancing belongs to a separate launch pane where external inputs are selected.
 - Qt2 must not store external input values in authored workflow graphs. Source artifacts, savestates, prior analysis output refs, and other run-specific bindings are instance-specific submission data.
 - Qt2 may bind authored plans, predicates, and specs in the authored graph, but it must not pre-create Analysis DB rows for downstream steps.
 - Workflow composition contracts expose required inputs and possible outputs. Possible outputs are only compatibility hints until a running step produces an actual typed reference.
@@ -91,6 +92,11 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
    - subscription status (`ACTIVE`/`PAUSED`/`ERROR`)
    - last processed outbox cursor/event id per projector and source stream
    - last error and recovery action guidance
+7. Move authoring editors out of inline panes and blocking dialogs:
+   - Predicate specs, battle plans, and workflow graphs open in modeless top-level editor windows.
+   - Parent panes track open windows and focus an existing editor for the same draft/record when possible.
+   - Save operations write to Authoring context services and refresh the parent browser after success.
+   - Workflow graph editors never collect external input values or launch workflow instances.
 
 ---
 
