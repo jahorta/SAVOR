@@ -16,7 +16,7 @@ class QTableWidget;
 class BattlePlanEditorWindow final : public QWidget
 {
 public:
-    explicit BattlePlanEditorWindow(QWidget* parent = nullptr);
+    explicit BattlePlanEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
 
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);

@@ -349,7 +349,7 @@ inline IUiReadDb* UiRead() {
 }
 
 inline DbError NotMigrated(const char* operation) {
-    return { DbErrorKind::Unavailable, 0, std::string(operation) + " is not migrated to SimCoreDB UIRead yet" };
+    return { DbErrorKind::Unavailable, 0, std::string(operation) + " is not implemented in this Qt2 migration slice yet" };
 }
 
 template <typename T>

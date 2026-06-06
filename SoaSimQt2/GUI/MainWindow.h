@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtCore/QDateTime>
+#include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 #include "GUI/Widgets/StatusBarWidget.h"
@@ -8,6 +9,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
+#include "GUI/Panes/BattleRunSettingsPane/SpecLibraryDialog.h"
 
 class CoordinatorController;
 class CoordinatorPane;
@@ -36,9 +38,18 @@ private slots:
     void handleNavigationChanged(int currentRow);
     void handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFocusTarget target);
     void syncStatusBar();
+    void openSeedProbeSpecLibrary();
+    void openTasSpecLibrary();
+    void openBattleRunSpecLibrary();
+    void openPredicateSpecLibrary();
+    void openBattlePlanSpecLibrary();
 
 private:
     void createWidgets();
+    void createMenus();
+    void openSpecLibraryDialog(
+        SpecLibraryDialog::SpecKind kind,
+        QPointer<SpecLibraryDialog>& dialog);
     QWidget* createTopBar();
     QWidget* createNavigationPane();
     QWidget* createContentPane();
@@ -60,4 +71,9 @@ private:
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;
+    QPointer<SpecLibraryDialog> seedProbeSpecLibraryDialog_;
+    QPointer<SpecLibraryDialog> tasSpecLibraryDialog_;
+    QPointer<SpecLibraryDialog> battleRunSpecLibraryDialog_;
+    QPointer<SpecLibraryDialog> predicateSpecLibraryDialog_;
+    QPointer<SpecLibraryDialog> battlePlanSpecLibraryDialog_;
 };

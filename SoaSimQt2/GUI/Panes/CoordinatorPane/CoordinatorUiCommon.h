@@ -45,7 +45,7 @@ inline std::string WorkerProgramKindLabel(const std::optional<int>& kind)
 
 inline QString VisualReplayRuntimeStateText(const void*)
 {
-    return QStringLiteral("Disabled during SimCoreDB UIRead cutover");
+    return QStringLiteral("Visual replay is temporarily unavailable in this Qt2 migration slice.");
 }
 
 } // namespace soasimqt::ui

@@ -19,7 +19,7 @@ QString CoordinatorController::validationMessage() const { return validationMess
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const { return emptySnapshots_; }
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return emptySnapshots_; }
 QStringList CoordinatorController::takeVisualLiveLogLineUpdates() { return {}; }
-QString CoordinatorController::visualReplayRuntimeStateText() const { return QStringLiteral("Disabled during SimCoreDB UIRead cutover"); }
+QString CoordinatorController::visualReplayRuntimeStateText() const { return QStringLiteral("Visual replay is disabled in this migration slice."); }
 bool CoordinatorController::visualReplayControlsEnabled() const { return false; }
 
 void CoordinatorController::startCoordinator() { updateValidationMessage(); emit stateChanged(); }
@@ -44,6 +44,5 @@ void CoordinatorController::refreshSnapshot() { emit snapshotChanged(); }
 
 void CoordinatorController::updateValidationMessage()
 {
-    validationMessage_ = QStringLiteral("Worker coordinator is disabled during SimCoreDB UIRead cutover.");
+    validationMessage_ = QStringLiteral("Worker coordinator is temporarily disabled while migrating away from the legacy SimCore/DB path.");
 }
-

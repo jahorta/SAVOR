@@ -27,6 +27,7 @@ constexpr auto kOnlyDoneKey = "only_done";
 constexpr auto kAutoRefreshKey = "auto_refresh";
 constexpr auto kRefreshSecondsKey = "refresh_seconds";
 constexpr auto kPageLimitKey = "page_limit";
+constexpr auto kDataSourceUnavailableMessage = "Seed probe data source is not implemented in this Qt2 migration slice yet.";
 
 QString describeException(const char* prefix)
 {
@@ -471,7 +472,7 @@ void SeedProbeController::kickPageFetch()
         auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
         if (uiReadDb == nullptr) {
             ListBundleResult result;
-            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
             return result;
         }
 
@@ -511,7 +512,7 @@ void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)
         auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
         if (uiReadDb == nullptr) {
             DetailBundleResult result;
-            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
             return result;
         }
         const auto summary = uiReadDb->GetSeedProbeRunSummary(probeId);
@@ -563,7 +564,7 @@ void SeedProbeController::kickRunningRefresh(const QVector<qint64>& probeIds)
         auto* uiReadDb = soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
         if (uiReadDb == nullptr) {
             RunningProbeUpdateResult result;
-            result.errorMessage = QStringLiteral("SimCoreDB UIRead database is not running");
+            result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
             return result;
         }
         QVector<RunningProbeUpdate> updates;

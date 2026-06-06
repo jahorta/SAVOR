@@ -7,6 +7,7 @@
 #include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
+#include "GUI/Panes/BattleRunSettingsPane/SpecLibraryDialog.h"
 #include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
 
 #include <QtCore/QStringList>
@@ -15,6 +16,9 @@
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QMenu>
+#include <QtGui/QAction>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
@@ -53,6 +57,7 @@ MainWindow::MainWindow(QWidget *parent)
     
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
+    createMenus();
 
     connect(this, &MainWindow::coordinatorStateChanged, statusBarWidget_, &StatusBarWidget::setCoordinatorState);
     connect(coordinatorController_, &CoordinatorController::stateChanged, this, &MainWindow::syncStatusBar);
@@ -114,6 +119,9 @@ void MainWindow::handleNavigationChanged(int currentRow)
     if (explorerRunsPage_) {
         explorerRunsPage_->setPageActive(currentRow == 8);
     }
+    if (dtmEditorPage_) {
+        dtmEditorPage_->setPageActive(currentRow == 9);
+    }
 
     if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
         contentTitleLabel_->setText(kPageMetadata[currentRow].title);
@@ -143,6 +151,56 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
     }
 
     settingsPage_->focusCoordinatorSettings(focusTarget);
+}
+
+void MainWindow::createMenus()
+{
+    auto* specsMenu = menuBar()->addMenu(QStringLiteral("Specs"));
+    connect(specsMenu->addAction(QStringLiteral("Seed Probe Specs")), &QAction::triggered, this, &MainWindow::openSeedProbeSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("TAS Specs")), &QAction::triggered, this, &MainWindow::openTasSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Battle Run Specs")), &QAction::triggered, this, &MainWindow::openBattleRunSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Battle Plans")), &QAction::triggered, this, &MainWindow::openBattlePlanSpecLibrary);
+}
+
+void MainWindow::openSpecLibraryDialog(
+    SpecLibraryDialog::SpecKind kind,
+    QPointer<SpecLibraryDialog>& dialog)
+{
+    if (dialog) {
+        dialog->raise();
+        dialog->activateWindow();
+        return;
+    }
+
+    dialog = new SpecLibraryDialog(kind, this);
+    connect(dialog.data(), &SpecLibraryDialog::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    dialog->show();
+}
+
+void MainWindow::openSeedProbeSpecLibrary()
+{
+    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::SeedProbe, seedProbeSpecLibraryDialog_);
+}
+
+void MainWindow::openTasSpecLibrary()
+{
+    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::Tas, tasSpecLibraryDialog_);
+}
+
+void MainWindow::openBattleRunSpecLibrary()
+{
+    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::BattleRun, battleRunSpecLibraryDialog_);
+}
+
+void MainWindow::openPredicateSpecLibrary()
+{
+    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::Predicate, predicateSpecLibraryDialog_);
+}
+
+void MainWindow::openBattlePlanSpecLibrary()
+{
+    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::BattlePlan, battlePlanSpecLibraryDialog_);
 }
 
 void MainWindow::syncStatusBar()

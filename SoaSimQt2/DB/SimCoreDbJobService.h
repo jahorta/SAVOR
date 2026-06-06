@@ -18,7 +18,7 @@ public:
     static simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>> ListProgramKinds() {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::ProgramKindKV>>("SimCoreDB UIRead database is not running");
+            return Unavailable<std::vector<simcore::db::ProgramKindKV>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
 
         std::vector<simcore::db::ProgramKindKV> out;
@@ -35,7 +35,7 @@ public:
         int limit) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<Page<JobLite>>("SimCoreDB UIRead database is not running");
+            return Unavailable<Page<JobLite>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
 
         simcore::db::UiReadJobListQuery query{};
@@ -76,7 +76,7 @@ public:
     static simcore::db::DbResult<Page<JobEventLite>> FetchJobEventsPage(const JobEventsListScope& scope, const PagedQuery<>& query) {
         auto* db = ExecutionDb();
         if (db == nullptr) {
-            return Unavailable<Page<JobEventLite>>("SimCoreDB execution database is not running");
+            return Unavailable<Page<JobEventLite>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (!scope.job_id.has_value() || *scope.job_id <= 0) {
             return Invalid<Page<JobEventLite>>("job_id is required");
@@ -116,7 +116,7 @@ public:
     static simcore::db::DbResult<std::vector<simcore::db::ArtifactRefLite>> FetchJobArtifactRefs(std::int64_t job_id) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::ArtifactRefLite>>("SimCoreDB UIRead database is not running");
+            return Unavailable<std::vector<simcore::db::ArtifactRefLite>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
 
         std::vector<simcore::db::ArtifactRefLite> out;
@@ -135,7 +135,7 @@ public:
     static simcore::db::DbResult<std::string> FetchJobInputIni(std::int64_t job_id) {
         auto* db = ExecutionDb();
         if (db == nullptr) {
-            return Unavailable<std::string>("SimCoreDB execution database is not running");
+            return Unavailable<std::string>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
 
         std::string error;
@@ -149,7 +149,7 @@ public:
     static simcore::db::DbResult<void> RequeueJob(std::int64_t job_id) {
         auto* db = ExecutionDb();
         if (db == nullptr) {
-            return UnavailableVoid("SimCoreDB execution database is not running");
+            return UnavailableVoid("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         std::string error;
         if (!db->RequeueJob(job_id, &error)) {
@@ -161,7 +161,7 @@ public:
     static simcore::db::DbResult<void> RestartFailedJob(std::int64_t job_id, std::optional<std::string> input_ini_override = std::nullopt) {
         auto* db = ExecutionDb();
         if (db == nullptr) {
-            return UnavailableVoid("SimCoreDB execution database is not running");
+            return UnavailableVoid("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         std::string error;
         if (!db->RestartFailedJob(job_id, std::move(input_ini_override), &error)) {
@@ -173,7 +173,7 @@ public:
     static simcore::db::DbResult<void> CancelJob(std::int64_t job_id) {
         auto* db = ExecutionDb();
         if (db == nullptr) {
-            return UnavailableVoid("SimCoreDB execution database is not running");
+            return UnavailableVoid("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         std::string error;
         if (!db->CancelQueuedOrClaimedJob(job_id, &error)) {
@@ -211,3 +211,4 @@ private:
 };
 
 } // namespace soasimqt2::db
+

@@ -344,7 +344,7 @@ void JobsController::replaySelectedJobVisually()
     replayVisualInFlight_ = true;
     setBusy(Operation::ReplayVisual, true);
     replayVisualWatcher_.setFuture(runDataServiceCall([]() {
-        return VoidResult::Err({ simcore::db::DbErrorKind::Unavailable, 0, "visual replay is not migrated to the Qt2 execution runtime" });
+        return VoidResult::Err({ simcore::db::DbErrorKind::Unavailable, 0, "visual replay is temporarily not implemented in this Qt2 migration slice" });
     }));
 }
 

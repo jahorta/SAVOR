@@ -104,6 +104,9 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
@@ -242,6 +245,9 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </QtMoc>
@@ -294,6 +300,9 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">

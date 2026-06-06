@@ -37,7 +37,7 @@ public:
         const simcore::db::UiReadArtifactListQuery& query) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::UiReadPage<simcore::db::UiArtifactSummary>>("SimCoreDB UIRead database is not running");
+            return Unavailable<simcore::db::UiReadPage<simcore::db::UiArtifactSummary>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<simcore::db::UiReadPage<simcore::db::UiArtifactSummary>>::Ok(db->ListArtifacts(query));
     }
@@ -45,7 +45,7 @@ public:
     static ServiceResult<simcore::db::UiArtifactSummary> ImportArtifact(const ArtifactImportRequest& request) {
         auto* state_db = StateDb();
         if (state_db == nullptr) {
-            return Unavailable<simcore::db::UiArtifactSummary>("SimCoreDB state database is not running");
+            return Unavailable<simcore::db::UiArtifactSummary>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (request.source_path.empty()) {
             return Invalid<simcore::db::UiArtifactSummary>("source path is required");
@@ -117,7 +117,7 @@ public:
         const std::filesystem::path& output_path) {
         auto* db = StateDb();
         if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "SimCoreDB state database is not running" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice" });
         }
         if (artifact_id <= 0 || output_path.empty()) {
             return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "artifact_id and output path are required" });
@@ -230,3 +230,4 @@ private:
 };
 
 } // namespace soasimqt2::db
+

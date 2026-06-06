@@ -107,11 +107,11 @@ QString targetKindLabel(simcore::db::BattlePlanTargetKind kind)
 
 } // namespace
 
-BattlePlanEditorWindow::BattlePlanEditorWindow(QWidget* parent)
+BattlePlanEditorWindow::BattlePlanEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    setWindowFlag(Qt::Window, !embeddedInContainer);
     setWindowTitle(QStringLiteral("Battle Plan Editor"));
     resize(760, 560);
     createWidgets();

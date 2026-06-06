@@ -10,8 +10,8 @@ class DtmEditorPage final : public QWidget
 
 public:
     explicit DtmEditorPage(QWidget* parent = nullptr);
+    void setPageActive(bool active);
 
 signals:
     void statusToastRequested(const StatusToast& toast);
 };
-
