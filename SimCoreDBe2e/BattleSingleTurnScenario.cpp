@@ -26,12 +26,15 @@
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
+#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
+#include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Breakpoints/BPRegistry.h"
 #include "Runner/Breakpoints/Predicate.h"
 #include "Runner/IPC/Wire.h"
+#include "Tas/DtmFile.h"
 #include "MultiLineProgressRenderer.h"
 
 namespace simcore::e2e {
@@ -69,6 +72,22 @@ std::int64_t ComputeBattleScenarioTimeoutMs(const simcore::db::BattleRunSpecSnap
     const std::int64_t per_wave_budget = static_cast<std::int64_t>(std::max(1, fake_jobs_per_wave))
         * std::max<std::int64_t>(1000, static_cast<std::int64_t>(run_spec.run_ms));
     return std::max<std::int64_t>(options.timeout_ms, (per_wave_budget * 4) + options.timeout_ms);
+}
+
+std::int64_t ComputeTasMovieRunMs(
+    const std::filesystem::path& dtm_file,
+    std::uint8_t headroom_x10,
+    std::int64_t fallback_ms) {
+    simcore::tas::DtmFile dtm;
+    if (!dtm.load(dtm_file.string())) {
+        return fallback_ms;
+    }
+    const auto info = dtm.info();
+    const auto run_ms = simcore::tasmovie::compute_run_ms_from_counts(
+        info.vi_count,
+        info.input_count,
+        static_cast<double>(headroom_x10) / 10.0);
+    return run_ms > 0 ? static_cast<std::int64_t>(run_ms) : fallback_ms;
 }
 
 std::vector<std::uint8_t> BuildCurrentTurnAddressProgram() {
@@ -287,6 +306,9 @@ bool RunSeedProbePrelude(
 
 bool SeedBattleAuthoringRows(
     simcore::db::IAuthoringDb* authoring_db,
+    int min_fake_attacks,
+    int max_fake_attacks,
+    bool require_electribox_drop,
     std::int64_t* battle_run_spec_id_out,
     std::int64_t* explorer_settings_id_out,
     std::string* error_out) {
@@ -305,8 +327,8 @@ bool SeedBattleAuthoringRows(
                 .progress_enable = true,
                 .use_single_turn_runner = true,
                 .auto_wave_trigger_enable = true,
-                .min_fake_attacks = 0,
-                .max_fake_attacks = 2,
+                .min_fake_attacks = min_fake_attacks,
+                .max_fake_attacks = max_fake_attacks,
                 .created_at_utc = now,
                 .event_id = "simcoredbe2e.battle.authoring.run_spec",
                 .correlation_id = "simcoredbe2e.battle",
@@ -392,47 +414,51 @@ bool SeedBattleAuthoringRows(
         return false;
     }
 
-    std::string desc;
-    addrprog::Builder builder;
-    addrprog::catalog::item_drop_amt(builder, 273, desc);
-    std::int64_t address_program_id = 0;
-    if (!authoring_db->EnsureAddressProgram(
-            {
-                .program_version = static_cast<int>(addrprog::PROG_VERSION),
-                .prog_bytes = builder.blob(),
-                .derived_buffer_version = 1,
-                .description = desc,
-            },
-            &address_program_id,
-            error_out)) {
-        return false;
-    }
+    std::vector<std::int64_t> predicate_spec_ids;
+    if (require_electribox_drop) {
+        std::string desc;
+        addrprog::Builder builder;
+        addrprog::catalog::item_drop_amt(builder, 273, desc);
+        std::int64_t address_program_id = 0;
+        if (!authoring_db->EnsureAddressProgram(
+                {
+                    .program_version = static_cast<int>(addrprog::PROG_VERSION),
+                    .prog_bytes = builder.blob(),
+                    .derived_buffer_version = 1,
+                    .description = desc,
+                },
+                &address_program_id,
+                error_out)) {
+            return false;
+        }
 
-    std::int64_t electribox_predicate_spec_id = 0;
-    if (!authoring_db->SavePredicateSpec(
-            {
-                .name = "SimCoreDBe2e one electribox per turn",
-                .breakpoint_id = bp::battle::EndTurn,
-                .lhs_kind = simcore::db::PredicateOperandKind::Absolute,
-                .lhs_value = 0,
-                .rhs_kind = simcore::db::PredicateOperandKind::Memory,
-                .rhs_value = static_cast<std::int64_t>(addr::battle::CurrentTurn),
-                .cmp_op = simcore::db::PredicateComparisonOp::EQ,
-                .width = 1,
-                .flag_mask = static_cast<std::int64_t>(
-                    static_cast<std::uint32_t>(simcore::pred::PredFlag::Active)
-                    | static_cast<std::uint32_t>(simcore::pred::PredFlag::LhsIsProg) 
-                    | static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsKey)),
-                .lhs_address_program_id = address_program_id,
-                .abort_on_fail = true,
-                .created_at_utc = now,
-                .event_id = "simcoredbe2e.battle.authoring.predicate.1",
-                .correlation_id = "simcoredbe2e.battle",
-                .causation_id = "address-program-" + std::to_string(address_program_id),
-            },
-            &electribox_predicate_spec_id,
-            error_out)) {
-        return false;
+        std::int64_t electribox_predicate_spec_id = 0;
+        if (!authoring_db->SavePredicateSpec(
+                {
+                    .name = "SimCoreDBe2e one electribox per turn",
+                    .breakpoint_id = bp::battle::EndTurn,
+                    .lhs_kind = simcore::db::PredicateOperandKind::Absolute,
+                    .lhs_value = 0,
+                    .rhs_kind = simcore::db::PredicateOperandKind::Memory,
+                    .rhs_value = static_cast<std::int64_t>(addr::battle::CurrentTurn),
+                    .cmp_op = simcore::db::PredicateComparisonOp::EQ,
+                    .width = 1,
+                    .flag_mask = static_cast<std::int64_t>(
+                        static_cast<std::uint32_t>(simcore::pred::PredFlag::Active)
+                        | static_cast<std::uint32_t>(simcore::pred::PredFlag::LhsIsProg)
+                        | static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsKey)),
+                    .lhs_address_program_id = address_program_id,
+                    .abort_on_fail = true,
+                    .created_at_utc = now,
+                    .event_id = "simcoredbe2e.battle.authoring.predicate.1",
+                    .correlation_id = "simcoredbe2e.battle",
+                    .causation_id = "address-program-" + std::to_string(address_program_id),
+                },
+                &electribox_predicate_spec_id,
+                error_out)) {
+            return false;
+        }
+        predicate_spec_ids.push_back(electribox_predicate_spec_id);
     }
 
     std::int64_t turn_order_predicate_spec_id = 0;
@@ -460,11 +486,12 @@ bool SeedBattleAuthoringRows(
         error_out)) {
         return false;
     }
+    predicate_spec_ids.push_back(turn_order_predicate_spec_id);
 
     std::int64_t predicate_set_id = 0;
     if (!authoring_db->SavePredicateSet(
             {
-                .predicate_spec_ids = { electribox_predicate_spec_id, turn_order_predicate_spec_id },
+                .predicate_spec_ids = predicate_spec_ids,
                 .created_at_utc = now,
             },
             &predicate_set_id,
@@ -583,6 +610,152 @@ bool SeedBattleAnalysisAndWorkflowRows(
     return true;
 }
 
+bool SeedTasMovieSeedProbeBattleGraphExecution(
+    simcore::db::IAuthoringDb* authoring_db,
+    simcore::db::IExecutionDb* execution_db,
+    std::int64_t dtm_artifact_id,
+    std::int64_t seed_probe_spec_id,
+    std::int64_t battle_template_id,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
+        if (error_out) *error_out = "authoring/execution db unavailable";
+        return false;
+    }
+    if (dtm_artifact_id <= 0 || seed_probe_spec_id <= 0 || battle_template_id <= 0) {
+        if (error_out) *error_out = "dtm artifact, seed probe spec, and battle template ids must be > 0";
+        return false;
+    }
+
+    simcore::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = "SimCoreDBe2e TAS SeedProbe Battle graph",
+                .description = "TasMovie -> SeedProbe -> Battle graph-style e2e scenario",
+                .graph_version = 1,
+                .graph_hash = "simcoredbe2e.workflow_graph.tasmovie_seedprobe_battle.v1",
+                .nodes = {
+                    {
+                        .node_key = "tas_1",
+                        .unit_kind = "tas_movie",
+                        .display_name = "TAS Movie",
+                        .inputs = {
+                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        },
+                    },
+                    {
+                        .node_key = "probe_1",
+                        .unit_kind = "seed_probe_chain",
+                        .display_name = "Seed Probe Chain",
+                        .authored_ref_kind = std::string("seed_probe_spec"),
+                        .authored_ref_id = seed_probe_spec_id,
+                        .inputs = {
+                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        },
+                    },
+                    {
+                        .node_key = "battle_1",
+                        .unit_kind = "battle_chain",
+                        .display_name = "Battle Chain",
+                        .authored_ref_kind = std::string("authoring.template"),
+                        .authored_ref_id = battle_template_id,
+                        .inputs = {
+                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                            { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "battle_context", .data_kind = "analysisbattle.context_probe", .display_name = "Battle context" },
+                        },
+                    },
+                },
+                .edges = {
+                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+                    { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+                },
+                .created_at_utc = simcore::db::types::UtcNow(),
+                .event_id = "simcoredbe2e.authoring.workflow_graph.tasmovie_seedprobe_battle",
+                .correlation_id = "simcoredbe2e.workflow_graph.tasmovie_seedprobe_battle",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    return execution_db->CreateWorkflowInstance(
+        {
+            .workflow_kind = "workflow_graph_tasmovie_seedprobe_battle",
+            .root_scope_kind = "manual",
+            .root_scope_id = dtm_artifact_id,
+            .input_ref_kind = std::string("state_artifact"),
+            .input_ref_id = dtm_artifact_id,
+            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+            .created_by = "simcoredbe2e",
+            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
+            .steps = {
+                {
+                    .step_key = "tas_1",
+                    .step_kind = "tas_movie",
+                    .priority = 1,
+                    .max_attempts = 1,
+                },
+            },
+            .input_bindings = {
+                {
+                    .node_key = "tas_1",
+                    .input_key = "dtm_artifact",
+                    .data_kind = "state_artifact.dtm_artifact_id",
+                    .ref_kind = "state_artifact",
+                    .ref_id = dtm_artifact_id,
+                    .source_kind = "external",
+                },
+            },
+        },
+        workflow_instance_id_out,
+        error_out);
+}
+
+std::int64_t ResolveProbeRunIdFromGraph(
+    const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
+    if (!graph.has_value()) {
+        return 0;
+    }
+    for (const auto& step : graph->steps) {
+        if ((step.step_key == "probe_1" || step.step_key == "probe_1/Unique")
+            && step.input_ref_kind.has_value()
+            && *step.input_ref_kind == "sp_probe_run"
+            && step.input_ref_id.has_value()
+            && *step.input_ref_id > 0) {
+            return *step.input_ref_id;
+        }
+    }
+    return 0;
+}
+
+std::int64_t ResolveBattleContextProbeIdFromGraph(
+    const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
+    if (!graph.has_value()) {
+        return 0;
+    }
+    for (const auto& step : graph->steps) {
+        if (step.step_key == "battle_1"
+            && step.output_ref_kind.has_value()
+            && *step.output_ref_kind == "analysisbattle.context_probe"
+            && step.output_ref_id.has_value()
+            && *step.output_ref_id > 0) {
+            return *step.output_ref_id;
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 bool RunBattleSingleTurnRealWorkerScenario(
@@ -633,6 +806,9 @@ bool RunBattleSingleTurnRealWorkerScenario(
     std::int64_t explorer_settings_id = 0;
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
+            0,
+            2,
+            true,
             &battle_run_spec_id,
             &explorer_settings_id,
             &err)) {
@@ -861,6 +1037,374 @@ bool RunBattleSingleTurnRealWorkerScenario(
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
             : "workflow did not reach COMPLETED state before timeout";
+        return false;
+    }
+    return true;
+}
+
+bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
+    const CliOptions& options,
+    const char* argv0,
+    simcore::db::core::DBService* db_service,
+    std::string* error_out) {
+    if (db_service == nullptr || !db_service->IsRunning()) {
+        if (error_out) *error_out = "DBService must be running";
+        return false;
+    }
+    if (db_service->ExecutionDb() == nullptr
+        || db_service->StateDb() == nullptr
+        || db_service->AnalysisDb() == nullptr
+        || db_service->AuthoringDb() == nullptr) {
+        if (error_out) *error_out = "one or more SimCoreDB contexts are unavailable";
+        return false;
+    }
+
+    const auto worker_exe = ResolveWorkerExePath(argv0);
+    if (!std::filesystem::exists(worker_exe)) {
+        if (error_out) *error_out = "SimCoreWorker.exe was not found next to SimCoreDBe2e: " + worker_exe.string();
+        return false;
+    }
+
+    DurableLogFile durable_log;
+    if (!durable_log.Open(options, options.scenario, error_out)) {
+        return false;
+    }
+    std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
+
+    std::string err;
+    std::int64_t dtm_artifact_id = 0;
+    if (!SeedStateDtmArtifact(db_service->StateDb(), options.dtm_file, &dtm_artifact_id, &err)) {
+        if (error_out) *error_out = "failed seeding StateDB DTM artifact: " + err;
+        return false;
+    }
+
+    std::int64_t seed_probe_spec_id = 0;
+    if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
+        if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
+        return false;
+    }
+
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
+    if (!SeedBattleAuthoringRows(
+            db_service->AuthoringDb(),
+            22,
+            25,
+            false,
+            &battle_run_spec_id,
+            &explorer_settings_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding battle authoring rows: " + err;
+        return false;
+    }
+
+    std::int64_t battle_template_id = 0;
+    if (!db_service->AuthoringDb()->SaveTemplate(
+            {
+                .name = "SimCoreDBe2e TAS SeedProbe Battle template",
+                .description = "First battle graph-style template",
+                .seed_probe_spec_id = seed_probe_spec_id,
+                .battle_run_spec_id = battle_run_spec_id,
+                .explorer_settings_id = explorer_settings_id,
+                .created_at_utc = simcore::db::types::UtcNow(),
+                .event_id = "simcoredbe2e.authoring.template.tasmovie_seedprobe_battle",
+                .correlation_id = "simcoredbe2e.workflow_graph.tasmovie_seedprobe_battle",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &battle_template_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding battle template: " + err;
+        return false;
+    }
+
+    std::int64_t workflow_instance_id = 0;
+    if (!SeedTasMovieSeedProbeBattleGraphExecution(
+            db_service->AuthoringDb(),
+            db_service->ExecutionDb(),
+            dtm_artifact_id,
+            seed_probe_spec_id,
+            battle_template_id,
+            &workflow_instance_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding graph workflow execution rows: " + err;
+        return false;
+    }
+
+    simcore::db::execution::programdb::ProgramKindRegistry registry;
+    simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    tas_config.authoring_db = db_service->AuthoringDb();
+    tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
+    tas_config.blueprint.rtc_low = 4;
+    tas_config.blueprint.rtc_high = 4;
+    tas_config.blueprint.run_ms = 0;
+    tas_config.blueprint.vi_stall_ms = 2000;
+    tas_config.blueprint.progress_enable = false;
+    tas_config.blueprint.headroom_x10 = 35;
+    tas_config.working_dir_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "simcoredbe2e-default") / "tasmovie";
+    simcore::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->StateDb(),
+        db_service->AnalysisDb(),
+        std::move(tas_config));
+
+    simcore::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
+    seed_config.authoring_db = db_service->AuthoringDb();
+    simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->AnalysisDb(),
+        std::move(seed_config));
+
+    simcore::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
+    context_config.authoring_db = db_service->AuthoringDb();
+    context_config.working_dir_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "simcoredbe2e-default") / "battle-context";
+    simcore::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->AnalysisDb(),
+        std::move(context_config));
+
+    simcore::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
+    battle_config.authoring_db = db_service->AuthoringDb();
+    battle_config.working_dir_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "simcoredbe2e-default") / "battle-single-turn";
+    simcore::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->StateDb(),
+        db_service->AnalysisDb(),
+        std::move(battle_config));
+
+    if (!registry.HasRequiredAdapters(static_cast<std::int32_t>(simcore::PK_TasMovie))
+        || !registry.HasRequiredAdaptersForStepKind("tas_movie")
+        || !registry.HasRequiredAdaptersForStepKind("seed_probe_chain")
+        || !registry.HasRequiredAdaptersForStepKind("battle_chain")
+        || !registry.HasRequiredAdaptersForStepKind("battle.context_probe")
+        || !registry.HasRequiredAdaptersForStepKind("battle.single_turn")) {
+        if (error_out) *error_out = "graph workflow descriptor registration is incomplete";
+        return false;
+    }
+
+    const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
+    const auto tas_budget_ms = ComputeTasMovieRunMs(options.dtm_file, 35, options.timeout_ms * 2) + options.timeout_ms;
+    const auto seedprobe_budget_ms = options.timeout_ms
+        * (1 + (static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * kSeedProbeSamplesPerAxis * 3) + 25);
+    const auto battle_budget_ms = run_spec.has_value()
+        ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
+        : std::max<std::int64_t>(options.timeout_ms, 300000);
+    const auto scenario_timeout_ms = tas_budget_ms + seedprobe_budget_ms + battle_budget_ms;
+
+    std::cout << "[tasmovie-seedprobe-battle-graph-setup] dtm_artifact_id=" << dtm_artifact_id
+              << " seed_probe_spec_id=" << seed_probe_spec_id
+              << " battle_run_spec_id=" << battle_run_spec_id
+              << " explorer_settings_id=" << explorer_settings_id
+              << " battle_template_id=" << battle_template_id
+              << " workflow_instance_id=" << workflow_instance_id
+              << " rtc=4"
+              << " fake_attacks=22..25\n";
+
+    auto coordinator = simcore::runner::parallel::simcoredb::BuildDbBackedWorkflowCoordinator(
+        db_service->ExecutionDb(),
+        db_service->StateDb(),
+        simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = 15u,
+            .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
+            .worker_exe_path = worker_exe.string(),
+            .iso_path = options.iso_path.string(),
+            .dolphin_base_dir = options.dolphin_base_dir.string(),
+            .worker_dir_root = options.worker_dir_root.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default") / ".workers").string(),
+        },
+        simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
+        &registry);
+
+    std::mutex lines_mtx;
+    std::deque<std::string> pending_lines;
+    const auto push_line = [&](std::string line) {
+        durable_log.AppendLine(line);
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        pending_lines.push_back(std::move(line));
+    };
+    const auto drain_lines = [&]() {
+        std::deque<std::string> out;
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        std::swap(out, pending_lines);
+        return out;
+    };
+    std::mutex progress_mtx;
+    std::unordered_map<std::size_t, simcore::PRProgress> last_progress_by_worker;
+
+    coordinator.SetResultCallback([&](const simcore::PRResult& result) {
+        std::ostringstream line;
+        line << "[tasmovie-seedprobe-battle-worker-result] job=" << result.job_id
+             << " worker=" << result.worker_id
+             << " ok=" << (result.ps.ok ? "true" : "false")
+             << " w_err=" << simcore::WErrToString(result.ps.w_err) << "(" << static_cast<int>(result.ps.w_err) << ")";
+        push_line(line.str());
+    });
+    coordinator.SetResultMapEventCallback([&](const std::string& line) {
+        push_line(line);
+    });
+    coordinator.SetProgressCallback([&](const simcore::PRProgress& progress) {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        last_progress_by_worker[progress.worker_id] = progress;
+    });
+
+    coordinator.Start();
+    const auto started = std::chrono::steady_clock::now();
+    const bool interactive_stdout = IsInteractiveStdout();
+    MultiLineProgressRenderer progress_renderer;
+    bool completed = false;
+    bool failed = false;
+    std::string latest_state = "workflow=unavailable";
+    std::size_t poll_count = 0;
+    std::size_t ticks_since_snapshot = 0;
+    std::vector<std::string> latest_lines;
+    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+        ++poll_count;
+        ++ticks_since_snapshot;
+        const auto event_lines = drain_lines();
+        const auto graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        WorkerProgressById progress_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(progress_mtx);
+            progress_snapshot = last_progress_by_worker;
+        }
+        latest_lines = BuildCoordinatorProgressLines(
+            db_service->ExecutionDb(),
+            coordinator.SnapshotTelemetry(),
+            coordinator.SnapshotWorkers(),
+            graph,
+            &progress_snapshot);
+        if (interactive_stdout) {
+            progress_renderer.SetLines(latest_lines);
+            for (const auto& line : event_lines) {
+                progress_renderer.WriteEventLine(std::cout, line);
+            }
+            progress_renderer.Render(std::cout);
+        } else {
+            for (const auto& line : event_lines) {
+                std::cout << line << '\n';
+            }
+            if (ticks_since_snapshot >= 10 || poll_count == 1) {
+                ticks_since_snapshot = 0;
+                std::cout << "[tasmovie-seedprobe-battle-graph] ";
+                for (std::size_t i = 0; i < latest_lines.size(); ++i) {
+                    if (i > 0) {
+                        std::cout << " | ";
+                    }
+                    std::cout << latest_lines[i];
+                }
+                std::cout << '\n';
+            }
+        }
+        if (graph.has_value()) {
+            latest_state = FormatWorkflowStateLine(*graph);
+            using simcore::db::execution::workflow::WorkflowInstanceState;
+            if (graph->instance.state == WorkflowInstanceState::Completed) {
+                completed = true;
+                break;
+            }
+            if (graph->instance.state == WorkflowInstanceState::Failed
+                || graph->instance.state == WorkflowInstanceState::Canceled) {
+                failed = true;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
+    }
+
+    coordinator.Stop();
+    for (const auto& line : drain_lines()) {
+        if (interactive_stdout) {
+            progress_renderer.WriteEventLine(std::cout, line);
+        } else {
+            std::cout << line << '\n';
+        }
+    }
+
+    const auto final_graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    WorkerProgressById final_progress_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        final_progress_snapshot = last_progress_by_worker;
+    }
+    latest_lines = BuildCoordinatorProgressLines(
+        db_service->ExecutionDb(),
+        coordinator.SnapshotTelemetry(),
+        coordinator.SnapshotWorkers(),
+        final_graph,
+        &final_progress_snapshot);
+    if (final_graph.has_value()) {
+        latest_state = FormatWorkflowStateLine(*final_graph);
+    }
+    if (interactive_stdout) {
+        progress_renderer.SetLines(latest_lines);
+        progress_renderer.Render(std::cout);
+    }
+
+    const auto probe_run_id = ResolveProbeRunIdFromGraph(final_graph);
+    const auto unique_rows = db_service->AnalysisDb()->ListSeedProbeUniqueSeeds(probe_run_id);
+    const auto context_probe_id = ResolveBattleContextProbeIdFromGraph(final_graph);
+    const auto context_probe = db_service->AnalysisDb()->GetBattleContextProbe(context_probe_id);
+    const auto waves = db_service->AnalysisDb()->ListBattleTurnWavesForContextProbe(context_probe_id);
+    const auto all_waves = !waves.empty()
+        ? db_service->AnalysisDb()->ListBattleTurnWaves(waves.front().battle_set_id)
+        : std::vector<simcore::db::BattleTurnWaveSnapshot>{};
+    std::size_t job_count = 0;
+    std::size_t succeeded_count = 0;
+    std::size_t victory_count = 0;
+    for (const auto& wave : all_waves) {
+        const auto jobs = db_service->AnalysisDb()->ListBattleTurnJobsForWave(wave.wave_id);
+        job_count += jobs.size();
+        for (const auto& job : jobs) {
+            if (job.job_state == simcore::db::BattleTurnJobState::Succeeded) {
+                ++succeeded_count;
+            }
+            if (job.battle_outcome.has_value()
+                && *job.battle_outcome == simcore::battle::Outcome::Victory) {
+                ++victory_count;
+            }
+        }
+    }
+
+    std::cout << "[tasmovie-seedprobe-battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
+    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "  " << latest_state << '\n';
+    std::cout << "  probe_run_id=" << probe_run_id
+              << " unique_count=" << unique_rows.size()
+              << " context_probe_id=" << context_probe_id
+              << " context_status=" << (context_probe.has_value() ? static_cast<int>(context_probe->probe_status) : 0)
+              << " first_turn_waves=" << waves.size()
+              << " all_waves=" << all_waves.size()
+              << " turn_jobs=" << job_count
+              << " succeeded_turn_jobs=" << succeeded_count
+              << " victory_jobs=" << victory_count << '\n';
+
+    if (!completed) {
+        if (error_out) *error_out = failed
+            ? "workflow did not complete successfully"
+            : "workflow did not reach COMPLETED state before timeout";
+        return false;
+    }
+    if (probe_run_id <= 0 || unique_rows.empty()) {
+        if (error_out) *error_out = "graph workflow completed without a SeedProbe run with uniques";
+        return false;
+    }
+    if (context_probe_id <= 0 || !context_probe.has_value()) {
+        if (error_out) *error_out = "graph workflow completed without a battle context probe output";
+        return false;
+    }
+    if (waves.size() != unique_rows.size()) {
+        if (error_out) *error_out = "battle context wave fanout mismatch: waves="
+            + std::to_string(waves.size()) + " uniques=" + std::to_string(unique_rows.size());
+        return false;
+    }
+    if (victory_count == 0) {
+        if (error_out) *error_out = "battle graph workflow completed without a victory job";
         return false;
     }
     return true;

@@ -412,6 +412,32 @@ namespace simcore {
         ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
         if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
     }
+    void PhaseScriptVM::op_record_current_bp(PSContext& ctx) {
+        const uint32_t pc = host_.getPC();
+        uint32_t hit_bp_key = 0;
+        for (auto k : canonical_bp_keys_) {
+            if (const auto* e = bpmap_.find(k); e && e->pc == pc) {
+                hit_bp_key = static_cast<uint32_t>(e->key);
+                break;
+            }
+        }
+        if (hit_bp_key == 0) {
+            for (auto k : predicate_bp_keys_) {
+                if (const auto* e = bpmap_.find(k); e && e->pc == pc) {
+                    hit_bp_key = static_cast<uint32_t>(e->key);
+                    break;
+                }
+            }
+        }
+        ctx[keys::core::DW_RUN_OUTCOME_CODE] = hit_bp_key != 0
+            ? static_cast<uint32_t>(RunToBpOutcome::Hit)
+            : static_cast<uint32_t>(RunToBpOutcome::Unknown);
+        ctx[keys::core::RUN_HIT_PC] = pc;
+        ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
+        ctx[keys::core::VI_DELTA] = 0u;
+        ctx[keys::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        if (derived_ && hit_bp_key != 0) derived_->update_on_bp(hit_bp_key, ctx, host_);
+    }
     void PhaseScriptVM::op_record_tas_input_sample(PSContext& ctx) {
         uint32_t sample_count = 0;
         ctx.get<uint32_t>(keys::tasframedetector::SAMPLE_COUNT, sample_count);
@@ -584,6 +610,7 @@ namespace simcore {
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
+            case PSOpCode::RECORD_CURRENT_BP: op_record_current_bp(ctx); break;
             case PSOpCode::RECORD_TAS_INPUT_SAMPLE: op_record_tas_input_sample(ctx); break;
             case PSOpCode::READ_U8: if (!op_read_u8(op, R, ctx)) return R; break;
             case PSOpCode::READ_U16: if (!op_read_u16(op, R, ctx)) return R; break;
@@ -621,6 +648,7 @@ namespace simcore {
         case PSOpCode::APPLY_INPUT_FROM: return { "Apply Input" };
         case PSOpCode::STEP_FRAMES: return { "Step Frames" };
         case PSOpCode::RUN_UNTIL_BP: return { "Run Until BP" };
+        case PSOpCode::RECORD_CURRENT_BP: return { "Record Current BP" };
         case PSOpCode::READ_U8: return { "Read u8" };
         case PSOpCode::READ_U16: return { "Read u16" };
         case PSOpCode::READ_U32: return { "Read u32" };

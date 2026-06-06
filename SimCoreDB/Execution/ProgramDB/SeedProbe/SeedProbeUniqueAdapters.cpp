@@ -109,6 +109,26 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
         return decision;
     }
 
+    if (context.workflow_kind == "workflow_graph_tasmovie_seedprobe_battle"
+        && context.step_key.size() >= 7
+        && context.step_key.compare(context.step_key.size() - 7, 7, "/Unique") == 0) {
+        if (!context.input_ref_id.has_value() || *context.input_ref_id <= 0) {
+            decision.blocked_reason = "seedprobe_graph_unique_missing_probe_run";
+            return decision;
+        }
+        decision.should_advance = true;
+        decision.spawn_steps.push_back(
+            WorkflowTransitionDecision::DynamicStep{
+                .step_key = "battle_1",
+                .step_kind = "battle_chain",
+                .input_ref_kind = std::string("sp_probe_run"),
+                .input_ref_id = *context.input_ref_id,
+                .priority = 5,
+                .max_attempts = 1,
+            });
+        return decision;
+    }
+
     if (context.step_key != "Grid") {
         decision.should_advance = true;
         return decision;

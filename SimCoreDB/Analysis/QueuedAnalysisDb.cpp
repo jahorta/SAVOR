@@ -517,6 +517,22 @@ std::vector<BattleTurnWaveSnapshot> QueuedAnalysisDb::ListBattleTurnWaves(std::i
         {});
 }
 
+std::vector<BattleTurnWaveSnapshot> QueuedAnalysisDb::ListBattleTurnWavesForContextProbe(std::int64_t context_probe_id) const {
+    return ExecuteRead<std::vector<BattleTurnWaveSnapshot>>(
+        [this, context_probe_id]() {
+            return inner_ != nullptr ? inner_->ListBattleTurnWavesForContextProbe(context_probe_id) : std::vector<BattleTurnWaveSnapshot>{};
+        },
+        {});
+}
+
+std::optional<BattleContextProbeSnapshot> QueuedAnalysisDb::GetBattleContextProbe(std::int64_t context_probe_id) const {
+    return ExecuteRead<std::optional<BattleContextProbeSnapshot>>(
+        [this, context_probe_id]() {
+            return inner_ != nullptr ? inner_->GetBattleContextProbe(context_probe_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::optional<BattleContextProbeSnapshot> QueuedAnalysisDb::GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const {
     return ExecuteRead<std::optional<BattleContextProbeSnapshot>>(
         [this, exec_job_id]() {

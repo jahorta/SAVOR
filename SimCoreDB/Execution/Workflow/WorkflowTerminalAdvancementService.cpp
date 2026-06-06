@@ -14,7 +14,8 @@ WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
 bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
     std::int64_t job_id,
     WorkflowTerminalAdvancementResult* result_out,
-    std::string* error_out) const {
+    std::string* error_out,
+    std::optional<programdb::ResultMapPayload> result_payload) const {
     if (query_service_ == nullptr) {
         if (error_out) *error_out = "workflow query service is not configured";
         return false;
@@ -28,13 +29,14 @@ bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
         return true;
     }
 
-    return AdvanceSnapshot(*snapshot, result_out, error_out);
+    return AdvanceSnapshot(*snapshot, result_out, error_out, std::move(result_payload));
 }
 
 bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     const WorkflowStepTerminalSnapshot& snapshot,
     WorkflowTerminalAdvancementResult* result_out,
-    std::string* error_out) const {
+    std::string* error_out,
+    std::optional<programdb::ResultMapPayload> result_payload) const {
     WorkflowTerminalAdvancementResult result{};
     result.snapshot_found = true;
 
@@ -58,6 +60,12 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
         .input_ref_id = snapshot.input_ref_id,
+        .output_ref_kind = result_payload.has_value() && !result_payload->result_kind.empty()
+            ? std::optional<std::string>(result_payload->result_kind)
+            : snapshot.output_ref_kind,
+        .output_ref_id = result_payload.has_value() && result_payload->result_ref_id > 0
+            ? std::optional<std::int64_t>(result_payload->result_ref_id)
+            : snapshot.output_ref_id,
     };
 
     const auto terminal = orchestrator_->OnStepTerminal(snapshot.step_kind, context, completion, nullptr);
@@ -100,6 +108,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         {
             .workflow_step_id = snapshot.workflow_step_id,
             .terminal_state = terminal_state,
+            .output_ref_kind = context.output_ref_kind,
+            .output_ref_id = context.output_ref_id,
             .requested_by = "workflow_terminal_advancement",
         },
         &command_error)) {

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS ab_turn_wave (
     wave_id INTEGER PRIMARY KEY,
     battle_set_id INTEGER NOT NULL,
     turn_index INTEGER NOT NULL,
+    context_probe_id INTEGER NULL,
     parent_wave_id INTEGER NULL,
     parent_turn_job_id INTEGER NULL,
     seed_candidate_id INTEGER NOT NULL,
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS ab_turn_wave (
     created_at_utc INTEGER NOT NULL,
     completed_at_utc INTEGER NULL,
     FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id),
+    FOREIGN KEY(context_probe_id) REFERENCES ab_battle_context_probe(context_probe_id),
     FOREIGN KEY(parent_wave_id) REFERENCES ab_turn_wave(wave_id),
     FOREIGN KEY(parent_turn_job_id) REFERENCES ab_turn_job(turn_job_id),
     FOREIGN KEY(seed_candidate_id) REFERENCES ab_seed_candidate(seed_candidate_id),
@@ -56,7 +58,7 @@ CREATE TABLE IF NOT EXISTS ab_turn_wave (
 
 CREATE TABLE IF NOT EXISTS ab_battle_context_probe (
     context_probe_id INTEGER PRIMARY KEY,
-    wave_id INTEGER NOT NULL,
+    wave_id INTEGER NULL,
     source_savestate_id INTEGER NOT NULL,
     exec_job_id INTEGER NULL,
     probe_status TEXT NOT NULL,

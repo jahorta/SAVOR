@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
         { "tasmovie_real_worker_smoke", &RunTasMovieRealWorkerSmoke },
         { "tasmovie_seedprobe_real_worker_smoke", &RunTasMovieSeedProbeRealWorkerSmoke },
         { "battle_single_turn_real_worker_smoke", &RunBattleSingleTurnRealWorkerScenario },
+        { "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
     };
 
     const auto it = scenarios.find(options.scenario);

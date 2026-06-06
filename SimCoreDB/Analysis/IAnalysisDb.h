@@ -407,6 +407,7 @@ struct AddBattleSeedCandidateCommand {
 struct CreateBattleTurnWaveCommand {
     std::int64_t battle_set_id = 0;
     int turn_index = 0;
+    std::optional<std::int64_t> context_probe_id;
     std::optional<std::int64_t> parent_wave_id;
     std::optional<std::int64_t> parent_turn_job_id;
     std::int64_t seed_candidate_id = 0;
@@ -507,6 +508,7 @@ struct BattleTurnWaveSnapshot {
     std::int64_t wave_id = 0;
     std::int64_t battle_set_id = 0;
     int turn_index = 0;
+    std::optional<std::int64_t> context_probe_id;
     std::optional<std::int64_t> parent_wave_id;
     std::optional<std::int64_t> parent_turn_job_id;
     std::int64_t seed_candidate_id = 0;
@@ -733,6 +735,8 @@ struct IAnalysisDb {
     virtual std::optional<BattleSeedCandidateRow> GetBattleSeedCandidate(std::int64_t seed_candidate_id) const = 0;
     virtual std::optional<BattleTurnWaveSnapshot> GetBattleTurnWave(std::int64_t wave_id) const = 0;
     virtual std::vector<BattleTurnWaveSnapshot> ListBattleTurnWaves(std::int64_t battle_set_id) const = 0;
+    virtual std::vector<BattleTurnWaveSnapshot> ListBattleTurnWavesForContextProbe(std::int64_t context_probe_id) const = 0;
+    virtual std::optional<BattleContextProbeSnapshot> GetBattleContextProbe(std::int64_t context_probe_id) const = 0;
     virtual std::optional<BattleContextProbeSnapshot> GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const = 0;
     virtual std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const = 0;
     virtual std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const = 0;

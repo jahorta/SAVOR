@@ -27,7 +27,7 @@ public:
     bool HasRequiredAdapters(std::int32_t program_kind) const {
         const auto* descriptor = Find(program_kind);
         return descriptor != nullptr
-            && descriptor->job_persistence != nullptr
+            && (descriptor->job_persistence != nullptr || descriptor->graph_job_persistence != nullptr)
             && descriptor->runtime_init != nullptr
             && descriptor->result_mapper != nullptr;
     }
@@ -47,7 +47,7 @@ public:
     bool HasRequiredAdaptersForStepKind(std::string_view step_kind) const {
         const auto* descriptor = FindForStepKind(step_kind);
         return descriptor != nullptr
-            && descriptor->job_persistence != nullptr
+            && (descriptor->job_persistence != nullptr || descriptor->graph_job_persistence != nullptr)
             && descriptor->runtime_init != nullptr
             && descriptor->result_mapper != nullptr;
     }

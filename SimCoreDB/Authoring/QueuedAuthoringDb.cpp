@@ -121,6 +121,15 @@ bool QueuedAuthoringDb::SaveTasSpec(
         error_out);
 }
 
+std::optional<TasSpecSnapshot> QueuedAuthoringDb::GetTasSpec(
+    std::int64_t tas_spec_id) const {
+    return ExecuteRead<std::optional<TasSpecSnapshot>>(
+        [this, tas_spec_id]() {
+            return inner_ != nullptr ? inner_->GetTasSpec(tas_spec_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 bool QueuedAuthoringDb::SaveBattleRunSpec(
     const SaveBattleRunSpecCommand& command,
     std::int64_t* battle_run_spec_id_out,
@@ -269,6 +278,15 @@ bool QueuedAuthoringDb::SaveTemplate(
         },
         false,
         error_out);
+}
+
+std::optional<TemplateSnapshot> QueuedAuthoringDb::GetTemplate(
+    std::int64_t template_id) const {
+    return ExecuteRead<std::optional<TemplateSnapshot>>(
+        [this, template_id]() {
+            return inner_ != nullptr ? inner_->GetTemplate(template_id) : std::nullopt;
+        },
+        std::nullopt);
 }
 
 bool QueuedAuthoringDb::SaveWorkflowGraph(

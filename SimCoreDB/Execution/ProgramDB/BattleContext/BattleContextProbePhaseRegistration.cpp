@@ -15,6 +15,7 @@ void RegisterBattleContextProbePhaseDescriptor(
         analysis_db,
         std::move(config));
     (void)registry->Register(descriptor);
+    (void)registry->RegisterForStepKind("battle_chain", descriptor);
     (void)registry->RegisterForStepKind("battle.context_probe", descriptor);
 }
 

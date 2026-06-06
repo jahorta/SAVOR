@@ -164,8 +164,8 @@ void PrintUsage() {
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: seedprobe_real_worker_smoke, seedprobe_workflow_graph_real_worker_smoke, tasmovie_real_worker_smoke, "
-              << "tasmovie_seedprobe_real_worker_smoke, battle_single_turn_setup, "
-              << "battle_single_turn_real_worker_smoke\n\n";
+              << "tasmovie_seedprobe_real_worker_smoke, battle_single_turn_real_worker_smoke, "
+              << "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke\n\n";
 }
 
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out) {
@@ -234,7 +234,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
 
     const bool is_tasmovie = options.scenario == "tasmovie_real_worker_smoke"
-        || options.scenario == "tasmovie_seedprobe_real_worker_smoke";
+        || options.scenario == "tasmovie_seedprobe_real_worker_smoke"
+        || options.scenario == "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke";
     const bool is_tasmovie_seedprobe = options.scenario == "tasmovie_seedprobe_real_worker_smoke";
 
     if (!is_tasmovie && options.savestate_file.empty()) {

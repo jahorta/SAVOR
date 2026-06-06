@@ -146,6 +146,24 @@ public:
 
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
         WorkflowTransitionDecision decision{};
+        if (context.workflow_kind.rfind("workflow_graph", 0) == 0 && context.step_key != "TasMovie") {
+            if (!context.output_ref_id.has_value() || *context.output_ref_id <= 0) {
+                decision.blocked_reason = "tasmovie_graph_missing_savestate_output";
+                return decision;
+            }
+            decision.should_advance = true;
+            decision.spawn_steps.push_back(
+                WorkflowTransitionDecision::DynamicStep{
+                    .step_key = "probe_1",
+                    .step_kind = "seed_probe_chain",
+                    .input_ref_kind = std::string("state.savestate"),
+                    .input_ref_id = *context.output_ref_id,
+                    .priority = 10,
+                    .max_attempts = 1,
+                });
+            return decision;
+        }
+
         if (context.step_key != "TasMovie") {
             decision.blocked_reason = "unsupported_step_key";
             return decision;
@@ -271,6 +289,110 @@ private:
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IStateDb* state_db_ = nullptr;
     TasMovieBlueprintConfig blueprint_;
+};
+
+const WorkflowGraphInputBinding* FindBinding(
+    const WorkflowGraphStepScheduleContext& context,
+    std::string_view input_key,
+    std::string_view data_kind) {
+    for (const auto& binding : context.input_bindings) {
+        if (binding.input_key == input_key && binding.data_kind == data_kind && binding.ref_id > 0) {
+            return &binding;
+        }
+    }
+    return nullptr;
+}
+
+const simcore::db::WorkflowGraphNodeSnapshot* FindNode(
+    const simcore::db::WorkflowGraphSnapshot& graph,
+    std::string_view step_key) {
+    for (const auto& node : graph.nodes) {
+        if (node.node_key == step_key) {
+            return &node;
+        }
+    }
+    return nullptr;
+}
+
+class TasMovieGraphJobPersistenceAdapter final : public IWorkflowGraphJobPersistenceAdapter {
+public:
+    TasMovieGraphJobPersistenceAdapter(
+        simcore::db::IExecutionDb* execution_db,
+        simcore::db::IStateDb* state_db,
+        simcore::db::IAuthoringDb* authoring_db,
+        TasMovieBlueprintConfig fallback_blueprint)
+        : execution_db_(execution_db)
+        , state_db_(state_db)
+        , authoring_db_(authoring_db)
+        , fallback_blueprint_(std::move(fallback_blueprint)) {
+    }
+
+    WorkflowStepScheduleResult EncodeForGraphQueueing(
+        const WorkflowGraphStepScheduleContext& context) const override {
+        if (authoring_db_ == nullptr
+            || execution_db_ == nullptr
+            || state_db_ == nullptr
+            || !context.workflow_graph_revision_id.has_value()
+            || context.workflow_instance_id <= 0
+            || context.workflow_step_id <= 0) {
+            return {};
+        }
+
+        const auto graph = authoring_db_->GetWorkflowGraphRevision(*context.workflow_graph_revision_id);
+        if (!graph.has_value()) {
+            return {};
+        }
+        const auto* node = FindNode(*graph, context.step_key);
+        if (node == nullptr || node->unit_kind != "tas_movie") {
+            return {};
+        }
+
+        auto cfg = fallback_blueprint_;
+        if (node->authored_ref_kind.value_or("") == "tas_spec"
+            && node->authored_ref_id.has_value()
+            && *node->authored_ref_id > 0) {
+            const auto spec = authoring_db_->GetTasSpec(*node->authored_ref_id);
+            if (!spec.has_value()) {
+                return {};
+            }
+            cfg.priority = spec->priority;
+            cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
+            cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
+            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp(spec->headroom_x10, 0, 255));
+            cfg.progress_enable = spec->progress_enable;
+            cfg.rtc_low = spec->rtc_low;
+            cfg.rtc_high = spec->rtc_high;
+        }
+
+        const auto* dtm = FindBinding(context, "dtm_artifact", "state_artifact.dtm_artifact_id");
+        if (dtm == nullptr) {
+            return {};
+        }
+        cfg.base_dtm_artifact_id = dtm->ref_id;
+        if (cfg.rtc_high < cfg.rtc_low) {
+            cfg.rtc_high = cfg.rtc_low;
+        }
+
+        auto adapter = TasMovieJobPersistenceAdapter(
+            execution_db_,
+            state_db_,
+            cfg);
+        auto scheduled = adapter.EncodeForQueueing(cfg.base_dtm_artifact_id);
+        scheduled.event_lines.push_back(
+            "[workflow-graph-tasmovie-bootstrap] workflow_instance_id="
+            + std::to_string(context.workflow_instance_id)
+            + " workflow_step_id=" + std::to_string(context.workflow_step_id)
+            + " base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
+            + " rtc_low=" + std::to_string(cfg.rtc_low)
+            + " rtc_high=" + std::to_string(cfg.rtc_high));
+        return scheduled;
+    }
+
+private:
+    simcore::db::IExecutionDb* execution_db_ = nullptr;
+    simcore::db::IStateDb* state_db_ = nullptr;
+    simcore::db::IAuthoringDb* authoring_db_ = nullptr;
+    TasMovieBlueprintConfig fallback_blueprint_;
 };
 
 class TasMovieRuntimeInitAdapter final : public IRuntimeInitAdapter {
@@ -540,6 +662,11 @@ ProgramKindDescriptor BuildTasMovieDescriptor(
     descriptor.job_persistence = std::make_shared<TasMovieJobPersistenceAdapter>(
         execution_db,
         state_db,
+        config.blueprint);
+    descriptor.graph_job_persistence = std::make_shared<TasMovieGraphJobPersistenceAdapter>(
+        execution_db,
+        state_db,
+        config.authoring_db,
         config.blueprint);
     descriptor.runtime_init = std::make_shared<TasMovieRuntimeInitAdapter>(
         execution_db,

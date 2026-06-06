@@ -18,8 +18,8 @@ void RegisterTasMoviePhaseDescriptor(
         analysis_db,
         std::move(config));
     (void)registry->Register(descriptor);
+    (void)registry->RegisterForStepKind("tas_movie", descriptor);
     (void)registry->RegisterForStepKind("tasmovie.play", descriptor);
 }
 
 } // namespace simcore::db::execution::programdb::tasmovie
-

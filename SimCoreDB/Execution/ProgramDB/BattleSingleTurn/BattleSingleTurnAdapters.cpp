@@ -686,7 +686,9 @@ public:
             scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=turn_missing");
             return scheduled;
         }
-        const auto context_probe = analysis_db_->GetLatestBattleContextForWave(wave->wave_id);
+        const auto context_probe = wave->context_probe_id.has_value()
+            ? analysis_db_->GetBattleContextProbe(*wave->context_probe_id)
+            : analysis_db_->GetLatestBattleContextForWave(wave->wave_id);
         if (!context_probe.has_value() || !context_probe->context_blob.has_value() || context_probe->context_blob->empty()) {
             scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=context_probe_missing");
             return scheduled;
@@ -1241,7 +1243,7 @@ public:
                 && wave.status != simcore::db::BattleTurnWaveStatus::Completed
                 && wave.status != simcore::db::BattleTurnWaveStatus::NoSurvivors
                 && wave.status != simcore::db::BattleTurnWaveStatus::Selected) {
-                decision.blocked_reason = "turn_waves_not_terminal";
+                decision.should_advance = false;
                 return decision;
             }
         }
@@ -1304,7 +1306,9 @@ public:
         }
 
         if (all_survivors.empty()) {
-            (void)analysis_db_->UpdateBattleSetStatus(current_wave->battle_set_id, simcore::db::BattleSetStatus::NoSurvivors, now, nullptr);
+            if (battle_set->status != simcore::db::BattleSetStatus::Victory) {
+                (void)analysis_db_->UpdateBattleSetStatus(current_wave->battle_set_id, simcore::db::BattleSetStatus::NoSurvivors, now, nullptr);
+            }
             decision.should_advance = true;
             return decision;
         }
@@ -1350,7 +1354,9 @@ public:
         if (!plan.has_value() || FindTurn(*plan, current_wave->turn_index + 1) == nullptr) {
             (void)analysis_db_->UpdateBattleSetStatus(
                 current_wave->battle_set_id,
-                any_victory ? simcore::db::BattleSetStatus::Victory : simcore::db::BattleSetStatus::Completed,
+                (any_victory || battle_set->status == simcore::db::BattleSetStatus::Victory)
+                    ? simcore::db::BattleSetStatus::Victory
+                    : simcore::db::BattleSetStatus::Completed,
                 now,
                 nullptr);
             decision.should_advance = true;

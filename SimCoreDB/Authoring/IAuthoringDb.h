@@ -80,7 +80,9 @@ inline PredicateComparisonOp ParsePredicateComparisonOp(std::string_view value) 
 struct AuthoringPayloadRecord {
     std::int64_t template_id = 0;
     std::int64_t seed_probe_spec_id = 0;
+    std::int64_t tas_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
     std::int64_t workflow_graph_id = 0;
     std::int64_t workflow_graph_revision_id = 0;
 };
@@ -135,6 +137,21 @@ struct SaveTasSpecCommand {
     std::string event_id;
     std::string correlation_id;
     std::string causation_id;
+};
+
+struct TasSpecSnapshot {
+    std::int64_t tas_spec_id = 0;
+    std::int64_t tas_spec_base_id = 0;
+    std::string base_name;
+    int priority = 0;
+    std::int64_t run_ms = 0;
+    std::int64_t vi_stall_ms = 0;
+    int headroom_x10 = 0;
+    bool progress_enable = false;
+    bool auto_queue_seeds = false;
+    std::int64_t base_dtm_artifact_id = 0;
+    std::int64_t rtc_low = 0;
+    std::int64_t rtc_high = 0;
 };
 
 struct SaveBattleRunSpecCommand {
@@ -243,6 +260,16 @@ struct SaveTemplateCommand {
     std::string event_id;
     std::string correlation_id;
     std::string causation_id;
+};
+
+struct TemplateSnapshot {
+    std::int64_t template_id = 0;
+    std::string name;
+    std::string description;
+    std::optional<std::int64_t> seed_probe_spec_id;
+    std::optional<std::int64_t> tas_spec_id;
+    std::optional<std::int64_t> battle_run_spec_id;
+    std::optional<std::int64_t> explorer_settings_id;
 };
 
 struct SaveWorkflowGraphNodeInputCommand {
@@ -445,6 +472,9 @@ struct IAuthoringDb {
         std::int64_t* tas_spec_base_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual std::optional<TasSpecSnapshot> GetTasSpec(
+        std::int64_t tas_spec_id) const = 0;
+
     virtual bool SaveBattleRunSpec(
         const SaveBattleRunSpecCommand& command,
         std::int64_t* battle_run_spec_id_out = nullptr,
@@ -502,6 +532,9 @@ struct IAuthoringDb {
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<TemplateSnapshot> GetTemplate(
+        std::int64_t template_id) const = 0;
 
     virtual bool SaveWorkflowGraph(
         const SaveWorkflowGraphCommand& command,

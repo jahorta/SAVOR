@@ -36,7 +36,7 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
             return {};
         }
         std::optional<simcore::db::execution::programdb::WorkflowStepScheduleResult> persisted;
-        if (step.input_ref_id.has_value() && descriptor->job_persistence != nullptr) {
+        if (step.input_ref_id.has_value() && descriptor->job_persistence != nullptr && step.step_kind != "battle_chain") {
             persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, *step.input_ref_id);
         } else if (descriptor->graph_job_persistence != nullptr && execution_db->WorkflowQueryService() != nullptr) {
             const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(step.workflow_instance_id);
@@ -50,6 +50,29 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
             context.workflow_graph_revision_id = graph->instance.workflow_graph_revision_id;
             context.step_key = step.step_key;
             context.step_kind = step.step_kind;
+            if (step.input_ref_id.has_value() && *step.input_ref_id > 0) {
+                if (step.step_kind == "seed_probe_chain" && step.input_ref_kind == "state.savestate") {
+                    context.input_bindings.push_back(
+                        simcore::db::execution::programdb::WorkflowGraphInputBinding{
+                            .node_key = step.step_key,
+                            .input_key = "entry_savestate",
+                            .data_kind = "state.savestate_id",
+                            .ref_kind = *step.input_ref_kind,
+                            .ref_id = *step.input_ref_id,
+                            .source_kind = "upstream",
+                        });
+                } else if (step.step_kind == "battle_chain" && step.input_ref_kind == "sp_probe_run") {
+                    context.input_bindings.push_back(
+                        simcore::db::execution::programdb::WorkflowGraphInputBinding{
+                            .node_key = step.step_key,
+                            .input_key = "initial_input_frames",
+                            .data_kind = "analysis.input_frame_set_id",
+                            .ref_kind = *step.input_ref_kind,
+                            .ref_id = *step.input_ref_id,
+                            .source_kind = "upstream",
+                        });
+                }
+            }
             for (const auto& binding : graph->input_bindings) {
                 if (binding.node_key != step.step_key) {
                     continue;
@@ -1393,7 +1416,8 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
                 if (!terminal_advancement.AdvanceForTerminalJob(
                         static_cast<std::int64_t>(result.job_id),
                         &advancement,
-                        &advancement_error)) {
+                        &advancement_error,
+                        mapped)) {
                     EmitAdapterTraceEvent(
                         context->step,
                         "OnStepTerminal",
@@ -1863,6 +1887,7 @@ void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {
             .step_key = step.step_key,
             .step_kind = step.step_kind,
             .priority = step.priority,
+            .input_ref_kind = step.input_ref_kind,
             .input_ref_id = step.input_ref_id,
         });
         ++ready_steps_enqueued_;

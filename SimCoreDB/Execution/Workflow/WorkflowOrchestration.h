@@ -70,6 +70,8 @@ struct WorkflowStepRecord {
     std::optional<std::int64_t> job_set_id;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
+    std::optional<std::string> output_ref_kind;
+    std::optional<std::int64_t> output_ref_id;
     int priority = 0;
     int attempts = 0;
     int max_attempts = 1;
@@ -110,6 +112,7 @@ struct WorkflowReadyStepRecord {
     std::string step_key;
     std::string step_kind;
     int priority = 0;
+    std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
 };
 
@@ -122,6 +125,8 @@ struct WorkflowStepTerminalSnapshot {
     std::string step_kind;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
+    std::optional<std::string> output_ref_kind;
+    std::optional<std::int64_t> output_ref_id;
     int expected_total = 0;
     int discovered_total = 0;
     int terminal_total = 0;
@@ -180,6 +185,8 @@ struct WorkflowMarkStepMaterializedCommand {
 struct WorkflowMarkStepTerminalCommand {
     std::int64_t workflow_step_id = 0;
     std::string terminal_state; // COMPLETED | FAILED
+    std::optional<std::string> output_ref_kind;
+    std::optional<std::int64_t> output_ref_id;
     std::string requested_by;
 };
 

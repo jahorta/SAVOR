@@ -7,6 +7,7 @@
 
 #include "../ProgramKindDescriptor.h"
 #include "../../../Analysis/IAnalysisDb.h"
+#include "../../../Authoring/IAuthoringDb.h"
 #include "../../../Execution/IExecutionDb.h"
 #include "../../../State/IStateDb.h"
 
@@ -26,6 +27,7 @@ struct TasMovieBlueprintConfig {
 
 struct TasMoviePhaseRegistrationConfig {
     TasMovieBlueprintConfig blueprint;
+    simcore::db::IAuthoringDb* authoring_db = nullptr;
     std::filesystem::path working_dir_root;
     std::string next_step_key = "Done";
 };
@@ -49,4 +51,3 @@ ProgramKindDescriptor BuildTasMovieDescriptor(
     TasMoviePhaseRegistrationConfig config);
 
 } // namespace simcore::db::execution::programdb::tasmovie
-

@@ -2075,8 +2075,8 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     Statement insert_wave;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_turn_wave(battle_set_id,turn_index,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
+            "INSERT INTO ab_turn_wave(battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
             -1,
             &insert_wave.st,
             nullptr)
@@ -2088,18 +2088,20 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
 
     sqlite3_bind_int64(insert_wave.st, 1, command.battle_set_id);
     sqlite3_bind_int(insert_wave.st, 2, command.turn_index);
-    if (command.parent_wave_id.has_value()) sqlite3_bind_int64(insert_wave.st, 3, command.parent_wave_id.value());
+    if (command.context_probe_id.has_value()) sqlite3_bind_int64(insert_wave.st, 3, command.context_probe_id.value());
     else sqlite3_bind_null(insert_wave.st, 3);
-    if (command.parent_turn_job_id.has_value()) sqlite3_bind_int64(insert_wave.st, 4, command.parent_turn_job_id.value());
+    if (command.parent_wave_id.has_value()) sqlite3_bind_int64(insert_wave.st, 4, command.parent_wave_id.value());
     else sqlite3_bind_null(insert_wave.st, 4);
-    sqlite3_bind_int64(insert_wave.st, 5, command.seed_candidate_id);
-    if (command.selection_pool_id.has_value()) sqlite3_bind_int64(insert_wave.st, 6, command.selection_pool_id.value());
-    else sqlite3_bind_null(insert_wave.st, 6);
+    if (command.parent_turn_job_id.has_value()) sqlite3_bind_int64(insert_wave.st, 5, command.parent_turn_job_id.value());
+    else sqlite3_bind_null(insert_wave.st, 5);
+    sqlite3_bind_int64(insert_wave.st, 6, command.seed_candidate_id);
+    if (command.selection_pool_id.has_value()) sqlite3_bind_int64(insert_wave.st, 7, command.selection_pool_id.value());
+    else sqlite3_bind_null(insert_wave.st, 7);
     const auto status = ToDbString(command.status);
-    sqlite3_bind_text(insert_wave.st, 7, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_wave.st, 8, command.created_at_utc.time_since_epoch().count());
-    if (command.completed_at_utc.has_value()) sqlite3_bind_int64(insert_wave.st, 9, command.completed_at_utc->time_since_epoch().count());
-    else sqlite3_bind_null(insert_wave.st, 9);
+    sqlite3_bind_text(insert_wave.st, 8, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_wave.st, 9, command.created_at_utc.time_since_epoch().count());
+    if (command.completed_at_utc.has_value()) sqlite3_bind_int64(insert_wave.st, 10, command.completed_at_utc->time_since_epoch().count());
+    else sqlite3_bind_null(insert_wave.st, 10);
     if (sqlite3_step(insert_wave.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -2147,15 +2149,18 @@ bool SqliteAnalysisDb::CreateBattleContextProbe(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.wave_id <= 0 || command.source_savestate_id <= 0 || command.probe_status == BattleContextProbeStatus::Unknown || command.event_id.empty()) {
+    if (command.source_savestate_id <= 0 || command.probe_status == BattleContextProbeStatus::Unknown || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
 
-    const auto battle_set_id = BattleSetIdForWave(db_, command.wave_id);
-    if (!battle_set_id.has_value()) {
-        if (error_out) *error_out = "wave_id does not resolve to battle_set";
-        return false;
+    std::optional<std::int64_t> battle_set_id;
+    if (command.wave_id > 0) {
+        battle_set_id = BattleSetIdForWave(db_, command.wave_id);
+        if (!battle_set_id.has_value()) {
+            if (error_out) *error_out = "wave_id does not resolve to battle_set";
+            return false;
+        }
     }
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -2176,7 +2181,8 @@ bool SqliteAnalysisDb::CreateBattleContextProbe(
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    sqlite3_bind_int64(insert_probe.st, 1, command.wave_id);
+    if (command.wave_id > 0) sqlite3_bind_int64(insert_probe.st, 1, command.wave_id);
+    else sqlite3_bind_null(insert_probe.st, 1);
     sqlite3_bind_int64(insert_probe.st, 2, command.source_savestate_id);
     const auto probe_status = ToDbString(command.probe_status);
     sqlite3_bind_text(insert_probe.st, 3, probe_status.data(), static_cast<int>(probe_status.size()), SQLITE_TRANSIENT);
@@ -2192,8 +2198,8 @@ bool SqliteAnalysisDb::CreateBattleContextProbe(
             db_,
             command.event_id,
             "AnalysisBattle.ContextProbeCreated.v1",
-            "battle_set",
-            std::to_string(*battle_set_id),
+            battle_set_id.has_value() ? "battle_set" : "battle_context_probe",
+            battle_set_id.has_value() ? std::to_string(*battle_set_id) : std::to_string(context_probe_id),
             command.correlation_id,
             command.causation_id,
             command.created_at_utc.time_since_epoch().count(),
@@ -2982,7 +2988,7 @@ std::optional<BattleTurnWaveSnapshot> SqliteAnalysisDb::GetBattleTurnWave(std::i
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT wave_id,battle_set_id,turn_index,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
         "FROM ab_turn_wave WHERE wave_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -2995,13 +3001,14 @@ std::optional<BattleTurnWaveSnapshot> SqliteAnalysisDb::GetBattleTurnWave(std::i
     out.wave_id = sqlite3_column_int64(st.st, 0);
     out.battle_set_id = sqlite3_column_int64(st.st, 1);
     out.turn_index = sqlite3_column_int(st.st, 2);
-    out.parent_wave_id = ColumnInt64Optional(st.st, 3);
-    out.parent_turn_job_id = ColumnInt64Optional(st.st, 4);
-    out.seed_candidate_id = sqlite3_column_int64(st.st, 5);
-    out.selection_pool_id = ColumnInt64Optional(st.st, 6);
-    out.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 7));
-    out.created_at_utc = ColumnTime(st.st, 8);
-    out.completed_at_utc = ColumnTimeOptional(st.st, 9);
+    out.context_probe_id = ColumnInt64Optional(st.st, 3);
+    out.parent_wave_id = ColumnInt64Optional(st.st, 4);
+    out.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
+    out.seed_candidate_id = sqlite3_column_int64(st.st, 6);
+    out.selection_pool_id = ColumnInt64Optional(st.st, 7);
+    out.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
+    out.created_at_utc = ColumnTime(st.st, 9);
+    out.completed_at_utc = ColumnTimeOptional(st.st, 10);
     return out;
 }
 
@@ -3012,7 +3019,7 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWaves(std::i
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT wave_id,battle_set_id,turn_index,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
         "FROM ab_turn_wave WHERE battle_set_id=?1 ORDER BY turn_index ASC, wave_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -3023,13 +3030,45 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWaves(std::i
         row.wave_id = sqlite3_column_int64(st.st, 0);
         row.battle_set_id = sqlite3_column_int64(st.st, 1);
         row.turn_index = sqlite3_column_int(st.st, 2);
-        row.parent_wave_id = ColumnInt64Optional(st.st, 3);
-        row.parent_turn_job_id = ColumnInt64Optional(st.st, 4);
-        row.seed_candidate_id = sqlite3_column_int64(st.st, 5);
-        row.selection_pool_id = ColumnInt64Optional(st.st, 6);
-        row.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 7));
-        row.created_at_utc = ColumnTime(st.st, 8);
-        row.completed_at_utc = ColumnTimeOptional(st.st, 9);
+        row.context_probe_id = ColumnInt64Optional(st.st, 3);
+        row.parent_wave_id = ColumnInt64Optional(st.st, 4);
+        row.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
+        row.seed_candidate_id = sqlite3_column_int64(st.st, 6);
+        row.selection_pool_id = ColumnInt64Optional(st.st, 7);
+        row.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
+        row.created_at_utc = ColumnTime(st.st, 9);
+        row.completed_at_utc = ColumnTimeOptional(st.st, 10);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWavesForContextProbe(std::int64_t context_probe_id) const {
+    std::vector<BattleTurnWaveSnapshot> rows;
+    if (db_ == nullptr || context_probe_id <= 0) {
+        return rows;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "FROM ab_turn_wave WHERE context_probe_id=?1 ORDER BY turn_index ASC, wave_id ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, context_probe_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        BattleTurnWaveSnapshot row{};
+        row.wave_id = sqlite3_column_int64(st.st, 0);
+        row.battle_set_id = sqlite3_column_int64(st.st, 1);
+        row.turn_index = sqlite3_column_int(st.st, 2);
+        row.context_probe_id = ColumnInt64Optional(st.st, 3);
+        row.parent_wave_id = ColumnInt64Optional(st.st, 4);
+        row.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
+        row.seed_candidate_id = sqlite3_column_int64(st.st, 6);
+        row.selection_pool_id = ColumnInt64Optional(st.st, 7);
+        row.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
+        row.created_at_utc = ColumnTime(st.st, 9);
+        row.completed_at_utc = ColumnTimeOptional(st.st, 10);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -3081,6 +3120,24 @@ BattleTurnJobSnapshot ReadBattleTurnJob(sqlite3_stmt* st) {
     return row;
 }
 } // namespace
+
+std::optional<BattleContextProbeSnapshot> SqliteAnalysisDb::GetBattleContextProbe(std::int64_t context_probe_id) const {
+    if (db_ == nullptr || context_probe_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT context_probe_id,wave_id,source_savestate_id,exec_job_id,probe_status,context_blob,context_version,recorded_at_utc,created_at_utc "
+        "FROM ab_battle_context_probe WHERE context_probe_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, context_probe_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return ReadBattleContextProbe(st.st);
+}
 
 std::optional<BattleContextProbeSnapshot> SqliteAnalysisDb::GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const {
     if (db_ == nullptr || exec_job_id <= 0) {

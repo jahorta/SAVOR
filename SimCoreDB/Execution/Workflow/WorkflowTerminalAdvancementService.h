@@ -30,12 +30,14 @@ public:
     bool AdvanceForTerminalJob(
         std::int64_t job_id,
         WorkflowTerminalAdvancementResult* result_out,
-        std::string* error_out) const;
+        std::string* error_out,
+        std::optional<programdb::ResultMapPayload> result_payload = std::nullopt) const;
 
     bool AdvanceSnapshot(
         const WorkflowStepTerminalSnapshot& snapshot,
         WorkflowTerminalAdvancementResult* result_out,
-        std::string* error_out) const;
+        std::string* error_out,
+        std::optional<programdb::ResultMapPayload> result_payload = std::nullopt) const;
 
 private:
     const AdapterChainOrchestrator* orchestrator_ = nullptr;

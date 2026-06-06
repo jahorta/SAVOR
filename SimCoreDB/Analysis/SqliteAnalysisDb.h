@@ -154,6 +154,8 @@ public:
     std::optional<BattleSeedCandidateRow> GetBattleSeedCandidate(std::int64_t seed_candidate_id) const override;
     std::optional<BattleTurnWaveSnapshot> GetBattleTurnWave(std::int64_t wave_id) const override;
     std::vector<BattleTurnWaveSnapshot> ListBattleTurnWaves(std::int64_t battle_set_id) const override;
+    std::vector<BattleTurnWaveSnapshot> ListBattleTurnWavesForContextProbe(std::int64_t context_probe_id) const override;
+    std::optional<BattleContextProbeSnapshot> GetBattleContextProbe(std::int64_t context_probe_id) const override;
     std::optional<BattleContextProbeSnapshot> GetBattleContextProbeForExecJob(std::int64_t exec_job_id) const override;
     std::optional<BattleContextProbeSnapshot> GetLatestBattleContextForWave(std::int64_t wave_id) const override;
     std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const override;

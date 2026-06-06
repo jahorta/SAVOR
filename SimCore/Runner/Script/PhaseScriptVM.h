@@ -30,6 +30,7 @@ namespace simcore {
 		APPLY_INPUT_FROM,          // key -> GCInputFrame
 		STEP_FRAMES,               // literal step count ok to keep
 		RUN_UNTIL_BP,              // uses current timeout
+		RECORD_CURRENT_BP,         // stores current pc / matching BP key
 		SET_TIMEOUT,               // imm -> time out in ms
 		SET_TIMEOUT_FROM,          // key -> uint32
 		START_DETERMINISIC_RUN,
@@ -146,6 +147,7 @@ namespace simcore {
 	inline PSOp OpLoadSnapshot() { PSOp o; o.code = PSOpCode::LOAD_SNAPSHOT; return o; }
 	inline PSOp OpCaptureSnapshot() { PSOp o; o.code = PSOpCode::CAPTURE_SNAPSHOT; return o; }
 	inline PSOp OpRunUntilBp() { PSOp o; o.code = PSOpCode::RUN_UNTIL_BP; return o; }
+	inline PSOp OpRecordCurrentBp() { PSOp o; o.code = PSOpCode::RECORD_CURRENT_BP; return o; }
 	inline PSOp OpStartDeterministicRun() { PSOp o; o.code = PSOpCode::START_DETERMINISIC_RUN; return o; }
 	inline PSOp OpEndDeterministicRun() { PSOp o; o.code = PSOpCode::END_DETERMINISTIC_RUN; return o; }
 	inline PSOp OpRebootCore() { PSOp o; o.code = PSOpCode::REBOOT_CORE; return o; }
@@ -260,6 +262,7 @@ namespace simcore {
 		void op_start_deterministic_run() const;
 		void op_end_deterministic_run() const;
 		void op_run_until_bp(PSContext& ctx);
+		void op_record_current_bp(PSContext& ctx);
 		void op_record_tas_input_sample(PSContext& ctx);
 		bool op_read_u8(const PSOp& op, PSResult& result, PSContext& ctx);
 		bool op_read_u16(const PSOp& op, PSResult& result, PSContext& ctx);

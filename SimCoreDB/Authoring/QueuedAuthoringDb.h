@@ -39,6 +39,8 @@ public:
         std::int64_t* tas_spec_id_out = nullptr,
         std::int64_t* tas_spec_base_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<TasSpecSnapshot> GetTasSpec(
+        std::int64_t tas_spec_id) const override;
     bool SaveBattleRunSpec(
         const SaveBattleRunSpecCommand& command,
         std::int64_t* battle_run_spec_id_out = nullptr,
@@ -83,6 +85,8 @@ public:
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    std::optional<TemplateSnapshot> GetTemplate(
+        std::int64_t template_id) const override;
     bool SaveWorkflowGraph(
         const SaveWorkflowGraphCommand& command,
         SaveWorkflowGraphResult* result_out = nullptr,
