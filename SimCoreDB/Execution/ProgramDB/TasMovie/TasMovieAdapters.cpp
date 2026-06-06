@@ -147,6 +147,10 @@ public:
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
         WorkflowTransitionDecision decision{};
         if (context.workflow_kind.rfind("workflow_graph", 0) == 0 && context.step_key != "TasMovie") {
+            if (context.workflow_kind == "workflow_graph_tasmovie") {
+                decision.should_advance = true;
+                return decision;
+            }
             if (!context.output_ref_id.has_value() || *context.output_ref_id <= 0) {
                 decision.blocked_reason = "tasmovie_graph_missing_savestate_output";
                 return decision;
@@ -526,6 +530,14 @@ public:
         if (failed) {
             AppendJobCompleted(execution_db_, job_id, "FAILED", &payload.event_lines);
             payload.result_kind = "state.tasmovie.failed";
+            std::ostringstream event;
+            event << "[tasmovie-result] job=" << job_id
+                  << " failed=true"
+                  << " w_err=" << parsed.w_err
+                  << " dw_err=" << parsed.dw_err
+                  << " savestate_path_empty=" << (parsed.savestate_path.empty() ? "true" : "false")
+                  << " savestate_path=\"" << parsed.savestate_path << "\"";
+            payload.event_lines.push_back(event.str());
             return payload;
         }
         if (execution_db_ == nullptr || state_db_ == nullptr) {

@@ -65,6 +65,8 @@ struct CliOptions {
     std::optional<std::filesystem::path> migration_root;
     std::optional<std::filesystem::path> workspace_root;
     std::optional<std::filesystem::path> worker_dir_root;
+    bool visual_worker = false;
+    std::optional<std::filesystem::path> visual_screenshot_dir;
 };
 
 void PrintUsage();

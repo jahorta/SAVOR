@@ -104,6 +104,8 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::EQ, (uint32_t)BP_BattleAcceptInput, LabelRetReachedNext));
+        ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::RUN_HIT_BP_KEY, simcore::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRunAppliedInputs));
+        ps.ops.push_back(simcore::OpStepOpcode(true));
 
         // Keep running until one of the terminals above.
         ps.ops.push_back(simcore::OpGoto(LabelRunAppliedInputs));

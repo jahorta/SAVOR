@@ -24,6 +24,7 @@
 #include "UIRead/IUiReadDb.h"
 
 #include "Cli.h"
+#include "CoordinatorProgress.h"
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
@@ -93,7 +94,7 @@ const char* ToString(simcore::db::execution::workflow::WorkflowStepState state) 
     return "UNKNOWN";
 }
 
-bool IsInteractiveStdout() {
+bool IsSeedProbeInteractiveStdout() {
 #ifdef _WIN32
     return _isatty(_fileno(stdout)) != 0;
 #else
@@ -715,7 +716,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         execution_db,
         db_service->StateDb(),
         DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 5,
+            .desired_workers = 1,
             .controller_sleep_ms = static_cast<uint32_t>(options.poll_ms),
             .worker_exe_path = worker_exe.string(),
             .iso_path = options.iso_path.string(),
@@ -793,7 +794,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     }
 
     const auto timeout_ms = ComputeSeedProbeTimeoutMs(options.timeout_ms);
-    const bool interactive_stdout = IsInteractiveStdout();
+    const bool interactive_stdout = IsSeedProbeInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
     const auto started = std::chrono::steady_clock::now();
     std::size_t poll_count = 0;
@@ -865,6 +866,14 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             if (graph->instance.state == WorkflowInstanceState::Failed
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
                 saw_terminal_failure = true;
+                break;
+            }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                if (HasFailedWorkflowStep(*graph)) {
+                    saw_terminal_failure = true;
+                } else {
+                    reached_completed = true;
+                }
                 break;
             }
         }

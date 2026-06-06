@@ -211,6 +211,7 @@ bool RunSeedProbePrelude(
     std::vector<std::string> latest_lines;
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
+    std::size_t terminal_steps_seen_count = 0;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(timeout_ms)) {
         ++poll_count;
         ++ticks_since_snapshot;
@@ -254,6 +255,19 @@ bool RunSeedProbePrelude(
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
                 failed = true;
                 break;
+            }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                ++terminal_steps_seen_count;
+                if (terminal_steps_seen_count >= 2) {
+                    if (HasFailedWorkflowStep(*graph)) {
+                        failed = true;
+                    } else {
+                        completed = true;
+                    }
+                    break;
+                }
+            } else {
+                terminal_steps_seen_count = 0;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
@@ -930,6 +944,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
     std::string latest_state = "workflow=unavailable";
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
+    std::size_t terminal_steps_seen_count = 0;
     std::vector<std::string> latest_lines;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
         ++poll_count;
@@ -980,6 +995,19 @@ bool RunBattleSingleTurnRealWorkerScenario(
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
                 failed = true;
                 break;
+            }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                ++terminal_steps_seen_count;
+                if (terminal_steps_seen_count >= 2) {
+                    if (HasFailedWorkflowStep(*graph)) {
+                        failed = true;
+                    } else {
+                        completed = true;
+                    }
+                    break;
+                }
+            } else {
+                terminal_steps_seen_count = 0;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
@@ -1259,6 +1287,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     std::string latest_state = "workflow=unavailable";
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
+    std::size_t terminal_steps_seen_count = 0;
     std::vector<std::string> latest_lines;
     while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
         ++poll_count;
@@ -1309,6 +1338,19 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
                 || graph->instance.state == WorkflowInstanceState::Canceled) {
                 failed = true;
                 break;
+            }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                ++terminal_steps_seen_count;
+                if (terminal_steps_seen_count >= 2) {
+                    if (HasFailedWorkflowStep(*graph)) {
+                        failed = true;
+                    } else {
+                        completed = true;
+                    }
+                    break;
+                }
+            } else {
+                terminal_steps_seen_count = 0;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));

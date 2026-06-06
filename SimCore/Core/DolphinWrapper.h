@@ -49,6 +49,7 @@ namespace simcore {
         bool loadGame(const std::string& iso_path);
         bool loadSavestate(const std::string& state_path);
         bool saveSavestateBlocking(const std::string& state_path);
+        bool saveScreenshotBlocking(const std::string& image_path, uint32_t timeout_ms = 3000);
         bool saveStateToBuffer(Common::UniqueBuffer<u8>& buffer);
         bool loadStateFromBuffer(Common::UniqueBuffer<u8>& buffer);
 
@@ -93,6 +94,7 @@ namespace simcore {
             const InputPlan& plan,
             const InputTapePlaybackOptions& options = {});
 
+        bool stepOneOpcodeBlocking(int timeout_ms = 1000);
         bool stepOneFrameBlocking(int timeout_ms = 1000);
 
         // Returns an approximate VI field count since the last reset.

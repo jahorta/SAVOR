@@ -106,6 +106,7 @@ int main(int argc, char** argv)
     uint64_t render_hwnd = 0;
     std::string visual_control_pipe;
     std::string visual_host_events_pipe;
+    std::string visual_screenshot_dir;
 
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -117,6 +118,7 @@ int main(int argc, char** argv)
         else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
         else if (k == "--visual-control-pipe") visual_control_pipe = argv_next(i, argc, argv);
         else if (k == "--visual-host-events-pipe") visual_host_events_pipe = argv_next(i, argc, argv);
+        else if (k == "--visual-screenshot-dir") visual_screenshot_dir = argv_next(i, argc, argv);
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -426,6 +428,19 @@ int main(int argc, char** argv)
 
             // Run
             auto R = vm.run(pj);
+
+            if (visual && !visual_screenshot_dir.empty()) {
+                const auto screenshot_path = std::filesystem::path(visual_screenshot_dir)
+                    / ("worker-" + std::to_string(worker_id)
+                        + "-job-" + std::to_string(jh.job_id)
+                        + "-epoch-" + std::to_string(jh.epoch)
+                        + ".png");
+                const bool screenshot_ok = host.saveScreenshotBlocking(screenshot_path.string(), 5000);
+                SCLOGI("[Worker %zu] visual screenshot ok=%d path=%s",
+                    worker_id,
+                    screenshot_ok ? 1 : 0,
+                    screenshot_path.string().c_str());
+            }
 
             // --- clear sink after job ---
             if (progress_flags != 0)

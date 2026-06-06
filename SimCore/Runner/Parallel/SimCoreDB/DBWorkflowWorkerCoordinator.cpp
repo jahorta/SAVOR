@@ -892,6 +892,19 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
         MarkWorkerError(slot, "ctl_activate_main failed");
         return false;
     }
+    if (worker_cfg_.visual_workers && worker_cfg_.auto_resume_visual_workers) {
+        bool resumed = false;
+        for (int attempt = 0; attempt < 20 && !resumed; ++attempt) {
+            resumed = slot.worker->visual_resume_emulation();
+            if (!resumed) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+        if (!resumed) {
+            MarkWorkerError(slot, "visual resume failed");
+            return false;
+        }
+    }
 
     slot.loaded_program_kind = claimed_job.program_kind;
     slot.loaded_program_runtime_affinity_key = runtime_key;
@@ -1663,6 +1676,8 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     ps.exe_path = runtime_worker_exe.string();
     ps.iso_path = worker_cfg_.iso_path;
     ps.dolphin_base_dir.clear();
+    ps.visual = worker_cfg_.visual_workers;
+    ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
 
     std::ostringstream user_dir;
     user_dir << worker_cfg_.worker_dir_root << "\\workflow-worker-" << worker_idx << "\\User";

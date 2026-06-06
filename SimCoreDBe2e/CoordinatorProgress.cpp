@@ -271,6 +271,22 @@ std::vector<std::string> BuildWorkerProgressLines(
 
 } // namespace
 
+bool AreWorkflowStepsTerminal(const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
+    using simcore::db::execution::workflow::WorkflowStepState;
+    return std::all_of(graph.steps.begin(), graph.steps.end(), [](const auto& step) {
+        return step.state == WorkflowStepState::Completed
+            || step.state == WorkflowStepState::Failed
+            || step.state == WorkflowStepState::Skipped;
+    });
+}
+
+bool HasFailedWorkflowStep(const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph) {
+    using simcore::db::execution::workflow::WorkflowStepState;
+    return std::any_of(graph.steps.begin(), graph.steps.end(), [](const auto& step) {
+        return step.state == WorkflowStepState::Failed;
+    });
+}
+
 bool IsInteractiveStdout() {
 #ifdef _WIN32
     return _isatty(_fileno(stdout)) != 0;

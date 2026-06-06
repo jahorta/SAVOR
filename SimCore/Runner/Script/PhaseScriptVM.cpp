@@ -249,6 +249,7 @@ namespace simcore {
     void PhaseScriptVM::op_set_u32(const PSOp& op, PSContext& ctx) const { ctx[op.keyimm.key] = op.keyimm.imm; }
     void PhaseScriptVM::op_add_u32(const PSOp& op, PSContext& ctx) const { uint32_t v = 0; ctx.get<uint32_t>(op.keyimm.key, v); ctx[op.keyimm.key] = v + op.keyimm.imm; }
     void PhaseScriptVM::op_step_frames(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking(); if (op.imm.v == 1) host_.setEnableAllBreakpoints(true); SCLOGD("[VM] phase=run_inputs end"); }
+    void PhaseScriptVM::op_step_opcode(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin opcode"); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); host_.stepOneOpcodeBlocking(); if (op.imm.v == 1) host_.setEnableAllBreakpoints(true); SCLOGD("[VM] phase=run_inputs end opcode"); }
     void PhaseScriptVM::op_start_deterministic_run() const { if (!host_.startMovieRecording()) SCLOGE("[VM] Unable to start recording for deterministic run"); }
     void PhaseScriptVM::op_end_deterministic_run() const { host_.endMovieRecording(); }
     bool PhaseScriptVM::op_read_u8(const PSOp& op, PSResult&, PSContext& ctx) { uint8_t v{}; if (!read_u8(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
@@ -261,8 +262,47 @@ namespace simcore {
     bool PhaseScriptVM::op_apply_input_from(const PSOp& op, PSResult&, PSContext& ctx) { auto it = ctx.find(op.key.id); if (it == ctx.end()) return false; if (auto p = std::get_if<GCInputFrame>(&it->second)) { host_.setInput(*p); return true; } return false; }
     void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[keys::core::RUN_MS] = op.imm.v; }
     void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[keys::core::RUN_MS] = timeout_ms; }
-    bool PhaseScriptVM::op_movie_play_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string path; ctx.get<std::string>(op.key.id, path); host_.clearAllPcBreakpoints(); if (!host_.startMoviePlayback(path)) return false; armed_ = false; armed_pcs_.clear(); arm_bps_once(); return true; }
-    bool PhaseScriptVM::op_save_savestate_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string path; ctx.get<std::string>(op.key.id, path); if (path.empty()) return true; if (!host_.saveSavestateBlocking(path)) return false; ctx[keys::core::LAST_SAVESTATE_PATH] = path; return true; }
+    bool PhaseScriptVM::op_movie_play_from(const PSOp& op, PSResult&, PSContext& ctx) {
+        std::string path;
+        ctx.get<std::string>(op.key.id, path);
+
+        host_.clearAllPcBreakpoints();
+        armed_ = false;
+        armed_pcs_.clear();
+
+        SCLOGI("[VM] MOVIE_PLAY arm-before-start path=%s", path.c_str());
+        arm_bps_once();
+
+        if (!host_.startMoviePlayback(path))
+            return false;
+
+        SCLOGI("[VM] MOVIE_PLAY arm-after-boot path=%s movie=%d input=%llu",
+            path.c_str(),
+            host_.isMoviePlaying() ? 1 : 0,
+            static_cast<unsigned long long>(host_.getCurrentMovieInputCount()));
+        armed_ = false;
+        armed_pcs_.clear();
+        arm_bps_once();
+        return true;
+    }
+    bool PhaseScriptVM::op_save_savestate_from(const PSOp& op, PSResult& result, PSContext& ctx) {
+        std::string path;
+        ctx.get<std::string>(op.key.id, path);
+        if (path.empty()) {
+            SCLOGW("[VM] SAVE_SAVESTATE skipped empty path key=%s", keys::name_for_id(op.key.id).data());
+            result.ctx = ctx;
+            return true;
+        }
+        SCLOGI("[VM] SAVE_SAVESTATE begin path=%s", path.c_str());
+        if (!host_.saveSavestateBlocking(path)) {
+            SCLOGW("[VM] SAVE_SAVESTATE failed path=%s", path.c_str());
+            result.ctx = ctx;
+            return false;
+        }
+        ctx[keys::core::LAST_SAVESTATE_PATH] = path;
+        SCLOGI("[VM] SAVE_SAVESTATE end path=%s", path.c_str());
+        return true;
+    }
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
     void PhaseScriptVM::op_build_turn_inputplan_from_battle_path(PSContext& ctx) const {
         uint32_t turn = 0;
@@ -607,6 +647,7 @@ namespace simcore {
             case PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH: op_build_turn_inputplan_from_battle_path(ctx); break;
             case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES: op_apply_battle_inputplan_frames(ctx); break;
             case PSOpCode::STEP_FRAMES: op_step_frames(op); break;
+            case PSOpCode::STEP_OPCODE: op_step_opcode(op); break;
             case PSOpCode::START_DETERMINISIC_RUN: op_start_deterministic_run(); break;
             case PSOpCode::END_DETERMINISTIC_RUN: op_end_deterministic_run(); break;
             case PSOpCode::RUN_UNTIL_BP: op_run_until_bp(ctx); break;
@@ -647,6 +688,7 @@ namespace simcore {
         case PSOpCode::CAPTURE_SNAPSHOT: return { "Capture Snapshot" };
         case PSOpCode::APPLY_INPUT_FROM: return { "Apply Input" };
         case PSOpCode::STEP_FRAMES: return { "Step Frames" };
+        case PSOpCode::STEP_OPCODE: return { "Step Opcode" };
         case PSOpCode::RUN_UNTIL_BP: return { "Run Until BP" };
         case PSOpCode::RECORD_CURRENT_BP: return { "Record Current BP" };
         case PSOpCode::READ_U8: return { "Read u8" };
@@ -703,6 +745,9 @@ namespace simcore {
             break;
         case PSOpCode::STEP_FRAMES:
             args << "n=" << op.step.n << ", disable_breakpoints=" << op.imm.v;
+            break;
+        case PSOpCode::STEP_OPCODE:
+            args << "disable_breakpoints=" << op.imm.v;
             break;
         case PSOpCode::SET_TIMEOUT:
             args << "ms=" << op.imm.v;

@@ -59,6 +59,9 @@ namespace simcore {
             if (!p.visual_host_events_pipe_name.empty()) {
                 cmd << " --visual-host-events-pipe \"" << p.visual_host_events_pipe_name << "\"";
             }
+            if (!p.visual_screenshot_dir.empty()) {
+                cmd << " --visual-screenshot-dir \"" << p.visual_screenshot_dir << "\"";
+            }
         }
 
         PROCESS_INFORMATION pi{};

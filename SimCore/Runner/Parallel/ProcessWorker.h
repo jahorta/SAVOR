@@ -26,6 +26,7 @@ namespace simcore {
 			uint64_t render_widget_handle{ 0 };
 			std::string visual_control_pipe_name;
 			std::string visual_host_events_pipe_name;
+			std::string visual_screenshot_dir;
 		};
 
 	struct AckWait

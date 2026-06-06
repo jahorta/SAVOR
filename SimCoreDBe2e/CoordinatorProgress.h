@@ -18,6 +18,9 @@ using WorkerProgressById = std::unordered_map<std::size_t, simcore::PRProgress>;
 
 bool IsInteractiveStdout();
 
+bool AreWorkflowStepsTerminal(const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph);
+bool HasFailedWorkflowStep(const simcore::db::execution::workflow::WorkflowGraphSnapshot& graph);
+
 std::vector<std::string> BuildCoordinatorProgressLines(
     simcore::db::IExecutionDb* execution_db,
     const simcore::runner::parallel::simcoredb::WorkflowCoordinatorTelemetry& telemetry,

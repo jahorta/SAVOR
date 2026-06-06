@@ -249,6 +249,7 @@ bool RunTasMovieScenario(
 
     simcore::db::execution::programdb::ProgramKindRegistry registry;
     simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
     tas_config.blueprint.rtc_low = 0;
     tas_config.blueprint.rtc_high = 0;
@@ -289,6 +290,11 @@ bool RunTasMovieScenario(
             .dolphin_base_dir = options.dolphin_base_dir.string(),
             .worker_dir_root = options.worker_dir_root.value_or(
                 std::filesystem::temp_directory_path() / "simcoredbe2e-workers").string(),
+            .visual_workers = options.visual_worker,
+            .auto_resume_visual_workers = options.visual_worker,
+            .visual_screenshot_dir = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default")
+                    / "visual-screenshots").string(),
         },
         simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
         &registry);
@@ -312,17 +318,54 @@ bool RunTasMovieScenario(
         std::swap(out, pending_lines);
         return out;
     };
+    std::mutex progress_mtx;
+    WorkerProgressById last_progress_by_worker;
 
     coordinator.SetResultCallback([&](const simcore::PRResult& result) {
+        uint32_t dw_err = 0;
+        uint32_t hit_pc = 0;
+        uint32_t hit_bp_key = 0;
+        uint32_t vi_delta = 0;
+        uint32_t vi_last = 0;
+        std::string save_path;
+        std::string last_savestate_path;
+        result.ps.ctx.get(simcore::keys::core::DW_RUN_OUTCOME_CODE, dw_err);
+        result.ps.ctx.get(simcore::keys::core::RUN_HIT_PC, hit_pc);
+        result.ps.ctx.get(simcore::keys::core::RUN_HIT_BP_KEY, hit_bp_key);
+        result.ps.ctx.get(simcore::keys::core::VI_DELTA, vi_delta);
+        result.ps.ctx.get(simcore::keys::core::VI_LAST, vi_last);
+        result.ps.ctx.get(simcore::keys::tas::SAVE_PATH, save_path);
+        result.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, last_savestate_path);
         std::ostringstream line;
         line << "[tasmovie-worker-result] job=" << result.job_id
              << " worker=" << result.worker_id
              << " ok=" << (result.ps.ok ? "true" : "false")
-             << " w_err=" << simcore::WErrToString(result.ps.w_err) << "(" << static_cast<int>(result.ps.w_err) << ")";
+             << " w_err=" << simcore::WErrToString(result.ps.w_err) << "(" << static_cast<int>(result.ps.w_err) << ")"
+             << " dw_err=" << dw_err
+             << " hit_pc=0x" << std::hex << std::uppercase << hit_pc << std::dec
+             << " hit_bp_key=" << hit_bp_key
+             << " vi_delta=" << vi_delta
+             << " vi_last=" << vi_last
+             << " save_path=\"" << save_path << "\""
+             << " last_savestate_path=\"" << last_savestate_path << "\"";
+        if (options.visual_worker) {
+            const auto screenshot_path = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default")
+                    / "visual-screenshots")
+                / ("worker-" + std::to_string(result.worker_id)
+                    + "-job-" + std::to_string(result.job_id)
+                    + "-epoch-" + std::to_string(result.epoch)
+                    + ".png");
+            line << " visual_screenshot=\"" << screenshot_path.string() << "\"";
+        }
         push_line(line.str());
     });
     coordinator.SetResultMapEventCallback([&](const std::string& line) {
         push_line(line);
+    });
+    coordinator.SetProgressCallback([&](const simcore::PRProgress& progress) {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        last_progress_by_worker[progress.worker_id] = progress;
     });
 
     coordinator.Start();
@@ -340,11 +383,17 @@ bool RunTasMovieScenario(
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
         const auto graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        WorkerProgressById progress_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(progress_mtx);
+            progress_snapshot = last_progress_by_worker;
+        }
         latest_lines = BuildCoordinatorProgressLines(
             db_service->ExecutionDb(),
             coordinator.SnapshotTelemetry(),
             coordinator.SnapshotWorkers(),
-            graph);
+            graph,
+            &progress_snapshot);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
             for (const auto& line : event_lines) {
@@ -379,6 +428,14 @@ bool RunTasMovieScenario(
                 failed = true;
                 break;
             }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                if (HasFailedWorkflowStep(*graph)) {
+                    failed = true;
+                } else {
+                    completed = true;
+                }
+                break;
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
     }
@@ -391,11 +448,17 @@ bool RunTasMovieScenario(
         }
     }
     const auto final_graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    WorkerProgressById final_progress_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        final_progress_snapshot = last_progress_by_worker;
+    }
     latest_lines = BuildCoordinatorProgressLines(
         db_service->ExecutionDb(),
         coordinator.SnapshotTelemetry(),
         coordinator.SnapshotWorkers(),
-        final_graph);
+        final_graph,
+        &final_progress_snapshot);
     if (final_graph.has_value()) {
         probe_run_id = ResolveSeedProbeRunIdFromGraph(final_graph, probe_run_id);
         latest_state = FormatWorkflowStateLine(*final_graph);

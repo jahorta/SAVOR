@@ -10,11 +10,12 @@
 namespace simcore::tasmovie {
 
     // Main TAS program: all arguments come from job/context via *_FROM(key).
-    // BPs: use the phase's canonical set (e.g., BeforeRandSeedSet).
     inline PhaseScript MakeTasMovieProgram()
     {
         PhaseScript p{};
-        p.canonical_bp_keys = { bp::prebattle::BeforeRandSeedSet }; // adjust if your header exposes a helper list
+        p.canonical_bp_keys = {
+            bp::prebattle::BeforeRandSeedSet,
+        };
 
         // 1) Make sure the disc matches the movie and reset game state.
         p.ops.push_back(OpRequireDiscGameIdFrom(keys::tas::DISC_ID6));

@@ -42,6 +42,9 @@ struct DBWorkflowWorkerCoordinatorConfig {
     std::string iso_path;
     std::string dolphin_base_dir;
     std::string worker_dir_root;
+    bool visual_workers = false;
+    bool auto_resume_visual_workers = false;
+    std::string visual_screenshot_dir;
 };
 
 struct WorkflowCoordinatorTelemetry {

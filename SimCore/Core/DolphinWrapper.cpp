@@ -53,6 +53,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <mutex>
+#include <optional>
 
 #include "Core/PowerPC/BreakPoints.h"
 #include <unordered_set>
@@ -519,13 +520,81 @@ namespace simcore {
 
     bool DolphinWrapper::saveSavestateBlocking(const std::string& path)
     {
-        if (!Core::IsRunning(*m_system)) return false;
-        if (Core::GetState(*m_system) != Core::State::Paused) 
+        const auto state = Core::GetState(*m_system);
+        if (!Core::IsRunning(*m_system) && state != Core::State::Paused) {
+            SCLOGW("[DW] saveSavestateBlocking rejected path=%s state=%d running=0", path.c_str(), static_cast<int>(state));
+            return false;
+        }
+        if (const auto parent = std::filesystem::path(path).parent_path(); !parent.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                SCLOGW("[DW] saveSavestateBlocking create_directories failed path=%s error=%s", parent.string().c_str(), ec.message().c_str());
+                return false;
+            }
+        }
+        if (Core::GetState(*m_system) != Core::State::Paused)
             Core::SetState(*m_system, Core::State::Paused, false, false);
         while (Core::GetState(*m_system) != Core::State::Paused)
             std::this_thread::sleep_for(milliseconds(10));
+        SCLOGI("[DW] saveSavestateBlocking begin path=%s state=%d running=%d", path.c_str(), static_cast<int>(Core::GetState(*m_system)), Core::IsRunning(*m_system) ? 1 : 0);
         State::SaveAs(*m_system, path, true);
+        SCLOGI("[DW] saveSavestateBlocking end path=%s exists=%d", path.c_str(), std::filesystem::exists(path) ? 1 : 0);
         return true;
+    }
+
+    bool DolphinWrapper::saveScreenshotBlocking(const std::string& path, uint32_t timeout_ms)
+    {
+        if (!Core::IsRunning(*m_system)) {
+            SCLOGW("[DW] saveScreenshotBlocking rejected path=%s running=0", path.c_str());
+            return false;
+        }
+
+        const auto output_path = std::filesystem::path(path);
+        const auto parent = output_path.parent_path();
+        if (!parent.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                SCLOGW("[DW] saveScreenshotBlocking create_directories failed path=%s error=%s",
+                    parent.string().c_str(),
+                    ec.message().c_str());
+                return false;
+            }
+        }
+
+        std::error_code remove_ec;
+        std::filesystem::remove(output_path, remove_ec);
+
+        SCLOGI("[DW] saveScreenshotBlocking begin path=%s visual=%d state=%d",
+            path.c_str(),
+            m_visual_mode ? 1 : 0,
+            static_cast<int>(Core::GetState(*m_system)));
+        Core::SaveScreenShot(path);
+
+        const auto deadline = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(timeout_ms == 0 ? 3000 : timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            Core::HostDispatchJobs(*m_system);
+            std::error_code ec;
+            if (std::filesystem::exists(output_path, ec)) {
+                const auto size = std::filesystem::file_size(output_path, ec);
+                if (!ec && size > 0) {
+                    SCLOGI("[DW] saveScreenshotBlocking end path=%s exists=1 size=%llu",
+                        path.c_str(),
+                        static_cast<unsigned long long>(size));
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(output_path, ec);
+        SCLOGW("[DW] saveScreenshotBlocking timeout path=%s exists=%d",
+            path.c_str(),
+            exists ? 1 : 0);
+        return exists;
     }
 
     bool DolphinWrapper::saveStateToBuffer(Common::UniqueBuffer<u8>& buffer)
@@ -553,7 +622,7 @@ namespace simcore {
 
     bool DolphinWrapper::startMoviePlayback(const std::string& dtm_path)
     {
-        SCLOGI("[Movie] PLAY %s", dtm_path);
+        SCLOGI("[Movie] PLAY %s", dtm_path.c_str());
         if (Core::GetState(*m_system) == Core::State::Paused)
             Core::SetState(*m_system, Core::State::Running);
 
@@ -841,6 +910,23 @@ namespace simcore {
     }
 
     // -- Frame Advancing --------------------------------
+
+    bool DolphinWrapper::stepOneOpcodeBlocking(int timeout_ms)
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+
+        SCLOGD("[DW/run] step-op begin state=%d pc=%08X", (int)Core::GetState(*m_system), getPC());
+        Common::Event sync_event;
+        auto& power_pc = m_system->GetPowerPC();
+        const PowerPC::CoreMode old_mode = power_pc.GetMode();
+        power_pc.SetMode(PowerPC::CoreMode::Interpreter);
+        m_system->GetCPU().StepOpcode(&sync_event);
+        sync_event.WaitFor(std::chrono::milliseconds(timeout_ms > 0 ? timeout_ms : 20));
+        power_pc.SetMode(old_mode);
+        SCLOGD("[DW/run] step-op end state=%d pc=%08X", (int)Core::GetState(*m_system), getPC());
+        return true;
+    }
 
     bool DolphinWrapper::stepOneFrameBlocking(int timeout_ms)
     {
@@ -1320,7 +1406,7 @@ namespace simcore {
             for (auto pc : pcs)
             {
                 if (armed.insert(pc).second)
-                    m_system->GetPowerPC().GetBreakPoints().Add(pc);
+                    m_system->GetPowerPC().GetBreakPoints().Add(pc, true, false, std::nullopt);
             }
             }, true);
         SCLOGT("[core] properly loaded battle breakpoints: %s", arm_result ? "true" : "false");
@@ -1366,8 +1452,8 @@ namespace simcore {
         bool arm_result = runOnCpuThread([&] {
             for (auto pc : pcs)
             {
-                if (armed.insert(pc).second)
-                    m_system->GetPowerPC().GetBreakPoints().Add(pc);
+                armed.insert(pc);
+                m_system->GetPowerPC().GetBreakPoints().Add(pc, true, false, std::nullopt);
             }
             }, true);
         SCLOGT("[core] properly loaded breakpoints: %s", arm_result ? "true" : "false");
@@ -1482,19 +1568,26 @@ namespace simcore {
         const bool had_movie = watch_movie && movie.IsPlayingInput();
 
         
-        SCLOGD("[run] timeout set to: %lld ms", timeout_ms);
-        SCLOGD("[run] start=%s deadline=%s", simcore::time_util::steady_to_cstr(start), simcore::time_util::steady_to_cstr(deadline));
+        const std::string start_s = simcore::time_util::steady_to_cstr(start);
+        const std::string deadline_s = simcore::time_util::steady_to_cstr(deadline);
+        SCLOGD("[run] timeout set to: %u ms", timeout_ms);
+        SCLOGD("[run] start=%s deadline=%s", start_s.c_str(), deadline_s.c_str());
 
         // VI stall tracking baseline
         resetViCounterBaseline();
         uint64_t last_vi = getViFieldCountApproxFromBaseline();
         auto last_vi_change = steady_clock::now();
+        constexpr uint64_t kViStallGuardStartVi = 100;
 
         const ProgressSink& emit = sink ? sink : m_progress_sink; // toggle: null = no progress
         auto last_emit = steady_clock::time_point{};
 
         const uint32_t pc = getPC();
         if (contains_pc(armed_singleton().pcs, pc)) {
+            if (Core::GetState(*m_system) == Core::State::Paused) {
+                SCLOGD("[DW/run] HIT already paused at pc=%08X before run loop", pc);
+                return { true, pc, "breakpoint" };
+            }
             SCLOGD("[DW/run] Stepping past pc=%08X to avoid breakpoint", pc);
             //setEnableBreakpoint(pc, false);
             Common::Event sync_event;
@@ -1510,6 +1603,77 @@ namespace simcore {
         if (progflags & (uint32_t)CoreProgressFlags::BattleProgress) armBattleBreakpoints();
         else disarmBattleBreakpoints();
 
+        auto& power_pc_for_run = m_system->GetPowerPC();
+        if (watch_movie && !armed_singleton().pcs.empty()) {
+            SCLOGD("[DW/run] pc-breakpoint debug=%d mode=%d forced_interpreter=0 bp_count=%zu",
+                Config::IsDebuggingEnabled() ? 1 : 0,
+                static_cast<int>(power_pc_for_run.GetMode()),
+                armed_singleton().pcs.size());
+        }
+
+        auto finish = [&](RunUntilHitResult result) -> RunUntilHitResult {
+            return result;
+        };
+
+        struct CpuProgressSample {
+            bool hit = false;
+            bool progress = false;
+            uint32_t hit_pc = 0;
+            uint32_t first_pc = 0;
+            uint32_t last_pc = 0;
+            size_t distinct_pcs = 0;
+            size_t steps = 0;
+        };
+
+        auto sample_cpu_progress = [&](size_t max_steps, size_t min_distinct_pcs) -> CpuProgressSample {
+            CpuProgressSample sample{};
+            Core::SetState(*m_system, Core::State::Paused);
+            if (!waitForPausedCoreState(250, 1)) {
+                sample.last_pc = getPC();
+                SCLOGW("[DW/run] VI stall CPU sample could not pause core pc=%08X", sample.last_pc);
+                return sample;
+            }
+
+            auto& power_pc = m_system->GetPowerPC();
+            const PowerPC::CoreMode old_mode = power_pc.GetMode();
+            power_pc.SetMode(PowerPC::CoreMode::Interpreter);
+
+            std::unordered_set<uint32_t> pcs_seen;
+            Common::Event sync_event;
+            for (size_t step = 0; step < max_steps; ++step) {
+                const uint32_t before_pc = getPC();
+                if (step == 0)
+                    sample.first_pc = before_pc;
+                pcs_seen.insert(before_pc);
+
+                if (contains_pc(armed_singleton().pcs, before_pc)) {
+                    sample.hit = true;
+                    sample.hit_pc = before_pc;
+                    sample.last_pc = before_pc;
+                    break;
+                }
+
+                m_system->GetCPU().StepOpcode(&sync_event);
+                sync_event.WaitFor(std::chrono::milliseconds(20));
+                ++sample.steps;
+
+                const uint32_t after_pc = getPC();
+                pcs_seen.insert(after_pc);
+                sample.last_pc = after_pc;
+
+                if (contains_pc(armed_singleton().pcs, after_pc)) {
+                    sample.hit = true;
+                    sample.hit_pc = after_pc;
+                    break;
+                }
+            }
+
+            sample.distinct_pcs = pcs_seen.size();
+            sample.progress = sample.distinct_pcs >= min_distinct_pcs;
+            power_pc.SetMode(old_mode);
+            return sample;
+        };
+
         // Ensure we begin in Running so time can advance (unless already paused by a BP before entry)
         if (Core::GetState(*m_system) != Core::State::Paused)
             Core::SetState(*m_system, Core::State::Running);
@@ -1524,8 +1688,9 @@ namespace simcore {
             if (now >= deadline) {
                 // TIMEOUT: enforce postcondition (Paused) then return
                 Core::SetState(*m_system, Core::State::Paused);
-                SCLOGD("[DW/run] TIMEOUT polls=%zu pc=%08X vi=%lld", polls, getPC(), getViFieldCountApproxFromBaseline());
-                return { false, 0u, "timeout" };
+                SCLOGD("[DW/run] TIMEOUT polls=%zu pc=%08X vi=%llu", polls, getPC(),
+                    (unsigned long long)getViFieldCountApproxFromBaseline());
+                return finish({ false, 0u, "timeout" });
             }
 
             const auto st = Core::GetState(*m_system);
@@ -1536,14 +1701,14 @@ namespace simcore {
                 if (contains_pc(armed_singleton().pcs, pc)) {
                     // HIT: core is already Paused by the BP; leave paused and return
                     SCLOGD("[DW/run] HIT pc=%08X polls=%zu", pc, polls);
-                    return { true, pc, "breakpoint" };
+                    return finish({ true, pc, "breakpoint" });
                 }
 
                 // 2) If movie EOM caused the pause (pause-on-EOM enabled), detect and return without resuming
                 if (had_movie && !movie.IsPlayingInput()) {
                     Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
                     SCLOGD("[DW/run] MOVIE_ENDED (paused) polls=%zu pc=%08X", polls, getPC());
-                    return { false, 0u, "movie_ended" };
+                    return finish({ false, 0u, "movie_ended" });
                 }
             }
             else // Running
@@ -1552,12 +1717,17 @@ namespace simcore {
                 if (had_movie && !movie.IsPlayingInput()) {
                     Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
                     SCLOGD("[DW/run] MOVIE_ENDED polls=%zu pc=%08X", polls, getPC());
-                    return { false, 0u, "movie_ended" };
+                    return finish({ false, 0u, "movie_ended" });
                 }
 
                 // VI-stall detection
                 if (vi_stall_ms > 0) {
                     const uint64_t vi_now = getViFieldCountApproxFromBaseline();
+                    if (vi_now <= kViStallGuardStartVi) {
+                        last_vi = vi_now;
+                        last_vi_change = now;
+                    }
+                    else
                     if (vi_now != last_vi) {
                         last_vi = vi_now;
                         last_vi_change = now;
@@ -1565,9 +1735,24 @@ namespace simcore {
                     else {
                         const auto since_ms = std::chrono::duration_cast<milliseconds>(now - last_vi_change).count();
                         if (since_ms >= vi_stall_ms) {
+                            const CpuProgressSample sample = sample_cpu_progress(128, 32);
+                            if (sample.hit) {
+                                SCLOGD("[DW/run] HIT pc=%08X polls=%zu during_vi_stall_sample steps=%zu distinct=%zu",
+                                    sample.hit_pc, polls, sample.steps, sample.distinct_pcs);
+                                return finish({ true, sample.hit_pc, "breakpoint" });
+                            }
+                            if (sample.progress) {
+                                last_vi_change = steady_clock::now();
+                                SCLOGD("[DW/run] VI_STALL_DEFERRED polls=%zu first_pc=%08X last_pc=%08X steps=%zu distinct=%zu",
+                                    polls, sample.first_pc, sample.last_pc, sample.steps, sample.distinct_pcs);
+                                Core::SetState(*m_system, Core::State::Running);
+                                continue;
+                            }
+
                             Core::SetState(*m_system, Core::State::Paused); // ensure postcondition
-                            SCLOGD("[DW/run] VI_STALLED polls=%zu pc=%08X", polls, getPC());
-                            return { false, 0u, "vi_stalled" };
+                            SCLOGD("[DW/run] VI_STALLED polls=%zu pc=%08X sample_first=%08X sample_last=%08X sample_steps=%zu sample_distinct=%zu",
+                                polls, getPC(), sample.first_pc, sample.last_pc, sample.steps, sample.distinct_pcs);
+                            return finish({ false, 0u, "vi_stalled" });
                         }
                     }
                 }
@@ -1591,7 +1776,7 @@ namespace simcore {
                     const auto left_ms_now2 = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - now2).count();
                     if (left_ms_now2 <= std::max<uint32_t>(2000u, timeout_ms / 10u))
                     {
-                        SCLOGW("[run] close to timeout! time remaining: %lld ms", left_ms_now2);
+                        SCLOGW("[run] close to timeout! time remaining: %u ms", left_ms_now2);
                         flags |= PF_TIMEOUT_NEAR;
                     }
 
@@ -1599,12 +1784,12 @@ namespace simcore {
                     if (vi_stall_ms > 0)
                     {
                         const uint64_t vi_now = getViFieldCountApproxFromBaseline();
-                        if (vi_now == last_vi)
+                        if (vi_now > kViStallGuardStartVi && vi_now == last_vi)
                         {
                             const auto since_ms = (uint32_t)std::chrono::duration_cast<milliseconds>(now2 - last_vi_change).count();
                             if (since_ms >= (vi_stall_ms / 2u))
                             {
-                                SCLOGW("[run] close to VI stall!", left_ms_now2);
+                                SCLOGW("[run] close to VI stall!");
                                 if (progflags & (uint32_t)CoreProgressFlags::WarnViStall) msg_strs.push_back("VI stall imminent");
                             }
                         }
@@ -1702,8 +1887,18 @@ namespace simcore {
             const auto left_ms_now = (uint32_t)std::chrono::duration_cast<milliseconds>(deadline - steady_clock::now()).count();
             const uint32_t sleep_ms = (left_ms_now > dyn_poll) ? dyn_poll : std::max<uint32_t>(1u, left_ms_now);
 
-            if (Core::GetState(*m_system) == Core::State::Paused)
+            if (Core::GetState(*m_system) == Core::State::Paused) {
+                const uint32_t paused_pc = getPC();
+                if (contains_pc(armed_singleton().pcs, paused_pc)) {
+                    SCLOGD("[DW/run] HIT pc=%08X polls=%zu late=true", paused_pc, polls);
+                    return finish({ true, paused_pc, "breakpoint" });
+                }
+                if (had_movie && !movie.IsPlayingInput()) {
+                    SCLOGD("[DW/run] MOVIE_ENDED (late paused) polls=%zu pc=%08X", polls, paused_pc);
+                    return finish({ false, 0u, "movie_ended" });
+                }
                 Core::SetState(*m_system, Core::State::Running);
+            }
 
             std::this_thread::sleep_for(milliseconds(sleep_ms));
         }

@@ -160,6 +160,8 @@ void PrintUsage() {
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
+              << " [--visual-worker]"
+              << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines normal]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
@@ -220,6 +222,12 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--worker-dir-root", &v)) return false;
             options.worker_dir_root = std::filesystem::path(v);
+        } else if (arg == "--visual-worker") {
+            options.visual_worker = true;
+        } else if (arg == "--visual-screenshot-dir") {
+            std::string v;
+            if (!require_value("--visual-screenshot-dir", &v)) return false;
+            options.visual_screenshot_dir = std::filesystem::path(v);
         } else if (arg == "--durable-lines" || arg == "--debug-durable-lines") {
             std::string v;
             if (!require_value(arg.c_str(), &v)) return false;
