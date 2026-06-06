@@ -21,7 +21,6 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "ExportCurrentDbSchemas.h"
 
 namespace {
