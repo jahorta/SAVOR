@@ -6,7 +6,7 @@ BlenderIrJsonExporter. It intentionally focuses on currently exported fields:
 - triangle corner vertex indices
 - material metadata + textureName
 - texture pixelDataBase64 (rgba8)
-- indexEntries with transform + meshIndices
+- indexEntries with transform + meshIndices, including decoded GRND meshes
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), 1.5707963267948966)
 NJD_EVAL_UNIT_POS = 1 << 0
 NJD_EVAL_UNIT_ANG = 1 << 1
 NJD_EVAL_UNIT_SCL = 1 << 2
+GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET = 0.05
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
@@ -730,12 +731,17 @@ def _append_triangle_corner_attributes(
 def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats: ImportStats) -> Object:
     mesh_name = _mesh_object_name(mesh_data)
     mesh_field_name = f"meshes[{mesh_name}]"
+    label = str(mesh_data.get("label", ""))
+    is_grnd_mesh = label.startswith("GRND_")
 
     vertices_data = mesh_data.get("vertices", [])
     vertices = []
     for vertex in vertices_data:
         pos = vertex.get("position", [0.0, 0.0, 0.0])
-        source_position = mathutils.Vector((float(pos[0]), float(pos[1]), float(pos[2])))
+        source_y = float(pos[1])
+        if is_grnd_mesh:
+            source_y += GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET
+        source_position = mathutils.Vector((float(pos[0]), source_y, float(pos[2])))
         blender_position = NJCM_TO_BLENDER_AXIS @ source_position
         vertices.append((blender_position.x, blender_position.y, blender_position.z))
 
@@ -833,6 +839,9 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
         stats,
         field_name=f"{mesh_field_name}.sourceObjectAddress",
     )
+    mesh["soasim_label"] = label
+    if is_grnd_mesh:
+        mesh["soasim_visual_source_y_offset"] = GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET
     _set_custom_int_property(
         mesh,
         "soasim_source_chunk_offset",
@@ -1037,6 +1046,9 @@ def import_blender_ir_json(
         entry_root["soasim_object_addresses"] = ",".join(
             str(int(v)) for v in entry.get("objectAddresses", [])
         )
+        entry_root["soasim_ground_addresses"] = ",".join(
+            str(int(v)) for v in entry.get("groundAddresses", [])
+        )
         root_collection.objects.link(entry_root)
         stats.object_count += 1
 
@@ -1184,6 +1196,22 @@ def import_blender_ir_json(
                 )
                 root_collection.objects.link(attach_obj)
                 stats.object_count += 1
+
+        for slot, mesh_index in enumerate(entry.get("meshIndices", [])):
+            mi = int(mesh_index)
+            if mi < 0 or mi >= len(mesh_objects):
+                stats.warnings += 1
+                continue
+            source_obj = mesh_objects[mi]
+            if not str(source_obj.data.get("soasim_label", "")).startswith("GRND_"):
+                continue
+            instance_name = f"SoaInst_{entry_id}_grnd_{slot}_{source_obj.name}"
+            instance_obj = bpy.data.objects.new(instance_name, source_obj.data)
+            _set_parent_with_identity_inverse(instance_obj, entry_root)
+            _apply_identity_local_transform(instance_obj)
+            instance_obj["soasim_mesh_index"] = mi
+            root_collection.objects.link(instance_obj)
+            stats.object_count += 1
 
     if emit_parity_debug:
         _write_debug_log(debug_lines, target_collection_name, stats)

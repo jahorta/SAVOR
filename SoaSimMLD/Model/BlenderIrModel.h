@@ -132,6 +132,7 @@ struct BlenderIrInstance {
     std::string fxnName{};
     Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
+    std::vector<std::uint32_t> groundAddresses{};
     std::vector<std::size_t> meshIndices{};
     std::vector<std::size_t> objectTreeIndices{};
 };

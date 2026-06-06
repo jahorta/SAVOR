@@ -44,6 +44,7 @@ struct ParseOptions {
     std::vector<std::uint32_t> filterEntryIdList{};
     bool buildBlenderIntermediateIr = true;
     bool exportBlenderIrJson = false;
+    bool extractGrndGobjBlocks = false;
     std::string blenderIrOutputDir{};
 };
 
@@ -53,6 +54,7 @@ struct ParsedRawEntry {
     std::uint32_t tblId = 0;
     model::Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
+    std::vector<std::uint32_t> groundAddresses{};
     std::vector<std::uint8_t> payload{};
 };
 
@@ -69,6 +71,31 @@ struct ExtractedNjBlock {
     std::vector<std::uint8_t> bytes{};
 };
 
+struct BlockOwnerRef {
+    std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
+    std::string fxnName{};
+    std::string role{};
+};
+
+struct ExtractedMldSpatialBlock {
+    enum class Kind {
+        Grnd,
+        Gobj,
+        UnknownGround,
+        UnknownObject,
+    };
+
+    Kind kind = Kind::UnknownObject;
+    std::uint32_t offset = 0;
+    std::size_t size = 0;
+    std::string tag{};
+    std::string sizeSource{};
+    std::vector<BlockOwnerRef> owners{};
+    std::vector<std::pair<std::string, std::string>> headerProbe{};
+    std::vector<std::uint8_t> bytes{};
+};
+
 struct ParseResult {
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
@@ -77,6 +104,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<ExtractedNjBlock> extractedNjBlocks{};
+    std::vector<ExtractedMldSpatialBlock> extractedSpatialBlocks{};
     std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};
     std::vector<std::string> blenderIrDiagnostics{};
@@ -91,6 +119,10 @@ public:
         const ParseOptions& options = {}) const;
 
     [[nodiscard]] std::vector<ExtractedNjBlock> extractNjBlocks(
+        std::span<const std::uint8_t> mldBytes,
+        const ParseOptions& options = {}) const;
+
+    [[nodiscard]] std::vector<ExtractedMldSpatialBlock> extractGrndGobjBlocks(
         std::span<const std::uint8_t> mldBytes,
         const ParseOptions& options = {}) const;
 };

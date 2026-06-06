@@ -61,6 +61,12 @@
     <ClInclude Include="Parsing\GeometryBuilder.h">
       <Filter>Parsing</Filter>
     </ClInclude>
+    <ClInclude Include="Parsing\GobjParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
+    <ClInclude Include="Parsing\GrndParser.h">
+      <Filter>Parsing</Filter>
+    </ClInclude>
     <ClInclude Include="Parsing\MldBinaryReader.h">
       <Filter>Parsing</Filter>
     </ClInclude>
@@ -100,6 +106,12 @@
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GeometryBuilder.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\GobjParser.cpp">
+      <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="Parsing\GrndParser.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldParser.cpp">

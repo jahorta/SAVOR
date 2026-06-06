@@ -10,6 +10,7 @@ namespace soasim::mld::model {
 
 struct GrndSurface {
     std::uint32_t id = 0;
+    std::uint32_t sourceOffset = 0;
     MeshData mesh{};
     Transform transform{};
     std::vector<std::uint32_t> linkedGrndIds{};

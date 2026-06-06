@@ -65,16 +65,18 @@ struct CliOptions {
     std::filesystem::path inputDir{};
     std::filesystem::path outputDir{};
     bool runAbSa3dPortVsSa3dBridge = false;
+    bool extractGrndGobjBlocks = false;
 };
 
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge]\n\n"
+        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SoaSimFileParsing/inputs\n"
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
+        << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - Bridge executable path is auto-discovered at <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
         << "  - In A/B mode, all slices (0..9) run automatically per fixture using a per-fixture NJ block manifest.\n";
 }
@@ -93,6 +95,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--ab-sa3d-port-vs-sa3d-bridge") {
             options.runAbSa3dPortVsSa3dBridge = true;
+            continue;
+        }
+        if (arg == "--extract-grnd-gobj-blocks") {
+            options.extractGrndGobjBlocks = true;
             continue;
         }
         if (!arg.empty() && arg.front() == '-') {
@@ -290,6 +296,134 @@ void writeFixtureBlockManifest(
     }
     out << "  ]\n";
     out << "}\n";
+}
+
+std::string toSpatialBlockKindLabel(const soasim::mld::parsing::ExtractedMldSpatialBlock::Kind kind) {
+    switch (kind) {
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::Grnd:
+        return "grnd";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::Gobj:
+        return "gobj";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::UnknownGround:
+        return "unknown_ground";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::UnknownObject:
+        return "unknown_object";
+    default:
+        return "unknown";
+    }
+}
+
+std::string spatialBlockExtension(const soasim::mld::parsing::ExtractedMldSpatialBlock::Kind kind) {
+    switch (kind) {
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::Grnd:
+        return ".grnd.bin";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::Gobj:
+        return ".gobj.bin";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::UnknownGround:
+        return ".ground.bin";
+    case soasim::mld::parsing::ExtractedMldSpatialBlock::Kind::UnknownObject:
+        return ".object.bin";
+    default:
+        return ".bin";
+    }
+}
+
+std::string hexU32ForFile(std::uint32_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result = "0x00000000";
+    for (int i = 9; i >= 2; --i) {
+        result[static_cast<std::size_t>(i)] = digits[value & 0xFu];
+        value >>= 4;
+    }
+    return result;
+}
+
+void writeSpatialBlockManifest(
+    const std::filesystem::path& outPath,
+    const std::string_view fixtureId,
+    const std::vector<std::filesystem::path>& blockPaths,
+    const std::vector<soasim::mld::parsing::ExtractedMldSpatialBlock>& blocks) {
+    std::ofstream out(outPath, std::ios::binary);
+    out << "{\n";
+    out << "  \"schema\": \"soasim_mld_spatial_block_manifest_v1\",\n";
+    out << "  \"fixture_id\": \"" << jsonEscape(std::string(fixtureId)) << "\",\n";
+    out << "  \"blocks\": [\n";
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        const auto& block = blocks[i];
+        out << "    {\n";
+        out << "      \"index\": " << i << ",\n";
+        out << "      \"kind\": \"" << toSpatialBlockKindLabel(block.kind) << "\",\n";
+        out << "      \"tag\": \"" << jsonEscape(block.tag) << "\",\n";
+        out << "      \"offset\": " << block.offset << ",\n";
+        out << "      \"offset_hex\": \"" << hexU32ForFile(block.offset) << "\",\n";
+        out << "      \"size\": " << block.size << ",\n";
+        out << "      \"size_source\": \"" << jsonEscape(block.sizeSource) << "\",\n";
+        out << "      \"path\": \"" << jsonEscape(i < blockPaths.size() ? std::filesystem::absolute(blockPaths[i]).string() : std::string{}) << "\",\n";
+        out << "      \"owners\": [\n";
+        for (std::size_t oi = 0; oi < block.owners.size(); ++oi) {
+            const auto& owner = block.owners[oi];
+            out << "        {"
+                << "\"entry_id\": " << owner.sourceEntryId
+                << ", \"table_index\": " << owner.tableIndex
+                << ", \"fxn\": \"" << jsonEscape(owner.fxnName) << "\""
+                << ", \"role\": \"" << jsonEscape(owner.role) << "\""
+                << "}";
+            if (oi + 1 < block.owners.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "      ],\n";
+        out << "      \"header_probe\": [\n";
+        for (std::size_t pi = 0; pi < block.headerProbe.size(); ++pi) {
+            const auto& item = block.headerProbe[pi];
+            out << "        {"
+                << "\"key\": \"" << jsonEscape(item.first) << "\""
+                << ", \"value\": \"" << jsonEscape(item.second) << "\""
+                << "}";
+            if (pi + 1 < block.headerProbe.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "      ]\n";
+        out << "    }";
+        if (i + 1 < blocks.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+}
+
+void writeExtractedSpatialBlocks(
+    const std::filesystem::path& outputDir,
+    const std::string_view fixtureId,
+    const std::vector<soasim::mld::parsing::ExtractedMldSpatialBlock>& blocks) {
+    const auto blockDir = outputDir / (std::string(fixtureId) + ".mld_blocks");
+    std::filesystem::create_directories(blockDir);
+
+    std::vector<std::filesystem::path> blockPaths{};
+    blockPaths.reserve(blocks.size());
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        const auto& block = blocks[i];
+        const auto fileName = std::string(fixtureId) +
+            "." + toSpatialBlockKindLabel(block.kind) +
+            "_" + std::to_string(i) +
+            "_" + hexU32ForFile(block.offset) +
+            spatialBlockExtension(block.kind);
+        const auto blockPath = blockDir / fileName;
+        if (!writeAllBytes(blockPath, std::span<const std::uint8_t>(block.bytes.data(), block.bytes.size()))) {
+            std::cerr << "[SoaSimFileParsing] WARNING: failed to write extracted GRND/GOBJ block: "
+                      << blockPath.string() << "\n";
+            blockPaths.push_back({});
+            continue;
+        }
+        blockPaths.push_back(blockPath);
+    }
+
+    writeSpatialBlockManifest(blockDir / "manifest.json", fixtureId, blockPaths, blocks);
 }
 
 std::string readTextFile(const std::filesystem::path& path) {
@@ -1554,11 +1688,15 @@ int main(int argc, char** argv) {
             std::cout << "[SoaSimFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
             if (cliOptions->runAbSa3dPortVsSa3dBridge) {
                 soasim::mld::parsing::ParseOptions sa3dPortOptions{};
+                sa3dPortOptions.extractGrndGobjBlocks = cliOptions->extractGrndGobjBlocks;
                 auto sa3dPortParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), sa3dPortOptions);
 
                 const auto sa3dPortOutPath = outputDir / (entry.path().stem().string() + ".mld.sa3d_port.txt");
                 std::ofstream sa3dPortOut(sa3dPortOutPath, std::ios::binary);
                 sa3dPortOut << soasim::mld::parsing::formatParseSummary(sa3dPortParsed);
+                if (cliOptions->extractGrndGobjBlocks) {
+                    writeExtractedSpatialBlocks(outputDir, entry.path().stem().string(), sa3dPortParsed.extractedSpatialBlocks);
+                }
 
                 const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sa3d_port.json");
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);
@@ -1608,11 +1746,15 @@ int main(int argc, char** argv) {
                 writeBridgeAbComparison(compareOutPath, sa3dPortParsed, validBlocks, bridgeReportPaths);
             } else {
                 soasim::mld::parsing::ParseOptions parityOptions{};
+                parityOptions.extractGrndGobjBlocks = cliOptions->extractGrndGobjBlocks;
                 auto parityParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), parityOptions);
 
                 const auto parityOutPath = outputDir / (entry.path().stem().string() + ".mld.parity.txt");
                 std::ofstream parityOut(parityOutPath, std::ios::binary);
                 parityOut << soasim::mld::parsing::formatParseSummary(parityParsed);
+                if (cliOptions->extractGrndGobjBlocks) {
+                    writeExtractedSpatialBlocks(outputDir, entry.path().stem().string(), parityParsed.extractedSpatialBlocks);
+                }
 
                 const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".json");
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);

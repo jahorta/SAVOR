@@ -53,7 +53,9 @@
 /SoaSimSCT/x64/
 /SoaSimFileParsing/x64/
 /SoaSimFileParsing/blender_ir/
+/SoaSimFileParsing/parsed_*/
 /SoaSimFileParsing/inputs_mld_only/
+*.mld
 /SoaSimMLD/blender/debug_node118_materials.py
 /Compression/x64/
 /SoaSimQt3D/x64/Debug

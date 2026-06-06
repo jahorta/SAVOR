@@ -111,6 +111,8 @@
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
     <ClInclude Include="Parsing\GvrTextureDecoder.h" />
     <ClInclude Include="Parsing\GeometryBuilder.h" />
+    <ClInclude Include="Parsing\GobjParser.h" />
+    <ClInclude Include="Parsing\GrndParser.h" />
     <ClInclude Include="Parsing\MldBinaryReader.h" />
     <ClInclude Include="Parsing\MldTextureArchiveParser.h" />
     <ClInclude Include="Parsing\MldParser.h" />
@@ -124,6 +126,8 @@
     <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp" />
     <ClCompile Include="Parsing\GvrTextureDecoder.cpp" />
     <ClCompile Include="Parsing\GeometryBuilder.cpp" />
+    <ClCompile Include="Parsing\GobjParser.cpp" />
+    <ClCompile Include="Parsing\GrndParser.cpp" />
     <ClCompile Include="Parsing\MldParser.cpp" />
     <ClCompile Include="Parsing\Sa3dBlenderIrBuilder.cpp" />
     <ClCompile Include="Export\BlenderIrJsonExporter.cpp" />

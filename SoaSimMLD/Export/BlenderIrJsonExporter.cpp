@@ -278,6 +278,15 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         }
         out << ']';
 
+        out << ",\"groundAddresses\":[";
+        for (std::size_t gi = 0; gi < entry.groundAddresses.size(); ++gi) {
+            if (gi != 0) {
+                out << ',';
+            }
+            out << entry.groundAddresses[gi];
+        }
+        out << ']';
+
         out << ",\"meshIndices\":[";
         for (std::size_t mi = 0; mi < entry.meshIndices.size(); ++mi) {
             if (mi != 0) {

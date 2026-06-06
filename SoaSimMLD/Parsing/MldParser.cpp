@@ -6,7 +6,7 @@
 #include "../Model/IndexEntry.h"
 #include "../common/ByteUtils.h"
 #include "EntryHandlers.h"
-#include "MldBinaryReader.h"
+#include "GrndParser.h"
 #include "MldTextureArchiveParser.h"
 
 #include <algorithm>
@@ -27,7 +27,6 @@ namespace {
 
 using soasim::mld::model::EncounterOrTriggerRegion;
 using soasim::mld::model::GrndSurface;
-using soasim::mld::model::MeshVertex;
 using soasim::mld::model::UnknownEntry;
 using soasim::mld::model::Vec3;
 using soasim::mld::model::WalkSurfaceNode;
@@ -74,17 +73,6 @@ constexpr std::uint32_t makeTag(const char a, const char b, const char c, const 
     out.y *= policy.uniformScale;
     out.z *= policy.uniformScale;
     return out;
-}
-
-[[nodiscard]] bool readVec3(MldBinaryReader& reader, Vec3& out) {
-    const auto x = reader.readF32LE();
-    const auto y = reader.readF32LE();
-    const auto z = reader.readF32LE();
-    if (!x.has_value() || !y.has_value() || !z.has_value()) {
-        return false;
-    }
-    out = Vec3{ *x, *y, *z };
-    return true;
 }
 
 void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const ParseOptions& options, const std::string& fxnName) {
@@ -210,6 +198,367 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
         blocks.push_back(std::move(block));
     }
 
+    return blocks;
+}
+
+using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwnerRef>>;
+
+[[nodiscard]] std::optional<std::uint16_t> readU16AtLE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    if (offset + 2U > bytes.size()) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint16_t>(bytes[offset]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1U]) << 8);
+}
+
+[[nodiscard]] std::optional<std::uint16_t> readU16AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    if (offset + 2U > bytes.size()) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset]) << 8) |
+        static_cast<std::uint16_t>(bytes[offset + 1U]);
+}
+
+[[nodiscard]] std::optional<std::int32_t> readI32AtLE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    const auto value = common::readU32AtLE(bytes, offset);
+    if (!value.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(*value);
+}
+
+[[nodiscard]] std::optional<std::int32_t> readI32AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    const auto value = common::readU32AtBE(bytes, offset);
+    if (!value.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(*value);
+}
+
+[[nodiscard]] std::string hex32(std::uint32_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result = "0x00000000";
+    for (int i = 9; i >= 2; --i) {
+        result[static_cast<std::size_t>(i)] = digits[value & 0xFu];
+        value >>= 4;
+    }
+    return result;
+}
+
+[[nodiscard]] std::string asciiTagAt(std::span<const std::uint8_t> payload, const std::size_t offset) {
+    if (offset + 4U > payload.size()) {
+        return {};
+    }
+
+    std::string tag{};
+    tag.reserve(4U);
+    for (std::size_t i = 0; i < 4U; ++i) {
+        const unsigned char c = payload[offset + i];
+        tag.push_back((c >= 32U && c <= 126U) ? static_cast<char>(c) : '?');
+    }
+    return tag;
+}
+
+[[nodiscard]] bool isNjLikeTag(const std::string& tag) {
+    return tag == "NJCM" ||
+        tag == "GJCM" ||
+        tag == "NJTL" ||
+        tag == "GJTL";
+}
+
+[[nodiscard]] bool isPlausibleBlockSize(
+    std::span<const std::uint8_t> payload,
+    const std::size_t offset,
+    const std::uint32_t size) {
+    if (size < 0x10U || offset > payload.size()) {
+        return false;
+    }
+    return static_cast<std::size_t>(size) <= payload.size() - offset;
+}
+
+[[nodiscard]] std::optional<std::size_t> nextCandidateAfter(
+    const std::vector<std::uint32_t>& candidateOffsets,
+    const std::uint32_t offset) {
+    const auto it = std::upper_bound(candidateOffsets.begin(), candidateOffsets.end(), offset);
+    if (it == candidateOffsets.end()) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(*it);
+}
+
+void appendProbeValue(
+    std::vector<std::pair<std::string, std::string>>& probe,
+    std::string key,
+    std::string value) {
+    probe.emplace_back(std::move(key), std::move(value));
+}
+
+void appendProbeValue(
+    std::vector<std::pair<std::string, std::string>>& probe,
+    std::string key,
+    const std::optional<std::uint32_t>& value) {
+    appendProbeValue(probe, std::move(key), value.has_value() ? hex32(*value) : std::string("unreadable"));
+}
+
+void appendProbeValue(
+    std::vector<std::pair<std::string, std::string>>& probe,
+    std::string key,
+    const std::optional<std::int32_t>& value) {
+    appendProbeValue(probe, std::move(key), value.has_value() ? std::to_string(*value) : std::string("unreadable"));
+}
+
+void appendProbeValue(
+    std::vector<std::pair<std::string, std::string>>& probe,
+    std::string key,
+    const std::optional<std::uint16_t>& value) {
+    appendProbeValue(probe, std::move(key), value.has_value() ? std::to_string(*value) : std::string("unreadable"));
+}
+
+void appendProbeValue(
+    std::vector<std::pair<std::string, std::string>>& probe,
+    std::string key,
+    const std::optional<float>& value) {
+    appendProbeValue(probe, std::move(key), value.has_value() ? std::to_string(*value) : std::string("unreadable"));
+}
+
+[[nodiscard]] bool offsetInBlock(
+    const std::size_t target,
+    const std::size_t blockOffset,
+    const std::size_t blockSize) {
+    return target >= blockOffset && target < blockOffset + blockSize;
+}
+
+void appendGobjNodeProbe(
+    const std::span<const std::uint8_t> payload,
+    ExtractedMldSpatialBlock& block,
+    const std::size_t nodeOffset,
+    const std::string& prefix) {
+    appendProbeValue(block.headerProbe, prefix + ".offset", hex32(static_cast<std::uint32_t>(nodeOffset)));
+    if (nodeOffset + 0x34U > payload.size()) {
+        appendProbeValue(block.headerProbe, prefix + ".status", "out_of_bounds");
+        return;
+    }
+
+    const auto dataPtrLe = common::readU32AtLE(payload, nodeOffset);
+    const auto dataPtrBe = common::readU32AtBE(payload, nodeOffset);
+    const auto childPtrLe = common::readU32AtLE(payload, nodeOffset + 0x2CU);
+    const auto childPtrBe = common::readU32AtBE(payload, nodeOffset + 0x2CU);
+    const auto siblingPtrLe = common::readU32AtLE(payload, nodeOffset + 0x30U);
+    const auto siblingPtrBe = common::readU32AtBE(payload, nodeOffset + 0x30U);
+
+    appendProbeValue(block.headerProbe, prefix + ".data_ptr_le", dataPtrLe);
+    appendProbeValue(block.headerProbe, prefix + ".data_ptr_be", dataPtrBe);
+    appendProbeValue(block.headerProbe, prefix + ".child_ptr_le", childPtrLe);
+    appendProbeValue(block.headerProbe, prefix + ".child_ptr_be", childPtrBe);
+    appendProbeValue(block.headerProbe, prefix + ".sibling_ptr_le", siblingPtrLe);
+    appendProbeValue(block.headerProbe, prefix + ".sibling_ptr_be", siblingPtrBe);
+
+    if (dataPtrLe.has_value() && *dataPtrLe > 0U) {
+        const auto target = nodeOffset + static_cast<std::size_t>(*dataPtrLe);
+        appendProbeValue(block.headerProbe, prefix + ".data_target_le", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".data_target_le_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+    if (childPtrLe.has_value() && *childPtrLe > 0U) {
+        const auto target = nodeOffset + 0x2CU + static_cast<std::size_t>(*childPtrLe);
+        appendProbeValue(block.headerProbe, prefix + ".child_target_le", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".child_target_le_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+    if (siblingPtrLe.has_value() && *siblingPtrLe > 0U) {
+        const auto target = nodeOffset + 0x2CU + static_cast<std::size_t>(*siblingPtrLe);
+        appendProbeValue(block.headerProbe, prefix + ".sibling_target_le", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".sibling_target_le_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+    if (dataPtrBe.has_value() && *dataPtrBe > 0U) {
+        const auto target = nodeOffset + 4U + static_cast<std::size_t>(*dataPtrBe);
+        appendProbeValue(block.headerProbe, prefix + ".data_target_be_rel_field", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".data_target_be_rel_field_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+    if (childPtrBe.has_value() && *childPtrBe > 0U) {
+        const auto target = nodeOffset + 0x2CU + static_cast<std::size_t>(*childPtrBe);
+        appendProbeValue(block.headerProbe, prefix + ".child_target_be_rel_field", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".child_target_be_rel_field_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+    if (siblingPtrBe.has_value() && *siblingPtrBe > 0U) {
+        const auto target = nodeOffset + 0x30U + static_cast<std::size_t>(*siblingPtrBe);
+        appendProbeValue(block.headerProbe, prefix + ".sibling_target_be_rel_field", hex32(static_cast<std::uint32_t>(target)));
+        appendProbeValue(block.headerProbe, prefix + ".sibling_target_be_rel_field_in_block",
+            offsetInBlock(target, block.offset, block.size) ? "true" : "false");
+    }
+}
+
+void appendSpatialHeaderProbe(
+    const std::span<const std::uint8_t> payload,
+    ExtractedMldSpatialBlock& block,
+    const std::optional<std::size_t> nextCandidate) {
+    appendProbeValue(block.headerProbe, "tag", block.tag.empty() ? std::string("unreadable") : block.tag);
+    appendProbeValue(block.headerProbe, "size_le", common::readU32AtLE(payload, static_cast<std::size_t>(block.offset) + 4U));
+    appendProbeValue(block.headerProbe, "size_be", common::readU32AtBE(payload, static_cast<std::size_t>(block.offset) + 4U));
+    if (nextCandidate.has_value()) {
+        appendProbeValue(block.headerProbe, "next_candidate_offset", hex32(static_cast<std::uint32_t>(*nextCandidate)));
+        appendProbeValue(block.headerProbe, "next_candidate_delta", std::to_string(*nextCandidate - block.offset));
+    }
+
+    if (block.kind == ExtractedMldSpatialBlock::Kind::Grnd) {
+        const std::size_t inner = static_cast<std::size_t>(block.offset) + 0x10U;
+        appendProbeValue(block.headerProbe, "grnd.inner_header_offset", hex32(static_cast<std::uint32_t>(inner)));
+        if (inner + 0x1CU <= payload.size()) {
+            const auto relTriSets = readI32AtBE(payload, inner);
+            const auto relQuads = readI32AtBE(payload, inner + 4U);
+            appendProbeValue(block.headerProbe, "grnd.rel_tri_sets", relTriSets);
+            appendProbeValue(block.headerProbe, "grnd.rel_quad_registry", relQuads);
+            if (relTriSets.has_value()) {
+                appendProbeValue(block.headerProbe, "grnd.tri_sets_offset",
+                    hex32(static_cast<std::uint32_t>(static_cast<std::int64_t>(inner) + *relTriSets)));
+            }
+            if (relQuads.has_value()) {
+                appendProbeValue(block.headerProbe, "grnd.quad_registry_offset",
+                    hex32(static_cast<std::uint32_t>(static_cast<std::int64_t>(inner) + *relQuads + 4)));
+            }
+            appendProbeValue(block.headerProbe, "grnd.center_x", common::readF32AtBE(payload, inner + 8U));
+            appendProbeValue(block.headerProbe, "grnd.center_z", common::readF32AtBE(payload, inner + 0x0CU));
+            appendProbeValue(block.headerProbe, "grnd.grid_x", readU16AtBE(payload, inner + 0x10U));
+            appendProbeValue(block.headerProbe, "grnd.grid_z", readU16AtBE(payload, inner + 0x12U));
+            appendProbeValue(block.headerProbe, "grnd.cell_size_x", readU16AtBE(payload, inner + 0x14U));
+            appendProbeValue(block.headerProbe, "grnd.cell_size_z", readU16AtBE(payload, inner + 0x16U));
+            appendProbeValue(block.headerProbe, "grnd.triangle_set_count", readU16AtBE(payload, inner + 0x18U));
+            appendProbeValue(block.headerProbe, "grnd.quad_count", readU16AtBE(payload, inner + 0x1AU));
+        } else {
+            appendProbeValue(block.headerProbe, "grnd.inner_header_status", "out_of_bounds");
+        }
+    }
+
+    if (block.kind == ExtractedMldSpatialBlock::Kind::Gobj ||
+        block.kind == ExtractedMldSpatialBlock::Kind::UnknownObject) {
+        appendGobjNodeProbe(payload, block, block.offset, "node_at_block_start");
+        appendGobjNodeProbe(payload, block, static_cast<std::size_t>(block.offset) + 0x10U, "node_at_0x10");
+    }
+}
+
+[[nodiscard]] std::vector<ExtractedMldSpatialBlock> buildExtractedSpatialBlocks(
+    std::span<const std::uint8_t> payload,
+    const std::unordered_set<std::uint32_t>& groundAddresses,
+    const std::unordered_set<std::uint32_t>& objectAddresses,
+    const std::unordered_set<std::uint32_t>& motionAddresses,
+    const std::unordered_set<std::uint32_t>& textureAddresses,
+    const SpatialOwnerMap& groundOwners,
+    const SpatialOwnerMap& objectOwners) {
+    std::vector<std::uint32_t> candidateOffsets{};
+    candidateOffsets.reserve(groundAddresses.size() + objectAddresses.size() + motionAddresses.size() + textureAddresses.size());
+    const auto appendCandidate = [&](const std::uint32_t offset) {
+        if (offset > 0U && static_cast<std::size_t>(offset) < payload.size()) {
+            candidateOffsets.push_back(offset);
+        }
+    };
+    for (const auto offset : groundAddresses) {
+        appendCandidate(offset);
+    }
+    for (const auto offset : objectAddresses) {
+        appendCandidate(offset);
+    }
+    for (const auto offset : motionAddresses) {
+        appendCandidate(offset);
+    }
+    for (const auto offset : textureAddresses) {
+        appendCandidate(offset);
+    }
+    std::sort(candidateOffsets.begin(), candidateOffsets.end());
+    candidateOffsets.erase(std::unique(candidateOffsets.begin(), candidateOffsets.end()), candidateOffsets.end());
+
+    std::vector<ExtractedMldSpatialBlock> blocks{};
+    blocks.reserve(groundAddresses.size() + objectAddresses.size());
+
+    const auto appendBlock = [&](const std::uint32_t offset, const bool isGround) {
+        if (offset == 0U || static_cast<std::size_t>(offset) >= payload.size()) {
+            return;
+        }
+
+        const auto begin = static_cast<std::size_t>(offset);
+        const std::string tag = asciiTagAt(payload, begin);
+        if (!isGround && isNjLikeTag(tag)) {
+            return;
+        }
+
+        const auto nextCandidate = nextCandidateAfter(candidateOffsets, offset);
+        std::size_t size = 0U;
+        std::string sizeSource{};
+
+        if (tag == "GRND" || tag == "GOBJ") {
+            const auto leSize = common::readU32AtLE(payload, begin + 4U);
+            if (leSize.has_value() && isPlausibleBlockSize(payload, begin, *leSize)) {
+                size = static_cast<std::size_t>(*leSize);
+                sizeSource = "header_le";
+            } else {
+                const auto beSize = common::readU32AtBE(payload, begin + 4U);
+                if (beSize.has_value() && isPlausibleBlockSize(payload, begin, *beSize)) {
+                    size = static_cast<std::size_t>(*beSize);
+                    sizeSource = "header_be";
+                }
+            }
+        }
+
+        if (size == 0U && nextCandidate.has_value() && *nextCandidate > begin) {
+            size = *nextCandidate - begin;
+            sizeSource = "next_candidate";
+        }
+        if (size == 0U) {
+            return;
+        }
+
+        ExtractedMldSpatialBlock block{};
+        block.offset = offset;
+        block.size = size;
+        block.tag = tag;
+        block.sizeSource = sizeSource;
+        if (tag == "GOBJ") {
+            block.kind = ExtractedMldSpatialBlock::Kind::Gobj;
+            if (isGround) {
+                if (const auto owners = groundOwners.find(offset); owners != groundOwners.end()) {
+                    block.owners = owners->second;
+                }
+            } else if (const auto owners = objectOwners.find(offset); owners != objectOwners.end()) {
+                block.owners = owners->second;
+            }
+        } else if (isGround) {
+            block.kind = tag == "GRND"
+                ? ExtractedMldSpatialBlock::Kind::Grnd
+                : ExtractedMldSpatialBlock::Kind::UnknownGround;
+            if (const auto owners = groundOwners.find(offset); owners != groundOwners.end()) {
+                block.owners = owners->second;
+            }
+        } else {
+            block.kind = tag == "GOBJ"
+                ? ExtractedMldSpatialBlock::Kind::Gobj
+                : ExtractedMldSpatialBlock::Kind::UnknownObject;
+            if (const auto owners = objectOwners.find(offset); owners != objectOwners.end()) {
+                block.owners = owners->second;
+            }
+        }
+
+        block.bytes.assign(
+            payload.begin() + static_cast<std::ptrdiff_t>(begin),
+            payload.begin() + static_cast<std::ptrdiff_t>(begin + size));
+        appendSpatialHeaderProbe(payload, block, nextCandidate);
+        blocks.push_back(std::move(block));
+    };
+
+    for (const auto offset : groundAddresses) {
+        appendBlock(offset, true);
+    }
+    for (const auto offset : objectAddresses) {
+        appendBlock(offset, false);
+    }
+
+    std::sort(blocks.begin(), blocks.end(), [](const auto& a, const auto& b) {
+        if (a.offset != b.offset) {
+            return a.offset < b.offset;
+        }
+        return static_cast<int>(a.kind) < static_cast<int>(b.kind);
+    });
     return blocks;
 }
 
@@ -389,6 +738,8 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     std::unordered_set<std::uint32_t> uniqueMotionAddresses{};
     std::unordered_set<std::uint32_t> uniqueTextureAddresses{};
     std::unordered_map<std::uint32_t, const model::IndexEntry*> groundAddressOwners{};
+    SpatialOwnerMap groundBlockOwners{};
+    SpatialOwnerMap objectBlockOwners{};
     const std::array<std::unique_ptr<EntryHandler>, 2> handlers{
         std::make_unique<CollisionEntryHandler>(),
         std::make_unique<TriggerEntryHandler>(),
@@ -421,6 +772,14 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             }
             objectAddresses.push_back(objectAddress);
         }
+        std::vector<std::uint32_t> groundAddresses{};
+        groundAddresses.reserve(entry.groundAddresses->values.size());
+        for (const auto groundAddress : entry.groundAddresses->values) {
+            if (groundAddress == 0U) {
+                continue;
+            }
+            groundAddresses.push_back(groundAddress);
+        }
         RawEntry rawEntry{
             .sourceEntryId = entry.entryId,
             .fxnName = entry.fxnName,
@@ -435,6 +794,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .tblId = entry.tblId,
             .transform = entry.transform,
             .objectAddresses = objectAddresses,
+            .groundAddresses = groundAddresses,
             .payload = std::vector<std::uint8_t>(
                 payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
                 payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize)),
@@ -491,6 +851,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
                 continue;
             }
             uniqueObjectAddresses.insert(objectAddress);
+            objectBlockOwners[objectAddress].push_back(BlockOwnerRef{
+                .sourceEntryId = entry.entryId,
+                .tableIndex = entry.tableIndex,
+                .fxnName = entry.fxnName,
+                .role = "object",
+            });
         }
         
         for (const auto groundAddress : entry.groundAddresses->values) {
@@ -500,6 +866,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             if (uniqueGroundAddresses.insert(groundAddress).second) {
                 groundAddressOwners.emplace(groundAddress, &entry);
             }
+            groundBlockOwners[groundAddress].push_back(BlockOwnerRef{
+                .sourceEntryId = entry.entryId,
+                .tableIndex = entry.tableIndex,
+                .fxnName = entry.fxnName,
+                .role = "ground",
+            });
         }
 
         for (const auto motionAddress : entry.motionAddresses->values) {
@@ -515,21 +887,6 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         }
     }
 
-    for (const auto groundAddress : uniqueGroundAddresses) {
-        GrndSurface surface{};
-        surface.id = groundAddress;
-        if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
-            const auto* owner = ownerIt->second;
-            surface.transform = owner->transform;
-            surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
-            for (const auto link : owner->groundLinks->values) {
-                surface.linkedGrndIds.push_back(link);
-            }
-        }
-        result.world.grndSurfaces.push_back(std::move(surface));
-    }
-
-
     std::vector<uint32_t> objectAddressesAll{};
     for (const auto addr : uniqueObjectAddresses) {
         objectAddressesAll.push_back(addr);
@@ -540,62 +897,77 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         .severity = ParseDiagnostic::Severity::Info,
         .message = "Extracted NJ blocks from MLD payload: " + std::to_string(result.extractedNjBlocks.size()),
     });
+    if (options.extractGrndGobjBlocks || options.buildBlenderIntermediateIr) {
+        result.extractedSpatialBlocks = buildExtractedSpatialBlocks(
+            payload,
+            uniqueGroundAddresses,
+            uniqueObjectAddresses,
+            uniqueMotionAddresses,
+            uniqueTextureAddresses,
+            groundBlockOwners,
+            objectBlockOwners);
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Scanned GRND/GOBJ spatial blocks from MLD payload: " + std::to_string(result.extractedSpatialBlocks.size()),
+        });
+    }
     result.diagnostics.push_back(ParseDiagnostic{
         .severity = ParseDiagnostic::Severity::Info,
         .message = "Legacy Ninja parsing modules (NJCM/NJTL) have been removed from MLD parsing. Object addresses are retained for SA3D IR migration.",
     });
 
+    GrndParser grndParser{};
     for (const auto groundAddress : uniqueGroundAddresses) {
         const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
-        if (grndOffset + 8 > payload.size()) {
+        if (grndOffset + 0x10U > payload.size()) {
             continue;
         }
-        if (common::readU32AtBE(payload, grndOffset).value_or(0U) == makeTag('G', 'R', 'N', 'D')) {
-            MldBinaryReader chunkReader(payload.subspan(grndOffset + 8));
-            const auto grndId = chunkReader.readU32BE();
-            const auto vertexCount = chunkReader.readU32BE();
-            const auto indexCount = chunkReader.readU32BE();
-            if (!grndId.has_value() || !vertexCount.has_value() || !indexCount.has_value()) {
-                continue;
-            }
-            GrndSurface surface{};
-            surface.id = *grndId;
-            if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
-                const auto* owner = ownerIt->second;
-                surface.transform = owner->transform;
-                surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
-                for (const auto link : owner->groundLinks->values) {
-                    surface.linkedGrndIds.push_back(link);
-                }
-            }
-
-            const std::size_t vtxCount = static_cast<std::size_t>(*vertexCount);
-            const std::size_t idxCount = static_cast<std::size_t>(*indexCount);
-            surface.mesh.vertices.reserve(vtxCount);
-            surface.mesh.indices.reserve(idxCount);
-            for (std::size_t vi = 0; vi < vtxCount; ++vi) {
-                Vec3 p{};
-                if (!readVec3(chunkReader, p)) {
-                    break;
-                }
-                MeshVertex v{};
-                v.position = applyCoordinates(p, options.coordinates);
-                surface.mesh.vertices.push_back(v);
-            }
-            for (std::size_t ii = 0; ii < idxCount; ++ii) {
-                const auto idx = chunkReader.readU32BE();
-                if (!idx.has_value()) {
-                    break;
-                }
-                surface.mesh.indices.push_back(*idx);
-            }
-            if (options.coordinates.reverseTriangleWinding && surface.mesh.indices.size() >= 3) {
-                for (std::size_t ii = 0; ii + 2 < surface.mesh.indices.size(); ii += 3) {
-                    std::swap(surface.mesh.indices[ii + 1], surface.mesh.indices[ii + 2]);
-                }
-            }
-            result.world.grndSurfaces.push_back(std::move(surface));
+        if (common::readU32AtBE(payload, grndOffset).value_or(0U) != 0x47524E44U) {
+            continue;
         }
+
+        const auto declaredSize = common::readU32AtBE(payload, grndOffset + 4U);
+        if (!declaredSize.has_value() || *declaredSize < 0x10U ||
+            static_cast<std::size_t>(*declaredSize) > payload.size() - grndOffset) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = ParseDiagnostic::Severity::Warning,
+                .message = "GRND block at " + std::to_string(groundAddress) + " has an invalid declared size.",
+            });
+            continue;
+        }
+
+        auto decoded = grndParser.decode(payload.subspan(grndOffset, static_cast<std::size_t>(*declaredSize)), groundAddress);
+        for (const auto& diagnostic : decoded.diagnostics) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = decoded.decoded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
+                .message = diagnostic,
+            });
+        }
+        if (!decoded.decoded) {
+            continue;
+        }
+
+        GrndSurface surface{};
+        surface.id = groundAddress;
+        surface.sourceOffset = groundAddress;
+        surface.mesh = std::move(decoded.mesh);
+        for (auto& vertex : surface.mesh.vertices) {
+            vertex.position = applyCoordinates(vertex.position, options.coordinates);
+        }
+        if (options.coordinates.reverseTriangleWinding && surface.mesh.indices.size() >= 3) {
+            for (std::size_t ii = 0; ii + 2 < surface.mesh.indices.size(); ii += 3) {
+                std::swap(surface.mesh.indices[ii + 1], surface.mesh.indices[ii + 2]);
+            }
+        }
+        if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
+            const auto* owner = ownerIt->second;
+            surface.transform = owner->transform;
+            surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
+            for (const auto link : owner->groundLinks->values) {
+                surface.linkedGrndIds.push_back(link);
+            }
+        }
+        result.world.grndSurfaces.push_back(std::move(surface));
     }
 
     result.diagnostics.push_back(ParseDiagnostic{
@@ -696,6 +1068,15 @@ std::vector<ExtractedNjBlock> MldParser::extractNjBlocks(
     return parsed.extractedNjBlocks;
 }
 
+std::vector<ExtractedMldSpatialBlock> MldParser::extractGrndGobjBlocks(
+    std::span<const std::uint8_t> mldBytes,
+    const ParseOptions& options) const {
+    ParseOptions extractOptions = options;
+    extractOptions.extractGrndGobjBlocks = true;
+    const auto parsed = parse(mldBytes, extractOptions);
+    return parsed.extractedSpatialBlocks;
+}
+
 std::string formatParseSummary(const ParseResult& parseResult) {
     std::ostringstream out;
     out << "grndSurfaces=" << parseResult.world.grndSurfaces.size() << '\n';
@@ -705,6 +1086,7 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
     out << "extractedNjBlocks=" << parseResult.extractedNjBlocks.size() << '\n';
+    out << "extractedSpatialBlocks=" << parseResult.extractedSpatialBlocks.size() << '\n';
     out << "blenderIrMeshes=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->meshes.size() : 0) << '\n';
     out << "blenderIrIndexEntries=" << (parseResult.blenderIrScene.has_value() ? parseResult.blenderIrScene->indexEntries.size() : 0) << '\n';
 

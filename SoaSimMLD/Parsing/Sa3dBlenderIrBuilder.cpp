@@ -1,6 +1,7 @@
 #include "Sa3dBlenderIrBuilder.h"
 
 #include "BlenderIrDiagnostics.h"
+#include "GobjParser.h"
 #include "GvrTextureDecoder.h"
 
 #include "../../Sa3Dport/Sa3Dport.h"
@@ -26,6 +27,17 @@ using Sa3Dport::Mesh::Buffer::BufferMesh;
 using Sa3Dport::Mesh::Converters::buffer_chunk_attach_with_active_poly_chunks;
 using Sa3Dport::Mesh::Converters::get_active_poly_chunks;
 using Sa3Dport::ObjectData::NodePtr;
+
+[[nodiscard]] std::string hexOffset(const std::uint32_t value) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result = "0x00000000";
+    auto v = value;
+    for (int i = 9; i >= 2; --i) {
+        result[static_cast<std::size_t>(i)] = digits[v & 0xFU];
+        v >>= 4U;
+    }
+    return result;
+}
 
 [[nodiscard]] model::Vec3 toVec3(const Sa3Dport::Structs::Vector3& value) {
     return model::Vec3{ value.x, value.y, value.z };
@@ -449,6 +461,61 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     return out.meshes.size() - 1U;
 }
 
+[[nodiscard]] std::optional<std::size_t> appendGobjAttachMesh(
+    const GobjNode& node,
+    const std::size_t nodeIndex,
+    const std::uint32_t sourceAddress,
+    model::BlenderIrScene& out) {
+    model::BlenderIrMesh mesh{};
+    mesh.label = "GOBJ_" + hexOffset(sourceAddress) + "_node_" + std::to_string(nodeIndex) +
+        "_attach_" + hexOffset(node.sourceAttachOffset);
+    mesh.sourceObjectAddress = sourceAddress;
+    mesh.sourceChunkOffset = sourceAddress;
+    mesh.sourceAttachOffset = node.sourceAttachOffset;
+
+    if (!node.streamMesh.vertices.empty() && !node.streamMesh.indices.empty()) {
+        mesh.vertices.reserve(node.streamMesh.vertices.size());
+        for (const auto& sourceVertex : node.streamMesh.vertices) {
+            model::BlenderIrVertex vertex{};
+            vertex.position = sourceVertex.position;
+            vertex.normal = sourceVertex.normal;
+            vertex.hasPosition = true;
+            vertex.hasNormal = true;
+            mesh.vertices.push_back(std::move(vertex));
+        }
+
+        model::BlenderIrMaterial material{};
+        material.polyType = 3U;
+        material.useTexture = false;
+        material.doubleSided = true;
+        material.flatShading = false;
+        material.textureId = 0xFFFFU;
+        material.textureFiltering = 1U;
+        material.materialHash = 0x474F424AULL ^ static_cast<std::uint64_t>(sourceAddress) ^ nodeIndex;
+        mesh.materials.push_back(std::move(material));
+
+        model::BlenderIrTriangleSet triangleSet{};
+        triangleSet.materialIndex = 0U;
+        triangleSet.polyType = 3U;
+        triangleSet.sourceChunkOffset = sourceAddress;
+        triangleSet.corners.reserve(node.streamMesh.indices.size());
+        for (const auto index : node.streamMesh.indices) {
+            model::BlenderIrCorner corner{};
+            corner.vertexIndex = index;
+            triangleSet.corners.push_back(corner);
+        }
+        mesh.triangleSets.push_back(std::move(triangleSet));
+    }
+
+    if (mesh.vertices.empty() || mesh.triangleSets.empty()) {
+        return std::nullopt;
+    }
+
+    BlenderIrDiagnostics::finalizeMesh(mesh);
+    out.meshes.push_back(std::move(mesh));
+    return out.meshes.size() - 1U;
+}
+
 void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene& out) {
     if (!parseResult.textureArchive.has_value()) {
         return;
@@ -492,12 +559,112 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
     }
 }
 
+void appendGrndMeshes(
+    const ParseResult& parseResult,
+    model::BlenderIrScene& out,
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>>& meshIndicesByGroundAddress) {
+    for (const auto& grnd : parseResult.world.grndSurfaces) {
+        if (grnd.mesh.vertices.empty() || grnd.mesh.indices.empty()) {
+            continue;
+        }
+
+        model::BlenderIrMesh mesh{};
+        mesh.label = "GRND_" + hexOffset(grnd.sourceOffset);
+        mesh.sourceObjectAddress = grnd.id;
+        mesh.sourceChunkOffset = grnd.sourceOffset;
+
+        mesh.vertices.reserve(grnd.mesh.vertices.size());
+        for (const auto& sourceVertex : grnd.mesh.vertices) {
+            model::BlenderIrVertex vertex{};
+            vertex.position = sourceVertex.position;
+            vertex.normal = sourceVertex.normal;
+            vertex.hasPosition = true;
+            vertex.hasNormal = true;
+            mesh.vertices.push_back(std::move(vertex));
+        }
+
+        model::BlenderIrMaterial material{};
+        material.polyType = 3U;
+        material.useTexture = false;
+        material.doubleSided = true;
+        material.flatShading = false;
+        material.textureId = 0xFFFFU;
+        material.textureFiltering = 1U;
+        material.materialHash = 0x47524E44ULL ^ static_cast<std::uint64_t>(grnd.sourceOffset);
+        mesh.materials.push_back(std::move(material));
+
+        model::BlenderIrTriangleSet triangleSet{};
+        triangleSet.materialIndex = 0U;
+        triangleSet.polyType = 3U;
+        triangleSet.sourceChunkOffset = grnd.sourceOffset;
+        triangleSet.corners.reserve(grnd.mesh.indices.size());
+        for (const auto index : grnd.mesh.indices) {
+            model::BlenderIrCorner corner{};
+            corner.vertexIndex = index;
+            triangleSet.corners.push_back(corner);
+        }
+        mesh.triangleSets.push_back(std::move(triangleSet));
+
+        BlenderIrDiagnostics::finalizeMesh(mesh);
+        out.meshes.push_back(std::move(mesh));
+        meshIndicesByGroundAddress[grnd.id].push_back(out.meshes.size() - 1U);
+    }
+}
+
+void appendGobjTrees(
+    const ParseResult& parseResult,
+    model::BlenderIrScene& out,
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>>& treeIndicesByGroundAddress) {
+    GobjParser parser{};
+    for (const auto& block : parseResult.extractedSpatialBlocks) {
+        if (block.kind != ExtractedMldSpatialBlock::Kind::Gobj) {
+            continue;
+        }
+
+        auto decoded = parser.decode(block.bytes, block.offset);
+        for (const auto& diagnostic : decoded.diagnostics) {
+            out.diagnostics.push_back(diagnostic);
+        }
+        if (!decoded.decoded) {
+            continue;
+        }
+
+        model::BlenderIrObjectTree tree{};
+        tree.label = "GOBJ_" + hexOffset(block.offset);
+        tree.sourceObjectAddress = block.offset;
+        tree.sourceChunkOffset = block.offset;
+        tree.rootNodeIndices = decoded.rootNodeIndices;
+        tree.nodes.reserve(decoded.nodes.size());
+
+        for (std::size_t nodeIndex = 0; nodeIndex < decoded.nodes.size(); ++nodeIndex) {
+            const auto& sourceNode = decoded.nodes[nodeIndex];
+            model::BlenderIrNode irNode{};
+            irNode.sourceNodeOffset = sourceNode.sourceNodeOffset;
+            irNode.sourceAttachOffset = sourceNode.sourceAttachOffset;
+            irNode.hasAttach = sourceNode.sourceAttachOffset != 0U;
+            irNode.meshIndex = appendGobjAttachMesh(sourceNode, nodeIndex, block.offset, out);
+            irNode.localTransform = sourceNode.transform;
+            irNode.parentNodeIndex = sourceNode.parentNodeIndex;
+            irNode.childNodeIndices = sourceNode.childNodeIndices;
+            tree.nodes.push_back(std::move(irNode));
+        }
+
+        out.objectTrees.push_back(std::move(tree));
+        treeIndicesByGroundAddress[block.offset].push_back(out.objectTrees.size() - 1U);
+    }
+}
+
 } // namespace
 
 model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult) const {
     model::BlenderIrScene out{};
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> meshIndicesByObjectAddress{};
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>> meshIndicesByGroundAddress{};
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>> treeIndicesByGroundAddress{};
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> treeIndicesByObjectAddress{};
+
+    appendGrndMeshes(parseResult, out, meshIndicesByGroundAddress);
+    appendGobjTrees(parseResult, out, treeIndicesByGroundAddress);
 
     for (const auto& block : parseResult.extractedNjBlocks) {
         if (block.kind != ExtractedNjBlock::Kind::Object) {
@@ -583,12 +750,21 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         instance.fxnName = entry.fxnName;
         instance.transform = entry.transform;
         instance.objectAddresses = entry.objectAddresses;
+        instance.groundAddresses = entry.groundAddresses;
 
         for (const auto objectAddress : entry.objectAddresses) {
             if (const auto found = meshIndicesByObjectAddress.find(objectAddress); found != meshIndicesByObjectAddress.end()) {
                 instance.meshIndices.insert(instance.meshIndices.end(), found->second.begin(), found->second.end());
             }
             if (const auto found = treeIndicesByObjectAddress.find(objectAddress); found != treeIndicesByObjectAddress.end()) {
+                instance.objectTreeIndices.insert(instance.objectTreeIndices.end(), found->second.begin(), found->second.end());
+            }
+        }
+        for (const auto groundAddress : entry.groundAddresses) {
+            if (const auto found = meshIndicesByGroundAddress.find(groundAddress); found != meshIndicesByGroundAddress.end()) {
+                instance.meshIndices.insert(instance.meshIndices.end(), found->second.begin(), found->second.end());
+            }
+            if (const auto found = treeIndicesByGroundAddress.find(groundAddress); found != treeIndicesByGroundAddress.end()) {
                 instance.objectTreeIndices.insert(instance.objectTreeIndices.end(), found->second.begin(), found->second.end());
             }
         }
