@@ -352,7 +352,7 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
 
     Statement step_st;
     if (!Prepare(db_,
-        "SELECT workflow_step_id, workflow_instance_id, step_key, step_kind, state, blocked_reason, job_set_id, priority, attempts, max_attempts "
+        "SELECT workflow_step_id, workflow_instance_id, step_key, step_kind, state, blocked_reason, job_set_id, input_ref_kind, input_ref_id, priority, attempts, max_attempts "
         "FROM exec_workflow_step WHERE workflow_instance_id=?1 ORDER BY workflow_step_id;",
         &step_st,
         nullptr)) {
@@ -369,9 +369,11 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
         row.state = ParseStepState(sqlite3_column_text(step_st.st, 4));
         row.blocked_reason = ColumnTextOptional(step_st.st, 5);
         row.job_set_id = ColumnInt64Optional(step_st.st, 6);
-        row.priority = sqlite3_column_int(step_st.st, 7);
-        row.attempts = sqlite3_column_int(step_st.st, 8);
-        row.max_attempts = sqlite3_column_int(step_st.st, 9);
+        row.input_ref_kind = ColumnTextOptional(step_st.st, 7);
+        row.input_ref_id = ColumnInt64Optional(step_st.st, 8);
+        row.priority = sqlite3_column_int(step_st.st, 9);
+        row.attempts = sqlite3_column_int(step_st.st, 10);
+        row.max_attempts = sqlite3_column_int(step_st.st, 11);
         snapshot.steps.push_back(std::move(row));
     }
 
@@ -1161,7 +1163,8 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
         Statement update;
         if (!Prepare(db_,
             "UPDATE exec_workflow_step "
-            "SET state='MATERIALIZED', job_set_id=?2, started_at_utc=COALESCE(started_at_utc, ?3) "
+            "SET state='MATERIALIZED', job_set_id=?2, started_at_utc=COALESCE(started_at_utc, ?3), "
+            "input_ref_kind=COALESCE(input_ref_kind, ?4), input_ref_id=COALESCE(input_ref_id, ?5) "
             "WHERE workflow_step_id=?1 AND state IN ('READY','MATERIALIZED','RUNNING');",
             &update,
             error_out)) {
@@ -1171,6 +1174,10 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
         sqlite3_bind_int64(update.st, 1, command.workflow_step_id);
         sqlite3_bind_int64(update.st, 2, command.job_set_id);
         sqlite3_bind_int64(update.st, 3, NowUtc());
+        if (command.input_ref_kind.has_value()) sqlite3_bind_text(update.st, 4, command.input_ref_kind->c_str(), -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(update.st, 4);
+        if (command.input_ref_id.has_value()) sqlite3_bind_int64(update.st, 5, *command.input_ref_id);
+        else sqlite3_bind_null(update.st, 5);
         if (sqlite3_step(update.st) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
             Exec(db_, "ROLLBACK;", nullptr);

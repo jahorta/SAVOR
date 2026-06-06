@@ -35,14 +35,30 @@ class GridToUniqueTransitionHandler final : public IWorkflowTransitionHandler {
 public:
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
         WorkflowTransitionDecision decision{};
-        if (context.step_key != "Grid") {
+        if (context.step_key == "Grid") {
+            decision.should_advance = true;
+            decision.next_step_key = std::string("Unique");
+            return decision;
+        }
+
+        const std::string suffix = "/Grid";
+        if (context.step_key.size() <= suffix.size()
+            || context.step_key.compare(context.step_key.size() - suffix.size(), suffix.size(), suffix) != 0) {
             decision.should_advance = false;
             decision.blocked_reason = "unsupported_step_key";
             return decision;
         }
 
         decision.should_advance = true;
-        decision.next_step_key = std::string("Unique");
+        decision.spawn_steps.push_back(
+            WorkflowTransitionDecision::DynamicStep{
+                .step_key = context.step_key.substr(0, context.step_key.size() - suffix.size()) + "/Unique",
+                .step_kind = "seedprobe.unique",
+                .input_ref_kind = context.input_ref_kind,
+                .input_ref_id = context.input_ref_id,
+                .priority = 0,
+                .max_attempts = 1,
+            });
         return decision;
     }
 };

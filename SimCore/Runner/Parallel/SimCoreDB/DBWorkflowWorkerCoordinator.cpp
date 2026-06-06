@@ -72,6 +72,8 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
         return ScheduledJobSet{
             .job_set_id = persisted->root_job_set_id,
             .workflow_step_id = step.workflow_step_id,
+            .program_ref_kind = persisted->persistence.program_ref_kind,
+            .program_ref_id = persisted->persistence.program_ref_id,
             .event_lines = persisted->event_lines,
         };
     };
@@ -587,6 +589,12 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
             {
                 .workflow_step_id = step.workflow_step_id,
                 .job_set_id = scheduled.job_set_id,
+                .input_ref_kind = scheduled.program_ref_kind.empty()
+                    ? std::nullopt
+                    : std::optional<std::string>(scheduled.program_ref_kind),
+                .input_ref_id = scheduled.program_ref_id > 0
+                    ? std::optional<std::int64_t>(scheduled.program_ref_id)
+                    : std::nullopt,
                 .requested_by = "workflow_materialize",
             },
             &error);

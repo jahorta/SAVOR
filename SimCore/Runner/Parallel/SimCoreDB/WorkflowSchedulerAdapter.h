@@ -20,6 +20,8 @@ struct WorkflowReadyStep {
 struct ScheduledJobSet {
     std::int64_t job_set_id = 0;
     std::int64_t workflow_step_id = 0;
+    std::string program_ref_kind;
+    std::int64_t program_ref_id = 0;
     std::vector<std::string> event_lines;
 };
 

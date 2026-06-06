@@ -51,6 +51,7 @@
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowSchedulerAdapter.h"
 #include "Runner/Parallel/SimCoreDB/StepInputAggregationService.h"
+#include "Runner/Parallel/SimCoreDB/JobMaterializationService.h"
 #include "Runner/Breakpoints/BPRegistry.h"
 
 #include "common/RecordingExecutionDb.h"
@@ -3081,6 +3082,17 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "seed_probe_run");
     EXPECT_EQ(sqlite3_column_int64(st, 1), probe_run_id);
     sqlite3_finalize(st);
+
+    JobMaterializationService materializer(execution_db, &registry);
+    const auto claimed = materializer.ClaimJobs(1, std::chrono::steady_clock::now());
+    ASSERT_EQ(claimed, 1u);
+    ASSERT_TRUE(materializer.MaterializeClaimedJobPayload(std::chrono::steady_clock::now()));
+    const auto materialized = materializer.ListByState(ClaimedJobLifecycleState::Materialized);
+    ASSERT_EQ(materialized.size(), 1u);
+    EXPECT_EQ(materialized.front().step.step_kind, "seed_probe_chain");
+    EXPECT_EQ(materialized.front().runtime_init.bootstrap_profile, "seedprobe.neutral.required_savestate");
+    EXPECT_EQ(materialized.front().runtime_init.savestate_ref_id, 44001);
+    EXPECT_TRUE(materialized.front().payload.has_value());
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {

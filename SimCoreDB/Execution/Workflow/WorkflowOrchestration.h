@@ -68,6 +68,8 @@ struct WorkflowStepRecord {
     WorkflowStepState state = WorkflowStepState::Waiting;
     std::optional<std::string> blocked_reason;
     std::optional<std::int64_t> job_set_id;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
     int priority = 0;
     int attempts = 0;
     int max_attempts = 1;
@@ -170,6 +172,8 @@ struct WorkflowTerminalFailInstanceCommand {
 struct WorkflowMarkStepMaterializedCommand {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
     std::string requested_by;
 };
 

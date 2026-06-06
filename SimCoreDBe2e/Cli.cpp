@@ -163,7 +163,7 @@ void PrintUsage() {
               << " [--durable-lines normal]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: seedprobe_real_worker_smoke, tasmovie_real_worker_smoke, "
+    std::cout << "Scenarios: seedprobe_real_worker_smoke, seedprobe_workflow_graph_real_worker_smoke, tasmovie_real_worker_smoke, "
               << "tasmovie_seedprobe_real_worker_smoke, battle_single_turn_setup, "
               << "battle_single_turn_real_worker_smoke\n\n";
 }

@@ -519,6 +519,23 @@ std::vector<std::string> BuildProgressLines(
     return lines;
 }
 
+std::int64_t ResolveSeedProbeRunIdFromGraph(
+    const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    std::int64_t current_probe_run_id) {
+    if (current_probe_run_id > 0 || !graph.has_value()) {
+        return current_probe_run_id;
+    }
+
+    for (const auto& step : graph->steps) {
+        if ((step.step_key == "probe_1" || step.step_kind == "seed_probe_chain")
+            && step.input_ref_id.has_value()
+            && *step.input_ref_id > 0) {
+            return *step.input_ref_id;
+        }
+    }
+    return 0;
+}
+
 bool RefreshSeedProbeUiReadProjection(
     simcore::db::IAnalysisDb* analysis_db,
     simcore::db::IUiReadDb* ui_read_db,
@@ -631,10 +648,11 @@ std::optional<std::string> BuildSeedProbeUiReadLine(
 
 } // namespace
 
-bool RunSeedProbeRealWorkerSmoke(
+bool RunSeedProbeRealWorkerSmokeImpl(
     const CliOptions& options,
     const char* argv0,
     simcore::db::core::DBService* db_service,
+    bool workflow_graph_style,
     std::string* error_out) {
     if (db_service == nullptr) {
         if (error_out) *error_out = "db service is required";
@@ -672,16 +690,29 @@ bool RunSeedProbeRealWorkerSmoke(
 
     std::int64_t workflow_instance_id = 0;
     std::int64_t probe_run_id = 0;
-    if (!SeedExecutionWorkflow(
-            db_service->AnalysisDb(),
-            execution_db,
-            savestate_id,
-            seed_probe_spec_id,
-            &workflow_instance_id,
-            &probe_run_id,
-            &err)) {
-        if (error_out) *error_out = "failed seeding execution workflow rows: " + err;
-        return false;
+    if (workflow_graph_style) {
+        if (!SeedWorkflowGraphExecution(
+                db_service->AuthoringDb(),
+                execution_db,
+                savestate_id,
+                seed_probe_spec_id,
+                &workflow_instance_id,
+                &err)) {
+            if (error_out) *error_out = "failed seeding workflow graph execution rows: " + err;
+            return false;
+        }
+    } else {
+        if (!SeedExecutionWorkflow(
+                db_service->AnalysisDb(),
+                execution_db,
+                savestate_id,
+                seed_probe_spec_id,
+                &workflow_instance_id,
+                &probe_run_id,
+                &err)) {
+            if (error_out) *error_out = "failed seeding execution workflow rows: " + err;
+            return false;
+        }
     }
 
     simcore::db::execution::programdb::ProgramKindRegistry program_kind_registry;
@@ -794,6 +825,7 @@ bool RunSeedProbeRealWorkerSmoke(
 
         const auto telemetry = coordinator.SnapshotTelemetry();
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        probe_run_id = ResolveSeedProbeRunIdFromGraph(graph, probe_run_id);
         latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.SnapshotWorkers(), graph);
         std::vector<DurableLine> event_lines = drain_event_lines();
         if (graph.has_value()) {
@@ -805,12 +837,12 @@ bool RunSeedProbeRealWorkerSmoke(
             auto failed_step_lines = BuildNewFailedStepEventLines(*graph, &emitted_failed_step_ids);
             append_event_lines(&event_lines, std::move(failed_step_lines));
         }
-        if (RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
+        if (probe_run_id > 0 && RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
             if (auto ui_line = BuildSeedProbeUiReadLine(ui_read_db, probe_run_id, latest_ui_read_line); ui_line.has_value()) {
                 latest_ui_read_line = *ui_line;
                 append_event_lines(&event_lines, { *ui_line });
             }
-        } else if (!err.empty()) {
+        } else if (probe_run_id > 0 && !err.empty()) {
             append_event_lines(&event_lines, { "[seedprobe-error] uiread_refresh_failed error=" + err });
             err.clear();
         }
@@ -875,8 +907,9 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     const auto final_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    probe_run_id = ResolveSeedProbeRunIdFromGraph(final_graph, probe_run_id);
     const auto final_telemetry = coordinator.SnapshotTelemetry();
-    if (RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
+    if (probe_run_id > 0 && RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
         if (auto ui_line = BuildSeedProbeUiReadLine(ui_read_db, probe_run_id, std::string{}); ui_line.has_value()) {
             durable_log.AppendLine(*ui_line);
             std::cout << *ui_line << '\n';
@@ -927,6 +960,22 @@ bool RunSeedProbeRealWorkerSmoke(
     }
 
     return true;
+}
+
+bool RunSeedProbeRealWorkerSmoke(
+    const CliOptions& options,
+    const char* argv0,
+    simcore::db::core::DBService* db_service,
+    std::string* error_out) {
+    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, false, error_out);
+}
+
+bool RunSeedProbeWorkflowGraphRealWorkerSmoke(
+    const CliOptions& options,
+    const char* argv0,
+    simcore::db::core::DBService* db_service,
+    std::string* error_out) {
+    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, true, error_out);
 }
 
 } // namespace simcore::e2e

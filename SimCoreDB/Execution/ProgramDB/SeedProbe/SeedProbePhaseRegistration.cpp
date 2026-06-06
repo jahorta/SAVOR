@@ -120,17 +120,45 @@ private:
     std::shared_ptr<IJobPersistenceAdapter> neutral_job_persistence_;
 };
 
+class SeedProbeChainTransitionHandler final : public IWorkflowTransitionHandler {
+public:
+    WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
+        WorkflowTransitionDecision decision{};
+        if (!context.input_ref_id.has_value() || *context.input_ref_id <= 0) {
+            decision.should_advance = false;
+            decision.blocked_reason = "seed_probe_chain missing descriptor-created probe run id";
+            return decision;
+        }
+
+        decision.should_advance = true;
+        decision.spawn_steps.push_back(
+            WorkflowTransitionDecision::DynamicStep{
+                .step_key = context.step_key + "/Grid",
+                .step_kind = "seedprobe.grid",
+                .input_ref_kind = std::string("sp_probe_run"),
+                .input_ref_id = *context.input_ref_id,
+                .priority = 0,
+                .max_attempts = 1,
+            });
+        return decision;
+    }
+};
+
 ProgramKindDescriptor BuildSeedProbeChainDescriptor(
     simcore::db::IAnalysisDb* analysis_db,
     simcore::db::IAuthoringDb* authoring_db,
-    std::shared_ptr<IJobPersistenceAdapter> neutral_job_persistence) {
+    const ProgramKindDescriptor& neutral_descriptor) {
     ProgramKindDescriptor descriptor{};
     descriptor.program_kind = simcore::PK_SeedProbe;
     descriptor.program_name = "SeedProbeChain";
     descriptor.graph_job_persistence = std::make_shared<SeedProbeChainGraphJobPersistenceAdapter>(
         analysis_db,
         authoring_db,
-        std::move(neutral_job_persistence));
+        neutral_descriptor.job_persistence);
+    descriptor.runtime_init = neutral_descriptor.runtime_init;
+    descriptor.result_mapper = neutral_descriptor.result_mapper;
+    descriptor.result_payload_writer = neutral_descriptor.result_payload_writer;
+    descriptor.workflow_transition = std::make_shared<SeedProbeChainTransitionHandler>();
     descriptor.supports_workflow_orchestration = true;
     return descriptor;
 }
@@ -163,7 +191,7 @@ void RegisterSeedProbePhaseDescriptors(
     auto chain = BuildSeedProbeChainDescriptor(
         analysis_db,
         config.authoring_db,
-        neutral.job_persistence);
+        neutral);
 
     (void)registry->Register(neutral);
     (void)registry->RegisterForStepKind("seed_probe_chain", chain);
