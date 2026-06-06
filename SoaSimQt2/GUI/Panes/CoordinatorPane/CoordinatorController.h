@@ -4,9 +4,13 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
-struct WorkerSnapshot {};
+#include "Runner/Parallel/PRTypes.h"
+#include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
+#include "Execution/ProgramDB/ProgramKindRegistry.h"
 
 class CoordinatorController : public QObject
 {
@@ -14,7 +18,7 @@ class CoordinatorController : public QObject
 
 public:
     explicit CoordinatorController(QObject* parent = nullptr);
-    ~CoordinatorController() override = default;
+    ~CoordinatorController() override;
 
     bool isRunning() const;
     bool isPaused() const;
@@ -23,6 +27,7 @@ public:
     int eventBufferCapacity() const;
     bool startPaused() const;
     bool restartFailedJobsAutomatically() const;
+    bool visualWorkerPoolEnabled() const;
     QString isoPath() const;
     QString dolphinBaseDir() const;
     QString validationMessage() const;
@@ -41,6 +46,9 @@ public slots:
     void setEventBufferCapacity(int capacity);
     void setStartPaused(bool startPaused);
     void setRestartFailedJobsAutomatically(bool enabled);
+    void setVisualWorkerPoolEnabled(bool enabled);
+    void setVisualWorkerSurface(int workerIndex, quintptr hwnd, const QString& hostEventsPipeName);
+    void clearVisualWorkerSurfaces();
     void setIsoPath(const QString& isoPath);
     void setDolphinBaseDir(const QString& dolphinBaseDir);
     void setVisualRenderWidgetHandle(quintptr hwnd);
@@ -59,16 +67,45 @@ signals:
     void visualLiveLogLinesReady(const QStringList& lines);
 
 private:
-    void updateValidationMessage();
+    static constexpr int kMinTargetWorkers = 1;
+    static constexpr int kMaxTargetWorkers = 9999;
+    static constexpr int kMinEventBufferCapacity = 8;
 
-    std::vector<WorkerSnapshot> emptySnapshots_;
+    void loadSettings();
+    void persistString(const char* key, const QString& value);
+    void persistInt(const char* key, int value);
+    void updateValidationMessage();
+    void updateSnapshotCache();
+    simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig buildWorkerConfig() const;
+    simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig buildIntegrationConfig() const;
+    bool buildProgramRegistry(QString* errorMessage);
+    QString visualReplayStateToText(simcore::runner::parallel::simcoredb::VisualReplayRuntimeState state) const;
+    void applyVisualWorkerSurfaces();
+    QString workerExePath() const;
+    QString workerRootPath() const;
+
+    struct VisualWorkerSurface {
+        quintptr renderWidgetHandle = 0;
+        QString hostEventsPipeName;
+    };
+
+    std::unique_ptr<simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator> coordinator_;
+    simcore::db::execution::programdb::ProgramKindRegistry programRegistry_;
+    std::vector<WorkerSnapshot> snapshotCache_;
+    std::vector<WorkerSnapshot> visualSnapshotCache_;
+    simcore::PRStatus statusSnapshot_{};
+    simcore::runner::parallel::simcoredb::WorkflowCoordinatorTelemetry telemetrySnapshot_{};
     int targetWorkers_ = 1;
     int eventBufferCapacity_ = 64;
-    bool paused_ = true;
+    bool paused_ = false;
     bool startPaused_ = true;
     bool restartFailedJobsAutomatically_ = true;
+    bool visualWorkerPoolEnabled_ = false;
+    std::unordered_map<int, VisualWorkerSurface> visualWorkerSurfaces_;
+    quintptr visualRenderWidgetHandle_ = 0;
+    QString visualHostEventsPipeName_;
+    QString visualReplayLastError_;
     QString isoPath_;
     QString dolphinBaseDir_;
     QString validationMessage_;
 };
-

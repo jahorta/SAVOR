@@ -1,5 +1,6 @@
 #include "JobMaterializationService.h"
 
+#include <charconv>
 #include <sstream>
 #include <utility>
 
@@ -268,6 +269,74 @@ bool JobMaterializationService::TrySelectMaterializedJobForWorker(
     *job_out = claimed_it->second;
     claimed_it->second.state = ClaimedJobLifecycleState::Dispatching;
     materialized_jobs_.erase(best_it);
+    return true;
+}
+
+bool JobMaterializationService::MaterializeJobForDebugReplay(
+    std::int64_t job_id,
+    ClaimedJobRecord* job_out,
+    std::string* error_out) const {
+    if (job_out == nullptr) {
+        if (error_out) *error_out = "job_out is null";
+        return false;
+    }
+    *job_out = ClaimedJobRecord{};
+    if (execution_db == nullptr) {
+        if (error_out) *error_out = "execution db is unavailable";
+        return false;
+    }
+    if (program_kind_registry == nullptr) {
+        if (error_out) *error_out = "program registry is unavailable";
+        return false;
+    }
+
+    const auto job = execution_db->GetJob(job_id);
+    if (!job.has_value()) {
+        if (error_out) *error_out = "job not found";
+        return false;
+    }
+
+    std::int32_t program_kind = 0;
+    const auto* first = job->program_kind.data();
+    const auto* last = first + job->program_kind.size();
+    const auto parse_result = std::from_chars(first, last, program_kind);
+    if (parse_result.ec != std::errc{} || parse_result.ptr != last) {
+        if (job->program_kind.size() == 1) {
+            program_kind = static_cast<unsigned char>(job->program_kind.front());
+        }
+    }
+    if (program_kind <= 0) {
+        if (error_out) *error_out = "job program_kind is not usable";
+        return false;
+    }
+
+    const auto* descriptor = program_kind_registry->Find(program_kind);
+    if (descriptor == nullptr || descriptor->runtime_init == nullptr) {
+        if (error_out) *error_out = "program descriptor does not support runtime initialization";
+        return false;
+    }
+
+    auto runtime_init = descriptor->runtime_init->BuildRuntimeInit(job_id);
+    auto payload = descriptor->runtime_init->MaterializePsJob(job_id, runtime_init);
+    if (!payload.has_value()) {
+        if (error_out) *error_out = "job payload materialization failed";
+        return false;
+    }
+
+    ClaimedJobRecord record{};
+    record.job_id = job_id;
+    record.job_set_id = job->job_set_id;
+    record.program_kind = program_kind;
+    record.runtime_init = std::move(runtime_init);
+    record.affinity = ClaimedJobAffinity{
+        .savestate_affinity_key = std::to_string(record.runtime_init.savestate_ref_id),
+        .program_runtime_affinity_key = record.runtime_init.bootstrap_profile,
+    };
+    record.claimed_at = std::chrono::steady_clock::now();
+    record.state = ClaimedJobLifecycleState::Materialized;
+    record.payload = std::move(payload);
+    *job_out = std::move(record);
+    if (error_out) error_out->clear();
     return true;
 }
 

@@ -72,6 +72,27 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t payload_materialization_failure_count = 0;
 };
 
+enum class VisualReplayRuntimeState {
+    Idle = 0,
+    QueuedStartup,
+    LaunchingWorker,
+    AttachReady,
+    Active,
+    Stopping,
+    Finished,
+    Failed,
+};
+
+struct VisualDebugReplaySnapshot {
+    bool active = false;
+    std::uint64_t session_id = 0;
+    std::int64_t job_id = 0;
+    std::int64_t worker_id = 0;
+    VisualReplayRuntimeState state = VisualReplayRuntimeState::Idle;
+    std::string detail;
+    bool controls_enabled = false;
+};
+
 class DBWorkflowWorkerCoordinator {
 public:
     using ReadyStepPersistFn = std::function<void(const WorkflowReadyStep&, const ScheduledJobSet&)>;
@@ -105,6 +126,7 @@ public:
 
     void SetPaused(bool paused);
     bool IsPaused() const;
+    void SetDesiredWorkerCount(size_t desired_workers);
 
     void SetWorkflowMaterializationCallback(WorkflowCoordinatorBridge::MaterializationCallback callback);
     void SetWorkflowTerminalCallback(WorkflowCoordinatorBridge::TerminalCallback callback);
@@ -128,6 +150,18 @@ public:
     PRStatus SnapshotStatus() const;
     WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
     std::vector<WorkerSnapshot> SnapshotWorkers() const;
+    bool SetWorkerVisualSurface(size_t worker_idx, uint64_t render_widget_handle, std::string host_events_pipe_name);
+    bool StartVisualDebugReplay(
+        std::int64_t job_id,
+        uint64_t render_widget_handle,
+        std::string host_events_pipe_name,
+        std::string* error_out = nullptr);
+    bool StopVisualDebugReplay();
+    bool PauseVisualDebugReplayEmulation();
+    bool ResumeVisualDebugReplayEmulation();
+    bool StepVisualDebugReplayVm();
+    VisualDebugReplaySnapshot SnapshotVisualDebugReplay() const;
+    std::vector<std::string> TakeVisualDebugLogLines();
 
 private:
     struct WorkerSlot {
@@ -145,6 +179,26 @@ private:
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
+        uint64_t visual_render_widget_handle = 0;
+        std::string visual_host_events_pipe_name;
+    };
+    struct WorkerVisualSurface {
+        uint64_t render_widget_handle = 0;
+        std::string host_events_pipe_name;
+    };
+    struct VisualDebugSession {
+        std::uint64_t session_id = 0;
+        std::int64_t job_id = 0;
+        size_t worker_id = 0;
+        uint64_t render_widget_handle = 0;
+        std::string host_events_pipe_name;
+        std::unique_ptr<simcore::ProcessWorker> worker;
+        std::thread thread;
+        VisualReplayRuntimeState state = VisualReplayRuntimeState::Idle;
+        std::string detail;
+        bool controls_enabled = false;
+        bool stop_requested = false;
+        std::vector<std::string> pending_log_lines;
     };
     struct DispatchableWorkerInfo {
         size_t worker_idx = 0;
@@ -168,6 +222,18 @@ private:
     void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
     void ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlot& slot);
+    void VisualDebugReplayThread(std::uint64_t session_id);
+    bool ConfigureVisualDebugWorkerForJob(
+        VisualDebugSession& session,
+        const ClaimedJobRecord& claimed_job,
+        std::string* error_out);
+    std::optional<std::string> PrepareVisualDebugSavestatePathForJob(
+        const VisualDebugSession& session,
+        const ClaimedJobRecord& claimed_job);
+    void SetVisualDebugState(
+        VisualDebugSession& session,
+        VisualReplayRuntimeState state,
+        std::string detail);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
     void ReleaseWorkerByResult(const simcore::PRResult& result);
     void PollReadyStepsFromDb();
@@ -242,9 +308,14 @@ private:
     mutable std::mutex workers_mtx_;
     std::vector<std::unique_ptr<WorkerSlot>> workers_;
     std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;
+    std::unordered_map<size_t, WorkerVisualSurface> worker_visual_surfaces_;
     size_t rr_worker_cursor_ = 0;
     TSQueue<simcore::PRProgress> progress_q_;
     TSQueue<simcore::PRResult> results_q_;
+    TSQueue<simcore::PRResult> visual_debug_results_q_;
+    mutable std::mutex visual_debug_mtx_;
+    std::unique_ptr<VisualDebugSession> visual_debug_session_;
+    std::uint64_t next_visual_debug_session_id_ = 1;
     size_t materialized_count_ = 0;
     size_t terminal_published_count_ = 0;
     std::atomic<std::int64_t> ready_scan_count_{ 0 };

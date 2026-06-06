@@ -81,6 +81,10 @@ public:
     bool TrySelectMaterializedJobForWorker(
         const MaterializedJobSelectionAffinity& worker_affinity,
         ClaimedJobRecord* job_out);
+    bool MaterializeJobForDebugReplay(
+        std::int64_t job_id,
+        ClaimedJobRecord* job_out,
+        std::string* error_out = nullptr) const;
     bool RequeueMaterializedJob(std::int64_t job_id);
 
     std::vector<ClaimedJobRecord> ListByState(ClaimedJobLifecycleState state) const;

@@ -442,6 +442,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
+    <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
+    <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp" />

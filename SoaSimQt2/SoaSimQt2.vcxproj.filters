@@ -89,6 +89,9 @@
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
@@ -184,6 +187,21 @@
     </ClCompile>
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp">
       <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClCompile>
     <ClCompile Include="main.cpp">
       <Filter>Main</Filter>
@@ -386,6 +404,21 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
     <ClInclude Include="DB\SimCoreDbAuthoringService.h">
       <Filter>DB</Filter>
     </ClInclude>

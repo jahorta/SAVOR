@@ -24,6 +24,7 @@ public:
     simcore::db::core::DBService* service();
     simcore::db::IUiReadDb* uiReadDb();
     simcore::db::IStateDb* stateDb();
+    simcore::db::IAnalysisDb* analysisDb();
     simcore::db::IAuthoringDb* authoringDb();
     simcore::db::IExecutionDb* executionDb();
     simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* workflowQueryService();

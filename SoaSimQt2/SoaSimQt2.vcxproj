@@ -128,6 +128,7 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp" />
     <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp" />
+    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp" />
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="SimCoreDbRuntime.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
@@ -157,11 +158,18 @@
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
     <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp" />
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h" />
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h" />
     <QtMoc Include="GUI\Widgets\EntityTagsDialog.h" />
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h" />
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h" />
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h" />
     <QtMoc Include="GUI\MainWindow.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h" />
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h" />
@@ -173,6 +181,8 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
+    <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h" />
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
@@ -201,6 +211,9 @@
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h" />
     <ClInclude Include="DB\SimCoreDbArtifactService.h" />
     <ClInclude Include="DB\SimCoreDbAuthoringService.h" />
     <ClInclude Include="DB\SimCoreDbJobService.h" />

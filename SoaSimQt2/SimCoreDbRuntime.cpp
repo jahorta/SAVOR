@@ -167,6 +167,10 @@ simcore::db::IStateDb* SimCoreDbRuntime::stateDb() {
     return service_ != nullptr ? service_->StateDb() : nullptr;
 }
 
+simcore::db::IAnalysisDb* SimCoreDbRuntime::analysisDb() {
+    return service_ != nullptr ? service_->AnalysisDb() : nullptr;
+}
+
 simcore::db::IAuthoringDb* SimCoreDbRuntime::authoringDb() {
     return service_ != nullptr ? service_->AuthoringDb() : nullptr;
 }

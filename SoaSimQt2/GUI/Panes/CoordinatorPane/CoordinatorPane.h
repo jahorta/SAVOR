@@ -6,6 +6,15 @@
 #include "GUI/Common/StatusToast.h"
 
 class CoordinatorController;
+class QCheckBox;
+class QLabel;
+class QPushButton;
+class QSpinBox;
+class QTimer;
+class QTreeView;
+class WorkerTableModel;
+class VisualReplayDialog;
+class VisualWorkerDashboardDialog;
 
 class CoordinatorPane : public QWidget
 {
@@ -27,5 +36,46 @@ signals:
 
 public slots:
     void requestVisualReplay(qint64 jobId);
-};
 
+private slots:
+    void refreshUi();
+    void handleValidationLinkActivated(const QString& link);
+    void handleStartRequested();
+    void handleTargetWorkersChanged(int targetWorkers);
+    void handleVisualWorkersToggled(bool enabled);
+    void showVisualWorkerDashboard();
+
+private:
+    void createWidgets();
+    void configureTable(QTreeView* tableView);
+    QWidget* createControlsCard();
+    QWidget* createTableCard();
+    QWidget* createMetricCard(const QString& caption, QLabel** valueLabel, const QString& objectName = QString());
+    void setControlsEnabledForRunningState(bool running);
+    void syncActionButtonStates(bool running, bool valid);
+    void syncVisualReplayDialog();
+    void ensureVisualWorkerDashboardSurfaces(int workerCount, bool allowShrink);
+    void syncVisualWorkerDashboard();
+
+    CoordinatorController* controller_ = nullptr;
+    QTimer* refreshTimer_ = nullptr;
+    WorkerTableModel* workerTableModel_ = nullptr;
+
+    QPushButton* startButton_ = nullptr;
+    QPushButton* pauseButton_ = nullptr;
+    QPushButton* stopButton_ = nullptr;
+    QPushButton* visualDashboardButton_ = nullptr;
+    QCheckBox* visualWorkersCheck_ = nullptr;
+    QSpinBox* targetWorkersSpin_ = nullptr;
+    QLabel* activeWorkersLabel_ = nullptr;
+    QLabel* statusValueLabel_ = nullptr;
+    QLabel* snapshotCountLabel_ = nullptr;
+    QLabel* validationLabel_ = nullptr;
+    QLabel* stoppedLabel_ = nullptr;
+    QLabel* tableSummaryLabel_ = nullptr;
+    QTreeView* workerTableView_ = nullptr;
+    VisualReplayDialog* visualReplayDialog_ = nullptr;
+    VisualWorkerDashboardDialog* visualWorkerDashboard_ = nullptr;
+    bool visualReplayDoneShown_ = false;
+    QString lastToastSignature_;
+};

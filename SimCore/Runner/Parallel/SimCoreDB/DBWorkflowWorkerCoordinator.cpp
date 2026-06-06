@@ -502,6 +502,11 @@ void DBWorkflowWorkerCoordinator::Start() {
             slot->id = i;
             slot->worker = std::make_unique<simcore::ProcessWorker>();
             slot->worker->set_progress_queue(&progress_q_);
+            const auto surface_it = worker_visual_surfaces_.find(i);
+            if (surface_it != worker_visual_surfaces_.end()) {
+                slot->visual_render_widget_handle = surface_it->second.render_widget_handle;
+                slot->visual_host_events_pipe_name = surface_it->second.host_events_pipe_name;
+            }
             RegisterWorkerSlotTelemetry(*slot);
             workers_.push_back(std::move(slot));
         }
@@ -515,6 +520,7 @@ void DBWorkflowWorkerCoordinator::Start() {
 }
 
 void DBWorkflowWorkerCoordinator::Stop() {
+    StopVisualDebugReplay();
     stop_.store(true);
     queue_cv_.notify_all();
     job_materialization_service_.StopMaterializationLoop();
@@ -570,6 +576,18 @@ void DBWorkflowWorkerCoordinator::SetPaused(bool paused) {
 
 bool DBWorkflowWorkerCoordinator::IsPaused() const {
     return paused_.load();
+}
+
+void DBWorkflowWorkerCoordinator::SetDesiredWorkerCount(size_t desired_workers) {
+    const size_t clamped_workers = std::max<size_t>(1, desired_workers);
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        if (worker_cfg_.desired_workers == clamped_workers) {
+            return;
+        }
+        worker_cfg_.desired_workers = clamped_workers;
+    }
+    queue_cv_.notify_all();
 }
 
 void DBWorkflowWorkerCoordinator::SetWorkflowMaterializationCallback(WorkflowCoordinatorBridge::MaterializationCallback callback) {
@@ -1031,6 +1049,150 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
 std::vector<WorkerSnapshot> DBWorkflowWorkerCoordinator::SnapshotWorkers() const {
     std::lock_guard<std::mutex> lock(workers_mtx_);
     return worker_status_.GetClusterSnapshot();
+}
+
+bool DBWorkflowWorkerCoordinator::SetWorkerVisualSurface(
+    size_t worker_idx,
+    uint64_t render_widget_handle,
+    std::string host_events_pipe_name) {
+    std::lock_guard<std::mutex> lock(workers_mtx_);
+    worker_visual_surfaces_[worker_idx] = WorkerVisualSurface{
+        .render_widget_handle = render_widget_handle,
+        .host_events_pipe_name = std::move(host_events_pipe_name),
+    };
+    if (worker_idx < workers_.size()) {
+        workers_[worker_idx]->visual_render_widget_handle = render_widget_handle;
+        workers_[worker_idx]->visual_host_events_pipe_name = worker_visual_surfaces_[worker_idx].host_events_pipe_name;
+    }
+    return true;
+}
+
+bool DBWorkflowWorkerCoordinator::StartVisualDebugReplay(
+    std::int64_t job_id,
+    uint64_t render_widget_handle,
+    std::string host_events_pipe_name,
+    std::string* error_out) {
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job id must be positive";
+        return false;
+    }
+    if (render_widget_handle == 0) {
+        if (error_out) *error_out = "render widget handle is required";
+        return false;
+    }
+    if (worker_cfg_.worker_exe_path.empty() || worker_cfg_.iso_path.empty() || worker_cfg_.worker_dir_root.empty()) {
+        if (error_out) *error_out = "worker configuration is incomplete";
+        return false;
+    }
+
+    StopVisualDebugReplay();
+
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    const auto session_id = next_visual_debug_session_id_++;
+    auto session = std::make_unique<VisualDebugSession>();
+    session->session_id = session_id;
+    session->job_id = job_id;
+    session->worker_id = static_cast<size_t>(1000000 + session_id);
+    session->render_widget_handle = render_widget_handle;
+    session->host_events_pipe_name = std::move(host_events_pipe_name);
+    session->worker = std::make_unique<simcore::ProcessWorker>();
+    SetVisualDebugState(*session, VisualReplayRuntimeState::QueuedStartup, "visual debug replay queued");
+    visual_debug_results_q_.reset();
+    visual_debug_session_ = std::move(session);
+    visual_debug_session_->thread = std::thread([this, session_id]() {
+        VisualDebugReplayThread(session_id);
+    });
+
+    if (error_out) error_out->clear();
+    return true;
+}
+
+bool DBWorkflowWorkerCoordinator::StopVisualDebugReplay() {
+    std::thread thread_to_join;
+    bool had_session = false;
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_) {
+            visual_debug_results_q_.reset();
+            return false;
+        }
+        had_session = true;
+        visual_debug_session_->stop_requested = true;
+        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Stopping, "visual debug replay stopped");
+        if (visual_debug_session_->worker) {
+            visual_debug_session_->worker->stop();
+        }
+        visual_debug_results_q_.close();
+        if (visual_debug_session_->thread.joinable()
+            && visual_debug_session_->thread.get_id() != std::this_thread::get_id()) {
+            thread_to_join = std::move(visual_debug_session_->thread);
+        }
+    }
+
+    if (thread_to_join.joinable()) {
+        thread_to_join.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (visual_debug_session_ && visual_debug_session_->thread.joinable()
+            && visual_debug_session_->thread.get_id() == std::this_thread::get_id()) {
+            visual_debug_session_->thread.detach();
+        }
+        visual_debug_session_.reset();
+        visual_debug_results_q_.reset();
+    }
+    return had_session;
+}
+
+bool DBWorkflowWorkerCoordinator::PauseVisualDebugReplayEmulation() {
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    if (!visual_debug_session_ || !visual_debug_session_->worker) {
+        return false;
+    }
+    return visual_debug_session_->worker->visual_pause_emulation();
+}
+
+bool DBWorkflowWorkerCoordinator::ResumeVisualDebugReplayEmulation() {
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    if (!visual_debug_session_ || !visual_debug_session_->worker) {
+        return false;
+    }
+    return visual_debug_session_->worker->visual_resume_emulation();
+}
+
+bool DBWorkflowWorkerCoordinator::StepVisualDebugReplayVm() {
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    if (!visual_debug_session_ || !visual_debug_session_->worker) {
+        return false;
+    }
+    return visual_debug_session_->worker->visual_step_vm();
+}
+
+VisualDebugReplaySnapshot DBWorkflowWorkerCoordinator::SnapshotVisualDebugReplay() const {
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    if (!visual_debug_session_) {
+        return {};
+    }
+    return VisualDebugReplaySnapshot{
+        .active = true,
+        .session_id = visual_debug_session_->session_id,
+        .job_id = visual_debug_session_->job_id,
+        .worker_id = static_cast<std::int64_t>(visual_debug_session_->worker_id),
+        .state = visual_debug_session_->state,
+        .detail = visual_debug_session_->detail,
+        .controls_enabled = visual_debug_session_->controls_enabled,
+    };
+}
+
+std::vector<std::string> DBWorkflowWorkerCoordinator::TakeVisualDebugLogLines() {
+    std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+    if (!visual_debug_session_) {
+        return {};
+    }
+    std::vector<std::string> lines;
+    lines.swap(visual_debug_session_->pending_log_lines);
+    return lines;
 }
 
 void DBWorkflowWorkerCoordinator::WorkflowStepCoordinatorLoop() {
@@ -1541,6 +1703,11 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         slot->id = worker_idx;
         slot->worker = std::make_unique<simcore::ProcessWorker>();
         slot->worker->set_progress_queue(&progress_q_);
+        const auto surface_it = worker_visual_surfaces_.find(worker_idx);
+        if (surface_it != worker_visual_surfaces_.end()) {
+            slot->visual_render_widget_handle = surface_it->second.render_widget_handle;
+            slot->visual_host_events_pipe_name = surface_it->second.host_events_pipe_name;
+        }
         workers_.push_back(std::move(slot));
     }
 
@@ -1677,6 +1844,10 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     ps.iso_path = worker_cfg_.iso_path;
     ps.dolphin_base_dir.clear();
     ps.visual = worker_cfg_.visual_workers;
+    if (ps.visual) {
+        ps.render_widget_handle = slot.visual_render_widget_handle;
+        ps.visual_host_events_pipe_name = slot.visual_host_events_pipe_name;
+    }
     ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
 
     std::ostringstream user_dir;
@@ -1818,6 +1989,278 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
     }
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
     worker_status_.UnregisterWorker(static_cast<std::int64_t>(slot.id));
+}
+
+void DBWorkflowWorkerCoordinator::VisualDebugReplayThread(std::uint64_t session_id) {
+    auto update_state = [this, session_id](VisualReplayRuntimeState state, const std::string& detail) {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (visual_debug_session_ && visual_debug_session_->session_id == session_id) {
+            SetVisualDebugState(*visual_debug_session_, state, detail);
+        }
+    };
+    auto fail = [&](const std::string& detail) {
+        update_state(VisualReplayRuntimeState::Failed, detail);
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (visual_debug_session_ && visual_debug_session_->session_id == session_id) {
+            visual_debug_session_->controls_enabled = false;
+        }
+    };
+
+    std::int64_t job_id = 0;
+    size_t worker_id = 0;
+    uint64_t render_widget_handle = 0;
+    std::string host_events_pipe_name;
+    simcore::ProcessWorker* worker = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
+            return;
+        }
+        job_id = visual_debug_session_->job_id;
+        worker_id = visual_debug_session_->worker_id;
+        render_widget_handle = visual_debug_session_->render_widget_handle;
+        host_events_pipe_name = visual_debug_session_->host_events_pipe_name;
+        worker = visual_debug_session_->worker.get();
+        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::LaunchingWorker, "materializing visual debug job");
+    }
+
+    ClaimedJobRecord claimed_job{};
+    std::string materialize_error;
+    if (!job_materialization_service_.MaterializeJobForDebugReplay(job_id, &claimed_job, &materialize_error)) {
+        fail("materialize visual debug job failed: " + materialize_error);
+        return;
+    }
+
+    std::filesystem::path runtime_worker_exe;
+    std::string runtime_error;
+    if (!EnsureWorkflowWorkerRuntimeSlot(worker_id, worker_cfg_, &runtime_worker_exe, &runtime_error)) {
+        fail("worker runtime setup failed: " + runtime_error);
+        return;
+    }
+
+    simcore::ProcStartParams ps{};
+    ps.worker_id = worker_id;
+    ps.exe_path = runtime_worker_exe.string();
+    ps.iso_path = worker_cfg_.iso_path;
+    ps.dolphin_base_dir.clear();
+    ps.visual = true;
+    ps.render_widget_handle = render_widget_handle;
+    ps.visual_host_events_pipe_name = host_events_pipe_name;
+    ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
+    ps.vm_control = true;
+    ps.user_dir = (std::filesystem::path(worker_cfg_.worker_dir_root)
+        / ("visual-debug-" + std::to_string(session_id))
+        / "User").string();
+
+    std::error_code user_ec;
+    std::filesystem::remove_all(ps.user_dir, user_ec);
+    if (user_ec) {
+        fail("clear visual debug user dir failed: " + user_ec.message());
+        return;
+    }
+    std::filesystem::create_directories(ps.user_dir, user_ec);
+    if (user_ec) {
+        fail("create visual debug user dir failed: " + user_ec.message());
+        return;
+    }
+
+    update_state(VisualReplayRuntimeState::LaunchingWorker, "starting visual debug worker");
+    if (worker == nullptr || !worker->start(ps, &visual_debug_results_q_)) {
+        fail("ProcessWorker.start failed");
+        return;
+    }
+
+    const auto timeout = std::chrono::milliseconds(worker_cfg_.worker_start_timeout_ms
+        ? worker_cfg_.worker_start_timeout_ms
+        : 10000);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool ready = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+            if (!visual_debug_session_ || visual_debug_session_->session_id != session_id || visual_debug_session_->stop_requested) {
+                return;
+            }
+        }
+        if (worker->wait_ready(50)) {
+            ready = true;
+            break;
+        }
+        if (worker->is_failed()) {
+            break;
+        }
+    }
+    if (!ready) {
+        std::ostringstream error;
+        error << "wait_ready failed err=" << worker->ready_error();
+        fail(error.str());
+        worker->stop();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
+            return;
+        }
+        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::AttachReady, "visual debug worker ready");
+        visual_debug_session_->controls_enabled = true;
+    }
+
+    VisualDebugSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
+            return;
+        }
+        session = visual_debug_session_.get();
+    }
+    std::string configure_error;
+    if (!ConfigureVisualDebugWorkerForJob(*session, claimed_job, &configure_error)) {
+        fail("configure visual debug worker failed: " + configure_error);
+        worker->stop();
+        return;
+    }
+
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (worker->visual_resume_emulation()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
+            return;
+        }
+        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Active, "visual debug replay active");
+        visual_debug_session_->controls_enabled = true;
+    }
+
+    if (!worker->try_acquire_slot()) {
+        fail("visual debug worker slot is busy");
+        worker->stop();
+        return;
+    }
+    if (!claimed_job.payload.has_value()
+        || !worker->send_job(static_cast<std::uint64_t>(job_id), epoch_.load(), *claimed_job.payload)) {
+        worker->release_slot();
+        fail("send visual debug job failed");
+        worker->stop();
+        return;
+    }
+
+    simcore::PRResult result{};
+    if (!visual_debug_results_q_.pop_wait(result)) {
+        worker->release_slot();
+        return;
+    }
+    worker->release_slot();
+    worker->stop();
+
+    {
+        std::lock_guard<std::mutex> lock(visual_debug_mtx_);
+        if (!visual_debug_session_ || visual_debug_session_->session_id != session_id) {
+            return;
+        }
+        std::ostringstream detail;
+        detail << "visual debug replay finished"
+               << " job=" << result.job_id
+               << " accepted=" << (result.accepted ? "true" : "false");
+        SetVisualDebugState(*visual_debug_session_, VisualReplayRuntimeState::Finished, detail.str());
+        visual_debug_session_->controls_enabled = false;
+    }
+}
+
+bool DBWorkflowWorkerCoordinator::ConfigureVisualDebugWorkerForJob(
+    VisualDebugSession& session,
+    const ClaimedJobRecord& claimed_job,
+    std::string* error_out) {
+    if (session.worker == nullptr) {
+        if (error_out) *error_out = "worker is unavailable";
+        return false;
+    }
+    if (claimed_job.program_kind <= 0) {
+        if (error_out) *error_out = "program kind is invalid";
+        return false;
+    }
+
+    simcore::PSInit init{};
+    init.default_timeout_ms = claimed_job.runtime_init.default_timeout_ms > 0
+        ? static_cast<uint32_t>(claimed_job.runtime_init.default_timeout_ms)
+        : 10000;
+    init.derived_buffer_type = claimed_job.runtime_init.derived_buffer_type;
+    if (claimed_job.runtime_init.savestate_ref_id > 0) {
+        const auto savestate_path = PrepareVisualDebugSavestatePathForJob(session, claimed_job);
+        if (!savestate_path.has_value()) {
+            if (error_out) *error_out = "savestate materialization failed";
+            return false;
+        }
+        init.savestate_path = *savestate_path;
+    }
+    if (!session.worker->ctl_set_program(
+        static_cast<uint8_t>(claimed_job.program_kind),
+        static_cast<uint8_t>(claimed_job.program_kind),
+        init)) {
+        if (error_out) *error_out = "ctl_set_program failed";
+        return false;
+    }
+    if (!session.worker->ctl_run_init_once()) {
+        if (error_out) *error_out = "ctl_run_init_once failed";
+        return false;
+    }
+    if (!session.worker->ctl_activate_main()) {
+        if (error_out) *error_out = "ctl_activate_main failed";
+        return false;
+    }
+    if (error_out) error_out->clear();
+    return true;
+}
+
+std::optional<std::string> DBWorkflowWorkerCoordinator::PrepareVisualDebugSavestatePathForJob(
+    const VisualDebugSession& session,
+    const ClaimedJobRecord& claimed_job) {
+    if (claimed_job.runtime_init.savestate_ref_id <= 0) {
+        return std::string{};
+    }
+    if (state_db_ == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto savestate_dir = std::filesystem::path(worker_cfg_.worker_dir_root)
+        / ("visual-debug-" + std::to_string(session.session_id))
+        / "savestate";
+    const auto savestate_path = savestate_dir / "current.sav";
+
+    std::error_code ec;
+    std::filesystem::remove_all(savestate_dir, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    std::filesystem::create_directories(savestate_dir, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+
+    std::string error;
+    const auto materialized = state_db_->MaterializeSavestateToPath(
+        claimed_job.runtime_init.savestate_ref_id,
+        savestate_path.string(),
+        &error);
+    if (!materialized.has_value() || materialized->empty()) {
+        return std::nullopt;
+    }
+    return materialized;
+}
+
+void DBWorkflowWorkerCoordinator::SetVisualDebugState(
+    VisualDebugSession& session,
+    VisualReplayRuntimeState state,
+    std::string detail) {
+    session.state = state;
+    session.detail = std::move(detail);
+    session.pending_log_lines.push_back(session.detail);
 }
 
 std::vector<DBWorkflowWorkerCoordinator::DispatchableWorkerInfo> DBWorkflowWorkerCoordinator::CollectDispatchableWorkers() {
