@@ -121,6 +121,7 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp" />
@@ -130,6 +131,7 @@
     <ClCompile Include="SimCoreDbRuntime.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp" />
+    <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
@@ -166,6 +168,7 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Common\StatusToast.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
@@ -173,6 +176,7 @@
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.h" />
+    <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />

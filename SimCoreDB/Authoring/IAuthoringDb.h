@@ -466,6 +466,9 @@ struct IAuthoringDb {
     virtual std::optional<SeedProbeSpecSnapshot> GetSeedProbeSpec(
         std::int64_t seed_probe_spec_id) const = 0;
 
+    virtual std::vector<SeedProbeSpecSnapshot> ListSeedProbeSpecs(
+        int max_count) const = 0;
+
     virtual bool SaveTasSpec(
         const SaveTasSpecCommand& command,
         std::int64_t* tas_spec_id_out = nullptr,
@@ -475,6 +478,9 @@ struct IAuthoringDb {
     virtual std::optional<TasSpecSnapshot> GetTasSpec(
         std::int64_t tas_spec_id) const = 0;
 
+    virtual std::vector<TasSpecSnapshot> ListTasSpecs(
+        int max_count) const = 0;
+
     virtual bool SaveBattleRunSpec(
         const SaveBattleRunSpecCommand& command,
         std::int64_t* battle_run_spec_id_out = nullptr,
@@ -482,6 +488,9 @@ struct IAuthoringDb {
 
     virtual std::optional<BattleRunSpecSnapshot> GetBattleRunSpec(
         std::int64_t battle_run_spec_id) const = 0;
+
+    virtual std::vector<BattleRunSpecSnapshot> ListBattleRunSpecs(
+        int max_count) const = 0;
 
     virtual bool SavePlan(
         const SavePlanCommand& command,
@@ -495,6 +504,9 @@ struct IAuthoringDb {
 
     virtual std::optional<BattlePlanSnapshot> GetBattlePlan(
         std::int64_t plan_id) const = 0;
+
+    virtual std::vector<BattlePlanSnapshot> ListBattlePlans(
+        int max_count) const = 0;
 
     virtual bool EnsureAddressProgram(
         const EnsureAddressProgramCommand& command,
@@ -512,6 +524,9 @@ struct IAuthoringDb {
     virtual std::optional<PredicateSpecSnapshot> GetPredicateSpec(
         std::int64_t predicate_spec_id) const = 0;
 
+    virtual std::vector<PredicateSpecSnapshot> ListPredicateSpecs(
+        int max_count) const = 0;
+
     virtual bool SavePredicateSet(
         const SavePredicateSetCommand& command,
         std::int64_t* predicate_set_id_out = nullptr,
@@ -519,6 +534,9 @@ struct IAuthoringDb {
 
     virtual std::optional<PredicateSetSnapshot> GetPredicateSet(
         std::int64_t predicate_set_id) const = 0;
+
+    virtual std::vector<PredicateSetSnapshot> ListPredicateSets(
+        int max_count) const = 0;
 
     virtual bool SaveExplorerSettings(
         const SaveExplorerSettingsCommand& command,
@@ -528,6 +546,9 @@ struct IAuthoringDb {
     virtual std::optional<ExplorerSettingsSnapshot> GetExplorerSettings(
         std::int64_t explorer_settings_id) const = 0;
 
+    virtual std::vector<ExplorerSettingsSnapshot> ListExplorerSettings(
+        int max_count) const = 0;
+
     virtual bool SaveTemplate(
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,
@@ -535,6 +556,9 @@ struct IAuthoringDb {
 
     virtual std::optional<TemplateSnapshot> GetTemplate(
         std::int64_t template_id) const = 0;
+
+    virtual std::vector<TemplateSnapshot> ListTemplates(
+        int max_count) const = 0;
 
     virtual bool SaveWorkflowGraph(
         const SaveWorkflowGraphCommand& command,
@@ -546,6 +570,9 @@ struct IAuthoringDb {
 
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
         std::int64_t workflow_graph_revision_id) const = 0;
+
+    virtual std::vector<WorkflowGraphSnapshot> ListWorkflowGraphs(
+        int max_count) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

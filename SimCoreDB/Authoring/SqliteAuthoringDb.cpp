@@ -1,5 +1,6 @@
 #include "SqliteAuthoringDb.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <unordered_map>
@@ -498,6 +499,32 @@ std::optional<SeedProbeSpecSnapshot> SqliteAuthoringDb::GetSeedProbeSpec(std::in
     return snapshot;
 }
 
+std::vector<SeedProbeSpecSnapshot> SqliteAuthoringDb::ListSeedProbeSpecs(
+    int max_count) const {
+    std::vector<SeedProbeSpecSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT seed_probe_spec_id FROM au_seed_probe_spec ORDER BY seed_probe_spec_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetSeedProbeSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
+}
+
 bool SqliteAuthoringDb::SaveTasSpec(
     const SaveTasSpecCommand& command,
     std::int64_t* tas_spec_id_out,
@@ -653,6 +680,32 @@ std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
     return snapshot;
 }
 
+std::vector<TasSpecSnapshot> SqliteAuthoringDb::ListTasSpecs(
+    int max_count) const {
+    std::vector<TasSpecSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT tas_spec_id FROM au_tas_spec ORDER BY tas_spec_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetTasSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
+}
+
 bool SqliteAuthoringDb::SaveBattleRunSpec(
     const SaveBattleRunSpecCommand& command,
     std::int64_t* battle_run_spec_id_out,
@@ -767,6 +820,32 @@ std::optional<BattleRunSpecSnapshot> SqliteAuthoringDb::GetBattleRunSpec(
     out.auto_wave_trigger_enable = sqlite3_column_int(st.st, 7) != 0;
     out.min_fake_attacks = sqlite3_column_int(st.st, 8);
     out.max_fake_attacks = sqlite3_column_int(st.st, 9);
+    return out;
+}
+
+std::vector<BattleRunSpecSnapshot> SqliteAuthoringDb::ListBattleRunSpecs(
+    int max_count) const {
+    std::vector<BattleRunSpecSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT battle_run_spec_id FROM au_battle_run_spec ORDER BY battle_run_spec_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetBattleRunSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
     return out;
 }
 
@@ -1071,6 +1150,32 @@ std::optional<BattlePlanSnapshot> SqliteAuthoringDb::GetBattlePlan(
     return out;
 }
 
+std::vector<BattlePlanSnapshot> SqliteAuthoringDb::ListBattlePlans(
+    int max_count) const {
+    std::vector<BattlePlanSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT plan_id FROM au_battle_plan ORDER BY plan_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetBattlePlan(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
+}
+
 bool SqliteAuthoringDb::EnsureAddressProgram(
     const EnsureAddressProgramCommand& command,
     std::int64_t* address_program_id_out,
@@ -1353,6 +1458,32 @@ std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
     return out;
 }
 
+std::vector<PredicateSpecSnapshot> SqliteAuthoringDb::ListPredicateSpecs(
+    int max_count) const {
+    std::vector<PredicateSpecSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT predicate_spec_id FROM au_predicate_spec ORDER BY predicate_spec_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetPredicateSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
+}
+
 bool SqliteAuthoringDb::SavePredicateSet(
     const SavePredicateSetCommand& command,
     std::int64_t* predicate_set_id_out,
@@ -1477,6 +1608,32 @@ std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
     return out;
 }
 
+std::vector<PredicateSetSnapshot> SqliteAuthoringDb::ListPredicateSets(
+    int max_count) const {
+    std::vector<PredicateSetSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT predicate_set_id FROM au_predicate_set ORDER BY predicate_set_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetPredicateSet(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
+}
+
 bool SqliteAuthoringDb::SaveExplorerSettings(
     const SaveExplorerSettingsCommand& command,
     std::int64_t* explorer_settings_id_out,
@@ -1589,6 +1746,32 @@ std::optional<ExplorerSettingsSnapshot> SqliteAuthoringDb::GetExplorerSettings(
     out.description = ColumnText(st.st, 2);
     out.default_plan_id = ColumnInt64Optional(st.st, 3);
     out.default_predicate_set_id = ColumnInt64Optional(st.st, 4);
+    return out;
+}
+
+std::vector<ExplorerSettingsSnapshot> SqliteAuthoringDb::ListExplorerSettings(
+    int max_count) const {
+    std::vector<ExplorerSettingsSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT explorer_settings_id FROM au_explorer_settings ORDER BY explorer_settings_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetExplorerSettings(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
     return out;
 }
 
@@ -1707,6 +1890,32 @@ std::optional<TemplateSnapshot> SqliteAuthoringDb::GetTemplate(
     snapshot.battle_run_spec_id = ColumnInt64Optional(st.st, 5);
     snapshot.explorer_settings_id = ColumnInt64Optional(st.st, 6);
     return snapshot;
+}
+
+std::vector<TemplateSnapshot> SqliteAuthoringDb::ListTemplates(
+    int max_count) const {
+    std::vector<TemplateSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT template_id FROM au_template ORDER BY template_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetTemplate(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
+    return out;
 }
 
 bool SqliteAuthoringDb::SaveWorkflowGraph(
@@ -2316,6 +2525,32 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
         });
     }
 
+    return out;
+}
+
+std::vector<WorkflowGraphSnapshot> SqliteAuthoringDb::ListWorkflowGraphs(
+    int max_count) const {
+    std::vector<WorkflowGraphSnapshot> out;
+    if (db_ == nullptr) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT workflow_graph_id FROM au_workflow_graph ORDER BY workflow_graph_id DESC LIMIT ?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        if (auto snapshot = GetWorkflowGraph(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+            out.push_back(std::move(*snapshot));
+        }
+    }
     return out;
 }
 

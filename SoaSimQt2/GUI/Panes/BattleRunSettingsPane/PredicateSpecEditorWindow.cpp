@@ -2,14 +2,18 @@
 
 #include "DB/SimCoreDbAuthoringService.h"
 
+#include <QtGui/QCloseEvent>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -38,6 +42,37 @@ PredicateSpecEditorWindow::PredicateSpecEditorWindow(QWidget* parent)
 void PredicateSpecEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
 {
     statusCallback_ = std::move(callback);
+}
+
+void PredicateSpecEditorWindow::setSavedCallback(std::function<void()> callback)
+{
+    savedCallback_ = std::move(callback);
+}
+
+void PredicateSpecEditorWindow::loadSnapshot(const simcore::db::PredicateSpecSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate
+        ? QStringLiteral("Predicate Editor - Duplicate")
+        : QStringLiteral("Predicate Editor - Edit Copy"));
+    nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    breakpointEdit_->setText(QString::number(static_cast<int>(snapshot.breakpoint_id)));
+    lhsKindCombo_->setCurrentIndex(std::max(0, lhsKindCombo_->findData(static_cast<int>(snapshot.lhs_kind))));
+    lhsValueEdit_->setText(QString::number(snapshot.lhs_value));
+    rhsKindCombo_->setCurrentIndex(std::max(0, rhsKindCombo_->findData(static_cast<int>(snapshot.rhs_kind))));
+    rhsValueEdit_->setText(QString::number(snapshot.rhs_value));
+    cmpCombo_->setCurrentIndex(std::max(0, cmpCombo_->findData(static_cast<int>(snapshot.cmp_op))));
+    widthCombo_->setCurrentIndex(std::max(0, widthCombo_->findData(snapshot.width)));
+    abortOnFailCheck_->setChecked(snapshot.abort_on_fail);
+    dirty_ = false;
+}
+
+void PredicateSpecEditorWindow::closeEvent(QCloseEvent* event)
+{
+    if (confirmDiscardIfDirty()) {
+        event->accept();
+    } else {
+        event->ignore();
+    }
 }
 
 void PredicateSpecEditorWindow::createWidgets()
@@ -101,6 +136,15 @@ void PredicateSpecEditorWindow::createWidgets()
     rootLayout->addLayout(buttonRow);
 
     connect(saveButton_, &QPushButton::clicked, this, &PredicateSpecEditorWindow::savePredicate);
+    connect(nameEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
+    connect(breakpointEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
+    connect(lhsKindCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() { markDirty(); });
+    connect(lhsValueEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
+    connect(rhsKindCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() { markDirty(); });
+    connect(rhsValueEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
+    connect(cmpCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() { markDirty(); });
+    connect(widthCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() { markDirty(); });
+    connect(abortOnFailCheck_, &QCheckBox::toggled, this, [this]() { markDirty(); });
 }
 
 void PredicateSpecEditorWindow::savePredicate()
@@ -145,7 +189,30 @@ void PredicateSpecEditorWindow::savePredicate()
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
         return;
     }
+    dirty_ = false;
+    if (savedCallback_) {
+        savedCallback_();
+    }
     postStatusMessage(QStringLiteral("Saved predicate %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
+}
+
+void PredicateSpecEditorWindow::markDirty()
+{
+    dirty_ = true;
+}
+
+bool PredicateSpecEditorWindow::confirmDiscardIfDirty()
+{
+    if (!dirty_) {
+        return true;
+    }
+    const auto result = QMessageBox::warning(
+        this,
+        QStringLiteral("Discard predicate changes?"),
+        QStringLiteral("This predicate has unsaved changes."),
+        QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    return result == QMessageBox::Discard;
 }
 
 void PredicateSpecEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)

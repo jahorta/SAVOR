@@ -108,6 +108,15 @@ std::optional<SeedProbeSpecSnapshot> QueuedAuthoringDb::GetSeedProbeSpec(
         std::nullopt);
 }
 
+std::vector<SeedProbeSpecSnapshot> QueuedAuthoringDb::ListSeedProbeSpecs(
+    int max_count) const {
+    return ExecuteRead<std::vector<SeedProbeSpecSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListSeedProbeSpecs(max_count) : std::vector<SeedProbeSpecSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SaveTasSpec(
     const SaveTasSpecCommand& command,
     std::int64_t* tas_spec_id_out,
@@ -130,6 +139,15 @@ std::optional<TasSpecSnapshot> QueuedAuthoringDb::GetTasSpec(
         std::nullopt);
 }
 
+std::vector<TasSpecSnapshot> QueuedAuthoringDb::ListTasSpecs(
+    int max_count) const {
+    return ExecuteRead<std::vector<TasSpecSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListTasSpecs(max_count) : std::vector<TasSpecSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SaveBattleRunSpec(
     const SaveBattleRunSpecCommand& command,
     std::int64_t* battle_run_spec_id_out,
@@ -149,6 +167,15 @@ std::optional<BattleRunSpecSnapshot> QueuedAuthoringDb::GetBattleRunSpec(
             return inner_ != nullptr ? inner_->GetBattleRunSpec(battle_run_spec_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<BattleRunSpecSnapshot> QueuedAuthoringDb::ListBattleRunSpecs(
+    int max_count) const {
+    return ExecuteRead<std::vector<BattleRunSpecSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListBattleRunSpecs(max_count) : std::vector<BattleRunSpecSnapshot>{};
+        },
+        {});
 }
 
 bool QueuedAuthoringDb::SavePlan(
@@ -182,6 +209,15 @@ std::optional<BattlePlanSnapshot> QueuedAuthoringDb::GetBattlePlan(
             return inner_ != nullptr ? inner_->GetBattlePlan(plan_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<BattlePlanSnapshot> QueuedAuthoringDb::ListBattlePlans(
+    int max_count) const {
+    return ExecuteRead<std::vector<BattlePlanSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListBattlePlans(max_count) : std::vector<BattlePlanSnapshot>{};
+        },
+        {});
 }
 
 bool QueuedAuthoringDb::EnsureAddressProgram(
@@ -226,6 +262,15 @@ std::optional<PredicateSpecSnapshot> QueuedAuthoringDb::GetPredicateSpec(
         std::nullopt);
 }
 
+std::vector<PredicateSpecSnapshot> QueuedAuthoringDb::ListPredicateSpecs(
+    int max_count) const {
+    return ExecuteRead<std::vector<PredicateSpecSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListPredicateSpecs(max_count) : std::vector<PredicateSpecSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SavePredicateSet(
     const SavePredicateSetCommand& command,
     std::int64_t* predicate_set_id_out,
@@ -245,6 +290,15 @@ std::optional<PredicateSetSnapshot> QueuedAuthoringDb::GetPredicateSet(
             return inner_ != nullptr ? inner_->GetPredicateSet(predicate_set_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<PredicateSetSnapshot> QueuedAuthoringDb::ListPredicateSets(
+    int max_count) const {
+    return ExecuteRead<std::vector<PredicateSetSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListPredicateSets(max_count) : std::vector<PredicateSetSnapshot>{};
+        },
+        {});
 }
 
 bool QueuedAuthoringDb::SaveExplorerSettings(
@@ -268,6 +322,15 @@ std::optional<ExplorerSettingsSnapshot> QueuedAuthoringDb::GetExplorerSettings(
         std::nullopt);
 }
 
+std::vector<ExplorerSettingsSnapshot> QueuedAuthoringDb::ListExplorerSettings(
+    int max_count) const {
+    return ExecuteRead<std::vector<ExplorerSettingsSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListExplorerSettings(max_count) : std::vector<ExplorerSettingsSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SaveTemplate(
     const SaveTemplateCommand& command,
     std::int64_t* template_id_out,
@@ -287,6 +350,15 @@ std::optional<TemplateSnapshot> QueuedAuthoringDb::GetTemplate(
             return inner_ != nullptr ? inner_->GetTemplate(template_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<TemplateSnapshot> QueuedAuthoringDb::ListTemplates(
+    int max_count) const {
+    return ExecuteRead<std::vector<TemplateSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListTemplates(max_count) : std::vector<TemplateSnapshot>{};
+        },
+        {});
 }
 
 bool QueuedAuthoringDb::SaveWorkflowGraph(
@@ -317,6 +389,15 @@ std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraphRevision
             return inner_ != nullptr ? inner_->GetWorkflowGraphRevision(workflow_graph_revision_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+std::vector<WorkflowGraphSnapshot> QueuedAuthoringDb::ListWorkflowGraphs(
+    int max_count) const {
+    return ExecuteRead<std::vector<WorkflowGraphSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListWorkflowGraphs(max_count) : std::vector<WorkflowGraphSnapshot>{};
+        },
+        {});
 }
 
 std::vector<events::EventEnvelope> QueuedAuthoringDb::ReadUnpublishedOutboxBatch(

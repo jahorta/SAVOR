@@ -98,7 +98,13 @@
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
@@ -227,6 +233,9 @@
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
@@ -276,6 +285,9 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">

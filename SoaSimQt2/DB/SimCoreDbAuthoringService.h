@@ -23,6 +23,34 @@ struct AddressProgramDraft {
     std::string description;
 };
 
+struct SeedProbeSpecDraft {
+    std::string name;
+    int priority = 0;
+    std::int64_t run_ms = 0;
+    std::int64_t vi_stall_ms = 0;
+    int samples_per_axis = 5;
+    std::int64_t min_value = -128;
+    std::int64_t max_value = 127;
+    bool cap_trigger_top = false;
+    bool ignore_trigger_minmax = false;
+    int combo_attempts_per_target = 3;
+    int combo_sampler_tries = 32;
+    bool auto_schedule_battle_run = false;
+};
+
+struct TasSpecDraft {
+    std::string base_name;
+    int priority = 0;
+    std::int64_t run_ms = 0;
+    std::int64_t vi_stall_ms = 0;
+    int headroom_x10 = 10;
+    bool progress_enable = false;
+    bool auto_queue_seeds = false;
+    std::int64_t base_dtm_artifact_id = 0;
+    std::int64_t rtc_low = 0;
+    std::int64_t rtc_high = 0;
+};
+
 struct PredicateSpecDraft {
     std::string name;
     int breakpoint_id = 0;
@@ -76,6 +104,17 @@ struct BattleRunSpecDraft {
     int max_fake_attacks = 0;
 };
 
+struct PredicateSetDraft {
+    std::vector<std::int64_t> predicate_spec_ids;
+};
+
+struct ExplorerSettingsDraft {
+    std::string name;
+    std::string description;
+    std::optional<std::int64_t> default_plan_id;
+    std::optional<std::int64_t> default_predicate_set_id;
+};
+
 struct TemplateDraft {
     std::string name;
     std::string description;
@@ -86,6 +125,8 @@ struct TemplateDraft {
 };
 
 struct WorkflowGraphDraft {
+    std::optional<std::int64_t> workflow_graph_id;
+    std::optional<std::int64_t> parent_revision_id;
     std::string name;
     std::string description;
     int graph_version = 1;
@@ -128,6 +169,118 @@ public:
             return NotFound<simcore::db::AddressProgramSnapshot>("address program not found");
         }
         return ServiceResult<simcore::db::AddressProgramSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::int64_t> SaveSeedProbeSpec(const SeedProbeSpecDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+        }
+        if (draft.name.empty()) {
+            return Invalid<std::int64_t>("seed probe spec name is required");
+        }
+        if (draft.samples_per_axis <= 0) {
+            return Invalid<std::int64_t>("samples per axis must be positive");
+        }
+
+        const auto now = simcore::db::types::UtcNow();
+        simcore::db::SaveSeedProbeSpecCommand command{};
+        command.name = draft.name;
+        command.priority = draft.priority;
+        command.run_ms = draft.run_ms;
+        command.vi_stall_ms = draft.vi_stall_ms;
+        command.samples_per_axis = draft.samples_per_axis;
+        command.min_value = draft.min_value;
+        command.max_value = draft.max_value;
+        command.cap_trigger_top = draft.cap_trigger_top;
+        command.ignore_trigger_minmax = draft.ignore_trigger_minmax;
+        command.combo_attempts_per_target = draft.combo_attempts_per_target;
+        command.combo_sampler_tries = draft.combo_sampler_tries;
+        command.auto_schedule_battle_run = draft.auto_schedule_battle_run;
+        command.created_at_utc = now;
+        command.event_id = NextEventId("Authoring.SeedProbeSpecSaved");
+        command.correlation_id = command.event_id;
+
+        std::int64_t id = 0;
+        std::string error;
+        if (!db->SaveSeedProbeSpec(command, &id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::SeedProbeSpecSnapshot> GetSeedProbeSpec(std::int64_t seed_probe_spec_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::SeedProbeSpecSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetSeedProbeSpec(seed_probe_spec_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::SeedProbeSpecSnapshot>("seed probe spec not found");
+        }
+        return ServiceResult<simcore::db::SeedProbeSpecSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::SeedProbeSpecSnapshot>> ListSeedProbeSpecs(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::SeedProbeSpecSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::SeedProbeSpecSnapshot>>::Ok(db->ListSeedProbeSpecs(max_count));
+    }
+
+    static ServiceResult<std::int64_t> SaveTasSpec(const TasSpecDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+        }
+        if (draft.base_name.empty()) {
+            return Invalid<std::int64_t>("TAS spec name is required");
+        }
+
+        const auto now = simcore::db::types::UtcNow();
+        simcore::db::SaveTasSpecCommand command{};
+        command.base_name = draft.base_name;
+        command.priority = draft.priority;
+        command.run_ms = draft.run_ms;
+        command.vi_stall_ms = draft.vi_stall_ms;
+        command.headroom_x10 = draft.headroom_x10;
+        command.progress_enable = draft.progress_enable;
+        command.auto_queue_seeds = draft.auto_queue_seeds;
+        command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
+        command.rtc_low = draft.rtc_low;
+        command.rtc_high = draft.rtc_high;
+        command.created_at_utc = now;
+        command.event_id = NextEventId("Authoring.TasSpecSaved");
+        command.correlation_id = command.event_id;
+
+        std::int64_t id = 0;
+        std::int64_t base_id = 0;
+        std::string error;
+        if (!db->SaveTasSpec(command, &id, &base_id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::TasSpecSnapshot> GetTasSpec(std::int64_t tas_spec_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::TasSpecSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetTasSpec(tas_spec_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::TasSpecSnapshot>("TAS spec not found");
+        }
+        return ServiceResult<simcore::db::TasSpecSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::TasSpecSnapshot>> ListTasSpecs(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::TasSpecSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
     }
 
     static ServiceResult<std::int64_t> SavePredicateSpec(const PredicateSpecDraft& draft) {
@@ -178,6 +331,14 @@ public:
         return ServiceResult<simcore::db::PredicateSpecSnapshot>::Ok(*snapshot);
     }
 
+    static ServiceResult<std::vector<simcore::db::PredicateSpecSnapshot>> ListPredicateSpecs(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::PredicateSpecSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::PredicateSpecSnapshot>>::Ok(db->ListPredicateSpecs(max_count));
+    }
+
     static ServiceResult<std::int64_t> SaveBattleRunSpec(const BattleRunSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -208,6 +369,26 @@ public:
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::BattleRunSpecSnapshot> GetBattleRunSpec(std::int64_t battle_run_spec_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::BattleRunSpecSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetBattleRunSpec(battle_run_spec_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::BattleRunSpecSnapshot>("battle run spec not found");
+        }
+        return ServiceResult<simcore::db::BattleRunSpecSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::BattleRunSpecSnapshot>> ListBattleRunSpecs(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::BattleRunSpecSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::BattleRunSpecSnapshot>>::Ok(db->ListBattleRunSpecs(max_count));
     }
 
     static ServiceResult<std::int64_t> SaveBattlePlan(const BattlePlanDraft& draft) {
@@ -277,6 +458,102 @@ public:
         return ServiceResult<simcore::db::BattlePlanSnapshot>::Ok(*snapshot);
     }
 
+    static ServiceResult<std::vector<simcore::db::BattlePlanSnapshot>> ListBattlePlans(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::BattlePlanSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::BattlePlanSnapshot>>::Ok(db->ListBattlePlans(max_count));
+    }
+
+    static ServiceResult<std::int64_t> SavePredicateSet(const PredicateSetDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+        }
+        if (draft.predicate_spec_ids.empty()) {
+            return Invalid<std::int64_t>("predicate set requires at least one predicate");
+        }
+
+        simcore::db::SavePredicateSetCommand command{};
+        command.predicate_spec_ids = draft.predicate_spec_ids;
+        command.created_at_utc = simcore::db::types::UtcNow();
+
+        std::int64_t id = 0;
+        std::string error;
+        if (!db->SavePredicateSet(command, &id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::PredicateSetSnapshot> GetPredicateSet(std::int64_t predicate_set_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::PredicateSetSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetPredicateSet(predicate_set_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::PredicateSetSnapshot>("predicate set not found");
+        }
+        return ServiceResult<simcore::db::PredicateSetSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::PredicateSetSnapshot>> ListPredicateSets(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::PredicateSetSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::PredicateSetSnapshot>>::Ok(db->ListPredicateSets(max_count));
+    }
+
+    static ServiceResult<std::int64_t> SaveExplorerSettings(const ExplorerSettingsDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+        }
+        if (draft.name.empty()) {
+            return Invalid<std::int64_t>("explorer settings name is required");
+        }
+
+        const auto now = simcore::db::types::UtcNow();
+        simcore::db::SaveExplorerSettingsCommand command{};
+        command.name = draft.name;
+        command.description = draft.description;
+        command.default_plan_id = draft.default_plan_id;
+        command.default_predicate_set_id = draft.default_predicate_set_id;
+        command.created_at_utc = now;
+        command.event_id = NextEventId("Authoring.ExplorerSettingsSaved");
+        command.correlation_id = command.event_id;
+
+        std::int64_t id = 0;
+        std::string error;
+        if (!db->SaveExplorerSettings(command, &id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<simcore::db::ExplorerSettingsSnapshot> GetExplorerSettings(std::int64_t explorer_settings_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::ExplorerSettingsSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetExplorerSettings(explorer_settings_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::ExplorerSettingsSnapshot>("explorer settings not found");
+        }
+        return ServiceResult<simcore::db::ExplorerSettingsSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::ExplorerSettingsSnapshot>> ListExplorerSettings(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::ExplorerSettingsSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::ExplorerSettingsSnapshot>>::Ok(db->ListExplorerSettings(max_count));
+    }
+
     static ServiceResult<std::int64_t> SaveTemplate(const TemplateDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -306,6 +583,26 @@ public:
         return ServiceResult<std::int64_t>::Ok(id);
     }
 
+    static ServiceResult<simcore::db::TemplateSnapshot> GetTemplate(std::int64_t template_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::TemplateSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetTemplate(template_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::TemplateSnapshot>("template not found");
+        }
+        return ServiceResult<simcore::db::TemplateSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::TemplateSnapshot>> ListTemplates(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::TemplateSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::TemplateSnapshot>>::Ok(db->ListTemplates(max_count));
+    }
+
     static ServiceResult<simcore::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
@@ -320,6 +617,8 @@ public:
 
         const auto now = simcore::db::types::UtcNow();
         simcore::db::SaveWorkflowGraphCommand command{};
+        command.workflow_graph_id = draft.workflow_graph_id;
+        command.parent_revision_id = draft.parent_revision_id;
         command.name = draft.name;
         command.description = draft.description;
         command.graph_version = draft.graph_version;
@@ -360,6 +659,14 @@ public:
             return NotFound<simcore::db::WorkflowGraphSnapshot>("workflow graph revision not found");
         }
         return ServiceResult<simcore::db::WorkflowGraphSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>> ListWorkflowGraphs(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::WorkflowGraphSnapshot>>("SimCoreDB authoring database is not running");
+        }
+        return ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>>::Ok(db->ListWorkflowGraphs(max_count));
     }
 
 private:

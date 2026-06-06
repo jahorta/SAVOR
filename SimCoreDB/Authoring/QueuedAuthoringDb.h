@@ -34,6 +34,8 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<SeedProbeSpecSnapshot> GetSeedProbeSpec(
         std::int64_t seed_probe_spec_id) const override;
+    std::vector<SeedProbeSpecSnapshot> ListSeedProbeSpecs(
+        int max_count) const override;
     bool SaveTasSpec(
         const SaveTasSpecCommand& command,
         std::int64_t* tas_spec_id_out = nullptr,
@@ -41,12 +43,16 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<TasSpecSnapshot> GetTasSpec(
         std::int64_t tas_spec_id) const override;
+    std::vector<TasSpecSnapshot> ListTasSpecs(
+        int max_count) const override;
     bool SaveBattleRunSpec(
         const SaveBattleRunSpecCommand& command,
         std::int64_t* battle_run_spec_id_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<BattleRunSpecSnapshot> GetBattleRunSpec(
         std::int64_t battle_run_spec_id) const override;
+    std::vector<BattleRunSpecSnapshot> ListBattleRunSpecs(
+        int max_count) const override;
     bool SavePlan(
         const SavePlanCommand& command,
         std::int64_t* plan_id_out = nullptr,
@@ -57,6 +63,8 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<BattlePlanSnapshot> GetBattlePlan(
         std::int64_t plan_id) const override;
+    std::vector<BattlePlanSnapshot> ListBattlePlans(
+        int max_count) const override;
     bool EnsureAddressProgram(
         const EnsureAddressProgramCommand& command,
         std::int64_t* address_program_id_out = nullptr,
@@ -69,24 +77,32 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<PredicateSpecSnapshot> GetPredicateSpec(
         std::int64_t predicate_spec_id) const override;
+    std::vector<PredicateSpecSnapshot> ListPredicateSpecs(
+        int max_count) const override;
     bool SavePredicateSet(
         const SavePredicateSetCommand& command,
         std::int64_t* predicate_set_id_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<PredicateSetSnapshot> GetPredicateSet(
         std::int64_t predicate_set_id) const override;
+    std::vector<PredicateSetSnapshot> ListPredicateSets(
+        int max_count) const override;
     bool SaveExplorerSettings(
         const SaveExplorerSettingsCommand& command,
         std::int64_t* explorer_settings_id_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<ExplorerSettingsSnapshot> GetExplorerSettings(
         std::int64_t explorer_settings_id) const override;
+    std::vector<ExplorerSettingsSnapshot> ListExplorerSettings(
+        int max_count) const override;
     bool SaveTemplate(
         const SaveTemplateCommand& command,
         std::int64_t* template_id_out = nullptr,
         std::string* error_out = nullptr) override;
     std::optional<TemplateSnapshot> GetTemplate(
         std::int64_t template_id) const override;
+    std::vector<TemplateSnapshot> ListTemplates(
+        int max_count) const override;
     bool SaveWorkflowGraph(
         const SaveWorkflowGraphCommand& command,
         SaveWorkflowGraphResult* result_out = nullptr,
@@ -95,6 +111,8 @@ public:
         std::int64_t workflow_graph_id) const override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
         std::int64_t workflow_graph_revision_id) const override;
+    std::vector<WorkflowGraphSnapshot> ListWorkflowGraphs(
+        int max_count) const override;
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;
