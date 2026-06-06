@@ -14,6 +14,8 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QVBoxLayout>
@@ -73,8 +75,38 @@ void WorkflowLauncherPage::createWidgets()
     rootScopeKindEdit_->setText(QStringLiteral("manual"));
     rootScopeIdEdit_ = new QLineEdit(formPanel);
     rootScopeIdEdit_->setPlaceholderText(QStringLiteral("optional numeric id"));
+    rtcRangeLabel_ = new QLabel(QStringLiteral("RTC range"), formPanel);
+    rtcLowEdit_ = new QLineEdit(formPanel);
+    rtcLowEdit_->setText(QStringLiteral("0"));
+    rtcHighEdit_ = new QLineEdit(formPanel);
+    rtcHighEdit_->setText(QStringLiteral("0"));
+    rtcRangePanel_ = new QFrame(formPanel);
+    auto* rtcLayout = new QHBoxLayout(rtcRangePanel_);
+    rtcLayout->setContentsMargins(0, 0, 0, 0);
+    rtcLayout->setSpacing(8);
+    rtcLayout->addWidget(rtcLowEdit_);
+    rtcLayout->addWidget(new QLabel(QStringLiteral("to"), rtcRangePanel_));
+    rtcLayout->addWidget(rtcHighEdit_);
+    battleFakeOverrideCheck_ = new QCheckBox(QStringLiteral("Override battle fake range"), formPanel);
+    battleFakeRangeLabel_ = new QLabel(QStringLiteral("Fake attack range"), formPanel);
+    battleFakeMinSpin_ = new QSpinBox(formPanel);
+    battleFakeMinSpin_->setRange(0, 100000);
+    battleFakeMinSpin_->setValue(22);
+    battleFakeMaxSpin_ = new QSpinBox(formPanel);
+    battleFakeMaxSpin_->setRange(0, 100000);
+    battleFakeMaxSpin_->setValue(25);
+    battleFakeRangePanel_ = new QFrame(formPanel);
+    auto* fakeLayout = new QHBoxLayout(battleFakeRangePanel_);
+    fakeLayout->setContentsMargins(0, 0, 0, 0);
+    fakeLayout->setSpacing(8);
+    fakeLayout->addWidget(battleFakeMinSpin_);
+    fakeLayout->addWidget(new QLabel(QStringLiteral("to"), battleFakeRangePanel_));
+    fakeLayout->addWidget(battleFakeMaxSpin_);
     form->addRow(QStringLiteral("Root scope kind"), rootScopeKindEdit_);
     form->addRow(QStringLiteral("Root scope id"), rootScopeIdEdit_);
+    form->addRow(rtcRangeLabel_, rtcRangePanel_);
+    form->addRow(battleFakeOverrideCheck_);
+    form->addRow(battleFakeRangeLabel_, battleFakeRangePanel_);
     bodyLayout->addWidget(formPanel, 1, 1);
 
     graphDetailLabel_ = new QLabel(body);
@@ -142,17 +174,33 @@ void WorkflowLauncherPage::handleGraphSelectionChanged()
         graphDetailLabel_->setText(QStringLiteral("No workflow graph selected."));
         launchStatusLabel_->setText(QString());
         launchButton_->setEnabled(false);
+        rtcRangeLabel_->hide();
+        rtcRangePanel_->hide();
+        battleFakeOverrideCheck_->hide();
+        battleFakeRangeLabel_->hide();
+        battleFakeRangePanel_->hide();
         return;
     }
 
     populateExternalInputs(*graph);
+    const bool hasTasMovie = !tasMovieNodeKeys(*graph).empty();
+    const bool hasBattleChain = !battleChainNodeKeys(*graph).empty();
+    rtcRangeLabel_->setVisible(hasTasMovie);
+    rtcRangePanel_->setVisible(hasTasMovie);
+    battleFakeOverrideCheck_->setVisible(hasBattleChain);
+    battleFakeRangeLabel_->setVisible(hasBattleChain);
+    battleFakeRangePanel_->setVisible(hasBattleChain);
     graphDetailLabel_->setText(QStringLiteral("%1 nodes, %2 edges, revision %3")
         .arg(static_cast<int>(graph->nodes.size()))
         .arg(static_cast<int>(graph->edges.size()))
         .arg(static_cast<qint64>(graph->workflow_graph_revision_id)));
     launchStatusLabel_->setText(externalInputs_.empty()
-        ? QStringLiteral("All required inputs are supplied by graph edges.")
-        : QStringLiteral("Provide one external reference for each required input below."));
+        ? (hasTasMovie
+            ? QStringLiteral("All required inputs are supplied by graph edges. One workflow instance will be launched per RTC value.")
+            : QStringLiteral("All required inputs are supplied by graph edges."))
+        : (hasTasMovie
+            ? QStringLiteral("Provide external references and RTC range. One workflow instance will be launched per RTC value.")
+            : QStringLiteral("Provide one external reference for each required input below.")));
     launchButton_->setEnabled(true);
 }
 
@@ -164,22 +212,54 @@ void WorkflowLauncherPage::launchSelectedGraph()
         return;
     }
 
-    soasimqt2::db::WorkflowGraphStartRequest request{};
-    request.workflow_graph_revision_id = graph->workflow_graph_revision_id;
-    request.root_scope_kind = rootScopeKindEdit_->text().trimmed().isEmpty()
-        ? "manual"
+    const auto tasNodes = tasMovieNodeKeys(*graph);
+    const auto battleNodes = battleChainNodeKeys(*graph);
+    std::int64_t rtcLow = 0;
+    std::int64_t rtcHigh = 0;
+    if (!tasNodes.empty()) {
+        bool lowOk = false;
+        bool highOk = false;
+        rtcLow = rtcLowEdit_->text().trimmed().toLongLong(&lowOk, 0);
+        rtcHigh = rtcHighEdit_->text().trimmed().toLongLong(&highOk, 0);
+        if (!lowOk || !highOk) {
+            postStatusMessage(QStringLiteral("RTC low and high must be numeric."), StatusToast::Severity::Warn);
+            return;
+        }
+        if (rtcHigh < rtcLow) {
+            postStatusMessage(QStringLiteral("RTC high must be greater than or equal to RTC low."), StatusToast::Severity::Warn);
+            return;
+        }
+    }
+    const bool useBattleFakeOverride = !battleNodes.empty()
+        && battleFakeOverrideCheck_ != nullptr
+        && battleFakeOverrideCheck_->isChecked();
+    int battleFakeMin = 0;
+    int battleFakeMax = 0;
+    if (useBattleFakeOverride) {
+        battleFakeMin = battleFakeMinSpin_->value();
+        battleFakeMax = battleFakeMaxSpin_->value();
+        if (battleFakeMax < battleFakeMin) {
+            postStatusMessage(QStringLiteral("Battle fake attack high must be greater than or equal to low."), StatusToast::Severity::Warn);
+            return;
+        }
+    }
+
+    const auto rootScopeKind = rootScopeKindEdit_->text().trimmed().isEmpty()
+        ? std::string("manual")
         : rootScopeKindEdit_->text().trimmed().toStdString();
+    std::optional<std::int64_t> rootScopeId;
 
     if (!rootScopeIdEdit_->text().trimmed().isEmpty()) {
         bool ok = false;
-        const auto rootScopeId = rootScopeIdEdit_->text().trimmed().toLongLong(&ok, 0);
-        if (!ok || rootScopeId <= 0) {
+        const auto parsedRootScopeId = rootScopeIdEdit_->text().trimmed().toLongLong(&ok, 0);
+        if (!ok || parsedRootScopeId <= 0) {
             postStatusMessage(QStringLiteral("Root scope id must be a positive number."), StatusToast::Severity::Warn);
             return;
         }
-        request.root_scope_id = rootScopeId;
+        rootScopeId = parsedRootScopeId;
     }
 
+    std::vector<soasimqt2::db::WorkflowGraphInputBindingDraft> inputBindings;
     for (int row = 0; row < externalInputsTable_->rowCount(); ++row) {
         const auto refKindText = externalInputsTable_->item(row, 3)->text().trimmed();
         const auto refIdText = externalInputsTable_->item(row, 4)->text().trimmed();
@@ -196,7 +276,7 @@ void WorkflowLauncherPage::launchSelectedGraph()
         }
 
         const auto& input = externalInputs_[static_cast<std::size_t>(row)];
-        request.input_bindings.push_back(soasimqt2::db::WorkflowGraphInputBindingDraft{
+        inputBindings.push_back(soasimqt2::db::WorkflowGraphInputBindingDraft{
             .node_key = input.node_key.toStdString(),
             .input_key = input.input_key.toStdString(),
             .data_kind = input.data_kind.toStdString(),
@@ -207,15 +287,61 @@ void WorkflowLauncherPage::launchSelectedGraph()
     }
 
     launchButton_->setEnabled(false);
-    const auto result = soasimqt2::db::SimCoreDbWorkflowService::StartWorkflowGraphRevision(request);
-    launchButton_->setEnabled(true);
-    if (!result.ok) {
-        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
-        return;
+    std::vector<std::int64_t> workflowIds;
+    const std::int64_t launchLow = tasNodes.empty() ? 0 : rtcLow;
+    const std::int64_t launchHigh = tasNodes.empty() ? 0 : rtcHigh;
+    for (std::int64_t rtc = launchLow; rtc <= launchHigh; ++rtc) {
+        soasimqt2::db::WorkflowGraphStartRequest request{};
+        request.workflow_graph_revision_id = graph->workflow_graph_revision_id;
+        request.root_scope_kind = rootScopeKind;
+        request.root_scope_id = rootScopeId;
+        request.input_bindings = inputBindings;
+        for (const auto& nodeKey : tasNodes) {
+            request.arguments.push_back(soasimqt2::db::WorkflowGraphArgumentDraft{
+                .node_key = nodeKey.toStdString(),
+                .argument_key = "rtc",
+                .value_type = "integer",
+                .integer_value = rtc,
+                .source_kind = "launcher",
+            });
+        }
+        if (useBattleFakeOverride) {
+            for (const auto& nodeKey : battleNodes) {
+                request.arguments.push_back(soasimqt2::db::WorkflowGraphArgumentDraft{
+                    .node_key = nodeKey.toStdString(),
+                    .argument_key = "fake_attack_min",
+                    .value_type = "integer",
+                    .integer_value = battleFakeMin,
+                    .source_kind = "launcher",
+                });
+                request.arguments.push_back(soasimqt2::db::WorkflowGraphArgumentDraft{
+                    .node_key = nodeKey.toStdString(),
+                    .argument_key = "fake_attack_max",
+                    .value_type = "integer",
+                    .integer_value = battleFakeMax,
+                    .source_kind = "launcher",
+                });
+            }
+        }
+        const auto result = soasimqt2::db::SimCoreDbWorkflowService::StartWorkflowGraphRevision(request);
+        if (!result.ok) {
+            launchButton_->setEnabled(true);
+            postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+            return;
+        }
+        workflowIds.push_back(result.value);
     }
-
-    launchStatusLabel_->setText(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(result.value)));
-    postStatusMessage(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
+    launchButton_->setEnabled(true);
+    if (workflowIds.size() == 1) {
+        launchStatusLabel_->setText(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(workflowIds.front())));
+        postStatusMessage(QStringLiteral("Launched workflow instance %1.").arg(static_cast<qint64>(workflowIds.front())), StatusToast::Severity::Info);
+    } else {
+        launchStatusLabel_->setText(QStringLiteral("Launched %1 workflow instances for RTC %2-%3.")
+            .arg(static_cast<int>(workflowIds.size()))
+            .arg(static_cast<qint64>(rtcLow))
+            .arg(static_cast<qint64>(rtcHigh)));
+        postStatusMessage(QStringLiteral("Launched %1 workflow instances.").arg(static_cast<int>(workflowIds.size())), StatusToast::Severity::Info);
+    }
 }
 
 void WorkflowLauncherPage::populateExternalInputs(const simcore::db::WorkflowGraphSnapshot& graph)
@@ -318,4 +444,26 @@ QString WorkflowLauncherPage::defaultRefKindForDataKind(const QString& data_kind
         return QStringLiteral("analysis.battle_followup");
     }
     return data_kind;
+}
+
+std::vector<QString> WorkflowLauncherPage::tasMovieNodeKeys(const simcore::db::WorkflowGraphSnapshot& graph)
+{
+    std::vector<QString> keys;
+    for (const auto& node : graph.nodes) {
+        if (node.unit_kind == "tas_movie") {
+            keys.push_back(QString::fromStdString(node.node_key));
+        }
+    }
+    return keys;
+}
+
+std::vector<QString> WorkflowLauncherPage::battleChainNodeKeys(const simcore::db::WorkflowGraphSnapshot& graph)
+{
+    std::vector<QString> keys;
+    for (const auto& node : graph.nodes) {
+        if (node.unit_kind == "battle_chain") {
+            keys.push_back(QString::fromStdString(node.node_key));
+        }
+    }
+    return keys;
 }

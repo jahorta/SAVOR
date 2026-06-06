@@ -45,12 +45,22 @@ struct WorkflowGraphInputBindingDraft {
     std::string source_kind = "external";
 };
 
+struct WorkflowGraphArgumentDraft {
+    std::string node_key;
+    std::string argument_key;
+    std::string value_type = "text";
+    std::optional<std::int64_t> integer_value;
+    std::optional<std::string> text_value;
+    std::string source_kind = "launcher";
+};
+
 struct WorkflowGraphStartRequest {
     std::int64_t workflow_graph_revision_id = 0;
     std::string root_scope_kind = "manual";
     std::optional<std::int64_t> root_scope_id;
     std::string created_by = "SoaSimQt2";
     std::vector<WorkflowGraphInputBindingDraft> input_bindings;
+    std::vector<WorkflowGraphArgumentDraft> arguments;
 };
 
 class SimCoreDbWorkflowService {
@@ -203,6 +213,35 @@ public:
                 .ref_kind = binding.ref_kind,
                 .ref_id = binding.ref_id,
                 .source_kind = binding.source_kind.empty() ? "external" : binding.source_kind,
+            });
+        }
+
+        std::unordered_set<std::string> supplied_arguments;
+        supplied_arguments.reserve(request.arguments.size());
+        for (const auto& argument : request.arguments) {
+            if (!argument.node_key.empty() && node_by_key.find(argument.node_key) == node_by_key.end()) {
+                return Invalid<std::int64_t>("workflow argument references an unknown workflow node");
+            }
+            if (argument.argument_key.empty()) {
+                return Invalid<std::int64_t>("workflow argument key is required");
+            }
+            if (argument.value_type != "integer"
+                && argument.value_type != "text"
+                && argument.value_type != "json"
+                && argument.value_type != "boolean") {
+                return Invalid<std::int64_t>("workflow argument value type must be integer, text, json, or boolean");
+            }
+            const auto key = argument.node_key + "\n" + argument.argument_key;
+            if (!supplied_arguments.emplace(key).second) {
+                return Invalid<std::int64_t>("duplicate workflow argument for " + argument.node_key + "." + argument.argument_key);
+            }
+            command.arguments.push_back(simcore::db::execution::workflow::WorkflowCreateInstanceArgumentSpec{
+                .node_key = argument.node_key,
+                .argument_key = argument.argument_key,
+                .value_type = argument.value_type,
+                .integer_value = argument.integer_value,
+                .text_value = argument.text_value,
+                .source_kind = argument.source_kind.empty() ? "launcher" : argument.source_kind,
             });
         }
 

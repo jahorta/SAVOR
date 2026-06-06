@@ -510,6 +510,9 @@
     <None Include="migration\Execution\202604101300_execution_workflow_graph_instance_bindings.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
+    <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
       <Filter>Migrations\State</Filter>
     </None>

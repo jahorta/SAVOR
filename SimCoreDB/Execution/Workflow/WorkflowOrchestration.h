@@ -99,11 +99,24 @@ struct WorkflowInstanceInputBindingRecord {
     std::int64_t created_at_utc = 0;
 };
 
+struct WorkflowInstanceArgumentRecord {
+    std::int64_t workflow_instance_argument_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::string node_key;
+    std::string argument_key;
+    std::string value_type;
+    std::optional<std::int64_t> integer_value;
+    std::optional<std::string> text_value;
+    std::string source_kind;
+    std::int64_t created_at_utc = 0;
+};
+
 struct WorkflowGraphSnapshot {
     WorkflowInstanceRecord instance;
     std::vector<WorkflowStepRecord> steps;
     std::vector<WorkflowEdgeRecord> edges;
     std::vector<WorkflowInstanceInputBindingRecord> input_bindings;
+    std::vector<WorkflowInstanceArgumentRecord> arguments;
 };
 
 struct WorkflowReadyStepRecord {
@@ -259,6 +272,15 @@ struct WorkflowCreateInstanceInputBindingSpec {
     std::string source_kind;
 };
 
+struct WorkflowCreateInstanceArgumentSpec {
+    std::string node_key;
+    std::string argument_key;
+    std::string value_type = "text";
+    std::optional<std::int64_t> integer_value;
+    std::optional<std::string> text_value;
+    std::string source_kind;
+};
+
 struct WorkflowCreateInstanceCommand {
     std::string workflow_kind;
     std::string root_scope_kind;
@@ -271,6 +293,7 @@ struct WorkflowCreateInstanceCommand {
     std::vector<std::string> available_inputs;
     std::vector<WorkflowCreateStepSpec> steps;
     std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
+    std::vector<WorkflowCreateInstanceArgumentSpec> arguments;
 };
 
 struct IWorkflowOrchestrationQueryService {

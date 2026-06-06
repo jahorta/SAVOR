@@ -543,11 +543,9 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
         }
         for (const auto& spec : result.value) {
             authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2 rtc %3-%4")
+                .label = QStringLiteral("#%1 %2")
                     .arg(static_cast<qint64>(spec.tas_spec_id))
-                    .arg(QString::fromStdString(spec.base_name))
-                    .arg(static_cast<qint64>(spec.rtc_low))
-                    .arg(static_cast<qint64>(spec.rtc_high)),
+                    .arg(QString::fromStdString(spec.base_name)),
                 .ref_kind = "tas_spec",
                 .ref_id = spec.tas_spec_id,
             });

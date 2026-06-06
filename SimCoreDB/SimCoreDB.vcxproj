@@ -306,6 +306,7 @@
     <None Include="migration\Execution\202604071000_execution_phase0b_job_savestate.sql" />
     <None Include="migration\Execution\202604081030_execution_phase0c_job_details_ini.sql" />
     <None Include="migration\Execution\202604101300_execution_workflow_graph_instance_bindings.sql" />
+    <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />

@@ -87,6 +87,20 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
                         .source_kind = binding.source_kind,
                     });
             }
+            for (const auto& argument : graph->arguments) {
+                if (!argument.node_key.empty() && argument.node_key != step.step_key) {
+                    continue;
+                }
+                context.arguments.push_back(
+                    simcore::db::execution::programdb::WorkflowGraphArgument{
+                        .node_key = argument.node_key,
+                        .argument_key = argument.argument_key,
+                        .value_type = argument.value_type,
+                        .integer_value = argument.integer_value,
+                        .text_value = argument.text_value,
+                        .source_kind = argument.source_kind,
+                    });
+            }
             persisted = adapter_chain_orchestrator->OnGraphInputComplete(step.step_kind, context);
         }
         if (!persisted.has_value() || persisted->root_job_set_id <= 0) {

@@ -36,6 +36,15 @@ struct WorkflowGraphInputBinding {
     std::string source_kind;
 };
 
+struct WorkflowGraphArgument {
+    std::string node_key;
+    std::string argument_key;
+    std::string value_type;
+    std::optional<std::int64_t> integer_value;
+    std::optional<std::string> text_value;
+    std::string source_kind;
+};
+
 struct WorkflowGraphStepScheduleContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
@@ -43,6 +52,7 @@ struct WorkflowGraphStepScheduleContext {
     std::string step_key;
     std::string step_kind;
     std::vector<WorkflowGraphInputBinding> input_bindings;
+    std::vector<WorkflowGraphArgument> arguments;
 };
 
 struct RuntimeInitRequest {

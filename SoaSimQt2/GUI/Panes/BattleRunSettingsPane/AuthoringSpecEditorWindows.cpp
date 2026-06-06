@@ -76,11 +76,9 @@ QString seedProbeLabel(const simcore::db::SeedProbeSpecSnapshot& row)
 
 QString tasLabel(const simcore::db::TasSpecSnapshot& row)
 {
-    return QStringLiteral("#%1 %2 rtc %3-%4")
+    return QStringLiteral("#%1 %2")
         .arg(static_cast<qint64>(row.tas_spec_id))
-        .arg(QString::fromStdString(row.base_name))
-        .arg(static_cast<qint64>(row.rtc_low))
-        .arg(static_cast<qint64>(row.rtc_high));
+        .arg(QString::fromStdString(row.base_name));
 }
 
 QString battleRunLabel(const simcore::db::BattleRunSpecSnapshot& row)
@@ -274,9 +272,6 @@ void TasSpecEditorWindow::createWidgets()
     headroomSpin_->setValue(10);
     progressCheck_ = new QCheckBox(panel);
     autoQueueSeedsCheck_ = new QCheckBox(panel);
-    baseDtmArtifactIdEdit_ = numericEdit(panel, QStringLiteral("0"));
-    rtcLowEdit_ = numericEdit(panel, QStringLiteral("0"));
-    rtcHighEdit_ = numericEdit(panel, QStringLiteral("0"));
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
@@ -284,9 +279,6 @@ void TasSpecEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Headroom x10"), headroomSpin_);
     form->addRow(QStringLiteral("Progress"), progressCheck_);
     form->addRow(QStringLiteral("Auto queue seeds"), autoQueueSeedsCheck_);
-    form->addRow(QStringLiteral("Base DTM artifact id"), baseDtmArtifactIdEdit_);
-    form->addRow(QStringLiteral("RTC low"), rtcLowEdit_);
-    form->addRow(QStringLiteral("RTC high"), rtcHighEdit_);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     buttons->addStretch();
@@ -306,14 +298,8 @@ void TasSpecEditorWindow::saveSpec()
     QString error;
     std::int64_t runMs = 0;
     std::int64_t viStallMs = 0;
-    std::int64_t baseDtm = 0;
-    std::int64_t rtcLow = 0;
-    std::int64_t rtcHigh = 0;
     if (!parseInt64(runMsEdit_, QStringLiteral("Run ms"), &runMs, &error)
-        || !parseInt64(viStallMsEdit_, QStringLiteral("VI stall ms"), &viStallMs, &error)
-        || !parseInt64(baseDtmArtifactIdEdit_, QStringLiteral("Base DTM artifact id"), &baseDtm, &error)
-        || !parseInt64(rtcLowEdit_, QStringLiteral("RTC low"), &rtcLow, &error)
-        || !parseInt64(rtcHighEdit_, QStringLiteral("RTC high"), &rtcHigh, &error)) {
+        || !parseInt64(viStallMsEdit_, QStringLiteral("VI stall ms"), &viStallMs, &error)) {
         postStatusMessage(error, StatusToast::Severity::Warn);
         return;
     }
@@ -325,9 +311,9 @@ void TasSpecEditorWindow::saveSpec()
     draft.headroom_x10 = headroomSpin_->value();
     draft.progress_enable = progressCheck_->isChecked();
     draft.auto_queue_seeds = autoQueueSeedsCheck_->isChecked();
-    draft.base_dtm_artifact_id = baseDtm;
-    draft.rtc_low = rtcLow;
-    draft.rtc_high = rtcHigh;
+    draft.base_dtm_artifact_id = 0;
+    draft.rtc_low = 0;
+    draft.rtc_high = 0;
     const auto result = soasimqt2::db::SimCoreDbAuthoringService::SaveTasSpec(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);

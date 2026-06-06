@@ -118,6 +118,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "failure_text"));
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "workflow_graph_revision_id"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_input_binding"));
+    EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_argument"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_step", "job_failed_count"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_alert", "is_active"));
 
@@ -131,6 +132,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_graph_revision"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_input_binding_instance"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_argument_instance"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_state_created"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_instance_state"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_alert_active"));
@@ -2871,6 +2873,29 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                     .source_kind = "external",
                 },
             },
+            .arguments = {
+                {
+                    .node_key = "probe_1",
+                    .argument_key = "rtc",
+                    .value_type = "integer",
+                    .integer_value = 4,
+                    .source_kind = "launcher",
+                },
+                {
+                    .node_key = "battle_1",
+                    .argument_key = "fake_attack_min",
+                    .value_type = "integer",
+                    .integer_value = 22,
+                    .source_kind = "launcher",
+                },
+                {
+                    .node_key = "battle_1",
+                    .argument_key = "fake_attack_max",
+                    .value_type = "integer",
+                    .integer_value = 25,
+                    .source_kind = "launcher",
+                },
+            },
         },
         &workflow_instance_id,
         &err)) << err;
@@ -2888,6 +2913,29 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     EXPECT_EQ(graph->input_bindings[0].ref_kind, "state.savestate");
     EXPECT_EQ(graph->input_bindings[0].ref_id, 44001);
     EXPECT_EQ(graph->input_bindings[0].source_kind, "external");
+    ASSERT_EQ(graph->arguments.size(), 3u);
+    EXPECT_EQ(graph->arguments[0].workflow_instance_id, workflow_instance_id);
+    EXPECT_EQ(graph->arguments[0].node_key, "probe_1");
+    EXPECT_EQ(graph->arguments[0].argument_key, "rtc");
+    EXPECT_EQ(graph->arguments[0].value_type, "integer");
+    ASSERT_TRUE(graph->arguments[0].integer_value.has_value());
+    EXPECT_EQ(*graph->arguments[0].integer_value, 4);
+    EXPECT_FALSE(graph->arguments[0].text_value.has_value());
+    EXPECT_EQ(graph->arguments[0].source_kind, "launcher");
+    EXPECT_EQ(graph->arguments[1].workflow_instance_id, workflow_instance_id);
+    EXPECT_EQ(graph->arguments[1].node_key, "battle_1");
+    EXPECT_EQ(graph->arguments[1].argument_key, "fake_attack_min");
+    EXPECT_EQ(graph->arguments[1].value_type, "integer");
+    ASSERT_TRUE(graph->arguments[1].integer_value.has_value());
+    EXPECT_EQ(*graph->arguments[1].integer_value, 22);
+    EXPECT_EQ(graph->arguments[1].source_kind, "launcher");
+    EXPECT_EQ(graph->arguments[2].workflow_instance_id, workflow_instance_id);
+    EXPECT_EQ(graph->arguments[2].node_key, "battle_1");
+    EXPECT_EQ(graph->arguments[2].argument_key, "fake_attack_max");
+    EXPECT_EQ(graph->arguments[2].value_type, "integer");
+    ASSERT_TRUE(graph->arguments[2].integer_value.has_value());
+    EXPECT_EQ(*graph->arguments[2].integer_value, 25);
+    EXPECT_EQ(graph->arguments[2].source_kind, "launcher");
 
     const auto instances = execution_db->WorkflowQueryService()->ListWorkflowInstances(
         WorkflowInstanceState::Running,

@@ -436,6 +436,30 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
         snapshot.input_bindings.push_back(std::move(binding));
     }
 
+    Statement argument_st;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_argument_id, workflow_instance_id, node_key, argument_key, value_type, integer_value, text_value, source_kind, created_at_utc "
+        "FROM exec_workflow_instance_argument WHERE workflow_instance_id=?1 ORDER BY workflow_instance_argument_id;",
+        &argument_st,
+        nullptr)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(argument_st.st, 1, workflow_instance_id);
+
+    while (sqlite3_step(argument_st.st) == SQLITE_ROW) {
+        WorkflowInstanceArgumentRecord argument;
+        argument.workflow_instance_argument_id = sqlite3_column_int64(argument_st.st, 0);
+        argument.workflow_instance_id = sqlite3_column_int64(argument_st.st, 1);
+        argument.node_key = ColumnTextOptional(argument_st.st, 2).value_or("");
+        argument.argument_key = ColumnTextOptional(argument_st.st, 3).value_or("");
+        argument.value_type = ColumnTextOptional(argument_st.st, 4).value_or("");
+        argument.integer_value = ColumnInt64Optional(argument_st.st, 5);
+        argument.text_value = ColumnTextOptional(argument_st.st, 6);
+        argument.source_kind = ColumnTextOptional(argument_st.st, 7).value_or("");
+        argument.created_at_utc = sqlite3_column_int64(argument_st.st, 8);
+        snapshot.arguments.push_back(std::move(argument));
+    }
+
     return snapshot;
 }
 
@@ -520,6 +544,10 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         if (error_out) *error_out = "workflow_graph_revision_id is required when input_bindings are provided";
         return false;
     }
+    if (!command.arguments.empty() && !command.workflow_graph_revision_id.has_value()) {
+        if (error_out) *error_out = "workflow_graph_revision_id is required when arguments are provided";
+        return false;
+    }
     std::unordered_set<std::string> input_binding_keys;
     input_binding_keys.reserve(command.input_bindings.size());
     for (const auto& binding : command.input_bindings) {
@@ -534,6 +562,38 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         const auto key = binding.node_key + "\n" + binding.input_key;
         if (!input_binding_keys.emplace(key).second) {
             if (error_out) *error_out = "duplicate input binding for node/input: " + binding.node_key + "/" + binding.input_key;
+            return false;
+        }
+    }
+
+    std::unordered_set<std::string> argument_keys;
+    argument_keys.reserve(command.arguments.size());
+    for (const auto& argument : command.arguments) {
+        if (argument.argument_key.empty()) {
+            if (error_out) *error_out = "argument_key is required";
+            return false;
+        }
+        if (argument.value_type != "integer"
+            && argument.value_type != "text"
+            && argument.value_type != "json"
+            && argument.value_type != "boolean") {
+            if (error_out) *error_out = "argument value_type must be integer, text, json, or boolean";
+            return false;
+        }
+        if ((argument.value_type == "integer" || argument.value_type == "boolean")
+            && !argument.integer_value.has_value()) {
+            if (error_out) *error_out = "integer and boolean arguments require integer_value";
+            return false;
+        }
+        if ((argument.value_type == "text" || argument.value_type == "json")
+            && !argument.text_value.has_value()) {
+            if (error_out) *error_out = "text and json arguments require text_value";
+            return false;
+        }
+        const auto key = argument.node_key + "\n" + argument.argument_key;
+        if (!argument_keys.emplace(key).second) {
+            if (error_out) *error_out = "duplicate workflow argument for node/key: "
+                + argument.node_key + "/" + argument.argument_key;
             return false;
         }
     }
@@ -669,6 +729,31 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         if (!binding.source_kind.empty()) sqlite3_bind_text(insert_binding.st, 8, binding.source_kind.c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_binding.st, 8);
         sqlite3_bind_int64(insert_binding.st, 9, now);
         if (sqlite3_step(insert_binding.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+    }
+
+    for (const auto& argument : command.arguments) {
+        Statement insert_argument;
+        if (!Prepare(db_,
+            "INSERT INTO exec_workflow_instance_argument(workflow_instance_id, node_key, argument_key, value_type, integer_value, text_value, source_kind, created_at_utc) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+            &insert_argument,
+            error_out)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(insert_argument.st, 1, workflow_instance_id);
+        sqlite3_bind_text(insert_argument.st, 2, argument.node_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_argument.st, 3, argument.argument_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_argument.st, 4, argument.value_type.c_str(), -1, SQLITE_TRANSIENT);
+        if (argument.integer_value.has_value()) sqlite3_bind_int64(insert_argument.st, 5, *argument.integer_value); else sqlite3_bind_null(insert_argument.st, 5);
+        if (argument.text_value.has_value()) sqlite3_bind_text(insert_argument.st, 6, argument.text_value->c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_argument.st, 6);
+        if (!argument.source_kind.empty()) sqlite3_bind_text(insert_argument.st, 7, argument.source_kind.c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_argument.st, 7);
+        sqlite3_bind_int64(insert_argument.st, 8, now);
+        if (sqlite3_step(insert_argument.st) != SQLITE_DONE) {
             if (error_out) *error_out = sqlite3_errmsg(db_);
             rollback();
             return false;

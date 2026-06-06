@@ -8,6 +8,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -728,6 +729,84 @@ const simcore::db::WorkflowGraphNodeSnapshot* FindGraphNode(
     return nullptr;
 }
 
+std::optional<std::int64_t> FindIntegerArgument(
+    const WorkflowGraphStepScheduleContext& context,
+    std::string_view argument_key) {
+    for (const auto& argument : context.arguments) {
+        if (argument.argument_key == argument_key
+            && argument.value_type == "integer"
+            && argument.integer_value.has_value()) {
+            return *argument.integer_value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::int64_t ResolveEffectiveBattleRunSpecId(
+    simcore::db::IAuthoringDb* authoring_db,
+    const simcore::db::BattleRunSpecSnapshot& template_spec,
+    const WorkflowGraphStepScheduleContext& context,
+    std::vector<std::string>* event_lines) {
+    const auto min_override = FindIntegerArgument(context, "fake_attack_min");
+    const auto max_override = FindIntegerArgument(context, "fake_attack_max");
+    if (!min_override.has_value() && !max_override.has_value()) {
+        return template_spec.battle_run_spec_id;
+    }
+
+    const auto min_fake = static_cast<int>(min_override.value_or(template_spec.min_fake_attacks));
+    const auto max_fake = static_cast<int>(max_override.value_or(template_spec.max_fake_attacks));
+    if (min_fake == template_spec.min_fake_attacks && max_fake == template_spec.max_fake_attacks) {
+        return template_spec.battle_run_spec_id;
+    }
+    if (authoring_db == nullptr) {
+        if (event_lines != nullptr) {
+            event_lines->push_back("[workflow-graph-battle-effective-run-spec] ok=false error=authoring_db_unavailable");
+        }
+        return 0;
+    }
+
+    const auto now = simcore::db::types::UtcNow();
+    const auto suffix = std::to_string(context.workflow_instance_id)
+        + "-" + std::to_string(context.workflow_step_id)
+        + "-" + std::to_string(now.time_since_epoch().count());
+    std::int64_t effective_id = 0;
+    std::string error;
+    if (!authoring_db->SaveBattleRunSpec(
+            {
+                .name = template_spec.name + " effective " + suffix,
+                .priority = template_spec.priority,
+                .run_ms = template_spec.run_ms,
+                .vi_stall_ms = template_spec.vi_stall_ms,
+                .progress_enable = template_spec.progress_enable,
+                .use_single_turn_runner = template_spec.use_single_turn_runner,
+                .auto_wave_trigger_enable = template_spec.auto_wave_trigger_enable,
+                .min_fake_attacks = min_fake,
+                .max_fake_attacks = max_fake,
+                .created_at_utc = now,
+                .event_id = "workflow-graph.battle.effective-run-spec." + suffix,
+                .correlation_id = "workflow-instance-" + std::to_string(context.workflow_instance_id),
+                .causation_id = "battle-run-spec-" + std::to_string(template_spec.battle_run_spec_id),
+            },
+            &effective_id,
+            &error)
+        || effective_id <= 0) {
+        if (event_lines != nullptr) {
+            event_lines->push_back("[workflow-graph-battle-effective-run-spec] ok=false error=" + error);
+        }
+        return 0;
+    }
+
+    if (event_lines != nullptr) {
+        event_lines->push_back(
+            "[workflow-graph-battle-effective-run-spec] template_battle_run_spec_id="
+            + std::to_string(template_spec.battle_run_spec_id)
+            + " effective_battle_run_spec_id=" + std::to_string(effective_id)
+            + " fake_attack_min=" + std::to_string(min_fake)
+            + " fake_attack_max=" + std::to_string(max_fake));
+    }
+    return effective_id;
+}
+
 class BattleChainGraphJobPersistenceAdapter final : public IWorkflowGraphJobPersistenceAdapter {
 public:
     BattleChainGraphJobPersistenceAdapter(
@@ -769,6 +848,10 @@ public:
             || !template_row->explorer_settings_id.has_value()) {
             return {};
         }
+        const auto template_run_spec = authoring_db_->GetBattleRunSpec(*template_row->battle_run_spec_id);
+        if (!template_run_spec.has_value()) {
+            return {};
+        }
 
         const auto* input_frames = FindGraphBinding(context, "initial_input_frames", "analysis.input_frame_set_id");
         if (input_frames == nullptr || input_frames->ref_kind != "sp_probe_run") {
@@ -795,6 +878,15 @@ public:
         scheduled.persistence.fingerprint = "battle.chain.probe_run." + std::to_string(input_frames->ref_id)
             + ".template." + std::to_string(*node->authored_ref_id);
 
+        const auto effective_battle_run_spec_id = ResolveEffectiveBattleRunSpecId(
+            authoring_db_,
+            *template_run_spec,
+            context,
+            &scheduled.event_lines);
+        if (effective_battle_run_spec_id <= 0) {
+            return scheduled;
+        }
+
         std::int64_t job_set_id = 0;
         if (!execution_db_->CreateJobSet(
                 {
@@ -819,7 +911,7 @@ public:
         job_ini.source_savestate_id = probe_run->entry_savestate_id;
         job_ini.probe_run_id = input_frames->ref_id;
         job_ini.battle_template_id = *node->authored_ref_id;
-        job_ini.battle_run_spec_id = *template_row->battle_run_spec_id;
+        job_ini.battle_run_spec_id = effective_battle_run_spec_id;
         job_ini.explorer_settings_id = *template_row->explorer_settings_id;
 
         std::int64_t exec_job_id = 0;
@@ -850,6 +942,7 @@ public:
             + " probe_run_id=" + std::to_string(input_frames->ref_id)
             + " unique_count=" + std::to_string(unique_rows.size())
             + " template_id=" + std::to_string(*node->authored_ref_id)
+            + " battle_run_spec_id=" + std::to_string(effective_battle_run_spec_id)
             + " job=" + std::to_string(exec_job_id));
         return scheduled;
     }

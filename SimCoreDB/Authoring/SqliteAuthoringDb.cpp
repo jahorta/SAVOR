@@ -534,7 +534,7 @@ bool SqliteAuthoringDb::SaveTasSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.base_name.empty() || command.base_dtm_artifact_id <= 0 || command.event_id.empty()) {
+    if (command.base_name.empty() || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }

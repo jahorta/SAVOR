@@ -717,6 +717,29 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                     .source_kind = "external",
                 },
             },
+            .arguments = {
+                {
+                    .node_key = "tas_1",
+                    .argument_key = "rtc",
+                    .value_type = "integer",
+                    .integer_value = 4,
+                    .source_kind = "scenario",
+                },
+                {
+                    .node_key = "battle_1",
+                    .argument_key = "fake_attack_min",
+                    .value_type = "integer",
+                    .integer_value = 22,
+                    .source_kind = "scenario",
+                },
+                {
+                    .node_key = "battle_1",
+                    .argument_key = "fake_attack_max",
+                    .value_type = "integer",
+                    .integer_value = 25,
+                    .source_kind = "scenario",
+                },
+            },
         },
         workflow_instance_id_out,
         error_out);
@@ -1088,8 +1111,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     std::int64_t explorer_settings_id = 0;
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
-            22,
-            25,
+            0,
+            0,
             false,
             &battle_run_spec_id,
             &explorer_settings_id,
@@ -1134,8 +1157,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = 4;
-    tas_config.blueprint.rtc_high = 4;
+    tas_config.blueprint.rtc_low = 0;
+    tas_config.blueprint.rtc_high = 0;
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;

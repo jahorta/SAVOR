@@ -303,6 +303,19 @@ const WorkflowGraphInputBinding* FindBinding(
     return nullptr;
 }
 
+std::optional<std::int64_t> FindIntegerArgument(
+    const WorkflowGraphStepScheduleContext& context,
+    std::string_view argument_key) {
+    for (const auto& argument : context.arguments) {
+        if (argument.argument_key == argument_key
+            && argument.value_type == "integer"
+            && argument.integer_value.has_value()) {
+            return *argument.integer_value;
+        }
+    }
+    return std::nullopt;
+}
+
 const simcore::db::WorkflowGraphNodeSnapshot* FindNode(
     const simcore::db::WorkflowGraphSnapshot& graph,
     std::string_view step_key) {
@@ -369,6 +382,11 @@ public:
             return {};
         }
         cfg.base_dtm_artifact_id = dtm->ref_id;
+        const auto rtc_argument = FindIntegerArgument(context, "rtc");
+        if (rtc_argument.has_value()) {
+            cfg.rtc_low = *rtc_argument;
+            cfg.rtc_high = *rtc_argument;
+        }
         if (cfg.rtc_high < cfg.rtc_low) {
             cfg.rtc_high = cfg.rtc_low;
         }
@@ -384,7 +402,8 @@ public:
             + " workflow_step_id=" + std::to_string(context.workflow_step_id)
             + " base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
             + " rtc_low=" + std::to_string(cfg.rtc_low)
-            + " rtc_high=" + std::to_string(cfg.rtc_high));
+            + " rtc_high=" + std::to_string(cfg.rtc_high)
+            + " rtc_argument=" + (rtc_argument.has_value() ? std::to_string(*rtc_argument) : "none"));
         return scheduled;
     }
 

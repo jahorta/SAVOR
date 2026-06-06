@@ -65,9 +65,6 @@ private:
     QSpinBox* headroomSpin_ = nullptr;
     QCheckBox* progressCheck_ = nullptr;
     QCheckBox* autoQueueSeedsCheck_ = nullptr;
-    QLineEdit* baseDtmArtifactIdEdit_ = nullptr;
-    QLineEdit* rtcLowEdit_ = nullptr;
-    QLineEdit* rtcHighEdit_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 

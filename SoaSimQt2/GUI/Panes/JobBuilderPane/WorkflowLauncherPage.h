@@ -12,6 +12,9 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QCheckBox;
+class QFrame;
+class QSpinBox;
 class QTableWidget;
 
 class WorkflowLauncherPage final : public QWidget
@@ -45,10 +48,21 @@ private:
     static QString graphListText(const simcore::db::WorkflowGraphSnapshot& graph);
     static QString nodeDisplayName(const simcore::db::WorkflowGraphSnapshot& graph, const std::string& node_key);
     static QString defaultRefKindForDataKind(const QString& data_kind);
+    static std::vector<QString> tasMovieNodeKeys(const simcore::db::WorkflowGraphSnapshot& graph);
+    static std::vector<QString> battleChainNodeKeys(const simcore::db::WorkflowGraphSnapshot& graph);
 
     QListWidget* graphList_ = nullptr;
     QLineEdit* rootScopeKindEdit_ = nullptr;
     QLineEdit* rootScopeIdEdit_ = nullptr;
+    QLabel* rtcRangeLabel_ = nullptr;
+    QFrame* rtcRangePanel_ = nullptr;
+    QLineEdit* rtcLowEdit_ = nullptr;
+    QLineEdit* rtcHighEdit_ = nullptr;
+    QCheckBox* battleFakeOverrideCheck_ = nullptr;
+    QLabel* battleFakeRangeLabel_ = nullptr;
+    QFrame* battleFakeRangePanel_ = nullptr;
+    QSpinBox* battleFakeMinSpin_ = nullptr;
+    QSpinBox* battleFakeMaxSpin_ = nullptr;
     QTableWidget* externalInputsTable_ = nullptr;
     QLabel* graphDetailLabel_ = nullptr;
     QLabel* launchStatusLabel_ = nullptr;
