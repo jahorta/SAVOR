@@ -41,9 +41,11 @@ namespace simcore {
             << " --worker"
             << " --id " << p.worker_id
             << " --iso \"" << p.iso_path << "\""
-            << " --qtbase \"" << p.dolphin_base_dir << "\""
             << " --userdir \"" << p.user_dir << "\""
             << " --vmctrl";
+        if (!p.dolphin_base_dir.empty()) {
+            cmd << " --qtbase \"" << p.dolphin_base_dir << "\"";
+        }
         if (p.visual) {
             cmd << " --visual";
         }

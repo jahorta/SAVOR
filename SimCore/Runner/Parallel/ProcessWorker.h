@@ -19,7 +19,7 @@ namespace simcore {
 			size_t worker_id{ 0 };
 			std::string exe_path;     // path to SimCoreSandbox.exe
 			std::string iso_path;
-			std::string dolphin_base_dir;
+			std::string dolphin_base_dir; // optional; worker derives its base from exe_dir when empty
 			std::string user_dir;     // unique per worker
 			bool vm_control{ false };
 			bool visual{ false };

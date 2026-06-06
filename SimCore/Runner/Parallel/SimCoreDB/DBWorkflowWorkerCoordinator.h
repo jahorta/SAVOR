@@ -37,6 +37,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     uint32_t worker_start_timeout_ms = 10000;
     uint32_t worker_start_retry_backoff_ms = 1000;
     uint32_t max_worker_start_attempts = 3;
+    uint32_t max_concurrent_worker_starts = 1;
     std::string worker_exe_path;
     std::string iso_path;
     std::string dolphin_base_dir;
@@ -131,10 +132,12 @@ private:
         std::unique_ptr<simcore::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
         bool start_attempted = false;
+        bool startup_in_progress = false;
         uint32_t start_attempts = 0;
         bool start_retry_exhausted_logged = false;
         std::chrono::steady_clock::time_point next_start_after{};
         std::string last_start_error;
+        std::thread startup_thread;
         std::optional<uint64_t> in_flight_job_id;
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
@@ -159,6 +162,7 @@ private:
     void ReconcileWorkerPool();
     void ReconcileTerminalWorkflowSteps();
     bool StartWorkerSlot(size_t worker_idx);
+    void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
     void ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlot& slot);
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();

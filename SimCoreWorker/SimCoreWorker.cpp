@@ -98,7 +98,7 @@ static bool read_exact(HANDLE h, void* p, size_t n) { return read_all(h, p, n); 
 int main(int argc, char** argv)
 {
     // args:
-    // --id N --iso <path> --savestate <path> --qtbase <dir> --userdir <dir> [--log <file>]
+    // --id N --iso <path> --savestate <path> [--qtbase <dir>] --userdir <dir> [--log <file>]
     size_t worker_id = 0;
     std::string iso, sav, qtbase, userdir, logfile; 
     uint32_t timeout_ms = 10000;
@@ -134,9 +134,13 @@ int main(int argc, char** argv)
 
     SCLOGIX(SC_TAGS("worker", "replay", "startup"), "[Worker %zu] Initializing", worker_id);
 
-    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s userdir=%s timeout=%u visual=%d render_hwnd=%llu",
-        worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), userdir.c_str(), timeout_ms, visual ? 1 : 0,
-        static_cast<unsigned long long>(render_hwnd));
+    const std::filesystem::path worker_base_dir = qtbase.empty()
+        ? std::filesystem::path(exe_dir_w())
+        : std::filesystem::path(qtbase);
+
+    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s resolved_base=%s userdir=%s timeout=%u visual=%d render_hwnd=%llu",
+        worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), worker_base_dir.string().c_str(), userdir.c_str(),
+        timeout_ms, visual ? 1 : 0, static_cast<unsigned long long>(render_hwnd));
 
     // Use inherited anonymous pipes as binary channels
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -156,7 +160,7 @@ int main(int argc, char** argv)
 
     BootPlan boot{};
     boot.boot.user_dir = userdir;
-    boot.boot.dolphin_qt_base = qtbase;
+    boot.boot.dolphin_qt_base = worker_base_dir;
     boot.boot.force_resync_from_base = true;
     boot.boot.visual = visual;
     boot.boot.render_widget_handle = reinterpret_cast<void*>(render_hwnd);

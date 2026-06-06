@@ -27,6 +27,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Common/Config/Config.h"
 #include "Common/Event.h"
+#include "Common/MsgHandler.h"
 
 #include "Core/PowerPC/PowerPC.h"       // PowerPC::PowerPCManager, GetPPCState()
 
@@ -65,6 +66,39 @@ using namespace std::chrono;
 namespace fs = std::filesystem;
 using addr::AddrKey;
 using addr::DolphinAddr;
+
+namespace {
+
+    const char* DolphinAlertStyleName(Common::MsgType style)
+    {
+        switch (style) {
+        case Common::MsgType::Information: return "information";
+        case Common::MsgType::Question: return "question";
+        case Common::MsgType::Warning: return "warning";
+        case Common::MsgType::Critical: return "critical";
+        default: return "unknown";
+        }
+    }
+
+    bool HeadlessDolphinAlertHandler(const char* caption, const char* text, bool yes_no, Common::MsgType style)
+    {
+        SCLOGW("[dolphin-alert-suppressed] style=%s yes_no=%d caption=%s text=%s",
+            DolphinAlertStyleName(style),
+            yes_no ? 1 : 0,
+            caption ? caption : "",
+            text ? text : "");
+
+        return style != Common::MsgType::Question;
+    }
+
+    void InstallHeadlessDolphinAlertHandler()
+    {
+        Common::RegisterMsgAlertHandler(HeadlessDolphinAlertHandler);
+        Common::SetEnableAlert(false);
+        Common::SetAbortOnPanicAlert(false);
+    }
+
+}
 
 namespace simcore {
 
@@ -907,6 +941,7 @@ namespace simcore {
     {
         m_user_dir = user_dir;
         try {
+            InstallHeadlessDolphinAlertHandler();
             fs::create_directories(m_user_dir / "Config");
             UICommon::SetUserDirectory(m_user_dir.string());
             UICommon::CreateDirectories();
@@ -1739,8 +1774,11 @@ namespace simcore {
         SCLOGT("Turning off background input.");
         Config::SetCurrent(Config::MAIN_INPUT_BACKGROUND_INPUT, false);
 
-        //SCLOGT("Turning off alerts.");
-        //Config::SetCurrent(Config::MAIN_);
+        SCLOGT("Turning off panic alert popups.");
+        Config::SetCurrent(Config::MAIN_USE_PANIC_HANDLERS, false);
+        Config::SetCurrent(Config::MAIN_ABORT_ON_PANIC_ALERT, false);
+        InstallHeadlessDolphinAlertHandler();
+
         Config::SetCurrent(Config::MAIN_WIIMOTE_CONTINUOUS_SCANNING, false);
         Config::SetCurrent(Config::MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE, false);
 

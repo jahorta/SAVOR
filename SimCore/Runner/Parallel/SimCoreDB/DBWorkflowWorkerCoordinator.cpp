@@ -146,7 +146,7 @@ bool CopyTree(const std::filesystem::path& src, const std::filesystem::path& dst
     std::error_code ec;
     fs::create_directories(dst, ec);
     if (ec) {
-        if (error_out) *error_out = "create runtime Sys directory failed: " + ec.message();
+        if (error_out) *error_out = "create runtime directory failed: " + ec.message();
         return false;
     }
 
@@ -171,7 +171,7 @@ bool CopyTree(const std::filesystem::path& src, const std::filesystem::path& dst
     }
 
     if (ec) {
-        if (error_out) *error_out = "copy runtime Sys failed: " + ec.message();
+        if (error_out) *error_out = "copy runtime tree failed: " + ec.message();
         return false;
     }
     return true;
@@ -202,7 +202,7 @@ std::string ExpectedWorkerRuntimeManifest(
     const std::string& fingerprint,
     const std::string& exe_materialization) {
     std::ostringstream manifest;
-    manifest << "simcore_worker_runtime_manifest_version=1\n";
+    manifest << "simcore_worker_runtime_manifest_version=2\n";
     manifest << "slot_id=" << worker_idx << "\n";
     manifest << "fingerprint=" << fingerprint << "\n";
     manifest << "source_worker_exe=" << WeaklyCanonicalOrAbsolute(source_worker_exe).string() << "\n";
@@ -310,6 +310,7 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     const fs::path source_worker_exe = worker_cfg.worker_exe_path;
     const fs::path dolphin_base_dir = worker_cfg.dolphin_base_dir;
     const fs::path source_sys = dolphin_base_dir / "Sys";
+    const fs::path source_portable = dolphin_base_dir / "portable.txt";
     const fs::path source_dsp_coef = source_sys / "GC" / "dsp_coef.bin";
 
     std::error_code ec;
@@ -321,6 +322,10 @@ bool EnsureWorkflowWorkerRuntimeSlot(
         if (error_out) *error_out = "Dolphin base Sys is missing or incomplete: " + source_sys.string();
         return false;
     }
+    if (!fs::is_regular_file(source_portable, ec) || ec) {
+        if (error_out) *error_out = "Dolphin base portable.txt is missing: " + dolphin_base_dir.string();
+        return false;
+    }
 
     const auto fingerprint = WorkerRuntimeFingerprint(source_worker_exe, dolphin_base_dir);
     const fs::path runtime_cache_root = utils::getExecutablePath() / ".worker-runtime";
@@ -329,12 +334,16 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     const fs::path slot_root = runtime_cache_root / fingerprint / ("slot-" + std::to_string(worker_idx));
     const fs::path runtime_worker_exe = slot_root / "SimCoreWorker.exe";
     const fs::path runtime_sys = slot_root / "Sys";
+    const fs::path runtime_user = slot_root / "User";
+    const fs::path runtime_portable = slot_root / "portable.txt";
     const fs::path manifest_path = slot_root / "worker-runtime.manifest";
 
     std::string existing_manifest;
     if (ReadFileToString(manifest_path, &existing_manifest)
         && fs::is_regular_file(runtime_worker_exe, ec) && !ec
-        && fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) && !ec) {
+        && fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) && !ec
+        && fs::is_directory(runtime_user, ec) && !ec
+        && fs::is_regular_file(runtime_portable, ec) && !ec) {
         const auto expected_hardlink_manifest = ExpectedWorkerRuntimeManifest(
             worker_idx,
             source_worker_exe,
@@ -342,7 +351,7 @@ bool EnsureWorkflowWorkerRuntimeSlot(
             fingerprint,
             "hardlink");
         if (existing_manifest == expected_hardlink_manifest
-            || existing_manifest.find("simcore_worker_runtime_manifest_version=1\n") == 0) {
+            || existing_manifest.find("simcore_worker_runtime_manifest_version=2\n") == 0) {
             if (runtime_worker_exe_out) *runtime_worker_exe_out = runtime_worker_exe;
             return true;
         }
@@ -366,6 +375,16 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     if (!CopyTree(source_sys, runtime_sys, error_out)) {
         return false;
     }
+    fs::create_directories(runtime_user, ec);
+    if (ec) {
+        if (error_out) *error_out = "create runtime User directory failed: " + ec.message();
+        return false;
+    }
+    fs::copy_file(source_portable, runtime_portable, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        if (error_out) *error_out = "copy runtime portable.txt failed: " + ec.message();
+        return false;
+    }
 
     const auto manifest = ExpectedWorkerRuntimeManifest(
         worker_idx,
@@ -378,7 +397,9 @@ bool EnsureWorkflowWorkerRuntimeSlot(
     }
 
     if (!fs::is_regular_file(runtime_worker_exe, ec) || ec
-        || !fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) || ec) {
+        || !fs::is_regular_file(runtime_sys / "GC" / "dsp_coef.bin", ec) || ec
+        || !fs::is_directory(runtime_user, ec) || ec
+        || !fs::is_regular_file(runtime_portable, ec) || ec) {
         if (error_out) *error_out = "worker runtime validation failed: " + slot_root.string();
         return false;
     }
@@ -516,11 +537,28 @@ void DBWorkflowWorkerCoordinator::Stop() {
         results_drainer_thread_.join();
     }
 
-    std::lock_guard<std::mutex> lock(workers_mtx_);
-    for (auto& slot : workers_) {
-        StopWorkerSlot(*slot);
+    std::vector<std::thread> startup_threads;
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        for (auto& slot : workers_) {
+            if (slot->startup_thread.joinable()) {
+                startup_threads.push_back(std::move(slot->startup_thread));
+            }
+        }
     }
-    workers_.clear();
+    for (auto& thread : startup_threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        for (auto& slot : workers_) {
+            StopWorkerSlot(*slot);
+        }
+        workers_.clear();
+    }
 }
 
 void DBWorkflowWorkerCoordinator::SetPaused(bool paused) {
@@ -1479,9 +1517,11 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
 }
 
 void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
-    std::lock_guard<std::mutex> lock(workers_mtx_);
+    std::vector<std::thread> completed_startup_threads;
+    std::unique_lock<std::mutex> lock(workers_mtx_);
     const auto now = std::chrono::steady_clock::now();
     const auto max_start_attempts = std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
+    const auto max_concurrent_starts = std::max<std::uint32_t>(1u, worker_cfg_.max_concurrent_worker_starts);
     while (workers_.size() < worker_cfg_.desired_workers) {
         const auto worker_idx = workers_.size();
         auto slot = std::make_unique<WorkerSlot>();
@@ -1491,9 +1531,28 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         workers_.push_back(std::move(slot));
     }
 
+    for (auto& slot : workers_) {
+        if (!slot->startup_in_progress && slot->startup_thread.joinable()) {
+            completed_startup_threads.push_back(std::move(slot->startup_thread));
+        }
+    }
+
+    std::uint32_t active_startups = 0;
+    for (const auto& slot : workers_) {
+        if (slot->startup_in_progress) {
+            ++active_startups;
+        }
+    }
+
     for (size_t worker_idx = 0; worker_idx < workers_.size(); ++worker_idx) {
+        if (active_startups >= max_concurrent_starts) {
+            break;
+        }
         auto& slot = *workers_[worker_idx];
         if (slot.ready.load()) {
+            continue;
+        }
+        if (slot.startup_in_progress) {
             continue;
         }
         if (slot.in_flight_job_id.has_value()) {
@@ -1532,16 +1591,25 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         if (slot.start_attempted) {
             continue;
         }
-        (void)StartWorkerSlot(worker_idx);
+        if (StartWorkerSlot(worker_idx)) {
+            ++active_startups;
+        }
     }
 
     while (workers_.size() > worker_cfg_.desired_workers) {
         auto& slot = workers_.back();
-        if (slot->in_flight_job_id.has_value()) {
+        if (slot->startup_in_progress || slot->startup_thread.joinable() || slot->in_flight_job_id.has_value()) {
             break;
         }
         StopWorkerSlot(*slot);
         workers_.pop_back();
+    }
+
+    lock.unlock();
+    for (auto& thread : completed_startup_threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
     }
 }
 
@@ -1551,13 +1619,18 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     }
 
     auto& slot = *workers_[worker_idx];
+    if (slot.startup_in_progress || slot.startup_thread.joinable()) {
+        return false;
+    }
     slot.start_attempted = true;
+    slot.startup_in_progress = true;
     slot.ready.store(false);
     slot.start_retry_exhausted_logged = false;
     const auto attempt = slot.start_attempts + 1;
     slot.start_attempts = attempt;
     const auto schedule_retry = [&](const std::string& error) {
         slot.ready.store(false);
+        slot.startup_in_progress = false;
         slot.last_start_error = error;
         slot.next_start_after = std::chrono::steady_clock::now()
             + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
@@ -1589,35 +1662,119 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     ps.worker_id = worker_idx;
     ps.exe_path = runtime_worker_exe.string();
     ps.iso_path = worker_cfg_.iso_path;
-    ps.dolphin_base_dir = worker_cfg_.dolphin_base_dir;
+    ps.dolphin_base_dir.clear();
 
     std::ostringstream user_dir;
     user_dir << worker_cfg_.worker_dir_root << "\\workflow-worker-" << worker_idx << "\\User";
     ps.user_dir = user_dir.str();
     ps.vm_control = true;
 
-    if (!slot.worker->start(ps, &results_q_)) {
-        RegisterWorkerSlotTelemetry(slot);
-        return schedule_retry("ProcessWorker.start failed");
+    namespace fs = std::filesystem;
+    std::error_code user_ec;
+    fs::remove_all(ps.user_dir, user_ec);
+    if (user_ec) {
+        return schedule_retry("clear worker user dir failed: " + user_ec.message());
+    }
+    fs::create_directories(ps.user_dir, user_ec);
+    if (user_ec) {
+        return schedule_retry("create worker user dir failed: " + user_ec.message());
     }
 
-    slot.ready.store(slot.worker->wait_ready(worker_cfg_.worker_start_timeout_ms));
-    RegisterWorkerSlotTelemetry(slot);
-    if (!slot.ready.load()) {
+    simcore::ProcessWorker* worker = slot.worker.get();
+    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Spawning);
+    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
+    slot.startup_thread = std::thread([this, worker_idx, attempt, worker, ps = std::move(ps)]() mutable {
+        if (stop_.load()) {
+            CompleteWorkerSlotStartup(worker_idx, attempt, false, "startup canceled");
+            return;
+        }
+
+        if (worker == nullptr || !worker->start(ps, &results_q_)) {
+            CompleteWorkerSlotStartup(worker_idx, attempt, false, "ProcessWorker.start failed");
+            return;
+        }
+
+        const auto timeout = std::chrono::milliseconds(worker_cfg_.worker_start_timeout_ms
+            ? worker_cfg_.worker_start_timeout_ms
+            : 10000);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        bool ready = false;
+        while (!stop_.load() && std::chrono::steady_clock::now() < deadline) {
+            if (worker->wait_ready(50)) {
+                ready = true;
+                break;
+            }
+            if (worker->is_failed()) {
+                break;
+            }
+        }
+
+        if (ready) {
+            CompleteWorkerSlotStartup(worker_idx, attempt, true, {});
+            return;
+        }
+
         std::ostringstream error;
-        error << "wait_ready failed err=" << slot.worker->ready_error();
-        return schedule_retry(error.str());
+        if (stop_.load()) {
+            error << "startup canceled";
+        } else {
+            error << "wait_ready failed err=" << worker->ready_error();
+        }
+        worker->stop();
+        CompleteWorkerSlotStartup(worker_idx, attempt, false, error.str());
+    });
+    return true;
+}
+
+void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
+    size_t worker_idx,
+    uint32_t attempt,
+    bool ready,
+    const std::string& error) {
+    std::lock_guard<std::mutex> lock(workers_mtx_);
+    if (worker_idx >= workers_.size()) {
+        return;
     }
-    slot.start_attempts = 0;
-    slot.next_start_after = {};
-    slot.last_start_error.clear();
-    slot.start_retry_exhausted_logged = false;
-    return slot.ready.load();
+
+    auto& slot = *workers_[worker_idx];
+    if (slot.start_attempts != attempt) {
+        return;
+    }
+
+    slot.startup_in_progress = false;
+    slot.ready.store(ready);
+    RegisterWorkerSlotTelemetry(slot);
+    if (ready) {
+        slot.start_attempts = 0;
+        slot.next_start_after = {};
+        slot.last_start_error.clear();
+        slot.start_retry_exhausted_logged = false;
+        queue_cv_.notify_all();
+        return;
+    }
+
+    slot.last_start_error = error;
+    slot.next_start_after = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
+    slot.loaded_program_kind.reset();
+    slot.loaded_program_runtime_affinity_key.reset();
+    slot.loaded_savestate_affinity_key.reset();
+
+    std::ostringstream line;
+    line << "[workflow-worker-start-failed]"
+         << " worker=" << worker_idx
+         << " attempt=" << attempt
+         << " max_attempts=" << std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts)
+         << " error=" << error;
+    EmitDurableEventLine(line.str());
+    MarkWorkerError(slot, error);
+    queue_cv_.notify_all();
 }
 
 void DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
     slot.ready.store(false);
     slot.start_attempted = false;
+    slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
@@ -1636,6 +1793,7 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
     worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
     slot.ready.store(false);
     slot.start_attempted = false;
+    slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();

@@ -26,7 +26,8 @@ constexpr std::uint32_t DurableLineBit(DurableLineCategory category) {
     return static_cast<std::uint32_t>(category);
 }
 
-constexpr std::uint32_t kDurableLineQuietMask = 0;
+constexpr std::uint32_t kDurableLineQuietMask =
+    DurableLineBit(DurableLineCategory::Result);
 constexpr std::uint32_t kDurableLineNormalMask =
     DurableLineBit(DurableLineCategory::Result)
     | DurableLineBit(DurableLineCategory::Workflow)
