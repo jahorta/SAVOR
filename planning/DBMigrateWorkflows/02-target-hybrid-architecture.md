@@ -46,11 +46,12 @@ The target model is authored graph templates plus per-instance runtime bindings,
 - Program descriptors/adapters create Analysis rows lazily when a step actually runs or maps results. The graph validator can prove potential compatibility, but it must not allocate speculative analysis state.
 - UIRead is read-only from Qt2. UIRead rows are refreshed only from source-context outboxes and projectors.
 
-Legacy implementation cleanup follows from this direction:
+Legacy implementation cleanup status follows from this direction:
 
-- Replace static workflow registries such as `SEED_PROBE_CHAIN` with authored graph templates.
+- Static workflow registries such as `SEED_PROBE_CHAIN` and the static workflow engine/builder/validator path have been removed from the active runtime.
 - Remove launcher behavior from authoring/editor surfaces.
-- Retire `exec_trigger`, `exec_workflow_input_event`, instance-level `input_ref_kind` / `input_ref_id`, and other static initial-input paths once the graph binding tables cover their remaining behavior.
+- `exec_workflow_input_event`, instance-level `input_ref_kind` / `input_ref_id`, and static initial-input launch paths have been removed from the active schema/runtime. Step-level `input_ref_kind` / `input_ref_id` remains valid for actual descriptor-produced refs.
+- Retire remaining `exec_trigger` behavior where it appears.
 - Move TAS DTM and RTC range values out of authored TAS specs; selected DTM is an instance input binding and each RTC value is an instance argument.
 - Move battle fake-attack ranges out of authored battle specs when they are launch-time exploration bounds.
 - Remove hard-coded graph transition names and scenario-only graph ids after descriptor-driven graph instancing is complete.

@@ -9,20 +9,20 @@ Prepare contracts and schema so later phases can ship safely without changing co
 ## Add
 
 1. **Event contract artifacts**
-   - Add concrete event definitions for workflow input orchestration events (v1).
-   - Add payload schemas for `workflow_input_event` family.
-   - Add envelope-level validation fixtures for required fields.
+   - Keep concrete event definitions for in-memory workflow input orchestration where the step aggregation service needs them.
+   - Do not persist a separate `workflow_input_event` payload family for launch inputs.
+   - Add envelope-level validation fixtures for durable outbox event refs that remain in the active runtime.
 
 2. **Schema migrations (Execution + payload refs)**
-   - Add migration scripts for payload tables/refs needed by `workflow_input_event`.
-   - Add indexes for expected lookup patterns:
-     - by `workflow_step_id`
+   - Keep schema migrations for durable workflow lifecycle events, instance input bindings, and scalar instance arguments.
+   - The active schema no longer includes `exec_workflow_input_event`.
+   - Keep indexes for expected lookup patterns:
      - by `payload_ref_kind/payload_ref_id`
      - by event replay cursor
 
 3. **Resolver/dispatcher registration**
-   - Register payload resolvers and dispatch bindings for new input event kinds.
-   - Add backward-read compatibility paths for existing `workflow_event` payload family.
+   - Register payload resolvers and dispatch bindings only for durable payload families that remain in the active runtime.
+   - Keep `workflow_event` payload resolution for lifecycle/outbox replay.
 
 4. **Replay/backfill validation tools**
    - Add a validation task/CLI path to replay outbox rows and verify payload resolution success.
@@ -30,7 +30,8 @@ Prepare contracts and schema so later phases can ship safely without changing co
 ## Modify
 
 1. **Event catalog docs + code constants**
-   - Extend event catalog with new workflow input events.
+   - Keep durable event catalog entries aligned with active persisted payload families.
+   - In-memory step-input aggregation names do not require `exec_workflow_input_event` storage.
 
 2. **Outbox relay bindings**
    - Extend relevant relay bindings for new event types (no behavior change yet).
@@ -40,13 +41,13 @@ Prepare contracts and schema so later phases can ship safely without changing co
 
 ## Remove
 
-- No removals in Phase 0.
-- Keep all legacy event families active.
+- Remove the obsolete `workflow_input_event` durable payload family and `exec_workflow_input_event` table from active schema/code.
+- Compatibility with those early workflow-input storage structures is not required for this cleanup pass.
 
 ## Guidance and constraints
 
-1. **Backward compatibility first**
-   - New contracts are additive; existing event readers must continue to function.
+1. **Fresh active schema**
+   - This branch is still early in production; removed early workflow-input storage does not need compatibility adapters.
 
 2. **No runtime behavior change goal**
    - Phase 0 should not change claim/materialize/dispatch behavior.
@@ -68,16 +69,16 @@ Prepare contracts and schema so later phases can ship safely without changing co
 ## Suggested SimCoreTests to add for phase exit readiness
 
 1. **Event contract schema coverage test**
-   - Validate all new `workflow_input_event` payload shapes pass required-field checks.
+   - Validate active durable payload shapes pass required-field checks.
 
 2. **Migration apply/rollback test**
    - Apply new migration set, verify required tables/indexes exist, then rollback and verify clean reapply.
 
 3. **Resolver registration test**
-   - Ensure each new event type resolves to a registered payload resolver/dispatch binding.
+   - Ensure each durable event type resolves to a registered payload resolver/dispatch binding.
 
 4. **Replay/backfill integrity test**
    - Feed representative outbox rows through replay path and assert zero unresolved payload references.
 
-5. **Backward-read compatibility test**
-   - Assert legacy `workflow_event` rows remain readable after introducing `workflow_input_event` family.
+5. **Replay compatibility test**
+   - Assert remaining `workflow_event` rows resolve during replay/backfill validation.

@@ -100,34 +100,13 @@
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h">
       <Filter>Workflows</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowParityStore.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowParityDiagnostics.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowModeProvider.h">
       <Filter>Workflows</Filter>
     </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h">
       <Filter>Workflows</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowEngine.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\Workflow\SeedProbeWorkflowDefinition.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
     <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowInstanceBuilder.h">
-      <Filter>Workflows</Filter>
-    </ClInclude>
-    <ClInclude Include="Execution\Workflow\WorkflowInstanceValidator.h">
       <Filter>Workflows</Filter>
     </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowComposition.h">
@@ -315,31 +294,10 @@
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowParityStore.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowParityDiagnostics.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowModeProvider.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowEngine.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\Workflow\SeedProbeWorkflowDefinition.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowInstanceBuilder.cpp">
-      <Filter>Workflows</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\Workflow\WorkflowInstanceValidator.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp">

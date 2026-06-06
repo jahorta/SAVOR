@@ -37,6 +37,7 @@ protected:
         ASSERT_TRUE(db_service_->Start(&start_error)) << start_error;
 
         ASSERT_EQ(SQLITE_OK, sqlite3_open(shared_db_path.string().c_str(), &db_));
+        ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(db_, 5000));
     }
 
     void TearDown() override {

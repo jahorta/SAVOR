@@ -113,7 +113,7 @@ Queueing, claiming, retries, parent/child orchestration, and event/outbox mechan
 - `created_by`
 - lifecycle timestamps and failure fields
 
-Legacy note: instance-level `input_ref_kind` / `input_ref_id` may still exist during transition, but the target model uses typed input bindings below.
+Cleanup status: instance-level `input_ref_kind` / `input_ref_id` bootstrap columns have been removed from the active workflow instance schema. External launch inputs use typed input bindings below.
 
 #### 8) `exec_workflow_step`
 - `workflow_step_id` (PK)
@@ -123,7 +123,7 @@ Legacy note: instance-level `input_ref_kind` / `input_ref_id` may still exist du
 - `state`
 - guard, priority, attempts, job-set, lifecycle, output, and failure fields
 
-Legacy note: step-level `input_ref_kind` / `input_ref_id` remains useful for produced refs during the transition, but external launch inputs should come from `exec_workflow_instance_input_binding`.
+Current note: step-level `input_ref_kind` / `input_ref_id` remains useful for actual runtime refs produced or consumed by descriptors and dynamic downstream steps. External launch inputs come from `exec_workflow_instance_input_binding`.
 
 #### 9) `exec_workflow_edge`
 - `workflow_edge_id` (PK)

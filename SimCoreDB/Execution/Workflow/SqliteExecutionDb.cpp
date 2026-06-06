@@ -178,33 +178,6 @@ std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowEventPaylo
     return view;
 }
 
-std::optional<events::ExecutionWorkflowJobPayloadView> ResolveWorkflowInputEventPayload(sqlite3* db, std::int64_t payload_ref_id) {
-    Statement st;
-    if (sqlite3_prepare_v2(db,
-        "SELECT e.workflow_instance_id, e.workflow_step_id, "
-        "COALESCE(s.job_set_id, 0) "
-        "FROM exec_workflow_input_event e "
-        "LEFT JOIN exec_workflow_step s ON s.workflow_step_id=e.workflow_step_id "
-        "WHERE e.workflow_input_event_id=?1;",
-        -1,
-        &st.st,
-        nullptr)
-        != SQLITE_OK) {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_int64(st.st, 1, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_ROW) {
-        return std::nullopt;
-    }
-
-    events::ExecutionWorkflowJobPayloadView view{};
-    view.workflow_instance_id = sqlite3_column_int64(st.st, 0);
-    view.workflow_step_id = sqlite3_column_int64(st.st, 1);
-    view.job_set_id = sqlite3_column_int64(st.st, 2);
-    return view;
-}
-
 std::optional<events::ExecutionWorkflowJobPayloadView> ResolveJobSetPayload(sqlite3* db, std::int64_t payload_ref_id) {
     Statement st;
     if (sqlite3_prepare_v2(db,
@@ -1360,9 +1333,6 @@ std::optional<events::ExecutionWorkflowJobPayloadView> SqliteExecutionDb::Resolv
 
     if (payload_ref_kind == "workflow_event") {
         return ResolveWorkflowEventPayload(db_, payload_ref_id);
-    }
-    if (payload_ref_kind == "workflow_input_event") {
-        return ResolveWorkflowInputEventPayload(db_, payload_ref_id);
     }
     if (payload_ref_kind == "job_set") {
         return ResolveJobSetPayload(db_, payload_ref_id);

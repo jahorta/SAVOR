@@ -13,7 +13,7 @@ This file is meant to be actively updated each iteration.
 4. **Failure policy**
    - Decision: on input timeout, retry once before terminal failure.
 5. **Payload family**
-   - Decision: `workflow_input_event` was the phase-0 input-orchestration event family, but it is not the target storage location for external launch inputs. Current direction is typed `exec_workflow_instance_input_binding` rows for external inputs and `exec_workflow_instance_argument` rows for scalar launch arguments.
+   - Decision: `workflow_input_event` was a phase-0 input-orchestration event family, but it is no longer part of the active schema/runtime. External launch inputs use typed `exec_workflow_instance_input_binding` rows and scalar launch choices use `exec_workflow_instance_argument` rows.
 6. **Step aggregate identity**
    - Decision: encode `workflow_step_id` as aggregate id string for step-scoped events.
 7. **Seed Probe split boundary**
@@ -119,3 +119,4 @@ For each question:
 - Workflow composition output semantics are standardized around `possible_outputs`, and Analysis rows are created lazily by program descriptors/adapters instead of by the composition layer.
 - Workflow graph storage is standardized around Authoring-owned graph identities, immutable graph revisions, and instance-specific submission bindings.
 - Workflow launch ownership is standardized around a separate launcher surface. Authoring editors create reusable records only; launch-time external inputs and scalar arguments are Execution-owned instance data.
+- Compatibility with removed early workflow structures is not required for this cleanup pass; prefer deleting stale schema/code paths over carrying adapters for `workflow_input_event` or instance-level bootstrap refs.

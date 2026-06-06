@@ -161,6 +161,25 @@ bool RefreshSeedProbeUiReadProjection(
     return ui_read_db->ReplaceSeedProbeUniqueValues(probe_run_id, values, error_out);
 }
 
+std::int64_t ResolveSeedProbeRunIdFromGraph(
+    const std::optional<simcore::db::execution::workflow::WorkflowGraphSnapshot>& graph,
+    std::int64_t current_probe_run_id) {
+    if (current_probe_run_id > 0 || !graph.has_value()) {
+        return current_probe_run_id;
+    }
+
+    for (const auto& step : graph->steps) {
+        if ((step.step_key == "probe_1" || step.step_kind == "seed_probe_chain")
+            && step.input_ref_kind.has_value()
+            && *step.input_ref_kind == "sp_probe_run"
+            && step.input_ref_id.has_value()
+            && *step.input_ref_id > 0) {
+            return *step.input_ref_id;
+        }
+    }
+    return 0;
+}
+
 void PrintSeedProbeUiReadLine(simcore::db::IUiReadDb* ui_read_db, std::int64_t probe_run_id) {
     if (ui_read_db == nullptr || probe_run_id <= 0) {
         return;
@@ -208,28 +227,22 @@ bool RunTasMovieScenario(
     std::int64_t workflow_instance_id = 0;
     std::int64_t probe_run_id = 0;
     if (chain_seedprobe) {
-        std::int64_t placeholder_savestate_id = 0;
-        if (!SeedStateSavestate(db_service->StateDb(), options.savestate_file, &placeholder_savestate_id, &err)) {
-            if (error_out) *error_out = "failed seeding placeholder savestate: " + err;
-            return false;
-        }
         std::int64_t seed_probe_spec_id = 0;
         if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
             if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
             return false;
         }
         if (!SeedTasMovieSeedProbeWorkflow(
-                db_service->AnalysisDb(),
+                db_service->AuthoringDb(),
                 db_service->ExecutionDb(),
-                placeholder_savestate_id,
+                dtm_artifact_id,
                 seed_probe_spec_id,
                 &workflow_instance_id,
-                &probe_run_id,
                 &err)) {
             if (error_out) *error_out = "failed seeding chained workflow rows: " + err;
             return false;
         }
-    } else if (!SeedTasMovieWorkflow(db_service->ExecutionDb(), dtm_artifact_id, &workflow_instance_id, &err)) {
+    } else if (!SeedTasMovieWorkflow(db_service->AuthoringDb(), db_service->ExecutionDb(), dtm_artifact_id, &workflow_instance_id, &err)) {
         if (error_out) *error_out = "failed seeding TasMovie workflow rows: " + err;
         return false;
     }
@@ -249,9 +262,6 @@ bool RunTasMovieScenario(
         tas_config.blueprint.headroom_x10);
     tas_config.working_dir_root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default") / "tasmovie";
     tas_config.next_step_key = chain_seedprobe ? "Neutral" : "Done";
-    if (chain_seedprobe) {
-        tas_config.blueprint.bind_seed_probe_run_id = probe_run_id;
-    }
     simcore::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
         &registry,
         db_service->ExecutionDb(),
@@ -358,6 +368,7 @@ bool RunTasMovieScenario(
             }
         }
         if (graph.has_value()) {
+            probe_run_id = ResolveSeedProbeRunIdFromGraph(graph, probe_run_id);
             latest_state = FormatWorkflowStateLine(*graph);
             using simcore::db::execution::workflow::WorkflowInstanceState;
             if (graph->instance.state == WorkflowInstanceState::Completed) {
@@ -386,6 +397,7 @@ bool RunTasMovieScenario(
         coordinator.SnapshotWorkers(),
         final_graph);
     if (final_graph.has_value()) {
+        probe_run_id = ResolveSeedProbeRunIdFromGraph(final_graph, probe_run_id);
         latest_state = FormatWorkflowStateLine(*final_graph);
     }
     if (interactive_stdout) {

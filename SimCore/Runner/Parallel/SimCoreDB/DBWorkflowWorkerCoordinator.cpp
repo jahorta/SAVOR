@@ -399,7 +399,6 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     simcore::db::IStateDb* state_db)
     : DBWorkflowWorkerCoordinator(
         execution_db,
-        nullptr,
         std::move(worker_cfg),
         integration_cfg,
         {},
@@ -411,7 +410,6 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
 
 DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     simcore::db::IExecutionDb* execution_db,
-    simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider,
     DBWorkflowWorkerCoordinatorConfig worker_cfg,
     CoordinatorIntegrationConfig integration_cfg,
     WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,
@@ -435,26 +433,16 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
             const std::optional<std::string>& source_key,
             const std::optional<std::string>& request_id,
             const std::optional<std::string>& message) {
-            if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
-                return;
-            }
-            std::string error;
-            (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
-                {
-                    .workflow_instance_id = step.workflow_instance_id,
-                    .workflow_step_id = step.workflow_step_id,
-                    .event_kind = event_kind,
-                    .source_key = source_key,
-                    .request_id = request_id,
-                    .message = message,
-                    .requested_by = "step_input_aggregation",
-                },
-                &error);
+            (void)this;
+            (void)step;
+            (void)event_kind;
+            (void)source_key;
+            (void)request_id;
+            (void)message;
         })
     , persist_materialization_fn_(std::move(persist_materialization_fn))
     , job_materialization_service_(execution_db, program_kind_registry)
     , program_kind_registry_(program_kind_registry) {
-    (void)mode_provider;
     if (step_completion_gate != nullptr) {
         step_completion_gate_ = step_completion_gate;
     } else {
@@ -1200,18 +1188,6 @@ bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReady
 
     auto* commands = execution_db_->WorkflowCommandService();
     std::string error;
-    (void)commands->AppendStepInputEvent(
-        {
-            .workflow_instance_id = step.workflow_instance_id,
-            .workflow_step_id = step.workflow_step_id,
-            .event_kind = "Execution.WorkflowStepInputComplete.v1",
-            .source_key = std::nullopt,
-            .request_id = std::nullopt,
-            .message = std::optional<std::string>("no-work-step"),
-            .requested_by = "workflow_no_work_step",
-        },
-        &error);
-
     if (!commands->MarkStepTerminal(
         {
             .workflow_step_id = step.workflow_step_id,
@@ -1738,17 +1714,7 @@ void DBWorkflowWorkerCoordinator::EmitAdapterTraceEvent(
     if (message.has_value()) detail << ";message=" << *message;
 
     std::string error;
-    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
-        {
-            .workflow_instance_id = step.workflow_instance_id,
-            .workflow_step_id = step.workflow_step_id,
-            .event_kind = "Execution.AdapterChainStage.v1",
-            .source_key = stage,
-            .request_id = std::nullopt,
-            .message = detail.str(),
-            .requested_by = "adapter_chain_orchestrator",
-        },
-        &error);
+    (void)error;
 }
 
 void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
@@ -1760,17 +1726,6 @@ void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
         return;
     }
     std::string error;
-    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
-        {
-            .workflow_instance_id = step.workflow_instance_id,
-            .workflow_step_id = step.workflow_step_id,
-            .event_kind = "Execution.AdapterChainFailure.v1",
-            .source_key = std::nullopt,
-            .request_id = std::nullopt,
-            .message = reason,
-            .requested_by = "adapter_chain_orchestrator",
-        },
-        &error);
     (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
         {
             .workflow_step_id = step.workflow_step_id,
@@ -1801,17 +1756,6 @@ void DBWorkflowWorkerCoordinator::EmitWorkflowFailureEvents(
     std::ostringstream detail;
     detail << "stage=" << stage << ";reason=" << reason;
     std::string error;
-    (void)execution_db_->WorkflowCommandService()->AppendStepInputEvent(
-        {
-            .workflow_instance_id = step.workflow_instance_id,
-            .workflow_step_id = step.workflow_step_id,
-            .event_kind = "Execution.WorkflowStepCoordinatorFailure.v1",
-            .source_key = stage,
-            .request_id = std::nullopt,
-            .message = detail.str(),
-            .requested_by = "workflow_coordinator",
-        },
-        &error);
     (void)execution_db_->WorkflowCommandService()->AppendLifecycleEvent(
         {
             .workflow_instance_id = step.workflow_instance_id,

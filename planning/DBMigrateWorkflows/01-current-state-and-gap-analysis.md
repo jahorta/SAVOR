@@ -21,7 +21,7 @@
 ### Current constraints
 
 1. **Ready-step polling is loop-based**, not yet fully event-triggered.
-2. **Workflow events are primarily lifecycle-level**; input-fragment and step-readiness contract set is incomplete.
+2. **Workflow events are primarily lifecycle-level**; in-memory input-fragment and step-readiness contracts exist, but they are not persisted through a separate workflow-input-event table.
 3. **Cross-context async input gathering** for step materialization is not yet a first-class subsystem.
 4. **Transition handling exists by interface, but not yet fully standardized around event contracts.**
 
@@ -49,7 +49,7 @@
 
 **Current:** strong lifecycle event basis exists, but internal workflow-step orchestration events are sparse.
 
-**Action direction:** extend event catalog and outbox payload mappings with backward-compatible versioning.
+**Action direction:** keep durable Execution outbox contracts focused on lifecycle/terminal authority and source-context projection events. In-memory step-input aggregation may keep internal event names, but new durable launch-input storage should use instance input bindings and arguments.
 
 ## Gap D: Operational controls and error semantics
 
@@ -85,14 +85,14 @@
 - The existing coordinator can both materialize and dispatch workers; this is now resolved toward a split architecture and we should plan explicit service boundaries for:
   - `WorkflowMaterializationService` (step -> job set/job rows)
   - `WorkflowDispatchCoordinator` (claim strategy, pre-warm, dispatch)
-- Existing workflow lifecycle events are persisted as `workflow_event` payload refs; this iteration locked input events to a new `workflow_input_event` payload family, so migration scope and payload resolver wiring must be explicitly planned.
+- Earlier plans experimented with a separate `workflow_input_event` payload family. That table/resolver path has been removed from the active schema/runtime; launch input state belongs to instance bindings and scalar arguments.
 
 ## Resolved inconsistencies
 
-1. **Payload family migration ambiguity resolved** with a phase-0 checklist:
-   - add `workflow_input_event` payload storage and resolver wiring,
-   - keep backward-read support for `workflow_event`,
-   - add replay/backfill validation pass before enabling new producers.
+1. **Payload family migration ambiguity resolved**:
+   - keep `workflow_event` as the durable workflow lifecycle payload family,
+   - do not reintroduce `workflow_input_event` for launch inputs,
+   - validate replay/backfill against remaining durable payload refs.
 2. **Completion invariant remediation resolved**:
    - on invariant violation, pause workflow instance,
    - emit invariant-violation event,

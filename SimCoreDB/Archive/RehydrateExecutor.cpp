@@ -481,8 +481,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     if (new_id == 0 || (ok_root && scope_kind == "job_set" && new_root == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,input_ref_kind,input_ref_id,created_by,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
-                            "VALUES(?1,json_extract(?2,'$.workflow_kind'),json_extract(?2,'$.state'),json_extract(?2,'$.root_scope_kind'),?3,json_extract(?2,'$.input_ref_kind'),json_extract(?2,'$.input_ref_id'),?4,json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.started_at_utc'),json_extract(?2,'$.completed_at_utc'),json_extract(?2,'$.failure_code'),json_extract(?2,'$.failure_text'));",
+                            "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
+                            "VALUES(?1,json_extract(?2,'$.workflow_kind'),json_extract(?2,'$.state'),json_extract(?2,'$.root_scope_kind'),?3,?4,json_extract(?2,'$.created_at_utc'),json_extract(?2,'$.started_at_utc'),json_extract(?2,'$.completed_at_utc'),json_extract(?2,'$.failure_code'),json_extract(?2,'$.failure_text'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);

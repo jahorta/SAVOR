@@ -43,7 +43,7 @@ Escalation expectations:
 **Procedure**
 
 1. Confirm scope
-   - Identify affected stream (`exec_workflow_input_event` vs `exec_workflow_event`) and tenant/workflow cohort.
+   - Identify affected durable source stream, tenant/workflow cohort, and whether terminal lifecycle rows in `exec_workflow_event` are delayed.
    - Confirm whether delay is producer-side (outbox enqueue) or consumer-side (subscription drain).
 2. Stabilize
    - Freeze non-critical backfills/replays that compete for the same consumer resources.

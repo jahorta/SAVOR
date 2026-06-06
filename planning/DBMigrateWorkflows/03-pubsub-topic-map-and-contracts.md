@@ -47,12 +47,11 @@ Examples:
 
 Note: worker coordinator should not rely on a `job.queued` topic for claiming decisions; it should request/claim from ExecutionDB using coordinator-side heuristics.
 
-## Existing-event compatibility note
+## Durable payload-family note
 
-Current Execution outbox events should remain source-compatible. New workflow-input events should be additive and versioned as new event types.
-New input orchestration payloads should use a distinct payload family:
-
-- `payload_ref_kind = workflow_input_event`
+Current Execution outbox rows use durable source payload refs such as `workflow_event`.
+The earlier `workflow_input_event` payload family has been removed from the active schema/runtime; do not add new durable launch-input payloads there.
+Launch inputs belong to `exec_workflow_instance_input_binding` and scalar launch choices belong to `exec_workflow_instance_argument`.
 
 ## Idempotency rules
 

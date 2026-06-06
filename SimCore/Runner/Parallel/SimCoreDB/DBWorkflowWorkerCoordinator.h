@@ -86,7 +86,6 @@ public:
 
     DBWorkflowWorkerCoordinator(
         simcore::db::IExecutionDb* execution_db,
-        simcore::db::execution::workflow::IWorkflowModeProvider* mode_provider,
         DBWorkflowWorkerCoordinatorConfig worker_cfg,
         CoordinatorIntegrationConfig integration_cfg,
         WorkflowSchedulerAdapter::ScheduleFn workflow_schedule_fn,

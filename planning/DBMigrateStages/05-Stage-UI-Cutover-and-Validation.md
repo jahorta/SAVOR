@@ -116,9 +116,10 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 
 The current target architecture intentionally replaces several early DBMigrate structures. Because this branch is still early in production, compatibility with those legacy structures is not required unless a later migration note says otherwise.
 
-- Replace static workflow definitions and static graph ids with Authoring-owned graph templates and immutable revisions.
-- Retire `exec_trigger` and `exec_workflow_input_event` once graph instancing and source outbox projection cover their remaining behavior.
-- Retire instance-level `input_ref_kind` / `input_ref_id` bootstrap paths in favor of typed `exec_workflow_instance_input_binding` rows.
+- Static workflow definitions, the static workflow engine/builder/validator path, `exec_workflow_input_event`, and instance-level `input_ref_kind` / `input_ref_id` bootstrap paths have been removed from active workflow launch.
+- New workflow launches should use Authoring-owned graph templates, immutable revisions, Execution-owned `exec_workflow_instance_input_binding` rows, and scalar `exec_workflow_instance_argument` rows.
+- Step-level `input_ref_kind` / `input_ref_id` remains valid for actual runtime refs that are produced or consumed by descriptors and dynamic downstream steps.
+- Retire remaining `exec_trigger` behavior where it appears; graph instancing and source outbox projection should cover new behavior.
 - Move launch-time values out of authored specs where they are not reusable authoring intent:
   - TAS selected DTM artifact -> instance input binding.
   - TAS RTC value/range -> launcher input and per-instance argument.

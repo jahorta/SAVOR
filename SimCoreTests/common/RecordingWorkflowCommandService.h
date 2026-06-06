@@ -66,12 +66,6 @@ public:
         dynamic_step_calls.push_back(command);
         return true;
     }
-    bool AppendStepInputEvent(
-        const simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand& command,
-        std::string*) override {
-        input_events.push_back(command);
-        return true;
-    }
     bool AppendLifecycleEvent(
         const simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand& command,
         std::string*) override {
@@ -84,7 +78,6 @@ public:
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepReadyCommand> ready_calls;
     std::vector<simcore::db::execution::workflow::WorkflowAppendDynamicStepsCommand> dynamic_step_calls;
-    std::vector<simcore::db::execution::workflow::WorkflowAppendStepInputEventCommand> input_events;
     std::vector<simcore::db::execution::workflow::WorkflowAppendLifecycleEventCommand> lifecycle_events;
     std::vector<simcore::db::execution::workflow::WorkflowCreateInstanceCommand> create_workflow_instance_calls;
     std::vector<simcore::db::execution::workflow::WorkflowCompleteInstanceCommand> complete_workflow_instance_calls;

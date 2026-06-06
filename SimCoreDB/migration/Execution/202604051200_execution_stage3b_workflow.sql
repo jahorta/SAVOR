@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS exec_workflow_instance (
     state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED')),
     root_scope_kind TEXT NOT NULL CHECK(root_scope_kind IN ('job_set','run','manual')),
     root_scope_id INTEGER NULL,
-    input_ref_kind TEXT NULL,
-    input_ref_id INTEGER NULL,
     created_by TEXT NULL,
     created_at_utc INTEGER NOT NULL,
     started_at_utc INTEGER NULL,

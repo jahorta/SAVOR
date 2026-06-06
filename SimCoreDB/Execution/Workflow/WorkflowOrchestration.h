@@ -10,27 +10,6 @@
 
 namespace simcore::db::execution::workflow {
 
-enum class WorkflowExecutionMode {
-    Workflow = 0,
-};
-
-inline constexpr std::string_view ToString(WorkflowExecutionMode mode) {
-    switch (mode) {
-    case WorkflowExecutionMode::Workflow: return "Workflow";
-    }
-    return "Unknown";
-}
-
-struct WorkflowModeSelection {
-    WorkflowExecutionMode mode = WorkflowExecutionMode::Workflow;
-    std::string source;
-};
-
-struct IWorkflowModeProvider {
-    virtual ~IWorkflowModeProvider() = default;
-    virtual WorkflowModeSelection GetModeSelection() const = 0;
-};
-
 enum class WorkflowInstanceState {
     Pending = 0,
     Running = 1,
@@ -55,8 +34,6 @@ struct WorkflowInstanceRecord {
     WorkflowInstanceState state = WorkflowInstanceState::Pending;
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
-    std::optional<std::string> input_ref_kind;
-    std::optional<std::int64_t> input_ref_id;
     std::optional<std::int64_t> workflow_graph_revision_id;
 };
 
@@ -233,16 +210,6 @@ struct WorkflowAppendDynamicStepsCommand {
     std::string requested_by;
 };
 
-struct WorkflowAppendStepInputEventCommand {
-    std::int64_t workflow_instance_id = 0;
-    std::int64_t workflow_step_id = 0;
-    std::string event_kind;
-    std::optional<std::string> source_key;
-    std::optional<std::string> request_id;
-    std::optional<std::string> message;
-    std::string requested_by;
-};
-
 struct WorkflowAppendLifecycleEventCommand {
     std::int64_t workflow_instance_id = 0;
     std::optional<std::int64_t> workflow_step_id;
@@ -285,12 +252,9 @@ struct WorkflowCreateInstanceCommand {
     std::string workflow_kind;
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
-    std::optional<std::string> input_ref_kind;
-    std::optional<std::int64_t> input_ref_id;
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string created_by;
     std::int64_t created_at_utc = 0;
-    std::vector<std::string> available_inputs;
     std::vector<WorkflowCreateStepSpec> steps;
     std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
     std::vector<WorkflowCreateInstanceArgumentSpec> arguments;
@@ -331,7 +295,6 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) = 0;
     virtual bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) = 0;
-    virtual bool AppendStepInputEvent(const WorkflowAppendStepInputEventCommand& command, std::string* error_out) = 0;
     virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
 };
 

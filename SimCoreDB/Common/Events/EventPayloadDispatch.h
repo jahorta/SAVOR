@@ -29,7 +29,7 @@ struct EventDispatchBinding {
     PayloadResolverContract contract = PayloadResolverContract::Unknown;
 };
 
-inline constexpr std::array<EventDispatchBinding, 43> kPayloadDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 40> kPayloadDispatchBindingsV1{ {
     { { "Execution.JobSetCreated.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobQueued.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobClaimed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
@@ -44,9 +44,6 @@ inline constexpr std::array<EventDispatchBinding, 43> kPayloadDispatchBindingsV1
     { { "Execution.WorkflowStepCompleted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowStepFailed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.WorkflowInstanceCompleted.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
-    { { "Execution.WorkflowStepInputRequested.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
-    { { "Execution.WorkflowStepInputFragmentReady.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
-    { { "Execution.WorkflowStepInputComplete.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "AnalysisSpine.RunCreated.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
     { { "AnalysisSpine.StateRefRegistered.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },
     { { "AnalysisSpine.LineageEdgeAdded.v1", 1 }, PayloadResolverContract::AnalysisSpineV1 },

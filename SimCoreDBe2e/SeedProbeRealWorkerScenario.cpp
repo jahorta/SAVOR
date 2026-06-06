@@ -690,29 +690,16 @@ bool RunSeedProbeRealWorkerSmokeImpl(
 
     std::int64_t workflow_instance_id = 0;
     std::int64_t probe_run_id = 0;
-    if (workflow_graph_style) {
-        if (!SeedWorkflowGraphExecution(
-                db_service->AuthoringDb(),
-                execution_db,
-                savestate_id,
-                seed_probe_spec_id,
-                &workflow_instance_id,
-                &err)) {
-            if (error_out) *error_out = "failed seeding workflow graph execution rows: " + err;
-            return false;
-        }
-    } else {
-        if (!SeedExecutionWorkflow(
-                db_service->AnalysisDb(),
-                execution_db,
-                savestate_id,
-                seed_probe_spec_id,
-                &workflow_instance_id,
-                &probe_run_id,
-                &err)) {
-            if (error_out) *error_out = "failed seeding execution workflow rows: " + err;
-            return false;
-        }
+    (void)workflow_graph_style;
+    if (!SeedWorkflowGraphExecution(
+            db_service->AuthoringDb(),
+            execution_db,
+            savestate_id,
+            seed_probe_spec_id,
+            &workflow_instance_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding workflow graph execution rows: " + err;
+        return false;
     }
 
     simcore::db::execution::programdb::ProgramKindRegistry program_kind_registry;

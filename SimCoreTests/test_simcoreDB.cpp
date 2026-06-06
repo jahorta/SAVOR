@@ -32,13 +32,8 @@
 #include "Runner/Parallel/SimCoreDB/ArchiveWorkflowCommands.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowComposition.h"
-#include "Execution/Workflow/WorkflowEngine.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
-#include "Execution/Workflow/WorkflowModeProvider.h"
-#include "Execution/Workflow/WorkflowParityDiagnostics.h"
-#include "Execution/Workflow/WorkflowParityStore.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
@@ -75,67 +70,6 @@ TEST(DbMigrateMigrationsIntegration, DISABLED_FilesystemSourceHasMigrationPerCon
         const auto entries = LoadContextMigrations(context, filesystem_options);
         ASSERT_FALSE(entries.empty()) << "Expected at least one migration in context " << ToString(context);
     }
-}
-
-TEST(Stage3cSeedProbeDefinition, ValidatesAndRejectsCycleDefinitions) {
-    using namespace simcore::db::execution::workflow;
-
-    auto definition = BuildSeedProbeChainDefinition();
-    std::string err;
-    EXPECT_TRUE(ValidateWorkflowDefinition(definition, &err)) << err;
-
-    definition.steps[0].dependencies.push_back("Done");
-    EXPECT_FALSE(ValidateWorkflowDefinition(definition, &err));
-    EXPECT_NE(err.find("cycle"), std::string::npos);
-}
-
-TEST(Stage3cSeedProbeDefinition, ValidatesStepContracts) {
-    using namespace simcore::db::execution::workflow;
-
-    auto definition = BuildSeedProbeChainDefinition();
-    std::string err;
-    EXPECT_TRUE(ValidateWorkflowDefinition(definition, &err)) << err;
-    ASSERT_EQ(definition.initial_inputs.size(), 1u);
-    EXPECT_EQ(definition.initial_inputs[0], "sp_probe_run.probe_run_id");
-    ASSERT_FALSE(definition.steps[0].required_inputs.empty());
-    EXPECT_EQ(definition.steps[0].required_inputs[0], "sp_probe_run.probe_run_id");
-    ASSERT_FALSE(definition.steps[2].provided_outputs.empty());
-    EXPECT_EQ(definition.steps[2].provided_outputs[0], "general.input_frame_list");
-
-    definition.steps[2].required_inputs.push_back("seedprobe.grid.extra_artifact");
-    EXPECT_FALSE(ValidateWorkflowDefinition(definition, &err));
-    EXPECT_NE(err.find("unsatisfied required_inputs"), std::string::npos);
-    EXPECT_NE(err.find("Unique"), std::string::npos);
-    EXPECT_NE(err.find("seedprobe.grid.extra_artifact"), std::string::npos);
-}
-
-TEST(Stage3cSeedProbeDefinition, RegistryRegistersDefaultsAndRejectsDuplicates) {
-    using namespace simcore::db::execution::workflow;
-
-    WorkflowDefinitionRegistry registry;
-    std::string err;
-    EXPECT_TRUE(registry.RegisterSeedProbeDefaults(&err)) << err;
-
-    const auto* found = registry.Find("SEED_PROBE_CHAIN");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->steps.size(), 4u);
-
-    EXPECT_FALSE(registry.RegisterSeedProbeDefaults(&err));
-    EXPECT_NE(err.find("already registered"), std::string::npos);
-}
-
-TEST(Stage3cSeedProbeDefinition, RegistryRejectsInvalidContractDefinition) {
-    using namespace simcore::db::execution::workflow;
-
-    WorkflowDefinitionRegistry registry;
-    auto definition = BuildSeedProbeChainDefinition();
-    definition.steps[1].required_inputs.push_back("seedprobe.missing.contract");
-
-    std::string err;
-    EXPECT_FALSE(registry.RegisterDefinition(std::move(definition), &err));
-    EXPECT_NE(err.find("invalid workflow definition"), std::string::npos);
-    EXPECT_NE(err.find("seedprobe.missing.contract"), std::string::npos);
-    EXPECT_NE(err.find("Grid"), std::string::npos);
 }
 
 TEST(Stage5WorkflowComposition, DefaultUnitsModelCanonicalTypedChains) {
@@ -218,220 +152,6 @@ TEST(Stage5WorkflowComposition, ReportsUnresolvedAndMismatchedInputs) {
     EXPECT_FALSE(preview.valid);
     ASSERT_FALSE(preview.issues.empty());
     EXPECT_NE(preview.issues[0].message.find("type mismatch"), std::string::npos);
-}
-
-TEST(Stage3cWorkflowEngine, ResolveReadinessAndRecoveryTransitions) {
-    using namespace simcore::db::execution::workflow;
-
-    WorkflowGraphSnapshot snapshot;
-    snapshot.instance.workflow_instance_id = 44;
-    snapshot.steps = {
-        WorkflowStepRecord{ .workflow_step_id = 1, .workflow_instance_id = 44, .step_key = "Neutral", .step_kind = "seedprobe.neutral", .state = WorkflowStepState::Completed },
-        WorkflowStepRecord{ .workflow_step_id = 2, .workflow_instance_id = 44, .step_key = "Grid", .step_kind = "seedprobe.grid", .state = WorkflowStepState::Waiting },
-        WorkflowStepRecord{ .workflow_step_id = 3, .workflow_instance_id = 44, .step_key = "Unique", .step_kind = "seedprobe.unique", .state = WorkflowStepState::Materialized, .job_set_id = 555 },
-        WorkflowStepRecord{ .workflow_step_id = 4, .workflow_instance_id = 44, .step_key = "Done", .step_kind = "seedprobe.done", .state = WorkflowStepState::Waiting },
-    };
-
-    const auto definition = BuildSeedProbeChainDefinition();
-    const auto ready_result = ResolveReadiness(snapshot, definition, {});
-    ASSERT_EQ(ready_result.transitions.size(), 1);
-    EXPECT_EQ(ready_result.transitions[0].workflow_step_id, 2);
-    EXPECT_EQ(ready_result.transitions[0].to, WorkflowStepState::Ready);
-
-    const auto reconcile_result = ReconcileRunningSteps(snapshot, { { 555, "FAILED" } });
-    ASSERT_EQ(reconcile_result.transitions.size(), 1);
-    EXPECT_EQ(reconcile_result.transitions[0].workflow_step_id, 3);
-    EXPECT_EQ(reconcile_result.transitions[0].to, WorkflowStepState::Failed);
-}
-
-
-TEST(Stage3cWorkflowParityDiagnostics, ClassifiesMissingAndMismatchedOutcomes) {
-    using namespace simcore::db::execution::workflow;
-
-    const auto report = CompareLegacyAndWorkflowOutcomes(
-        {
-            WorkflowOutcomeItem{ .step_key = "Neutral", .outcome = "COMPLETED" },
-            WorkflowOutcomeItem{ .step_key = "Grid", .outcome = "COMPLETED" },
-        },
-        {
-            WorkflowOutcomeItem{ .step_key = "Neutral", .outcome = "FAILED" },
-            WorkflowOutcomeItem{ .step_key = "Unique", .outcome = "COMPLETED" },
-        });
-
-    EXPECT_EQ(report.compared_steps, 3);
-    EXPECT_EQ(report.matched_steps, 0);
-    EXPECT_EQ(report.mismatches.size(), 3);
-}
-
-TEST(Stage3cWorkflowParityDiagnostics, NormalizesLegacyAndWorkflowOutcomeVocabulary) {
-    using namespace simcore::db::execution::workflow;
-
-    const auto report = CompareLegacyAndWorkflowOutcomes(
-        {
-            WorkflowOutcomeItem{ .step_key = "neutral", .outcome = "SUCCEEDED" },
-            WorkflowOutcomeItem{ .step_key = "Grid", .outcome = "SUCCEEDED_WINNER" },
-            WorkflowOutcomeItem{ .step_key = "Unique", .outcome = "CANCELED" },
-        },
-        {
-            WorkflowOutcomeItem{ .step_key = "NEUTRAL", .outcome = "COMPLETED" },
-            WorkflowOutcomeItem{ .step_key = "grid", .outcome = "COMPLETED" },
-            WorkflowOutcomeItem{ .step_key = "unique", .outcome = "FAILED" },
-        });
-
-    EXPECT_EQ(report.compared_steps, 3);
-    EXPECT_EQ(report.matched_steps, 3);
-    EXPECT_TRUE(report.mismatches.empty());
-}
-
-TEST(Stage3cWorkflowPromotionGate, EvaluatesDecisionFromLegacyAndWorkflowPathsAndBuildsArtifact) {
-    using namespace simcore::db::execution::workflow;
-
-    const std::vector<WorkflowOutcomeItem> legacy_pass_path{
-        { .step_key = "Neutral", .outcome = "SUCCEEDED" },
-        { .step_key = "Grid", .outcome = "SUCCEEDED_WINNER" },
-        { .step_key = "Unique", .outcome = "SUCCEEDED" },
-        { .step_key = "Done", .outcome = "COMPLETED" },
-    };
-    const std::vector<WorkflowOutcomeItem> workflow_pass_path{
-        { .step_key = "neutral", .outcome = "COMPLETED" },
-        { .step_key = "grid", .outcome = "COMPLETED" },
-        { .step_key = "unique", .outcome = "COMPLETED" },
-        { .step_key = "done", .outcome = "COMPLETED" },
-    };
-    const auto pass_parity = CompareLegacyAndWorkflowOutcomes(legacy_pass_path, workflow_pass_path);
-
-    const WorkflowPromotionEvidence pass_evidence{
-        .parity_compared_steps = pass_parity.compared_steps,
-        .parity_matched_steps = pass_parity.matched_steps,
-        .recovery_passed = true,
-        .integrity_passed = true,
-        .readiness_scan_p95_ms = 5.0,
-        .readiness_scan_threshold_ms = 20.0,
-    };
-
-    const auto pass_decision = EvaluateWorkflowPromotionGate(pass_evidence);
-    EXPECT_TRUE(pass_decision.approved);
-    EXPECT_TRUE(pass_decision.blockers.empty());
-
-    const auto pass_json = BuildWorkflowPromotionDecisionJson(pass_evidence, pass_decision);
-    EXPECT_NE(pass_json.find("\"approved\":true"), std::string::npos);
-    EXPECT_NE(pass_json.find("\"blockers\":[]"), std::string::npos);
-
-    const std::vector<WorkflowOutcomeItem> legacy_fail_path{
-        { .step_key = "Neutral", .outcome = "SUCCEEDED" },
-        { .step_key = "Grid", .outcome = "SUCCEEDED" },
-        { .step_key = "Unique", .outcome = "SUCCEEDED" },
-        { .step_key = "Done", .outcome = "SUCCEEDED" },
-    };
-    const std::vector<WorkflowOutcomeItem> workflow_fail_path{
-        { .step_key = "Neutral", .outcome = "FAILED" },
-        { .step_key = "Grid", .outcome = "FAILED" },
-        { .step_key = "Unique", .outcome = "FAILED" },
-        { .step_key = "Done", .outcome = "FAILED" },
-    };
-    const auto fail_parity = CompareLegacyAndWorkflowOutcomes(legacy_fail_path, workflow_fail_path);
-
-    const WorkflowPromotionEvidence fail_evidence{
-        .parity_compared_steps = fail_parity.compared_steps,
-        .parity_matched_steps = fail_parity.matched_steps,
-        .recovery_passed = false,
-        .integrity_passed = true,
-        .readiness_scan_p95_ms = 50.0,
-        .readiness_scan_threshold_ms = 20.0,
-    };
-
-    const auto fail_decision = EvaluateWorkflowPromotionGate(fail_evidence);
-    EXPECT_FALSE(fail_decision.approved);
-    EXPECT_GE(fail_decision.blockers.size(), 3u);
-
-    const auto fail_json = BuildWorkflowPromotionDecisionJson(fail_evidence, fail_decision);
-    EXPECT_NE(fail_json.find("parity_below_99_percent"), std::string::npos);
-    EXPECT_NE(fail_json.find("recovery_failed"), std::string::npos);
-    EXPECT_NE(fail_json.find("readiness_latency_above_threshold"), std::string::npos);
-
-    const std::vector<std::string> required_json_fields{
-        "\"approved\":",
-        "\"parity_percent\":",
-        "\"parity_compared_steps\":",
-        "\"parity_matched_steps\":",
-        "\"recovery_passed\":",
-        "\"integrity_passed\":",
-        "\"readiness_scan_p95_ms\":",
-        "\"readiness_scan_threshold_ms\":",
-        "\"blockers\":[",
-    };
-
-    auto has_all_required_fields = [&](const std::string& json) {
-        for (const auto& token : required_json_fields) {
-            if (json.find(token) == std::string::npos) {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    EXPECT_TRUE(has_all_required_fields(pass_json));
-    EXPECT_TRUE(has_all_required_fields(fail_json));
-
-    const auto pass_parity_percent =
-        (static_cast<double>(pass_evidence.parity_matched_steps) / static_cast<double>(pass_evidence.parity_compared_steps)) * 100.0;
-    const auto fail_parity_percent =
-        (static_cast<double>(fail_evidence.parity_matched_steps) / static_cast<double>(fail_evidence.parity_compared_steps)) * 100.0;
-
-    std::ostringstream detail_summary;
-    detail_summary << "Item18PromotionGate\n";
-    detail_summary << "RequiredDataFieldsPresent(pass_json)="
-                   << (has_all_required_fields(pass_json) ? "YES" : "NO") << "\n";
-    detail_summary << "RequiredDataFieldsPresent(fail_json)="
-                   << (has_all_required_fields(fail_json) ? "YES" : "NO") << "\n";
-    detail_summary << "PassEvidence: "
-                   << "approved=" << (pass_decision.approved ? "true" : "false")
-                   << ", parity_percent=" << pass_parity_percent
-                   << ", parity_compared_steps=" << pass_evidence.parity_compared_steps
-                   << ", parity_matched_steps=" << pass_evidence.parity_matched_steps
-                   << ", recovery_passed=" << (pass_evidence.recovery_passed ? "true" : "false")
-                   << ", integrity_passed=" << (pass_evidence.integrity_passed ? "true" : "false")
-                   << ", readiness_scan_p95_ms=" << pass_evidence.readiness_scan_p95_ms
-                   << ", readiness_scan_threshold_ms=" << pass_evidence.readiness_scan_threshold_ms
-                   << ", blockers_count=" << pass_decision.blockers.size() << "\n";
-    detail_summary << "FailEvidence: "
-                   << "approved=" << (fail_decision.approved ? "true" : "false")
-                   << ", parity_percent=" << fail_parity_percent
-                   << ", parity_compared_steps=" << fail_evidence.parity_compared_steps
-                   << ", parity_matched_steps=" << fail_evidence.parity_matched_steps
-                   << ", recovery_passed=" << (fail_evidence.recovery_passed ? "true" : "false")
-                   << ", integrity_passed=" << (fail_evidence.integrity_passed ? "true" : "false")
-                   << ", readiness_scan_p95_ms=" << fail_evidence.readiness_scan_p95_ms
-                   << ", readiness_scan_threshold_ms=" << fail_evidence.readiness_scan_threshold_ms
-                   << ", blockers_count=" << fail_decision.blockers.size() << "\n";
-    detail_summary << "PassPathSampleSize(legacy|workflow)="
-                   << legacy_pass_path.size() << "|" << workflow_pass_path.size() << "\n";
-    detail_summary << "FailPathSampleSize(legacy|workflow)="
-                   << legacy_fail_path.size() << "|" << workflow_fail_path.size() << "\n";
-    detail_summary << "FailBlockers=";
-    for (size_t i = 0; i < fail_decision.blockers.size(); ++i) {
-        if (i > 0) {
-            detail_summary << "|";
-        }
-        detail_summary << fail_decision.blockers[i];
-    }
-
-    ::testing::Test::RecordProperty("TestDetailSummary", detail_summary.str());
-}
-
-TEST(Stage3cWorkflowModeProvider, ParsesAndReturnsSelectedModes) {
-    using namespace simcore::db::execution::workflow;
-
-    StaticWorkflowModeProvider provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
-    const auto selection = provider.GetModeSelection();
-    EXPECT_EQ(selection.mode, WorkflowExecutionMode::Workflow);
-    EXPECT_EQ(selection.source, "unit-test");
-
-    EXPECT_EQ(ParseWorkflowExecutionMode("Workflow", WorkflowExecutionMode::Workflow), WorkflowExecutionMode::Workflow);
-    EXPECT_EQ(ParseWorkflowExecutionMode("invalid", WorkflowExecutionMode::Workflow), WorkflowExecutionMode::Workflow);
-
-    const auto policy = BuildWorkflowAuthorityPolicy(WorkflowExecutionMode::Workflow);
-    EXPECT_TRUE(policy.run_workflow);
 }
 
 TEST(Stage3cCoordinatorBridge, DeduplicatesTerminalSignalsAndSchedulesReadySteps) {
@@ -790,11 +510,8 @@ TEST(Stage3cCoordinatorReplacement, MaterializesAndPublishesThroughWorkflowBridg
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         nullptr,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
         },
@@ -852,11 +569,8 @@ TEST(Stage3cCoordinatorReplacement, SnapshotWorkersTracksSlotLifecycleAcrossEnqu
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         nullptr,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 1,
             .controller_sleep_ms = 1,
@@ -897,11 +611,8 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
         },
@@ -937,60 +648,6 @@ TEST(Stage3cCoordinatorReplacement, PersistsMaterializedAndTerminalTransitionsTo
     EXPECT_TRUE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_FALSE(coordinator.PublishTerminalJobSet(terminal));
     EXPECT_TRUE(execution_db.command_service.terminal_calls.empty());
-}
-
-TEST(Stage1CoordinatorIntegration, AggregationGatesMaterializationAndEmitsInputEvents) {
-    using namespace simcore::runner::parallel::simcoredb;
-    using namespace simcore::db::execution::workflow;
-
-    RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage1-test" });
-
-    DBWorkflowWorkerCoordinator coordinator(
-        &execution_db,
-        &mode_provider,
-        DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 0,
-            .controller_sleep_ms = 1,
-        },
-        CoordinatorIntegrationConfig{},
-        [](const WorkflowReadyStep& step) {
-            return ScheduledJobSet{
-                .job_set_id = 7000 + step.workflow_step_id,
-                .workflow_step_id = step.workflow_step_id,
-            };
-        });
-
-    coordinator.EnqueueReadyStep({
-        .workflow_instance_id = 101,
-        .workflow_step_id = 202,
-        .step_key = "Neutral",
-        .step_kind = "seedprobe.neutral",
-        .priority = 1,
-    });
-
-    coordinator.Start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    coordinator.Stop();
-
-    ASSERT_EQ(execution_db.command_service.materialized_calls.size(), 1u);
-    EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 202);
-    EXPECT_FALSE(execution_db.command_service.input_events.empty());
-    bool saw_requested = false;
-    bool saw_fragment = false;
-    bool saw_complete = false;
-    for (const auto& event : execution_db.command_service.input_events) {
-        if (event.event_kind == "Execution.WorkflowStepInputRequested.v1") saw_requested = true;
-        if (event.event_kind == "Execution.WorkflowStepInputFragmentReady.v1") saw_fragment = true;
-        if (event.event_kind == "Execution.WorkflowStepInputComplete.v1") saw_complete = true;
-    }
-    EXPECT_TRUE(saw_requested);
-    EXPECT_TRUE(saw_fragment);
-    EXPECT_TRUE(saw_complete);
-
-    const auto telemetry = coordinator.SnapshotTelemetry();
-    EXPECT_GE(telemetry.input_complete_count, 1);
-    EXPECT_GE(telemetry.last_input_latency_ms, 0);
 }
 
 TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndMarksSameJobSet) {
@@ -1097,11 +754,8 @@ TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMat
     };
 
     SignalExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "workflow-created-signal-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
             .controller_sleep_ms = 1,
@@ -1146,16 +800,13 @@ TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMat
     EXPECT_GT(execution_db.signal_query_service.scan_count.load(), 0);
 }
 
-TEST(Stage3cCoordinatorReplacement, DisabledWorkflowModeSkipsWorkflowPersistencePath) {
+TEST(Stage3cCoordinatorReplacement, DisabledWorkflowIntegrationSkipsWorkflowPersistencePath) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "unit-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
         },
@@ -1224,37 +875,6 @@ TEST(Stage3cEventContracts, PayloadDispatchAndValidationRejectVersionSuffixMisma
     EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(envelope, &error));
     EXPECT_EQ(error, "event_type must end with .v<event_version>");
 }
-
-TEST(Stage3cEventContracts, WorkflowInputEventsRouteToExecutionContractAndRequireWorkflowInputPayloadFamily) {
-    using namespace simcore::db::events;
-
-    constexpr std::array<std::string_view, 3> kWorkflowInputEvents{ {
-        "Execution.WorkflowStepInputRequested.v1",
-        "Execution.WorkflowStepInputFragmentReady.v1",
-        "Execution.WorkflowStepInputComplete.v1",
-    } };
-
-    for (const auto event_type : kWorkflowInputEvents) {
-        const auto contract = ResolvePayloadResolverContract(event_type, 1);
-        ASSERT_TRUE(contract.has_value()) << event_type;
-        EXPECT_EQ(*contract, PayloadResolverContract::ExecutionWorkflowJobV1) << event_type;
-
-        EventEnvelope valid{};
-        valid.event_type = std::string(event_type);
-        valid.event_version = 1;
-        valid.context_name = "Execution";
-        valid.aggregate_kind = "workflow_step";
-        valid.payload_ref_kind = "workflow_input_event";
-        valid.payload_ref_id = 123;
-        std::string error;
-        EXPECT_TRUE(ValidateExecutionWorkflowJobPayloadV1(valid, &error)) << event_type << ": " << error;
-
-        valid.payload_ref_kind = "workflow_event";
-        EXPECT_FALSE(ValidateExecutionWorkflowJobPayloadV1(valid, &error));
-        EXPECT_EQ(error, "payload_ref_kind must be workflow_input_event for Execution.WorkflowStepInput* event");
-    }
-}
-
 
 TEST(Stage3cEventContracts, SeedProbeValidationRequiresConcretePayloadRefKinds) {
     using namespace simcore::db::events;
@@ -1372,7 +992,7 @@ TEST(Stage3cEventContracts, AuthoringCatalogEntriesRemainDispatched) {
     EXPECT_EQ(authoring_entries, 8u);
 }
 
-TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
+TEST(Stage3cCoordinatorIntegrationConfig, WorkflowEnabledConfigDrivesWorkflowPathDecisions) {
     using namespace simcore::runner::parallel::simcoredb;
     using namespace simcore::db::execution::workflow;
 
@@ -1383,11 +1003,8 @@ TEST(Stage3cCoordinatorModes, ModeMatrixPoliciesDriveWorkflowPathDecisions) {
 
     for (const auto& [integration_cfg, should_run_workflow] : matrix) {
         RecordingExecutionDb execution_db;
-        StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "mode-matrix" });
-
         DBWorkflowWorkerCoordinator coordinator(
             &execution_db,
-            &mode_provider,
             DBWorkflowWorkerCoordinatorConfig{
                 .desired_workers = 0,
             },
@@ -1434,11 +1051,8 @@ TEST(Stage3cCoordinatorTelemetry, CapturesReadinessScanLatencyAndQueueDepth) {
     using namespace simcore::db::execution::workflow;
 
     RecordingExecutionDb execution_db;
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "telemetry-test" });
-
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
         },

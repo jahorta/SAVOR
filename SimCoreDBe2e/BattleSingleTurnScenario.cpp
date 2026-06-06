@@ -136,13 +136,12 @@ bool RunSeedProbePrelude(
 
     std::int64_t seedprobe_workflow_instance_id = 0;
     std::int64_t probe_run_id = 0;
-    if (!SeedExecutionWorkflow(
-            db_service->AnalysisDb(),
+    if (!SeedWorkflowGraphExecution(
+            db_service->AuthoringDb(),
             db_service->ExecutionDb(),
             entry_savestate_id,
             seed_probe_spec_id,
             &seedprobe_workflow_instance_id,
-            &probe_run_id,
             &err)) {
         if (error_out) *error_out = "failed seeding SeedProbe workflow: " + err;
         return false;
@@ -279,6 +278,18 @@ bool RunSeedProbePrelude(
     if (interactive_stdout) {
         progress_renderer.SetLines(latest_lines);
         progress_renderer.Render(std::cout);
+    }
+    if (final_graph.has_value()) {
+        for (const auto& step : final_graph->steps) {
+            if ((step.step_key == "probe_1" || step.step_kind == "seed_probe_chain")
+                && step.input_ref_kind.has_value()
+                && *step.input_ref_kind == "sp_probe_run"
+                && step.input_ref_id.has_value()
+                && *step.input_ref_id > 0) {
+                probe_run_id = *step.input_ref_id;
+                break;
+            }
+        }
     }
 
     std::cout << "[battle-seedprobe-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
@@ -588,11 +599,8 @@ bool SeedBattleAnalysisAndWorkflowRows(
     workflow.workflow_kind = "BATTLE_SINGLE_TURN_CHAIN";
     workflow.root_scope_kind = "run";
     workflow.root_scope_id = battle_set_id;
-    workflow.input_ref_kind = std::string(kWaveRefKind);
-    workflow.input_ref_id = wave_id;
     workflow.created_by = "simcoredbe2e";
     workflow.created_at_utc = now.time_since_epoch().count();
-    workflow.available_inputs = { "analysis_battle.turn_wave.wave_id" };
     simcore::db::execution::workflow::WorkflowCreateStepSpec step{};
     step.step_key = "BattleContext/t1/w" + std::to_string(wave_id);
     step.step_kind = "battle.context_probe";
@@ -689,60 +697,26 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
         return false;
     }
 
-    return execution_db->CreateWorkflowInstance(
-        {
-            .workflow_kind = "workflow_graph_tasmovie_seedprobe_battle",
-            .root_scope_kind = "manual",
-            .root_scope_id = dtm_artifact_id,
-            .input_ref_kind = std::string("state_artifact"),
-            .input_ref_id = dtm_artifact_id,
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .created_by = "simcoredbe2e",
-            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
-            .steps = {
-                {
-                    .step_key = "tas_1",
-                    .step_kind = "tas_movie",
-                    .priority = 1,
-                    .max_attempts = 1,
-                },
-            },
-            .input_bindings = {
-                {
-                    .node_key = "tas_1",
-                    .input_key = "dtm_artifact",
-                    .data_kind = "state_artifact.dtm_artifact_id",
-                    .ref_kind = "state_artifact",
-                    .ref_id = dtm_artifact_id,
-                    .source_kind = "external",
-                },
-            },
-            .arguments = {
-                {
-                    .node_key = "tas_1",
-                    .argument_key = "rtc",
-                    .value_type = "integer",
-                    .integer_value = 4,
-                    .source_kind = "scenario",
-                },
-                {
-                    .node_key = "battle_1",
-                    .argument_key = "fake_attack_min",
-                    .value_type = "integer",
-                    .integer_value = 22,
-                    .source_kind = "scenario",
-                },
-                {
-                    .node_key = "battle_1",
-                    .argument_key = "fake_attack_max",
-                    .value_type = "integer",
-                    .integer_value = 25,
-                    .source_kind = "scenario",
-                },
-            },
-        },
-        workflow_instance_id_out,
-        error_out);
+    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph_tasmovie_seedprobe_battle";
+    command.root_scope_kind = "manual";
+    command.root_scope_id = dtm_artifact_id;
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "simcoredbe2e";
+    command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "tas_1",
+        .input_key = "dtm_artifact",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = 4, .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = 22, .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = 25, .source_kind = "scenario" });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
 std::int64_t ResolveProbeRunIdFromGraph(

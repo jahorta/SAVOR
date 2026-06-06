@@ -1,5 +1,6 @@
 #include "QueuedExecutionDb.h"
 
+#include <memory>
 #include <utility>
 
 namespace simcore::db::execution {
@@ -180,12 +181,6 @@ public:
         });
     }
 
-    bool AppendStepInputEvent(const workflow::WorkflowAppendStepInputEventCommand& command, std::string* error_out) override {
-        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
-            return service->AppendStepInputEvent(cmd, err);
-        });
-    }
-
     bool AppendLifecycleEvent(const workflow::WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->AppendLifecycleEvent(cmd, err);
@@ -322,10 +317,11 @@ bool QueuedExecutionDb::CreateWorkflowInstance(
     const workflow::WorkflowCreateInstanceCommand& command,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
+    auto command_copy = std::make_shared<workflow::WorkflowCreateInstanceCommand>(command);
     return ExecuteWrite<bool>(
-        [this, command, workflow_instance_id_out, error_out]() {
+        [this, command_copy, workflow_instance_id_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->CreateWorkflowInstance(command, workflow_instance_id_out, error_out)
+                ? inner_->CreateWorkflowInstance(*command_copy, workflow_instance_id_out, error_out)
                 : false;
         },
         false,

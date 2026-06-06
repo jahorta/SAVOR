@@ -1,8 +1,7 @@
 #include "DbSetup.h"
 
 #include "Common/Types/UtcTimestamp.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
-#include "Execution/Workflow/WorkflowInstanceBuilder.h"
+#include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Tas/DtmFile.h"
 
 namespace simcore::e2e {
@@ -158,83 +157,6 @@ bool SeedAuthoringSpec(
         error_out);
 }
 
-bool SeedExecutionWorkflow(
-    simcore::db::IAnalysisDb* analysis_db,
-    simcore::db::IExecutionDb* execution_db,
-    std::int64_t savestate_id,
-    std::int64_t seed_probe_spec_id,
-    std::int64_t* workflow_instance_id_out,
-    std::int64_t* probe_run_id_out,
-    std::string* error_out) {
-    if (analysis_db == nullptr || execution_db == nullptr) {
-        if (error_out) *error_out = "analysis/execution db unavailable";
-        return false;
-    }
-
-    std::int64_t probe_set_id = 0;
-    if (!analysis_db->CreateSeedProbeSet(
-            {
-                .name = "SimCoreDBe2e probe set",
-                .probe_flavor = "BATTLE_PRE",
-                .breakpoint_policy_name = "default",
-                .segment_source_kind = "manual",
-                .created_at_utc = UtcNow(),
-                .event_id = "simcoredbe2e.analysis.probe_set",
-                .correlation_id = "simcoredbe2e.seedprobe",
-                .causation_id = "simcoredbe2e.seed",
-            },
-            &probe_set_id,
-            error_out)) {
-        return false;
-    }
-
-    std::int64_t probe_run_id = 0;
-    if (!analysis_db->RequestSeedProbeRun(
-            {
-                .probe_set_id = probe_set_id,
-                .entry_savestate_id = savestate_id,
-                .seed_probe_spec_id = seed_probe_spec_id,
-                .codec_version = 1,
-                .status = "queued",
-                .requested_at_utc = UtcNow(),
-                .event_id = "simcoredbe2e.analysis.probe_run",
-                .correlation_id = "simcoredbe2e.seedprobe",
-                .causation_id = "simcoredbe2e.seed",
-            },
-            &probe_run_id,
-            error_out)) {
-        return false;
-    }
-    if (probe_run_id_out != nullptr) {
-        *probe_run_id_out = probe_run_id;
-    }
-
-    simcore::db::execution::workflow::WorkflowDefinitionRegistry registry;
-    if (!registry.RegisterSeedProbeDefaults(error_out)) {
-        return false;
-    }
-    simcore::db::execution::workflow::WorkflowInstanceValidator validator;
-    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry, &validator);
-    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    if (!builder.BuildCreateCommand(
-            {
-                .workflow_kind = "SEED_PROBE_CHAIN",
-                .root_scope_kind = "run",
-                .root_scope_id = probe_run_id,
-                .input_ref_kind = std::string("sp_probe_run"),
-                .input_ref_id = probe_run_id,
-                .created_by = "simcoredbe2e",
-                .created_at_utc = UtcNow().time_since_epoch().count(),
-                .available_inputs = { "sp_probe_run.probe_run_id" },
-            },
-            &command,
-            error_out)) {
-        return false;
-    }
-
-    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
-}
-
 bool SeedWorkflowGraphExecution(
     simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
@@ -283,144 +205,162 @@ bool SeedWorkflowGraphExecution(
         return false;
     }
 
-    return execution_db->CreateWorkflowInstance(
-        {
-            .workflow_kind = "workflow_graph",
-            .root_scope_kind = "manual",
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .created_by = "simcoredbe2e",
-            .created_at_utc = UtcNow().time_since_epoch().count(),
-            .steps = {
-                {
-                    .step_key = "probe_1",
-                    .step_kind = "seed_probe_chain",
-                    .priority = 1,
-                    .max_attempts = 1,
-                },
-            },
-            .input_bindings = {
-                {
-                    .node_key = "probe_1",
-                    .input_key = "entry_savestate",
-                    .data_kind = "state.savestate_id",
-                    .ref_kind = "state.savestate",
-                    .ref_id = savestate_id,
-                    .source_kind = "external",
-                },
-            },
-        },
-        workflow_instance_id_out,
-        error_out);
+    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "simcoredbe2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "probe_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = savestate_id,
+        .source_kind = "external",
+    });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
 bool SeedTasMovieWorkflow(
+    simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
-    if (execution_db == nullptr || dtm_artifact_id <= 0) {
-        if (error_out) *error_out = "execution db/dtm artifact unavailable";
+    if (authoring_db == nullptr || execution_db == nullptr || dtm_artifact_id <= 0) {
+        if (error_out) *error_out = "authoring/execution db/dtm artifact unavailable";
         return false;
     }
 
-    simcore::db::execution::workflow::WorkflowDefinitionRegistry registry;
-    if (!registry.RegisterTasMovieDefaults(error_out)) {
-        return false;
-    }
-    simcore::db::execution::workflow::WorkflowInstanceValidator validator;
-    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry, &validator);
-    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    if (!builder.BuildCreateCommand(
+    simcore::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
             {
-                .workflow_kind = "TAS_MOVIE_CHAIN",
-                .root_scope_kind = "manual",
-                .root_scope_id = dtm_artifact_id,
-                .input_ref_kind = std::string("state_artifact"),
-                .input_ref_id = dtm_artifact_id,
-                .created_by = "simcoredbe2e",
-                .created_at_utc = UtcNow().time_since_epoch().count(),
-                .available_inputs = { "state_artifact.artifact_id" },
+                .name = "SimCoreDBe2e workflow graph TasMovie",
+                .description = "Graph-style TAS movie scenario",
+                .graph_version = 1,
+                .graph_hash = "simcoredbe2e.workflow_graph.tasmovie",
+                .nodes = {
+                    {
+                        .node_key = "tas_1",
+                        .unit_kind = "tas_movie",
+                        .display_name = "TAS Movie",
+                        .inputs = {
+                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        },
+                    },
+                },
+                .created_at_utc = UtcNow(),
+                .event_id = "simcoredbe2e.authoring.workflow_graph.tasmovie",
+                .correlation_id = "simcoredbe2e.workflow_graph.tasmovie",
+                .causation_id = "simcoredbe2e.seed",
             },
-            &command,
+            &saved,
             error_out)) {
         return false;
     }
+
+    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph_tasmovie";
+    command.root_scope_kind = "manual";
+    command.root_scope_id = dtm_artifact_id;
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "simcoredbe2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "tas_1",
+        .input_key = "dtm_artifact",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
 bool SeedTasMovieSeedProbeWorkflow(
-    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
-    std::int64_t placeholder_savestate_id,
+    std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
     std::int64_t* workflow_instance_id_out,
-    std::int64_t* probe_run_id_out,
     std::string* error_out) {
-    if (analysis_db == nullptr || execution_db == nullptr) {
-        if (error_out) *error_out = "analysis/execution db unavailable";
+    if (authoring_db == nullptr || execution_db == nullptr) {
+        if (error_out) *error_out = "authoring/execution db unavailable";
+        return false;
+    }
+    if (dtm_artifact_id <= 0 || seed_probe_spec_id <= 0) {
+        if (error_out) *error_out = "dtm artifact and seed probe spec ids must be > 0";
         return false;
     }
 
-    std::int64_t probe_set_id = 0;
-    if (!analysis_db->CreateSeedProbeSet(
+    simcore::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SimCoreDBe2e TasMovie probe set",
-                .probe_flavor = "BATTLE_PRE",
-                .breakpoint_policy_name = "default",
-                .segment_source_kind = "tasmovie",
+                .name = "SimCoreDBe2e workflow graph TasMovie SeedProbe",
+                .description = "Graph-style TAS movie into seed probe scenario",
+                .graph_version = 1,
+                .graph_hash = "simcoredbe2e.workflow_graph.tasmovie_seedprobe",
+                .nodes = {
+                    {
+                        .node_key = "tas_1",
+                        .unit_kind = "tas_movie",
+                        .display_name = "TAS Movie",
+                        .inputs = {
+                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        },
+                    },
+                    {
+                        .node_key = "probe_1",
+                        .unit_kind = "seed_probe_chain",
+                        .display_name = "Seed Probe Chain",
+                        .authored_ref_kind = std::string("seed_probe_spec"),
+                        .authored_ref_id = seed_probe_spec_id,
+                        .inputs = {
+                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                        },
+                    },
+                },
+                .edges = {
+                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                },
                 .created_at_utc = UtcNow(),
-                .event_id = "simcoredbe2e.tasmovie.analysis.probe_set",
-                .correlation_id = "simcoredbe2e.tasmovie_seedprobe",
+                .event_id = "simcoredbe2e.authoring.workflow_graph.tasmovie_seedprobe",
+                .correlation_id = "simcoredbe2e.workflow_graph.tasmovie_seedprobe",
                 .causation_id = "simcoredbe2e.seed",
             },
-            &probe_set_id,
+            &saved,
             error_out)) {
         return false;
     }
 
-    std::int64_t probe_run_id = 0;
-    if (!analysis_db->RequestSeedProbeRun(
-            {
-                .probe_set_id = probe_set_id,
-                .entry_savestate_id = placeholder_savestate_id,
-                .seed_probe_spec_id = seed_probe_spec_id,
-                .codec_version = 1,
-                .status = "queued",
-                .requested_at_utc = UtcNow(),
-                .event_id = "simcoredbe2e.tasmovie.analysis.probe_run",
-                .correlation_id = "simcoredbe2e.tasmovie_seedprobe",
-                .causation_id = "simcoredbe2e.seed",
-            },
-            &probe_run_id,
-            error_out)) {
-        return false;
-    }
-    if (probe_run_id_out != nullptr) {
-        *probe_run_id_out = probe_run_id;
-    }
-
-    simcore::db::execution::workflow::WorkflowDefinitionRegistry registry;
-    if (!registry.RegisterSeedProbeDefaults(error_out) || !registry.RegisterTasMovieDefaults(error_out)) {
-        return false;
-    }
-    simcore::db::execution::workflow::WorkflowInstanceValidator validator;
-    simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry, &validator);
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    if (!builder.BuildCreateCommand(
-            {
-                .workflow_kind = "TAS_MOVIE_SEED_PROBE_CHAIN",
-                .root_scope_kind = "run",
-                .root_scope_id = probe_run_id,
-                .input_ref_kind = std::string("sp_probe_run"),
-                .input_ref_id = probe_run_id,
-                .created_by = "simcoredbe2e",
-                .created_at_utc = UtcNow().time_since_epoch().count(),
-                .available_inputs = { "sp_probe_run.probe_run_id" },
-            },
-            &command,
-            error_out)) {
-        return false;
-    }
+    command.workflow_kind = "workflow_graph_tasmovie_seedprobe";
+    command.root_scope_kind = "manual";
+    command.root_scope_id = dtm_artifact_id;
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "simcoredbe2e";
+    command.created_at_utc = UtcNow().time_since_epoch().count();
+    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "tas_1",
+        .input_key = "dtm_artifact",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 

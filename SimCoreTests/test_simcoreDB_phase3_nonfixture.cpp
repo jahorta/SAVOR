@@ -15,10 +15,8 @@
 #include "Archive/QueuedArchiveDb.h"
 #include "Authoring/QueuedAuthoringDb.h"
 #include "Execution/QueuedExecutionDb.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
-#include "Execution/Workflow/WorkflowModeProvider.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowDispatchCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowMaterializationService.h"
@@ -30,43 +28,6 @@
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
-    TEST(Stage3Phase2Contracts, SeedProbeSplitContractIncludesNeutralGridUniqueDependenciesAndInputs) {
-        using namespace simcore::db::execution::workflow;
-
-        const auto definition = BuildSeedProbeChainDefinition();
-        std::string validation_error;
-        ASSERT_TRUE(ValidateWorkflowDefinition(definition, &validation_error)) << validation_error;
-
-        const auto find_step = [&](std::string_view key) -> const WorkflowStepDefinition* {
-            for (const auto& step : definition.steps) {
-                if (step.step_key == key) {
-                    return &step;
-                }
-            }
-            return nullptr;
-        };
-
-        const auto* neutral = find_step("Neutral");
-        const auto* grid = find_step("Grid");
-        const auto* unique = find_step("Unique");
-        ASSERT_NE(neutral, nullptr);
-        ASSERT_NE(grid, nullptr);
-        ASSERT_NE(unique, nullptr);
-
-        ASSERT_EQ(neutral->required_inputs.size(), 1u);
-        EXPECT_EQ(neutral->required_inputs.front(), "sp_probe_run.probe_run_id");
-
-        ASSERT_EQ(grid->dependencies.size(), 1u);
-        EXPECT_EQ(grid->dependencies.front(), "Neutral");
-        ASSERT_EQ(grid->required_inputs.size(), 1u);
-        EXPECT_EQ(grid->required_inputs.front(), "seedprobe.neutral.seed_context");
-
-        ASSERT_EQ(unique->dependencies.size(), 1u);
-        EXPECT_EQ(unique->dependencies.front(), "Grid");
-        ASSERT_EQ(unique->required_inputs.size(), 1u);
-        EXPECT_EQ(unique->required_inputs.front(), "seedprobe.grid.seed_evidence");
-    }
-
     TEST(Stage3Phase2Contracts, DbLifecyclePreservesCanonicalEventOrderingAndOutboxContracts) {
         using namespace simcore::db::execution::workflow;
         using namespace simcore::db::migrations;
@@ -89,24 +50,6 @@ VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*10
         ASSERT_NE(commands, nullptr);
 
         ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2502, .job_set_id = 8801, .requested_by = "SimCoreTests" }, &err)) << err;
-        ASSERT_TRUE(commands->AppendStepInputEvent({
-            .workflow_instance_id = 2501,
-            .workflow_step_id = 2502,
-            .event_kind = "Execution.WorkflowStepInputRequested.v1",
-            .source_key = std::optional<std::string>("savestate"),
-            .request_id = std::optional<std::string>("request-neutral"),
-            .message = std::optional<std::string>("request input"),
-            .requested_by = "SimCoreTests",
-        }, &err)) << err;
-        ASSERT_TRUE(commands->AppendStepInputEvent({
-            .workflow_instance_id = 2501,
-            .workflow_step_id = 2502,
-            .event_kind = "Execution.WorkflowStepInputComplete.v1",
-            .source_key = std::nullopt,
-            .request_id = std::nullopt,
-            .message = std::optional<std::string>("input complete"),
-            .requested_by = "SimCoreTests",
-        }, &err)) << err;
         ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2502, .terminal_state = "COMPLETED", .requested_by = "SimCoreTests" }, &err)) << err;
 
         sqlite3_stmt* st = nullptr;
@@ -122,20 +65,6 @@ VALUES(2502, 2501, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*10
         EXPECT_EQ(lifecycle_events, (std::vector<std::string>{
             "Execution.WorkflowStepMaterialized.v1",
             "Execution.WorkflowStepCompleted.v1",
-            }));
-
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db,
-            "SELECT event_kind FROM exec_workflow_input_event WHERE workflow_step_id=2502 ORDER BY workflow_input_event_id;",
-            -1, &st, nullptr));
-        std::vector<std::string> input_events;
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            const auto* text = sqlite3_column_text(st, 0);
-            input_events.emplace_back(text != nullptr ? reinterpret_cast<const char*>(text) : "");
-        }
-        sqlite3_finalize(st);
-        EXPECT_EQ(input_events, (std::vector<std::string>{
-            "Execution.WorkflowStepInputRequested.v1",
-            "Execution.WorkflowStepInputComplete.v1",
             }));
 
         ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
@@ -207,9 +136,9 @@ VALUES
 
         ASSERT_TRUE(ExecSql(db, R"SQL(
 INSERT INTO exec_workflow_instance(
-    workflow_instance_id, workflow_kind, state, root_scope_kind, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc
+    workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc
 )
-VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'sp_probe_run.probe_run_id', 1, 'test', unixepoch()*1000, unixepoch()*1000);
+VALUES(2601, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, input_ref_kind, created_at_utc, ready_at_utc)
 VALUES
     (2602, 2601, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, 'sp_probe_run.probe_run_id', unixepoch()*1000, unixepoch()*1000),
@@ -225,24 +154,6 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         ASSERT_NE(queries, nullptr);
 
         ASSERT_TRUE(commands->MarkStepMaterialized({ .workflow_step_id = 2602, .job_set_id = 9001, .requested_by = "SimCoreTests" }, &err)) << err;
-        ASSERT_TRUE(commands->AppendStepInputEvent({
-            .workflow_instance_id = 2601,
-            .workflow_step_id = 2602,
-            .event_kind = "Execution.WorkflowStepInputRequested.v1",
-            .source_key = std::optional<std::string>("savestate"),
-            .request_id = std::optional<std::string>(savestate_path.filename().string()),
-            .message = std::optional<std::string>("neutral input requested"),
-            .requested_by = "SimCoreTests",
-        }, &err)) << err;
-        ASSERT_TRUE(commands->AppendStepInputEvent({
-            .workflow_instance_id = 2601,
-            .workflow_step_id = 2602,
-            .event_kind = "Execution.WorkflowStepInputComplete.v1",
-            .source_key = std::nullopt,
-            .request_id = std::nullopt,
-            .message = std::optional<std::string>("neutral input complete"),
-            .requested_by = "SimCoreTests",
-        }, &err)) << err;
         ASSERT_TRUE(commands->MarkStepTerminal({ .workflow_step_id = 2602, .terminal_state = "COMPLETED", .requested_by = "SimCoreTests" }, &err)) << err;
         ASSERT_TRUE(ExecSql(db, "UPDATE exec_workflow_step SET state='READY', ready_at_utc=unixepoch()*1000 WHERE workflow_step_id=2603 AND state='WAITING';"));
 
@@ -270,11 +181,8 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         using namespace simcore::runner::parallel::simcoredb;
         using namespace simcore::db::execution::workflow;
 
-        StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "phase3-telemetry-test" });
-
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            &mode_provider,
             DBWorkflowWorkerCoordinatorConfig{
                 .desired_workers = 0,
                 .controller_sleep_ms = 1,
@@ -313,10 +221,8 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         using namespace simcore::runner::parallel::simcoredb;
         using namespace simcore::db::execution::workflow;
 
-        StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "phase3-batching-test" });
         DBWorkflowWorkerCoordinator coordinator(
             nullptr,
-            &mode_provider,
             DBWorkflowWorkerCoordinatorConfig{
                 .desired_workers = 0,
                 .controller_sleep_ms = 1,
@@ -675,14 +581,11 @@ INSERT INTO exec_workflow_step(
 VALUES(302, 301, 'seedprobe.neutral', 'seedprobe.neutral', 'READY', unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_event(workflow_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, message)
 VALUES(303, 301, 302, 'Execution.WorkflowStepReady.v1', unixepoch()*1000, 'ready');
-INSERT INTO exec_workflow_input_event(workflow_input_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, source_key, request_id)
-VALUES(304, 301, 302, 'Execution.WorkflowStepInputRequested.v1', unixepoch()*1000, 'state', 'req-304');
 INSERT INTO exec_outbox_message(
     outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id
 )
 VALUES
-    (305,'evt-v-1','Execution.WorkflowStepReady.v1',1,'Execution','workflow_step','302','corr-301','cause-301',unixepoch()*1000,'workflow_event',303),
-    (306,'evt-v-2','Execution.WorkflowStepInputRequested.v1',1,'Execution','workflow_step','302','corr-301','cause-301',unixepoch()*1000,'workflow_input_event',304);
+    (305,'evt-v-1','Execution.WorkflowStepReady.v1',1,'Execution','workflow_step','302','corr-301','cause-301',unixepoch()*1000,'workflow_event',303);
 )SQL"));
 
         simcore::db::execution::workflow::SqliteExecutionDb execution_db(db);
@@ -714,27 +617,12 @@ VALUES
                 return true;
             },
         });
-        bindings.push_back({
-            .key = { .event_type = "Execution.WorkflowStepInputRequested.v1", .event_version = 1 },
-            .handler = [&](const EventEnvelope& envelope, std::string* handler_error) {
-                const auto payload = execution_db.ResolveExecutionWorkflowJobPayload(envelope);
-                if (!payload.has_value()) {
-                    ++unresolved_count;
-                    if (handler_error != nullptr) {
-                        *handler_error = "unresolved payload";
-                    }
-                    return false;
-                }
-                return true;
-            },
-        });
-
         OutboxRelayResult relay_result{};
         std::string err;
         ASSERT_TRUE(relay.RelayBatch(0, 10, bindings, &relay_result, &err)) << err;
         EXPECT_EQ(relay_result.failure_count, 0);
         EXPECT_EQ(unresolved_count, 0);
-        EXPECT_EQ(relay_result.published_count, 2);
+        EXPECT_EQ(relay_result.published_count, 1);
 
         sqlite3_close(db);
     }
@@ -808,7 +696,8 @@ INSERT INTO exec_outbox_message(
       "compression_kind": 0,
       "filename": "placeholder_phase3.sav",
       "file_ext": ".sav",
-      "artifact_kind": "SAV"
+      "artifact_kind": "SAV",
+      "created_at_utc": 1712304000000
     }
   ]
 })JSON";

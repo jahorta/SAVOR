@@ -38,4 +38,6 @@ Database-layer scaffolding for SOASim bounded contexts.
 - Qt2 workflow authoring must not launch workflow instances. A separate launcher selects external inputs and instance arguments, then submits Execution workflow instances.
 - Program descriptors/adapters own lazy Analysis row creation during step materialization or result mapping. Authored graph composition must not pre-create speculative Analysis rows.
 - Qt2 treats UIRead as read-only. UIRead updates come from source-context outboxes and projectors.
-- Static workflow registries, trigger-driven launch paths, `workflow_input_event` as launch-input storage, and instance-level `input_ref_kind` / `input_ref_id` bootstrap paths are legacy cleanup targets.
+- Static workflow registries, the static workflow engine/builder/validator path, `workflow_input_event` launch-input storage, and instance-level `input_ref_kind` / `input_ref_id` bootstrap paths have been removed from the active runtime.
+- Step-level `input_ref_kind` / `input_ref_id` remains active for concrete runtime refs produced or consumed by descriptors and dynamic downstream steps.
+- Trigger-driven launch behavior is still a cleanup target where it appears; new workflow launches should use authored graph revisions plus Execution-owned input bindings and scalar arguments.

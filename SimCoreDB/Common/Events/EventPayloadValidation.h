@@ -100,16 +100,6 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
         }
         return true;
     }
-    if (envelope.event_type == "Execution.WorkflowStepInputRequested.v1"
-        || envelope.event_type == "Execution.WorkflowStepInputFragmentReady.v1"
-        || envelope.event_type == "Execution.WorkflowStepInputComplete.v1") {
-        if (envelope.payload_ref_kind != "workflow_input_event") {
-            if (error_out) *error_out = "payload_ref_kind must be workflow_input_event for Execution.WorkflowStepInput* event";
-            return false;
-        }
-        return true;
-    }
-
     if (error_out) *error_out = "unsupported Execution event_type";
     return false;
 }

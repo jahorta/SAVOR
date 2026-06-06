@@ -5,7 +5,7 @@
 
 namespace simcore::db::events {
 
-inline constexpr std::array<std::string_view, 61> kEventCatalogV1{ {
+inline constexpr std::array<std::string_view, 58> kEventCatalogV1{ {
     "Execution.JobSetCreated.v1",
     "Execution.JobQueued.v1",
     "Execution.JobClaimed.v1",
@@ -28,9 +28,6 @@ inline constexpr std::array<std::string_view, 61> kEventCatalogV1{ {
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowRemediationTerminalFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
-    "Execution.WorkflowStepInputRequested.v1",
-    "Execution.WorkflowStepInputFragmentReady.v1",
-    "Execution.WorkflowStepInputComplete.v1",
     "State.ArtifactStored.v1",
     "State.SavestateCreated.v1",
     "State.SavestateDerived.v1",
@@ -84,12 +81,6 @@ inline constexpr std::array<std::string_view, 14> kWorkflowExecutionEventsV1{ {
     "Execution.WorkflowRemediationReopened.v1",
     "Execution.WorkflowRemediationTerminalFailed.v1",
     "Execution.WorkflowInstanceCompleted.v1",
-} };
-
-inline constexpr std::array<std::string_view, 3> kWorkflowInputEventsV1{ {
-    "Execution.WorkflowStepInputRequested.v1",
-    "Execution.WorkflowStepInputFragmentReady.v1",
-    "Execution.WorkflowStepInputComplete.v1",
 } };
 
 } // namespace simcore::db::events

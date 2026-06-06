@@ -30,13 +30,7 @@
 #include "Runner/Parallel/SimCoreDB/ArchiveWorkflowCommands.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
 #include "Execution/Jobs/JobEventOrchestration.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
-#include "Execution/Workflow/WorkflowEngine.h"
 #include "Execution/Workflow/WorkflowIntegrityChecks.h"
-#include "Execution/Workflow/WorkflowInstanceBuilder.h"
-#include "Execution/Workflow/WorkflowModeProvider.h"
-#include "Execution/Workflow/WorkflowParityDiagnostics.h"
-#include "Execution/Workflow/WorkflowParityStore.h"
 #include "Execution/Workflow/WorkflowProjector.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/Workflow/AdapterChainOrchestrator.h"
@@ -103,7 +97,6 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(TableExists(db_, "exec_workflow_step"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_edge"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_event"));
-    EXPECT_TRUE(TableExists(db_, "exec_workflow_input_event"));
 
     EXPECT_TRUE(TableExists(db_, "ui_workflow_instance"));
     EXPECT_TRUE(TableExists(db_, "ui_workflow_step"));
@@ -126,8 +119,6 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_instance_state_priority_ready"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_job_set"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_edge_instance_to"));
-    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_input_event_step_ts"));
-    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_input_event_instance_step"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_payload_ref"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_graph_revision"));
@@ -147,96 +138,24 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_NE(instance_table_sql.find("CHECK(root_scope_kind IN ('job_set','run','manual'))"), std::string::npos);
 }
 
-TEST_F(SqliteDbFixture, Stage5WorkflowInstanceBuilderCreatesAndPersistsDefinitionGraph) {
-    using namespace simcore::db::execution::workflow;
-
-    SqliteExecutionDb execution_db(db_);
-    WorkflowDefinitionRegistry registry;
-    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
-    WorkflowInstanceBuilder builder(&registry, nullptr);
-    std::int64_t workflow_instance_id = 0;
-    std::string error;
-
-    EXPECT_FALSE(builder.CreateWorkflowInstance(
-        {
-            .workflow_kind = "SEED_PROBE_CHAIN",
-            .root_scope_kind = "run",
-            .root_scope_id = 9001,
-            .input_ref_kind = std::string("sp_probe_run"),
-            .input_ref_id = 9001,
-            .created_by = "sqlite-fixture",
-            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
-            .available_inputs = {},
-        },
-        execution_db.WorkflowCommandService(),
-        &workflow_instance_id,
-        &error));
-    EXPECT_NE(error.find("missing required workflow input"), std::string::npos);
-
-    error.clear();
-    EXPECT_TRUE(builder.CreateWorkflowInstance(
-        {
-            .workflow_kind = "SEED_PROBE_CHAIN",
-            .root_scope_kind = "run",
-            .root_scope_id = 9001,
-            .input_ref_kind = std::string("sp_probe_run"),
-            .input_ref_id = 9001,
-            .created_by = "sqlite-fixture",
-            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
-            .available_inputs = { "sp_probe_run.probe_run_id" },
-        },
-        execution_db.WorkflowCommandService(),
-        &workflow_instance_id,
-        &error))
-        << error;
-    EXPECT_GT(workflow_instance_id, 0);
-
-    auto count_rows = [this](const char* sql) {
-        sqlite3_stmt* stmt = nullptr;
-        EXPECT_EQ(sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr), SQLITE_OK);
-        EXPECT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-        const auto value = sqlite3_column_int64(stmt, 0);
-        sqlite3_finalize(stmt);
-        return value;
-    };
-
-    const auto step_count = count_rows("SELECT COUNT(1) FROM exec_workflow_step;");
-    const auto edge_count = count_rows("SELECT COUNT(1) FROM exec_workflow_edge;");
-    const auto ready_count = count_rows("SELECT COUNT(1) FROM exec_workflow_step WHERE state='READY' AND ready_at_utc IS NOT NULL;");
-    const auto lifecycle_count = count_rows("SELECT COUNT(1) FROM exec_workflow_event;");
-    const auto outbox_count = count_rows("SELECT COUNT(1) FROM exec_outbox_message WHERE event_type IN ('Execution.WorkflowInstanceCreated.v1','Execution.WorkflowStepReady.v1');");
-
-    EXPECT_EQ(step_count, 4);
-    EXPECT_EQ(edge_count, 3);
-    EXPECT_EQ(ready_count, 1);
-    EXPECT_EQ(lifecycle_count, 2);
-    EXPECT_EQ(outbox_count, 2);
-}
-
 TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentChildren) {
     using namespace simcore::db::execution::workflow;
 
     SqliteExecutionDb execution_db(db_);
-    WorkflowDefinitionRegistry registry;
-    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
-    WorkflowInstanceBuilder builder(&registry, nullptr);
 
     std::int64_t workflow_instance_id = 0;
     std::string error;
-    ASSERT_TRUE(builder.CreateWorkflowInstance(
-        {
-            .workflow_kind = "SEED_PROBE_CHAIN",
-            .root_scope_kind = "run",
-            .root_scope_id = 9002,
-            .input_ref_kind = std::string("sp_probe_run"),
-            .input_ref_id = 9002,
-            .created_by = "sqlite-fixture",
-            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
-            .available_inputs = { "sp_probe_run.probe_run_id" },
-        },
-        execution_db.WorkflowCommandService(),
-        &workflow_instance_id,
-        &error)) << error;
+    WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "SEED_PROBE_CHAIN";
+    create.root_scope_kind = "run";
+    create.root_scope_id = 9002;
+    create.created_by = "sqlite-fixture";
+    create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+    create.steps.push_back({ .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 9002 });
+    create.steps.push_back({ .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 });
+    create.steps.push_back({ .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 });
+    create.steps.push_back({ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 });
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &error)) << error;
 
     const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
@@ -698,43 +617,6 @@ VALUES(8501, 8201, 8401, 8402, unixepoch());
     EXPECT_TRUE(report.IsClean());
     EXPECT_EQ(report.non_terminal_step_in_terminal_instance_count, 0);
     EXPECT_EQ(report.completed_step_missing_completion_ts_count, 0);
-}
-
-TEST_F(SqliteDbFixture, Stage3cWorkflowParityStorePersistsAndListsSummaryRows) {
-    using namespace simcore::db::execution::workflow;
-
-    const auto report = CompareLegacyAndWorkflowOutcomes(
-        {
-            WorkflowOutcomeItem{ .step_key = "Neutral", .outcome = "COMPLETED" },
-            WorkflowOutcomeItem{ .step_key = "Grid", .outcome = "COMPLETED" },
-        },
-        {
-            WorkflowOutcomeItem{ .step_key = "Neutral", .outcome = "FAILED" },
-            WorkflowOutcomeItem{ .step_key = "Unique", .outcome = "COMPLETED" },
-        });
-
-    WorkflowParityStore store(db_);
-    std::string err;
-    ASSERT_TRUE(store.PersistReport("run-42", 4200, report, &err)) << err;
-
-    const auto summaries = store.ListSummaries(&err);
-    ASSERT_FALSE(summaries.empty()) << err;
-    EXPECT_EQ(summaries[0].run_ref, "run-42");
-    EXPECT_EQ(summaries[0].workflow_instance_id, 4200);
-    EXPECT_EQ(summaries[0].compared_steps, 3);
-    EXPECT_EQ(summaries[0].matched_steps, 0);
-    EXPECT_EQ(summaries[0].mismatch_steps, 3);
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
-        db_,
-        "SELECT COUNT(1) FROM exec_workflow_parity_mismatch WHERE run_ref='run-42' AND workflow_instance_id=4200;",
-        -1,
-        &st,
-        nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
-    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3cTerminalSubscriberProcessesTerminalJobEventsAsynchronously) {
@@ -1221,23 +1103,18 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
 
     simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
-    WorkflowDefinitionRegistry registry;
-    ASSERT_TRUE(registry.RegisterSeedProbeDefaults(nullptr));
-    WorkflowInstanceBuilder builder(&registry, nullptr);
 
     std::int64_t workflow_instance_id = 0;
-    ASSERT_TRUE(builder.CreateWorkflowInstance(
-        {
-            .workflow_kind = "SEED_PROBE_CHAIN",
-            .root_scope_kind = "manual",
-            .created_by = "stage3c-e2e",
-            .created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count(),
-            .available_inputs = { "sp_probe_run.probe_run_id" },
-        },
-        execution_db.WorkflowCommandService(),
-        &workflow_instance_id,
-        &err))
-        << err;
+    WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "SEED_PROBE_CHAIN";
+    create.root_scope_kind = "manual";
+    create.created_by = "stage3c-e2e";
+    create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+    create.steps.push_back({ .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 1 });
+    create.steps.push_back({ .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 });
+    create.steps.push_back({ .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 });
+    create.steps.push_back({ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 });
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
     ASSERT_GT(workflow_instance_id, 0);
 
     const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -1256,8 +1133,6 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     const auto unique_step_id = step_ids_by_key.at("Unique");
     const auto done_step_id = step_ids_by_key.at("Done");
 
-    StaticWorkflowModeProvider mode_provider({ .mode = WorkflowExecutionMode::Workflow, .source = "stage3c-item15-test" });
-
     std::int64_t next_job_set_id = 12000;
     auto schedule = [&](const WorkflowReadyStep& step) {
         const auto job_set_id = ++next_job_set_id;
@@ -1274,7 +1149,6 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
 
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
             .controller_sleep_ms = 1,
@@ -1344,7 +1218,6 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     // Simulate restart in the middle: process exits after materialization, before terminal callback.
     DBWorkflowWorkerCoordinator after_restart(
         &execution_db,
-        &mode_provider,
         DBWorkflowWorkerCoordinatorConfig{
             .desired_workers = 0,
         },
@@ -1428,14 +1301,6 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 4);
     sqlite3_finalize(st);
-
-    std::vector<WorkflowOutcomeItem> workflow_outcomes{
-        { .step_key = "Neutral", .outcome = "COMPLETED" },
-        { .step_key = "Grid", .outcome = "COMPLETED" },
-        { .step_key = "Unique", .outcome = "COMPLETED" },
-        { .step_key = "Done", .outcome = "COMPLETED" },
-    };
-    EXPECT_EQ(workflow_outcomes.size(), 4);
 
     WorkflowProjector projector(db_);
     ASSERT_TRUE(projector.ProjectFromOutbox("WorkflowProjector", 1000, &err)) << err;
@@ -1961,47 +1826,7 @@ VALUES(801, 701, 1, 1, 'seed_probe', 11, 'fp-stage3d-801', 5, 'QUEUED', 0, 2, un
     EXPECT_FALSE(execution_db.ResolveExecutionWorkflowJobPayload(invalid).has_value());
 }
 
-TEST_F(SqliteDbFixture, Stage0ExecutionPayloadResolverReadsWorkflowInputEventPayloads) {
-    using namespace simcore::db::execution::workflow;
-    using namespace simcore::db::migrations;
-
-    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
-    std::string err;
-    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(
-    workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc
-)
-VALUES(9101, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'stage0-input', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
-VALUES(9102, 1, 'stage0-input', unixepoch()*1000);
-INSERT INTO exec_workflow_step(
-    workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, created_at_utc, ready_at_utc
-)
-VALUES(9103, 9101, 'seedprobe.grid', 'seedprobe.grid', 'READY', 9102, unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_input_event(
-    workflow_input_event_id, workflow_instance_id, workflow_step_id, event_kind, source_key, request_id, event_ts_utc
-)
-VALUES(9104, 9101, 9103, 'Execution.WorkflowStepInputFragmentReady.v1', 'state', 'req-9104', unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-
-    const auto from_input_event = execution_db.ResolveExecutionWorkflowJobPayload(
-        "Execution.WorkflowStepInputFragmentReady.v1", 1, "workflow_input_event", 9104);
-    ASSERT_TRUE(from_input_event.has_value());
-    EXPECT_EQ(from_input_event->workflow_instance_id, 9101);
-    EXPECT_EQ(from_input_event->workflow_step_id, 9103);
-    EXPECT_EQ(from_input_event->job_set_id, 9102);
-    EXPECT_EQ(from_input_event->job_id, 0);
-
-    const auto legacy_from_workflow_event = execution_db.ResolveExecutionWorkflowJobPayload(
-        "Execution.WorkflowStepCompleted.v1", 1, "workflow_event", 9104);
-    EXPECT_FALSE(legacy_from_workflow_event.has_value());
-}
-
-TEST_F(SqliteDbFixture, Stage0ReplayBackfillValidationResolvesWorkflowAndWorkflowInputPayloadRefs) {
+TEST_F(SqliteDbFixture, Stage0ReplayBackfillValidationResolvesWorkflowPayloadRefs) {
     using namespace simcore::db::events;
     using namespace simcore::db::migrations;
 
@@ -2020,15 +1845,12 @@ INSERT INTO exec_workflow_step(
 VALUES(9202, 9201, 'seedprobe.neutral', 'seedprobe.neutral', 'READY', unixepoch()*1000, unixepoch()*1000);
 INSERT INTO exec_workflow_event(workflow_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, message)
 VALUES(9203, 9201, 9202, 'Execution.WorkflowStepReady.v1', unixepoch()*1000, 'ready');
-INSERT INTO exec_workflow_input_event(workflow_input_event_id, workflow_instance_id, workflow_step_id, event_kind, event_ts_utc, source_key, request_id)
-VALUES(9204, 9201, 9202, 'Execution.WorkflowStepInputRequested.v1', unixepoch()*1000, 'state', 'req-9204');
 INSERT INTO exec_outbox_message(
     outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id
 )
 VALUES
-    (9205,'evt-stage0-replay-1','Execution.WorkflowStepReady.v1',1,'Execution','workflow_step','9202','corr-9201','cause-9201',unixepoch()*1000,'workflow_event',9203),
-    (9206,'evt-stage0-replay-2','Execution.WorkflowStepInputRequested.v1',1,'Execution','workflow_step','9202','corr-9201','cause-9201',unixepoch()*1000,'workflow_input_event',9204);
-)SQL"));
+    (9205,'evt-stage0-replay-1','Execution.WorkflowStepReady.v1',1,'Execution','workflow_instance','9201','corr-9201','cause-9201',unixepoch()*1000,'workflow_event',9203);
+)SQL")) << sqlite3_errmsg(db_);
 
     simcore::db::execution::workflow::SqliteExecutionDb execution_db(db_);
     int unresolved_count = 0;
@@ -2052,24 +1874,11 @@ VALUES
             return true;
         },
     });
-    bindings.push_back({
-        .key = { .event_type = "Execution.WorkflowStepInputRequested.v1", .event_version = 1 },
-        .handler = [&](const EventEnvelope& envelope, std::string* handler_error) {
-            const auto payload = execution_db.ResolveExecutionWorkflowJobPayload(envelope);
-            if (!payload.has_value()) {
-                ++unresolved_count;
-                if (handler_error) *handler_error = "unresolved payload";
-                return false;
-            }
-            return true;
-        },
-    });
-
     OutboxRelayResult result{};
     ASSERT_TRUE(relay.RelayBatch(0, 10, bindings, &result, &err)) << err;
     EXPECT_EQ(result.failure_count, 0);
     EXPECT_EQ(unresolved_count, 0);
-    EXPECT_EQ(result.published_count, 2);
+    EXPECT_EQ(result.published_count, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThirtySix) {
@@ -2841,64 +2650,26 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     auto* execution_db = db_service_->ExecutionDb();
     ASSERT_NE(execution_db, nullptr);
     std::int64_t workflow_instance_id = 0;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
-        {
-            .workflow_kind = "workflow_graph",
-            .root_scope_kind = "manual",
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .created_by = "sqlite-fixture",
-            .created_at_utc = now.time_since_epoch().count(),
-            .steps = {
-                {
-                    .step_key = "probe_1",
-                    .step_kind = "seed_probe_chain",
-                    .priority = 10,
-                    .max_attempts = 1,
-                },
-                {
-                    .step_key = "battle_1",
-                    .step_kind = "battle_chain",
-                    .dependencies = { "probe_1" },
-                    .priority = 5,
-                    .max_attempts = 1,
-                },
-            },
-            .input_bindings = {
-                {
-                    .node_key = "probe_1",
-                    .input_key = "entry_savestate",
-                    .data_kind = "state.savestate_id",
-                    .ref_kind = "state.savestate",
-                    .ref_id = 44001,
-                    .source_kind = "external",
-                },
-            },
-            .arguments = {
-                {
-                    .node_key = "probe_1",
-                    .argument_key = "rtc",
-                    .value_type = "integer",
-                    .integer_value = 4,
-                    .source_kind = "launcher",
-                },
-                {
-                    .node_key = "battle_1",
-                    .argument_key = "fake_attack_min",
-                    .value_type = "integer",
-                    .integer_value = 22,
-                    .source_kind = "launcher",
-                },
-                {
-                    .node_key = "battle_1",
-                    .argument_key = "fake_attack_max",
-                    .value_type = "integer",
-                    .integer_value = 25,
-                    .source_kind = "launcher",
-                },
-            },
-        },
-        &workflow_instance_id,
-        &err)) << err;
+    WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "sqlite-fixture";
+    command.created_at_utc = now.time_since_epoch().count();
+    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 10, .max_attempts = 1 });
+    command.steps.push_back({ .step_key = "battle_1", .step_kind = "battle_chain", .dependencies = { "probe_1" }, .priority = 5, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "probe_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = 44001,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({ .node_key = "probe_1", .argument_key = "rtc", .value_type = "integer", .integer_value = 4, .source_kind = "launcher" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = 22, .source_kind = "launcher" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = 25, .source_kind = "launcher" });
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
     ASSERT_GT(workflow_instance_id, 0);
 
     const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -2950,28 +2721,21 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
 
     err.clear();
     std::int64_t rejected_instance_id = 0;
-    EXPECT_FALSE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
-        {
-            .workflow_kind = "workflow_graph",
-            .root_scope_kind = "manual",
-            .created_by = "sqlite-fixture",
-            .created_at_utc = now.time_since_epoch().count(),
-            .steps = {
-                { .step_key = "probe_1", .step_kind = "seed_probe_chain" },
-            },
-            .input_bindings = {
-                {
-                    .node_key = "probe_1",
-                    .input_key = "entry_savestate",
-                    .data_kind = "state.savestate_id",
-                    .ref_kind = "state.savestate",
-                    .ref_id = 44002,
-                    .source_kind = "external",
-                },
-            },
-        },
-        &rejected_instance_id,
-        &err));
+    WorkflowCreateInstanceCommand rejected{};
+    rejected.workflow_kind = "workflow_graph";
+    rejected.root_scope_kind = "manual";
+    rejected.created_by = "sqlite-fixture";
+    rejected.created_at_utc = now.time_since_epoch().count();
+    rejected.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain" });
+    rejected.input_bindings.push_back({
+        .node_key = "probe_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = 44002,
+        .source_kind = "external",
+    });
+    EXPECT_FALSE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(rejected, &rejected_instance_id, &err));
     EXPECT_NE(err.find("workflow_graph_revision_id is required"), std::string::npos);
 }
 
@@ -3045,35 +2809,22 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
     auto* execution_db = db_service_->ExecutionDb();
     ASSERT_NE(execution_db, nullptr);
     std::int64_t workflow_instance_id = 0;
-    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
-        {
-            .workflow_kind = "workflow_graph",
-            .root_scope_kind = "manual",
-            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
-            .created_by = "sqlite-fixture",
-            .created_at_utc = types::UtcNow().time_since_epoch().count(),
-            .steps = {
-                {
-                    .step_key = "probe_1",
-                    .step_kind = "seed_probe_chain",
-                    .priority = 10,
-                    .max_attempts = 1,
-                },
-            },
-            .input_bindings = {
-                {
-                    .node_key = "probe_1",
-                    .input_key = "entry_savestate",
-                    .data_kind = "state.savestate_id",
-                    .ref_kind = "state.savestate",
-                    .ref_id = 44001,
-                    .source_kind = "external",
-                },
-            },
-        },
-        &workflow_instance_id,
-        &err))
-        << err;
+    WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "sqlite-fixture";
+    command.created_at_utc = types::UtcNow().time_since_epoch().count();
+    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 10, .max_attempts = 1 });
+    command.input_bindings.push_back({
+        .node_key = "probe_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = 44001,
+        .source_kind = "external",
+    });
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
 
     const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
@@ -3554,72 +3305,6 @@ VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'A
     std::filesystem::remove_all(temp_root);
 }
 
-TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_AppendInputEventsEmitWorkflowInputOutboxRows) {
-    using namespace simcore::db::execution::workflow;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
-VALUES(1301, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc, ready_at_utc)
-VALUES(1302, 1301, 'Neutral', 'seedprobe.neutral', 'READY', 1, 0, 2, unixepoch()*1000, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    auto* commands = execution_db.WorkflowCommandService();
-    ASSERT_NE(commands, nullptr);
-
-    std::string err;
-    ASSERT_TRUE(commands->AppendStepInputEvent(
-        {
-            .workflow_instance_id = 1301,
-            .workflow_step_id = 1302,
-            .event_kind = "Execution.WorkflowStepInputRequested.v1",
-            .source_key = std::optional<std::string>("sync"),
-            .request_id = std::optional<std::string>("req-sync-1"),
-            .message = std::optional<std::string>("phase1-test"),
-            .requested_by = "SimCoreTests",
-        },
-        &err))
-        << err;
-    ASSERT_TRUE(commands->AppendStepInputEvent(
-        {
-            .workflow_instance_id = 1301,
-            .workflow_step_id = 1302,
-            .event_kind = "Execution.WorkflowStepInputFragmentReady.v1",
-            .source_key = std::optional<std::string>("sync"),
-            .request_id = std::optional<std::string>("req-sync-1"),
-            .message = std::optional<std::string>("phase1-test"),
-            .requested_by = "SimCoreTests",
-        },
-        &err))
-        << err;
-    ASSERT_TRUE(commands->AppendStepInputEvent(
-        {
-            .workflow_instance_id = 1301,
-            .workflow_step_id = 1302,
-            .event_kind = "Execution.WorkflowStepInputComplete.v1",
-            .source_key = std::nullopt,
-            .request_id = std::nullopt,
-            .message = std::optional<std::string>("phase1-test"),
-            .requested_by = "SimCoreTests",
-        },
-        &err))
-        << err;
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(
-        SQLITE_OK,
-        sqlite3_prepare_v2(
-            db_,
-            "SELECT COUNT(1) FROM exec_outbox_message WHERE payload_ref_kind='workflow_input_event' AND aggregate_kind='workflow_step' AND aggregate_id='1302';",
-            -1,
-            &st,
-            nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_EQ(sqlite3_column_int(st, 0), 3);
-    sqlite3_finalize(st);
-}
-
 TEST_F(SqliteDbFixture, Stage3Phase1DbContracts_TimeoutRetryOnceThenFailedTerminalState) {
     using namespace simcore::db::execution::workflow;
 
@@ -3635,20 +3320,6 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     ASSERT_NE(commands, nullptr);
 
     std::string err;
-    for (int retry = 0; retry < 2; ++retry) {
-        ASSERT_TRUE(commands->AppendStepInputEvent(
-            {
-                .workflow_instance_id = 1401,
-                .workflow_step_id = 1402,
-                .event_kind = "Execution.WorkflowStepInputRequested.v1",
-                .source_key = std::optional<std::string>("async"),
-                .request_id = std::optional<std::string>("req-async-retry-" + std::to_string(retry)),
-                .message = std::optional<std::string>("retry-on-timeout"),
-                .requested_by = "SimCoreTests",
-            },
-            &err))
-            << err;
-    }
     ASSERT_TRUE(commands->MarkStepTerminal(
         {
             .workflow_step_id = 1402,
@@ -3664,52 +3335,6 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
     ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "FAILED");
     sqlite3_finalize(st);
-}
-
-TEST_F(SqliteDbFixture, Stage3Phase3DbContracts_ProgressAndTerminalEventsRemainSeparated) {
-    using namespace simcore::db::execution::workflow;
-
-    ASSERT_TRUE(ExecSql(db_, R"SQL(
-INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
-VALUES(3801, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
-INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, ready_at_utc)
-VALUES(3802, 3801, 'Neutral', 'seedprobe.neutral', 'READY', 0, 2, unixepoch()*1000, unixepoch()*1000);
-)SQL"));
-
-    SqliteExecutionDb execution_db(db_);
-    auto* commands = execution_db.WorkflowCommandService();
-    ASSERT_NE(commands, nullptr);
-
-    std::string err;
-    for (int i = 0; i < 100; ++i) {
-        ASSERT_TRUE(commands->AppendStepInputEvent({
-                .workflow_instance_id = 3801,
-                .workflow_step_id = 3802,
-                .event_kind = "Execution.WorkflowStepInputFragmentReady.v1",
-                .source_key = std::optional<std::string>("progress"),
-                .request_id = std::optional<std::string>("frag-" + std::to_string(i)),
-                .message = std::optional<std::string>("progress"),
-                .requested_by = "SimCoreTests",
-            }, &err))
-            << err;
-    }
-    ASSERT_TRUE(commands->MarkStepTerminal(
-        { .workflow_step_id = 3802, .terminal_state = "COMPLETED", .requested_by = "SimCoreTests" }, &err))
-        << err;
-
-    sqlite3_stmt* st = nullptr;
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_workflow_input_event WHERE workflow_step_id=3802;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    const int input_count = sqlite3_column_int(st, 0);
-    sqlite3_finalize(st);
-
-    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=3802;", -1, &st, nullptr));
-    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    const int terminal_count = sqlite3_column_int(st, 0);
-    sqlite3_finalize(st);
-
-    EXPECT_GE(input_count, 100);
-    EXPECT_EQ(terminal_count, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerprints) {

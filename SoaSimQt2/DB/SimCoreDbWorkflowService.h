@@ -10,9 +10,7 @@
 
 #include "SimCoreDbRuntime.h"
 #include "DB/SimCoreDbAuthoringService.h"
-#include "Execution/Workflow/SeedProbeWorkflowDefinition.h"
 #include "Execution/Workflow/WorkflowComposition.h"
-#include "Execution/Workflow/WorkflowInstanceBuilder.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "UIRead/IUiReadDb.h"
 
@@ -24,16 +22,6 @@ struct WorkflowListRequest {
     std::optional<simcore::db::UiReadListCursor> before;
     std::optional<simcore::db::UiReadListCursor> after;
     int limit = 50;
-};
-
-struct WorkflowStartRequest {
-    std::string workflow_kind;
-    std::string root_scope_kind;
-    std::optional<std::int64_t> root_scope_id;
-    std::optional<std::string> input_ref_kind;
-    std::optional<std::int64_t> input_ref_id;
-    std::string created_by = "SoaSimQt2";
-    std::vector<std::string> available_inputs;
 };
 
 struct WorkflowGraphInputBindingDraft {
@@ -108,41 +96,6 @@ public:
             return NotFound<simcore::db::UiWorkflowDetail>("workflow instance not found");
         }
         return ServiceResult<simcore::db::UiWorkflowDetail>::Ok(*detail);
-    }
-
-    static ServiceResult<std::int64_t> StartWorkflow(const WorkflowStartRequest& request) {
-        auto* command_service = WorkflowCommandService();
-        if (command_service == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB workflow command service is not running");
-        }
-        if (request.workflow_kind.empty()) {
-            return Invalid<std::int64_t>("workflow kind is required");
-        }
-
-        simcore::db::execution::workflow::WorkflowDefinitionRegistry registry;
-        std::string error;
-        if (!registry.RegisterSeedProbeDefaults(&error) || !registry.RegisterTasMovieDefaults(&error)) {
-            return Failed<std::int64_t>(error);
-        }
-
-        simcore::db::execution::workflow::WorkflowInstanceValidator validator;
-        simcore::db::execution::workflow::WorkflowInstanceBuilder builder(&registry, &validator);
-
-        simcore::db::execution::workflow::WorkflowDefinitionInstantiationInput input{};
-        input.workflow_kind = request.workflow_kind;
-        input.root_scope_kind = request.root_scope_kind;
-        input.root_scope_id = request.root_scope_id;
-        input.input_ref_kind = request.input_ref_kind;
-        input.input_ref_id = request.input_ref_id;
-        input.created_by = request.created_by;
-        input.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-        input.available_inputs = request.available_inputs;
-
-        std::int64_t workflow_instance_id = 0;
-        if (!builder.CreateWorkflowInstance(input, command_service, &workflow_instance_id, &error)) {
-            return Failed<std::int64_t>(error);
-        }
-        return ServiceResult<std::int64_t>::Ok(workflow_instance_id);
     }
 
     static ServiceResult<std::int64_t> StartWorkflowGraphRevision(const WorkflowGraphStartRequest& request) {
