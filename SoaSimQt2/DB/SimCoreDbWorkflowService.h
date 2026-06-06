@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -32,6 +34,23 @@ struct WorkflowStartRequest {
     std::optional<std::int64_t> input_ref_id;
     std::string created_by = "SoaSimQt2";
     std::vector<std::string> available_inputs;
+};
+
+struct WorkflowGraphInputBindingDraft {
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string source_kind = "external";
+};
+
+struct WorkflowGraphStartRequest {
+    std::int64_t workflow_graph_revision_id = 0;
+    std::string root_scope_kind = "manual";
+    std::optional<std::int64_t> root_scope_id;
+    std::string created_by = "SoaSimQt2";
+    std::vector<WorkflowGraphInputBindingDraft> input_bindings;
 };
 
 class SimCoreDbWorkflowService {
@@ -111,6 +130,108 @@ public:
 
         std::int64_t workflow_instance_id = 0;
         if (!builder.CreateWorkflowInstance(input, command_service, &workflow_instance_id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(workflow_instance_id);
+    }
+
+    static ServiceResult<std::int64_t> StartWorkflowGraphRevision(const WorkflowGraphStartRequest& request) {
+        auto* command_service = WorkflowCommandService();
+        if (command_service == nullptr) {
+            return Unavailable<std::int64_t>("SimCoreDB workflow command service is not running");
+        }
+        if (request.workflow_graph_revision_id <= 0) {
+            return Invalid<std::int64_t>("workflow graph revision id is required");
+        }
+
+        const auto graph_result = SimCoreDbAuthoringService::GetWorkflowGraphRevision(request.workflow_graph_revision_id);
+        if (!graph_result.ok) {
+            return ServiceResult<std::int64_t>::Err(graph_result.error);
+        }
+        const auto& graph = graph_result.value;
+        if (graph.nodes.empty()) {
+            return Invalid<std::int64_t>("workflow graph revision has no nodes");
+        }
+
+        std::unordered_map<std::string, const simcore::db::WorkflowGraphNodeSnapshot*> node_by_key;
+        node_by_key.reserve(graph.nodes.size());
+        for (const auto& node : graph.nodes) {
+            if (node.node_key.empty() || node.unit_kind.empty()) {
+                return Invalid<std::int64_t>("workflow graph contains a node without a key or unit kind");
+            }
+            if (!node_by_key.emplace(node.node_key, &node).second) {
+                return Invalid<std::int64_t>("workflow graph contains duplicate node keys");
+            }
+        }
+
+        std::unordered_map<std::string, std::vector<std::string>> dependencies_by_node;
+        std::unordered_set<std::string> supplied_by_edge;
+        for (const auto& edge : graph.edges) {
+            if (node_by_key.find(edge.from_node_key) == node_by_key.end()
+                || node_by_key.find(edge.to_node_key) == node_by_key.end()) {
+                return Invalid<std::int64_t>("workflow graph contains an edge with an unknown node");
+            }
+            dependencies_by_node[edge.to_node_key].push_back(edge.from_node_key);
+            supplied_by_edge.insert(edge.to_node_key + "\n" + edge.input_key);
+        }
+
+        std::unordered_set<std::string> supplied_by_binding;
+        supplied_by_binding.reserve(request.input_bindings.size());
+        simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+        command.workflow_kind = "workflow_graph";
+        command.root_scope_kind = request.root_scope_kind.empty() ? "manual" : request.root_scope_kind;
+        command.root_scope_id = request.root_scope_id;
+        command.workflow_graph_revision_id = graph.workflow_graph_revision_id;
+        command.created_by = request.created_by.empty() ? "SoaSimQt2" : request.created_by;
+        command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+
+        for (const auto& binding : request.input_bindings) {
+            if (node_by_key.find(binding.node_key) == node_by_key.end()) {
+                return Invalid<std::int64_t>("input binding references an unknown workflow node");
+            }
+            if (binding.input_key.empty() || binding.data_kind.empty() || binding.ref_kind.empty() || binding.ref_id <= 0) {
+                return Invalid<std::int64_t>("input binding requires input key, data kind, ref kind, and ref id");
+            }
+            const auto key = binding.node_key + "\n" + binding.input_key;
+            if (!supplied_by_binding.emplace(key).second) {
+                return Invalid<std::int64_t>("duplicate input binding for " + binding.node_key + "." + binding.input_key);
+            }
+            command.input_bindings.push_back(simcore::db::execution::workflow::WorkflowCreateInstanceInputBindingSpec{
+                .node_key = binding.node_key,
+                .input_key = binding.input_key,
+                .data_kind = binding.data_kind,
+                .ref_kind = binding.ref_kind,
+                .ref_id = binding.ref_id,
+                .source_kind = binding.source_kind.empty() ? "external" : binding.source_kind,
+            });
+        }
+
+        for (const auto& node : graph.nodes) {
+            for (const auto& input : node.inputs) {
+                if (!input.required) {
+                    continue;
+                }
+                const auto key = node.node_key + "\n" + input.input_key;
+                if (supplied_by_edge.find(key) == supplied_by_edge.end()
+                    && supplied_by_binding.find(key) == supplied_by_binding.end()) {
+                    return Invalid<std::int64_t>("required input is not supplied: " + node.node_key + "." + input.input_key);
+                }
+            }
+
+            simcore::db::execution::workflow::WorkflowCreateStepSpec step{};
+            step.step_key = node.node_key;
+            step.step_kind = node.unit_kind;
+            const auto deps = dependencies_by_node.find(node.node_key);
+            if (deps != dependencies_by_node.end()) {
+                step.dependencies = deps->second;
+            }
+            step.max_attempts = 1;
+            command.steps.push_back(std::move(step));
+        }
+
+        std::int64_t workflow_instance_id = 0;
+        std::string error;
+        if (!command_service->CreateWorkflowInstance(command, &workflow_instance_id, &error)) {
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(workflow_instance_id);

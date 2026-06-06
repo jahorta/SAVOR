@@ -27,6 +27,24 @@ struct WorkflowStepScheduleResult {
     std::vector<std::string> event_lines;
 };
 
+struct WorkflowGraphInputBinding {
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string source_kind;
+};
+
+struct WorkflowGraphStepScheduleContext {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> workflow_graph_revision_id;
+    std::string step_key;
+    std::string step_kind;
+    std::vector<WorkflowGraphInputBinding> input_bindings;
+};
+
 struct RuntimeInitRequest {
     std::string savestate_ref_kind;
     std::int64_t savestate_ref_id = 0;
@@ -84,6 +102,12 @@ struct IJobPersistenceAdapter {
     virtual std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const = 0;
 };
 
+struct IWorkflowGraphJobPersistenceAdapter {
+    virtual ~IWorkflowGraphJobPersistenceAdapter() = default;
+    virtual WorkflowStepScheduleResult EncodeForGraphQueueing(
+        const WorkflowGraphStepScheduleContext& context) const = 0;
+};
+
 struct IRuntimeInitAdapter {
     virtual ~IRuntimeInitAdapter() = default;
     virtual RuntimeInitRequest BuildRuntimeInit(std::int64_t job_id) const = 0;
@@ -107,6 +131,7 @@ struct ProgramKindDescriptor {
     std::string program_name;
 
     std::shared_ptr<IJobPersistenceAdapter> job_persistence;
+    std::shared_ptr<IWorkflowGraphJobPersistenceAdapter> graph_job_persistence;
     std::shared_ptr<IRuntimeInitAdapter> runtime_init;
     std::shared_ptr<IResultMapper> result_mapper;
     std::shared_ptr<IResultPayloadWriter> result_payload_writer;

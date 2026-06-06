@@ -57,6 +57,7 @@ struct WorkflowInstanceRecord {
     std::optional<std::int64_t> root_scope_id;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
+    std::optional<std::int64_t> workflow_graph_revision_id;
 };
 
 struct WorkflowStepRecord {
@@ -81,10 +82,24 @@ struct WorkflowEdgeRecord {
     std::optional<std::string> condition_value;
 };
 
+struct WorkflowInstanceInputBindingRecord {
+    std::int64_t workflow_instance_input_binding_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_graph_revision_id = 0;
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string source_kind;
+    std::int64_t created_at_utc = 0;
+};
+
 struct WorkflowGraphSnapshot {
     WorkflowInstanceRecord instance;
     std::vector<WorkflowStepRecord> steps;
     std::vector<WorkflowEdgeRecord> edges;
+    std::vector<WorkflowInstanceInputBindingRecord> input_bindings;
 };
 
 struct WorkflowReadyStepRecord {
@@ -224,16 +239,27 @@ struct WorkflowCreateStepSpec {
     std::optional<std::int64_t> input_ref_id;
 };
 
+struct WorkflowCreateInstanceInputBindingSpec {
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string source_kind;
+};
+
 struct WorkflowCreateInstanceCommand {
     std::string workflow_kind;
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
+    std::optional<std::int64_t> workflow_graph_revision_id;
     std::string created_by;
     std::int64_t created_at_utc = 0;
     std::vector<std::string> available_inputs;
     std::vector<WorkflowCreateStepSpec> steps;
+    std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
 };
 
 struct IWorkflowOrchestrationQueryService {

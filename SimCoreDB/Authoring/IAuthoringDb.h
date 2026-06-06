@@ -511,6 +511,9 @@ struct IAuthoringDb {
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const = 0;
 
+    virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
+        std::int64_t workflow_graph_revision_id) const = 0;
+
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) = 0;

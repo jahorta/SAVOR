@@ -32,13 +32,40 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
             return {};
         }
         const auto* descriptor = program_kind_registry->FindForStepKind(step.step_kind);
-        if (descriptor == nullptr || descriptor->job_persistence == nullptr || adapter_chain_orchestrator == nullptr) {
+        if (descriptor == nullptr || adapter_chain_orchestrator == nullptr) {
             return {};
         }
-        if (!step.input_ref_id.has_value()) {
-            return {};
+        std::optional<simcore::db::execution::programdb::WorkflowStepScheduleResult> persisted;
+        if (step.input_ref_id.has_value() && descriptor->job_persistence != nullptr) {
+            persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, *step.input_ref_id);
+        } else if (descriptor->graph_job_persistence != nullptr && execution_db->WorkflowQueryService() != nullptr) {
+            const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(step.workflow_instance_id);
+            if (!graph.has_value()) {
+                return {};
+            }
+
+            simcore::db::execution::programdb::WorkflowGraphStepScheduleContext context{};
+            context.workflow_instance_id = step.workflow_instance_id;
+            context.workflow_step_id = step.workflow_step_id;
+            context.workflow_graph_revision_id = graph->instance.workflow_graph_revision_id;
+            context.step_key = step.step_key;
+            context.step_kind = step.step_kind;
+            for (const auto& binding : graph->input_bindings) {
+                if (binding.node_key != step.step_key) {
+                    continue;
+                }
+                context.input_bindings.push_back(
+                    simcore::db::execution::programdb::WorkflowGraphInputBinding{
+                        .node_key = binding.node_key,
+                        .input_key = binding.input_key,
+                        .data_kind = binding.data_kind,
+                        .ref_kind = binding.ref_kind,
+                        .ref_id = binding.ref_id,
+                        .source_kind = binding.source_kind,
+                    });
+            }
+            persisted = adapter_chain_orchestrator->OnGraphInputComplete(step.step_kind, context);
         }
-        const auto persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, *step.input_ref_id);
         if (!persisted.has_value() || persisted->root_job_set_id <= 0) {
             return {};
         }

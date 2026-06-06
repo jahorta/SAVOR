@@ -89,6 +89,8 @@ public:
         std::string* error_out = nullptr) override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const override;
+    std::optional<WorkflowGraphSnapshot> GetWorkflowGraphRevision(
+        std::int64_t workflow_graph_revision_id) const override;
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,
         int max_batch_size) override;

@@ -292,6 +292,15 @@ std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraph(
         std::nullopt);
 }
 
+std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraphRevision(
+    std::int64_t workflow_graph_revision_id) const {
+    return ExecuteRead<std::optional<WorkflowGraphSnapshot>>(
+        [this, workflow_graph_revision_id]() {
+            return inner_ != nullptr ? inner_->GetWorkflowGraphRevision(workflow_graph_revision_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 std::vector<events::EventEnvelope> QueuedAuthoringDb::ReadUnpublishedOutboxBatch(
     std::int64_t after_outbox_id,
     int max_batch_size) {

@@ -4,7 +4,6 @@
 #include "DB/SimCoreDbWorkflowService.h"
 
 #include <QtCore/QDateTime>
-#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -104,20 +103,10 @@ void JobBuilderPage::createWidgets()
     clearButton_->setObjectName("jobsSecondaryButton");
     saveGraphButton_->setObjectName("jobsPrimaryButton");
 
-    externalDtmCheck_ = new QCheckBox(QStringLiteral("DTM artifact"), toolbar);
-    externalSavestateCheck_ = new QCheckBox(QStringLiteral("Savestate"), toolbar);
-    externalInputFramesCheck_ = new QCheckBox(QStringLiteral("Input frames"), toolbar);
-    externalSavestateCheck_->setChecked(true);
-
     toolbarLayout->addWidget(addUnitButton_);
     toolbarLayout->addWidget(removeNodeButton_);
     toolbarLayout->addWidget(clearButton_);
     toolbarLayout->addWidget(saveGraphButton_);
-    toolbarLayout->addSpacing(12);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("External inputs"), toolbar));
-    toolbarLayout->addWidget(externalDtmCheck_);
-    toolbarLayout->addWidget(externalSavestateCheck_);
-    toolbarLayout->addWidget(externalInputFramesCheck_);
     toolbarLayout->addStretch();
     rootLayout->addWidget(toolbar);
 
@@ -153,18 +142,6 @@ void JobBuilderPage::createWidgets()
     connect(removeNodeButton_, &QPushButton::clicked, this, &JobBuilderPage::removeSelectedNode);
     connect(clearButton_, &QPushButton::clicked, this, &JobBuilderPage::clearComposition);
     connect(saveGraphButton_, &QPushButton::clicked, this, &JobBuilderPage::saveGraph);
-    connect(externalDtmCheck_, &QCheckBox::toggled, this, [this]() {
-        rebuildBindings();
-        refreshPreview();
-    });
-    connect(externalSavestateCheck_, &QCheckBox::toggled, this, [this]() {
-        rebuildBindings();
-        refreshPreview();
-    });
-    connect(externalInputFramesCheck_, &QCheckBox::toggled, this, [this]() {
-        rebuildBindings();
-        refreshPreview();
-    });
 }
 
 void JobBuilderPage::loadUnits()
@@ -215,7 +192,6 @@ void JobBuilderPage::removeSelectedNode()
 void JobBuilderPage::clearComposition()
 {
     nodes_.clear();
-    externalInputs_.clear();
     outputBindings_.clear();
     rebuildBindings();
     refreshCompositionList();
@@ -291,7 +267,6 @@ void JobBuilderPage::saveGraph()
 
 void JobBuilderPage::rebuildBindings()
 {
-    externalInputs_.clear();
     outputBindings_.clear();
 
     std::unordered_map<std::string, std::pair<std::string, std::string>> latestOutputByKind;
@@ -311,14 +286,6 @@ void JobBuilderPage::rebuildBindings()
                     .input_key = input.key,
                 });
                 continue;
-            }
-            if (externalInputEnabled(input.data_kind)) {
-                externalInputs_.push_back(WorkflowExternalInputBinding{
-                    .node_key = node.node_key,
-                    .input_key = input.key,
-                    .data_kind = input.data_kind,
-                    .ref_id = externalInputRefId(input.data_kind),
-                });
             }
         }
 
@@ -362,7 +329,6 @@ void JobBuilderPage::refreshPreview()
 
     simcore::db::execution::workflow::WorkflowCompositionSpec spec{};
     spec.nodes = nodes_;
-    spec.external_inputs = externalInputs_;
     spec.output_bindings = outputBindings_;
 
     const auto result = soasimqt2::db::SimCoreDbWorkflowService::PreviewComposition(spec);
@@ -448,32 +414,4 @@ QString JobBuilderPage::describeNode(const WorkflowCompositionNode& node) const
     return QStringLiteral("%1  %2")
         .arg(QString::fromStdString(node.node_key))
         .arg(unit != nullptr ? QString::fromStdString(unit->display_name) : QString::fromStdString(node.unit_kind));
-}
-
-bool JobBuilderPage::externalInputEnabled(const std::string& data_kind) const
-{
-    if (data_kind == "state.savestate_id") {
-        return externalSavestateCheck_ != nullptr && externalSavestateCheck_->isChecked();
-    }
-    if (data_kind == "state_artifact.dtm_artifact_id") {
-        return externalDtmCheck_ != nullptr && externalDtmCheck_->isChecked();
-    }
-    if (data_kind == "analysis.input_frame_set_id") {
-        return externalInputFramesCheck_ != nullptr && externalInputFramesCheck_->isChecked();
-    }
-    return false;
-}
-
-qint64 JobBuilderPage::externalInputRefId(const std::string& data_kind) const
-{
-    if (data_kind == "state.savestate_id") {
-        return 0;
-    }
-    if (data_kind == "state_artifact.dtm_artifact_id") {
-        return 0;
-    }
-    if (data_kind == "analysis.input_frame_set_id") {
-        return 0;
-    }
-    return 0;
 }

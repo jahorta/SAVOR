@@ -350,6 +350,18 @@ public:
         return ServiceResult<simcore::db::WorkflowGraphSnapshot>::Ok(*snapshot);
     }
 
+    static ServiceResult<simcore::db::WorkflowGraphSnapshot> GetWorkflowGraphRevision(std::int64_t workflow_graph_revision_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::WorkflowGraphSnapshot>("SimCoreDB authoring database is not running");
+        }
+        const auto snapshot = db->GetWorkflowGraphRevision(workflow_graph_revision_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::WorkflowGraphSnapshot>("workflow graph revision not found");
+        }
+        return ServiceResult<simcore::db::WorkflowGraphSnapshot>::Ok(*snapshot);
+    }
+
 private:
     static simcore::db::IAuthoringDb* AuthoringDb() {
         return soasimqt2::SimCoreDbRuntime::instance().authoringDb();

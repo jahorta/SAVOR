@@ -115,6 +115,8 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_step", "guard_value"));
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_step", "job_set_id"));
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "failure_text"));
+    EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "workflow_graph_revision_id"));
+    EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_input_binding"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_step", "job_failed_count"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_alert", "is_active"));
 
@@ -126,6 +128,8 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_input_event_instance_step"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_payload_ref"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_graph_revision"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_input_binding_instance"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_state_created"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_instance_state"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_alert_active"));
@@ -2757,6 +2761,12 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
     EXPECT_EQ(active_graph->parent_revision_id.value_or(0), saved.workflow_graph_revision_id);
     EXPECT_EQ(active_graph->nodes[2].authored_ref_id.value_or(0), 88);
 
+    const auto first_revision = authoring_db->GetWorkflowGraphRevision(saved.workflow_graph_revision_id);
+    ASSERT_TRUE(first_revision.has_value());
+    EXPECT_EQ(first_revision->workflow_graph_id, saved.workflow_graph_id);
+    EXPECT_EQ(first_revision->workflow_graph_revision_id, saved.workflow_graph_revision_id);
+    EXPECT_EQ(first_revision->nodes[2].authored_ref_id.value_or(0), 77);
+
     sqlite3_stmt* revision_counts = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
@@ -2771,6 +2781,306 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
     EXPECT_EQ(sqlite3_column_int64(revision_counts, 0), 1);
     EXPECT_EQ(sqlite3_column_int64(revision_counts, 1), 2);
     sqlite3_finalize(revision_counts);
+}
+
+TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisionAndExternalInputs) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    ASSERT_NE(authoring_db, nullptr);
+
+    std::string err;
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000456));
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "launchable-seedprobe-to-battle",
+            .description = "Seed probe can feed a battle chain",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-launchable-seedprobe-to-battle",
+            .nodes = {
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe_chain",
+                    .display_name = "Seed Probe Chain",
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                    },
+                },
+                {
+                    .node_key = "battle_1",
+                    .unit_kind = "battle_chain",
+                    .display_name = "Battle Chain",
+                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_id = 901,
+                    .inputs = {
+                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "terminal_savestate", .data_kind = "state.savestate_id", .display_name = "Terminal savestate" },
+                    },
+                },
+            },
+            .edges = {
+                { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
+            },
+            .created_at_utc = now,
+            .event_id = "au-workflow-graph-launch",
+            .correlation_id = "au-workflow-graph-launch",
+        },
+        &saved,
+        &err)) << err;
+
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(execution_db, nullptr);
+    std::int64_t workflow_instance_id = 0;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
+        {
+            .workflow_kind = "workflow_graph",
+            .root_scope_kind = "manual",
+            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+            .created_by = "sqlite-fixture",
+            .created_at_utc = now.time_since_epoch().count(),
+            .steps = {
+                {
+                    .step_key = "probe_1",
+                    .step_kind = "seed_probe_chain",
+                    .priority = 10,
+                    .max_attempts = 1,
+                },
+                {
+                    .step_key = "battle_1",
+                    .step_kind = "battle_chain",
+                    .dependencies = { "probe_1" },
+                    .priority = 5,
+                    .max_attempts = 1,
+                },
+            },
+            .input_bindings = {
+                {
+                    .node_key = "probe_1",
+                    .input_key = "entry_savestate",
+                    .data_kind = "state.savestate_id",
+                    .ref_kind = "state.savestate",
+                    .ref_id = 44001,
+                    .source_kind = "external",
+                },
+            },
+        },
+        &workflow_instance_id,
+        &err)) << err;
+    ASSERT_GT(workflow_instance_id, 0);
+
+    const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    EXPECT_EQ(graph->instance.workflow_graph_revision_id.value_or(0), saved.workflow_graph_revision_id);
+    ASSERT_EQ(graph->input_bindings.size(), 1u);
+    EXPECT_EQ(graph->input_bindings[0].workflow_instance_id, workflow_instance_id);
+    EXPECT_EQ(graph->input_bindings[0].workflow_graph_revision_id, saved.workflow_graph_revision_id);
+    EXPECT_EQ(graph->input_bindings[0].node_key, "probe_1");
+    EXPECT_EQ(graph->input_bindings[0].input_key, "entry_savestate");
+    EXPECT_EQ(graph->input_bindings[0].data_kind, "state.savestate_id");
+    EXPECT_EQ(graph->input_bindings[0].ref_kind, "state.savestate");
+    EXPECT_EQ(graph->input_bindings[0].ref_id, 44001);
+    EXPECT_EQ(graph->input_bindings[0].source_kind, "external");
+
+    const auto instances = execution_db->WorkflowQueryService()->ListWorkflowInstances(
+        WorkflowInstanceState::Running,
+        now.time_since_epoch().count() - 1,
+        now.time_since_epoch().count() + 1);
+    const auto instance_it = std::find_if(
+        instances.begin(),
+        instances.end(),
+        [workflow_instance_id](const auto& row) { return row.workflow_instance_id == workflow_instance_id; });
+    ASSERT_NE(instance_it, instances.end());
+    EXPECT_EQ(instance_it->workflow_graph_revision_id.value_or(0), saved.workflow_graph_revision_id);
+
+    err.clear();
+    std::int64_t rejected_instance_id = 0;
+    EXPECT_FALSE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
+        {
+            .workflow_kind = "workflow_graph",
+            .root_scope_kind = "manual",
+            .created_by = "sqlite-fixture",
+            .created_at_utc = now.time_since_epoch().count(),
+            .steps = {
+                { .step_key = "probe_1", .step_kind = "seed_probe_chain" },
+            },
+            .input_bindings = {
+                {
+                    .node_key = "probe_1",
+                    .input_key = "entry_savestate",
+                    .data_kind = "state.savestate_id",
+                    .ref_kind = "state.savestate",
+                    .ref_id = 44002,
+                    .source_kind = "external",
+                },
+            },
+        },
+        &rejected_instance_id,
+        &err));
+    EXPECT_NE(err.find("workflow_graph_revision_id is required"), std::string::npos);
+}
+
+TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInstanceInputBinding) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::programdb::seedprobe;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+
+    std::string err;
+    std::int64_t seed_probe_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "graph seed probe spec",
+            .priority = 1,
+            .run_ms = 12000,
+            .vi_stall_ms = 500,
+            .samples_per_axis = 1,
+            .min_value = 80,
+            .max_value = 180,
+            .cap_trigger_top = true,
+            .ignore_trigger_minmax = true,
+            .combo_attempts_per_target = 1,
+            .combo_sampler_tries = 1,
+            .auto_schedule_battle_run = false,
+            .created_at_utc = types::UtcNow(),
+            .event_id = "test.authoring.seedprobe.graph-materialize",
+            .correlation_id = "test.graph-materialize",
+            .causation_id = "test",
+        },
+        &seed_probe_spec_id,
+        &err))
+        << err;
+
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "graph-materialize-seedprobe",
+            .description = "Seed probe chain launch graph",
+            .graph_version = 1,
+            .graph_hash = "graph-materialize-seedprobe-hash",
+            .nodes = {
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe_chain",
+                    .display_name = "Seed Probe Chain",
+                    .authored_ref_kind = std::string("seed_probe_spec"),
+                    .authored_ref_id = seed_probe_spec_id,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                    .possible_outputs = {
+                        { .output_key = "unique_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Unique input frames" },
+                    },
+                },
+            },
+            .created_at_utc = types::UtcNow(),
+            .event_id = "test.authoring.workflow.graph-materialize",
+            .correlation_id = "test.graph-materialize",
+        },
+        &saved,
+        &err))
+        << err;
+
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(execution_db, nullptr);
+    std::int64_t workflow_instance_id = 0;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
+        {
+            .workflow_kind = "workflow_graph",
+            .root_scope_kind = "manual",
+            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+            .created_by = "sqlite-fixture",
+            .created_at_utc = types::UtcNow().time_since_epoch().count(),
+            .steps = {
+                {
+                    .step_key = "probe_1",
+                    .step_kind = "seed_probe_chain",
+                    .priority = 10,
+                    .max_attempts = 1,
+                },
+            },
+            .input_bindings = {
+                {
+                    .node_key = "probe_1",
+                    .input_key = "entry_savestate",
+                    .data_kind = "state.savestate_id",
+                    .ref_kind = "state.savestate",
+                    .ref_id = 44001,
+                    .source_kind = "external",
+                },
+            },
+        },
+        &workflow_instance_id,
+        &err))
+        << err;
+
+    const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    ASSERT_EQ(graph->steps.size(), 1u);
+
+    ProgramKindRegistry registry;
+    SeedProbePhaseRegistrationConfig config{};
+    config.authoring_db = authoring_db;
+    RegisterSeedProbePhaseDescriptors(&registry, execution_db, analysis_db, config);
+
+    DBWorkflowWorkerCoordinator coordinator(
+        execution_db,
+        DBWorkflowWorkerCoordinatorConfig{},
+        CoordinatorIntegrationConfig{ .workflow_enabled = true },
+        &registry);
+
+    const auto scheduled = coordinator.MaterializeWorkflowStep(
+        WorkflowReadyStep{
+            .workflow_instance_id = workflow_instance_id,
+            .workflow_step_id = graph->steps.front().workflow_step_id,
+            .step_key = "probe_1",
+            .step_kind = "seed_probe_chain",
+            .priority = 10,
+        });
+    ASSERT_TRUE(scheduled.has_value());
+    EXPECT_GT(scheduled->job_set_id, 0);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT probe_run_id, probe_set_id, entry_savestate_id, seed_probe_spec_id "
+        "FROM sp_probe_run WHERE entry_savestate_id=?1 AND seed_probe_spec_id=?2 LIMIT 1;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int64(st, 1, 44001);
+    sqlite3_bind_int64(st, 2, seed_probe_spec_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    const auto probe_run_id = sqlite3_column_int64(st, 0);
+    EXPECT_GT(sqlite3_column_int64(st, 1), 0);
+    EXPECT_EQ(sqlite3_column_int64(st, 2), 44001);
+    EXPECT_EQ(sqlite3_column_int64(st, 3), seed_probe_spec_id);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT program_ref_kind, program_ref_id FROM exec_job WHERE job_set_id=?1 ORDER BY job_id LIMIT 1;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int64(st, 1, scheduled->job_set_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    ASSERT_NE(sqlite3_column_text(st, 0), nullptr);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(st, 0))), "seed_probe_run");
+    EXPECT_EQ(sqlite3_column_int64(st, 1), probe_run_id);
+    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {

@@ -62,6 +62,19 @@ std::optional<programdb::WorkflowStepScheduleResult> AdapterChainOrchestrator::O
     return descriptor->job_persistence->EncodeForQueueing(domain_ref_id);
 }
 
+std::optional<programdb::WorkflowStepScheduleResult> AdapterChainOrchestrator::OnGraphInputComplete(
+    std::string_view step_kind,
+    const programdb::WorkflowGraphStepScheduleContext& context,
+    AdapterChainTrace* trace) const {
+    if (registry_ == nullptr) return std::nullopt;
+    const auto* descriptor = registry_->FindForStepKind(step_kind);
+    if (descriptor == nullptr || descriptor->graph_job_persistence == nullptr) {
+        return std::nullopt;
+    }
+    if (trace) trace->job_persistence_invoked = true;
+    return descriptor->graph_job_persistence->EncodeForGraphQueueing(context);
+}
+
 std::optional<programdb::RuntimeInitRequest> AdapterChainOrchestrator::OnJobClaimed(
     std::string_view step_kind,
     std::int64_t job_id,

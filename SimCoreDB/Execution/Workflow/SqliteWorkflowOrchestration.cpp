@@ -3,6 +3,7 @@
 #include <chrono>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "../../Common/Events/EventCatalog.h"
 
@@ -136,7 +137,7 @@ std::vector<WorkflowInstanceRecord> SqliteWorkflowOrchestrationQueryService::Lis
 
     Statement st;
     if (!Prepare(db_,
-        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id "
+        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id, workflow_graph_revision_id "
         "FROM exec_workflow_instance WHERE state=?1 AND created_at_utc BETWEEN ?2 AND ?3 "
         "ORDER BY created_at_utc DESC, workflow_instance_id DESC;",
         &st,
@@ -157,6 +158,7 @@ std::vector<WorkflowInstanceRecord> SqliteWorkflowOrchestrationQueryService::Lis
         row.root_scope_id = ColumnInt64Optional(st.st, 4);
         row.input_ref_kind = ColumnTextOptional(st.st, 5);
         row.input_ref_id = ColumnInt64Optional(st.st, 6);
+        row.workflow_graph_revision_id = ColumnInt64Optional(st.st, 7);
         rows.push_back(std::move(row));
     }
 
@@ -326,7 +328,7 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
 std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::GetWorkflowGraph(std::int64_t workflow_instance_id) const {
     Statement inst;
     if (!Prepare(db_,
-        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id "
+        "SELECT workflow_instance_id, workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id, workflow_graph_revision_id "
         "FROM exec_workflow_instance WHERE workflow_instance_id=?1;",
         &inst,
         nullptr)) {
@@ -346,6 +348,7 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
     snapshot.instance.root_scope_id = ColumnInt64Optional(inst.st, 4);
     snapshot.instance.input_ref_kind = ColumnTextOptional(inst.st, 5);
     snapshot.instance.input_ref_id = ColumnInt64Optional(inst.st, 6);
+    snapshot.instance.workflow_graph_revision_id = ColumnInt64Optional(inst.st, 7);
 
     Statement step_st;
     if (!Prepare(db_,
@@ -391,6 +394,31 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
         edge.condition_kind = ColumnTextOptional(edge_st.st, 4);
         edge.condition_value = ColumnTextOptional(edge_st.st, 5);
         snapshot.edges.push_back(std::move(edge));
+    }
+
+    Statement binding_st;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_input_binding_id, workflow_instance_id, workflow_graph_revision_id, node_key, input_key, data_kind, ref_kind, ref_id, source_kind, created_at_utc "
+        "FROM exec_workflow_instance_input_binding WHERE workflow_instance_id=?1 ORDER BY workflow_instance_input_binding_id;",
+        &binding_st,
+        nullptr)) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(binding_st.st, 1, workflow_instance_id);
+
+    while (sqlite3_step(binding_st.st) == SQLITE_ROW) {
+        WorkflowInstanceInputBindingRecord binding;
+        binding.workflow_instance_input_binding_id = sqlite3_column_int64(binding_st.st, 0);
+        binding.workflow_instance_id = sqlite3_column_int64(binding_st.st, 1);
+        binding.workflow_graph_revision_id = sqlite3_column_int64(binding_st.st, 2);
+        binding.node_key = reinterpret_cast<const char*>(sqlite3_column_text(binding_st.st, 3));
+        binding.input_key = reinterpret_cast<const char*>(sqlite3_column_text(binding_st.st, 4));
+        binding.data_kind = reinterpret_cast<const char*>(sqlite3_column_text(binding_st.st, 5));
+        binding.ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(binding_st.st, 6));
+        binding.ref_id = sqlite3_column_int64(binding_st.st, 7);
+        binding.source_kind = ColumnTextOptional(binding_st.st, 8).value_or("");
+        binding.created_at_utc = sqlite3_column_int64(binding_st.st, 9);
+        snapshot.input_bindings.push_back(std::move(binding));
     }
 
     return snapshot;
@@ -469,6 +497,31 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         if (error_out) *error_out = "at least one workflow step is required";
         return false;
     }
+    if (command.workflow_graph_revision_id.has_value() && *command.workflow_graph_revision_id <= 0) {
+        if (error_out) *error_out = "workflow_graph_revision_id must be > 0";
+        return false;
+    }
+    if (!command.input_bindings.empty() && !command.workflow_graph_revision_id.has_value()) {
+        if (error_out) *error_out = "workflow_graph_revision_id is required when input_bindings are provided";
+        return false;
+    }
+    std::unordered_set<std::string> input_binding_keys;
+    input_binding_keys.reserve(command.input_bindings.size());
+    for (const auto& binding : command.input_bindings) {
+        if (binding.node_key.empty() || binding.input_key.empty()) {
+            if (error_out) *error_out = "input binding node_key and input_key are required";
+            return false;
+        }
+        if (binding.data_kind.empty() || binding.ref_kind.empty() || binding.ref_id <= 0) {
+            if (error_out) *error_out = "input binding data_kind, ref_kind, and ref_id are required";
+            return false;
+        }
+        const auto key = binding.node_key + "\n" + binding.input_key;
+        if (!input_binding_keys.emplace(key).second) {
+            if (error_out) *error_out = "duplicate input binding for node/input: " + binding.node_key + "/" + binding.input_key;
+            return false;
+        }
+    }
 
     if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
         return false;
@@ -478,8 +531,8 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     const auto now = command.created_at_utc > 0 ? command.created_at_utc : NowUtc();
     Statement insert_instance;
     if (!Prepare(db_,
-        "INSERT INTO exec_workflow_instance(workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc) "
-        "VALUES(?1, 'RUNNING', ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+        "INSERT INTO exec_workflow_instance(workflow_kind, state, root_scope_kind, root_scope_id, input_ref_kind, input_ref_id, created_by, created_at_utc, started_at_utc, workflow_graph_revision_id) "
+        "VALUES(?1, 'RUNNING', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);",
         &insert_instance,
         error_out)) {
         rollback();
@@ -493,6 +546,7 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     sqlite3_bind_text(insert_instance.st, 6, command.created_by.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_instance.st, 7, now);
     sqlite3_bind_int64(insert_instance.st, 8, now);
+    if (command.workflow_graph_revision_id.has_value()) sqlite3_bind_int64(insert_instance.st, 9, *command.workflow_graph_revision_id); else sqlite3_bind_null(insert_instance.st, 9);
     if (sqlite3_step(insert_instance.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         rollback();
@@ -577,6 +631,32 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
                 rollback();
                 return false;
             }
+        }
+    }
+
+    for (const auto& binding : command.input_bindings) {
+        Statement insert_binding;
+        if (!Prepare(db_,
+            "INSERT INTO exec_workflow_instance_input_binding(workflow_instance_id, workflow_graph_revision_id, node_key, input_key, data_kind, ref_kind, ref_id, source_kind, created_at_utc) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);",
+            &insert_binding,
+            error_out)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(insert_binding.st, 1, workflow_instance_id);
+        sqlite3_bind_int64(insert_binding.st, 2, *command.workflow_graph_revision_id);
+        sqlite3_bind_text(insert_binding.st, 3, binding.node_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_binding.st, 4, binding.input_key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_binding.st, 5, binding.data_kind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_binding.st, 6, binding.ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(insert_binding.st, 7, binding.ref_id);
+        if (!binding.source_kind.empty()) sqlite3_bind_text(insert_binding.st, 8, binding.source_kind.c_str(), -1, SQLITE_TRANSIENT); else sqlite3_bind_null(insert_binding.st, 8);
+        sqlite3_bind_int64(insert_binding.st, 9, now);
+        if (sqlite3_step(insert_binding.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
         }
     }
 
