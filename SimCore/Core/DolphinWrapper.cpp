@@ -94,7 +94,7 @@ namespace {
     void InstallHeadlessDolphinAlertHandler()
     {
         Common::RegisterMsgAlertHandler(HeadlessDolphinAlertHandler);
-        Common::SetEnableAlert(false);
+        Common::SetEnableAlert(true);
         Common::SetAbortOnPanicAlert(false);
     }
 
@@ -150,10 +150,18 @@ namespace simcore {
         return true;
     }
 
-    static bool initWiimotesNone() {
+    static void stopRealWiimoteScannerForHeadless(const char* phase)
+    {
+        SCLOGT("Stopping Dolphin real Wiimote scanner for headless wrapper: %s", phase ? phase : "");
+        WiimoteReal::Shutdown();
+    }
+
+    static bool initWiimotesNone(bool stop_real_wiimote_scanner) {
         using namespace Wiimote;
         // Ensure module is initialized and configs loaded so controllers exist.
         Initialize(InitializeMode::DO_NOT_WAIT_FOR_WIIMOTES);
+        if (stop_real_wiimote_scanner)
+            stopRealWiimoteScannerForHeadless("initial initialize");
         if (auto* ic = GetConfig()) {
             ic->LoadConfig();
             SCLOGI("[Wii] controllers=%d", ic->GetControllerCount());
@@ -162,6 +170,8 @@ namespace simcore {
         Config::SetCurrent(Config::MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE, false);
         Shutdown();
         Initialize(InitializeMode::DO_NOT_WAIT_FOR_WIIMOTES);
+        if (stop_real_wiimote_scanner)
+            stopRealWiimoteScannerForHeadless("post-none reinitialize");
         if (auto* ic2 = GetConfig()) {
             ic2->LoadConfig();
             SCLOGI("[Wii] controllers(after None)=%d", ic2->GetControllerCount());
@@ -169,11 +179,11 @@ namespace simcore {
         return true;
     }
 
-    static bool loadDolphinGUISettings(WindowSystemInfo wsi) {
+    static bool loadDolphinGUISettings(WindowSystemInfo wsi, bool stop_real_wiimote_scanner) {
         SCLOGI("Loading Dolphin GUI settings");
         g_controller_interface.Initialize(wsi);
         initPads();
-        initWiimotesNone();
+        initWiimotesNone(stop_real_wiimote_scanner);
         return true;
     }
 
@@ -268,7 +278,7 @@ namespace simcore {
         SetUserDirectory(m_user_dir);
         sterilizeConfigs();
 
-        m_system_pad_is_inited = loadDolphinGUISettings(wsi);
+        m_system_pad_is_inited = loadDolphinGUISettings(wsi, !m_visual_mode);
 
         auto volume = DiscIO::CreateVolume(iso_path);
         if (!volume)
@@ -1774,8 +1784,8 @@ namespace simcore {
         SCLOGT("Turning off background input.");
         Config::SetCurrent(Config::MAIN_INPUT_BACKGROUND_INPUT, false);
 
-        SCLOGT("Turning off panic alert popups.");
-        Config::SetCurrent(Config::MAIN_USE_PANIC_HANDLERS, false);
+        SCLOGT("Installing headless Dolphin alert handler.");
+        Config::SetCurrent(Config::MAIN_USE_PANIC_HANDLERS, true);
         Config::SetCurrent(Config::MAIN_ABORT_ON_PANIC_ALERT, false);
         InstallHeadlessDolphinAlertHandler();
 
