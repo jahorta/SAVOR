@@ -35,7 +35,6 @@ struct SeedProbeSpecDraft {
     bool ignore_trigger_minmax = false;
     int combo_attempts_per_target = 3;
     int combo_sampler_tries = 32;
-    bool auto_schedule_battle_run = false;
 };
 
 struct TasSpecDraft {
@@ -45,7 +44,6 @@ struct TasSpecDraft {
     std::int64_t vi_stall_ms = 0;
     int headroom_x10 = 10;
     bool progress_enable = false;
-    bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
     std::int64_t rtc_low = 0;
     std::int64_t rtc_high = 0;
@@ -140,7 +138,7 @@ public:
     static ServiceResult<std::int64_t> EnsureAddressProgram(const AddressProgramDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
 
         simcore::db::EnsureAddressProgramCommand command{};
@@ -162,7 +160,7 @@ public:
     static ServiceResult<simcore::db::AddressProgramSnapshot> GetAddressProgram(std::int64_t address_program_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::AddressProgramSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::AddressProgramSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetAddressProgram(address_program_id);
         if (!snapshot.has_value()) {
@@ -174,7 +172,7 @@ public:
     static ServiceResult<std::int64_t> SaveSeedProbeSpec(const SeedProbeSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("seed probe spec name is required");
@@ -196,7 +194,6 @@ public:
         command.ignore_trigger_minmax = draft.ignore_trigger_minmax;
         command.combo_attempts_per_target = draft.combo_attempts_per_target;
         command.combo_sampler_tries = draft.combo_sampler_tries;
-        command.auto_schedule_battle_run = draft.auto_schedule_battle_run;
         command.created_at_utc = now;
         command.event_id = NextEventId("Authoring.SeedProbeSpecSaved");
         command.correlation_id = command.event_id;
@@ -212,7 +209,7 @@ public:
     static ServiceResult<simcore::db::SeedProbeSpecSnapshot> GetSeedProbeSpec(std::int64_t seed_probe_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::SeedProbeSpecSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::SeedProbeSpecSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetSeedProbeSpec(seed_probe_spec_id);
         if (!snapshot.has_value()) {
@@ -224,7 +221,7 @@ public:
     static ServiceResult<std::vector<simcore::db::SeedProbeSpecSnapshot>> ListSeedProbeSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::SeedProbeSpecSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::SeedProbeSpecSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::SeedProbeSpecSnapshot>>::Ok(db->ListSeedProbeSpecs(max_count));
     }
@@ -232,7 +229,7 @@ public:
     static ServiceResult<std::int64_t> SaveTasSpec(const TasSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.base_name.empty()) {
             return Invalid<std::int64_t>("TAS spec name is required");
@@ -246,7 +243,6 @@ public:
         command.vi_stall_ms = draft.vi_stall_ms;
         command.headroom_x10 = draft.headroom_x10;
         command.progress_enable = draft.progress_enable;
-        command.auto_queue_seeds = draft.auto_queue_seeds;
         command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
         command.rtc_low = draft.rtc_low;
         command.rtc_high = draft.rtc_high;
@@ -266,7 +262,7 @@ public:
     static ServiceResult<simcore::db::TasSpecSnapshot> GetTasSpec(std::int64_t tas_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::TasSpecSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::TasSpecSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetTasSpec(tas_spec_id);
         if (!snapshot.has_value()) {
@@ -278,7 +274,7 @@ public:
     static ServiceResult<std::vector<simcore::db::TasSpecSnapshot>> ListTasSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::TasSpecSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::TasSpecSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
     }
@@ -286,7 +282,7 @@ public:
     static ServiceResult<std::int64_t> SavePredicateSpec(const PredicateSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("predicate name is required");
@@ -322,7 +318,7 @@ public:
     static ServiceResult<simcore::db::PredicateSpecSnapshot> GetPredicateSpec(std::int64_t predicate_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::PredicateSpecSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::PredicateSpecSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetPredicateSpec(predicate_spec_id);
         if (!snapshot.has_value()) {
@@ -334,7 +330,7 @@ public:
     static ServiceResult<std::vector<simcore::db::PredicateSpecSnapshot>> ListPredicateSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::PredicateSpecSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::PredicateSpecSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::PredicateSpecSnapshot>>::Ok(db->ListPredicateSpecs(max_count));
     }
@@ -342,7 +338,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattleRunSpec(const BattleRunSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("battle run spec name is required");
@@ -374,7 +370,7 @@ public:
     static ServiceResult<simcore::db::BattleRunSpecSnapshot> GetBattleRunSpec(std::int64_t battle_run_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::BattleRunSpecSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::BattleRunSpecSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetBattleRunSpec(battle_run_spec_id);
         if (!snapshot.has_value()) {
@@ -386,7 +382,7 @@ public:
     static ServiceResult<std::vector<simcore::db::BattleRunSpecSnapshot>> ListBattleRunSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::BattleRunSpecSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::BattleRunSpecSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::BattleRunSpecSnapshot>>::Ok(db->ListBattleRunSpecs(max_count));
     }
@@ -394,7 +390,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattlePlan(const BattlePlanDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty() || draft.fingerprint.empty()) {
             return Invalid<std::int64_t>("battle plan name and fingerprint are required");
@@ -449,7 +445,7 @@ public:
     static ServiceResult<simcore::db::BattlePlanSnapshot> GetBattlePlan(std::int64_t plan_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::BattlePlanSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::BattlePlanSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetBattlePlan(plan_id);
         if (!snapshot.has_value()) {
@@ -461,7 +457,7 @@ public:
     static ServiceResult<std::vector<simcore::db::BattlePlanSnapshot>> ListBattlePlans(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::BattlePlanSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::BattlePlanSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::BattlePlanSnapshot>>::Ok(db->ListBattlePlans(max_count));
     }
@@ -469,7 +465,7 @@ public:
     static ServiceResult<std::int64_t> SavePredicateSet(const PredicateSetDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.predicate_spec_ids.empty()) {
             return Invalid<std::int64_t>("predicate set requires at least one predicate");
@@ -490,7 +486,7 @@ public:
     static ServiceResult<simcore::db::PredicateSetSnapshot> GetPredicateSet(std::int64_t predicate_set_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::PredicateSetSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::PredicateSetSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetPredicateSet(predicate_set_id);
         if (!snapshot.has_value()) {
@@ -502,7 +498,7 @@ public:
     static ServiceResult<std::vector<simcore::db::PredicateSetSnapshot>> ListPredicateSets(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::PredicateSetSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::PredicateSetSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::PredicateSetSnapshot>>::Ok(db->ListPredicateSets(max_count));
     }
@@ -510,7 +506,7 @@ public:
     static ServiceResult<std::int64_t> SaveExplorerSettings(const ExplorerSettingsDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("explorer settings name is required");
@@ -537,7 +533,7 @@ public:
     static ServiceResult<simcore::db::ExplorerSettingsSnapshot> GetExplorerSettings(std::int64_t explorer_settings_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::ExplorerSettingsSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::ExplorerSettingsSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetExplorerSettings(explorer_settings_id);
         if (!snapshot.has_value()) {
@@ -549,7 +545,7 @@ public:
     static ServiceResult<std::vector<simcore::db::ExplorerSettingsSnapshot>> ListExplorerSettings(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::ExplorerSettingsSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::ExplorerSettingsSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::ExplorerSettingsSnapshot>>::Ok(db->ListExplorerSettings(max_count));
     }
@@ -557,7 +553,7 @@ public:
     static ServiceResult<std::int64_t> SaveTemplate(const TemplateDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("SimCoreDB authoring database is not running");
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("template name is required");
@@ -586,7 +582,7 @@ public:
     static ServiceResult<simcore::db::TemplateSnapshot> GetTemplate(std::int64_t template_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::TemplateSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::TemplateSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetTemplate(template_id);
         if (!snapshot.has_value()) {
@@ -598,7 +594,7 @@ public:
     static ServiceResult<std::vector<simcore::db::TemplateSnapshot>> ListTemplates(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::TemplateSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::TemplateSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::TemplateSnapshot>>::Ok(db->ListTemplates(max_count));
     }
@@ -606,7 +602,7 @@ public:
     static ServiceResult<simcore::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::SaveWorkflowGraphResult>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::SaveWorkflowGraphResult>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty() || draft.graph_hash.empty()) {
             return Invalid<simcore::db::SaveWorkflowGraphResult>("workflow graph name and hash are required");
@@ -640,7 +636,7 @@ public:
     static ServiceResult<simcore::db::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_graph_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::WorkflowGraphSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::WorkflowGraphSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetWorkflowGraph(workflow_graph_id);
         if (!snapshot.has_value()) {
@@ -652,7 +648,7 @@ public:
     static ServiceResult<simcore::db::WorkflowGraphSnapshot> GetWorkflowGraphRevision(std::int64_t workflow_graph_revision_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::WorkflowGraphSnapshot>("SimCoreDB authoring database is not running");
+            return Unavailable<simcore::db::WorkflowGraphSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         const auto snapshot = db->GetWorkflowGraphRevision(workflow_graph_revision_id);
         if (!snapshot.has_value()) {
@@ -664,7 +660,7 @@ public:
     static ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>> ListWorkflowGraphs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::WorkflowGraphSnapshot>>("SimCoreDB authoring database is not running");
+            return Unavailable<std::vector<simcore::db::WorkflowGraphSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         return ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>>::Ok(db->ListWorkflowGraphs(max_count));
     }
@@ -702,3 +698,4 @@ private:
 };
 
 } // namespace soasimqt2::db
+

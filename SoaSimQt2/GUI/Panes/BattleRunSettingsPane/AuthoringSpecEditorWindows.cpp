@@ -120,11 +120,13 @@ void notifySaved(const std::function<void()>& callback)
 
 } // namespace
 
-SeedProbeSpecEditorWindow::SeedProbeSpecEditorWindow(QWidget* parent)
+SeedProbeSpecEditorWindow::SeedProbeSpecEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    if (!embeddedInContainer) {
+        setWindowFlag(Qt::Window, true);
+    }
     setWindowTitle(QStringLiteral("Seed Probe Spec Editor"));
     resize(620, 480);
     createWidgets();
@@ -138,6 +140,24 @@ void SeedProbeSpecEditorWindow::setStatusCallback(std::function<void(const QStri
 void SeedProbeSpecEditorWindow::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
+}
+
+void SeedProbeSpecEditorWindow::loadSnapshot(const simcore::db::SeedProbeSpecSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate
+        ? QStringLiteral("Seed Probe Spec Editor - Duplicate")
+        : QStringLiteral("Seed Probe Spec Editor - Edit Copy"));
+    nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    prioritySpin_->setValue(snapshot.priority);
+    runMsEdit_->setText(QString::number(snapshot.run_ms));
+    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
+    samplesPerAxisSpin_->setValue(snapshot.samples_per_axis);
+    minValueEdit_->setText(QString::number(snapshot.min_value));
+    maxValueEdit_->setText(QString::number(snapshot.max_value));
+    capTriggerTopCheck_->setChecked(snapshot.cap_trigger_top);
+    ignoreTriggerMinMaxCheck_->setChecked(snapshot.ignore_trigger_minmax);
+    comboAttemptsSpin_->setValue(snapshot.combo_attempts_per_target);
+    comboSamplerTriesSpin_->setValue(snapshot.combo_sampler_tries);
 }
 
 void SeedProbeSpecEditorWindow::createWidgets()
@@ -165,7 +185,6 @@ void SeedProbeSpecEditorWindow::createWidgets()
     comboSamplerTriesSpin_ = new QSpinBox(panel);
     comboSamplerTriesSpin_->setRange(0, 100000);
     comboSamplerTriesSpin_->setValue(32);
-    autoScheduleBattleRunCheck_ = new QCheckBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
@@ -177,7 +196,6 @@ void SeedProbeSpecEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Ignore trigger min/max"), ignoreTriggerMinMaxCheck_);
     form->addRow(QStringLiteral("Combo attempts/target"), comboAttemptsSpin_);
     form->addRow(QStringLiteral("Combo sampler tries"), comboSamplerTriesSpin_);
-    form->addRow(QStringLiteral("Auto schedule battle run"), autoScheduleBattleRunCheck_);
     root->addWidget(panel, 1);
 
     auto* buttons = new QHBoxLayout();
@@ -220,7 +238,6 @@ void SeedProbeSpecEditorWindow::saveSpec()
     draft.ignore_trigger_minmax = ignoreTriggerMinMaxCheck_->isChecked();
     draft.combo_attempts_per_target = comboAttemptsSpin_->value();
     draft.combo_sampler_tries = comboSamplerTriesSpin_->value();
-    draft.auto_schedule_battle_run = autoScheduleBattleRunCheck_->isChecked();
     const auto result = soasimqt2::db::SimCoreDbAuthoringService::SaveSeedProbeSpec(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
@@ -235,11 +252,13 @@ void SeedProbeSpecEditorWindow::postStatusMessage(const QString& text, StatusToa
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-TasSpecEditorWindow::TasSpecEditorWindow(QWidget* parent)
+TasSpecEditorWindow::TasSpecEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    if (!embeddedInContainer) {
+        setWindowFlag(Qt::Window, true);
+    }
     setWindowTitle(QStringLiteral("TAS Spec Editor"));
     resize(620, 440);
     createWidgets();
@@ -253,6 +272,19 @@ void TasSpecEditorWindow::setStatusCallback(std::function<void(const QString&, S
 void TasSpecEditorWindow::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
+}
+
+void TasSpecEditorWindow::loadSnapshot(const simcore::db::TasSpecSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate
+        ? QStringLiteral("TAS Spec Editor - Duplicate")
+        : QStringLiteral("TAS Spec Editor - Edit Copy"));
+    nameEdit_->setText(QString::fromStdString(snapshot.base_name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    prioritySpin_->setValue(snapshot.priority);
+    runMsEdit_->setText(QString::number(snapshot.run_ms));
+    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
+    headroomSpin_->setValue(snapshot.headroom_x10);
+    progressCheck_->setChecked(snapshot.progress_enable);
 }
 
 void TasSpecEditorWindow::createWidgets()
@@ -271,14 +303,12 @@ void TasSpecEditorWindow::createWidgets()
     headroomSpin_->setRange(0, 255);
     headroomSpin_->setValue(10);
     progressCheck_ = new QCheckBox(panel);
-    autoQueueSeedsCheck_ = new QCheckBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
     form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
     form->addRow(QStringLiteral("Headroom x10"), headroomSpin_);
     form->addRow(QStringLiteral("Progress"), progressCheck_);
-    form->addRow(QStringLiteral("Auto queue seeds"), autoQueueSeedsCheck_);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     buttons->addStretch();
@@ -310,7 +340,6 @@ void TasSpecEditorWindow::saveSpec()
     draft.vi_stall_ms = viStallMs;
     draft.headroom_x10 = headroomSpin_->value();
     draft.progress_enable = progressCheck_->isChecked();
-    draft.auto_queue_seeds = autoQueueSeedsCheck_->isChecked();
     draft.base_dtm_artifact_id = 0;
     draft.rtc_low = 0;
     draft.rtc_high = 0;
@@ -328,11 +357,13 @@ void TasSpecEditorWindow::postStatusMessage(const QString& text, StatusToast::Se
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-BattleRunSpecEditorWindow::BattleRunSpecEditorWindow(QWidget* parent)
+BattleRunSpecEditorWindow::BattleRunSpecEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    if (!embeddedInContainer) {
+        setWindowFlag(Qt::Window, true);
+    }
     setWindowTitle(QStringLiteral("Battle Run Spec Editor"));
     resize(620, 420);
     createWidgets();
@@ -346,6 +377,22 @@ void BattleRunSpecEditorWindow::setStatusCallback(std::function<void(const QStri
 void BattleRunSpecEditorWindow::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
+}
+
+void BattleRunSpecEditorWindow::loadSnapshot(const simcore::db::BattleRunSpecSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate
+        ? QStringLiteral("Battle Run Spec Editor - Duplicate")
+        : QStringLiteral("Battle Run Spec Editor - Edit Copy"));
+    nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    prioritySpin_->setValue(snapshot.priority);
+    runMsEdit_->setText(QString::number(snapshot.run_ms));
+    viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
+    progressCheck_->setChecked(snapshot.progress_enable);
+    singleTurnRunnerCheck_->setChecked(snapshot.use_single_turn_runner);
+    autoWaveTriggerCheck_->setChecked(snapshot.auto_wave_trigger_enable);
+    minFakeAttacksSpin_->setValue(snapshot.min_fake_attacks);
+    maxFakeAttacksSpin_->setValue(snapshot.max_fake_attacks);
 }
 
 void BattleRunSpecEditorWindow::createWidgets()

@@ -2,6 +2,7 @@
 
 #include <functional>
 
+#include "Authoring/IAuthoringDb.h"
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
@@ -18,9 +19,10 @@ class QSpinBox;
 class SeedProbeSpecEditorWindow final : public QWidget
 {
 public:
-    explicit SeedProbeSpecEditorWindow(QWidget* parent = nullptr);
+    explicit SeedProbeSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
+    void loadSnapshot(const simcore::db::SeedProbeSpecSnapshot& snapshot, bool duplicate);
 
 private:
     void createWidgets();
@@ -40,16 +42,16 @@ private:
     QCheckBox* ignoreTriggerMinMaxCheck_ = nullptr;
     QSpinBox* comboAttemptsSpin_ = nullptr;
     QSpinBox* comboSamplerTriesSpin_ = nullptr;
-    QCheckBox* autoScheduleBattleRunCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 
 class TasSpecEditorWindow final : public QWidget
 {
 public:
-    explicit TasSpecEditorWindow(QWidget* parent = nullptr);
+    explicit TasSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
+    void loadSnapshot(const simcore::db::TasSpecSnapshot& snapshot, bool duplicate);
 
 private:
     void createWidgets();
@@ -64,16 +66,16 @@ private:
     QLineEdit* viStallMsEdit_ = nullptr;
     QSpinBox* headroomSpin_ = nullptr;
     QCheckBox* progressCheck_ = nullptr;
-    QCheckBox* autoQueueSeedsCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 
 class BattleRunSpecEditorWindow final : public QWidget
 {
 public:
-    explicit BattleRunSpecEditorWindow(QWidget* parent = nullptr);
+    explicit BattleRunSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
+    void loadSnapshot(const simcore::db::BattleRunSpecSnapshot& snapshot, bool duplicate);
 
 private:
     void createWidgets();
