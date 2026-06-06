@@ -146,6 +146,9 @@
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\WorkflowsPage.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp">
       <Filter>GUI\Panes\Settings</Filter>
     </ClCompile>
@@ -246,6 +249,9 @@
       <Filter>GUI\Panes\SeedProbe</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobSetsPane\WorkflowsPage.h">
       <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />

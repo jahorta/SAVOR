@@ -138,6 +138,7 @@
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp" />
+    <ClCompile Include="GUI\Panes\JobSetsPane\WorkflowsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\JobsController.cpp" />
@@ -181,6 +182,7 @@
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
+    <QtMoc Include="GUI\Panes\JobSetsPane\WorkflowsPage.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h" />
     <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />

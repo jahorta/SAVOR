@@ -11,7 +11,7 @@
 
 class CoordinatorController;
 class CoordinatorPane;
-class JobSetsPage;
+class WorkflowsPage;
 class JobsPage;
 class SeedProbePage;
 class ExplorerRunsPage;
@@ -51,7 +51,7 @@ private:
     QLabel* contentDescriptionLabel_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* coordinatorPane_ = nullptr;
-    JobSetsPage* jobSetsPage_ = nullptr;
+    WorkflowsPage* workflowsPage_ = nullptr;
     JobsPage* jobsPage_ = nullptr;
     SeedProbePage* seedProbePage_ = nullptr;
     ExplorerRunsPage* explorerRunsPage_ = nullptr;

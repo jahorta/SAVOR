@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "GUI/StyleSheet.h"
-#include "GUI/Panes/JobSetsPane/JobSetsPage.h"
+#include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/SeedProbePane/SeedProbePage.h"
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
@@ -33,7 +33,7 @@ struct PageMetadata {
 };
 
 constexpr PageMetadata kPageMetadata[] = {
-    { "Job Sets", "Live Job Sets workspace with filtering, paging, expansion state, right-click actions, and progress visuals." },
+    { "Workflows", "Workflow execution workspace grouped by instance, step, and job set drilldown." },
     { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Workflow Builder", "Composable workflow unit builder with typed input and output compatibility preview." },
@@ -99,8 +99,8 @@ void MainWindow::handleNavigationChanged(int currentRow)
     }
 
     contentStack_->setCurrentIndex(currentRow);
-    if (jobSetsPage_) {
-        jobSetsPage_->setPageActive(currentRow == 0);
+    if (workflowsPage_) {
+        workflowsPage_->setPageActive(currentRow == 0);
     }
     if (jobsPage_) {
         jobsPage_->setPageActive(currentRow == 1);
@@ -225,7 +225,7 @@ QWidget* MainWindow::createNavigationPane()
     navigationList_ = new QListWidget(navFrame);
     navigationList_->setObjectName("navigationList");
     navigationList_->addItems(QStringList{
-        "Job Sets",
+        "Workflows",
         "Jobs",
         "Workers",
         "Workflow Builder",
@@ -270,9 +270,9 @@ QWidget* MainWindow::createContentPane()
     layout->addLayout(topLayout);
 
     contentStack_ = new QStackedWidget(contentPane);
-    jobSetsPage_ = new JobSetsPage(contentPane);
-    connect(jobSetsPage_, &JobSetsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(jobSetsPage_);
+    workflowsPage_ = new WorkflowsPage(contentPane);
+    connect(workflowsPage_, &WorkflowsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    contentStack_->addWidget(workflowsPage_);
     jobsPage_ = new JobsPage(contentPane);
     connect(jobsPage_, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(jobsPage_);
