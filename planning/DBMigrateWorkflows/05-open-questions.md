@@ -13,7 +13,7 @@ This file is meant to be actively updated each iteration.
 4. **Failure policy**
    - Decision: on input timeout, retry once before terminal failure.
 5. **Payload family**
-   - Decision: use new `workflow_input_event` payload family for workflow input orchestration events.
+   - Decision: `workflow_input_event` was the phase-0 input-orchestration event family, but it is not the target storage location for external launch inputs. Current direction is typed `exec_workflow_instance_input_binding` rows for external inputs and `exec_workflow_instance_argument` rows for scalar launch arguments.
 6. **Step aggregate identity**
    - Decision: encode `workflow_step_id` as aggregate id string for step-scoped events.
 7. **Seed Probe split boundary**
@@ -52,6 +52,12 @@ This file is meant to be actively updated each iteration.
    - Decision: Qt2/workflow composition must not pre-create Analysis DB rows. Program descriptors/adapters create Analysis rows lazily during materialization or result mapping for steps that actually run.
 22. **Workflow graph storage boundary**
    - Decision: reusable workflow graph templates live in Authoring DB as logical graph identities with immutable revisions. External input values are instance-specific and must not be stored in authored workflow graphs.
+23. **Workflow launch boundary**
+   - Decision: Qt2 Workflow Builder is authoring-only. Workflow instances are launched only from a separate launcher surface that selects external inputs and instance arguments.
+24. **Instance argument ownership**
+   - Decision: scalar launch values that vary per run live in Execution DB as workflow instance arguments, not in authored specs or graphs. Current examples are TAS RTC value and battle fake-attack min/max.
+25. **RTC fan-out**
+   - Decision: a TAS RTC range selected at launch produces one workflow instance per RTC value, so each instance has one concrete RTC argument.
 
 ## Priority A (blockers)
 
@@ -61,10 +67,11 @@ This file is meant to be actively updated each iteration.
    - Compatibility with older persisted formats is not a phase-1 requirement (fresh structure rollout).
 
 2. **Composable workflow definition source**
-   - Definitions source is **code registry** for now.
-   - Add a dedicated validation service to gate workflow definitions before use.
-   - We should add per-step contracts (`required_inputs`, `possible_outputs`) and validator rules to ensure downstream requirements are potentially satisfiable by prior possible outputs.
-   - We should support grouped workflows for common sequential pipelines (e.g., grouped Seed Probe workflow).
+   - Definitions source is Authoring-owned workflow graph templates.
+   - Keep code descriptors as the source for program kind contracts and materialization behavior.
+   - Use a dedicated validation service to gate authored graph revisions before use.
+   - Per-node contracts (`required_inputs`, `possible_outputs`) and validator rules ensure downstream requirements are potentially satisfiable by prior possible outputs or external input bindings.
+   - Grouped workflows for common sequential pipelines are authored graph templates, not separate static workflow definitions.
 
 ## Priority B (important)
 
@@ -103,7 +110,7 @@ For each question:
 
 ## Resolved inconsistencies
 
-- Definitions source ambiguity is resolved for initial rollout: use code registry + validation service.
+- Definitions source ambiguity is resolved for the target architecture: use Authoring-owned workflow graph templates + descriptor-provided program contracts + validation service.
 - Seed Probe split entry point module is identified (`SimCore/DB/ProgramDB/SeedProbeDBCodec.h/.cpp`), reducing uncertainty on where decomposition starts.
 - Claimed-job ownership path and matching order are now explicitly defined.
 - Result mapping ownership and dedupe persistence strategy are now explicitly defined.
@@ -111,3 +118,4 @@ For each question:
 - Completion invariant remediation path is standardized through pause + invariant event + reconciliation/repair + reopen-or-fail policy.
 - Workflow composition output semantics are standardized around `possible_outputs`, and Analysis rows are created lazily by program descriptors/adapters instead of by the composition layer.
 - Workflow graph storage is standardized around Authoring-owned graph identities, immutable graph revisions, and instance-specific submission bindings.
+- Workflow launch ownership is standardized around a separate launcher surface. Authoring editors create reusable records only; launch-time external inputs and scalar arguments are Execution-owned instance data.

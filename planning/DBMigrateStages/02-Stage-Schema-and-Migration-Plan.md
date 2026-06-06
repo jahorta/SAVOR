@@ -104,6 +104,60 @@ Queueing, claiming, retries, parent/child orchestration, and event/outbox mechan
 - `last_scanned_at_utc` (int)
 - `last_job_set_id` (int nullable)
 
+#### 7) `exec_workflow_instance`
+- `workflow_instance_id` (PK)
+- `workflow_kind` (text)
+- `state` (text)
+- `root_scope_kind` / `root_scope_id` (nullable operational scope)
+- `workflow_graph_revision_id` (nullable FK by convention -> `au_workflow_graph_revision.workflow_graph_revision_id`)
+- `created_by`
+- lifecycle timestamps and failure fields
+
+Legacy note: instance-level `input_ref_kind` / `input_ref_id` may still exist during transition, but the target model uses typed input bindings below.
+
+#### 8) `exec_workflow_step`
+- `workflow_step_id` (PK)
+- `workflow_instance_id` (FK -> `exec_workflow_instance.workflow_instance_id`)
+- `step_key`
+- `step_kind`
+- `state`
+- guard, priority, attempts, job-set, lifecycle, output, and failure fields
+
+Legacy note: step-level `input_ref_kind` / `input_ref_id` remains useful for produced refs during the transition, but external launch inputs should come from `exec_workflow_instance_input_binding`.
+
+#### 9) `exec_workflow_edge`
+- `workflow_edge_id` (PK)
+- `workflow_instance_id` (FK -> `exec_workflow_instance.workflow_instance_id`)
+- `from_step_id` / `to_step_id`
+- `condition_kind` / `condition_value`
+- `created_at_utc`
+
+#### 10) `exec_workflow_instance_input_binding`
+- `workflow_instance_input_binding_id` (PK)
+- `workflow_instance_id` (FK -> `exec_workflow_instance.workflow_instance_id`)
+- `workflow_graph_revision_id`
+- `node_key`
+- `input_key`
+- `data_kind`
+- `ref_kind`
+- `ref_id`
+- `source_kind` (nullable)
+- `created_at_utc`
+
+This table is the target home for external inputs selected by the launcher. Authored workflow graphs must not store these values.
+
+#### 11) `exec_workflow_instance_argument`
+- `workflow_instance_argument_id` (PK)
+- `workflow_instance_id` (FK -> `exec_workflow_instance.workflow_instance_id`)
+- `node_key` (empty string for graph/global argument)
+- `argument_key`
+- `value_type` (`integer`, `text`, `json`, `boolean`)
+- `integer_value` / `text_value`
+- `source_kind` (nullable)
+- `created_at_utc`
+
+This table is the target home for scalar launch values that vary by instance, such as TAS RTC value and battle fake-attack min/max overrides.
+
 ### Key Constraints / Indexes
 - Unique job fingerprint (`exec_job.fingerprint`).
 - `exec_job_set.domain_ref_kind/domain_ref_id` are lightweight links only; source-of-truth domain facts remain in domain context tables.
@@ -440,6 +494,8 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `auto_schedule_battle_run` (bool)
 - `created_at_utc` (int)
 
+Target cleanup: `auto_schedule_battle_run` should be removed or ignored by new graph-style execution. Downstream scheduling belongs to authored graph edges plus descriptor-produced actual refs.
+
 #### 2) `au_tas_spec_base`
 - `tas_spec_base_id` (PK)
 - `name` (text UNIQUE NOT NULL)
@@ -459,6 +515,8 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `rtc_high` (int)
 - `created_at_utc` (int)
 
+Target cleanup: selected DTM artifacts are workflow instance input bindings, and RTC values/ranges are launcher input that fan out to per-instance arguments. Authored TAS specs should retain reusable TAS behavior only.
+
 #### 4) `au_battle_run_spec`
 - `battle_run_spec_id` (PK)
 - `name` (text UNIQUE NOT NULL)
@@ -471,6 +529,8 @@ Versioned, user-selectable input specs and composition rows used to build worker
 - `min_fake_attacks` (int)
 - `max_fake_attacks` (int)
 - `created_at_utc` (int)
+
+Target cleanup: fake-attack min/max bounds are launch-time exploration arguments when they vary per run. Authored battle specs should keep reusable runner settings.
 
 #### 5) `au_battle_plan`
 - `plan_id` (PK)
@@ -532,6 +592,60 @@ Versioned, user-selectable input specs and composition rows used to build worker
 
 #### 13) `au_outbox_message`
 - same envelope fields as `exec_outbox_message`
+
+#### 14) `au_workflow_graph`
+- `workflow_graph_id` (PK)
+- `name` (text UNIQUE NOT NULL)
+- `description` (nullable)
+- `active_revision_id` (nullable FK -> `au_workflow_graph_revision.workflow_graph_revision_id`)
+- `created_at_utc`
+
+#### 15) `au_workflow_graph_revision`
+- `workflow_graph_revision_id` (PK)
+- `workflow_graph_id` (FK -> `au_workflow_graph.workflow_graph_id`)
+- `graph_version`
+- `graph_hash`
+- `parent_revision_id` (nullable FK -> `au_workflow_graph_revision.workflow_graph_revision_id`)
+- `status`
+- `created_at_utc`
+
+#### 16) `au_workflow_graph_revision_node`
+- `workflow_graph_revision_node_id` (PK)
+- `workflow_graph_revision_id` (FK -> `au_workflow_graph_revision.workflow_graph_revision_id`)
+- `node_key`
+- `unit_kind`
+- `display_name` (nullable)
+- `authored_ref_kind` / `authored_ref_id` (nullable authored record reference)
+- `ordinal`
+
+#### 17) `au_workflow_graph_revision_node_input`
+- `workflow_graph_revision_node_input_id` (PK)
+- `workflow_graph_revision_node_id` (FK -> `au_workflow_graph_revision_node.workflow_graph_revision_node_id`)
+- `input_key`
+- `data_kind`
+- `display_name` (nullable)
+- `required`
+- `ordinal`
+
+#### 18) `au_workflow_graph_revision_node_output`
+- `workflow_graph_revision_node_output_id` (PK)
+- `workflow_graph_revision_node_id` (FK -> `au_workflow_graph_revision_node.workflow_graph_revision_node_id`)
+- `output_key`
+- `data_kind`
+- `display_name` (nullable)
+- `ordinal`
+
+#### 19) `au_workflow_graph_revision_edge`
+- `workflow_graph_revision_edge_id` (PK)
+- `workflow_graph_revision_id` (FK -> `au_workflow_graph_revision.workflow_graph_revision_id`)
+- `from_revision_node_id`
+- `output_key`
+- `to_revision_node_id`
+- `input_key`
+- `guard_kind` / `guard_value` (nullable)
+- `ordinal`
+
+Authoring workflow graph rows define reusable graph shape only. They do not contain external input values or per-launch scalar arguments.
 
 ---
 

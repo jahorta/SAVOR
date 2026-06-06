@@ -31,6 +31,30 @@ Workflow composition is a design-time/control-plane concern, not an Analysis DB 
 
 Example: a battle chain may have a possible terminal savestate output that can feed a dungeon explorer. If no tested battle branch reaches victory, the dungeon explorer remains blocked or skipped and no dungeon-analysis rows are created.
 
+### Current workflow graph direction
+
+The target model is authored graph templates plus per-instance runtime bindings, not static compiled workflows or authored launch payloads.
+
+- Authoring DB stores reusable workflow graph identities and immutable graph revisions.
+- Authored graph nodes describe workflow unit kind, required input ports, possible output ports, edges/guards, and optional refs to authored records such as seed-probe specs, TAS specs, battle specs, battle plans, and predicate sets.
+- External input values are never stored in the authored graph. Examples include selected DTM artifacts, selected savestates, prior analysis output refs, or any other concrete source artifact chosen for one run.
+- Execution DB stores workflow instances, concrete instantiated steps, external input bindings, and instance scalar arguments.
+- Instance scalar arguments are values that shape one launch without changing the reusable authored graph. Current examples are TAS RTC value and battle fake-attack min/max overrides.
+- Qt2 Workflow Builder is authoring-only. It must not launch workflow instances.
+- Qt2 Workflow Launcher is the only UI surface that selects external inputs and instance arguments. Launching a TAS RTC range should create one workflow instance per RTC value.
+- Program descriptors and the coordinator materialize concrete execution steps from the authored graph revision plus the workflow instance's bindings and arguments.
+- Program descriptors/adapters create Analysis rows lazily when a step actually runs or maps results. The graph validator can prove potential compatibility, but it must not allocate speculative analysis state.
+- UIRead is read-only from Qt2. UIRead rows are refreshed only from source-context outboxes and projectors.
+
+Legacy implementation cleanup follows from this direction:
+
+- Replace static workflow registries such as `SEED_PROBE_CHAIN` with authored graph templates.
+- Remove launcher behavior from authoring/editor surfaces.
+- Retire `exec_trigger`, `exec_workflow_input_event`, instance-level `input_ref_kind` / `input_ref_id`, and other static initial-input paths once the graph binding tables cover their remaining behavior.
+- Move TAS DTM and RTC range values out of authored TAS specs; selected DTM is an instance input binding and each RTC value is an instance argument.
+- Move battle fake-attack ranges out of authored battle specs when they are launch-time exploration bounds.
+- Remove hard-coded graph transition names and scenario-only graph ids after descriptor-driven graph instancing is complete.
+
 ## 2. Step Input Aggregation Service (new)
 
 - Subscribes to step input requests.

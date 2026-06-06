@@ -37,6 +37,9 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 - Qt2 authoring uses modeless top-level editor windows for reusable authoring records. The main panes are browsers/libraries; `New`, `Edit`, and `Duplicate` actions open independent editor windows for predicates, battle plans, and workflow graphs. These windows must not block the rest of Qt2, and dirty-close handling should prompt before discarding unsaved edits.
 - Qt2 Workflow Builder is an authoring surface only. It saves reusable workflow graphs to Authoring as logical graphs with immutable revisions containing required input port definitions, possible output port definitions, edges, guards, and optional refs to other authored records. Workflow submission/instancing belongs to a separate launch pane where external inputs are selected.
 - Qt2 must not store external input values in authored workflow graphs. Source artifacts, savestates, prior analysis output refs, and other run-specific bindings are instance-specific submission data.
+- Qt2 must not launch workflows from authoring editors or the workflow builder. A separate Workflow Launcher owns instance creation, external input selection, and scalar instance arguments.
+- Scalar launch choices that vary per run belong to Execution workflow instance arguments. Current examples are TAS RTC value and battle fake-attack min/max overrides.
+- TAS RTC ranges are launcher input, not authored TAS spec state. Launching a range creates one workflow instance per RTC value, each with one concrete RTC argument.
 - Qt2 may bind authored plans, predicates, and specs in the authored graph, but it must not pre-create Analysis DB rows for downstream steps.
 - Workflow composition contracts expose required inputs and possible outputs. Possible outputs are only compatibility hints until a running step produces an actual typed reference.
 - Program descriptors/adapters own lazy Analysis DB row creation during step materialization/result mapping. Downstream dependent steps should be readied only when their required actual refs exist; otherwise they remain blocked, skipped, or failed according to the transition policy.
@@ -97,6 +100,31 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
    - Parent panes track open windows and focus an existing editor for the same draft/record when possible.
    - Save operations write to Authoring context services and refresh the parent browser after success.
    - Workflow graph editors never collect external input values or launch workflow instances.
+8. Keep workflow launch separate from authoring:
+   - Add/complete a Workflow Launcher pane that selects an authored graph revision.
+   - Collect required external input bindings from State/Analysis source records.
+   - Collect scalar instance arguments such as TAS RTC and battle fake-attack bounds.
+   - Fan out TAS RTC ranges into one workflow instance per RTC value.
+   - Submit instances to Execution DB without mutating the authored graph revision.
+9. Demote job sets to workflow drill-down:
+   - The primary operations surface should group work by workflow instance, then step, then step job set.
+   - Job sets remain available as a detail tab for execution diagnostics, retries, and per-job inspection.
+
+---
+
+## 5.2.1 Legacy Cleanup Direction
+
+The current target architecture intentionally replaces several early DBMigrate structures. Because this branch is still early in production, compatibility with those legacy structures is not required unless a later migration note says otherwise.
+
+- Replace static workflow definitions and static graph ids with Authoring-owned graph templates and immutable revisions.
+- Retire `exec_trigger` and `exec_workflow_input_event` once graph instancing and source outbox projection cover their remaining behavior.
+- Retire instance-level `input_ref_kind` / `input_ref_id` bootstrap paths in favor of typed `exec_workflow_instance_input_binding` rows.
+- Move launch-time values out of authored specs where they are not reusable authoring intent:
+  - TAS selected DTM artifact -> instance input binding.
+  - TAS RTC value/range -> launcher input and per-instance argument.
+  - Battle fake-attack min/max exploration bounds -> instance arguments.
+- Remove seedprobe auto-schedule and other cross-workflow launch behavior from authored specs. Downstream flow comes from graph edges and descriptor-produced actual refs.
+- Remove UI derivation from raw legacy `vm_kv`, raw `input_ini`, and result INI parsing except explicit diagnostics. Typed details should come from Authoring, Analysis, State, Execution, or UIRead projections.
 
 ---
 
