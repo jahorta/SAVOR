@@ -47,8 +47,8 @@ private:
     void syncSelectionPanelToAction();
     void addActionFromLibrarySelection();
     void assignPresetToSelection(std::int64_t presetId);
-    void addActionToSelectedTurn(std::int64_t presetId, int turnIndex = -1);
-    void assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex);
+    void addActionToSelectedTurn(std::int64_t presetId, int turnIndex = -1, int slotIndex = -1);
+    void assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex, int slotIndex);
     void duplicateSelectedAction();
     void removeSelectedNode();
     void moveSelectedAction(int delta);
@@ -61,7 +61,12 @@ private:
     ActionDraft* selectedAction();
     const TurnDraft* selectedTurn() const;
     const ActionDraft* selectedAction() const;
+    int selectedSlotIndex() const;
     const simcore::db::BattlePlanActionPresetSnapshot* actionPresetById(std::int64_t presetId) const;
+    int findActionIndexBySlot(const TurnDraft& turn, int slotIndex) const;
+    void ensureTurnActionSlots(TurnDraft& turn) const;
+    void normalizeActionOrder(TurnDraft& turn) const;
+    void removeActionsOutsideSlotRange(TurnDraft& turn, int maxSlots) const;
     QTreeWidgetItem* selectedTreeItem() const;
     int selectedTurnIndex() const;
     int selectedActionIndex() const;
@@ -80,6 +85,7 @@ private:
     QLabel* selectionLabel_ = nullptr;
     QLabel* presetSummaryLabel_ = nullptr;
     QLabel* presetDetailLabel_ = nullptr;
+    QLabel* slotLabel_ = nullptr;
     QSpinBox* combatantCountSpin_ = nullptr;
     QSpinBox* actorSlotSpin_ = nullptr;
     QPushButton* addActionButton_ = nullptr;
