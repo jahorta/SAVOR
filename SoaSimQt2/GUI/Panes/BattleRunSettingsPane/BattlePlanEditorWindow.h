@@ -1,17 +1,23 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
 #include "Authoring/IAuthoringDb.h"
 
+class QCheckBox;
 class QCloseEvent;
+class QComboBox;
+class QLabel;
 class QLineEdit;
+class QListWidget;
 class QPushButton;
 class QSpinBox;
-class QTableWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 
 class BattlePlanEditorWindow final : public QWidget
 {
@@ -22,23 +28,75 @@ public:
     void setSavedCallback(std::function<void()> callback);
     void loadSnapshot(const simcore::db::BattlePlanSnapshot& snapshot, bool duplicate);
 
+    struct ActionDraft {
+        int actor_slot = 0;
+        simcore::db::BattlePlanActionMacro macro = simcore::db::BattlePlanActionMacro::Attack;
+        simcore::db::BattlePlanTargetKind target_kind = simcore::db::BattlePlanTargetKind::SingleEnemy;
+        int target_slot = 0;
+        int target_mask_bits = 0;
+        int target_single_slot = 0;
+        int target_same_as_actor_slot = 0;
+        int item_id = 0;
+        bool has_item_id = false;
+    };
+
+    struct TurnDraft {
+        int turn_index = 1;
+        int player_combatants = 1;
+        std::vector<ActionDraft> actions;
+    };
+
 private:
     void closeEvent(QCloseEvent* event) override;
     void createWidgets();
-    void addActionRow();
-    void removeSelectedActionRows();
+    void populateActionLibrary();
+    void rebuildPlanTree();
+    void refreshSelectionPanel();
+    void syncSelectionPanelToAction();
+    void addActionFromLibrarySelection();
+    void addActionToSelectedTurn(simcore::db::BattlePlanActionMacro macro);
+    void duplicateSelectedAction();
+    void removeSelectedNode();
+    void moveSelectedAction(int delta);
+    void ensureTurnCount(int count);
     void saveBattlePlan();
     void markDirty();
     bool confirmDiscardIfDirty();
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
+    TurnDraft* selectedTurn();
+    ActionDraft* selectedAction();
+    const TurnDraft* selectedTurn() const;
+    const ActionDraft* selectedAction() const;
+    QTreeWidgetItem* selectedTreeItem() const;
+    int selectedTurnIndex() const;
+    int selectedActionIndex() const;
+    static bool isActionItem(const QTreeWidgetItem* item);
+    static bool isTurnItem(const QTreeWidgetItem* item);
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
     bool dirty_ = false;
+    bool rebuildingTree_ = false;
+    bool refreshingSelection_ = false;
     QLineEdit* nameEdit_ = nullptr;
     QSpinBox* turnCountSpin_ = nullptr;
-    QTableWidget* actionsTable_ = nullptr;
+    QListWidget* actionLibraryList_ = nullptr;
+    QTreeWidget* planTree_ = nullptr;
+    QLabel* selectionLabel_ = nullptr;
+    QSpinBox* combatantCountSpin_ = nullptr;
+    QSpinBox* actorSlotSpin_ = nullptr;
+    QComboBox* macroCombo_ = nullptr;
+    QComboBox* targetKindCombo_ = nullptr;
+    QSpinBox* targetSlotSpin_ = nullptr;
+    QSpinBox* targetMaskSpin_ = nullptr;
+    QSpinBox* sameAsActorSpin_ = nullptr;
+    QCheckBox* itemIdCheck_ = nullptr;
+    QSpinBox* itemIdSpin_ = nullptr;
     QPushButton* addActionButton_ = nullptr;
-    QPushButton* removeActionButton_ = nullptr;
+    QPushButton* duplicateActionButton_ = nullptr;
+    QPushButton* removeNodeButton_ = nullptr;
+    QPushButton* moveUpButton_ = nullptr;
+    QPushButton* moveDownButton_ = nullptr;
     QPushButton* saveButton_ = nullptr;
+    std::vector<TurnDraft> turns_;
 };
