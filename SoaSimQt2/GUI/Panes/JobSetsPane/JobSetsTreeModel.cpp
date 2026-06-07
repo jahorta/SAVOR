@@ -104,8 +104,6 @@ QVariant JobSetsTreeModel::data(const QModelIndex& index, int role) const
     case CreatedAtColumn: return formatTime(row.created_at);
     case ProgressColumn:
         return QStringLiteral("%1 / %2 complete").arg(row.completed_jobs).arg(row.total_jobs);
-    case ActionsColumn:
-        return QStringLiteral("Right-click");
     default:
         return {};
     }
@@ -123,7 +121,6 @@ QVariant JobSetsTreeModel::headerData(int section, Qt::Orientation orientation, 
     case PurposeColumn: return QStringLiteral("purpose");
     case CreatedAtColumn: return QStringLiteral("created_at");
     case ProgressColumn: return QStringLiteral("progress");
-    case ActionsColumn: return QStringLiteral("actions");
     default: return {};
     }
 }

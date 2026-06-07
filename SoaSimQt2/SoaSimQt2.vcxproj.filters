@@ -326,9 +326,6 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h">
-      <Filter>GUI\Panes\Coordinator</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>

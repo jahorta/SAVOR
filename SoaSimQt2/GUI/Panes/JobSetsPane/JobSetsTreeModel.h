@@ -24,7 +24,6 @@ public:
         PurposeColumn,
         CreatedAtColumn,
         ProgressColumn,
-        ActionsColumn,
         ColumnCount
     };
 

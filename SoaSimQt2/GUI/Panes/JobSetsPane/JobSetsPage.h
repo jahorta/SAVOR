@@ -43,7 +43,6 @@ private:
     std::optional<int> selectedProgramKind() const;
     std::optional<JobSetStateFilter> selectedStateFilter() const;
     std::optional<QString> selectedTagKey() const;
-    void handleDeleteRequested(qint64 jobSetId);
 
     JobSetsController* controller_ = nullptr;
     JobSetsTreeModel* treeModel_ = nullptr;

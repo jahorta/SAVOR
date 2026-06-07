@@ -237,23 +237,6 @@ struct JobSetPageWithFamilies {
     std::vector<JobSetLite> family_items;
 };
 
-struct JobSetPriorityBoostResult {
-    int new_priority{};
-    std::int64_t changed_jobs{};
-};
-
-struct JobSetCancelQueuedResult {
-    std::vector<std::int64_t> canceled_job_ids;
-};
-
-struct ExplorerRunReconcileResult {
-    std::int64_t roots_scanned{};
-    std::int64_t roots_with_existing_runs{};
-    std::int64_t roots_reconciled{};
-    std::int64_t runs_created{};
-    std::int64_t jobs_updated{};
-};
-
 struct BattleContextRow {
     std::int64_t id{};
     std::int64_t savestate_id{};
@@ -562,17 +545,6 @@ public:
         return qt2shim::ReadyFuture(DbResult<Page<ObjectRefLite>>::Ok(std::move(out)));
     }
 
-    static std::future<DbResult<void>> RequeueJobAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Requeue job"))); }
-    static std::future<DbResult<void>> ReplayJobVisuallyAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Replay job visually"))); }
-    static std::future<DbResult<void>> RestartFailedJobAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Restart job"))); }
-    static std::future<DbResult<void>> CancelJobAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Cancel job"))); }
-    static std::future<DbResult<void>> SetJobVmKvAsync(std::int64_t, std::optional<std::string>) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Set job VM KV"))); }
-    static std::future<DbResult<JobSetPriorityBoostResult>> BoostJobSetPriorityTreeAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<JobSetPriorityBoostResult>::Err(qt2shim::NotMigrated("Boost job set"))); }
-    static std::future<DbResult<JobSetCancelQueuedResult>> CancelQueuedJobsForJobSetTreeAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<JobSetCancelQueuedResult>::Err(qt2shim::NotMigrated("Cancel job set"))); }
-    static std::future<DbResult<void>> DeleteJobSetAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Delete job set"))); }
-    static std::future<DbResult<std::int64_t>> CreateJobSetAsync(std::optional<std::string>, int, std::optional<std::string> = {}, std::optional<std::string> = {}, std::optional<std::int64_t> = {}, std::optional<std::string> = {}, std::optional<std::int64_t> = {}) { return qt2shim::ReadyFuture(DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Create job set"))); }
-    static std::future<DbResult<std::int64_t>> EncodeJobSetWithCodecAsync(int, std::int64_t, const std::string&) { return qt2shim::ReadyFuture(DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Encode job set"))); }
-    static std::future<DbResult<void>> SetJobSetExpectedTotalAsync(std::int64_t, std::optional<std::int64_t>) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Set job set expected total"))); }
     static std::future<DbResult<Page<SavestateLite>>> FetchSavestatesPage(const PagedQuery<>&, const std::string&) { return qt2shim::ReadyFuture(DbResult<Page<SavestateLite>>::Ok({})); }
     static std::future<DbResult<Page<SeedProbeLite>>> FetchSeedProbesPage(const PagedQuery<>&, const std::string&, bool, std::optional<std::int64_t> = std::nullopt) { return qt2shim::ReadyFuture(DbResult<Page<SeedProbeLite>>::Ok({})); }
     static std::future<DbResult<Page<TasMovieLite>>> FetchTasMoviesPage(const PagedQuery<>&, const std::string&, bool) { return qt2shim::ReadyFuture(DbResult<Page<TasMovieLite>>::Ok({})); }
@@ -584,7 +556,6 @@ public:
     static std::future<DbResult<std::vector<PredicateSpecLite>>> ListPredicateSpecsAsync(const std::string&, std::int32_t) { return qt2shim::ReadyFuture(DbResult<std::vector<PredicateSpecLite>>::Ok({})); }
     static std::future<DbResult<std::vector<UiConfigRow>>> GetUiConfigRowsByIdsAsync(const std::vector<std::int64_t>&) { return qt2shim::ReadyFuture(DbResult<std::vector<UiConfigRow>>::Ok({})); }
     static std::future<DbResult<std::vector<std::int64_t>>> InsertUiConfigRowsAsync(const std::vector<UiConfigRow>&) { return qt2shim::ReadyFuture(DbResult<std::vector<std::int64_t>>::Err(qt2shim::NotMigrated("Insert UI config rows"))); }
-    static std::future<DbResult<ExplorerRunReconcileResult>> ReconcileMissingExplorerRunsAsync() { return qt2shim::ReadyFuture(DbResult<ExplorerRunReconcileResult>::Err(qt2shim::NotMigrated("Reconcile explorer runs"))); }
 };
 
 struct JobsRepo {

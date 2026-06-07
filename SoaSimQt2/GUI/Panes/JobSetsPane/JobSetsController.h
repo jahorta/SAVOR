@@ -49,9 +49,6 @@ public:
     void requestRefresh();
     void requestNextPage();
     void requestPreviousPage();
-    void boostJobSetTree(qint64 jobSetId);
-    void cancelQueuedForTree(qint64 jobSetId);
-    void deleteJobSet(qint64 jobSetId);
 
 signals:
     void stateChanged();
@@ -60,16 +57,10 @@ signals:
 private:
     using ProgramKindsResult = simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>;
     using JobSetPageResult = simcore::db::DbResult<simcore::db::JobSetPageWithFamilies>;
-    using BoostResult = simcore::db::DbResult<simcore::db::JobSetPriorityBoostResult>;
-    using CancelResult = simcore::db::DbResult<simcore::db::JobSetCancelQueuedResult>;
-    using DeleteResult = simcore::db::DbResult<void>;
 
     enum class Operation {
         FetchKinds,
-        FetchPage,
-        Boost,
-        CancelQueued,
-        Delete
+        FetchPage
     };
 
     void kickKindsFetch();
@@ -87,19 +78,12 @@ private:
     int fetchPageLimit_ = 100;
     std::optional<KeysetCursor> before_;
     std::optional<KeysetCursor> after_;
-    qint64 pendingActionJobSetId_ = 0;
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;
     bool pendingPageFetch_ = false;
-    bool boostInFlight_ = false;
-    bool cancelInFlight_ = false;
-    bool deleteInFlight_ = false;
     QFutureWatcher<ProgramKindsResult> kindsWatcher_;
     QFutureWatcher<JobSetPageResult> pageWatcher_;
-    QFutureWatcher<BoostResult> boostWatcher_;
-    QFutureWatcher<CancelResult> cancelWatcher_;
-    QFutureWatcher<DeleteResult> deleteWatcher_;
     QTimer* refreshTimer_ = nullptr;
     bool pageActive_ = false;
 };

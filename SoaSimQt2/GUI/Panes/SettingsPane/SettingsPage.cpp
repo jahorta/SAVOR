@@ -1,7 +1,6 @@
 #include "SettingsPage.h"
 
 #include "DB/DBCore/DbSnapshotService.h"
-#include "DB/Querying/DataService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "SimCoreDbRuntime.h"
 
@@ -103,7 +102,6 @@ SettingsPage::SettingsPage(CoordinatorController* coordinatorController, QWidget
     , coordinatorController_(coordinatorController)
 {
     connect(&storageWatcher_, &QFutureWatcher<StorageResult>::finished, this, &SettingsPage::handleStorageOperationFinished);
-    connect(&reconcileWatcher_, &QFutureWatcher<simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult>>::finished, this, &SettingsPage::handleReconcileOperationFinished);
 
     createWidgets();
     loadState();
@@ -319,51 +317,6 @@ void SettingsPage::createWidgets()
 
     rootLayout->addWidget(coordinatorSection.card);
 
-    const CollapsibleSection reconcileSection = createCollapsibleSection(
-        "MAINTENANCE SECTION",
-        "Reconcile DB changes",
-        "Run one-shot maintenance routines that backfill data introduced by newer schema and detection logic.");
-
-    QVBoxLayout* reconcileLayout = new QVBoxLayout(reconcileSection.content);
-    reconcileLayout->setContentsMargins(0, 0, 0, 0);
-    reconcileLayout->setSpacing(10);
-
-    QLabel* reconcileDescription = new QLabel(
-        "Populate explorer_run rows for historical Explorer / BattleSingleTurn root job-set trees that predate explorer_run linkage.",
-        reconcileSection.content);
-    reconcileDescription->setObjectName("settingsSectionDescription");
-    reconcileDescription->setWordWrap(true);
-    reconcileLayout->addWidget(reconcileDescription);
-
-    QHBoxLayout* reconcileButtonLayout = new QHBoxLayout();
-    reconcileButtonLayout->setContentsMargins(0, 0, 0, 0);
-    reconcileButtonLayout->addStretch();
-    reconcileExplorerRunsButton_ = new QPushButton("Backfill Explorer Runs", reconcileSection.content);
-    reconcileExplorerRunsButton_->setObjectName("jobsSecondaryButton");
-    connect(reconcileExplorerRunsButton_, &QPushButton::clicked, this, &SettingsPage::handleReconcileExplorerRunsClicked);
-    reconcileButtonLayout->addWidget(reconcileExplorerRunsButton_);
-    reconcileLayout->addLayout(reconcileButtonLayout);
-
-    rootLayout->addWidget(reconcileSection.card);
-
-    const CollapsibleSection futureSection = createCollapsibleSection(
-        "PLACEHOLDER",
-        "Future sections",
-        "Scaffold reserved for additional SoaSimQt settings sections such as worker defaults, diagnostics, and UI preferences.",
-        false);
-
-    QVBoxLayout* futureLayout = new QVBoxLayout(futureSection.content);
-    futureLayout->setContentsMargins(0, 0, 0, 0);
-    futureLayout->setSpacing(8);
-
-    QLabel* futureBody = new QLabel(
-        "Additional sections can be dropped into this collapsible pattern without changing the overall Settings page layout.",
-        futureSection.content);
-    futureBody->setObjectName("settingsSectionDescription");
-    futureBody->setWordWrap(true);
-    futureLayout->addWidget(futureBody);
-
-    rootLayout->addWidget(futureSection.card);
     rootLayout->addStretch();
 }
 
@@ -436,13 +389,12 @@ void SettingsPage::refreshActiveRoot()
 void SettingsPage::refreshStorageUi()
 {
     refreshActiveRoot();
-    const bool enabled = !storageBusy_ && !reconcileBusy_;
+    const bool enabled = !storageBusy_;
     if (moveDatabaseButton_) moveDatabaseButton_->setEnabled(enabled);
     if (resetDatabaseButton_) resetDatabaseButton_->setEnabled(enabled);
     if (useExistingButton_) useExistingButton_->setEnabled(enabled);
     if (saveSnapshotButton_) saveSnapshotButton_->setEnabled(enabled);
     if (loadSnapshotButton_) loadSnapshotButton_->setEnabled(enabled);
-    if (reconcileExplorerRunsButton_) reconcileExplorerRunsButton_->setEnabled(enabled);
 }
 
 void SettingsPage::handleMoveDatabaseClicked()
@@ -670,31 +622,6 @@ void SettingsPage::handleLoadSnapshotClicked()
         });
 }
 
-void SettingsPage::handleReconcileExplorerRunsClicked()
-{
-    if (storageBusy_ || reconcileBusy_) {
-        return;
-    }
-
-    const auto answer = QMessageBox::question(
-        this,
-        "Backfill Explorer Runs",
-        QStringLiteral("Scan historical Explorer/BattleSingleTurn runner roots and backfill missing explorer_run rows?\n\nThis is safe to run multiple times."),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (answer != QMessageBox::Yes) {
-        return;
-    }
-
-    reconcileBusy_ = true;
-    refreshStorageUi();
-    setStatus(StatusKind::Working, QStringLiteral("Reconciling explorer_run backfill across existing root job sets…"));
-    QCoreApplication::processEvents();
-    reconcileWatcher_.setFuture(runAsync([]() {
-        return simcore::db::DataService::ReconcileMissingExplorerRunsAsync().get();
-    }));
-}
-
 void SettingsPage::startStorageOperation(StorageOperation op, const QString& workingMessage, StorageTask task)
 {
     if (storageBusy_) {
@@ -768,39 +695,6 @@ void SettingsPage::handleStorageOperationFinished()
     case StorageOperation::None:
         break;
     }
-}
-
-void SettingsPage::handleReconcileOperationFinished()
-{
-    reconcileBusy_ = false;
-    refreshStorageUi();
-
-    simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult> result
-        = simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult>::Err({ simcore::db::DbErrorKind::Unknown, 0, "Unknown reconcile failure." });
-    try {
-        result = reconcileWatcher_.result();
-    } catch (const std::exception& ex) {
-        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed: %1").arg(QString::fromUtf8(ex.what())));
-        return;
-    } catch (...) {
-        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed with an unknown exception."));
-        return;
-    }
-
-    if (!result.ok) {
-        setStatus(StatusKind::Failure, QStringLiteral("Explorer run reconcile failed: %1").arg(QString::fromStdString(result.error.message)));
-        return;
-    }
-
-    const auto& stats = result.value;
-    setStatus(
-        StatusKind::Success,
-        QStringLiteral("Explorer runs reconciled. Roots scanned: %1 · roots with existing runs: %2 · roots backfilled: %3 · runs created: %4 · jobs updated: %5")
-            .arg(stats.roots_scanned)
-            .arg(stats.roots_with_existing_runs)
-            .arg(stats.roots_reconciled)
-            .arg(stats.runs_created)
-            .arg(stats.jobs_updated));
 }
 
 void SettingsPage::refreshCoordinatorUi()

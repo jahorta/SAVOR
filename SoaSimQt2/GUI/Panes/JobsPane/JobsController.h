@@ -68,7 +68,6 @@ public:
     void refreshSelectedJobDetail();
     void loadSelectedJobInputIni();
     void requeueSelectedJob();
-    void replaySelectedJobVisually();
     void cancelSelectedJob();
     void restartSelectedFailedJob(std::optional<QString> iniOverride = std::nullopt);
 
@@ -92,7 +91,7 @@ private:
     using InputIniResult = simcore::db::DbResult<QString>;
     using VoidResult = simcore::db::DbResult<void>;
 
-    enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, ReplayVisual, Cancel, Restart };
+    enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, Cancel, Restart };
 
     void kickKindsFetch();
     void kickPageFetch();
@@ -119,7 +118,6 @@ private:
     bool detailInFlight_ = false;
     bool inputIniInFlight_ = false;
     bool requeueInFlight_ = false;
-    bool replayVisualInFlight_ = false;
     bool cancelInFlight_ = false;
     bool restartInFlight_ = false;
     qint64 detailRequestJobId_ = 0;
@@ -130,7 +128,6 @@ private:
     QFutureWatcher<JobDetailResult> detailWatcher_;
     QFutureWatcher<InputIniResult> inputIniWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;
-    QFutureWatcher<VoidResult> replayVisualWatcher_;
     QFutureWatcher<VoidResult> cancelWatcher_;
     QFutureWatcher<VoidResult> restartWatcher_;
     QTimer* refreshTimer_ = nullptr;

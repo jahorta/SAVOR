@@ -181,7 +181,6 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h" />
-    <ClInclude Include="GUI\Panes\CoordinatorPane\CoordinatorUiCommon.h" />
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h" />

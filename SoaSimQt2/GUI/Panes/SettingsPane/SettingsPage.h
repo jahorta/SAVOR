@@ -5,16 +5,9 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
-#include "DB/Querying/DataService.h"
 
 #include <functional>
 #include <utility>
-
-namespace simcore::db {
-    template <typename T>
-    struct DbResult;
-    struct ExplorerRunReconcileResult;
-}
 
 class CoordinatorController;
 class QLabel;
@@ -62,9 +55,7 @@ private slots:
     void handleUseExistingDatabaseClicked();
     void handleSaveSnapshotClicked();
     void handleLoadSnapshotClicked();
-    void handleReconcileExplorerRunsClicked();
     void handleStorageOperationFinished();
-    void handleReconcileOperationFinished();
 
 private:
     struct CollapsibleSection {
@@ -119,8 +110,5 @@ private:
     bool storageBusy_ = false;
     StorageOperation currentStorageOperation_ = StorageOperation::None;
     QFutureWatcher<SettingsStorageResult> storageWatcher_;
-    QPushButton* reconcileExplorerRunsButton_ = nullptr;
-    bool reconcileBusy_ = false;
-    QFutureWatcher<simcore::db::DbResult<simcore::db::ExplorerRunReconcileResult>> reconcileWatcher_;
     QString lastToastSignature_;
 };

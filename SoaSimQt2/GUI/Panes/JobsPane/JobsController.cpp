@@ -189,9 +189,6 @@ JobsController::JobsController(QObject* parent)
     connect(&requeueWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(requeueWatcher_, requeueInFlight_, Operation::Requeue, QStringLiteral("Requeued job %1.").arg(actionJobId_), "Requeue failed");
     });
-    connect(&replayVisualWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
-        finishAction(replayVisualWatcher_, replayVisualInFlight_, Operation::ReplayVisual, QStringLiteral("Replay visual queued for job %1.").arg(actionJobId_), "Replay visual failed");
-    });
     connect(&cancelWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(cancelWatcher_, cancelInFlight_, Operation::Cancel, QStringLiteral("Canceled job %1.").arg(actionJobId_), "Cancel failed");
     });
@@ -336,18 +333,6 @@ void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride
     }));
 }
 
-void JobsController::replaySelectedJobVisually()
-{
-    const JobLite* job = selectedJob();
-    if (!job || replayVisualInFlight_ || state_.actionsBusy) return;
-    actionJobId_ = job->job_id;
-    replayVisualInFlight_ = true;
-    setBusy(Operation::ReplayVisual, true);
-    replayVisualWatcher_.setFuture(runDataServiceCall([]() {
-        return VoidResult::Err({ simcore::db::DbErrorKind::Unavailable, 0, "visual replay is temporarily not implemented in this Qt2 migration slice" });
-    }));
-}
-
 void JobsController::kickKindsFetch()
 {
     if (kindsInFlight_) return;
@@ -433,7 +418,7 @@ void JobsController::loadSelectedJobInputIni()
 
 void JobsController::setBusy(Operation, bool)
 {
-    state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
     emitStateChanged();
 }
 
@@ -444,7 +429,7 @@ bool JobsController::canAutoRefresh() const
 
 bool JobsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
+    return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || cancelInFlight_ || restartInFlight_;
 }
 
 const JobLite* JobsController::selectedJob() const
@@ -457,7 +442,7 @@ QString JobsController::programKindLabel(int id) const { return state_.programNa
 
 void JobsController::emitStateChanged()
 {
-    state_.actionsBusy = requeueInFlight_ || replayVisualInFlight_ || cancelInFlight_ || restartInFlight_;
+    state_.actionsBusy = requeueInFlight_ || cancelInFlight_ || restartInFlight_;
     state_.loading = pageInFlight_ || kindsInFlight_ || detailInFlight_ || inputIniInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }

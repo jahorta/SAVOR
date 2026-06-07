@@ -99,73 +99,6 @@ JobSetsController::JobSetsController(QObject* parent)
         }
     });
 
-    connect(&boostWatcher_, &QFutureWatcher<BoostResult>::finished, this, [this]() {
-        try {
-            const auto result = boostWatcher_.result();
-            boostInFlight_ = false;
-            setBusy(Operation::Boost, false);
-            if (result.ok) {
-                state_.infoMessage = QStringLiteral("Boosted %1 jobs to priority %2.").arg(result.value.changed_jobs).arg(result.value.new_priority);
-                before_.reset();
-                after_.reset();
-                kickPageFetch();
-            } else {
-                state_.errorMessage = QStringLiteral("Boost failed: %1").arg(QString::fromStdString(result.error.message));
-                emitStateChanged();
-            }
-        } catch (...) {
-            boostInFlight_ = false;
-            setBusy(Operation::Boost, false);
-            state_.errorMessage = describeException("Boost failed");
-            emitStateChanged();
-        }
-    });
-
-    connect(&cancelWatcher_, &QFutureWatcher<CancelResult>::finished, this, [this]() {
-        try {
-            const auto result = cancelWatcher_.result();
-            cancelInFlight_ = false;
-            setBusy(Operation::CancelQueued, false);
-            if (result.ok) {
-                state_.infoMessage = QStringLiteral("Canceled %1 queued jobs.").arg(result.value.canceled_job_ids.size());
-                before_.reset();
-                after_.reset();
-                kickPageFetch();
-            } else {
-                state_.errorMessage = QStringLiteral("Cancel queued failed: %1").arg(QString::fromStdString(result.error.message));
-                emitStateChanged();
-            }
-        } catch (...) {
-            cancelInFlight_ = false;
-            setBusy(Operation::CancelQueued, false);
-            state_.errorMessage = describeException("Cancel queued failed");
-            emitStateChanged();
-        }
-    });
-
-    connect(&deleteWatcher_, &QFutureWatcher<DeleteResult>::finished, this, [this]() {
-        try {
-            const auto result = deleteWatcher_.result();
-            deleteInFlight_ = false;
-            setBusy(Operation::Delete, false);
-            if (result.ok) {
-                state_.infoMessage = QStringLiteral("Deleted job set %1.").arg(pendingActionJobSetId_);
-                before_.reset();
-                after_.reset();
-                kickPageFetch();
-            } else {
-                state_.errorMessage = QStringLiteral("Delete failed: %1").arg(QString::fromStdString(result.error.message));
-                emitStateChanged();
-            }
-        } catch (...) {
-            deleteInFlight_ = false;
-            setBusy(Operation::Delete, false);
-            state_.errorMessage = describeException("Delete failed");
-            emitStateChanged();
-        }
-        pendingActionJobSetId_ = 0;
-    });
-
     refreshTimer_ = new QTimer(this);
     connect(refreshTimer_, &QTimer::timeout, this, [this]() {
         if (canAutoRefresh()) {
@@ -298,48 +231,6 @@ void JobSetsController::requestPreviousPage()
     kickPageFetch();
 }
 
-void JobSetsController::boostJobSetTree(qint64 jobSetId)
-{
-    if (boostInFlight_ || cancelInFlight_ || deleteInFlight_ || jobSetId <= 0) {
-        return;
-    }
-
-    pendingActionJobSetId_ = jobSetId;
-    boostInFlight_ = true;
-    setBusy(Operation::Boost, true);
-    boostWatcher_.setFuture(runDataServiceCall([jobSetId]() {
-        return DataService::BoostJobSetPriorityTreeAsync(jobSetId);
-    }));
-}
-
-void JobSetsController::cancelQueuedForTree(qint64 jobSetId)
-{
-    if (boostInFlight_ || cancelInFlight_ || deleteInFlight_ || jobSetId <= 0) {
-        return;
-    }
-
-    pendingActionJobSetId_ = jobSetId;
-    cancelInFlight_ = true;
-    setBusy(Operation::CancelQueued, true);
-    cancelWatcher_.setFuture(runDataServiceCall([jobSetId]() {
-        return DataService::CancelQueuedJobsForJobSetTreeAsync(jobSetId);
-    }));
-}
-
-void JobSetsController::deleteJobSet(qint64 jobSetId)
-{
-    if (deleteInFlight_ || cancelInFlight_ || boostInFlight_ || jobSetId <= 0) {
-        return;
-    }
-
-    pendingActionJobSetId_ = jobSetId;
-    deleteInFlight_ = true;
-    setBusy(Operation::Delete, true);
-    deleteWatcher_.setFuture(runDataServiceCall([jobSetId]() {
-        return DataService::DeleteJobSetAsync(jobSetId);
-    }));
-}
-
 void JobSetsController::kickKindsFetch()
 {
     if (kindsInFlight_) {
@@ -379,7 +270,7 @@ void JobSetsController::setBusy(Operation operation, bool busy)
 {
     Q_UNUSED(operation);
     Q_UNUSED(busy);
-    state_.actionsBusy = boostInFlight_ || cancelInFlight_ || deleteInFlight_;
+    state_.actionsBusy = false;
     emitStateChanged();
 }
 
@@ -390,12 +281,12 @@ bool JobSetsController::canAutoRefresh() const
 
 bool JobSetsController::anyWorkInFlight() const
 {
-    return kindsInFlight_ || pageInFlight_ || boostInFlight_ || cancelInFlight_ || deleteInFlight_;
+    return kindsInFlight_ || pageInFlight_;
 }
 
 void JobSetsController::emitStateChanged()
 {
-    state_.actionsBusy = boostInFlight_ || cancelInFlight_ || deleteInFlight_;
+    state_.actionsBusy = false;
     state_.loading = pageInFlight_ || anyWorkInFlight();
     emit stateChanged();
 }
