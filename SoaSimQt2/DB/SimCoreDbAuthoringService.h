@@ -289,24 +289,7 @@ public:
             return Invalid<std::int64_t>("predicate name is required");
         }
 
-        const auto now = simcore::db::types::UtcNow();
-        simcore::db::SavePredicateSpecCommand command{};
-        command.name = draft.name;
-        command.breakpoint_id = static_cast<BPKey>(draft.breakpoint_id);
-        command.lhs_kind = draft.lhs_kind;
-        command.lhs_value = draft.lhs_value;
-        command.rhs_kind = draft.rhs_kind;
-        command.rhs_value = draft.rhs_value;
-        command.cmp_op = draft.cmp_op;
-        command.width = draft.width;
-        command.flag_mask = draft.flag_mask;
-        command.value_mask = draft.value_mask;
-        command.lhs_address_program_id = draft.lhs_address_program_id;
-        command.rhs_address_program_id = draft.rhs_address_program_id;
-        command.abort_on_fail = draft.abort_on_fail;
-        command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.PredicateSpecSaved");
-        command.correlation_id = command.event_id;
+        auto command = BuildPredicateSpecCommand(draft, "Authoring.PredicateSpecSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -314,6 +297,48 @@ public:
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<std::int64_t> UpdatePredicateSpec(std::int64_t predicate_spec_id, const PredicateSpecDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        if (predicate_spec_id <= 0) {
+            return Invalid<std::int64_t>("predicate spec id is required");
+        }
+        if (draft.name.empty()) {
+            return Invalid<std::int64_t>("predicate name is required");
+        }
+
+        auto command = BuildPredicateSpecCommand(draft, "Authoring.PredicateSpecUpdated");
+        std::string error;
+        if (!db->UpdatePredicateSpec(predicate_spec_id, command, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(predicate_spec_id);
+    }
+
+    static ServiceResult<void> DeletePredicateSpec(std::int64_t predicate_spec_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+        }
+        if (predicate_spec_id <= 0) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "predicate spec id is required" });
+        }
+
+        simcore::db::DeletePredicateSpecCommand command{};
+        command.predicate_spec_id = predicate_spec_id;
+        command.deleted_at_utc = simcore::db::types::UtcNow();
+        command.event_id = NextEventId("Authoring.PredicateSpecDeleted");
+        command.correlation_id = command.event_id;
+
+        std::string error;
+        if (!db->DeletePredicateSpec(command, &error)) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
+        }
+        return ServiceResult<void>::Ok();
     }
 
     static ServiceResult<simcore::db::PredicateSpecSnapshot> GetPredicateSpec(std::int64_t predicate_spec_id) {
@@ -326,6 +351,17 @@ public:
             return NotFound<simcore::db::PredicateSpecSnapshot>("predicate spec not found");
         }
         return ServiceResult<simcore::db::PredicateSpecSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<simcore::db::PredicateSpecUsageSnapshot> GetPredicateSpecUsage(std::int64_t predicate_spec_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::PredicateSpecUsageSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        if (predicate_spec_id <= 0) {
+            return Invalid<simcore::db::PredicateSpecUsageSnapshot>("predicate spec id is required");
+        }
+        return ServiceResult<simcore::db::PredicateSpecUsageSnapshot>::Ok(db->GetPredicateSpecUsage(predicate_spec_id));
     }
 
     static ServiceResult<std::vector<simcore::db::PredicateSpecSnapshot>> ListPredicateSpecs(int max_count = 100) {
@@ -684,6 +720,27 @@ public:
     }
 
 private:
+    static simcore::db::SavePredicateSpecCommand BuildPredicateSpecCommand(const PredicateSpecDraft& draft, const char* event_prefix) {
+        simcore::db::SavePredicateSpecCommand command{};
+        command.name = draft.name;
+        command.breakpoint_id = static_cast<BPKey>(draft.breakpoint_id);
+        command.lhs_kind = draft.lhs_kind;
+        command.lhs_value = draft.lhs_value;
+        command.rhs_kind = draft.rhs_kind;
+        command.rhs_value = draft.rhs_value;
+        command.cmp_op = draft.cmp_op;
+        command.width = draft.width;
+        command.flag_mask = draft.flag_mask;
+        command.value_mask = draft.value_mask;
+        command.lhs_address_program_id = draft.lhs_address_program_id;
+        command.rhs_address_program_id = draft.rhs_address_program_id;
+        command.abort_on_fail = draft.abort_on_fail;
+        command.created_at_utc = simcore::db::types::UtcNow();
+        command.event_id = NextEventId(event_prefix);
+        command.correlation_id = command.event_id;
+        return command;
+    }
+
     static simcore::db::IAuthoringDb* AuthoringDb() {
         return soasimqt2::SimCoreDbRuntime::instance().authoringDb();
     }

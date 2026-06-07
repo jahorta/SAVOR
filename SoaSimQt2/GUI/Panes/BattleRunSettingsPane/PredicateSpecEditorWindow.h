@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include <QtCore/QByteArray>
@@ -85,6 +86,7 @@ private:
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
+    std::optional<std::int64_t> predicateSpecId_;
     bool dirty_ = false;
     QLineEdit* nameEdit_ = nullptr;
     QWidget* requiredBpRowsWidget_ = nullptr;

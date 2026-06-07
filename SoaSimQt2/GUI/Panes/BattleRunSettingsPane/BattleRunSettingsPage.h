@@ -42,6 +42,7 @@ private:
     void openTemplateEditor();
     void editSelectedPredicate();
     void duplicateSelectedPredicate();
+    void deleteSelectedPredicate();
     void openBattlePlanEditor();
     void editSelectedBattlePlan();
     void duplicateSelectedBattlePlan();
@@ -57,6 +58,7 @@ private:
     QPushButton* newTemplateButton_ = nullptr;
     QPushButton* editPredicateButton_ = nullptr;
     QPushButton* duplicatePredicateButton_ = nullptr;
+    QPushButton* deletePredicateButton_ = nullptr;
     QPushButton* newBattlePlanButton_ = nullptr;
     QPushButton* editBattlePlanButton_ = nullptr;
     QPushButton* duplicateBattlePlanButton_ = nullptr;

@@ -29,7 +29,7 @@ struct EventDispatchBinding {
     PayloadResolverContract contract = PayloadResolverContract::Unknown;
 };
 
-inline constexpr std::array<EventDispatchBinding, 40> kPayloadDispatchBindingsV1{ {
+inline constexpr std::array<EventDispatchBinding, 42> kPayloadDispatchBindingsV1{ {
     { { "Execution.JobSetCreated.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobQueued.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
     { { "Execution.JobClaimed.v1", 1 }, PayloadResolverContract::ExecutionWorkflowJobV1 },
@@ -67,6 +67,8 @@ inline constexpr std::array<EventDispatchBinding, 40> kPayloadDispatchBindingsV1
     { { "Authoring.BattleRunSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.PlanSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.PredicateSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.PredicateSpecUpdated.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.PredicateSpecDeleted.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.SettingsSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.TemplateSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.WorkflowGraphSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },

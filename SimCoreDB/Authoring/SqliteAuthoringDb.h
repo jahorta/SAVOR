@@ -69,8 +69,17 @@ public:
         const SavePredicateSpecCommand& command,
         std::int64_t* predicate_spec_id_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool UpdatePredicateSpec(
+        std::int64_t predicate_spec_id,
+        const SavePredicateSpecCommand& command,
+        std::string* error_out = nullptr) override;
+    bool DeletePredicateSpec(
+        const DeletePredicateSpecCommand& command,
+        std::string* error_out = nullptr) override;
 
     std::optional<PredicateSpecSnapshot> GetPredicateSpec(
+        std::int64_t predicate_spec_id) const override;
+    PredicateSpecUsageSnapshot GetPredicateSpecUsage(
         std::int64_t predicate_spec_id) const override;
 
     std::vector<PredicateSpecSnapshot> ListPredicateSpecs(

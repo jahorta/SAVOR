@@ -70,6 +70,28 @@ std::vector<std::uint8_t> ColumnBlob(sqlite3_stmt* st, int index) {
     return std::vector<std::uint8_t>(first, first + size);
 }
 
+void BindOptionalInt64(sqlite3_stmt* st, int index, const std::optional<std::int64_t>& value) {
+    if (value.has_value()) {
+        sqlite3_bind_int64(st, index, *value);
+    } else {
+        sqlite3_bind_null(st, index);
+    }
+}
+
+bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::string* error_out) {
+    if (command.name.empty()
+        || command.breakpoint_id == 0
+        || bp::BPRegistry::find(command.breakpoint_id) == nullptr
+        || command.lhs_kind == PredicateOperandKind::Unknown
+        || command.rhs_kind == PredicateOperandKind::Unknown
+        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
+        || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+    return true;
+}
+
 
 
 bool InsertAuthoringOutboxEvent(
@@ -1360,26 +1382,10 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     sqlite3_bind_int64(insert_spec.st, 7, command.rhs_value);
     sqlite3_bind_text(insert_spec.st, 8, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 9, command.width);
-    if (command.flag_mask.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 10, command.flag_mask.value());
-    } else {
-        sqlite3_bind_null(insert_spec.st, 10);
-    }
-    if (command.value_mask.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 11, command.value_mask.value());
-    } else {
-        sqlite3_bind_null(insert_spec.st, 11);
-    }
-    if (command.lhs_address_program_id.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 12, *command.lhs_address_program_id);
-    } else {
-        sqlite3_bind_null(insert_spec.st, 12);
-    }
-    if (command.rhs_address_program_id.has_value()) {
-        sqlite3_bind_int64(insert_spec.st, 13, *command.rhs_address_program_id);
-    } else {
-        sqlite3_bind_null(insert_spec.st, 13);
-    }
+    BindOptionalInt64(insert_spec.st, 10, command.flag_mask);
+    BindOptionalInt64(insert_spec.st, 11, command.value_mask);
+    BindOptionalInt64(insert_spec.st, 12, command.lhs_address_program_id);
+    BindOptionalInt64(insert_spec.st, 13, command.rhs_address_program_id);
     sqlite3_bind_int(insert_spec.st, 14, command.abort_on_fail ? 1 : 0);
     sqlite3_bind_int64(insert_spec.st, 15, ToEpochMillis(command.created_at_utc));
 
@@ -1421,6 +1427,173 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     return true;
 }
 
+bool SqliteAuthoringDb::UpdatePredicateSpec(
+    std::int64_t predicate_spec_id,
+    const SavePredicateSpecCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (predicate_spec_id <= 0) {
+        if (error_out) *error_out = "predicate spec id is required";
+        return false;
+    }
+    if (!ValidatePredicateSpecCommand(command, error_out)) {
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (!GetPredicateSpec(predicate_spec_id).has_value()) {
+        if (error_out) *error_out = "predicate spec not found";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto usage = GetPredicateSpecUsage(predicate_spec_id);
+    if (usage.used()) {
+        if (error_out) *error_out = "predicate spec is already used by a predicate set";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    Statement update_spec;
+    constexpr const char* kUpdateSql =
+        "UPDATE au_predicate_spec SET "
+        "name=?1,breakpoint_name=?2,breakpoint_id=?3,lhs_kind=?4,lhs_value=?5,rhs_kind=?6,rhs_value=?7,"
+        "cmp_op=?8,width=?9,flag_mask=?10,value_mask=?11,lhs_address_program_id=?12,rhs_address_program_id=?13,"
+        "abort_on_fail=?14 "
+        "WHERE predicate_spec_id=?15;";
+    if (sqlite3_prepare_v2(db_, kUpdateSql, -1, &update_spec.st, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(update_spec.st, 3, static_cast<int>(command.breakpoint_id));
+    const auto lhs_kind = ToDbString(command.lhs_kind);
+    const auto rhs_kind = ToDbString(command.rhs_kind);
+    const auto cmp_op = ToDbString(command.cmp_op);
+    sqlite3_bind_text(update_spec.st, 4, lhs_kind.data(), static_cast<int>(lhs_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update_spec.st, 5, command.lhs_value);
+    sqlite3_bind_text(update_spec.st, 6, rhs_kind.data(), static_cast<int>(rhs_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update_spec.st, 7, command.rhs_value);
+    sqlite3_bind_text(update_spec.st, 8, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(update_spec.st, 9, command.width);
+    BindOptionalInt64(update_spec.st, 10, command.flag_mask);
+    BindOptionalInt64(update_spec.st, 11, command.value_mask);
+    BindOptionalInt64(update_spec.st, 12, command.lhs_address_program_id);
+    BindOptionalInt64(update_spec.st, 13, command.rhs_address_program_id);
+    sqlite3_bind_int(update_spec.st, 14, command.abort_on_fail ? 1 : 0);
+    sqlite3_bind_int64(update_spec.st, 15, predicate_spec_id);
+
+    if (sqlite3_step(update_spec.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (!InsertAuthoringOutboxEvent(
+            db_,
+            command.event_id,
+            "Authoring.PredicateSpecUpdated.v1",
+            std::to_string(predicate_spec_id),
+            command.correlation_id,
+            command.causation_id,
+            ToEpochMillis(command.created_at_utc),
+            predicate_spec_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    return true;
+}
+
+bool SqliteAuthoringDb::DeletePredicateSpec(
+    const DeletePredicateSpecCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.predicate_spec_id <= 0 || command.event_id.empty()) {
+        if (error_out) *error_out = "required command fields are missing";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    if (!GetPredicateSpec(command.predicate_spec_id).has_value()) {
+        if (error_out) *error_out = "predicate spec not found";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto usage = GetPredicateSpecUsage(command.predicate_spec_id);
+    if (usage.used()) {
+        if (error_out) *error_out = "predicate spec is already used by a predicate set";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    Statement delete_spec;
+    if (sqlite3_prepare_v2(
+            db_,
+            "DELETE FROM au_predicate_spec WHERE predicate_spec_id=?1;",
+            -1,
+            &delete_spec.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(delete_spec.st, 1, command.predicate_spec_id);
+    if (sqlite3_step(delete_spec.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (!InsertAuthoringOutboxEvent(
+            db_,
+            command.event_id,
+            "Authoring.PredicateSpecDeleted.v1",
+            std::to_string(command.predicate_spec_id),
+            command.correlation_id,
+            command.causation_id,
+            ToEpochMillis(command.deleted_at_utc),
+            command.predicate_spec_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    return true;
+}
+
 std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
     std::int64_t predicate_spec_id) const {
     if (db_ == nullptr || predicate_spec_id <= 0) {
@@ -1455,6 +1628,31 @@ std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
     out.lhs_address_program_id = ColumnInt64Optional(st.st, 11);
     out.rhs_address_program_id = ColumnInt64Optional(st.st, 12);
     out.abort_on_fail = sqlite3_column_int(st.st, 13) != 0;
+    return out;
+}
+
+PredicateSpecUsageSnapshot SqliteAuthoringDb::GetPredicateSpecUsage(
+    std::int64_t predicate_spec_id) const {
+    PredicateSpecUsageSnapshot out{};
+    out.predicate_spec_id = predicate_spec_id;
+    if (db_ == nullptr || predicate_spec_id <= 0) {
+        return out;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT COUNT(DISTINCT predicate_set_id) FROM au_predicate_set_item WHERE predicate_spec_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
+    if (sqlite3_step(st.st) == SQLITE_ROW) {
+        out.predicate_set_count = sqlite3_column_int(st.st, 0);
+    }
     return out;
 }
 

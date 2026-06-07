@@ -262,6 +262,14 @@ struct SaveTemplateCommand {
     std::string causation_id;
 };
 
+struct DeletePredicateSpecCommand {
+    std::int64_t predicate_spec_id = 0;
+    types::UtcTimePoint deleted_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
 struct TemplateSnapshot {
     std::int64_t template_id = 0;
     std::string name;
@@ -396,6 +404,15 @@ struct PredicateSpecSnapshot {
     bool abort_on_fail = false;
 };
 
+struct PredicateSpecUsageSnapshot {
+    std::int64_t predicate_spec_id = 0;
+    int predicate_set_count = 0;
+
+    [[nodiscard]] bool used() const {
+        return predicate_set_count > 0;
+    }
+};
+
 struct PredicateSetSnapshot {
     std::int64_t predicate_set_id = 0;
     std::vector<PredicateSpecSnapshot> predicates;
@@ -523,7 +540,19 @@ struct IAuthoringDb {
         std::int64_t* predicate_spec_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool UpdatePredicateSpec(
+        std::int64_t predicate_spec_id,
+        const SavePredicateSpecCommand& command,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool DeletePredicateSpec(
+        const DeletePredicateSpecCommand& command,
+        std::string* error_out = nullptr) = 0;
+
     virtual std::optional<PredicateSpecSnapshot> GetPredicateSpec(
+        std::int64_t predicate_spec_id) const = 0;
+
+    virtual PredicateSpecUsageSnapshot GetPredicateSpecUsage(
         std::int64_t predicate_spec_id) const = 0;
 
     virtual std::vector<PredicateSpecSnapshot> ListPredicateSpecs(

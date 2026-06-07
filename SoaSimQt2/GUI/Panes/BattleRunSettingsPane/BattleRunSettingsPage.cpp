@@ -11,6 +11,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 
@@ -66,6 +67,7 @@ void BattleRunSettingsPage::createWidgets()
     newTemplateButton_ = new QPushButton(QStringLiteral("New Template"), toolbar);
     editPredicateButton_ = new QPushButton(QStringLiteral("Edit Predicate"), toolbar);
     duplicatePredicateButton_ = new QPushButton(QStringLiteral("Duplicate Predicate"), toolbar);
+    deletePredicateButton_ = new QPushButton(QStringLiteral("Delete Predicate"), toolbar);
     newBattlePlanButton_ = new QPushButton(QStringLiteral("New Battle Plan"), toolbar);
     editBattlePlanButton_ = new QPushButton(QStringLiteral("Edit Battle Plan"), toolbar);
     duplicateBattlePlanButton_ = new QPushButton(QStringLiteral("Duplicate Battle Plan"), toolbar);
@@ -79,6 +81,7 @@ void BattleRunSettingsPage::createWidgets()
     newTemplateButton_->setObjectName("jobsPrimaryButton");
     editPredicateButton_->setObjectName("jobsSecondaryButton");
     duplicatePredicateButton_->setObjectName("jobsSecondaryButton");
+    deletePredicateButton_->setObjectName("jobsSecondaryButton");
     newBattlePlanButton_->setObjectName("jobsPrimaryButton");
     editBattlePlanButton_->setObjectName("jobsSecondaryButton");
     duplicateBattlePlanButton_->setObjectName("jobsSecondaryButton");
@@ -92,6 +95,7 @@ void BattleRunSettingsPage::createWidgets()
     toolbarLayout->addWidget(newTemplateButton_);
     toolbarLayout->addWidget(editPredicateButton_);
     toolbarLayout->addWidget(duplicatePredicateButton_);
+    toolbarLayout->addWidget(deletePredicateButton_);
     toolbarLayout->addWidget(newBattlePlanButton_);
     toolbarLayout->addWidget(editBattlePlanButton_);
     toolbarLayout->addWidget(duplicateBattlePlanButton_);
@@ -146,6 +150,7 @@ void BattleRunSettingsPage::createWidgets()
     connect(newTemplateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openTemplateEditor);
     connect(editPredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::editSelectedPredicate);
     connect(duplicatePredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::duplicateSelectedPredicate);
+    connect(deletePredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::deleteSelectedPredicate);
     connect(newBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattlePlanEditor);
     connect(editBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::editSelectedBattlePlan);
     connect(duplicateBattlePlanButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::duplicateSelectedBattlePlan);
@@ -295,6 +300,49 @@ void BattleRunSettingsPage::duplicateSelectedPredicate()
     if (predicateEditor_) {
         predicateEditor_->loadSnapshot(predicates_[static_cast<std::size_t>(row)], true);
     }
+}
+
+void BattleRunSettingsPage::deleteSelectedPredicate()
+{
+    const int row = predicateList_ != nullptr ? predicateList_->currentRow() : -1;
+    if (row < 0 || row >= static_cast<int>(predicates_.size())) {
+        postStatusMessage(QStringLiteral("Select a predicate to delete."), StatusToast::Severity::Warn);
+        return;
+    }
+
+    const auto& predicate = predicates_[static_cast<std::size_t>(row)];
+    const auto usage = soasimqt2::db::SimCoreDbAuthoringService::GetPredicateSpecUsage(predicate.predicate_spec_id);
+    if (!usage.ok) {
+        postStatusMessage(QString::fromStdString(usage.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    if (usage.value.used()) {
+        postStatusMessage(
+            QStringLiteral("Predicate is used by %1 predicate set(s) and cannot be deleted.")
+                .arg(usage.value.predicate_set_count),
+            StatusToast::Severity::Warn);
+        return;
+    }
+
+    const auto response = QMessageBox::question(
+        this,
+        QStringLiteral("Delete Predicate"),
+        QStringLiteral("Delete predicate #%1 \"%2\"?")
+            .arg(static_cast<qint64>(predicate.predicate_spec_id))
+            .arg(QString::fromStdString(predicate.name)),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (response != QMessageBox::Yes) {
+        return;
+    }
+
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::DeletePredicateSpec(predicate.predicate_spec_id);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    refreshAuthoringLists();
+    postStatusMessage(QStringLiteral("Deleted predicate."), StatusToast::Severity::Info);
 }
 
 void BattleRunSettingsPage::openBattlePlanEditor()

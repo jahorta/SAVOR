@@ -253,6 +253,29 @@ bool QueuedAuthoringDb::SavePredicateSpec(
         error_out);
 }
 
+bool QueuedAuthoringDb::UpdatePredicateSpec(
+    std::int64_t predicate_spec_id,
+    const SavePredicateSpecCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, predicate_spec_id, command, error_out]() {
+            return inner_ != nullptr ? inner_->UpdatePredicateSpec(predicate_spec_id, command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAuthoringDb::DeletePredicateSpec(
+    const DeletePredicateSpecCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->DeletePredicateSpec(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<PredicateSpecSnapshot> QueuedAuthoringDb::GetPredicateSpec(
     std::int64_t predicate_spec_id) const {
     return ExecuteRead<std::optional<PredicateSpecSnapshot>>(
@@ -260,6 +283,15 @@ std::optional<PredicateSpecSnapshot> QueuedAuthoringDb::GetPredicateSpec(
             return inner_ != nullptr ? inner_->GetPredicateSpec(predicate_spec_id) : std::nullopt;
         },
         std::nullopt);
+}
+
+PredicateSpecUsageSnapshot QueuedAuthoringDb::GetPredicateSpecUsage(
+    std::int64_t predicate_spec_id) const {
+    return ExecuteRead<PredicateSpecUsageSnapshot>(
+        [this, predicate_spec_id]() {
+            return inner_ != nullptr ? inner_->GetPredicateSpecUsage(predicate_spec_id) : PredicateSpecUsageSnapshot{};
+        },
+        PredicateSpecUsageSnapshot{ .predicate_spec_id = predicate_spec_id });
 }
 
 std::vector<PredicateSpecSnapshot> QueuedAuthoringDb::ListPredicateSpecs(

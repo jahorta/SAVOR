@@ -10,6 +10,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
@@ -48,13 +49,20 @@ void SpecLibraryDialog::createWidgets()
     toolbarLayout->setSpacing(10);
     newButton_ = new QPushButton(QStringLiteral("New"), toolbar);
     newButton_->setObjectName("jobsPrimaryButton");
-    editButton_ = new QPushButton(QStringLiteral("Edit Selected (copy)"), toolbar);
+    editButton_ = new QPushButton(
+        kind_ == SpecKind::Predicate ? QStringLiteral("Edit Selected") : QStringLiteral("Edit Selected (copy)"),
+        toolbar);
     editButton_->setObjectName("jobsSecondaryButton");
     editButton_->setEnabled(false);
+    deleteButton_ = new QPushButton(QStringLiteral("Delete Selected"), toolbar);
+    deleteButton_->setObjectName("jobsSecondaryButton");
+    deleteButton_->setEnabled(false);
+    deleteButton_->setVisible(kind_ == SpecKind::Predicate);
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), toolbar);
     refreshButton_->setObjectName("jobsSecondaryButton");
     toolbarLayout->addWidget(newButton_);
     toolbarLayout->addWidget(editButton_);
+    toolbarLayout->addWidget(deleteButton_);
     toolbarLayout->addWidget(refreshButton_);
     toolbarLayout->addStretch();
     root->addWidget(toolbar);
@@ -79,7 +87,9 @@ void SpecLibraryDialog::createWidgets()
     placeholderLabel_ = new QLabel(rightPane_);
     placeholderLabel_->setObjectName("sectionDescription");
     placeholderLabel_->setWordWrap(true);
-    placeholderLabel_->setText(QStringLiteral("Create a new spec, or select one from the library to edit a copy."));
+    placeholderLabel_->setText(kind_ == SpecKind::Predicate
+        ? QStringLiteral("Create a new predicate, or select one from the library to edit it.")
+        : QStringLiteral("Create a new spec, or select one from the library to edit a copy."));
     rightPaneLayout_->addWidget(placeholderLabel_);
     rightPaneLayout_->addStretch(1);
 
@@ -114,8 +124,9 @@ void SpecLibraryDialog::createWidgets()
         if (row < 0) {
             return;
         }
-        showForRow(row, true);
+        showForRow(row, kind_ != SpecKind::Predicate);
     });
+    connect(deleteButton_, &QPushButton::clicked, this, &SpecLibraryDialog::deleteSelectedPredicate);
     connect(refreshButton_, &QPushButton::clicked, this, &SpecLibraryDialog::refreshLibrary);
     connect(libraryList_, &QListWidget::currentRowChanged, this, &SpecLibraryDialog::handleLibrarySelectionChanged);
     connect(libraryList_, &QListWidget::itemDoubleClicked, this, &SpecLibraryDialog::onLibraryActivated);
@@ -234,11 +245,13 @@ void SpecLibraryDialog::handleLibrarySelectionChanged()
     if (row < 0) {
         clearRightPane();
         if (placeholderLabel_) {
-            placeholderLabel_->setText(QStringLiteral("Create a new spec, or select one from the library to edit a copy."));
+            placeholderLabel_->setText(kind_ == SpecKind::Predicate
+                ? QStringLiteral("Create a new predicate, or select one from the library to edit it.")
+                : QStringLiteral("Create a new spec, or select one from the library to edit a copy."));
         }
         return;
     }
-    showForRow(row, true);
+    showForRow(row, kind_ != SpecKind::Predicate);
 }
 
 void SpecLibraryDialog::onLibraryActivated()
@@ -247,7 +260,54 @@ void SpecLibraryDialog::onLibraryActivated()
     if (row < 0) {
         return;
     }
-    showForRow(row, true);
+    showForRow(row, kind_ != SpecKind::Predicate);
+}
+
+void SpecLibraryDialog::deleteSelectedPredicate()
+{
+    if (kind_ != SpecKind::Predicate) {
+        return;
+    }
+    const int row = selectedLibraryRow();
+    if (row < 0 || row >= static_cast<int>(predicateSpecs_.size())) {
+        postStatusMessage(QStringLiteral("Select a predicate to delete."), StatusToast::Severity::Warn);
+        return;
+    }
+
+    const auto& predicate = predicateSpecs_[static_cast<std::size_t>(row)];
+    const auto usage = soasimqt2::db::SimCoreDbAuthoringService::GetPredicateSpecUsage(predicate.predicate_spec_id);
+    if (!usage.ok) {
+        postStatusMessage(QString::fromStdString(usage.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    if (usage.value.used()) {
+        postStatusMessage(
+            QStringLiteral("Predicate is used by %1 predicate set(s) and cannot be deleted.")
+                .arg(usage.value.predicate_set_count),
+            StatusToast::Severity::Warn);
+        return;
+    }
+
+    const auto response = QMessageBox::question(
+        this,
+        QStringLiteral("Delete Predicate"),
+        QStringLiteral("Delete predicate #%1 \"%2\"?")
+            .arg(static_cast<qint64>(predicate.predicate_spec_id))
+            .arg(QString::fromStdString(predicate.name)),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (response != QMessageBox::Yes) {
+        return;
+    }
+
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::DeletePredicateSpec(predicate.predicate_spec_id);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    refreshPredicates();
+    clearRightPane();
+    postStatusMessage(QStringLiteral("Deleted predicate."), StatusToast::Severity::Info);
 }
 
 void SpecLibraryDialog::showForRow(int row, bool duplicate)
@@ -444,7 +504,11 @@ void SpecLibraryDialog::installEditorWidget(QWidget* editor)
 
 void SpecLibraryDialog::updateEditButtonState()
 {
-    editButton_->setEnabled(selectedLibraryRow() >= 0);
+    const bool hasSelection = selectedLibraryRow() >= 0;
+    editButton_->setEnabled(hasSelection);
+    if (deleteButton_ != nullptr) {
+        deleteButton_->setEnabled(kind_ == SpecKind::Predicate && hasSelection);
+    }
 }
 
 int SpecLibraryDialog::selectedLibraryRow() const

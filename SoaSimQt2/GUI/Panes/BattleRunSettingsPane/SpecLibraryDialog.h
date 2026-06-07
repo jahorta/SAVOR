@@ -56,6 +56,7 @@ private:
     void openNewBattlePlanEditor();
     void handleLibrarySelectionChanged();
     void onLibraryActivated();
+    void deleteSelectedPredicate();
     void showForRow(int row, bool duplicate);
     void showEditorForSeedProbe(std::int64_t row, bool duplicate);
     void showEditorForTas(std::int64_t row, bool duplicate);
@@ -79,6 +80,7 @@ private:
     QListWidget* libraryList_ = nullptr;
     QPushButton* newButton_ = nullptr;
     QPushButton* editButton_ = nullptr;
+    QPushButton* deleteButton_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QWidget* rightPane_ = nullptr;
     QVBoxLayout* rightPaneLayout_ = nullptr;

@@ -140,10 +140,38 @@ void PredicateSpecEditorWindow::setSavedCallback(std::function<void()> callback)
 
 void PredicateSpecEditorWindow::loadSnapshot(const simcore::db::PredicateSpecSnapshot& snapshot, bool duplicate)
 {
-    setWindowTitle(duplicate
-        ? QStringLiteral("Predicate Editor - Duplicate")
-        : QStringLiteral("Predicate Editor - Edit Copy"));
-    nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    predicateSpecId_.reset();
+    bool saveAsCopy = duplicate;
+    if (!duplicate) {
+        const auto usage = soasimqt2::db::SimCoreDbAuthoringService::GetPredicateSpecUsage(snapshot.predicate_spec_id);
+        if (!usage.ok) {
+            saveAsCopy = true;
+            postStatusMessage(QString::fromStdString(usage.error.message), StatusToast::Severity::Warn);
+        } else if (usage.value.used()) {
+            saveAsCopy = true;
+            postStatusMessage(
+                QStringLiteral("Predicate is used by %1 predicate set(s); edits will save as a copy.")
+                    .arg(usage.value.predicate_set_count),
+                StatusToast::Severity::Warn);
+        } else {
+            predicateSpecId_ = snapshot.predicate_spec_id;
+        }
+    }
+
+    if (predicateSpecId_.has_value()) {
+        setWindowTitle(QStringLiteral("Predicate Editor - Edit"));
+        if (saveButton_ != nullptr) {
+            saveButton_->setText(QStringLiteral("Save Predicate In Place"));
+        }
+    } else {
+        setWindowTitle(duplicate
+            ? QStringLiteral("Predicate Editor - Duplicate")
+            : QStringLiteral("Predicate Editor - Edit Copy"));
+        if (saveButton_ != nullptr) {
+            saveButton_->setText(QStringLiteral("Save Predicate Copy"));
+        }
+    }
+    nameEdit_->setText(QString::fromStdString(snapshot.name) + (saveAsCopy ? QStringLiteral(" copy") : QString()));
 
     while (breakpointCombos_.size() > 1) {
         removeRequiredBreakpointField(static_cast<int>(breakpointCombos_.size()) - 1);
@@ -861,12 +889,17 @@ void PredicateSpecEditorWindow::savePredicate()
     draft.flag_mask = static_cast<std::int64_t>(flags);
 
     saveButton_->setEnabled(false);
-    const auto result = soasimqt2::db::SimCoreDbAuthoringService::SavePredicateSpec(draft);
+    const auto result = predicateSpecId_.has_value()
+        ? soasimqt2::db::SimCoreDbAuthoringService::UpdatePredicateSpec(*predicateSpecId_, draft)
+        : soasimqt2::db::SimCoreDbAuthoringService::SavePredicateSpec(draft);
     saveButton_->setEnabled(true);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
         return;
     }
+    predicateSpecId_ = result.value;
+    setWindowTitle(QStringLiteral("Predicate Editor - Edit"));
+    saveButton_->setText(QStringLiteral("Save Predicate In Place"));
 
     if (requiredBreakpoints.size() > 1) {
         postStatusMessage(
