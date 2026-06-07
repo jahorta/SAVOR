@@ -284,9 +284,6 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>

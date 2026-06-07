@@ -144,10 +144,10 @@ private:
     QPushButton* saveButton_ = nullptr;
 };
 
-class TemplateEditorWindow final : public QWidget
+class BattleChainSpecEditorWindow final : public QWidget
 {
 public:
-    explicit TemplateEditorWindow(QWidget* parent = nullptr);
+    explicit BattleChainSpecEditorWindow(QWidget* parent = nullptr);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
 
@@ -161,8 +161,6 @@ private:
     std::function<void()> savedCallback_;
     QLineEdit* nameEdit_ = nullptr;
     QPlainTextEdit* descriptionEdit_ = nullptr;
-    QComboBox* seedProbeCombo_ = nullptr;
-    QComboBox* tasCombo_ = nullptr;
     QComboBox* battleRunCombo_ = nullptr;
     QComboBox* explorerSettingsCombo_ = nullptr;
     QPushButton* refreshButton_ = nullptr;

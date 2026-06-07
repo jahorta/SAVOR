@@ -42,7 +42,7 @@ struct JobIni {
     std::int64_t source_savestate_id = 0;
     std::int64_t probe_run_id = 0;
     std::int64_t unique_seed_id = 0;
-    std::int64_t battle_template_id = 0;
+    std::int64_t battle_chain_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
 
@@ -52,7 +52,7 @@ struct JobIni {
         ini.set(kJobSection, "source_savestate_id", std::to_string(source_savestate_id));
         ini.set(kJobSection, "probe_run_id", std::to_string(probe_run_id));
         ini.set(kJobSection, "unique_seed_id", std::to_string(unique_seed_id));
-        ini.set(kJobSection, "battle_template_id", std::to_string(battle_template_id));
+        ini.set(kJobSection, "battle_chain_spec_id", std::to_string(battle_chain_spec_id));
         ini.set(kJobSection, "battle_run_spec_id", std::to_string(battle_run_spec_id));
         ini.set(kJobSection, "explorer_settings_id", std::to_string(explorer_settings_id));
     }
@@ -65,7 +65,7 @@ struct JobIni {
         out.source_savestate_id = ini.get_i64(kJobSection, "source_savestate_id", 0);
         out.probe_run_id = ini.get_i64(kJobSection, "probe_run_id", 0);
         out.unique_seed_id = ini.get_i64(kJobSection, "unique_seed_id", 0);
-        out.battle_template_id = ini.get_i64(kJobSection, "battle_template_id", 0);
+        out.battle_chain_spec_id = ini.get_i64(kJobSection, "battle_chain_spec_id", 0);
         out.battle_run_spec_id = ini.get_i64(kJobSection, "battle_run_spec_id", 0);
         out.explorer_settings_id = ini.get_i64(kJobSection, "explorer_settings_id", 0);
         return out;
@@ -744,19 +744,19 @@ std::optional<std::int64_t> FindIntegerArgument(
 
 std::int64_t ResolveEffectiveBattleRunSpecId(
     simcore::db::IAuthoringDb* authoring_db,
-    const simcore::db::BattleRunSpecSnapshot& template_spec,
+    const simcore::db::BattleRunSpecSnapshot& base_run_spec,
     const WorkflowGraphStepScheduleContext& context,
     std::vector<std::string>* event_lines) {
     const auto min_override = FindIntegerArgument(context, "fake_attack_min");
     const auto max_override = FindIntegerArgument(context, "fake_attack_max");
     if (!min_override.has_value() && !max_override.has_value()) {
-        return template_spec.battle_run_spec_id;
+        return base_run_spec.battle_run_spec_id;
     }
 
-    const auto min_fake = static_cast<int>(min_override.value_or(template_spec.min_fake_attacks));
-    const auto max_fake = static_cast<int>(max_override.value_or(template_spec.max_fake_attacks));
-    if (min_fake == template_spec.min_fake_attacks && max_fake == template_spec.max_fake_attacks) {
-        return template_spec.battle_run_spec_id;
+    const auto min_fake = static_cast<int>(min_override.value_or(base_run_spec.min_fake_attacks));
+    const auto max_fake = static_cast<int>(max_override.value_or(base_run_spec.max_fake_attacks));
+    if (min_fake == base_run_spec.min_fake_attacks && max_fake == base_run_spec.max_fake_attacks) {
+        return base_run_spec.battle_run_spec_id;
     }
     if (authoring_db == nullptr) {
         if (event_lines != nullptr) {
@@ -773,19 +773,19 @@ std::int64_t ResolveEffectiveBattleRunSpecId(
     std::string error;
     if (!authoring_db->SaveBattleRunSpec(
             {
-                .name = template_spec.name + " effective " + suffix,
-                .priority = template_spec.priority,
-                .run_ms = template_spec.run_ms,
-                .vi_stall_ms = template_spec.vi_stall_ms,
-                .progress_enable = template_spec.progress_enable,
-                .use_single_turn_runner = template_spec.use_single_turn_runner,
-                .auto_wave_trigger_enable = template_spec.auto_wave_trigger_enable,
+                .name = base_run_spec.name + " effective " + suffix,
+                .priority = base_run_spec.priority,
+                .run_ms = base_run_spec.run_ms,
+                .vi_stall_ms = base_run_spec.vi_stall_ms,
+                .progress_enable = base_run_spec.progress_enable,
+                .use_single_turn_runner = base_run_spec.use_single_turn_runner,
+                .auto_wave_trigger_enable = base_run_spec.auto_wave_trigger_enable,
                 .min_fake_attacks = min_fake,
                 .max_fake_attacks = max_fake,
                 .created_at_utc = now,
                 .event_id = "workflow-graph.battle.effective-run-spec." + suffix,
                 .correlation_id = "workflow-instance-" + std::to_string(context.workflow_instance_id),
-                .causation_id = "battle-run-spec-" + std::to_string(template_spec.battle_run_spec_id),
+                .causation_id = "battle-run-spec-" + std::to_string(base_run_spec.battle_run_spec_id),
             },
             &effective_id,
             &error)
@@ -798,8 +798,8 @@ std::int64_t ResolveEffectiveBattleRunSpecId(
 
     if (event_lines != nullptr) {
         event_lines->push_back(
-            "[workflow-graph-battle-effective-run-spec] template_battle_run_spec_id="
-            + std::to_string(template_spec.battle_run_spec_id)
+            "[workflow-graph-battle-effective-run-spec] base_battle_run_spec_id="
+            + std::to_string(base_run_spec.battle_run_spec_id)
             + " effective_battle_run_spec_id=" + std::to_string(effective_id)
             + " fake_attack_min=" + std::to_string(min_fake)
             + " fake_attack_max=" + std::to_string(max_fake));
@@ -837,19 +837,17 @@ public:
         const auto* node = FindGraphNode(*graph, context.step_key);
         if (node == nullptr
             || node->unit_kind != "battle_chain"
-            || node->authored_ref_kind.value_or("") != "authoring.template"
+            || node->authored_ref_kind.value_or("") != "authoring.battle_chain_spec"
             || !node->authored_ref_id.has_value()
             || *node->authored_ref_id <= 0) {
             return {};
         }
-        const auto template_row = authoring_db_->GetTemplate(*node->authored_ref_id);
-        if (!template_row.has_value()
-            || !template_row->battle_run_spec_id.has_value()
-            || !template_row->explorer_settings_id.has_value()) {
+        const auto battle_chain_spec = authoring_db_->GetBattleChainSpec(*node->authored_ref_id);
+        if (!battle_chain_spec.has_value()) {
             return {};
         }
-        const auto template_run_spec = authoring_db_->GetBattleRunSpec(*template_row->battle_run_spec_id);
-        if (!template_run_spec.has_value()) {
+        const auto battle_chain_run_spec = authoring_db_->GetBattleRunSpec(battle_chain_spec->battle_run_spec_id);
+        if (!battle_chain_run_spec.has_value()) {
             return {};
         }
 
@@ -876,11 +874,11 @@ public:
         scheduled.persistence.program_ref_id = input_frames->ref_id;
         scheduled.persistence.program_version = kProgramVersion;
         scheduled.persistence.fingerprint = "battle.chain.probe_run." + std::to_string(input_frames->ref_id)
-            + ".template." + std::to_string(*node->authored_ref_id);
+            + ".battle_chain_spec." + std::to_string(*node->authored_ref_id);
 
         const auto effective_battle_run_spec_id = ResolveEffectiveBattleRunSpecId(
             authoring_db_,
-            *template_run_spec,
+            *battle_chain_run_spec,
             context,
             &scheduled.event_lines);
         if (effective_battle_run_spec_id <= 0) {
@@ -897,7 +895,7 @@ public:
                     .expected_total = 1,
                     .domain_ref_kind = std::string("sp_probe_run"),
                     .domain_ref_id = input_frames->ref_id,
-                    .meta_note = "phase=battle_chain.context_probe;template_id=" + std::to_string(*node->authored_ref_id),
+                    .meta_note = "phase=battle_chain.context_probe;battle_chain_spec_id=" + std::to_string(*node->authored_ref_id),
                 },
                 &job_set_id,
                 &error)
@@ -910,9 +908,9 @@ public:
         JobIni job_ini{};
         job_ini.source_savestate_id = probe_run->entry_savestate_id;
         job_ini.probe_run_id = input_frames->ref_id;
-        job_ini.battle_template_id = *node->authored_ref_id;
+        job_ini.battle_chain_spec_id = *node->authored_ref_id;
         job_ini.battle_run_spec_id = effective_battle_run_spec_id;
-        job_ini.explorer_settings_id = *template_row->explorer_settings_id;
+        job_ini.explorer_settings_id = battle_chain_spec->explorer_settings_id;
 
         std::int64_t exec_job_id = 0;
         if (!execution_db_->EnqueueJob(
@@ -941,7 +939,7 @@ public:
             + " workflow_step_id=" + std::to_string(context.workflow_step_id)
             + " probe_run_id=" + std::to_string(input_frames->ref_id)
             + " unique_count=" + std::to_string(unique_rows.size())
-            + " template_id=" + std::to_string(*node->authored_ref_id)
+            + " battle_chain_spec_id=" + std::to_string(*node->authored_ref_id)
             + " battle_run_spec_id=" + std::to_string(effective_battle_run_spec_id)
             + " job=" + std::to_string(exec_job_id));
         return scheduled;

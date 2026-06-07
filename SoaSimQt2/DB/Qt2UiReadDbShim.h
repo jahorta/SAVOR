@@ -241,8 +241,8 @@ struct BattleContextRow {
     std::string ini_text;
 };
 
-struct AuthoringTemplateRow {
-    std::int64_t template_id{};
+struct AuthoringBattleChainSpecRow {
+    std::int64_t battle_chain_spec_id{};
     std::string name;
     std::string description;
     std::string ini_text;
@@ -616,7 +616,7 @@ struct TasMovieRepo { static DbResult<TasMovieLite> Get(std::int64_t id) { TasMo
 struct ExplorerSettingsPredicateRepo {};
 struct BattleContextRepo {};
 struct AddressProgramRepo { static DbResult<std::int64_t> Get(std::int64_t id) { return DbResult<std::int64_t>::Ok(id); } static DbResult<std::int64_t> Ensure(const std::string&) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Address program")); } };
-struct AuthoringTemplatesRepo { static auto ListLiteAsync(const std::string&, std::int32_t) { return qt2shim::ReadyFuture(DbResult<std::vector<AuthoringTemplateRow>>::Ok({})); } static DbResult<AuthoringTemplateRow> Get(std::int64_t) { return DbResult<AuthoringTemplateRow>::Err(qt2shim::NotMigrated("Authoring template")); } static DbResult<std::int64_t> Insert(const AuthoringTemplateRow&) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Authoring template")); } };
+struct AuthoringBattleChainSpecsRepo { static auto ListLiteAsync(const std::string&, std::int32_t) { return qt2shim::ReadyFuture(DbResult<std::vector<AuthoringBattleChainSpecRow>>::Ok({})); } static DbResult<AuthoringBattleChainSpecRow> Get(std::int64_t) { return DbResult<AuthoringBattleChainSpecRow>::Err(qt2shim::NotMigrated("Authoring battle chain spec")); } static DbResult<std::int64_t> Insert(const AuthoringBattleChainSpecRow&) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Authoring battle chain spec")); } };
 struct PredicateSpecRepo { static DbResult<PredicateSpecRow> Get(std::int64_t) { return DbResult<PredicateSpecRow>::Err(qt2shim::NotMigrated("Predicate spec")); } static DbResult<std::int64_t> EnsureByFingerprint(const PredicateSpecRow&) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Predicate spec")); } };
 struct TurnActionPresetRepo { static DbResult<TurnActionPresetRow> Get(std::int64_t) { return DbResult<TurnActionPresetRow>::Err(qt2shim::NotMigrated("Action preset")); } static DbResult<void> Update(const TurnActionPresetRow&) { return DbResult<void>::Err(qt2shim::NotMigrated("Action preset")); } static DbResult<std::int64_t> Insert(const TurnActionPresetRow&) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Action preset")); } };
 

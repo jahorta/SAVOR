@@ -72,7 +72,7 @@ inline constexpr std::array<EventDispatchBinding, 44> kPayloadDispatchBindingsV1
     { { "Authoring.PredicateSpecUpdated.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.PredicateSpecDeleted.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.SettingsSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
-    { { "Authoring.TemplateSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
+    { { "Authoring.BattleChainSpecSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
     { { "Authoring.WorkflowGraphSaved.v1", 1 }, PayloadResolverContract::AuthoringV1 },
 } };
 

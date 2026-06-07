@@ -404,32 +404,32 @@ std::vector<ExplorerSettingsSnapshot> QueuedAuthoringDb::ListExplorerSettings(
         {});
 }
 
-bool QueuedAuthoringDb::SaveTemplate(
-    const SaveTemplateCommand& command,
-    std::int64_t* template_id_out,
+bool QueuedAuthoringDb::SaveBattleChainSpec(
+    const SaveBattleChainSpecCommand& command,
+    std::int64_t* battle_chain_spec_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, template_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->SaveTemplate(command, template_id_out, error_out) : false;
+        [this, command, battle_chain_spec_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->SaveBattleChainSpec(command, battle_chain_spec_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-std::optional<TemplateSnapshot> QueuedAuthoringDb::GetTemplate(
-    std::int64_t template_id) const {
-    return ExecuteRead<std::optional<TemplateSnapshot>>(
-        [this, template_id]() {
-            return inner_ != nullptr ? inner_->GetTemplate(template_id) : std::nullopt;
+std::optional<BattleChainSpecSnapshot> QueuedAuthoringDb::GetBattleChainSpec(
+    std::int64_t battle_chain_spec_id) const {
+    return ExecuteRead<std::optional<BattleChainSpecSnapshot>>(
+        [this, battle_chain_spec_id]() {
+            return inner_ != nullptr ? inner_->GetBattleChainSpec(battle_chain_spec_id) : std::nullopt;
         },
         std::nullopt);
 }
 
-std::vector<TemplateSnapshot> QueuedAuthoringDb::ListTemplates(
+std::vector<BattleChainSpecSnapshot> QueuedAuthoringDb::ListBattleChainSpecs(
     int max_count) const {
-    return ExecuteRead<std::vector<TemplateSnapshot>>(
+    return ExecuteRead<std::vector<BattleChainSpecSnapshot>>(
         [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListTemplates(max_count) : std::vector<TemplateSnapshot>{};
+            return inner_ != nullptr ? inner_->ListBattleChainSpecs(max_count) : std::vector<BattleChainSpecSnapshot>{};
         },
         {});
 }

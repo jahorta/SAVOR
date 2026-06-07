@@ -64,7 +64,7 @@ void BattleRunSettingsPage::createWidgets()
     newBattleRunSpecButton_ = new QPushButton(QStringLiteral("New Battle Run"), toolbar);
     newPredicateSetButton_ = new QPushButton(QStringLiteral("New Predicate Set"), toolbar);
     newExplorerSettingsButton_ = new QPushButton(QStringLiteral("New Battle Explorer Settings"), toolbar);
-    newTemplateButton_ = new QPushButton(QStringLiteral("New Template"), toolbar);
+    newBattleChainSpecButton_ = new QPushButton(QStringLiteral("New Battle Chain Spec"), toolbar);
     editPredicateButton_ = new QPushButton(QStringLiteral("Edit Predicate"), toolbar);
     duplicatePredicateButton_ = new QPushButton(QStringLiteral("Duplicate Predicate"), toolbar);
     deletePredicateButton_ = new QPushButton(QStringLiteral("Delete Predicate"), toolbar);
@@ -78,7 +78,7 @@ void BattleRunSettingsPage::createWidgets()
     newBattleRunSpecButton_->setObjectName("jobsPrimaryButton");
     newPredicateSetButton_->setObjectName("jobsPrimaryButton");
     newExplorerSettingsButton_->setObjectName("jobsPrimaryButton");
-    newTemplateButton_->setObjectName("jobsPrimaryButton");
+    newBattleChainSpecButton_->setObjectName("jobsPrimaryButton");
     editPredicateButton_->setObjectName("jobsSecondaryButton");
     duplicatePredicateButton_->setObjectName("jobsSecondaryButton");
     deletePredicateButton_->setObjectName("jobsSecondaryButton");
@@ -92,7 +92,7 @@ void BattleRunSettingsPage::createWidgets()
     toolbarLayout->addWidget(newBattleRunSpecButton_);
     toolbarLayout->addWidget(newPredicateSetButton_);
     toolbarLayout->addWidget(newExplorerSettingsButton_);
-    toolbarLayout->addWidget(newTemplateButton_);
+    toolbarLayout->addWidget(newBattleChainSpecButton_);
     toolbarLayout->addWidget(editPredicateButton_);
     toolbarLayout->addWidget(duplicatePredicateButton_);
     toolbarLayout->addWidget(deletePredicateButton_);
@@ -147,7 +147,7 @@ void BattleRunSettingsPage::createWidgets()
     connect(newBattleRunSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattleRunSpecEditor);
     connect(newPredicateSetButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openPredicateSetEditor);
     connect(newExplorerSettingsButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openExplorerSettingsEditor);
-    connect(newTemplateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openTemplateEditor);
+    connect(newBattleChainSpecButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::openBattleChainSpecEditor);
     connect(editPredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::editSelectedPredicate);
     connect(duplicatePredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::duplicateSelectedPredicate);
     connect(deletePredicateButton_, &QPushButton::clicked, this, &BattleRunSettingsPage::deleteSelectedPredicate);
@@ -260,19 +260,19 @@ void BattleRunSettingsPage::openExplorerSettingsEditor()
     editor->show();
 }
 
-void BattleRunSettingsPage::openTemplateEditor()
+void BattleRunSettingsPage::openBattleChainSpecEditor()
 {
-    if (templateEditor_) {
-        templateEditor_->show();
-        templateEditor_->raise();
-        templateEditor_->activateWindow();
+    if (battleChainSpecEditor_) {
+        battleChainSpecEditor_->show();
+        battleChainSpecEditor_->raise();
+        battleChainSpecEditor_->activateWindow();
         return;
     }
-    auto* editor = new TemplateEditorWindow(nullptr);
-    templateEditor_ = editor;
+    auto* editor = new BattleChainSpecEditorWindow(nullptr);
+    battleChainSpecEditor_ = editor;
     editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) { postStatusMessage(text, severity); });
     editor->setSavedCallback([this]() { refreshAuthoringLists(); });
-    connect(editor, &QObject::destroyed, this, [this]() { templateEditor_.clear(); });
+    connect(editor, &QObject::destroyed, this, [this]() { battleChainSpecEditor_.clear(); });
     editor->show();
 }
 

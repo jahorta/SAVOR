@@ -288,6 +288,7 @@
     <None Include="migration\Authoring\202604101200_authoring_workflow_graph.sql" />
     <None Include="migration\Authoring\202604101250_authoring_workflow_graph_hidden.sql" />
     <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql" />
+    <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />

@@ -134,7 +134,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .display_name = "Battle Chain",
             .description = "Builds battle context, then runs one or more battle turns from candidate input frames.",
             .authored_refs = {
-                { .ref_kind = "authoring.template", .display_name = "Battle template" },
+                { .ref_kind = "authoring.battle_chain_spec", .display_name = "Battle chain spec" },
             },
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),

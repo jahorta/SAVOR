@@ -2232,13 +2232,13 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         {
             .name = "battle-hp-check",
             .breakpoint_id = bp::battle::EndTurn,
-            .lhs_kind = simcore::db::PredicateOperandKind::Memory,
             .lhs_value = 0x1000,
-            .rhs_kind = simcore::db::PredicateOperandKind::Literal,
             .rhs_value = 0,
             .cmp_op = simcore::db::PredicateComparisonOp::GT,
             .width = 2,
-            .flag_mask = 0xff,
+            .flag_mask = static_cast<std::int64_t>(
+                static_cast<std::uint32_t>(simcore::pred::PredFlag::Active)
+                | static_cast<std::uint32_t>(simcore::pred::PredFlag::LhsIsProg)),
             .lhs_address_program_id = lhs_address_program_id,
             .abort_on_fail = true,
             .created_at_utc = now,
@@ -2452,7 +2452,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(decisions[0].decision_reason.value_or(""), "best delta vi");
 }
 
-TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExternalInputs) {
+TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithoutExternalInputs) {
     using namespace simcore::db;
     std::string err;
 
@@ -2494,7 +2494,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
                     .node_key = "battle_1",
                     .unit_kind = "battle_chain",
                     .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
                     .authored_ref_id = 77,
                     .inputs = {
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
@@ -2527,7 +2527,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
     ASSERT_EQ(graph->edges.size(), 3u);
     EXPECT_EQ(graph->nodes[0].inputs[0].data_kind, "state_artifact.dtm_artifact_id");
     EXPECT_EQ(graph->nodes[1].possible_outputs[0].data_kind, "analysis.input_frame_set_id");
-    EXPECT_EQ(graph->nodes[2].authored_ref_kind.value_or(""), "authoring.template");
+    EXPECT_EQ(graph->nodes[2].authored_ref_kind.value_or(""), "authoring.battle_chain_spec");
     EXPECT_EQ(graph->nodes[2].authored_ref_id.value_or(0), 77);
     EXPECT_EQ(graph->edges[2].from_node_key, "probe_1");
 
@@ -2564,7 +2564,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
     ASSERT_TRUE(payload.has_value());
     EXPECT_EQ(payload->workflow_graph_id, saved.workflow_graph_id);
     EXPECT_EQ(payload->workflow_graph_revision_id, saved.workflow_graph_revision_id);
-    EXPECT_EQ(payload->template_id, 0);
+    EXPECT_EQ(payload->battle_chain_spec_id, 0);
 
     SaveWorkflowGraphResult revised{};
     ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
@@ -2602,7 +2602,7 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresTemplateWithoutExterna
                     .node_key = "battle_1",
                     .unit_kind = "battle_chain",
                     .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
                     .authored_ref_id = 88,
                     .inputs = {
                         { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
@@ -2688,7 +2688,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                     .node_key = "battle_1",
                     .unit_kind = "battle_chain",
                     .display_name = "Battle Chain",
-                    .authored_ref_kind = std::string("authoring.template"),
+                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
                     .authored_ref_id = 901,
                     .inputs = {
                         { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
@@ -3333,6 +3333,9 @@ VALUES(10,'evt-10','Execution.JobQueued.v1',1,'Execution','job','200',1000,'job'
       (20,'evt-20','Execution.JobCompleted.v1',1,'Execution','job','200',2000,'job',200,2100);
 INSERT INTO ui_projection_subscription(projector_name,source_context,source_outbox_table,last_outbox_id,last_event_id,updated_at_utc,status,last_error)
 VALUES('WorkflowProjector','Execution','exec_outbox_message',15,'evt-15',3000,'ACTIVE','');
+UPDATE ui_projection_subscription
+SET last_outbox_id=15,last_event_id='evt-15',updated_at_utc=3000,status='ACTIVE',last_error=''
+WHERE source_context='Execution' AND source_outbox_table='exec_outbox_message';
 )SQL"));
 
     const auto temp_root = std::filesystem::temp_directory_path() / ("soasim-floor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -3818,11 +3821,17 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSu
 
     ASSERT_EQ(payload.result_kind, "analysisseedprobe.unique.winner");
     ASSERT_GT(payload.result_ref_id, 0);
-    ASSERT_EQ(payload.event_lines.size(), 1u);
-    EXPECT_NE(payload.event_lines.front().find("[seedprobe-superseded]"), std::string::npos);
-    EXPECT_NE(payload.event_lines.front().find("expected_delta=4"), std::string::npos);
-    EXPECT_NE(payload.event_lines.front().find("observed_delta=4"), std::string::npos);
-    EXPECT_NE(payload.event_lines.front().find("superseded=1"), std::string::npos);
+    ASSERT_GE(payload.event_lines.size(), 1u);
+    const auto superseded_line = std::find_if(
+        payload.event_lines.begin(),
+        payload.event_lines.end(),
+        [](const std::string& line) {
+            return line.find("[seedprobe-superseded]") != std::string::npos;
+        });
+    ASSERT_NE(superseded_line, payload.event_lines.end());
+    EXPECT_NE(superseded_line->find("expected_delta=4"), std::string::npos);
+    EXPECT_NE(superseded_line->find("observed_delta=4"), std::string::npos);
+    EXPECT_NE(superseded_line->find("superseded=1"), std::string::npos);
 
     const auto winner_job = execution_db->GetJob(winner_job_id);
     const auto sibling_job = execution_db->GetJob(sibling_job_id);

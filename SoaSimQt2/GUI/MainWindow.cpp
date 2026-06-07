@@ -40,7 +40,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
     { "Workflow Launcher", "Workflow graph authoring and instancing with per-run external input bindings." },
-    { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
+    { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, battle chain specs, context validation, estimates, and save/materialize actions." },
     { "Artifacts", "Artifact storage browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Seed probe grid and unique probing results." },
     { "Explorer Runs", "Explorer run history and controls." },

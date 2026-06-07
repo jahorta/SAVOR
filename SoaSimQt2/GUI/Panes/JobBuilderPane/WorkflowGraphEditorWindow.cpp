@@ -719,21 +719,21 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
                 .ref_id = spec.seed_probe_spec_id,
             });
         }
-    } else if (*requiredKind == "authoring.template") {
-        const auto result = soasimqt2::db::SimCoreDbAuthoringService::ListTemplates();
+    } else if (*requiredKind == "authoring.battle_chain_spec") {
+        const auto result = soasimqt2::db::SimCoreDbAuthoringService::ListBattleChainSpecs();
         if (!result.ok) {
             postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
             return;
         }
-        for (const auto& template_row : result.value) {
+        for (const auto& battle_chain_spec : result.value) {
             authoredRefOptions_.push_back(AuthoredRefOption{
                 .label = QStringLiteral("#%1 %2 battle=%3 battle explorer=%4")
-                    .arg(static_cast<qint64>(template_row.template_id))
-                    .arg(QString::fromStdString(template_row.name))
-                    .arg(template_row.battle_run_spec_id.has_value() ? QString::number(*template_row.battle_run_spec_id) : QStringLiteral("-"))
-                    .arg(template_row.explorer_settings_id.has_value() ? QString::number(*template_row.explorer_settings_id) : QStringLiteral("-")),
-                .ref_kind = "authoring.template",
-                .ref_id = template_row.template_id,
+                    .arg(static_cast<qint64>(battle_chain_spec.battle_chain_spec_id))
+                    .arg(QString::fromStdString(battle_chain_spec.name))
+                    .arg(QString::number(battle_chain_spec.battle_run_spec_id))
+                    .arg(QString::number(battle_chain_spec.explorer_settings_id)),
+                .ref_kind = "authoring.battle_chain_spec",
+                .ref_id = battle_chain_spec.battle_chain_spec_id,
             });
         }
     }

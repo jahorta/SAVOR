@@ -125,13 +125,11 @@ struct ExplorerSettingsDraft {
     std::optional<std::int64_t> default_predicate_set_id;
 };
 
-struct TemplateDraft {
+struct BattleChainSpecDraft {
     std::string name;
     std::string description;
-    std::optional<std::int64_t> seed_probe_spec_id;
-    std::optional<std::int64_t> tas_spec_id;
-    std::optional<std::int64_t> battle_run_spec_id;
-    std::optional<std::int64_t> explorer_settings_id;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
 };
 
 struct WorkflowGraphDraft {
@@ -699,53 +697,54 @@ public:
         return ServiceResult<std::vector<simcore::db::ExplorerSettingsSnapshot>>::Ok(db->ListExplorerSettings(max_count));
     }
 
-    static ServiceResult<std::int64_t> SaveTemplate(const TemplateDraft& draft) {
+    static ServiceResult<std::int64_t> SaveBattleChainSpec(const BattleChainSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
             return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
-            return Invalid<std::int64_t>("template name is required");
+            return Invalid<std::int64_t>("battle chain spec name is required");
+        }
+        if (draft.battle_run_spec_id <= 0 || draft.explorer_settings_id <= 0) {
+            return Invalid<std::int64_t>("battle chain spec requires battle run spec and battle explorer settings");
         }
 
         const auto now = simcore::db::types::UtcNow();
-        simcore::db::SaveTemplateCommand command{};
+        simcore::db::SaveBattleChainSpecCommand command{};
         command.name = draft.name;
         command.description = draft.description;
-        command.seed_probe_spec_id = draft.seed_probe_spec_id;
-        command.tas_spec_id = draft.tas_spec_id;
         command.battle_run_spec_id = draft.battle_run_spec_id;
         command.explorer_settings_id = draft.explorer_settings_id;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.TemplateSaved");
+        command.event_id = NextEventId("Authoring.BattleChainSpecSaved");
         command.correlation_id = command.event_id;
 
         std::int64_t id = 0;
         std::string error;
-        if (!db->SaveTemplate(command, &id, &error)) {
+        if (!db->SaveBattleChainSpec(command, &id, &error)) {
             return Failed<std::int64_t>(error);
         }
         return ServiceResult<std::int64_t>::Ok(id);
     }
 
-    static ServiceResult<simcore::db::TemplateSnapshot> GetTemplate(std::int64_t template_id) {
+    static ServiceResult<simcore::db::BattleChainSpecSnapshot> GetBattleChainSpec(std::int64_t battle_chain_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<simcore::db::TemplateSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<simcore::db::BattleChainSpecSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
-        const auto snapshot = db->GetTemplate(template_id);
+        const auto snapshot = db->GetBattleChainSpec(battle_chain_spec_id);
         if (!snapshot.has_value()) {
-            return NotFound<simcore::db::TemplateSnapshot>("template not found");
+            return NotFound<simcore::db::BattleChainSpecSnapshot>("battle chain spec not found");
         }
-        return ServiceResult<simcore::db::TemplateSnapshot>::Ok(*snapshot);
+        return ServiceResult<simcore::db::BattleChainSpecSnapshot>::Ok(*snapshot);
     }
 
-    static ServiceResult<std::vector<simcore::db::TemplateSnapshot>> ListTemplates(int max_count = 100) {
+    static ServiceResult<std::vector<simcore::db::BattleChainSpecSnapshot>> ListBattleChainSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<simcore::db::TemplateSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<simcore::db::BattleChainSpecSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
-        return ServiceResult<std::vector<simcore::db::TemplateSnapshot>>::Ok(db->ListTemplates(max_count));
+        return ServiceResult<std::vector<simcore::db::BattleChainSpecSnapshot>>::Ok(db->ListBattleChainSpecs(max_count));
     }
 
     static ServiceResult<simcore::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {

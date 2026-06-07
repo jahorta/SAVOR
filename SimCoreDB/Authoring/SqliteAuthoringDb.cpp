@@ -169,6 +169,26 @@ std::vector<BPKey> ParseBpKeyList(std::string_view text) {
 
 
 
+std::string_view AuthoringAggregateKindForEvent(std::string_view event_type) {
+    if (event_type == "Authoring.SeedProbeSpecSaved.v1") return "seed_probe_spec";
+    if (event_type == "Authoring.TasSpecSaved.v1") return "tas_spec";
+    if (event_type == "Authoring.BattleRunSpecSaved.v1") return "battle_run_spec";
+    if (event_type == "Authoring.PlanSaved.v1") return "battle_plan";
+    if (event_type == "Authoring.BattlePlanActionPresetSaved.v1"
+        || event_type == "Authoring.BattlePlanActionPresetRenamed.v1") {
+        return "battle_plan_action_preset";
+    }
+    if (event_type == "Authoring.PredicateSpecSaved.v1"
+        || event_type == "Authoring.PredicateSpecUpdated.v1"
+        || event_type == "Authoring.PredicateSpecDeleted.v1") {
+        return "predicate_spec";
+    }
+    if (event_type == "Authoring.SettingsSaved.v1") return "explorer_settings";
+    if (event_type == "Authoring.BattleChainSpecSaved.v1") return "battle_chain_spec";
+    if (event_type == "Authoring.WorkflowGraphSaved.v1") return "workflow_graph";
+    return "authoring";
+}
+
 bool InsertAuthoringOutboxEvent(
     sqlite3* db,
     std::string_view event_id,
@@ -184,7 +204,7 @@ bool InsertAuthoringOutboxEvent(
             db,
             "INSERT INTO au_outbox_message("
             "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'Authoring','template',?3,?4,?5,?6,'authoring_event',?7);",
+            "VALUES(?1,?2,1,'Authoring',?3,?4,?5,?6,?7,'authoring_event',?8);",
             -1,
             &st.st,
             nullptr)
@@ -197,11 +217,13 @@ bool InsertAuthoringOutboxEvent(
 
     sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
     sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 6, occurred_at_utc);
-    sqlite3_bind_int64(st.st, 7, payload_ref_id);
+    const auto aggregate_kind = AuthoringAggregateKindForEvent(event_type);
+    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+    sqlite3_bind_int64(st.st, 8, payload_ref_id);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db);
@@ -211,61 +233,35 @@ bool InsertAuthoringOutboxEvent(
     return true;
 }
 
-bool TryReadTemplatePayload(sqlite3* db, std::int64_t template_id, AuthoringPayloadRecord* out) {
-    if (db == nullptr || out == nullptr || template_id <= 0) {
+bool TryReadBattleChainSpecPayload(sqlite3* db, std::int64_t battle_chain_spec_id, AuthoringPayloadRecord* out) {
+    if (db == nullptr || out == nullptr || battle_chain_spec_id <= 0) {
         return false;
     }
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT template_id, COALESCE(seed_probe_spec_id, 0), COALESCE(tas_spec_id, 0), "
-        "COALESCE(battle_run_spec_id, 0), COALESCE(explorer_settings_id, 0) "
-        "FROM au_template "
-        "WHERE template_id=?1;";
+        "SELECT battle_chain_spec_id, battle_run_spec_id, explorer_settings_id "
+        "FROM au_battle_chain_spec "
+        "WHERE battle_chain_spec_id=?1;";
     if (sqlite3_prepare_v2(db, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return false;
     }
 
-    sqlite3_bind_int64(st.st, 1, template_id);
+    sqlite3_bind_int64(st.st, 1, battle_chain_spec_id);
 
     if (sqlite3_step(st.st) == SQLITE_ROW) {
-        out->template_id = sqlite3_column_int64(st.st, 0);
-        out->seed_probe_spec_id = sqlite3_column_int64(st.st, 1);
-        out->tas_spec_id = sqlite3_column_int64(st.st, 2);
-        out->battle_run_spec_id = sqlite3_column_int64(st.st, 3);
-        out->explorer_settings_id = sqlite3_column_int64(st.st, 4);
+        out->battle_chain_spec_id = sqlite3_column_int64(st.st, 0);
+        out->battle_run_spec_id = sqlite3_column_int64(st.st, 1);
+        out->explorer_settings_id = sqlite3_column_int64(st.st, 2);
         return true;
     }
 
     return false;
 }
 
-bool TryReadTemplateBySeedProbeSpec(sqlite3* db, std::int64_t seed_probe_spec_id, AuthoringPayloadRecord* out) {
+bool TryReadSeedProbeSpecPayload(sqlite3* db, std::int64_t seed_probe_spec_id, AuthoringPayloadRecord* out) {
     if (db == nullptr || out == nullptr || seed_probe_spec_id <= 0) {
         return false;
-    }
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT template_id, COALESCE(seed_probe_spec_id, 0), COALESCE(tas_spec_id, 0), "
-        "COALESCE(battle_run_spec_id, 0), COALESCE(explorer_settings_id, 0) "
-        "FROM au_template "
-        "WHERE seed_probe_spec_id=?1 "
-        "ORDER BY template_id DESC "
-        "LIMIT 1;";
-    if (sqlite3_prepare_v2(db, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return false;
-    }
-
-    sqlite3_bind_int64(st.st, 1, seed_probe_spec_id);
-
-    if (sqlite3_step(st.st) == SQLITE_ROW) {
-        out->template_id = sqlite3_column_int64(st.st, 0);
-        out->seed_probe_spec_id = sqlite3_column_int64(st.st, 1);
-        out->tas_spec_id = sqlite3_column_int64(st.st, 2);
-        out->battle_run_spec_id = sqlite3_column_int64(st.st, 3);
-        out->explorer_settings_id = sqlite3_column_int64(st.st, 4);
-        return true;
     }
 
     Statement exists_st;
@@ -279,43 +275,16 @@ bool TryReadTemplateBySeedProbeSpec(sqlite3* db, std::int64_t seed_probe_spec_id
 
     sqlite3_bind_int64(exists_st.st, 1, seed_probe_spec_id);
     if (sqlite3_step(exists_st.st) == SQLITE_ROW) {
-        out->template_id = 0;
         out->seed_probe_spec_id = seed_probe_spec_id;
-        out->tas_spec_id = 0;
-        out->battle_run_spec_id = 0;
-        out->explorer_settings_id = 0;
         return true;
     }
 
     return false;
 }
 
-bool TryReadTemplateByBattleRunSpec(sqlite3* db, std::int64_t battle_run_spec_id, AuthoringPayloadRecord* out) {
+bool TryReadBattleRunSpecPayload(sqlite3* db, std::int64_t battle_run_spec_id, AuthoringPayloadRecord* out) {
     if (db == nullptr || out == nullptr || battle_run_spec_id <= 0) {
         return false;
-    }
-
-    Statement st;
-    constexpr const char* kSql =
-        "SELECT template_id, COALESCE(seed_probe_spec_id, 0), COALESCE(tas_spec_id, 0), "
-        "COALESCE(battle_run_spec_id, 0), COALESCE(explorer_settings_id, 0) "
-        "FROM au_template "
-        "WHERE battle_run_spec_id=?1 "
-        "ORDER BY template_id DESC "
-        "LIMIT 1;";
-    if (sqlite3_prepare_v2(db, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
-        return false;
-    }
-
-    sqlite3_bind_int64(st.st, 1, battle_run_spec_id);
-
-    if (sqlite3_step(st.st) == SQLITE_ROW) {
-        out->template_id = sqlite3_column_int64(st.st, 0);
-        out->seed_probe_spec_id = sqlite3_column_int64(st.st, 1);
-        out->tas_spec_id = sqlite3_column_int64(st.st, 2);
-        out->battle_run_spec_id = sqlite3_column_int64(st.st, 3);
-        out->explorer_settings_id = sqlite3_column_int64(st.st, 4);
-        return true;
     }
 
     Statement exists_st;
@@ -329,11 +298,7 @@ bool TryReadTemplateByBattleRunSpec(sqlite3* db, std::int64_t battle_run_spec_id
 
     sqlite3_bind_int64(exists_st.st, 1, battle_run_spec_id);
     if (sqlite3_step(exists_st.st) == SQLITE_ROW) {
-        out->template_id = 0;
-        out->seed_probe_spec_id = 0;
-        out->tas_spec_id = 0;
         out->battle_run_spec_id = battle_run_spec_id;
-        out->explorer_settings_id = 0;
         return true;
     }
 
@@ -2266,9 +2231,9 @@ std::vector<ExplorerSettingsSnapshot> SqliteAuthoringDb::ListExplorerSettings(
     return out;
 }
 
-bool SqliteAuthoringDb::SaveTemplate(
-    const SaveTemplateCommand& command,
-    std::int64_t* template_id_out,
+bool SqliteAuthoringDb::SaveBattleChainSpec(
+    const SaveBattleChainSpecCommand& command,
+    std::int64_t* battle_chain_spec_id_out,
     std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
@@ -2286,14 +2251,14 @@ bool SqliteAuthoringDb::SaveTemplate(
         return false;
     }
 
-    Statement insert_template;
+    Statement insert_battle_chain_spec;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_template("
-            "name,description,seed_probe_spec_id,tas_spec_id,battle_run_spec_id,explorer_settings_id,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
+            "INSERT INTO au_battle_chain_spec("
+            "name,description,battle_run_spec_id,explorer_settings_id,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5);",
             -1,
-            &insert_template.st,
+            &insert_battle_chain_spec.st,
             nullptr)
         != SQLITE_OK) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -2301,20 +2266,14 @@ bool SqliteAuthoringDb::SaveTemplate(
         return false;
     }
 
-    sqlite3_bind_text(insert_template.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    if (command.description.empty()) sqlite3_bind_null(insert_template.st, 2);
-    else sqlite3_bind_text(insert_template.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
-    if (command.seed_probe_spec_id.has_value()) sqlite3_bind_int64(insert_template.st, 3, command.seed_probe_spec_id.value());
-    else sqlite3_bind_null(insert_template.st, 3);
-    if (command.tas_spec_id.has_value()) sqlite3_bind_int64(insert_template.st, 4, command.tas_spec_id.value());
-    else sqlite3_bind_null(insert_template.st, 4);
-    if (command.battle_run_spec_id.has_value()) sqlite3_bind_int64(insert_template.st, 5, command.battle_run_spec_id.value());
-    else sqlite3_bind_null(insert_template.st, 5);
-    if (command.explorer_settings_id.has_value()) sqlite3_bind_int64(insert_template.st, 6, command.explorer_settings_id.value());
-    else sqlite3_bind_null(insert_template.st, 6);
-    sqlite3_bind_int64(insert_template.st, 7, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_text(insert_battle_chain_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+    if (command.description.empty()) sqlite3_bind_null(insert_battle_chain_spec.st, 2);
+    else sqlite3_bind_text(insert_battle_chain_spec.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_battle_chain_spec.st, 3, command.battle_run_spec_id);
+    sqlite3_bind_int64(insert_battle_chain_spec.st, 4, command.explorer_settings_id);
+    sqlite3_bind_int64(insert_battle_chain_spec.st, 5, ToEpochMillis(command.created_at_utc));
 
-    if (sqlite3_step(insert_template.st) != SQLITE_DONE) {
+    if (sqlite3_step(insert_battle_chain_spec.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
         }
@@ -2322,16 +2281,16 @@ bool SqliteAuthoringDb::SaveTemplate(
         return false;
     }
 
-    const auto template_id = sqlite3_last_insert_rowid(db_);
+    const auto battle_chain_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
             command.event_id,
-            "Authoring.TemplateSaved.v1",
-            std::to_string(template_id),
+            "Authoring.BattleChainSpecSaved.v1",
+            std::to_string(battle_chain_spec_id),
             command.correlation_id,
             command.causation_id,
             ToEpochMillis(command.created_at_utc),
-            template_id,
+            battle_chain_spec_id,
             error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
@@ -2345,47 +2304,45 @@ bool SqliteAuthoringDb::SaveTemplate(
         return false;
     }
 
-    if (template_id_out) {
-        *template_id_out = template_id;
+    if (battle_chain_spec_id_out) {
+        *battle_chain_spec_id_out = battle_chain_spec_id;
     }
 
     return true;
 }
 
-std::optional<TemplateSnapshot> SqliteAuthoringDb::GetTemplate(
-    std::int64_t template_id) const {
-    if (db_ == nullptr || template_id <= 0) {
+std::optional<BattleChainSpecSnapshot> SqliteAuthoringDb::GetBattleChainSpec(
+    std::int64_t battle_chain_spec_id) const {
+    if (db_ == nullptr || battle_chain_spec_id <= 0) {
         return std::nullopt;
     }
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT template_id, name, description, seed_probe_spec_id, tas_spec_id, battle_run_spec_id, explorer_settings_id "
-        "FROM au_template "
-        "WHERE template_id=?1;";
+        "SELECT battle_chain_spec_id, name, description, battle_run_spec_id, explorer_settings_id "
+        "FROM au_battle_chain_spec "
+        "WHERE battle_chain_spec_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
     }
-    sqlite3_bind_int64(st.st, 1, template_id);
+    sqlite3_bind_int64(st.st, 1, battle_chain_spec_id);
 
     if (sqlite3_step(st.st) != SQLITE_ROW) {
         return std::nullopt;
     }
 
-    TemplateSnapshot snapshot{};
-    snapshot.template_id = sqlite3_column_int64(st.st, 0);
+    BattleChainSpecSnapshot snapshot{};
+    snapshot.battle_chain_spec_id = sqlite3_column_int64(st.st, 0);
     snapshot.name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 1));
     snapshot.description = ColumnTextOptional(st.st, 2).value_or("");
-    snapshot.seed_probe_spec_id = ColumnInt64Optional(st.st, 3);
-    snapshot.tas_spec_id = ColumnInt64Optional(st.st, 4);
-    snapshot.battle_run_spec_id = ColumnInt64Optional(st.st, 5);
-    snapshot.explorer_settings_id = ColumnInt64Optional(st.st, 6);
+    snapshot.battle_run_spec_id = sqlite3_column_int64(st.st, 3);
+    snapshot.explorer_settings_id = sqlite3_column_int64(st.st, 4);
     return snapshot;
 }
 
-std::vector<TemplateSnapshot> SqliteAuthoringDb::ListTemplates(
+std::vector<BattleChainSpecSnapshot> SqliteAuthoringDb::ListBattleChainSpecs(
     int max_count) const {
-    std::vector<TemplateSnapshot> out;
+    std::vector<BattleChainSpecSnapshot> out;
     if (db_ == nullptr) {
         return out;
     }
@@ -2393,7 +2350,7 @@ std::vector<TemplateSnapshot> SqliteAuthoringDb::ListTemplates(
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT template_id FROM au_template ORDER BY template_id DESC LIMIT ?1;",
+            "SELECT battle_chain_spec_id FROM au_battle_chain_spec ORDER BY battle_chain_spec_id DESC LIMIT ?1;",
             -1,
             &st.st,
             nullptr)
@@ -2402,7 +2359,7 @@ std::vector<TemplateSnapshot> SqliteAuthoringDb::ListTemplates(
     }
     sqlite3_bind_int(st.st, 1, std::max(1, max_count));
     while (sqlite3_step(st.st) == SQLITE_ROW) {
-        if (auto snapshot = GetTemplate(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
+        if (auto snapshot = GetBattleChainSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
             out.push_back(std::move(*snapshot));
         }
     }
@@ -3306,8 +3263,8 @@ std::optional<AuthoringPayloadRecord> SqliteAuthoringDb::ResolveAuthoringPayload
 
     std::string_view effective_ref_kind = payload_ref_kind;
     if (payload_ref_kind == "authoring_event") {
-        if (event_type == "Authoring.TemplateSaved.v1") {
-            effective_ref_kind = "template";
+        if (event_type == "Authoring.BattleChainSpecSaved.v1") {
+            effective_ref_kind = "battle_chain_spec";
         }
         else if (event_type == "Authoring.SeedProbeSpecSaved.v1") {
             effective_ref_kind = "seed_probe_spec";
@@ -3323,27 +3280,27 @@ std::optional<AuthoringPayloadRecord> SqliteAuthoringDb::ResolveAuthoringPayload
             effective_ref_kind = "battle_plan_action_preset";
         }
         else {
-            effective_ref_kind = "template";
+            effective_ref_kind = "battle_chain_spec";
         }
     }
 
     AuthoringPayloadRecord payload{};
-    if (effective_ref_kind == "template") {
-        if (!TryReadTemplatePayload(db_, payload_ref_id, &payload)) {
+    if (effective_ref_kind == "battle_chain_spec") {
+        if (!TryReadBattleChainSpecPayload(db_, payload_ref_id, &payload)) {
             return std::nullopt;
         }
         return payload;
     }
 
     if (effective_ref_kind == "seed_probe_spec") {
-        if (!TryReadTemplateBySeedProbeSpec(db_, payload_ref_id, &payload)) {
+        if (!TryReadSeedProbeSpecPayload(db_, payload_ref_id, &payload)) {
             return std::nullopt;
         }
         return payload;
     }
 
     if (effective_ref_kind == "battle_run_spec") {
-        if (!TryReadTemplateByBattleRunSpec(db_, payload_ref_id, &payload)) {
+        if (!TryReadBattleRunSpecPayload(db_, payload_ref_id, &payload)) {
             return std::nullopt;
         }
         return payload;

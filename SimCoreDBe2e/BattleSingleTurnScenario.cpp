@@ -380,6 +380,39 @@ bool SeedBattleAuthoringRows(
         return false;
     }
 
+    std::int64_t attack_any_enemy_preset_id = 0;
+    if (!authoring_db->SaveBattlePlanActionPreset(
+            {
+                .name = "SimCoreDBe2e attack any enemy",
+                .macro = soa::battle::actions::BattleAction::Attack,
+                .target_kind = simcore::db::BattlePlanTargetKind::AnyEnemy,
+                .created_at_utc = now,
+                .event_id = "simcoredbe2e.battle.authoring.action_preset.attack_any_enemy",
+                .correlation_id = "simcoredbe2e.battle",
+                .causation_id = "plan-" + std::to_string(plan_id),
+            },
+            &attack_any_enemy_preset_id,
+            error_out)) {
+        return false;
+    }
+
+    std::int64_t attack_same_target_preset_id = 0;
+    if (!authoring_db->SaveBattlePlanActionPreset(
+            {
+                .name = "SimCoreDBe2e attack same target as PC0",
+                .macro = soa::battle::actions::BattleAction::Attack,
+                .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
+                .target_same_as_actor_slot = 0,
+                .created_at_utc = now,
+                .event_id = "simcoredbe2e.battle.authoring.action_preset.attack_same_target",
+                .correlation_id = "simcoredbe2e.battle",
+                .causation_id = "plan-" + std::to_string(plan_id),
+            },
+            &attack_same_target_preset_id,
+            error_out)) {
+        return false;
+    }
+
     std::int64_t turn_id = 0;
     if (!authoring_db->SaveBattlePlanTurn(
             {
@@ -388,15 +421,12 @@ bool SeedBattleAuthoringRows(
                 .actions = {
                     {
                         .actor_slot = 0,
-                        .macro = soa::battle::actions::BattleAction::Attack,
-                        .target_kind = simcore::db::BattlePlanTargetKind::AnyEnemy,
+                        .action_preset_id = attack_any_enemy_preset_id,
                         .ordinal = 0,
                     },
                     {
                         .actor_slot = 1,
-                        .macro = soa::battle::actions::BattleAction::Attack,
-                        .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
-                        .target_same_as_actor_slot = 0,
+                        .action_preset_id = attack_same_target_preset_id,
                         .ordinal = 1,
                     }
                 },
@@ -417,15 +447,12 @@ bool SeedBattleAuthoringRows(
                 .actions = {
                     {
                         .actor_slot = 0,
-                        .macro = soa::battle::actions::BattleAction::Attack,
-                        .target_kind = simcore::db::BattlePlanTargetKind::AnyEnemy,
+                        .action_preset_id = attack_any_enemy_preset_id,
                         .ordinal = 0,
                     },
                     {
                         .actor_slot = 1,
-                        .macro = soa::battle::actions::BattleAction::Attack,
-                        .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
-                        .target_same_as_actor_slot = 0,
+                        .action_preset_id = attack_same_target_preset_id,
                         .ordinal = 1,
                     },
                 },
@@ -462,9 +489,7 @@ bool SeedBattleAuthoringRows(
                 {
                     .name = "SimCoreDBe2e one electribox per turn",
                     .breakpoint_id = bp::battle::EndTurn,
-                    .lhs_kind = simcore::db::PredicateOperandKind::Absolute,
                     .lhs_value = 0,
-                    .rhs_kind = simcore::db::PredicateOperandKind::Memory,
                     .rhs_value = static_cast<std::int64_t>(addr::battle::CurrentTurn),
                     .cmp_op = simcore::db::PredicateComparisonOp::EQ,
                     .width = 1,
@@ -491,9 +516,7 @@ bool SeedBattleAuthoringRows(
         {
             .name = "SimCoreDBe2e players before enemies",
             .breakpoint_id = bp::battle::TurnIsReady,
-            .lhs_kind = simcore::db::PredicateOperandKind::Memory,
             .lhs_value = static_cast<std::int64_t>(addr::derived::battle::TurnOrderPcMax),
-            .rhs_kind = simcore::db::PredicateOperandKind::Memory,
             .rhs_value = static_cast<std::int64_t>(addr::derived::battle::TurnOrderEcMin),
             .cmp_op = simcore::db::PredicateComparisonOp::LT,
             .width = 1,
@@ -637,15 +660,15 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
-    std::int64_t battle_template_id,
+    std::int64_t battle_chain_spec_id,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
         if (error_out) *error_out = "authoring/execution db unavailable";
         return false;
     }
-    if (dtm_artifact_id <= 0 || seed_probe_spec_id <= 0 || battle_template_id <= 0) {
-        if (error_out) *error_out = "dtm artifact, seed probe spec, and battle template ids must be > 0";
+    if (dtm_artifact_id <= 0 || seed_probe_spec_id <= 0 || battle_chain_spec_id <= 0) {
+        if (error_out) *error_out = "dtm artifact, seed probe spec, and battle chain spec ids must be > 0";
         return false;
     }
 
@@ -685,8 +708,8 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                         .node_key = "battle_1",
                         .unit_kind = "battle_chain",
                         .display_name = "Battle Chain",
-                        .authored_ref_kind = std::string("authoring.template"),
-                        .authored_ref_id = battle_template_id,
+                        .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                        .authored_ref_id = battle_chain_spec_id,
                         .inputs = {
                             { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
                             { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
@@ -1123,22 +1146,21 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
 
-    std::int64_t battle_template_id = 0;
-    if (!db_service->AuthoringDb()->SaveTemplate(
+    std::int64_t battle_chain_spec_id = 0;
+    if (!db_service->AuthoringDb()->SaveBattleChainSpec(
             {
-                .name = "SimCoreDBe2e TAS SeedProbe Battle template",
-                .description = "First battle graph-style template",
-                .seed_probe_spec_id = seed_probe_spec_id,
+                .name = "SimCoreDBe2e TAS SeedProbe Battle chain spec",
+                .description = "First battle graph-style chain spec",
                 .battle_run_spec_id = battle_run_spec_id,
                 .explorer_settings_id = explorer_settings_id,
                 .created_at_utc = simcore::db::types::UtcNow(),
-                .event_id = "simcoredbe2e.authoring.template.tasmovie_seedprobe_battle",
+                .event_id = "simcoredbe2e.authoring.battle_chain_spec.tasmovie_seedprobe_battle",
                 .correlation_id = "simcoredbe2e.workflow_graph.tasmovie_seedprobe_battle",
                 .causation_id = "simcoredbe2e.seed",
             },
-            &battle_template_id,
+            &battle_chain_spec_id,
             &err)) {
-        if (error_out) *error_out = "failed seeding battle template: " + err;
+        if (error_out) *error_out = "failed seeding battle chain spec: " + err;
         return false;
     }
 
@@ -1148,7 +1170,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             db_service->ExecutionDb(),
             dtm_artifact_id,
             seed_probe_spec_id,
-            battle_template_id,
+            battle_chain_spec_id,
             &workflow_instance_id,
             &err)) {
         if (error_out) *error_out = "failed seeding graph workflow execution rows: " + err;
@@ -1226,7 +1248,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
               << " seed_probe_spec_id=" << seed_probe_spec_id
               << " battle_run_spec_id=" << battle_run_spec_id
               << " explorer_settings_id=" << explorer_settings_id
-              << " battle_template_id=" << battle_template_id
+              << " battle_chain_spec_id=" << battle_chain_spec_id
               << " workflow_instance_id=" << workflow_instance_id
               << " rtc=4"
               << " fake_attacks=22..25\n";

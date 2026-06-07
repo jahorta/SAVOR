@@ -456,6 +456,9 @@
     <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
+    <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
       <Filter>Migrations\Execution</Filter>
     </None>

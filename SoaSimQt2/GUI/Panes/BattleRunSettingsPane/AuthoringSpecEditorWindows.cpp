@@ -740,28 +740,28 @@ void ExplorerSettingsEditorWindow::postStatusMessage(const QString& text, Status
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-TemplateEditorWindow::TemplateEditorWindow(QWidget* parent)
+BattleChainSpecEditorWindow::BattleChainSpecEditorWindow(QWidget* parent)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlag(Qt::Window, true);
-    setWindowTitle(QStringLiteral("Template Editor"));
+    setWindowTitle(QStringLiteral("Battle Chain Spec Editor"));
     resize(660, 460);
     createWidgets();
     refreshChoices();
 }
 
-void TemplateEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
+void BattleChainSpecEditorWindow::setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback)
 {
     statusCallback_ = std::move(callback);
 }
 
-void TemplateEditorWindow::setSavedCallback(std::function<void()> callback)
+void BattleChainSpecEditorWindow::setSavedCallback(std::function<void()> callback)
 {
     savedCallback_ = std::move(callback);
 }
 
-void TemplateEditorWindow::createWidgets()
+void BattleChainSpecEditorWindow::createWidgets()
 {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
@@ -771,48 +771,30 @@ void TemplateEditorWindow::createWidgets()
     nameEdit_ = new QLineEdit(panel);
     descriptionEdit_ = new QPlainTextEdit(panel);
     descriptionEdit_->setMaximumHeight(80);
-    seedProbeCombo_ = new QComboBox(panel);
-    tasCombo_ = new QComboBox(panel);
     battleRunCombo_ = new QComboBox(panel);
     explorerSettingsCombo_ = new QComboBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Description"), descriptionEdit_);
-    form->addRow(QStringLiteral("Seed probe spec"), seedProbeCombo_);
-    form->addRow(QStringLiteral("TAS spec"), tasCombo_);
     form->addRow(QStringLiteral("Battle run spec"), battleRunCombo_);
     form->addRow(QStringLiteral("Battle explorer settings"), explorerSettingsCombo_);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);
     refreshButton_->setObjectName("jobsSecondaryButton");
-    saveButton_ = new QPushButton(QStringLiteral("Save Template"), this);
+    saveButton_ = new QPushButton(QStringLiteral("Save Battle Chain Spec"), this);
     saveButton_->setObjectName("jobsPrimaryButton");
     buttons->addWidget(refreshButton_);
     buttons->addStretch();
     buttons->addWidget(saveButton_);
     root->addLayout(buttons);
-    connect(refreshButton_, &QPushButton::clicked, this, &TemplateEditorWindow::refreshChoices);
-    connect(saveButton_, &QPushButton::clicked, this, &TemplateEditorWindow::saveSpec);
+    connect(refreshButton_, &QPushButton::clicked, this, &BattleChainSpecEditorWindow::refreshChoices);
+    connect(saveButton_, &QPushButton::clicked, this, &BattleChainSpecEditorWindow::saveSpec);
 }
 
-void TemplateEditorWindow::refreshChoices()
+void BattleChainSpecEditorWindow::refreshChoices()
 {
-    addNoneOption(seedProbeCombo_);
-    addNoneOption(tasCombo_);
     addNoneOption(battleRunCombo_);
     addNoneOption(explorerSettingsCombo_);
-    const auto seedProbeSpecs = soasimqt2::db::SimCoreDbAuthoringService::ListSeedProbeSpecs();
-    if (seedProbeSpecs.ok) {
-        for (const auto& spec : seedProbeSpecs.value) {
-            seedProbeCombo_->addItem(seedProbeLabel(spec), static_cast<qint64>(spec.seed_probe_spec_id));
-        }
-    }
-    const auto tasSpecs = soasimqt2::db::SimCoreDbAuthoringService::ListTasSpecs();
-    if (tasSpecs.ok) {
-        for (const auto& spec : tasSpecs.value) {
-            tasCombo_->addItem(tasLabel(spec), static_cast<qint64>(spec.tas_spec_id));
-        }
-    }
     const auto battleRunSpecs = soasimqt2::db::SimCoreDbAuthoringService::ListBattleRunSpecs();
     if (battleRunSpecs.ok) {
         for (const auto& spec : battleRunSpecs.value) {
@@ -827,29 +809,33 @@ void TemplateEditorWindow::refreshChoices()
     }
 }
 
-void TemplateEditorWindow::saveSpec()
+void BattleChainSpecEditorWindow::saveSpec()
 {
     if (nameEdit_->text().trimmed().isEmpty()) {
-        postStatusMessage(QStringLiteral("Template name is required."), StatusToast::Severity::Warn);
+        postStatusMessage(QStringLiteral("Battle chain spec name is required."), StatusToast::Severity::Warn);
         return;
     }
-    soasimqt2::db::TemplateDraft draft{};
+    const auto battleRunSpecId = optionalComboId(battleRunCombo_);
+    const auto explorerSettingsId = optionalComboId(explorerSettingsCombo_);
+    if (!battleRunSpecId.has_value() || !explorerSettingsId.has_value()) {
+        postStatusMessage(QStringLiteral("Battle chain spec requires battle run spec and battle explorer settings."), StatusToast::Severity::Warn);
+        return;
+    }
+    soasimqt2::db::BattleChainSpecDraft draft{};
     draft.name = nameEdit_->text().trimmed().toStdString();
     draft.description = descriptionEdit_->toPlainText().trimmed().toStdString();
-    draft.seed_probe_spec_id = optionalComboId(seedProbeCombo_);
-    draft.tas_spec_id = optionalComboId(tasCombo_);
-    draft.battle_run_spec_id = optionalComboId(battleRunCombo_);
-    draft.explorer_settings_id = optionalComboId(explorerSettingsCombo_);
-    const auto result = soasimqt2::db::SimCoreDbAuthoringService::SaveTemplate(draft);
+    draft.battle_run_spec_id = *battleRunSpecId;
+    draft.explorer_settings_id = *explorerSettingsId;
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::SaveBattleChainSpec(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
         return;
     }
     notifySaved(savedCallback_);
-    postStatusMessage(QStringLiteral("Saved template %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
+    postStatusMessage(QStringLiteral("Saved battle chain spec %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
 }
 
-void TemplateEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
+void BattleChainSpecEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
 {
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }

@@ -74,7 +74,7 @@ inline PredicateComparisonOp ParsePredicateComparisonOp(std::string_view value) 
 }
 
 struct AuthoringPayloadRecord {
-    std::int64_t template_id = 0;
+    std::int64_t battle_chain_spec_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t tas_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
@@ -263,13 +263,11 @@ struct SavePredicateSetCommand {
     types::UtcTimePoint created_at_utc{};
 };
 
-struct SaveTemplateCommand {
+struct SaveBattleChainSpecCommand {
     std::string name;
     std::string description;
-    std::optional<std::int64_t> seed_probe_spec_id;
-    std::optional<std::int64_t> tas_spec_id;
-    std::optional<std::int64_t> battle_run_spec_id;
-    std::optional<std::int64_t> explorer_settings_id;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
     types::UtcTimePoint created_at_utc{};
     std::string event_id;
     std::string correlation_id;
@@ -284,14 +282,12 @@ struct DeletePredicateSpecCommand {
     std::string causation_id;
 };
 
-struct TemplateSnapshot {
-    std::int64_t template_id = 0;
+struct BattleChainSpecSnapshot {
+    std::int64_t battle_chain_spec_id = 0;
     std::string name;
     std::string description;
-    std::optional<std::int64_t> seed_probe_spec_id;
-    std::optional<std::int64_t> tas_spec_id;
-    std::optional<std::int64_t> battle_run_spec_id;
-    std::optional<std::int64_t> explorer_settings_id;
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
 };
 
 struct SaveWorkflowGraphNodeInputCommand {
@@ -617,15 +613,15 @@ struct IAuthoringDb {
     virtual std::vector<ExplorerSettingsSnapshot> ListExplorerSettings(
         int max_count) const = 0;
 
-    virtual bool SaveTemplate(
-        const SaveTemplateCommand& command,
-        std::int64_t* template_id_out = nullptr,
+    virtual bool SaveBattleChainSpec(
+        const SaveBattleChainSpecCommand& command,
+        std::int64_t* battle_chain_spec_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual std::optional<TemplateSnapshot> GetTemplate(
-        std::int64_t template_id) const = 0;
+    virtual std::optional<BattleChainSpecSnapshot> GetBattleChainSpec(
+        std::int64_t battle_chain_spec_id) const = 0;
 
-    virtual std::vector<TemplateSnapshot> ListTemplates(
+    virtual std::vector<BattleChainSpecSnapshot> ListBattleChainSpecs(
         int max_count) const = 0;
 
     virtual bool SaveWorkflowGraph(

@@ -266,7 +266,7 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
         { { "Authoring.PredicateSpecUpdated.v1", 1 }, no_op },
         { { "Authoring.PredicateSpecDeleted.v1", 1 }, no_op },
         { { "Authoring.SettingsSaved.v1", 1 }, no_op },
-        { { "Authoring.TemplateSaved.v1", 1 }, no_op },
+        { { "Authoring.BattleChainSpecSaved.v1", 1 }, no_op },
         { { "Authoring.WorkflowGraphSaved.v1", 1 }, no_op },
     };
 
@@ -278,7 +278,7 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
             .db = db_,
             .outbox_table = "au_outbox_message",
             .context_name = "Authoring",
-            .aggregate_kind = "template",
+            .aggregate_kind = "",
             .payload_ref_kind = "authoring_event",
             .max_attempts = max_attempts,
         },

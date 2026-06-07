@@ -964,7 +964,7 @@ TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) 
         "Authoring.PredicateSpecUpdated.v1",
         "Authoring.PredicateSpecDeleted.v1",
         "Authoring.SettingsSaved.v1",
-        "Authoring.TemplateSaved.v1",
+        "Authoring.BattleChainSpecSaved.v1",
         "Authoring.WorkflowGraphSaved.v1",
     } };
 

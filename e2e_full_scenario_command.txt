@@ -1,0 +1,1 @@
+bin\x64\Debug\SimCoreDBe2e.exe --scenario tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke --dtm-file "D:\SoATAS\beginning_in_first_battle.dtm" --iso "D:\SoATAS\SkiesofArcadiaLegends(USA).gcm" --dolphin-base-dir "D:\SoATAS\dolphin-2506a-x64" --workspace-root "C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDBe2e\.simcoredbe2e" --timeout-ms 600000

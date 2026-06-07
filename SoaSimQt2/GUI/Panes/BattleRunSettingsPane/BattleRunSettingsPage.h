@@ -18,7 +18,7 @@ class PredicateSetEditorWindow;
 class QPushButton;
 class SeedProbeSpecEditorWindow;
 class TasSpecEditorWindow;
-class TemplateEditorWindow;
+class BattleChainSpecEditorWindow;
 
 class BattleRunSettingsPage final : public QWidget
 {
@@ -39,7 +39,7 @@ private:
     void openBattleRunSpecEditor();
     void openPredicateSetEditor();
     void openExplorerSettingsEditor();
-    void openTemplateEditor();
+    void openBattleChainSpecEditor();
     void editSelectedPredicate();
     void duplicateSelectedPredicate();
     void deleteSelectedPredicate();
@@ -55,7 +55,7 @@ private:
     QPushButton* newBattleRunSpecButton_ = nullptr;
     QPushButton* newPredicateSetButton_ = nullptr;
     QPushButton* newExplorerSettingsButton_ = nullptr;
-    QPushButton* newTemplateButton_ = nullptr;
+    QPushButton* newBattleChainSpecButton_ = nullptr;
     QPushButton* editPredicateButton_ = nullptr;
     QPushButton* duplicatePredicateButton_ = nullptr;
     QPushButton* deletePredicateButton_ = nullptr;
@@ -74,6 +74,6 @@ private:
     QPointer<BattleRunSpecEditorWindow> battleRunSpecEditor_;
     QPointer<PredicateSetEditorWindow> predicateSetEditor_;
     QPointer<ExplorerSettingsEditorWindow> explorerSettingsEditor_;
-    QPointer<TemplateEditorWindow> templateEditor_;
+    QPointer<BattleChainSpecEditorWindow> battleChainSpecEditor_;
     QPointer<BattlePlanEditorWindow> battlePlanEditor_;
 };
