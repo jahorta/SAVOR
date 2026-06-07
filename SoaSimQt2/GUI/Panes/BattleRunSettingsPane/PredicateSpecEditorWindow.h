@@ -41,6 +41,7 @@ public:
         AddrKey = 1,
         AddrProgram = 2,
         Immediate = 3,
+        Baseline = 4,
     };
 
     enum class ProgramKind : int {
@@ -128,7 +129,6 @@ private:
     QComboBox* widthCombo_ = nullptr;
     QCheckBox* abortOnFailCheck_ = nullptr;
     QCheckBox* activeCheck_ = nullptr;
-    QCheckBox* rhsDeltaCheck_ = nullptr;
     QCheckBox* lhsNegateCheck_ = nullptr;
     QCheckBox* rhsNegateCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
