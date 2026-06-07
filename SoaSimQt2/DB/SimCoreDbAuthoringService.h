@@ -67,6 +67,7 @@ struct PredicateSpecDraft {
 
 struct BattlePlanActionDraft {
     int actor_slot = 0;
+    std::optional<std::int64_t> action_preset_id;
     simcore::db::BattlePlanActionMacro macro = simcore::db::BattlePlanActionMacro::Attack;
     simcore::db::BattlePlanTargetKind target_kind = simcore::db::BattlePlanTargetKind::SingleEnemy;
     std::optional<int> target_slot;
@@ -468,31 +469,40 @@ public:
             turn_command.event_id = NextEventId("Authoring.BattlePlanTurnSaved");
             turn_command.correlation_id = plan.event_id;
             for (const auto& action : turn.actions) {
-                simcore::db::SaveBattlePlanActionPresetCommand preset_command{};
-                preset_command.name = BuildGeneratedActionPresetName(draft.name, turn.turn_index, action.ordinal);
-                preset_command.macro = action.macro;
-                preset_command.target_kind = action.target_kind;
-                preset_command.target_mask_bits = action.target_mask_bits;
-                preset_command.target_single_slot = action.target_single_slot.has_value()
-                    ? action.target_single_slot
-                    : action.target_slot;
-                preset_command.target_same_as_actor_slot = action.target_same_as_actor_slot;
-                preset_command.target_expr_ini = action.target_expr_ini;
-                preset_command.item_id = action.item_id;
-                preset_command.created_at_utc = now;
-                preset_command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
-                preset_command.correlation_id = plan.event_id;
+                if (action.action_preset_id.has_value() && action.action_preset_id.value() > 0) {
+                    turn_command.actions.push_back(simcore::db::SaveBattlePlanActionCommand{
+                        .actor_slot = action.actor_slot,
+                        .action_preset_id = action.action_preset_id.value(),
+                        .ordinal = action.ordinal,
+                    });
+                } else {
+                    simcore::db::SaveBattlePlanActionPresetCommand preset_command{};
+                    preset_command.name = BuildGeneratedActionPresetName(draft.name, turn.turn_index, action.ordinal);
+                    preset_command.macro = action.macro;
+                    preset_command.target_kind = action.target_kind;
+                    preset_command.target_mask_bits = action.target_mask_bits;
+                    preset_command.target_single_slot = action.target_single_slot.has_value()
+                        ? action.target_single_slot
+                        : action.target_slot;
+                    preset_command.target_same_as_actor_slot = action.target_same_as_actor_slot;
+                    preset_command.target_expr_ini = action.target_expr_ini;
+                    preset_command.item_id = action.item_id;
+                    preset_command.created_at_utc = now;
+                    preset_command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
+                    preset_command.correlation_id = plan.event_id;
 
-                std::int64_t action_preset_id = 0;
-                if (!db->SaveBattlePlanActionPreset(preset_command, &action_preset_id, &error)) {
-                    return Failed<std::int64_t>(error);
+                    std::int64_t action_preset_id = 0;
+                    if (!db->SaveBattlePlanActionPreset(preset_command, &action_preset_id, &error)) {
+                        return Failed<std::int64_t>(error);
+                    }
+
+                    turn_command.actions.push_back(simcore::db::SaveBattlePlanActionCommand{
+                        .actor_slot = action.actor_slot,
+                        .action_preset_id = action_preset_id,
+                        .ordinal = action.ordinal,
+                    });
                 }
 
-                turn_command.actions.push_back(simcore::db::SaveBattlePlanActionCommand{
-                    .actor_slot = action.actor_slot,
-                    .action_preset_id = action_preset_id,
-                    .ordinal = action.ordinal,
-                });
             }
 
             std::int64_t turn_id = 0;

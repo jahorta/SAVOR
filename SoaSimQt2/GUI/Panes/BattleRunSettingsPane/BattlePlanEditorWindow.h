@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -29,15 +30,8 @@ public:
     void loadSnapshot(const simcore::db::BattlePlanSnapshot& snapshot, bool duplicate);
 
     struct ActionDraft {
+        std::int64_t action_preset_id = 0;
         int actor_slot = 0;
-        simcore::db::BattlePlanActionMacro macro = simcore::db::BattlePlanActionMacro::Attack;
-        simcore::db::BattlePlanTargetKind target_kind = simcore::db::BattlePlanTargetKind::SingleEnemy;
-        int target_slot = 0;
-        int target_mask_bits = 0;
-        int target_single_slot = 0;
-        int target_same_as_actor_slot = 0;
-        int item_id = 0;
-        bool has_item_id = false;
     };
 
     struct TurnDraft {
@@ -54,7 +48,7 @@ private:
     void refreshSelectionPanel();
     void syncSelectionPanelToAction();
     void addActionFromLibrarySelection();
-    void addActionToSelectedTurn(simcore::db::BattlePlanActionMacro macro);
+    void addActionToSelectedTurn(std::int64_t presetId);
     void duplicateSelectedAction();
     void removeSelectedNode();
     void moveSelectedAction(int delta);
@@ -67,6 +61,7 @@ private:
     ActionDraft* selectedAction();
     const TurnDraft* selectedTurn() const;
     const ActionDraft* selectedAction() const;
+    const simcore::db::BattlePlanActionPresetSnapshot* actionPresetById(std::int64_t presetId) const;
     QTreeWidgetItem* selectedTreeItem() const;
     int selectedTurnIndex() const;
     int selectedActionIndex() const;
@@ -98,5 +93,6 @@ private:
     QPushButton* moveUpButton_ = nullptr;
     QPushButton* moveDownButton_ = nullptr;
     QPushButton* saveButton_ = nullptr;
+    std::vector<simcore::db::BattlePlanActionPresetSnapshot> actionPresets_;
     std::vector<TurnDraft> turns_;
 };
