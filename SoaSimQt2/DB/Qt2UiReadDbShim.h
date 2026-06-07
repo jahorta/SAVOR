@@ -62,7 +62,6 @@ struct JobsListScope {
     std::optional<int> program_kind;
     std::optional<std::int64_t> job_set_id;
     std::optional<std::int64_t> since_queued_at;
-    std::optional<std::string> tag_key;
 };
 
 struct JobEventLite {
@@ -104,7 +103,6 @@ struct JobSetsListScope {
     std::optional<int> program_kind;
     std::optional<std::int64_t> min_job_set_id;
     std::optional<JobSetStateFilter> state_filter;
-    std::optional<std::string> tag_key;
 };
 
 namespace simcore::db {
@@ -606,33 +604,6 @@ struct JobSetsRepo {
         });
     }
     static DbResult<std::vector<JobSetLite>> ListFamiliesForSeeds(const std::vector<std::int64_t>&) { return DbResult<std::vector<JobSetLite>>::Ok({}); }
-};
-
-struct ObjectStore {
-    static bool Ready() { return qt2shim::UiRead() != nullptr; }
-    static std::future<DbResult<std::optional<ObjectRefRow>>> GetByShaAsync(const std::string&) { return qt2shim::ReadyFuture(DbResult<std::optional<ObjectRefRow>>::Ok(std::nullopt)); }
-    static DbResult<ObjectRefRow> FinalizeFromFile(const std::string&, Compression, const std::string&) { return DbResult<ObjectRefRow>::Err(qt2shim::NotMigrated("Import artifact")); }
-    static std::future<DbResult<ObjectRefRow>> FinalizeFromFileAsync(const std::string&, Compression, const std::string&) { return qt2shim::ReadyFuture(DbResult<ObjectRefRow>::Err(qt2shim::NotMigrated("Import artifact"))); }
-    static DbResult<std::string> GetText(std::int64_t) { return DbResult<std::string>::Err(qt2shim::NotMigrated("Read artifact text")); }
-    static std::future<DbResult<std::string>> GetTextAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<std::string>::Err(qt2shim::NotMigrated("Read artifact text"))); }
-    static std::future<DbResult<void>> MaterializeToPathAsync(std::int64_t, const std::string&) { return qt2shim::ReadyFuture(DbResult<void>::Err(qt2shim::NotMigrated("Export artifact"))); }
-};
-
-struct TagRecord {
-    std::int64_t tag_id{};
-    std::string tag_key;
-    std::string description;
-    std::string created_at;
-};
-
-struct TagRepo {
-    static DbResult<std::int64_t> EnsureTag(const std::string&, std::optional<std::string>) { return DbResult<std::int64_t>::Err(qt2shim::NotMigrated("Create tag")); }
-    static DbResult<std::vector<TagRecord>> ListTags(std::optional<std::string>) { return DbResult<std::vector<TagRecord>>::Ok({}); }
-    static DbResult<std::vector<TagRecord>> ListEntityTags(const std::string&, std::int64_t) { return DbResult<std::vector<TagRecord>>::Ok({}); }
-    static DbResult<void> AttachTagToEntity(const std::string&, std::int64_t, const std::string&, std::optional<std::string>) { return DbResult<void>::Err(qt2shim::NotMigrated("Attach tag")); }
-    static DbResult<void> DetachTagFromEntity(const std::string&, std::int64_t, const std::string&) { return DbResult<void>::Err(qt2shim::NotMigrated("Detach tag")); }
-    static DbResult<std::vector<std::int64_t>> FindEntityIdsByTag(const std::string&, const std::string&, bool) { return DbResult<std::vector<std::int64_t>>::Ok({}); }
-    static DbResult<std::vector<TagRecord>> ListTagsForEntityKind(const std::string&) { return DbResult<std::vector<TagRecord>>::Ok({}); }
 };
 
 struct DeltaSeedRepo { static auto ListUniqueForProbeAsync(std::int64_t) { return qt2shim::ReadyFuture(DbResult<std::vector<std::int64_t>>::Ok({})); } static DbResult<std::int64_t> Get(std::int64_t id) { return DbResult<std::int64_t>::Ok(id); } };

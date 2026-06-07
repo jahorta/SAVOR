@@ -176,9 +176,6 @@
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Widgets\EntityTagsDialog.cpp">
-      <Filter>GUI\Widgets</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\Widgets\LedgerPickerDialog.cpp">
       <Filter>GUI\Widgets</Filter>
     </ClCompile>
@@ -245,9 +242,6 @@
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Widgets\EntityTagsDialog.h">
-      <Filter>GUI\Widgets</Filter>
-    </QtMoc>
     <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
       <Filter>GUI\Widgets</Filter>
     </QtMoc>
@@ -309,12 +303,6 @@
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\TemplateSaveDialog.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateEditorDialog.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PresetEditorDialog.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">

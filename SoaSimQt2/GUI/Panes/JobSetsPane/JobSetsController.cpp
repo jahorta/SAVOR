@@ -14,7 +14,6 @@ namespace {
 constexpr auto kSettingsGroup = "JobSetsPane";
 constexpr auto kProgramKindKey = "program_kind";
 constexpr auto kStateFilterKey = "state_filter";
-constexpr auto kTagKey = "tag_key";
 constexpr auto kPageLimitKey = "page_limit";
 constexpr auto kAutoRefreshKey = "auto_refresh";
 constexpr auto kRefreshSecondsKey = "refresh_seconds";
@@ -148,14 +147,11 @@ void JobSetsController::setPageActive(bool active)
     loadInitial();
 }
 
-void JobSetsController::applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, const std::optional<QString>& tagKey, int pageLimit)
+void JobSetsController::applyFilters(const std::optional<int>& programKind, const std::optional<JobSetStateFilter>& stateFilter, int pageLimit)
 {
     state_.scope = {};
     state_.scope.program_kind = programKind;
     state_.scope.state_filter = stateFilter;
-    if (tagKey.has_value() && !tagKey->trimmed().isEmpty()) {
-        state_.scope.tag_key = tagKey->trimmed().toStdString();
-    }
     state_.pageLimit = pageLimit;
     before_.reset();
     after_.reset();
@@ -303,10 +299,6 @@ void JobSetsController::loadSettings()
     state_.scope.state_filter = stateFilter.isValid()
         ? std::optional<JobSetStateFilter>(static_cast<JobSetStateFilter>(stateFilter.toInt()))
         : std::nullopt;
-    const QString tagKey = settings.value(kTagKey).toString().trimmed();
-    if (!tagKey.isEmpty()) {
-        state_.scope.tag_key = tagKey.toStdString();
-    }
 
     state_.pageLimit = (std::max)(1, settings.value(kPageLimitKey, state_.pageLimit).toInt());
     state_.autoRefresh = settings.value(kAutoRefreshKey, state_.autoRefresh).toBool();
@@ -331,12 +323,6 @@ void JobSetsController::persistSettings() const
     } else {
         settings.remove(kStateFilterKey);
     }
-    if (state_.scope.tag_key.has_value() && !state_.scope.tag_key->empty()) {
-        settings.setValue(kTagKey, QString::fromStdString(*state_.scope.tag_key));
-    } else {
-        settings.remove(kTagKey);
-    }
-
     settings.setValue(kPageLimitKey, state_.pageLimit);
     settings.setValue(kAutoRefreshKey, state_.autoRefresh);
     settings.setValue(kRefreshSecondsKey, state_.refreshSeconds);

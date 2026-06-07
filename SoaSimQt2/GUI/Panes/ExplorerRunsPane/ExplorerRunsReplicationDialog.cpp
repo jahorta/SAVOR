@@ -2,7 +2,6 @@
 
 #include "Core/Input/AppliedTurnTapeBlob.h"
 #include "Core/Input/InputPlanFmt.h"
-#include "DB/DBCore/ObjectStore.h"
 #include "DB/DeltaSeedRepo.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/SavestateRepo.h"
@@ -10,6 +9,7 @@
 #include "DB/Scheduling/JobsRepo.h"
 #include "DB/Scheduling/JobSetsRepo.h"
 #include "DB/SeedProbeRepo.h"
+#include "DB/SimCoreDbArtifactService.h"
 #include "DB/TasMovieRepo.h"
 #include "Utils/IniDoc.h"
 
@@ -26,6 +26,7 @@
 
 using namespace simcore::db;
 using namespace simcore::db::codec::battle::singleturn;
+using soasimqt2::db::SimCoreDbArtifactService;
 
 namespace {
 
@@ -74,7 +75,7 @@ std::optional<simcore::inputtape::TurnChunk> readTurnChunkForJob(qint64 jobId, q
         return std::nullopt;
     }
 
-    auto tapeText = ObjectStore::GetText(results->applied_input_artifact_id);
+    auto tapeText = SimCoreDbArtifactService::ReadArtifactText(results->applied_input_artifact_id);
     if (!tapeText.ok) {
         return std::nullopt;
     }
@@ -241,7 +242,7 @@ void ExplorerRunsReplicationDialog::materializeObjectToPath(qint64 objectRefId, 
         return;
     }
 
-    auto materialize = ObjectStore::MaterializeToPathAsync(objectRefId, outPath.toStdString()).get();
+    auto materialize = SimCoreDbArtifactService::MaterializeArtifactToPath(objectRefId, outPath.toStdString());
     if (materialize.ok) {
         setStatusMessage(QStringLiteral("Materialized object %1 to %2.").arg(objectRefId).arg(outPath));
     } else {

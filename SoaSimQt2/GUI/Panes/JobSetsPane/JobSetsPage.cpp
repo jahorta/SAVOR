@@ -5,7 +5,6 @@
 #include "JobSetsTreeModel.h"
 #include "JobSetsTreeView.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
-#include "DB/TagRepo.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
@@ -58,8 +57,6 @@ void JobSetsPage::createWidgets()
     kindFilter_->setObjectName("jobSetsFilterCombo");
     stateFilter_ = new QComboBox(toolbarPanel);
     stateFilter_->setObjectName("jobSetsFilterCombo");
-    tagFilter_ = new QComboBox(toolbarPanel);
-    tagFilter_->setObjectName("jobSetsFilterCombo");
     pageSizeSpin_ = new QSpinBox(toolbarPanel);
     pageSizeSpin_->setObjectName("jobSetsSpin");
     pageSizeSpin_->setRange(10, 500);
@@ -80,21 +77,18 @@ void JobSetsPage::createWidgets()
     stateFilter_->addItem(QStringLiteral("Completed"), static_cast<int>(JobSetStateFilter::Completed));
     stateFilter_->addItem(QStringLiteral("Incomplete"), static_cast<int>(JobSetStateFilter::Incomplete));
     stateFilter_->addItem(QStringLiteral("Has failures"), static_cast<int>(JobSetStateFilter::HasFailures));
-    tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
 
     toolbarLayout->addWidget(new QLabel(QStringLiteral("Kind"), toolbarPanel), 0, 0);
     toolbarLayout->addWidget(kindFilter_, 1, 0);
     toolbarLayout->addWidget(new QLabel(QStringLiteral("State"), toolbarPanel), 0, 1);
     toolbarLayout->addWidget(stateFilter_, 1, 1);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("Tag"), toolbarPanel), 0, 2);
-    toolbarLayout->addWidget(tagFilter_, 1, 2);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("Page size"), toolbarPanel), 0, 3);
-    toolbarLayout->addWidget(pageSizeSpin_, 1, 3);
-    toolbarLayout->addWidget(applyButton_, 1, 4);
-    toolbarLayout->addWidget(resetButton_, 1, 5);
-    toolbarLayout->addWidget(autoRefreshCheck_, 0, 6, 1, 2, Qt::AlignBottom);
-    toolbarLayout->addWidget(refreshSecondsSpin_, 1, 6);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("Interval"), toolbarPanel), 1, 7);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("Page size"), toolbarPanel), 0, 2);
+    toolbarLayout->addWidget(pageSizeSpin_, 1, 2);
+    toolbarLayout->addWidget(applyButton_, 1, 3);
+    toolbarLayout->addWidget(resetButton_, 1, 4);
+    toolbarLayout->addWidget(autoRefreshCheck_, 0, 5, 1, 2, Qt::AlignBottom);
+    toolbarLayout->addWidget(refreshSecondsSpin_, 1, 5);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("Interval"), toolbarPanel), 1, 6);
     toolbarLayout->setColumnStretch(0, 1);
     toolbarLayout->setColumnStretch(1, 1);
 
@@ -161,7 +155,7 @@ void JobSetsPage::wireSignals()
     connect(controller_, &JobSetsController::rowsChanged, this, &JobSetsPage::refreshModel);
 
     connect(applyButton_, &QPushButton::clicked, this, [this]() {
-        controller_->applyFilters(selectedProgramKind(), selectedStateFilter(), selectedTagKey(), pageSizeSpin_->value());
+        controller_->applyFilters(selectedProgramKind(), selectedStateFilter(), pageSizeSpin_->value());
     });
     connect(resetButton_, &QPushButton::clicked, controller_, &JobSetsController::resetFilters);
     connect(refreshButton_, &QPushButton::clicked, controller_, &JobSetsController::requestRefresh);
@@ -201,22 +195,6 @@ void JobSetsPage::syncControlsFromController()
         pageSizeSpin_->setValue(state.pageLimit);
     }
     {
-        QSignalBlocker blocker(tagFilter_);
-        tagFilter_->clear();
-        tagFilter_->addItem(QStringLiteral("All tags"), QVariant());
-        const auto tagsResult = simcore::db::TagRepo::ListTagsForEntityKind("job_set");
-        if (tagsResult.ok) {
-            for (const auto& tag : tagsResult.value) {
-                const QString key = QString::fromStdString(tag.tag_key);
-                tagFilter_->addItem(key, key);
-            }
-        }
-        const QVariant target = state.scope.tag_key.has_value() ? QVariant(QString::fromStdString(*state.scope.tag_key)) : QVariant();
-        const int idx = target.isValid() ? tagFilter_->findData(target) : 0;
-        tagFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
-    }
-
-    {
         QSignalBlocker blocker(autoRefreshCheck_);
         autoRefreshCheck_->setChecked(state.autoRefresh);
     }
@@ -247,7 +225,6 @@ void JobSetsPage::syncControlsFromController()
     resetButton_->setEnabled(!state.actionsBusy);
     kindFilter_->setEnabled(!state.actionsBusy);
     stateFilter_->setEnabled(!state.actionsBusy);
-    tagFilter_->setEnabled(!state.actionsBusy);
     pageSizeSpin_->setEnabled(!state.actionsBusy);
     autoRefreshCheck_->setEnabled(!state.actionsBusy);
     refreshSecondsSpin_->setEnabled(!state.actionsBusy);
@@ -363,8 +340,3 @@ std::optional<JobSetStateFilter> JobSetsPage::selectedStateFilter() const
     return static_cast<JobSetStateFilter>(data.toInt());
 }
 
-std::optional<QString> JobSetsPage::selectedTagKey() const
-{
-    const QVariant data = tagFilter_->currentData();
-    return data.isValid() ? std::optional<QString>(data.toString()) : std::nullopt;
-}

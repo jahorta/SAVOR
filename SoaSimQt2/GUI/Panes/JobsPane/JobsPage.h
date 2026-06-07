@@ -47,7 +47,6 @@ private:
     std::optional<int> selectedProgramKind() const;
     std::optional<QString> selectedState() const;
     std::optional<qint64> selectedJobSetId() const;
-    std::optional<QString> selectedTagKey() const;
     void handleRestartRequested();
     void showJobsContextMenu(const QPoint& position);
 
@@ -59,7 +58,6 @@ private:
     QLabel* descriptionLabel_ = nullptr;
     QComboBox* kindFilter_ = nullptr;
     QComboBox* stateFilter_ = nullptr;
-    QComboBox* tagFilter_ = nullptr;
     QLineEdit* jobSetFilter_ = nullptr;
     QSpinBox* pageSizeSpin_ = nullptr;
     QPushButton* applyButton_ = nullptr;

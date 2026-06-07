@@ -5,7 +5,9 @@
 #include <cctype>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -129,6 +131,42 @@ public:
             return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
         }
         return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<std::string> ReadArtifactText(std::int64_t artifact_id) {
+        auto* db = StateDb();
+        if (db == nullptr) {
+            return Unavailable<std::string>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        if (artifact_id <= 0) {
+            return Invalid<std::string>("artifact_id is required");
+        }
+
+        const auto temp_path = std::filesystem::temp_directory_path()
+            / ("soasimqt2-artifact-" + NextEventId("read") + ".tmp");
+        std::string error;
+        const auto materialized = db->MaterializeArtifactToPath(artifact_id, temp_path.string(), &error);
+        if (!materialized.has_value()) {
+            return Failed<std::string>(std::move(error));
+        }
+
+        std::ifstream in(temp_path, std::ios::binary);
+        if (!in.is_open()) {
+            std::error_code ec;
+            std::filesystem::remove(temp_path, ec);
+            return Failed<std::string>("failed opening materialized artifact text");
+        }
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        if (!in.good() && !in.eof()) {
+            std::error_code ec;
+            std::filesystem::remove(temp_path, ec);
+            return Failed<std::string>("failed reading materialized artifact text");
+        }
+
+        std::error_code ec;
+        std::filesystem::remove(temp_path, ec);
+        return ServiceResult<std::string>::Ok(buffer.str());
     }
 
 private:

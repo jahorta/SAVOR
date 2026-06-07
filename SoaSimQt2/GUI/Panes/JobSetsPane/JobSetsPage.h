@@ -42,7 +42,6 @@ private:
     void updateLoadingIndicatorState();
     std::optional<int> selectedProgramKind() const;
     std::optional<JobSetStateFilter> selectedStateFilter() const;
-    std::optional<QString> selectedTagKey() const;
 
     JobSetsController* controller_ = nullptr;
     JobSetsTreeModel* treeModel_ = nullptr;
@@ -52,7 +51,6 @@ private:
     QLabel* descriptionLabel_ = nullptr;
     QComboBox* kindFilter_ = nullptr;
     QComboBox* stateFilter_ = nullptr;
-    QComboBox* tagFilter_ = nullptr;
     QSpinBox* pageSizeSpin_ = nullptr;
     QPushButton* applyButton_ = nullptr;
     QPushButton* resetButton_ = nullptr;

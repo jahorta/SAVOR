@@ -3,11 +3,11 @@
 #include "ExplorerRunsJobsTableModel.h"
 
 #include "Core/Input/AppliedTurnTapeBlob.h"
-#include "DB/DBCore/ObjectStore.h"
 #include "DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "DB/Scheduling/JobEventsRepo.h"
 #include "DB/Scheduling/JobsRepo.h"
 #include "DB/Scheduling/JobSetsRepo.h"
+#include "DB/SimCoreDbArtifactService.h"
 #include "Core/Input/InputPlanFmt.h"
 #include "Utils/IniDoc.h"
 
@@ -23,6 +23,7 @@
 
 using namespace simcore::db;
 using namespace simcore::db::codec::battle::singleturn;
+using soasimqt2::db::SimCoreDbArtifactService;
 
 namespace {
 
@@ -124,7 +125,7 @@ std::optional<TurnInputNode> buildTurnInputNode(qint64 jobId)
         return std::nullopt;
     }
 
-    auto artifactText = ObjectStore::GetText(resultsIni->applied_input_artifact_id);
+    auto artifactText = SimCoreDbArtifactService::ReadArtifactText(resultsIni->applied_input_artifact_id);
     if (!artifactText.ok) {
         return std::nullopt;
     }
