@@ -60,6 +60,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpLabel(LabelAdvanceToTurnInput));
         ps.ops.push_back(simcore::OpRunUntilBp());
         ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0, LabelRetDWErr));
+        ps.ops.push_back(simcore::OpCapturePredBaselines());
         ps.ops.push_back(simcore::OpEvalPredicatesAtHitBP());
 
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PRED_ABORT_RUN, simcore::PSCmp::EQ, 1u, LabelRetPredFail));
@@ -98,6 +99,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpLabel(LabelRunAppliedInputs));
         ps.ops.push_back(simcore::OpRunUntilBp());
         ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0u, LabelRetDWErr));
+        ps.ops.push_back(simcore::OpCapturePredBaselines());
         ps.ops.push_back(simcore::OpEvalPredicatesAtHitBP());
 
         ps.ops.push_back(simcore::OpGotoIf(simcore::keys::core::PRED_ABORT_RUN, simcore::PSCmp::EQ, 1u, LabelRetPredFail));

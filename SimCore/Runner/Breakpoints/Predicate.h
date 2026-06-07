@@ -10,7 +10,7 @@ namespace simcore::pred {
 
 #pragma pack(push,1)
     enum class PredFlag : uint32_t {
-        CaptureBaseline = 1 << 0,
+        RhsIsDelta = 1 << 0,
         Active = 1 << 1,
         LhsIsKey = 1 << 2,
         LhsIsProg = 1 << 3,
@@ -21,8 +21,8 @@ namespace simcore::pred {
         AbortOnFail = 1 << 8
     };
 
-    inline constexpr PredFlag operator|(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) | uint8_t(b)); }
-    inline constexpr PredFlag operator&(PredFlag a, PredFlag b) { return PredFlag(uint8_t(a) & uint8_t(b)); }
+    inline constexpr PredFlag operator|(PredFlag a, PredFlag b) { return PredFlag(uint32_t(a) | uint32_t(b)); }
+    inline constexpr PredFlag operator&(PredFlag a, PredFlag b) { return PredFlag(uint32_t(a) & uint32_t(b)); }
 
     static constexpr int PredNameLength = 32;
 
@@ -39,6 +39,7 @@ namespace simcore::pred {
         uint32_t lhs_addr;            // legacy absolute VA
         uint16_t lhs_addr_key;        // region comes from this (for key-based reads)
         uint32_t lhs_addrprog_offset; // program offset within [records || blob] (0 = none)
+        uint32_t baseline_bps_offset; // u16 count + u16 bp keys within [records || blob] (0 = none)
 
         // RHS
         uint64_t rhs_imm;             // when !(RhsIsKey || rhs_addrprog_offset)
@@ -68,7 +69,7 @@ namespace simcore::pred {
         return "(?)";
     }
 
-    static constexpr size_t SPEC_VERSION = 2;
+    static constexpr size_t SPEC_VERSION = 3;
     struct Spec {
         uint16_t id{ 0 };
         uint16_t required_bp{ 0 };
@@ -76,13 +77,14 @@ namespace simcore::pred {
         PredKind kind{ PredKind::ABS };
         uint8_t  width{ 4 };
         CmpOp    cmp{ CmpOp::EQ };
-        uint32_t  flags{ 0 }; // bit0=capture_baseline, bit1=active, bit2=rhs_is_key
+        uint32_t  flags{ 0 }; // PredFlag bits
 
         uint32_t lhs_addr{ 0 };                   // LHS absolute VA (legacy path)
         std::optional<addr::AddrKey> lhs_key{};     // LHS anchor (symbolic), optional
 
         uint64_t rhs_value{ 0 };                   // RHS immediate if not key and not program
         std::optional<addr::AddrKey> rhs_key{}; // RHS anchor when RhsIsKey
+        std::vector<uint16_t> baseline_bps{};   // capture LHS baseline when any listed BP is hit
 
         uint32_t turn_mask{ 0x0u };
 

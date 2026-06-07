@@ -540,12 +540,14 @@ std::vector<simcore::pred::Spec> BuildPredicates(
         simcore::pred::Spec spec{};
         spec.id = ordinal++;
         spec.required_bp = pred.breakpoint_id;
-        spec.kind = simcore::db::ToRuntimePredicateKind(pred.lhs_kind);
         spec.width = static_cast<std::uint8_t>(pred.width);
         spec.cmp = pred.cmp_op;
         spec.flags = static_cast<std::uint32_t>(pred.flag_mask.value_or(0));
         spec.lhs_addr = static_cast<std::uint32_t>(pred.lhs_value);
         spec.rhs_value = static_cast<std::uint64_t>(pred.rhs_value);
+        for (const auto bp_key : pred.baseline_breakpoint_ids) {
+            spec.baseline_bps.push_back(static_cast<std::uint16_t>(bp_key));
+        }
         spec.turn_mask = static_cast<std::uint32_t>(pred.value_mask.value_or(0xFFFFFFFF));
         if (spec.has_flag(simcore::pred::PredFlag::LhsIsKey)) {
             spec.lhs_key = to_addr_key(pred.lhs_value);

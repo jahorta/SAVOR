@@ -47,6 +47,14 @@ namespace simcore::pred {
         return out;
     }
 
+    static inline std::vector<uint16_t> normalize_baseline_bps(const Spec& s) {
+        std::vector<uint16_t> out = s.baseline_bps;
+        out.erase(std::remove(out.begin(), out.end(), uint16_t(0)), out.end());
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+
     static inline void push_u8(std::vector<uint8_t>& b, uint8_t  v) { b.push_back(v); }
     static inline void push_u16(std::vector<uint8_t>& b, uint16_t v) { b.push_back(uint8_t(v & 0xFF)); b.push_back(uint8_t((v >> 8) & 0xFF)); }
     static inline void push_u32(std::vector<uint8_t>& b, uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back(uint8_t((v >> (8 * i)) & 0xFF)); }
@@ -65,11 +73,13 @@ namespace simcore::pred {
         push_u16(buf, s.required_bp);
         push_u32(buf, (uint32_t)required_bps.size());
         for (auto bp : required_bps) push_u16(buf, bp);
-        push_u8(buf, (uint8_t)s.kind);
         push_u8(buf, width);
         push_u8(buf, (uint8_t)s.cmp);
         push_u32(buf, s.flags);
         push_u32(buf, tmask);
+        auto baseline_bps = normalize_baseline_bps(s);
+        push_u32(buf, (uint32_t)baseline_bps.size());
+        for (auto bp : baseline_bps) push_u16(buf, bp);
 
         // LHS
         push_u32(buf, s.lhs_addr);
@@ -120,7 +130,7 @@ namespace simcore::pred {
             for (auto bp : required_bps) {
                 PredicateRecord r{};
                 r.id = s.id; r.required_bp = bp;
-                r.kind = static_cast<uint8_t>(s.kind);
+                r.kind = 0;
                 r.cmp = static_cast<uint8_t>(s.cmp);
 
                 const uint8_t width = s.width ? s.width : 4; // explicit-at-read-time rule
@@ -133,10 +143,11 @@ namespace simcore::pred {
                 r.lhs_addr = s.lhs_addr;
                 r.lhs_addr_key = s.lhs_key.has_value() ? static_cast<uint16_t>(*s.lhs_key) : 0;
                 r.lhs_addrprog_offset = 0; // fill after packing
+                r.baseline_bps_offset = 0; // fill after packing
 
                 // RHS
                 const bool rhs_is_key = s.rhs_key.has_value();
-                if (rhs_is_key) r.flags |= uint8_t(PredFlag::RhsIsKey);
+                if (rhs_is_key) r.flags |= uint32_t(PredFlag::RhsIsKey);
 
                 r.rhs_addr_key = rhs_is_key ? static_cast<uint16_t>(*s.rhs_key) : 0;
                 r.rhs_imm = rhs_is_key ? 0ull : s.rhs_value;
@@ -170,6 +181,15 @@ namespace simcore::pred {
                 if (!s.rhs_prog.empty() && s.has_flag(PredFlag::RhsIsProg)) {
                     const uint32_t off = dedupe.intern(std::span<const uint8_t>(s.rhs_prog.data(), s.rhs_prog.size()));
                     r.rhs_addrprog_offset = base + off;
+                }
+                auto baseline_bps = normalize_baseline_bps(s);
+                if (!baseline_bps.empty() && s.has_flag(PredFlag::RhsIsDelta)) {
+                    std::vector<uint8_t> encoded;
+                    encoded.reserve(sizeof(uint16_t) * (baseline_bps.size() + 1));
+                    push_u16(encoded, static_cast<uint16_t>(baseline_bps.size()));
+                    for (const auto bp : baseline_bps) push_u16(encoded, bp);
+                    const uint32_t off = dedupe.intern(std::span<const uint8_t>(encoded.data(), encoded.size()));
+                    r.baseline_bps_offset = base + off;
                 }
             }
         }

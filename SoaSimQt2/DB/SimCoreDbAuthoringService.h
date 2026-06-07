@@ -52,10 +52,9 @@ struct TasSpecDraft {
 struct PredicateSpecDraft {
     std::string name;
     int breakpoint_id = 0;
-    simcore::db::PredicateOperandKind lhs_kind = simcore::db::PredicateOperandKind::Unknown;
     std::int64_t lhs_value = 0;
-    simcore::db::PredicateOperandKind rhs_kind = simcore::db::PredicateOperandKind::Unknown;
     std::int64_t rhs_value = 0;
+    std::vector<BPKey> baseline_breakpoint_ids;
     simcore::db::PredicateComparisonOp cmp_op = simcore::db::PredicateComparisonOp::EQ;
     int width = 4;
     std::optional<std::int64_t> flag_mask;
@@ -837,10 +836,9 @@ private:
         simcore::db::SavePredicateSpecCommand command{};
         command.name = draft.name;
         command.breakpoint_id = static_cast<BPKey>(draft.breakpoint_id);
-        command.lhs_kind = draft.lhs_kind;
         command.lhs_value = draft.lhs_value;
-        command.rhs_kind = draft.rhs_kind;
         command.rhs_value = draft.rhs_value;
+        command.baseline_breakpoint_ids = draft.baseline_breakpoint_ids;
         command.cmp_op = draft.cmp_op;
         command.width = draft.width;
         command.flag_mask = draft.flag_mask;

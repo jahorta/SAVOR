@@ -22,6 +22,52 @@
 #include <sstream>
 
 namespace {
+    static uint16_t read_u16_le(const char* ptr) {
+        return static_cast<uint16_t>(static_cast<unsigned char>(ptr[0]))
+            | static_cast<uint16_t>(static_cast<unsigned char>(ptr[1]) << 8);
+    }
+
+    static bool record_has_baseline_bp(const std::string& table_blob, const simcore::pred::PredicateRecord& record, const uint32_t bp_key) {
+        if (record.baseline_bps_offset == 0 || bp_key == 0) {
+            return false;
+        }
+        const auto offset = static_cast<size_t>(record.baseline_bps_offset);
+        if (offset + sizeof(uint16_t) > table_blob.size()) {
+            return false;
+        }
+        const char* ptr = table_blob.data() + offset;
+        const uint16_t count = read_u16_le(ptr);
+        ptr += sizeof(uint16_t);
+        if (offset + sizeof(uint16_t) + static_cast<size_t>(count) * sizeof(uint16_t) > table_blob.size()) {
+            return false;
+        }
+        for (uint16_t i = 0; i < count; ++i) {
+            if (read_u16_le(ptr + i * sizeof(uint16_t)) == bp_key) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void append_record_baseline_bps(const std::string& table_blob, const simcore::pred::PredicateRecord& record, std::vector<uint32_t>& bp_keys) {
+        if (record.baseline_bps_offset == 0) {
+            return;
+        }
+        const auto offset = static_cast<size_t>(record.baseline_bps_offset);
+        if (offset + sizeof(uint16_t) > table_blob.size()) {
+            return;
+        }
+        const char* ptr = table_blob.data() + offset;
+        const uint16_t count = read_u16_le(ptr);
+        ptr += sizeof(uint16_t);
+        if (offset + sizeof(uint16_t) + static_cast<size_t>(count) * sizeof(uint16_t) > table_blob.size()) {
+            return;
+        }
+        for (uint16_t i = 0; i < count; ++i) {
+            bp_keys.push_back(read_u16_le(ptr + i * sizeof(uint16_t)));
+        }
+    }
+
     inline bool read_via_addrprog(simcore::DolphinWrapper& host,
         const simcore::IDerivedBuffer* derived,
         const std::string& table_and_blob,
@@ -525,9 +571,19 @@ namespace simcore {
         const auto* tbl = std::get_if<std::string>(&itT->second);
         if (!n || !tbl) return;
         const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
-        std::vector<uint32_t> pcs; pcs.reserve(n);
+        std::vector<uint32_t> bp_keys; bp_keys.reserve(n);
         for (uint32_t i = 0; i < n; ++i) {
-            const BPAddr* e = bpmap_.find(static_cast<BPKey>(rec[i].required_bp));
+            if (rec[i].required_bp != 0) {
+                bp_keys.push_back(rec[i].required_bp);
+            }
+            append_record_baseline_bps(*tbl, rec[i], bp_keys);
+        }
+        std::sort(bp_keys.begin(), bp_keys.end());
+        bp_keys.erase(std::unique(bp_keys.begin(), bp_keys.end()), bp_keys.end());
+
+        std::vector<uint32_t> pcs; pcs.reserve(bp_keys.size());
+        for (const auto bp_key : bp_keys) {
+            const BPAddr* e = bpmap_.find(static_cast<BPKey>(bp_key));
             if (!e || !e->pc) continue;
             pcs.push_back(e->pc); predicate_bp_keys_.push_back(e->key);
         }
@@ -537,16 +593,18 @@ namespace simcore {
         auto itN = ctx.find(keys::core::PRED_COUNT);
         auto itT = ctx.find(keys::core::PRED_TABLE);
         auto itB = ctx.find(keys::core::PRED_BASELINES);
-        if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end()) return;
+        auto itHit = ctx.find(keys::core::RUN_HIT_BP_KEY);
+        if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end() || itHit == ctx.end()) return;
         const uint32_t n = std::get<uint32_t>(itN->second);
         const auto* tbl = std::get_if<std::string>(&itT->second);
         auto* bas = std::get_if<std::string>(&itB->second);
-        if (!n || !tbl || !bas) return;
+        const uint32_t hit = std::get<uint32_t>(itHit->second);
+        if (!n || !tbl || !bas || !hit) return;
         using simcore::pred::PredFlag;
         const auto* rec = reinterpret_cast<const pred::PredicateRecord*>(tbl->data());
         for (uint32_t i = 0; i < n; ++i) {
             const auto& r = rec[i];
-            if (!r.has_flag(PredFlag::CaptureBaseline) || !r.has_flag(PredFlag::Active)) continue;
+            if (!r.has_flag(PredFlag::RhsIsDelta) || !r.has_flag(PredFlag::Active) || !record_has_baseline_bp(*tbl, r, hit)) continue;
             uint64_t vbits = 0;
             if (r.lhs_addrprog_offset && read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, vbits)) {}
             else if (r.lhs_addr_key) { if (!router.read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, vbits)) continue; }
@@ -585,10 +643,10 @@ namespace simcore {
             if (r.has_flag(PredFlag::LhsIsProg) && read_via_addrprog(host_, derived_.get(), *tbl, r.lhs_addrprog_offset, r.width, lhs)) {}
             else if (r.has_flag(PredFlag::LhsIsKey)) { if (!router.read(static_cast<addr::AddrKey>(r.lhs_addr_key), r.width, lhs)) continue; }
             else { switch (r.width) { case 1: { uint8_t v = 0; if (!host_.readU8(r.lhs_addr, v)) continue; lhs = v; break; } case 2: { uint16_t v = 0; if (!host_.readU16(r.lhs_addr, v)) continue; lhs = v; break; } case 4: { uint32_t v = 0; if (!host_.readU32(r.lhs_addr, v)) continue; lhs = v; break; } case 8: { uint64_t v = 0; if (!host_.readU64(r.lhs_addr, v)) continue; lhs = v; break; } default: continue; } }
-            if (r.has_flag(PredFlag::RhsIsProg) && read_via_addrprog(host_, derived_.get(), *tbl, r.rhs_addrprog_offset, r.width, rhs)) {}
+            if (r.has_flag(PredFlag::RhsIsDelta)) { uint64_t cap = 0; std::memcpy(&cap, bas_ptr + i * sizeof(uint64_t), sizeof(uint64_t)); rhs = cap; }
+            else if (r.has_flag(PredFlag::RhsIsProg) && read_via_addrprog(host_, derived_.get(), *tbl, r.rhs_addrprog_offset, r.width, rhs)) {}
             else if (r.has_flag(PredFlag::RhsIsKey)) { if (!router.read(static_cast<addr::AddrKey>(r.rhs_addr_key), r.width, rhs)) continue; }
             else rhs = r.rhs_imm;
-            if (r.kind == 1) { uint64_t cap = 0; std::memcpy(&cap, bas_ptr + i * sizeof(uint64_t), sizeof(uint64_t)); rhs = cap; }
             bool ok = false;
             switch (r.cmp) { case 0: ok = (lhs == rhs); break; case 1: ok = (lhs != rhs); break; case 2: ok = (lhs < rhs); break; case 3: ok = (lhs <= rhs); break; case 4: ok = (lhs > rhs); break; case 5: ok = (lhs >= rhs); break; default: ok = false; break; }
             std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);

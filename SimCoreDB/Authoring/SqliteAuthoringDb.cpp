@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <charconv>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
@@ -98,14 +100,71 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
     if (command.name.empty()
         || command.breakpoint_id == 0
         || bp::BPRegistry::find(command.breakpoint_id) == nullptr
-        || command.lhs_kind == PredicateOperandKind::Unknown
-        || command.rhs_kind == PredicateOperandKind::Unknown
         || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
         || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
+    const auto flags = static_cast<std::uint32_t>(command.flag_mask.value_or(0));
+    if ((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsDelta)) != 0) {
+        if (command.baseline_breakpoint_ids.empty()) {
+            if (error_out) *error_out = "delta RHS predicates require at least one baseline breakpoint";
+            return false;
+        }
+        for (const auto bp_key : command.baseline_breakpoint_ids) {
+            if (bp_key == 0 || bp::BPRegistry::find(bp_key) == nullptr) {
+                if (error_out) *error_out = "baseline breakpoint is invalid";
+                return false;
+            }
+        }
+    }
     return true;
+}
+
+std::string FormatBpKeyList(const std::vector<BPKey>& values) {
+    std::vector<BPKey> unique_values;
+    unique_values.reserve(values.size());
+    for (const auto value : values) {
+        if (value != 0 && bp::BPRegistry::find(value) != nullptr) {
+            unique_values.push_back(value);
+        }
+    }
+    std::sort(unique_values.begin(), unique_values.end());
+    unique_values.erase(std::unique(unique_values.begin(), unique_values.end()), unique_values.end());
+
+    std::string out;
+    for (const auto value : unique_values) {
+        if (!out.empty()) {
+            out.push_back(',');
+        }
+        out += std::to_string(static_cast<unsigned int>(value));
+    }
+    return out;
+}
+
+std::vector<BPKey> ParseBpKeyList(std::string_view text) {
+    std::vector<BPKey> out;
+    while (!text.empty()) {
+        const auto comma = text.find(',');
+        const auto token = text.substr(0, comma == std::string_view::npos ? text.size() : comma);
+        unsigned int value = 0;
+        const char* first = token.data();
+        const char* last = token.data() + token.size();
+        const auto [ptr, ec] = std::from_chars(first, last, value);
+        if (ec == std::errc{} && ptr == last && value > 0 && value <= std::numeric_limits<BPKey>::max()) {
+            const auto bp_key = static_cast<BPKey>(value);
+            if (bp::BPRegistry::find(bp_key) != nullptr) {
+                out.push_back(bp_key);
+            }
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        text.remove_prefix(comma + 1);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 
@@ -1583,14 +1642,7 @@ bool SqliteAuthoringDb::SavePredicateSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty()
-        || command.breakpoint_id == 0
-        || bp::BPRegistry::find(command.breakpoint_id) == nullptr
-        || command.lhs_kind == PredicateOperandKind::Unknown
-        || command.rhs_kind == PredicateOperandKind::Unknown
-        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
-        || command.event_id.empty()) {
-        if (error_out) *error_out = "required command fields are missing";
+    if (!ValidatePredicateSpecCommand(command, error_out)) {
         return false;
     }
 
@@ -1605,9 +1657,9 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     if (sqlite3_prepare_v2(
             db_,
             "INSERT INTO au_predicate_spec("
-            "name,breakpoint_name,breakpoint_id,lhs_kind,lhs_value,rhs_kind,rhs_value,cmp_op,width,flag_mask,value_mask,"
+            "name,breakpoint_name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,width,flag_mask,value_mask,"
             "lhs_address_program_id,rhs_address_program_id,abort_on_fail,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15);",
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14);",
             -1,
             &insert_spec.st,
             nullptr)
@@ -1620,21 +1672,19 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(insert_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(command.breakpoint_id));
-    const auto lhs_kind = ToDbString(command.lhs_kind);
-    const auto rhs_kind = ToDbString(command.rhs_kind);
+    const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
-    sqlite3_bind_text(insert_spec.st, 4, lhs_kind.data(), static_cast<int>(lhs_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_spec.st, 5, command.lhs_value);
-    sqlite3_bind_text(insert_spec.st, 6, rhs_kind.data(), static_cast<int>(rhs_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_spec.st, 7, command.rhs_value);
-    sqlite3_bind_text(insert_spec.st, 8, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_spec.st, 9, command.width);
-    BindOptionalInt64(insert_spec.st, 10, command.flag_mask);
-    BindOptionalInt64(insert_spec.st, 11, command.value_mask);
-    BindOptionalInt64(insert_spec.st, 12, command.lhs_address_program_id);
-    BindOptionalInt64(insert_spec.st, 13, command.rhs_address_program_id);
-    sqlite3_bind_int(insert_spec.st, 14, command.abort_on_fail ? 1 : 0);
-    sqlite3_bind_int64(insert_spec.st, 15, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(insert_spec.st, 4, command.lhs_value);
+    sqlite3_bind_int64(insert_spec.st, 5, command.rhs_value);
+    sqlite3_bind_text(insert_spec.st, 6, baseline_bps.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_spec.st, 7, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_spec.st, 8, command.width);
+    BindOptionalInt64(insert_spec.st, 9, command.flag_mask);
+    BindOptionalInt64(insert_spec.st, 10, command.value_mask);
+    BindOptionalInt64(insert_spec.st, 11, command.lhs_address_program_id);
+    BindOptionalInt64(insert_spec.st, 12, command.rhs_address_program_id);
+    sqlite3_bind_int(insert_spec.st, 13, command.abort_on_fail ? 1 : 0);
+    sqlite3_bind_int64(insert_spec.st, 14, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -1711,10 +1761,10 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     Statement update_spec;
     constexpr const char* kUpdateSql =
         "UPDATE au_predicate_spec SET "
-        "name=?1,breakpoint_name=?2,breakpoint_id=?3,lhs_kind=?4,lhs_value=?5,rhs_kind=?6,rhs_value=?7,"
-        "cmp_op=?8,width=?9,flag_mask=?10,value_mask=?11,lhs_address_program_id=?12,rhs_address_program_id=?13,"
-        "abort_on_fail=?14 "
-        "WHERE predicate_spec_id=?15;";
+        "name=?1,breakpoint_name=?2,breakpoint_id=?3,lhs_value=?4,rhs_value=?5,baseline_bps=?6,"
+        "cmp_op=?7,width=?8,flag_mask=?9,value_mask=?10,lhs_address_program_id=?11,rhs_address_program_id=?12,"
+        "abort_on_fail=?13 "
+        "WHERE predicate_spec_id=?14;";
     if (sqlite3_prepare_v2(db_, kUpdateSql, -1, &update_spec.st, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1724,21 +1774,19 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(update_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(update_spec.st, 3, static_cast<int>(command.breakpoint_id));
-    const auto lhs_kind = ToDbString(command.lhs_kind);
-    const auto rhs_kind = ToDbString(command.rhs_kind);
+    const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
-    sqlite3_bind_text(update_spec.st, 4, lhs_kind.data(), static_cast<int>(lhs_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(update_spec.st, 5, command.lhs_value);
-    sqlite3_bind_text(update_spec.st, 6, rhs_kind.data(), static_cast<int>(rhs_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(update_spec.st, 7, command.rhs_value);
-    sqlite3_bind_text(update_spec.st, 8, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int(update_spec.st, 9, command.width);
-    BindOptionalInt64(update_spec.st, 10, command.flag_mask);
-    BindOptionalInt64(update_spec.st, 11, command.value_mask);
-    BindOptionalInt64(update_spec.st, 12, command.lhs_address_program_id);
-    BindOptionalInt64(update_spec.st, 13, command.rhs_address_program_id);
-    sqlite3_bind_int(update_spec.st, 14, command.abort_on_fail ? 1 : 0);
-    sqlite3_bind_int64(update_spec.st, 15, predicate_spec_id);
+    sqlite3_bind_int64(update_spec.st, 4, command.lhs_value);
+    sqlite3_bind_int64(update_spec.st, 5, command.rhs_value);
+    sqlite3_bind_text(update_spec.st, 6, baseline_bps.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update_spec.st, 7, cmp_op.data(), static_cast<int>(cmp_op.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int(update_spec.st, 8, command.width);
+    BindOptionalInt64(update_spec.st, 9, command.flag_mask);
+    BindOptionalInt64(update_spec.st, 10, command.value_mask);
+    BindOptionalInt64(update_spec.st, 11, command.lhs_address_program_id);
+    BindOptionalInt64(update_spec.st, 12, command.rhs_address_program_id);
+    sqlite3_bind_int(update_spec.st, 13, command.abort_on_fail ? 1 : 0);
+    sqlite3_bind_int64(update_spec.st, 14, predicate_spec_id);
 
     if (sqlite3_step(update_spec.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1849,7 +1897,7 @@ std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT predicate_spec_id,name,breakpoint_id,lhs_kind,lhs_value,rhs_kind,rhs_value,cmp_op,"
+        "SELECT predicate_spec_id,name,breakpoint_id,lhs_value,rhs_value,baseline_bps,cmp_op,"
         "width,flag_mask,value_mask,lhs_address_program_id,rhs_address_program_id,abort_on_fail "
         "FROM au_predicate_spec WHERE predicate_spec_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
@@ -1864,17 +1912,16 @@ std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
     out.predicate_spec_id = sqlite3_column_int64(st.st, 0);
     out.name = ColumnText(st.st, 1);
     out.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
-    out.lhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 3));
-    out.lhs_value = sqlite3_column_int64(st.st, 4);
-    out.rhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 5));
-    out.rhs_value = sqlite3_column_int64(st.st, 6);
-    out.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 7));
-    out.width = sqlite3_column_int(st.st, 8);
-    out.flag_mask = ColumnInt64Optional(st.st, 9);
-    out.value_mask = ColumnInt64Optional(st.st, 10);
-    out.lhs_address_program_id = ColumnInt64Optional(st.st, 11);
-    out.rhs_address_program_id = ColumnInt64Optional(st.st, 12);
-    out.abort_on_fail = sqlite3_column_int(st.st, 13) != 0;
+    out.lhs_value = sqlite3_column_int64(st.st, 3);
+    out.rhs_value = sqlite3_column_int64(st.st, 4);
+    out.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));
+    out.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 6));
+    out.width = sqlite3_column_int(st.st, 7);
+    out.flag_mask = ColumnInt64Optional(st.st, 8);
+    out.value_mask = ColumnInt64Optional(st.st, 9);
+    out.lhs_address_program_id = ColumnInt64Optional(st.st, 10);
+    out.rhs_address_program_id = ColumnInt64Optional(st.st, 11);
+    out.abort_on_fail = sqlite3_column_int(st.st, 12) != 0;
     return out;
 }
 
@@ -2023,7 +2070,7 @@ std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
 
     Statement st;
     constexpr const char* kSql =
-        "SELECT ps.predicate_spec_id,ps.name,ps.breakpoint_id,ps.lhs_kind,ps.lhs_value,ps.rhs_kind,ps.rhs_value,"
+        "SELECT ps.predicate_spec_id,ps.name,ps.breakpoint_id,ps.lhs_value,ps.rhs_value,ps.baseline_bps,"
         "ps.cmp_op,ps.width,ps.flag_mask,ps.value_mask,ps.lhs_address_program_id,ps.rhs_address_program_id,ps.abort_on_fail "
         "FROM au_predicate_set_item item "
         "JOIN au_predicate_spec ps ON ps.predicate_spec_id=item.predicate_spec_id "
@@ -2037,17 +2084,16 @@ std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
         pred.predicate_spec_id = sqlite3_column_int64(st.st, 0);
         pred.name = ColumnText(st.st, 1);
         pred.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
-        pred.lhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 3));
-        pred.lhs_value = sqlite3_column_int64(st.st, 4);
-        pred.rhs_kind = ParsePredicateOperandKind(ColumnText(st.st, 5));
-        pred.rhs_value = sqlite3_column_int64(st.st, 6);
-        pred.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 7));
-        pred.width = sqlite3_column_int(st.st, 8);
-        pred.flag_mask = ColumnInt64Optional(st.st, 9);
-        pred.value_mask = ColumnInt64Optional(st.st, 10);
-        pred.lhs_address_program_id = ColumnInt64Optional(st.st, 11);
-        pred.rhs_address_program_id = ColumnInt64Optional(st.st, 12);
-        pred.abort_on_fail = sqlite3_column_int(st.st, 13) != 0;
+        pred.lhs_value = sqlite3_column_int64(st.st, 3);
+        pred.rhs_value = sqlite3_column_int64(st.st, 4);
+        pred.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));
+        pred.cmp_op = ParsePredicateComparisonOp(ColumnText(st.st, 6));
+        pred.width = sqlite3_column_int(st.st, 7);
+        pred.flag_mask = ColumnInt64Optional(st.st, 8);
+        pred.value_mask = ColumnInt64Optional(st.st, 9);
+        pred.lhs_address_program_id = ColumnInt64Optional(st.st, 10);
+        pred.rhs_address_program_id = ColumnInt64Optional(st.st, 11);
+        pred.abort_on_fail = sqlite3_column_int(st.st, 12) != 0;
         out.predicates.push_back(std::move(pred));
     }
     return out;

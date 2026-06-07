@@ -52,10 +52,6 @@ inline PredicateOperandKind ParsePredicateOperandKind(std::string_view value) {
     return PredicateOperandKind::Unknown;
 }
 
-inline simcore::pred::PredKind ToRuntimePredicateKind(PredicateOperandKind value) {
-    return value == PredicateOperandKind::Delta ? simcore::pred::PredKind::DELTA : simcore::pred::PredKind::ABS;
-}
-
 inline std::string_view ToDbString(PredicateComparisonOp value) {
     switch (value) {
     case PredicateComparisonOp::EQ: return "EQ";
@@ -235,10 +231,9 @@ struct EnsureAddressProgramCommand {
 struct SavePredicateSpecCommand {
     std::string name;
     BPKey breakpoint_id = 0;
-    PredicateOperandKind lhs_kind = PredicateOperandKind::Unknown;
     std::int64_t lhs_value = 0;
-    PredicateOperandKind rhs_kind = PredicateOperandKind::Unknown;
     std::int64_t rhs_value = 0;
+    std::vector<BPKey> baseline_breakpoint_ids;
     PredicateComparisonOp cmp_op = PredicateComparisonOp::EQ;
     int width = 0;
     std::optional<std::int64_t> flag_mask;
@@ -419,10 +414,9 @@ struct PredicateSpecSnapshot {
     std::int64_t predicate_spec_id = 0;
     std::string name;
     BPKey breakpoint_id = 0;
-    PredicateOperandKind lhs_kind = PredicateOperandKind::Unknown;
     std::int64_t lhs_value = 0;
-    PredicateOperandKind rhs_kind = PredicateOperandKind::Unknown;
     std::int64_t rhs_value = 0;
+    std::vector<BPKey> baseline_breakpoint_ids;
     PredicateComparisonOp cmp_op = PredicateComparisonOp::EQ;
     int width = 0;
     std::optional<std::int64_t> flag_mask;

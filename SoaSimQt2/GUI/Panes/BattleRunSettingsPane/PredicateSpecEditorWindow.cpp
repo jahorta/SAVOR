@@ -71,14 +71,6 @@ QString describeProgramDraft(const PredicateSpecEditorWindow::ProgramDraft& draf
         .arg(draft.description.isEmpty() ? QString() : QStringLiteral(" · %1").arg(draft.description));
 }
 
-simcore::db::PredicateOperandKind operandKindFromCombo(const QComboBox* combo)
-{
-    if (combo == nullptr) {
-        return simcore::db::PredicateOperandKind::Unknown;
-    }
-    return static_cast<simcore::db::PredicateOperandKind>(combo->currentData().toInt());
-}
-
 void setFormRowVisibility(QFormLayout* layout, QWidget* field, const bool visible)
 {
     if (layout == nullptr || field == nullptr) {
@@ -181,8 +173,19 @@ void PredicateSpecEditorWindow::loadSnapshot(const simcore::db::PredicateSpecSna
     }
     breakpointCombos_[0]->setCurrentIndex(std::max(0, breakpointCombos_[0]->findData(snapshot.breakpoint_id)));
 
-    lhsKindCombo_->setCurrentIndex(std::max(0, lhsKindCombo_->findData(static_cast<int>(snapshot.lhs_kind))));
-    rhsKindCombo_->setCurrentIndex(std::max(0, rhsKindCombo_->findData(static_cast<int>(snapshot.rhs_kind))));
+    while (baselineBreakpointCombos_.size() > 1) {
+        removeBaselineBreakpointField(static_cast<int>(baselineBreakpointCombos_.size()) - 1);
+    }
+    if (baselineBreakpointCombos_.empty()) {
+        addBaselineBreakpointField();
+    }
+    const auto baselineBps = snapshot.baseline_breakpoint_ids;
+    baselineBreakpointCombos_[0]->setCurrentIndex(std::max(0, baselineBreakpointCombos_[0]->findData(
+        baselineBps.empty() ? 0 : static_cast<int>(baselineBps.front()))));
+    for (size_t i = 1; i < baselineBps.size(); ++i) {
+        addBaselineBreakpointField(static_cast<int>(baselineBps[i]));
+    }
+
     lhsValueEdit_->setText(QString::number(snapshot.lhs_value));
     rhsValueEdit_->setText(QString::number(snapshot.rhs_value));
 
@@ -192,7 +195,7 @@ void PredicateSpecEditorWindow::loadSnapshot(const simcore::db::PredicateSpecSna
     const std::uint32_t flags = static_cast<std::uint32_t>(snapshot.flag_mask.value_or(0));
     abortOnFailCheck_->setChecked(snapshot.abort_on_fail);
     activeCheck_->setChecked((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::Active)) != 0);
-    captureCheck_->setChecked((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::CaptureBaseline)) != 0);
+    rhsDeltaCheck_->setChecked((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsDelta)) != 0);
     lhsNegateCheck_->setChecked((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::LhsIsNeg)) != 0);
     rhsNegateCheck_->setChecked((flags & static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsNeg)) != 0);
 
@@ -292,17 +295,20 @@ void PredicateSpecEditorWindow::createWidgets()
         markDirty();
     };
     for (auto* combo : {
-             lhsKindCombo_, rhsKindCombo_, widthCombo_, lhsModeCombo_, rhsModeCombo_, lhsKeyCombo_, rhsKeyCombo_,
+             widthCombo_, lhsModeCombo_, rhsModeCombo_, lhsKeyCombo_, rhsKeyCombo_,
              lhsProgramKindCombo_, rhsProgramKindCombo_ }) {
         if (combo != nullptr) {
             connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, markDirtyAndRefresh);
         }
     }
     for (auto* checkbox : {
-             abortOnFailCheck_, activeCheck_, captureCheck_, lhsNegateCheck_, rhsNegateCheck_ }) {
+             abortOnFailCheck_, activeCheck_, rhsDeltaCheck_, lhsNegateCheck_, rhsNegateCheck_ }) {
         if (checkbox != nullptr) {
             connect(checkbox, &QCheckBox::toggled, this, markDirtyAndRefresh);
         }
+    }
+    if (rhsDeltaCheck_ != nullptr) {
+        connect(rhsDeltaCheck_, &QCheckBox::toggled, this, [this]() { refreshUi(); });
     }
     for (auto* line : {
              nameEdit_, lhsValueEdit_, rhsValueEdit_, turnMaskEdit_, lhsProgramAEdit_, lhsProgramBEdit_, rhsProgramAEdit_, rhsProgramBEdit_ }) {
@@ -310,7 +316,7 @@ void PredicateSpecEditorWindow::createWidgets()
             connect(line, &QLineEdit::textChanged, this, markDirtyAndRefresh);
         }
     }
-    for (auto* button : { addRequiredBpButton_, lhsBuildProgramButton_, rhsBuildProgramButton_ }) {
+    for (auto* button : { addRequiredBpButton_, addBaselineBpButton_, lhsBuildProgramButton_, rhsBuildProgramButton_ }) {
         if (button != nullptr) {
             connect(button, &QPushButton::clicked, this, markDirtyAndRefresh);
         }
@@ -319,7 +325,7 @@ void PredicateSpecEditorWindow::createWidgets()
     refreshUi();
     abortOnFailCheck_->setChecked(false);
     activeCheck_->setChecked(true);
-    captureCheck_->setChecked(true);
+    rhsDeltaCheck_->setChecked(false);
     turnMaskEdit_->setText(QStringLiteral("0xFFFFFFFF"));
     turnMaskEdit_->setPlaceholderText(QStringLiteral("0xFFFFFFFF"));
 }
@@ -333,18 +339,6 @@ void PredicateSpecEditorWindow::createCoreSection()
 
     nameEdit_ = new QLineEdit(coreBox);
 
-    lhsKindCombo_ = new QComboBox(coreBox);
-    lhsKindCombo_->addItem(QStringLiteral("Memory"), static_cast<int>(simcore::db::PredicateOperandKind::Memory));
-    lhsKindCombo_->addItem(QStringLiteral("Absolute"), static_cast<int>(simcore::db::PredicateOperandKind::Absolute));
-    lhsKindCombo_->addItem(QStringLiteral("Delta"), static_cast<int>(simcore::db::PredicateOperandKind::Delta));
-    lhsKindCombo_->addItem(QStringLiteral("Literal"), static_cast<int>(simcore::db::PredicateOperandKind::Literal));
-
-    rhsKindCombo_ = new QComboBox(coreBox);
-    rhsKindCombo_->addItem(QStringLiteral("Memory"), static_cast<int>(simcore::db::PredicateOperandKind::Memory));
-    rhsKindCombo_->addItem(QStringLiteral("Absolute"), static_cast<int>(simcore::db::PredicateOperandKind::Absolute));
-    rhsKindCombo_->addItem(QStringLiteral("Delta"), static_cast<int>(simcore::db::PredicateOperandKind::Delta));
-    rhsKindCombo_->addItem(QStringLiteral("Literal"), static_cast<int>(simcore::db::PredicateOperandKind::Literal));
-
     widthCombo_ = new QComboBox(coreBox);
     widthCombo_->addItem(QStringLiteral("1"), 1);
     widthCombo_->addItem(QStringLiteral("2"), 2);
@@ -353,8 +347,6 @@ void PredicateSpecEditorWindow::createCoreSection()
     widthCombo_->setCurrentIndex(widthCombo_->findData(4));
 
     coreForm->addRow(QStringLiteral("Name"), nameEdit_);
-    coreForm->addRow(QStringLiteral("LHS kind"), lhsKindCombo_);
-    coreForm->addRow(QStringLiteral("RHS kind"), rhsKindCombo_);
     coreForm->addRow(QStringLiteral("Width"), widthCombo_);
     contentLayout_->addWidget(coreBox);
 }
@@ -376,12 +368,24 @@ void PredicateSpecEditorWindow::createExecutionSection()
     addRequiredBpButton_->setObjectName("jobsSecondaryButton");
     connect(addRequiredBpButton_, &QPushButton::clicked, this, [this]() { addRequiredBreakpointField(); });
 
+    baselineBpRowsWidget_ = new QWidget(executionBox);
+    baselineBpRowsLayout_ = new QVBoxLayout(baselineBpRowsWidget_);
+    baselineBpRowsLayout_->setContentsMargins(0, 0, 0, 0);
+    baselineBpRowsLayout_->setSpacing(6);
+
+    addBaselineBreakpointField();
+    addBaselineBpButton_ = new QPushButton(QStringLiteral("Add baseline breakpoint"), executionBox);
+    addBaselineBpButton_->setObjectName("jobsSecondaryButton");
+    connect(addBaselineBpButton_, &QPushButton::clicked, this, [this]() { addBaselineBreakpointField(); });
+
     turnMaskEdit_ = new QLineEdit(executionBox);
     turnMaskEdit_->setPlaceholderText(QStringLiteral("0xFFFFFFFF"));
     turnMaskEdit_->setText(QStringLiteral("0xFFFFFFFF"));
 
     executionLayout->addRow(QStringLiteral("Required breakpoints"), requiredBpRowsWidget_);
     executionLayout->addRow(QString(), addRequiredBpButton_);
+    executionLayout->addRow(QStringLiteral("Baseline breakpoints"), baselineBpRowsWidget_);
+    executionLayout->addRow(QString(), addBaselineBpButton_);
     executionLayout->addRow(QStringLiteral("Turn mask"), turnMaskEdit_);
 
     contentLayout_->addWidget(executionBox);
@@ -394,11 +398,11 @@ void PredicateSpecEditorWindow::createFlagsSection()
     flagsLayout->setContentsMargins(12, 12, 12, 12);
     activeCheck_ = new QCheckBox(QStringLiteral("Active"), flagsBox);
     abortOnFailCheck_ = new QCheckBox(QStringLiteral("Abort on fail"), flagsBox);
-    captureCheck_ = new QCheckBox(QStringLiteral("Capture baseline"), flagsBox);
+    rhsDeltaCheck_ = new QCheckBox(QStringLiteral("RHS uses baseline"), flagsBox);
     lhsNegateCheck_ = new QCheckBox(QStringLiteral("Negate LHS"), flagsBox);
     rhsNegateCheck_ = new QCheckBox(QStringLiteral("Negate RHS"), flagsBox);
     flagsLayout->addWidget(activeCheck_);
-    flagsLayout->addWidget(captureCheck_);
+    flagsLayout->addWidget(rhsDeltaCheck_);
     flagsLayout->addWidget(lhsNegateCheck_);
     flagsLayout->addWidget(rhsNegateCheck_);
     flagsLayout->addWidget(abortOnFailCheck_);
@@ -647,6 +651,83 @@ std::vector<int> PredicateSpecEditorWindow::selectedRequiredBreakpoints() const
     return out;
 }
 
+void PredicateSpecEditorWindow::addBaselineBreakpointField(const int selectedBp)
+{
+    if (baselineBpRowsLayout_ == nullptr || baselineBpRowsWidget_ == nullptr) {
+        return;
+    }
+    auto* rowLayout = new QHBoxLayout();
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(6);
+
+    auto* combo = new QComboBox(baselineBpRowsWidget_);
+    populateBreakpointCombo(combo);
+    combo->setCurrentIndex(std::max(0, combo->findData(selectedBp)));
+    rowLayout->addWidget(combo, 1);
+
+    auto* removeButton = new QPushButton(QStringLiteral("Delete"), baselineBpRowsWidget_);
+    rowLayout->addWidget(removeButton);
+
+    baselineBreakpointCombos_.push_back(combo);
+    removeBaselineBreakpointButtons_.push_back(removeButton);
+    baselineBreakpointRowLayouts_.push_back(rowLayout);
+    baselineBpRowsLayout_->addLayout(rowLayout);
+
+    connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() { markDirty(); });
+    connect(removeButton, &QPushButton::clicked, this, [this, removeButton]() {
+        const auto index = std::find(removeBaselineBreakpointButtons_.begin(), removeBaselineBreakpointButtons_.end(), removeButton);
+        if (index != removeBaselineBreakpointButtons_.end()) {
+            const int rowIndex = static_cast<int>(std::distance(removeBaselineBreakpointButtons_.begin(), index));
+            removeBaselineBreakpointField(rowIndex);
+        }
+    });
+
+    rebuildBaselineBreakpointRows();
+    markDirty();
+}
+
+void PredicateSpecEditorWindow::removeBaselineBreakpointField(const int index)
+{
+    if (index < 0 || index >= static_cast<int>(baselineBreakpointCombos_.size()) || baselineBreakpointCombos_.size() <= 1) {
+        return;
+    }
+    QComboBox* combo = baselineBreakpointCombos_[index];
+    QPushButton* button = removeBaselineBreakpointButtons_[index];
+    QHBoxLayout* rowLayout = baselineBreakpointRowLayouts_[index];
+
+    baselineBpRowsLayout_->removeItem(rowLayout);
+    baselineBreakpointCombos_.erase(baselineBreakpointCombos_.begin() + index);
+    removeBaselineBreakpointButtons_.erase(removeBaselineBreakpointButtons_.begin() + index);
+    baselineBreakpointRowLayouts_.erase(baselineBreakpointRowLayouts_.begin() + index);
+
+    delete combo;
+    delete button;
+    delete rowLayout;
+    rebuildBaselineBreakpointRows();
+    markDirty();
+}
+
+void PredicateSpecEditorWindow::rebuildBaselineBreakpointRows()
+{
+    const bool showDelete = baselineBreakpointCombos_.size() > 1;
+    for (auto* button : removeBaselineBreakpointButtons_) {
+        button->setVisible(showDelete);
+    }
+}
+
+std::vector<int> PredicateSpecEditorWindow::selectedBaselineBreakpoints() const
+{
+    std::vector<int> out;
+    out.reserve(baselineBreakpointCombos_.size());
+    for (auto* combo : baselineBreakpointCombos_) {
+        const int value = combo != nullptr ? combo->currentData().toInt() : 0;
+        if (value > 0) {
+            out.push_back(value);
+        }
+    }
+    return out;
+}
+
 void PredicateSpecEditorWindow::applyProgramDraftToWidgets(const ProgramDraft& draft, const bool lhs)
 {
     QComboBox* kindCombo = lhs ? lhsProgramKindCombo_ : rhsProgramKindCombo_;
@@ -749,6 +830,10 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
     if (breakpoints.empty()) {
         errors.push_back(QStringLiteral("At least one required breakpoint is required."));
     }
+    const bool rhsIsDelta = rhsDeltaCheck_ != nullptr && rhsDeltaCheck_->isChecked();
+    if (rhsIsDelta && selectedBaselineBreakpoints().empty()) {
+        errors.push_back(QStringLiteral("RHS baseline mode requires at least one baseline breakpoint."));
+    }
 
     std::uint64_t turnMask = 0;
     if (turnMaskEdit_ == nullptr || !parseUnsignedInteger(turnMaskEdit_->text().trimmed(), turnMask)) {
@@ -773,6 +858,9 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
     }
 
     const auto rhsMode = static_cast<ValueSourceMode>(rhsModeCombo_ != nullptr ? rhsModeCombo_->currentData().toInt() : static_cast<int>(ValueSourceMode::Immediate));
+    if (rhsIsDelta) {
+        return errors;
+    }
     if (rhsMode == ValueSourceMode::Immediate) {
         std::int64_t rhsValue = 0;
         if (rhsValueEdit_ == nullptr || !parseSignedInteger(rhsValueEdit_->text().trimmed(), rhsValue)) {
@@ -801,14 +889,17 @@ void PredicateSpecEditorWindow::savePredicate()
     }
 
     const auto requiredBreakpoints = selectedRequiredBreakpoints();
+    const auto baselineBreakpoints = selectedBaselineBreakpoints();
     const auto lhsMode = static_cast<ValueSourceMode>(lhsModeCombo_ != nullptr ? lhsModeCombo_->currentData().toInt() : static_cast<int>(ValueSourceMode::AbsoluteAddress));
     const auto rhsMode = static_cast<ValueSourceMode>(rhsModeCombo_ != nullptr ? rhsModeCombo_->currentData().toInt() : static_cast<int>(ValueSourceMode::Immediate));
 
     soasimqt2::db::PredicateSpecDraft draft{};
     draft.name = nameEdit_ != nullptr ? nameEdit_->text().trimmed().toStdString() : std::string();
     draft.breakpoint_id = requiredBreakpoints.empty() ? 0 : requiredBreakpoints.front();
-    draft.lhs_kind = operandKindFromCombo(lhsKindCombo_);
-    draft.rhs_kind = operandKindFromCombo(rhsKindCombo_);
+    draft.baseline_breakpoint_ids.reserve(baselineBreakpoints.size());
+    for (const auto breakpoint : baselineBreakpoints) {
+        draft.baseline_breakpoint_ids.push_back(static_cast<BPKey>(breakpoint));
+    }
     draft.cmp_op = comparison();
     draft.width = widthCombo_ != nullptr ? widthCombo_->currentData().toInt() : 4;
 
@@ -823,8 +914,9 @@ void PredicateSpecEditorWindow::savePredicate()
     if (activeCheck_ != nullptr && activeCheck_->isChecked()) {
         flags |= static_cast<std::uint32_t>(simcore::pred::PredFlag::Active);
     }
-    if (captureCheck_ != nullptr && captureCheck_->isChecked()) {
-        flags |= static_cast<std::uint32_t>(simcore::pred::PredFlag::CaptureBaseline);
+    const bool rhsIsDelta = rhsDeltaCheck_ != nullptr && rhsDeltaCheck_->isChecked();
+    if (rhsIsDelta) {
+        flags |= static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsDelta);
     }
     if (lhsNegateCheck_ != nullptr && lhsNegateCheck_->isChecked()) {
         flags |= static_cast<std::uint32_t>(simcore::pred::PredFlag::LhsIsNeg);
@@ -862,7 +954,9 @@ void PredicateSpecEditorWindow::savePredicate()
         draft.lhs_value = lhsValue;
     }
 
-    if (rhsMode == ValueSourceMode::AddrKey) {
+    if (rhsIsDelta) {
+        draft.rhs_value = 0;
+    } else if (rhsMode == ValueSourceMode::AddrKey) {
         flags |= static_cast<std::uint32_t>(simcore::pred::PredFlag::RhsIsKey);
         draft.rhs_value = rhsKeyCombo_->currentData().toLongLong();
     } else if (rhsMode == ValueSourceMode::AddrProgram) {
@@ -936,10 +1030,12 @@ void PredicateSpecEditorWindow::refreshUi()
     }
 
     const auto rhsMode = static_cast<ValueSourceMode>(rhsModeCombo_ != nullptr ? rhsModeCombo_->currentData().toInt() : static_cast<int>(ValueSourceMode::Immediate));
-    const bool rhsImmediateVisible = rhsMode == ValueSourceMode::Immediate;
-    const bool rhsKeyVisible = rhsMode == ValueSourceMode::AddrKey;
-    const bool rhsProgramVisible = rhsMode == ValueSourceMode::AddrProgram;
+    const bool rhsIsDelta = rhsDeltaCheck_ != nullptr && rhsDeltaCheck_->isChecked();
+    const bool rhsImmediateVisible = !rhsIsDelta && rhsMode == ValueSourceMode::Immediate;
+    const bool rhsKeyVisible = !rhsIsDelta && rhsMode == ValueSourceMode::AddrKey;
+    const bool rhsProgramVisible = !rhsIsDelta && rhsMode == ValueSourceMode::AddrProgram;
 
+    setFormRowVisibility(rhsMatchLayout_, rhsModeCombo_, !rhsIsDelta);
     setFormRowVisibility(rhsMatchLayout_, rhsValueEdit_, rhsImmediateVisible);
     setFormRowVisibility(rhsMatchLayout_, rhsKeyCombo_, rhsKeyVisible);
     setFormRowVisibility(rhsMatchLayout_, rhsProgramKindCombo_, rhsProgramVisible);

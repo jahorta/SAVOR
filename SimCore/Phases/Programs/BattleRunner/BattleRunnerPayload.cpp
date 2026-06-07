@@ -11,7 +11,7 @@ namespace phase::battle::runner {
     static inline void put_u32(std::vector<uint8_t>& b, uint32_t v) { b.push_back(uint8_t(v)); b.push_back(uint8_t(v >> 8)); b.push_back(uint8_t(v >> 16)); b.push_back(uint8_t(v >> 24)); }
     static inline bool get_u32(const uint8_t*& p, const uint8_t* e, uint32_t& v) { if (p + 4 > e) return false; v = (uint32_t)p[0] | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24); p += 4; return true; }
 
-    static constexpr int VERSION = 3;
+    static constexpr int VERSION = 4;
 
     bool encode_payload(const EncodeSpec& spec, std::vector<uint8_t>& out)
     {

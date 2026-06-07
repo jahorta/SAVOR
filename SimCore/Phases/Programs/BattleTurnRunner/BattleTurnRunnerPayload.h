@@ -10,7 +10,7 @@
 
 namespace phase::battle::turnrunner {
 
-    static constexpr int PayloadVersion = 2;
+    static constexpr int PayloadVersion = 3;
 
     struct EncodeSpec {
         uint32_t run_ms{ 0 };

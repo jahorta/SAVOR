@@ -65,6 +65,7 @@ namespace phase::battle::runner {
         // set timeout based on bp
         ps.ops.push_back(OpRunUntilBp());
         ps.ops.push_back(OpGotoIf(DW_Outcome, PSCmp::NE, 0, LabelDWErr));
+        ps.ops.push_back(OpCapturePredBaselines());
         ps.ops.push_back(OpEvalPredicatesAtHitBP()); // Sets whether all predicates passed into keys::core::PRED_ALL_PASSED
 
         // Check exit conditions
@@ -85,7 +86,6 @@ namespace phase::battle::runner {
         ps.ops.push_back(OpLabel(LabelADV));
         ps.ops.push_back(OpSetTimeoutToMS(short_timeout));
         ps.ops.push_back(OpAddU32(keys::battle::ACTIVE_TURN, 1));
-        ps.ops.push_back(OpCapturePredBaselines());
         ps.ops.push_back(OpGoto(LabelInputTurnActions));
 
         // ============  Label Victory  ===================

@@ -73,6 +73,10 @@ private:
     void removeRequiredBreakpointField(int index);
     void rebuildRequiredBreakpointRows();
     std::vector<int> selectedRequiredBreakpoints() const;
+    void addBaselineBreakpointField(int selectedBp = 0);
+    void removeBaselineBreakpointField(int index);
+    void rebuildBaselineBreakpointRows();
+    std::vector<int> selectedBaselineBreakpoints() const;
     void setComparison(simcore::db::PredicateComparisonOp op);
     simcore::db::PredicateComparisonOp comparison() const;
     void applyProgramDraftToWidgets(const ProgramDraft& draft, bool lhs);
@@ -95,10 +99,14 @@ private:
     std::vector<QComboBox*> breakpointCombos_;
     std::vector<QPushButton*> removeBreakpointButtons_;
     std::vector<QHBoxLayout*> breakpointRowLayouts_;
+    QWidget* baselineBpRowsWidget_ = nullptr;
+    QVBoxLayout* baselineBpRowsLayout_ = nullptr;
+    QPushButton* addBaselineBpButton_ = nullptr;
+    std::vector<QComboBox*> baselineBreakpointCombos_;
+    std::vector<QPushButton*> removeBaselineBreakpointButtons_;
+    std::vector<QHBoxLayout*> baselineBreakpointRowLayouts_;
     QLineEdit* turnMaskEdit_ = nullptr;
-    QComboBox* lhsKindCombo_ = nullptr;
     QLineEdit* lhsValueEdit_ = nullptr;
-    QComboBox* rhsKindCombo_ = nullptr;
     QComboBox* lhsModeCombo_ = nullptr;
     QLineEdit* rhsValueEdit_ = nullptr;
     QComboBox* rhsModeCombo_ = nullptr;
@@ -120,7 +128,7 @@ private:
     QComboBox* widthCombo_ = nullptr;
     QCheckBox* abortOnFailCheck_ = nullptr;
     QCheckBox* activeCheck_ = nullptr;
-    QCheckBox* captureCheck_ = nullptr;
+    QCheckBox* rhsDeltaCheck_ = nullptr;
     QCheckBox* lhsNegateCheck_ = nullptr;
     QCheckBox* rhsNegateCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
