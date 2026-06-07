@@ -4,7 +4,6 @@
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/SeedProbePane/SeedProbePage.h"
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
-#include "GUI/Panes/JobBuilderPane/JobBuilderPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/SpecLibraryDialog.h"
@@ -40,8 +39,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Workflows", "Workflow execution workspace grouped by instance, step, and job set drilldown." },
     { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
     { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
-    { "Workflow Builder", "Composable workflow unit builder with typed input and output compatibility preview." },
-    { "Workflow Launcher", "Workflow graph instancing with per-run external input bindings." },
+    { "Workflow Launcher", "Workflow graph authoring and instancing with per-run external input bindings." },
     { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
     { "Artifacts", "Artifact storage browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Seed probe grid and unique probing results." },
@@ -114,13 +112,13 @@ void MainWindow::handleNavigationChanged(int currentRow)
         coordinatorPane_->setPageActive(currentRow == 2);
     }
     if (seedProbePage_) {
-        seedProbePage_->setPageActive(currentRow == 7);
+        seedProbePage_->setPageActive(currentRow == 6);
     }
     if (explorerRunsPage_) {
-        explorerRunsPage_->setPageActive(currentRow == 8);
+        explorerRunsPage_->setPageActive(currentRow == 7);
     }
     if (dtmEditorPage_) {
-        dtmEditorPage_->setPageActive(currentRow == 9);
+        dtmEditorPage_->setPageActive(currentRow == 8);
     }
 
     if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
@@ -135,7 +133,7 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
         return;
     }
 
-        navigationList_->setCurrentRow(10);
+        navigationList_->setCurrentRow(9);
 
     SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
     switch (target) {
@@ -286,7 +284,6 @@ QWidget* MainWindow::createNavigationPane()
         "Workflows",
         "Jobs",
         "Workers",
-        "Workflow Builder",
         "Workflow Launcher",
         "Battle Run Settings",
         "Artifacts",
@@ -339,9 +336,6 @@ QWidget* MainWindow::createContentPane()
     connect(coordinatorPane_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
     connect(jobsPage_, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
-    auto* jobBuilderPage = new JobBuilderPage(contentStack_);
-    connect(jobBuilderPage, &JobBuilderPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(jobBuilderPage);
     auto* workflowLauncherPage = new WorkflowLauncherPage(contentStack_);
     connect(workflowLauncherPage, &WorkflowLauncherPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
     contentStack_->addWidget(workflowLauncherPage);

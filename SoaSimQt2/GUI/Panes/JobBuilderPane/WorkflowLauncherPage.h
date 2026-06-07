@@ -3,6 +3,7 @@
 #include <optional>
 #include <vector>
 
+#include <QtCore/QPointer>
 #include <QtWidgets/QWidget>
 
 #include "Authoring/IAuthoringDb.h"
@@ -16,6 +17,7 @@ class QCheckBox;
 class QFrame;
 class QSpinBox;
 class QTableWidget;
+class WorkflowGraphEditorWindow;
 
 class WorkflowLauncherPage final : public QWidget
 {
@@ -39,6 +41,7 @@ private:
 
     void createWidgets();
     void refreshWorkflowGraphs();
+    void openWorkflowGraphEditor();
     void handleGraphSelectionChanged();
     void launchSelectedGraph();
     void populateExternalInputs(const simcore::db::WorkflowGraphSnapshot& graph);
@@ -67,8 +70,10 @@ private:
     QLabel* graphDetailLabel_ = nullptr;
     QLabel* launchStatusLabel_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
+    QPushButton* editGraphsButton_ = nullptr;
     QPushButton* launchButton_ = nullptr;
 
+    QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
     std::vector<simcore::db::WorkflowGraphSnapshot> workflowGraphs_;
     std::vector<ExternalInputRow> externalInputs_;
 };

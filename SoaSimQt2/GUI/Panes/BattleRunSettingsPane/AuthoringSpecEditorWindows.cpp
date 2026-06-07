@@ -566,7 +566,7 @@ ExplorerSettingsEditorWindow::ExplorerSettingsEditorWindow(QWidget* parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlag(Qt::Window, true);
-    setWindowTitle(QStringLiteral("Explorer Settings Editor"));
+    setWindowTitle(QStringLiteral("Battle Explorer Settings Editor"));
     resize(620, 420);
     createWidgets();
     refreshChoices();
@@ -602,7 +602,7 @@ void ExplorerSettingsEditorWindow::createWidgets()
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);
     refreshButton_->setObjectName("jobsSecondaryButton");
-    saveButton_ = new QPushButton(QStringLiteral("Save Explorer Settings"), this);
+    saveButton_ = new QPushButton(QStringLiteral("Save Battle Explorer Settings"), this);
     saveButton_->setObjectName("jobsPrimaryButton");
     buttons->addWidget(refreshButton_);
     buttons->addStretch();
@@ -633,7 +633,7 @@ void ExplorerSettingsEditorWindow::refreshChoices()
 void ExplorerSettingsEditorWindow::saveSpec()
 {
     if (nameEdit_->text().trimmed().isEmpty()) {
-        postStatusMessage(QStringLiteral("Explorer settings name is required."), StatusToast::Severity::Warn);
+        postStatusMessage(QStringLiteral("Battle explorer settings name is required."), StatusToast::Severity::Warn);
         return;
     }
     soasimqt2::db::ExplorerSettingsDraft draft{};
@@ -647,7 +647,7 @@ void ExplorerSettingsEditorWindow::saveSpec()
         return;
     }
     notifySaved(savedCallback_);
-    postStatusMessage(QStringLiteral("Saved explorer settings %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
+    postStatusMessage(QStringLiteral("Saved battle explorer settings %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
 }
 
 void ExplorerSettingsEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
@@ -695,7 +695,7 @@ void TemplateEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Seed probe spec"), seedProbeCombo_);
     form->addRow(QStringLiteral("TAS spec"), tasCombo_);
     form->addRow(QStringLiteral("Battle run spec"), battleRunCombo_);
-    form->addRow(QStringLiteral("Explorer settings"), explorerSettingsCombo_);
+    form->addRow(QStringLiteral("Battle explorer settings"), explorerSettingsCombo_);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);

@@ -1,0 +1,6 @@
+BEGIN IMMEDIATE;
+
+ALTER TABLE au_workflow_graph
+    ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0, 1));
+
+COMMIT;

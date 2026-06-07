@@ -144,6 +144,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "overworld_explorer",
             .display_name = "Overworld Explorer",
             .description = "Placeholder contract for future overworld traversal from a terminal savestate.",
+            .hidden = true,
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },
@@ -159,6 +160,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "dungeon_explorer",
             .display_name = "Dungeon Explorer",
             .description = "Placeholder contract for future dungeon traversal from a terminal savestate.",
+            .hidden = true,
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },

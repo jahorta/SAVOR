@@ -1,5 +1,6 @@
 #include "WorkflowLauncherPage.h"
 
+#include "WorkflowGraphEditorWindow.h"
 #include "DB/SimCoreDbAuthoringService.h"
 #include "DB/SimCoreDbWorkflowService.h"
 
@@ -42,10 +43,13 @@ void WorkflowLauncherPage::createWidgets()
     toolbarLayout->setSpacing(10);
 
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), toolbar);
+    editGraphsButton_ = new QPushButton(QStringLiteral("Edit Graphs"), toolbar);
     launchButton_ = new QPushButton(QStringLiteral("Launch Instance"), toolbar);
     refreshButton_->setObjectName("jobsSecondaryButton");
+    editGraphsButton_->setObjectName("jobsSecondaryButton");
     launchButton_->setObjectName("jobsPrimaryButton");
     toolbarLayout->addWidget(refreshButton_);
+    toolbarLayout->addWidget(editGraphsButton_);
     toolbarLayout->addStretch();
     toolbarLayout->addWidget(launchButton_);
     rootLayout->addWidget(toolbar);
@@ -140,8 +144,28 @@ void WorkflowLauncherPage::createWidgets()
     rootLayout->addWidget(body, 1);
 
     connect(refreshButton_, &QPushButton::clicked, this, &WorkflowLauncherPage::refreshWorkflowGraphs);
+    connect(editGraphsButton_, &QPushButton::clicked, this, &WorkflowLauncherPage::openWorkflowGraphEditor);
     connect(launchButton_, &QPushButton::clicked, this, &WorkflowLauncherPage::launchSelectedGraph);
     connect(graphList_, &QListWidget::currentRowChanged, this, &WorkflowLauncherPage::handleGraphSelectionChanged);
+}
+
+void WorkflowLauncherPage::openWorkflowGraphEditor()
+{
+    if (workflowGraphEditor_) {
+        workflowGraphEditor_->show();
+        workflowGraphEditor_->raise();
+        workflowGraphEditor_->activateWindow();
+        return;
+    }
+
+    auto* editor = new WorkflowGraphEditorWindow(nullptr);
+    workflowGraphEditor_ = editor;
+    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) {
+        postStatusMessage(text, severity);
+    });
+    editor->setSavedCallback([this]() { refreshWorkflowGraphs(); });
+    connect(editor, &QObject::destroyed, this, [this]() { workflowGraphEditor_.clear(); });
+    editor->show();
 }
 
 void WorkflowLauncherPage::refreshWorkflowGraphs()

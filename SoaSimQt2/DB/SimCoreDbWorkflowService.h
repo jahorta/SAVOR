@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -57,9 +58,15 @@ public:
     using WorkflowCompositionSpec = simcore::db::execution::workflow::WorkflowCompositionSpec;
     using WorkflowCompositionPreview = simcore::db::execution::workflow::WorkflowCompositionPreview;
 
-    static ServiceResult<std::vector<WorkflowUnitDefinition>> ListWorkflowUnits() {
+    static ServiceResult<std::vector<WorkflowUnitDefinition>> ListWorkflowUnits(bool include_hidden = false) {
         const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
-        return ServiceResult<std::vector<WorkflowUnitDefinition>>::Ok(registry.ListUnits());
+        auto units = registry.ListUnits();
+        if (!include_hidden) {
+            units.erase(
+                std::remove_if(units.begin(), units.end(), [](const auto& unit) { return unit.hidden; }),
+                units.end());
+        }
+        return ServiceResult<std::vector<WorkflowUnitDefinition>>::Ok(std::move(units));
     }
 
     static ServiceResult<WorkflowCompositionPreview> PreviewComposition(

@@ -127,6 +127,7 @@ struct WorkflowGraphDraft {
     std::optional<std::int64_t> parent_revision_id;
     std::string name;
     std::string description;
+    std::optional<bool> hidden;
     int graph_version = 1;
     std::string graph_hash;
     std::vector<simcore::db::SaveWorkflowGraphNodeCommand> nodes;
@@ -509,7 +510,7 @@ public:
             return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
         if (draft.name.empty()) {
-            return Invalid<std::int64_t>("explorer settings name is required");
+            return Invalid<std::int64_t>("battle explorer settings name is required");
         }
 
         const auto now = simcore::db::types::UtcNow();
@@ -537,7 +538,7 @@ public:
         }
         const auto snapshot = db->GetExplorerSettings(explorer_settings_id);
         if (!snapshot.has_value()) {
-            return NotFound<simcore::db::ExplorerSettingsSnapshot>("explorer settings not found");
+            return NotFound<simcore::db::ExplorerSettingsSnapshot>("battle explorer settings not found");
         }
         return ServiceResult<simcore::db::ExplorerSettingsSnapshot>::Ok(*snapshot);
     }
@@ -617,6 +618,7 @@ public:
         command.parent_revision_id = draft.parent_revision_id;
         command.name = draft.name;
         command.description = draft.description;
+        command.hidden = draft.hidden;
         command.graph_version = draft.graph_version;
         command.graph_hash = draft.graph_hash;
         command.nodes = draft.nodes;
@@ -657,12 +659,28 @@ public:
         return ServiceResult<simcore::db::WorkflowGraphSnapshot>::Ok(*snapshot);
     }
 
-    static ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>> ListWorkflowGraphs(int max_count = 100) {
+    static ServiceResult<void> SetWorkflowGraphHidden(std::int64_t workflow_graph_id, bool hidden) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+        }
+        if (workflow_graph_id <= 0) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "workflow graph id is required" });
+        }
+
+        std::string error;
+        if (!db->SetWorkflowGraphHidden(workflow_graph_id, hidden, &error)) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
+        }
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>> ListWorkflowGraphs(int max_count = 100, bool include_hidden = false) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
             return Unavailable<std::vector<simcore::db::WorkflowGraphSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
         }
-        return ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>>::Ok(db->ListWorkflowGraphs(max_count));
+        return ServiceResult<std::vector<simcore::db::WorkflowGraphSnapshot>>::Ok(db->ListWorkflowGraphs(max_count, include_hidden));
     }
 
 private:

@@ -373,6 +373,18 @@ bool QueuedAuthoringDb::SaveWorkflowGraph(
         error_out);
 }
 
+bool QueuedAuthoringDb::SetWorkflowGraphHidden(
+    std::int64_t workflow_graph_id,
+    bool hidden,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, workflow_graph_id, hidden, error_out]() {
+            return inner_ != nullptr ? inner_->SetWorkflowGraphHidden(workflow_graph_id, hidden, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraph(
     std::int64_t workflow_graph_id) const {
     return ExecuteRead<std::optional<WorkflowGraphSnapshot>>(
@@ -392,10 +404,11 @@ std::optional<WorkflowGraphSnapshot> QueuedAuthoringDb::GetWorkflowGraphRevision
 }
 
 std::vector<WorkflowGraphSnapshot> QueuedAuthoringDb::ListWorkflowGraphs(
-    int max_count) const {
+    int max_count,
+    bool include_hidden) const {
     return ExecuteRead<std::vector<WorkflowGraphSnapshot>>(
-        [this, max_count]() {
-            return inner_ != nullptr ? inner_->ListWorkflowGraphs(max_count) : std::vector<WorkflowGraphSnapshot>{};
+        [this, max_count, include_hidden]() {
+            return inner_ != nullptr ? inner_->ListWorkflowGraphs(max_count, include_hidden) : std::vector<WorkflowGraphSnapshot>{};
         },
         {});
 }

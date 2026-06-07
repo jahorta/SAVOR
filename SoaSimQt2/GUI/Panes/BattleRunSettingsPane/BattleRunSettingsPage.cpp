@@ -62,7 +62,7 @@ void BattleRunSettingsPage::createWidgets()
     newTasSpecButton_ = new QPushButton(QStringLiteral("New TAS"), toolbar);
     newBattleRunSpecButton_ = new QPushButton(QStringLiteral("New Battle Run"), toolbar);
     newPredicateSetButton_ = new QPushButton(QStringLiteral("New Predicate Set"), toolbar);
-    newExplorerSettingsButton_ = new QPushButton(QStringLiteral("New Explorer Settings"), toolbar);
+    newExplorerSettingsButton_ = new QPushButton(QStringLiteral("New Battle Explorer Settings"), toolbar);
     newTemplateButton_ = new QPushButton(QStringLiteral("New Template"), toolbar);
     editPredicateButton_ = new QPushButton(QStringLiteral("Edit Predicate"), toolbar);
     duplicatePredicateButton_ = new QPushButton(QStringLiteral("Duplicate Predicate"), toolbar);
@@ -107,7 +107,7 @@ void BattleRunSettingsPage::createWidgets()
     auto* title = new QLabel(QStringLiteral("Authoring Library"), body);
     title->setObjectName("panelTitle");
     auto* detail = new QLabel(
-        QStringLiteral("Predicates and battle plans are edited in modeless windows and saved to the Authoring database. Workflow graphs are edited from the Workflow Builder pane."),
+        QStringLiteral("Predicates and battle plans are edited in modeless windows and saved to the Authoring database. Workflow graphs are edited from the Workflow Launcher pane."),
         body);
     detail->setObjectName("sectionDescription");
     detail->setWordWrap(true);

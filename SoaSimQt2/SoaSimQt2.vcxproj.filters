@@ -98,9 +98,6 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
-      <Filter>GUI\Panes\JobBuilder</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
@@ -232,9 +229,6 @@
     </QtMoc>
     <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h">
-      <Filter>GUI\Panes\JobBuilder</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h">
       <Filter>GUI\Panes\JobBuilder</Filter>

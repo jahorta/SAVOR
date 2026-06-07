@@ -5,6 +5,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtGui/QCloseEvent>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
@@ -52,6 +53,20 @@ QString portListText(const std::vector<simcore::db::execution::workflow::Workflo
     return lines.join(QStringLiteral("\n"));
 }
 
+QString workflowGraphText(const simcore::db::WorkflowGraphSnapshot& graph)
+{
+    QString text = QStringLiteral("#%1 r%2  %3\n%4 nodes, %5 edges")
+        .arg(static_cast<qint64>(graph.workflow_graph_id))
+        .arg(graph.graph_version)
+        .arg(QString::fromStdString(graph.name))
+        .arg(static_cast<int>(graph.nodes.size()))
+        .arg(static_cast<int>(graph.edges.size()));
+    if (graph.hidden) {
+        text += QStringLiteral("\nHidden");
+    }
+    return text;
+}
+
 std::string workflowGraphHash(
     const QString& name,
     const QString& description,
@@ -89,6 +104,7 @@ WorkflowGraphEditorWindow::WorkflowGraphEditorWindow(QWidget* parent)
 
     createWidgets();
     loadUnits();
+    refreshWorkflowGraphs();
     rebuildBindings();
     refreshPreview();
 }
@@ -206,6 +222,39 @@ void WorkflowGraphEditorWindow::createWidgets()
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
 
+    QVBoxLayout* graphLibraryLayout = nullptr;
+    auto* graphLibraryPanel = createPanel(QStringLiteral("Workflow Graph Library"), splitter, &graphLibraryLayout);
+    graphList_ = new QListWidget(graphLibraryPanel);
+    graphLibraryLayout->addWidget(graphList_, 1);
+    auto* graphButtonRow = new QHBoxLayout();
+    newGraphButton_ = new QPushButton(QStringLiteral("New"), graphLibraryPanel);
+    editGraphButton_ = new QPushButton(QStringLiteral("Edit"), graphLibraryPanel);
+    duplicateGraphButton_ = new QPushButton(QStringLiteral("Duplicate"), graphLibraryPanel);
+    newGraphButton_->setObjectName("jobsPrimaryButton");
+    editGraphButton_->setObjectName("jobsSecondaryButton");
+    duplicateGraphButton_->setObjectName("jobsSecondaryButton");
+    graphButtonRow->addWidget(newGraphButton_);
+    graphButtonRow->addWidget(editGraphButton_);
+    graphButtonRow->addWidget(duplicateGraphButton_);
+    graphLibraryLayout->addLayout(graphButtonRow);
+    auto* visibilityButtonRow = new QHBoxLayout();
+    hideGraphButton_ = new QPushButton(QStringLiteral("Hide"), graphLibraryPanel);
+    unhideGraphButton_ = new QPushButton(QStringLiteral("Unhide"), graphLibraryPanel);
+    refreshGraphsButton_ = new QPushButton(QStringLiteral("Refresh"), graphLibraryPanel);
+    hideGraphButton_->setObjectName("jobsSecondaryButton");
+    unhideGraphButton_->setObjectName("jobsSecondaryButton");
+    refreshGraphsButton_->setObjectName("jobsSecondaryButton");
+    visibilityButtonRow->addWidget(hideGraphButton_);
+    visibilityButtonRow->addWidget(unhideGraphButton_);
+    visibilityButtonRow->addWidget(refreshGraphsButton_);
+    graphLibraryLayout->addLayout(visibilityButtonRow);
+    showHiddenGraphsCheck_ = new QCheckBox(QStringLiteral("Show hidden"), graphLibraryPanel);
+    graphLibraryLayout->addWidget(showHiddenGraphsCheck_);
+    graphStatusLabel_ = new QLabel(graphLibraryPanel);
+    graphStatusLabel_->setObjectName("sectionDescription");
+    graphStatusLabel_->setWordWrap(true);
+    graphLibraryLayout->addWidget(graphStatusLabel_);
+
     QVBoxLayout* unitLayout = nullptr;
     auto* unitPanel = createPanel(QStringLiteral("Workflow Units"), splitter, &unitLayout);
     unitList_ = new QListWidget(unitPanel);
@@ -241,14 +290,24 @@ void WorkflowGraphEditorWindow::createWidgets()
     previewText_->setMinimumWidth(360);
     previewLayout->addWidget(previewText_, 1);
 
+    splitter->addWidget(graphLibraryPanel);
     splitter->addWidget(unitPanel);
     splitter->addWidget(compositionPanel);
     splitter->addWidget(previewPanel);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 2);
+    splitter->setStretchFactor(2, 1);
+    splitter->setStretchFactor(3, 2);
     rootLayout->addWidget(splitter, 1);
 
+    connect(newGraphButton_, &QPushButton::clicked, this, &WorkflowGraphEditorWindow::newGraph);
+    connect(editGraphButton_, &QPushButton::clicked, this, [this]() { loadSelectedGraph(false); });
+    connect(duplicateGraphButton_, &QPushButton::clicked, this, [this]() { loadSelectedGraph(true); });
+    connect(hideGraphButton_, &QPushButton::clicked, this, [this]() { setSelectedGraphHidden(true); });
+    connect(unhideGraphButton_, &QPushButton::clicked, this, [this]() { setSelectedGraphHidden(false); });
+    connect(refreshGraphsButton_, &QPushButton::clicked, this, &WorkflowGraphEditorWindow::refreshWorkflowGraphs);
+    connect(showHiddenGraphsCheck_, &QCheckBox::toggled, this, &WorkflowGraphEditorWindow::refreshWorkflowGraphs);
+    connect(graphList_, &QListWidget::itemDoubleClicked, this, [this]() { loadSelectedGraph(false); });
     connect(addUnitButton_, &QPushButton::clicked, this, &WorkflowGraphEditorWindow::addSelectedUnit);
     connect(removeNodeButton_, &QPushButton::clicked, this, &WorkflowGraphEditorWindow::removeSelectedNode);
     connect(clearButton_, &QPushButton::clicked, this, &WorkflowGraphEditorWindow::clearComposition);
@@ -271,6 +330,99 @@ void WorkflowGraphEditorWindow::loadUnits()
     }
     units_ = result.value;
     refreshUnitList();
+}
+
+void WorkflowGraphEditorWindow::refreshWorkflowGraphs()
+{
+    if (graphList_ == nullptr) {
+        return;
+    }
+
+    const bool includeHidden = showHiddenGraphsCheck_ != nullptr && showHiddenGraphsCheck_->isChecked();
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::ListWorkflowGraphs(200, includeHidden);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+
+    workflowGraphs_ = result.value;
+    graphList_->clear();
+    for (const auto& graph : workflowGraphs_) {
+        auto* item = new QListWidgetItem(workflowGraphText(graph), graphList_);
+        item->setData(Qt::UserRole, static_cast<qint64>(graph.workflow_graph_id));
+    }
+    if (graphList_->count() > 0) {
+        graphList_->setCurrentRow(0);
+    }
+    if (graphStatusLabel_ != nullptr) {
+        graphStatusLabel_->setText(QStringLiteral("%1 workflow graphs%2")
+            .arg(static_cast<int>(workflowGraphs_.size()))
+            .arg(includeHidden ? QStringLiteral(" including hidden") : QString()));
+    }
+}
+
+void WorkflowGraphEditorWindow::newGraph()
+{
+    if (!confirmDiscardIfDirty()) {
+        return;
+    }
+
+    workflowGraphId_.reset();
+    parentRevisionId_.reset();
+    nodes_.clear();
+    outputBindings_.clear();
+    authoredRefsByNode_.clear();
+    authoredRefOptions_.clear();
+    nextNodeOrdinal_ = 1;
+    const auto stamp = QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+    nameEdit_->setText(QStringLiteral("Qt2 workflow graph %1").arg(stamp));
+    descriptionEdit_->clear();
+    setWindowTitle(QStringLiteral("Workflow Graph Editor"));
+    refreshCompositionList();
+    refreshNodeSettings();
+    refreshPreview();
+    dirty_ = false;
+}
+
+void WorkflowGraphEditorWindow::loadSelectedGraph(bool duplicate)
+{
+    const int row = graphList_ != nullptr ? graphList_->currentRow() : -1;
+    if (row < 0 || row >= static_cast<int>(workflowGraphs_.size())) {
+        postStatusMessage(
+            duplicate ? QStringLiteral("Select a workflow graph to duplicate.") : QStringLiteral("Select a workflow graph to edit."),
+            StatusToast::Severity::Warn);
+        return;
+    }
+    if (!confirmDiscardIfDirty()) {
+        return;
+    }
+    loadSnapshot(workflowGraphs_[static_cast<std::size_t>(row)], duplicate);
+}
+
+void WorkflowGraphEditorWindow::setSelectedGraphHidden(bool hidden)
+{
+    const int row = graphList_ != nullptr ? graphList_->currentRow() : -1;
+    if (row < 0 || row >= static_cast<int>(workflowGraphs_.size())) {
+        postStatusMessage(QStringLiteral("Select a workflow graph first."), StatusToast::Severity::Warn);
+        return;
+    }
+
+    const auto graphId = workflowGraphs_[static_cast<std::size_t>(row)].workflow_graph_id;
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::SetWorkflowGraphHidden(graphId, hidden);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+
+    postStatusMessage(
+        hidden
+            ? QStringLiteral("Workflow graph hidden.")
+            : QStringLiteral("Workflow graph unhidden."),
+        StatusToast::Severity::Info);
+    refreshWorkflowGraphs();
+    if (savedCallback_) {
+        savedCallback_();
+    }
 }
 
 void WorkflowGraphEditorWindow::addSelectedUnit()
@@ -414,6 +566,7 @@ void WorkflowGraphEditorWindow::saveGraph()
     workflowGraphId_ = result.value.workflow_graph_id;
     parentRevisionId_ = result.value.workflow_graph_revision_id;
     dirty_ = false;
+    refreshWorkflowGraphs();
     if (savedCallback_) {
         savedCallback_();
     }
@@ -574,7 +727,7 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
         }
         for (const auto& template_row : result.value) {
             authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2 battle=%3 explorer=%4")
+                .label = QStringLiteral("#%1 %2 battle=%3 battle explorer=%4")
                     .arg(static_cast<qint64>(template_row.template_id))
                     .arg(QString::fromStdString(template_row.name))
                     .arg(template_row.battle_run_spec_id.has_value() ? QString::number(*template_row.battle_run_spec_id) : QStringLiteral("-"))

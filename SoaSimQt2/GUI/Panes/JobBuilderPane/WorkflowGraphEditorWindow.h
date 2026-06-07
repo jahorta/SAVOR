@@ -14,6 +14,7 @@
 
 class QCloseEvent;
 class QLabel;
+class QCheckBox;
 class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
@@ -41,6 +42,10 @@ private:
     void closeEvent(QCloseEvent* event) override;
     void createWidgets();
     void loadUnits();
+    void refreshWorkflowGraphs();
+    void newGraph();
+    void loadSelectedGraph(bool duplicate);
+    void setSelectedGraphHidden(bool hidden);
     void addSelectedUnit();
     void removeSelectedNode();
     void clearComposition();
@@ -64,6 +69,7 @@ private:
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
+    std::vector<simcore::db::WorkflowGraphSnapshot> workflowGraphs_;
     std::vector<WorkflowUnitDefinition> units_;
     std::vector<WorkflowCompositionNode> nodes_;
     std::vector<WorkflowUnitOutputBinding> outputBindings_;
@@ -74,6 +80,15 @@ private:
     int nextNodeOrdinal_ = 1;
     bool dirty_ = false;
 
+    QListWidget* graphList_ = nullptr;
+    QLabel* graphStatusLabel_ = nullptr;
+    QCheckBox* showHiddenGraphsCheck_ = nullptr;
+    QPushButton* newGraphButton_ = nullptr;
+    QPushButton* editGraphButton_ = nullptr;
+    QPushButton* duplicateGraphButton_ = nullptr;
+    QPushButton* hideGraphButton_ = nullptr;
+    QPushButton* unhideGraphButton_ = nullptr;
+    QPushButton* refreshGraphsButton_ = nullptr;
     QLineEdit* nameEdit_ = nullptr;
     QPlainTextEdit* descriptionEdit_ = nullptr;
     QListWidget* unitList_ = nullptr;

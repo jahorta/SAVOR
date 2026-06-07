@@ -309,6 +309,7 @@ struct SaveWorkflowGraphCommand {
     std::optional<std::int64_t> parent_revision_id;
     std::string name;
     std::string description;
+    std::optional<bool> hidden;
     int graph_version = 1;
     std::string graph_hash;
     bool make_active = true;
@@ -448,6 +449,7 @@ struct WorkflowGraphSnapshot {
     std::optional<std::int64_t> parent_revision_id;
     std::string name;
     std::string description;
+    bool hidden = false;
     int graph_version = 1;
     std::string graph_hash;
     std::string status;
@@ -565,6 +567,11 @@ struct IAuthoringDb {
         SaveWorkflowGraphResult* result_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
+    virtual bool SetWorkflowGraphHidden(
+        std::int64_t workflow_graph_id,
+        bool hidden,
+        std::string* error_out = nullptr) = 0;
+
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const = 0;
 
@@ -572,7 +579,8 @@ struct IAuthoringDb {
         std::int64_t workflow_graph_revision_id) const = 0;
 
     virtual std::vector<WorkflowGraphSnapshot> ListWorkflowGraphs(
-        int max_count) const = 0;
+        int max_count,
+        bool include_hidden = false) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

@@ -132,7 +132,6 @@
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="DB\DBCore\DbSnapshotService.cpp" />
     <ClCompile Include="SimCoreDbRuntime.cpp" />
-    <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp" />
@@ -182,7 +181,6 @@
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
-    <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />

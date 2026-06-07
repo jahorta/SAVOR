@@ -25,6 +25,7 @@ struct WorkflowUnitDefinition {
     std::string unit_kind;
     std::string display_name;
     std::string description;
+    bool hidden = false;
     std::vector<WorkflowPortDefinition> required_inputs;
     std::vector<WorkflowPortDefinition> possible_outputs;
     std::vector<std::string> internal_step_kinds;

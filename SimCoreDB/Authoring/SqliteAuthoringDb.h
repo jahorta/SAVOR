@@ -111,6 +111,11 @@ public:
         SaveWorkflowGraphResult* result_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    bool SetWorkflowGraphHidden(
+        std::int64_t workflow_graph_id,
+        bool hidden,
+        std::string* error_out = nullptr) override;
+
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(
         std::int64_t workflow_graph_id) const override;
 
@@ -118,7 +123,8 @@ public:
         std::int64_t workflow_graph_revision_id) const override;
 
     std::vector<WorkflowGraphSnapshot> ListWorkflowGraphs(
-        int max_count) const override;
+        int max_count,
+        bool include_hidden = false) const override;
 
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

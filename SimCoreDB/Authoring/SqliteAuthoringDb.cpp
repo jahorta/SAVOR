@@ -1970,7 +1970,7 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         Statement update_graph;
         if (sqlite3_prepare_v2(
                 db_,
-                "UPDATE au_workflow_graph SET name=?1, description=?2 WHERE workflow_graph_id=?3;",
+                "UPDATE au_workflow_graph SET name=?1, description=?2, hidden=COALESCE(?3, hidden) WHERE workflow_graph_id=?4;",
                 -1,
                 &update_graph.st,
                 nullptr)
@@ -1982,7 +1982,9 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         sqlite3_bind_text(update_graph.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
         if (command.description.empty()) sqlite3_bind_null(update_graph.st, 2);
         else sqlite3_bind_text(update_graph.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(update_graph.st, 3, workflow_graph_id);
+        if (command.hidden.has_value()) sqlite3_bind_int(update_graph.st, 3, *command.hidden ? 1 : 0);
+        else sqlite3_bind_null(update_graph.st, 3);
+        sqlite3_bind_int64(update_graph.st, 4, workflow_graph_id);
         if (sqlite3_step(update_graph.st) != SQLITE_DONE) {
             rollback();
             if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -1992,8 +1994,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         Statement insert_graph;
         if (sqlite3_prepare_v2(
                 db_,
-                "INSERT INTO au_workflow_graph(name,description,created_at_utc) "
-                "VALUES(?1,?2,?3);",
+                "INSERT INTO au_workflow_graph(name,description,created_at_utc,hidden) "
+                "VALUES(?1,?2,?3,?4);",
                 -1,
                 &insert_graph.st,
                 nullptr)
@@ -2007,6 +2009,7 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         if (command.description.empty()) sqlite3_bind_null(insert_graph.st, 2);
         else sqlite3_bind_text(insert_graph.st, 2, command.description.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(insert_graph.st, 3, ToEpochMillis(command.created_at_utc));
+        sqlite3_bind_int(insert_graph.st, 4, command.hidden.value_or(false) ? 1 : 0);
         if (sqlite3_step(insert_graph.st) != SQLITE_DONE) {
             rollback();
             if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -2266,6 +2269,43 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
     return true;
 }
 
+bool SqliteAuthoringDb::SetWorkflowGraphHidden(
+    std::int64_t workflow_graph_id,
+    bool hidden,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (workflow_graph_id <= 0) {
+        if (error_out) *error_out = "workflow_graph_id must be > 0";
+        return false;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "UPDATE au_workflow_graph SET hidden=?1 WHERE workflow_graph_id=?2;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int(st.st, 1, hidden ? 1 : 0);
+    sqlite3_bind_int64(st.st, 2, workflow_graph_id);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "workflow graph not found";
+        return false;
+    }
+    return true;
+}
+
 std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     std::int64_t workflow_graph_id) const {
     if (db_ == nullptr || workflow_graph_id <= 0) {
@@ -2276,7 +2316,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "r.graph_version,r.graph_hash,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.status "
             "FROM au_workflow_graph g "
             "JOIN au_workflow_graph_revision r ON r.workflow_graph_revision_id=g.active_revision_id "
             "WHERE g.workflow_graph_id=?1;",
@@ -2297,9 +2337,10 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraph(
     out.parent_revision_id = ColumnInt64Optional(graph_st.st, 2);
     out.name = ColumnText(graph_st.st, 3);
     out.description = ColumnText(graph_st.st, 4);
-    out.graph_version = sqlite3_column_int(graph_st.st, 5);
-    out.graph_hash = ColumnText(graph_st.st, 6);
-    out.status = ColumnText(graph_st.st, 7);
+    out.hidden = sqlite3_column_int(graph_st.st, 5) != 0;
+    out.graph_version = sqlite3_column_int(graph_st.st, 6);
+    out.graph_hash = ColumnText(graph_st.st, 7);
+    out.status = ColumnText(graph_st.st, 8);
 
     Statement node_st;
     if (sqlite3_prepare_v2(
@@ -2407,7 +2448,7 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     if (sqlite3_prepare_v2(
             db_,
             "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,r.parent_revision_id,g.name,COALESCE(g.description,''),"
-            "r.graph_version,r.graph_hash,r.status "
+            "COALESCE(g.hidden,0),r.graph_version,r.graph_hash,r.status "
             "FROM au_workflow_graph_revision r "
             "JOIN au_workflow_graph g ON g.workflow_graph_id=r.workflow_graph_id "
             "WHERE r.workflow_graph_revision_id=?1;",
@@ -2428,9 +2469,10 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
     out.parent_revision_id = ColumnInt64Optional(graph_st.st, 2);
     out.name = ColumnText(graph_st.st, 3);
     out.description = ColumnText(graph_st.st, 4);
-    out.graph_version = sqlite3_column_int(graph_st.st, 5);
-    out.graph_hash = ColumnText(graph_st.st, 6);
-    out.status = ColumnText(graph_st.st, 7);
+    out.hidden = sqlite3_column_int(graph_st.st, 5) != 0;
+    out.graph_version = sqlite3_column_int(graph_st.st, 6);
+    out.graph_hash = ColumnText(graph_st.st, 7);
+    out.status = ColumnText(graph_st.st, 8);
 
     Statement node_st;
     if (sqlite3_prepare_v2(
@@ -2529,7 +2571,8 @@ std::optional<WorkflowGraphSnapshot> SqliteAuthoringDb::GetWorkflowGraphRevision
 }
 
 std::vector<WorkflowGraphSnapshot> SqliteAuthoringDb::ListWorkflowGraphs(
-    int max_count) const {
+    int max_count,
+    bool include_hidden) const {
     std::vector<WorkflowGraphSnapshot> out;
     if (db_ == nullptr) {
         return out;
@@ -2538,14 +2581,17 @@ std::vector<WorkflowGraphSnapshot> SqliteAuthoringDb::ListWorkflowGraphs(
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT workflow_graph_id FROM au_workflow_graph ORDER BY workflow_graph_id DESC LIMIT ?1;",
+            "SELECT workflow_graph_id FROM au_workflow_graph "
+            "WHERE (?1<>0 OR COALESCE(hidden,0)=0) "
+            "ORDER BY workflow_graph_id DESC LIMIT ?2;",
             -1,
             &st.st,
             nullptr)
         != SQLITE_OK) {
         return out;
     }
-    sqlite3_bind_int(st.st, 1, std::max(1, max_count));
+    sqlite3_bind_int(st.st, 1, include_hidden ? 1 : 0);
+    sqlite3_bind_int(st.st, 2, std::max(1, max_count));
     while (sqlite3_step(st.st) == SQLITE_ROW) {
         if (auto snapshot = GetWorkflowGraph(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
             out.push_back(std::move(*snapshot));
