@@ -450,12 +450,6 @@
     <ClInclude Include="DB\Scheduling\TriggersRepo.h">
       <Filter>DB\Scheduling</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\DB\DBTriggerEngine.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinator.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
     <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
@@ -575,6 +569,9 @@
     </ClInclude>
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
       <Filter>Core\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="Tas\DtmAnnotationFile.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1063,6 +1060,9 @@
     </ClCompile>
     <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp">
       <Filter>DB\ProgramCodecs</Filter>
+    </ClCompile>
+    <ClCompile Include="Tas\DtmAnnotationFile.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

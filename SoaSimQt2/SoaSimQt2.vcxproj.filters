@@ -198,6 +198,7 @@
       <Filter>DB</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
@@ -269,28 +270,10 @@
     <ClInclude Include="SimCoreDbRuntime.h">
       <Filter>Main</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\ActionPresetDragTableModel.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateDragTableModel.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsDragDrop.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\UiActionSlotDropWidget.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SelectedPredicateDropListWidget.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </QtMoc>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
-      <Filter>GUI\Panes\BattleRunSettings</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">
@@ -344,12 +327,6 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
-      <Filter>GUI\Widgets\VisualReplay</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
-      <Filter>GUI\Widgets\VisualReplay</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h">
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </ClInclude>
@@ -383,5 +360,6 @@
     <ClInclude Include="DB\DBCore\DbSnapshotService.h">
       <Filter>DB</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
   </ItemGroup>
 </Project>
