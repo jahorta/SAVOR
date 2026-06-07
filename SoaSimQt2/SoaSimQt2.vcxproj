@@ -135,6 +135,7 @@
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp" />
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
@@ -184,6 +185,7 @@
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h" />
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h" />
     <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.h" />
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.h" />
@@ -214,6 +216,7 @@
     <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h" />
     <ClInclude Include="DB\SimCoreDbArtifactService.h" />
     <ClInclude Include="DB\SimCoreDbAuthoringService.h" />
+    <ClInclude Include="DB\SimCoreDbExplorerRunService.h" />
     <ClInclude Include="DB\SimCoreDbJobService.h" />
     <ClInclude Include="DB\SimCoreDbServiceResult.h" />
     <ClInclude Include="DB\SimCoreDbWorkflowService.h" />

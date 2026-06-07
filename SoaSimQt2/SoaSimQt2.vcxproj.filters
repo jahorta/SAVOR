@@ -95,6 +95,9 @@
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\JobBuilderPane\JobBuilderPage.cpp">
       <Filter>GUI\Panes\JobBuilder</Filter>
     </ClCompile>
@@ -266,6 +269,9 @@
     <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
       <Filter>GUI\Panes\ExplorerRuns</Filter>
     </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
     <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
     </QtMoc>
@@ -408,6 +414,9 @@
       <Filter>GUI\Widgets\VisualReplay</Filter>
     </QtMoc>
     <ClInclude Include="DB\SimCoreDbAuthoringService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbExplorerRunService.h">
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SimCoreDbJobService.h">
