@@ -4,6 +4,7 @@
 #include <functional>
 #include <vector>
 
+#include <QtCore/QPointer>
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
@@ -18,6 +19,8 @@ class QPushButton;
 class QSpinBox;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QVBoxLayout;
+class BattlePlanActionPresetEditorWindow;
 
 class BattlePlanEditorWindow final : public QWidget
 {
@@ -51,6 +54,9 @@ private:
     void addActionToSelectedTurn(std::int64_t presetId, int turnIndex = -1, int slotIndex = -1);
     void assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex, int slotIndex);
     void clearSelectedSlot();
+    void openActionPresetEditorForSelection();
+    void openActionPresetEditorForAction();
+    void openNewActionPresetEditor();
     void duplicateSelectedAction();
     void removeSelectedNode();
     void moveSelectedAction(int delta);
@@ -74,6 +80,9 @@ private:
     int selectedActionIndex() const;
     static bool isActionItem(const QTreeWidgetItem* item);
     static bool isTurnItem(const QTreeWidgetItem* item);
+    std::int64_t selectedPresetIdFromLibrary() const;
+    std::int64_t selectedPresetIdFromAction() const;
+    void openPresetEditor(std::int64_t presetId, bool duplicate);
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
@@ -93,4 +102,5 @@ private:
     QPushButton* saveButton_ = nullptr;
     std::vector<simcore::db::BattlePlanActionPresetSnapshot> actionPresets_;
     std::vector<TurnDraft> turns_;
+    QPointer<BattlePlanActionPresetEditorWindow> presetEditor_;
 };

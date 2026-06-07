@@ -1,6 +1,7 @@
 #include "BattlePlanEditorWindow.h"
 
 #include "DB/SimCoreDbAuthoringService.h"
+#include "BattlePlanActionPresetEditorWindow.h"
 #include "BattleRunSettingsDragDrop.h"
 
 #include <QtCore/QMimeData>
@@ -331,6 +332,15 @@ void BattlePlanEditorWindow::createWidgets()
     actionLibraryList_ = new ActionLibraryListWidget(libraryPanel);
     libraryLayout->addWidget(libraryTitle);
     libraryLayout->addWidget(actionLibraryList_, 1);
+    auto* libraryButtons = new QHBoxLayout();
+    auto* newPresetButton = new QPushButton(QStringLiteral("New Preset"), libraryPanel);
+    auto* editPresetButton = new QPushButton(QStringLiteral("Edit Preset"), libraryPanel);
+    newPresetButton->setObjectName("jobsSecondaryButton");
+    editPresetButton->setObjectName("jobsSecondaryButton");
+    libraryButtons->addWidget(newPresetButton);
+    libraryButtons->addWidget(editPresetButton);
+    libraryButtons->addStretch();
+    libraryLayout->addLayout(libraryButtons);
     populateActionLibrary();
 
     auto* planPanel = new QFrame(splitter);
@@ -402,6 +412,8 @@ void BattlePlanEditorWindow::createWidgets()
 
     connect(saveButton_, &QPushButton::clicked, this, &BattlePlanEditorWindow::saveBattlePlan);
     connect(actionLibraryList_, &QListWidget::itemDoubleClicked, this, &BattlePlanEditorWindow::addActionFromLibrarySelection);
+    connect(newPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openNewActionPresetEditor);
+    connect(editPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openActionPresetEditorForSelection);
     connect(planTree_, &QTreeWidget::currentItemChanged, this, [this]() { refreshSelectionPanel(); });
     connect(planTree_, &QWidget::customContextMenuRequested, this, &BattlePlanEditorWindow::showPlanContextMenu);
     connect(nameEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
@@ -620,6 +632,90 @@ void BattlePlanEditorWindow::addActionFromLibrarySelection()
     assignPresetToSelection(presetId);
 }
 
+void BattlePlanEditorWindow::openNewActionPresetEditor()
+{
+    if (presetEditor_ != nullptr) {
+        presetEditor_->close();
+    }
+    auto* editor = new BattlePlanActionPresetEditorWindow(this);
+    presetEditor_ = editor;
+    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) {
+        postStatusMessage(text, severity);
+    });
+    editor->setSavedCallback([this]() {
+        populateActionLibrary();
+        refreshSelectionPanel();
+    });
+    editor->loadNew();
+    editor->show();
+    editor->raise();
+    editor->activateWindow();
+}
+
+void BattlePlanEditorWindow::openActionPresetEditorForSelection()
+{
+    auto presetId = selectedPresetIdFromAction();
+    if (presetId <= 0) {
+        presetId = selectedPresetIdFromLibrary();
+    }
+    if (presetId <= 0) {
+        openNewActionPresetEditor();
+        return;
+    }
+    openPresetEditor(presetId, false);
+}
+
+void BattlePlanEditorWindow::openActionPresetEditorForAction()
+{
+    openPresetEditor(selectedPresetIdFromAction(), false);
+}
+
+std::int64_t BattlePlanEditorWindow::selectedPresetIdFromLibrary() const
+{
+    const auto* item = actionLibraryList_->currentItem();
+    if (item == nullptr) {
+        return 0;
+    }
+    return item->data(kActionPresetIdRole).toLongLong();
+}
+
+std::int64_t BattlePlanEditorWindow::selectedPresetIdFromAction() const
+{
+    const auto* action = selectedAction();
+    return action != nullptr ? action->action_preset_id : 0;
+}
+
+void BattlePlanEditorWindow::openPresetEditor(std::int64_t presetId, bool duplicate)
+{
+    if (presetId <= 0) {
+        openNewActionPresetEditor();
+        return;
+    }
+    const auto result = soasimqt2::db::SimCoreDbAuthoringService::GetBattlePlanActionPreset(presetId);
+    if (!result.ok) {
+        postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
+        return;
+    }
+    if (presetEditor_ != nullptr) {
+        presetEditor_->close();
+    }
+
+    auto* editor = new BattlePlanActionPresetEditorWindow(this);
+    presetEditor_ = editor;
+    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) {
+        postStatusMessage(text, severity);
+    });
+    editor->setSavedCallback([this]() {
+        populateActionLibrary();
+        rebuildPlanTree();
+        refreshSelectionPanel();
+    });
+    editor->loadSnapshot(result.value, duplicate);
+    editor->show();
+    editor->raise();
+    editor->activateWindow();
+}
+
 void BattlePlanEditorWindow::clearSelectedSlot()
 {
     const int turnIndex = selectedTurnIndex();
@@ -651,7 +747,7 @@ void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
         return;
     }
 
-    const auto* turn = selectedTurn();
+    auto* turn = selectedTurn();
     const int slotIndex = selectedSlotIndex();
     const int selectedCombatants = turn != nullptr ? turn->player_combatants : 0;
     const int selectedAction = selectedActionIndex();
@@ -664,6 +760,7 @@ void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
     if (hitAction) {
         QAction* assignAction = menu.addAction(QStringLiteral("Assign selected preset"));
         QAction* clearAction = menu.addAction(QStringLiteral("Delete slot"));
+        QAction* editPresetAction = menu.addAction(QStringLiteral("Edit preset"));
         menu.addSeparator();
         QAction* duplicateAction = menu.addAction(QStringLiteral("Duplicate"));
         QAction* moveUpAction = menu.addAction(QStringLiteral("Move slot up"));
@@ -671,6 +768,7 @@ void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
 
         assignAction->setEnabled(canAssign);
         clearAction->setEnabled(canClear);
+        editPresetAction->setEnabled(hasAssignedAction);
         duplicateAction->setEnabled(hasAssignedAction);
         moveUpAction->setEnabled(slotIndex > 0);
         moveDownAction->setEnabled(slotIndex >= 0 && slotIndex + 1 < selectedCombatants);
@@ -680,6 +778,8 @@ void BattlePlanEditorWindow::showPlanContextMenu(const QPoint& position)
             addActionFromLibrarySelection();
         } else if (chosen == clearAction) {
             clearSelectedSlot();
+        } else if (chosen == editPresetAction) {
+            openActionPresetEditorForAction();
         } else if (chosen == duplicateAction) {
             duplicateSelectedAction();
         } else if (chosen == moveUpAction) {

@@ -121,6 +121,7 @@
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp" />
     <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp" />
@@ -172,6 +173,7 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h" />
     <ClInclude Include="GUI\Common\StatusToast.h" />
     <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h" />
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h" />
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h" />
