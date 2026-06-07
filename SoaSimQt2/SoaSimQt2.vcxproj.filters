@@ -209,6 +209,9 @@
     <ClCompile Include="SimCoreDbRuntime.cpp">
       <Filter>Main</Filter>
     </ClCompile>
+    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
+      <Filter>DB</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -429,6 +432,9 @@
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SimCoreDbWorkflowService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\DBCore\DbSnapshotService.h">
       <Filter>DB</Filter>
     </ClInclude>
   </ItemGroup>

@@ -655,29 +655,4 @@ struct BattleSingleTurnRunDBCodec {
 
 struct BattleContextDBCodec {};
 
-enum class DbSnapshotPhase {
-    Preparing,
-    ScanningArtifacts,
-    WritingCoreEntries,
-    WritingArtifacts,
-    Finalizing,
-    Starting,
-    Reading,
-    Writing,
-    Complete,
-    Failed
-};
-struct DbSnapshotProgress {
-    DbSnapshotPhase phase = DbSnapshotPhase::Preparing;
-    std::int64_t completed{};
-    std::int64_t current{};
-    std::int64_t total{};
-    std::string message;
-    std::string detail;
-};
-struct DbSnapshotService {
-    static DbResult<void> SaveSnapshot(const std::string&, std::function<void(const DbSnapshotProgress&)>) { return DbResult<void>::Err(qt2shim::NotMigrated("Save snapshot")); }
-    static DbResult<void> LoadSnapshot(const std::string&, const std::string&, bool) { return DbResult<void>::Err(qt2shim::NotMigrated("Load snapshot")); }
-};
-
 } // namespace simcore::db
