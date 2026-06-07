@@ -78,6 +78,18 @@ struct BattlePlanActionDraft {
     int ordinal = 0;
 };
 
+struct BattlePlanActionPresetDraft {
+    std::string name;
+    simcore::db::BattlePlanActionMacro macro = simcore::db::BattlePlanActionMacro::Attack;
+    simcore::db::BattlePlanTargetKind target_kind = simcore::db::BattlePlanTargetKind::SingleEnemy;
+    std::optional<int> target_mask_bits;
+    std::optional<int> target_single_slot;
+    std::optional<int> target_same_as_actor_slot;
+    std::optional<std::string> target_expr_ini;
+    std::optional<int> item_id;
+    int flags = 0;
+};
+
 struct BattlePlanTurnDraft {
     int turn_index = 0;
     std::vector<BattlePlanActionDraft> actions;
@@ -456,16 +468,29 @@ public:
             turn_command.event_id = NextEventId("Authoring.BattlePlanTurnSaved");
             turn_command.correlation_id = plan.event_id;
             for (const auto& action : turn.actions) {
+                simcore::db::SaveBattlePlanActionPresetCommand preset_command{};
+                preset_command.name = BuildGeneratedActionPresetName(draft.name, turn.turn_index, action.ordinal);
+                preset_command.macro = action.macro;
+                preset_command.target_kind = action.target_kind;
+                preset_command.target_mask_bits = action.target_mask_bits;
+                preset_command.target_single_slot = action.target_single_slot.has_value()
+                    ? action.target_single_slot
+                    : action.target_slot;
+                preset_command.target_same_as_actor_slot = action.target_same_as_actor_slot;
+                preset_command.target_expr_ini = action.target_expr_ini;
+                preset_command.item_id = action.item_id;
+                preset_command.created_at_utc = now;
+                preset_command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
+                preset_command.correlation_id = plan.event_id;
+
+                std::int64_t action_preset_id = 0;
+                if (!db->SaveBattlePlanActionPreset(preset_command, &action_preset_id, &error)) {
+                    return Failed<std::int64_t>(error);
+                }
+
                 turn_command.actions.push_back(simcore::db::SaveBattlePlanActionCommand{
                     .actor_slot = action.actor_slot,
-                    .macro = action.macro,
-                    .target_kind = action.target_kind,
-                    .target_slot = action.target_slot,
-                    .target_mask_bits = action.target_mask_bits,
-                    .target_single_slot = action.target_single_slot,
-                    .target_same_as_actor_slot = action.target_same_as_actor_slot,
-                    .target_expr_ini = action.target_expr_ini,
-                    .item_id = action.item_id,
+                    .action_preset_id = action_preset_id,
                     .ordinal = action.ordinal,
                 });
             }
@@ -477,6 +502,84 @@ public:
         }
 
         return ServiceResult<std::int64_t>::Ok(plan_id);
+    }
+
+    static ServiceResult<std::int64_t> SaveBattlePlanActionPreset(const BattlePlanActionPresetDraft& draft) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::int64_t>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        if (draft.name.empty()) {
+            return Invalid<std::int64_t>("battle plan action preset name is required");
+        }
+
+        const auto now = simcore::db::types::UtcNow();
+        simcore::db::SaveBattlePlanActionPresetCommand command{};
+        command.name = draft.name;
+        command.macro = draft.macro;
+        command.target_kind = draft.target_kind;
+        command.target_mask_bits = draft.target_mask_bits;
+        command.target_single_slot = draft.target_single_slot;
+        command.target_same_as_actor_slot = draft.target_same_as_actor_slot;
+        command.target_expr_ini = draft.target_expr_ini;
+        command.item_id = draft.item_id;
+        command.flags = draft.flags;
+        command.created_at_utc = now;
+        command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
+        command.correlation_id = command.event_id;
+
+        std::int64_t id = 0;
+        std::string error;
+        if (!db->SaveBattlePlanActionPreset(command, &id, &error)) {
+            return Failed<std::int64_t>(error);
+        }
+        return ServiceResult<std::int64_t>::Ok(id);
+    }
+
+    static ServiceResult<void> RenameBattlePlanActionPreset(std::int64_t action_preset_id, const std::string& name) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+        }
+        if (action_preset_id <= 0) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "battle plan action preset id is required" });
+        }
+        if (name.empty()) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "battle plan action preset name is required" });
+        }
+
+        simcore::db::RenameBattlePlanActionPresetCommand command{};
+        command.action_preset_id = action_preset_id;
+        command.name = name;
+        command.updated_at_utc = simcore::db::types::UtcNow();
+        command.event_id = NextEventId("Authoring.BattlePlanActionPresetRenamed");
+        command.correlation_id = command.event_id;
+
+        std::string error;
+        if (!db->RenameBattlePlanActionPreset(command, &error)) {
+            return ServiceResult<void>::Err({ ServiceErrorKind::Failed, std::move(error) });
+        }
+        return ServiceResult<void>::Ok();
+    }
+
+    static ServiceResult<simcore::db::BattlePlanActionPresetSnapshot> GetBattlePlanActionPreset(std::int64_t action_preset_id) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<simcore::db::BattlePlanActionPresetSnapshot>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        const auto snapshot = db->GetBattlePlanActionPreset(action_preset_id);
+        if (!snapshot.has_value()) {
+            return NotFound<simcore::db::BattlePlanActionPresetSnapshot>("battle plan action preset not found");
+        }
+        return ServiceResult<simcore::db::BattlePlanActionPresetSnapshot>::Ok(*snapshot);
+    }
+
+    static ServiceResult<std::vector<simcore::db::BattlePlanActionPresetSnapshot>> ListBattlePlanActionPresets(int max_count = 100) {
+        auto* db = AuthoringDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<simcore::db::BattlePlanActionPresetSnapshot>>("legacy SimCore/DB path is temporarily unavailable in this Qt2 migration slice");
+        }
+        return ServiceResult<std::vector<simcore::db::BattlePlanActionPresetSnapshot>>::Ok(db->ListBattlePlanActionPresets(max_count));
     }
 
     static ServiceResult<simcore::db::BattlePlanSnapshot> GetBattlePlan(std::int64_t plan_id) {
@@ -749,6 +852,16 @@ private:
         static std::atomic<std::uint64_t> counter{ 1 };
         const auto now = simcore::db::types::UtcNow().time_since_epoch().count();
         return std::string(prefix) + "." + std::to_string(now) + "." + std::to_string(counter.fetch_add(1));
+    }
+
+    static std::string BuildGeneratedActionPresetName(const std::string& plan_name, int turn_index, int ordinal) {
+        static std::atomic<std::uint64_t> counter{ 1 };
+        const auto now = simcore::db::types::UtcNow().time_since_epoch().count();
+        return plan_name
+            + ".turn" + std::to_string(turn_index)
+            + ".action" + std::to_string(ordinal)
+            + "." + std::to_string(now)
+            + "." + std::to_string(counter.fetch_add(1));
     }
 
     template <typename T>

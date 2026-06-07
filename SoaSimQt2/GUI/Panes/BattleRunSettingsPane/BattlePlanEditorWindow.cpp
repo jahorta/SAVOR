@@ -245,16 +245,17 @@ void BattlePlanEditorWindow::loadSnapshot(const simcore::db::BattlePlanSnapshot&
         }
         auto& targetTurn = turns_[static_cast<std::size_t>(turn.turn_index - 1)];
         for (const auto& action : turn.actions) {
+            const auto& preset = action.action_preset;
             ActionDraft draft{};
             draft.actor_slot = action.actor_slot;
-            draft.macro = action.macro;
-            draft.target_kind = action.target_kind;
-            draft.target_slot = action.target_slot.value_or(action.target_single_slot.value_or(4));
-            draft.target_mask_bits = action.target_mask_bits.value_or(0);
-            draft.target_single_slot = action.target_single_slot.value_or(action.target_slot.value_or(4));
-            draft.target_same_as_actor_slot = action.target_same_as_actor_slot.value_or(0);
-            draft.item_id = action.item_id.value_or(0);
-            draft.has_item_id = action.item_id.has_value();
+            draft.macro = preset.macro;
+            draft.target_kind = preset.target_kind;
+            draft.target_slot = preset.target_single_slot.value_or(4);
+            draft.target_mask_bits = preset.target_mask_bits.value_or(0);
+            draft.target_single_slot = preset.target_single_slot.value_or(4);
+            draft.target_same_as_actor_slot = preset.target_same_as_actor_slot.value_or(0);
+            draft.item_id = preset.item_id.value_or(0);
+            draft.has_item_id = preset.item_id.has_value();
             targetTurn.player_combatants = std::max(targetTurn.player_combatants, draft.actor_slot + 1);
             targetTurn.actions.push_back(std::move(draft));
         }

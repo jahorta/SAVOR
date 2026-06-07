@@ -260,6 +260,8 @@ bool UiOutboxRelayCoordinator::RelayAuthoringOutbox(
         { { "Authoring.TasSpecSaved.v1", 1 }, no_op },
         { { "Authoring.BattleRunSpecSaved.v1", 1 }, no_op },
         { { "Authoring.PlanSaved.v1", 1 }, no_op },
+        { { "Authoring.BattlePlanActionPresetSaved.v1", 1 }, no_op },
+        { { "Authoring.BattlePlanActionPresetRenamed.v1", 1 }, no_op },
         { { "Authoring.PredicateSpecSaved.v1", 1 }, no_op },
         { { "Authoring.PredicateSpecUpdated.v1", 1 }, no_op },
         { { "Authoring.PredicateSpecDeleted.v1", 1 }, no_op },

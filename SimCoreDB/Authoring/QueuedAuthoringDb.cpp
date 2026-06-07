@@ -190,6 +190,47 @@ bool QueuedAuthoringDb::SavePlan(
         error_out);
 }
 
+bool QueuedAuthoringDb::SaveBattlePlanActionPreset(
+    const SaveBattlePlanActionPresetCommand& command,
+    std::int64_t* action_preset_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, action_preset_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->SaveBattlePlanActionPreset(command, action_preset_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedAuthoringDb::RenameBattlePlanActionPreset(
+    const RenameBattlePlanActionPresetCommand& command,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->RenameBattlePlanActionPreset(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::optional<BattlePlanActionPresetSnapshot> QueuedAuthoringDb::GetBattlePlanActionPreset(
+    std::int64_t action_preset_id) const {
+    return ExecuteRead<std::optional<BattlePlanActionPresetSnapshot>>(
+        [this, action_preset_id]() {
+            return inner_ != nullptr ? inner_->GetBattlePlanActionPreset(action_preset_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<BattlePlanActionPresetSnapshot> QueuedAuthoringDb::ListBattlePlanActionPresets(
+    int max_count) const {
+    return ExecuteRead<std::vector<BattlePlanActionPresetSnapshot>>(
+        [this, max_count]() {
+            return inner_ != nullptr ? inner_->ListBattlePlanActionPresets(max_count) : std::vector<BattlePlanActionPresetSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SaveBattlePlanTurn(
     const SaveBattlePlanTurnCommand& command,
     std::int64_t* plan_turn_id_out,

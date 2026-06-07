@@ -46,6 +46,21 @@ public:
         std::int64_t* plan_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
+    bool SaveBattlePlanActionPreset(
+        const SaveBattlePlanActionPresetCommand& command,
+        std::int64_t* action_preset_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool RenameBattlePlanActionPreset(
+        const RenameBattlePlanActionPresetCommand& command,
+        std::string* error_out = nullptr) override;
+
+    std::optional<BattlePlanActionPresetSnapshot> GetBattlePlanActionPreset(
+        std::int64_t action_preset_id) const override;
+
+    std::vector<BattlePlanActionPresetSnapshot> ListBattlePlanActionPresets(
+        int max_count) const override;
+
     bool SaveBattlePlanTurn(
         const SaveBattlePlanTurnCommand& command,
         std::int64_t* plan_turn_id_out = nullptr,

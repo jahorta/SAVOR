@@ -83,6 +83,7 @@ struct AuthoringPayloadRecord {
     std::int64_t tas_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    std::int64_t battle_plan_action_preset_id = 0;
     std::int64_t workflow_graph_id = 0;
     std::int64_t workflow_graph_revision_id = 0;
 };
@@ -180,16 +181,34 @@ struct SavePlanCommand {
     std::string causation_id;
 };
 
-struct SaveBattlePlanActionCommand {
-    int actor_slot = 0;
+struct SaveBattlePlanActionPresetCommand {
+    std::string name;
     BattlePlanActionMacro macro = BattlePlanActionMacro::Attack;
     BattlePlanTargetKind target_kind = BattlePlanTargetKind::SingleEnemy;
-    std::optional<int> target_slot;
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
     std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
+    int flags = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct RenameBattlePlanActionPresetCommand {
+    std::int64_t action_preset_id = 0;
+    std::string name;
+    types::UtcTimePoint updated_at_utc{};
+    std::string event_id;
+    std::string correlation_id;
+    std::string causation_id;
+};
+
+struct SaveBattlePlanActionCommand {
+    int actor_slot = 0;
+    std::int64_t action_preset_id = 0;
     int ordinal = 0;
 };
 
@@ -347,18 +366,27 @@ struct BattleRunSpecSnapshot {
     int max_fake_attacks = 0;
 };
 
-struct BattlePlanActionSnapshot {
-    std::int64_t plan_action_id = 0;
-    std::int64_t plan_turn_id = 0;
-    int actor_slot = 0;
+struct BattlePlanActionPresetSnapshot {
+    std::int64_t action_preset_id = 0;
+    std::string name;
     BattlePlanActionMacro macro = BattlePlanActionMacro::Attack;
     BattlePlanTargetKind target_kind = BattlePlanTargetKind::SingleEnemy;
-    std::optional<int> target_slot;
     std::optional<int> target_mask_bits;
     std::optional<int> target_single_slot;
     std::optional<int> target_same_as_actor_slot;
     std::optional<std::string> target_expr_ini;
     std::optional<int> item_id;
+    int flags = 0;
+    types::UtcTimePoint created_at_utc{};
+    std::optional<types::UtcTimePoint> updated_at_utc;
+};
+
+struct BattlePlanActionSnapshot {
+    std::int64_t plan_action_id = 0;
+    std::int64_t plan_turn_id = 0;
+    int actor_slot = 0;
+    std::int64_t action_preset_id = 0;
+    BattlePlanActionPresetSnapshot action_preset;
     int ordinal = 0;
 };
 
@@ -515,6 +543,21 @@ struct IAuthoringDb {
         const SavePlanCommand& command,
         std::int64_t* plan_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
+
+    virtual bool SaveBattlePlanActionPreset(
+        const SaveBattlePlanActionPresetCommand& command,
+        std::int64_t* action_preset_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual bool RenameBattlePlanActionPreset(
+        const RenameBattlePlanActionPresetCommand& command,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::optional<BattlePlanActionPresetSnapshot> GetBattlePlanActionPreset(
+        std::int64_t action_preset_id) const = 0;
+
+    virtual std::vector<BattlePlanActionPresetSnapshot> ListBattlePlanActionPresets(
+        int max_count) const = 0;
 
     virtual bool SaveBattlePlanTurn(
         const SaveBattlePlanTurnCommand& command,

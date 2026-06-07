@@ -2104,6 +2104,67 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &plan_id,
         &err)) << err;
 
+    std::int64_t attack_preset_id = 0;
+    ASSERT_TRUE(authoring_db.SaveBattlePlanActionPreset(
+        {
+            .name = "attack-mask-preset",
+            .macro = soa::battle::actions::BattleAction::Attack,
+            .target_kind = simcore::db::BattlePlanTargetKind::MultipleEnemies,
+            .target_mask_bits = 1 << 4,
+            .created_at_utc = now,
+            .event_id = "au-action-preset-attack",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-3a",
+        },
+        &attack_preset_id,
+        &err)) << err;
+    ASSERT_GT(attack_preset_id, 0);
+
+    std::int64_t item_preset_id = 0;
+    ASSERT_TRUE(authoring_db.SaveBattlePlanActionPreset(
+        {
+            .name = "use-item-same-as-preset",
+            .macro = soa::battle::actions::BattleAction::UseItem,
+            .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
+            .target_same_as_actor_slot = 0,
+            .item_id = 99,
+            .created_at_utc = now,
+            .event_id = "au-action-preset-item",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-3b",
+        },
+        &item_preset_id,
+        &err)) << err;
+    ASSERT_GT(item_preset_id, 0);
+
+    ASSERT_TRUE(authoring_db.RenameBattlePlanActionPreset(
+        {
+            .action_preset_id = item_preset_id,
+            .name = "renamed-use-item-same-as-preset",
+            .updated_at_utc = now,
+            .event_id = "au-action-preset-rename",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-3c",
+        },
+        &err)) << err;
+
+    std::int64_t edited_attack_preset_id = 0;
+    ASSERT_TRUE(authoring_db.SaveBattlePlanActionPreset(
+        {
+            .name = "attack-mask-preset",
+            .macro = soa::battle::actions::BattleAction::Attack,
+            .target_kind = simcore::db::BattlePlanTargetKind::SingleEnemy,
+            .target_single_slot = 4,
+            .created_at_utc = now,
+            .event_id = "au-action-preset-attack-edited",
+            .correlation_id = "au-corr",
+            .causation_id = "au-cause-3d",
+        },
+        &edited_attack_preset_id,
+        &err)) << err;
+    ASSERT_GT(edited_attack_preset_id, 0);
+    EXPECT_NE(edited_attack_preset_id, attack_preset_id);
+
     std::int64_t plan_turn_id = 0;
     ASSERT_TRUE(authoring_db.SaveBattlePlanTurn(
         {
@@ -2112,16 +2173,12 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .actions = {
                 {
                     .actor_slot = 0,
-                    .macro = soa::battle::actions::BattleAction::Attack,
-                    .target_kind = simcore::db::BattlePlanTargetKind::MultipleEnemies,
-                    .target_slot = 2,
+                    .action_preset_id = attack_preset_id,
                     .ordinal = 0,
                 },
                 {
                     .actor_slot = 1,
-                    .macro = soa::battle::actions::BattleAction::UseItem,
-                    .target_kind = simcore::db::BattlePlanTargetKind::SameAsOtherPC,
-                    .item_id = 99,
+                    .action_preset_id = item_preset_id,
                     .ordinal = 1,
                 },
             },
@@ -2226,12 +2283,16 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     ASSERT_EQ(plan->turns.size(), 1);
     EXPECT_EQ(plan->turns[0].turn_index, 1);
     ASSERT_EQ(plan->turns[0].actions.size(), 2);
-    EXPECT_EQ(plan->turns[0].actions[0].macro, soa::battle::actions::BattleAction::Attack);
-    EXPECT_EQ(plan->turns[0].actions[0].target_kind, simcore::db::BattlePlanTargetKind::MultipleEnemies);
-    EXPECT_EQ(plan->turns[0].actions[0].target_slot.value_or(-1), 2);
-    EXPECT_EQ(plan->turns[0].actions[1].macro, soa::battle::actions::BattleAction::UseItem);
-    EXPECT_EQ(plan->turns[0].actions[1].target_kind, simcore::db::BattlePlanTargetKind::SameAsOtherPC);
-    EXPECT_EQ(plan->turns[0].actions[1].item_id.value_or(-1), 99);
+    EXPECT_EQ(plan->turns[0].actions[0].action_preset_id, attack_preset_id);
+    EXPECT_EQ(plan->turns[0].actions[0].action_preset.macro, soa::battle::actions::BattleAction::Attack);
+    EXPECT_EQ(plan->turns[0].actions[0].action_preset.target_kind, simcore::db::BattlePlanTargetKind::MultipleEnemies);
+    EXPECT_EQ(plan->turns[0].actions[0].action_preset.target_mask_bits.value_or(-1), 1 << 4);
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset_id, item_preset_id);
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset.name, "renamed-use-item-same-as-preset");
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset.macro, soa::battle::actions::BattleAction::UseItem);
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset.target_kind, simcore::db::BattlePlanTargetKind::SameAsOtherPC);
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset.target_same_as_actor_slot.value_or(-1), 0);
+    EXPECT_EQ(plan->turns[0].actions[1].action_preset.item_id.value_or(-1), 99);
 
     const auto predicate_set = authoring_db.GetPredicateSet(predicate_set_id);
     ASSERT_TRUE(predicate_set.has_value());

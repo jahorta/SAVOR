@@ -213,15 +213,16 @@ std::optional<std::vector<std::uint8_t>> HexToBytes(const std::string& hex) {
 std::string ActionKey(const simcore::db::BattlePlanTurnSnapshot& turn) {
     std::ostringstream raw;
     for (const auto& action : turn.actions) {
+        const auto& preset = action.action_preset;
         raw << action.actor_slot << ':'
-            << static_cast<int>(action.macro) << ':'
-            << static_cast<int>(action.target_kind) << ':'
-            << action.target_slot.value_or(-1) << ':'
-            << action.target_mask_bits.value_or(-1) << ':'
-            << action.target_single_slot.value_or(-1) << ':'
-            << action.target_same_as_actor_slot.value_or(-1) << ':'
-            << action.target_expr_ini.value_or("") << ':'
-            << action.item_id.value_or(-1) << '|';
+            << action.action_preset_id << ':'
+            << static_cast<int>(preset.macro) << ':'
+            << static_cast<int>(preset.target_kind) << ':'
+            << preset.target_mask_bits.value_or(-1) << ':'
+            << preset.target_single_slot.value_or(-1) << ':'
+            << preset.target_same_as_actor_slot.value_or(-1) << ':'
+            << preset.target_expr_ini.value_or("") << ':'
+            << preset.item_id.value_or(-1) << '|';
     }
     const auto text = raw.str();
     return hash::sha256(text.data(), text.size());
@@ -242,16 +243,18 @@ soa::battle::actions::TurnPlan BuildTurnPlan(
     soa::battle::actions::TurnPlan out{};
     out.fake_attack_count = static_cast<std::uint32_t>(std::max(0, fake_attacks_this_turn));
     for (const auto& action : turn.actions) {
+        const auto& preset = action.action_preset;
         soa::battle::actions::ActionPlan ap{};
         ap.actor_slot = static_cast<std::uint8_t>(std::clamp(action.actor_slot, 0, 255));
-        ap.macro = action.macro;
-        if (action.target_slot.has_value()) {
-            ap.params.target_slot = static_cast<std::uint8_t>(std::clamp(*action.target_slot, -1, 255));
+        ap.macro = preset.macro;
+        if (preset.target_kind == simcore::db::BattlePlanTargetKind::SingleEnemy
+            && preset.target_single_slot.has_value()) {
+            ap.params.target_slot = static_cast<std::uint8_t>(std::clamp(*preset.target_single_slot, -1, 255));
         } else {
             ap.params.target_slot = 0xFF;
         }
-        if (action.item_id.has_value()) {
-            ap.params.item_id = static_cast<std::uint16_t>(std::clamp(*action.item_id, 0, 0xFFFF));
+        if (preset.item_id.has_value()) {
+            ap.params.item_id = static_cast<std::uint16_t>(std::clamp(*preset.item_id, 0, 0xFFFF));
         }
         out.spec.push_back(ap);
     }
@@ -316,19 +319,19 @@ std::vector<int> EnemySlotsByKind(
 std::vector<int> TargetDomain(
     const soa::battle::ctx::BattleContext& context,
     const simcore::db::BattlePlanActionSnapshot& action) {
-    if (action.target_expr_ini.has_value() && !action.target_expr_ini->empty()) {
-        return EnemySlotsByKind(context, *action.target_expr_ini);
+    const auto& preset = action.action_preset;
+    if (preset.target_expr_ini.has_value() && !preset.target_expr_ini->empty()) {
+        return EnemySlotsByKind(context, *preset.target_expr_ini);
     }
-    switch (action.target_kind) {
+    switch (preset.target_kind) {
     case simcore::db::BattlePlanTargetKind::SingleEnemy: {
-        const int slot = action.target_single_slot.value_or(action.target_slot.value_or(-1));
+        const int slot = preset.target_single_slot.value_or(-1);
         return slot >= 4 && slot <= 11 && context.slots_[slot].present == 1
             ? std::vector<int>{ slot }
             : std::vector<int>{};
     }
     case simcore::db::BattlePlanTargetKind::MultipleEnemies: {
-        const int mask_bits = action.target_mask_bits.value_or(
-            action.target_slot.has_value() ? (1 << *action.target_slot) : 0);
+        const int mask_bits = preset.target_mask_bits.value_or(0);
         return EnemySlotsFromMask(context, mask_bits);
     }
     case simcore::db::BattlePlanTargetKind::AnyEnemy:
@@ -341,10 +344,11 @@ std::vector<int> TargetDomain(
 }
 
 std::optional<int> SameAsActorSlot(const simcore::db::BattlePlanActionSnapshot& action) {
-    if (action.target_kind != simcore::db::BattlePlanTargetKind::SameAsOtherPC) {
+    const auto& preset = action.action_preset;
+    if (preset.target_kind != simcore::db::BattlePlanTargetKind::SameAsOtherPC) {
         return std::nullopt;
     }
-    const int actor = action.target_same_as_actor_slot.value_or(-1);
+    const int actor = preset.target_same_as_actor_slot.value_or(-1);
     return actor >= 0 && actor <= 3 ? std::optional<int>(actor) : std::nullopt;
 }
 
@@ -438,13 +442,14 @@ std::vector<soa::battle::actions::TurnPlanSpec> CompileConcreteTurnSpecs(
     std::vector<PlannedAction> planned;
     planned.reserve(turn.actions.size());
     for (const auto& action : turn.actions) {
+        const auto& preset = action.action_preset;
         PlannedAction item{};
         item.source = action;
         item.base.actor_slot = static_cast<std::uint8_t>(std::clamp(action.actor_slot, 0, 255));
-        item.base.macro = action.macro;
+        item.base.macro = preset.macro;
         item.base.params.target_slot = 0xFF;
-        if (action.item_id.has_value()) {
-            item.base.params.item_id = static_cast<std::uint16_t>(std::clamp(*action.item_id, 0, 0xFFFF));
+        if (preset.item_id.has_value()) {
+            item.base.params.item_id = static_cast<std::uint16_t>(std::clamp(*preset.item_id, 0, 0xFFFF));
         }
         item.needs_target = ActionNeedsTarget(item.base.macro);
         if (item.needs_target) {

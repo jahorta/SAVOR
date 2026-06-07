@@ -953,12 +953,16 @@ TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) 
 TEST(Stage3cEventContracts, AuthoringFamilyDispatchRoutesToAuthoringContractV1) {
     using namespace simcore::db::events;
 
-    constexpr std::array<std::string_view, 8> kAuthoringEventTypes{ {
+    constexpr std::array<std::string_view, 12> kAuthoringEventTypes{ {
         "Authoring.SeedProbeSpecSaved.v1",
         "Authoring.TasSpecSaved.v1",
         "Authoring.BattleRunSpecSaved.v1",
         "Authoring.PlanSaved.v1",
+        "Authoring.BattlePlanActionPresetSaved.v1",
+        "Authoring.BattlePlanActionPresetRenamed.v1",
         "Authoring.PredicateSpecSaved.v1",
+        "Authoring.PredicateSpecUpdated.v1",
+        "Authoring.PredicateSpecDeleted.v1",
         "Authoring.SettingsSaved.v1",
         "Authoring.TemplateSaved.v1",
         "Authoring.WorkflowGraphSaved.v1",
@@ -989,7 +993,7 @@ TEST(Stage3cEventContracts, AuthoringCatalogEntriesRemainDispatched) {
         EXPECT_EQ(*contract, PayloadResolverContract::AuthoringV1) << event_type;
     }
 
-    EXPECT_EQ(authoring_entries, 8u);
+    EXPECT_EQ(authoring_entries, 12u);
 }
 
 TEST(Stage3cCoordinatorIntegrationConfig, WorkflowEnabledConfigDrivesWorkflowPathDecisions) {

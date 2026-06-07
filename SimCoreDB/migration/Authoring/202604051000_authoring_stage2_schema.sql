@@ -93,19 +93,13 @@ CREATE TABLE IF NOT EXISTS au_battle_plan_action (
     plan_action_id INTEGER PRIMARY KEY,
     plan_turn_id INTEGER NOT NULL,
     actor_slot INTEGER NOT NULL,
-    macro INTEGER NOT NULL,
-    target_kind INTEGER NOT NULL,
-    target_slot INTEGER NULL,
-    target_mask_bits INTEGER NULL,
-    target_single_slot INTEGER NULL,
-    target_same_as_actor_slot INTEGER NULL,
-    target_expr_ini TEXT NULL,
-    item_id INTEGER NULL,
+    action_preset_id INTEGER NOT NULL,
     ordinal INTEGER NOT NULL,
-    FOREIGN KEY(plan_turn_id) REFERENCES au_battle_plan_turn(plan_turn_id)
+    FOREIGN KEY(plan_turn_id) REFERENCES au_battle_plan_turn(plan_turn_id),
+    FOREIGN KEY(action_preset_id) REFERENCES au_battle_plan_action_preset(action_preset_id)
 );
 
-CREATE TABLE IF NOT EXISTS au_turn_action_preset (
+CREATE TABLE IF NOT EXISTS au_battle_plan_action_preset (
     action_preset_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     macro INTEGER NOT NULL,
@@ -117,8 +111,7 @@ CREATE TABLE IF NOT EXISTS au_turn_action_preset (
     target_expr_ini TEXT NULL,
     flags INTEGER NOT NULL DEFAULT 0,
     created_at_utc INTEGER NOT NULL,
-    updated_at_utc INTEGER NULL,
-    CONSTRAINT uq_au_turn_action_preset_name UNIQUE (name)
+    updated_at_utc INTEGER NULL
 );
 
 CREATE TABLE IF NOT EXISTS au_address_program (
