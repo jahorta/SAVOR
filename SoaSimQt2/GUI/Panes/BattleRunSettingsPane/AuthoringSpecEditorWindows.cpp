@@ -44,6 +44,61 @@ std::optional<std::int64_t> optionalComboId(const QComboBox* combo)
     return value > 0 ? std::optional<std::int64_t>{ value } : std::nullopt;
 }
 
+bool explorerSettingsNameIsUnique(const QString& name, std::optional<std::int64_t> excludeId)
+{
+    const auto settings = soasimqt2::db::SimCoreDbAuthoringService::ListExplorerSettings();
+    if (!settings.ok) {
+        return false;
+    }
+
+    const auto target = name.trimmed().toStdString();
+    for (const auto& setting : settings.value) {
+        if (excludeId.has_value() && setting.explorer_settings_id == excludeId.value()) {
+            continue;
+        }
+        if (setting.name == target) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString resolveExplorerSettingsCopyName(const QString& sourceName, bool duplicateLoad, std::optional<std::int64_t> excludeId)
+{
+    const auto trimmed = sourceName.trimmed();
+    if (!duplicateLoad) {
+        return trimmed;
+    }
+    if (trimmed.isEmpty()) {
+        return trimmed;
+    }
+
+    return explorerSettingsNameIsUnique(trimmed, excludeId)
+        ? trimmed
+        : trimmed + QStringLiteral(" copy");
+}
+
+void setComboSelection(QComboBox* combo, const std::optional<std::int64_t>& value)
+{
+    if (combo == nullptr) {
+        return;
+    }
+
+    if (!value.has_value()) {
+        combo->setCurrentIndex(0);
+        return;
+    }
+
+    for (int i = 0; i < combo->count(); ++i) {
+        if (combo->itemData(i).toLongLong() == value.value()) {
+            combo->setCurrentIndex(i);
+            return;
+        }
+    }
+
+    combo->setCurrentIndex(0);
+}
+
 bool parseInt64(const QLineEdit* edit, const QString& fieldName, std::int64_t* out, QString* errorText)
 {
     bool ok = false;
@@ -476,11 +531,11 @@ void BattleRunSpecEditorWindow::postStatusMessage(const QString& text, StatusToa
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-PredicateSetEditorWindow::PredicateSetEditorWindow(QWidget* parent)
+PredicateSetEditorWindow::PredicateSetEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    setWindowFlag(Qt::Window, !embeddedInContainer);
     setWindowTitle(QStringLiteral("Predicate Set Editor"));
     resize(520, 520);
     createWidgets();
@@ -538,6 +593,20 @@ void PredicateSetEditorWindow::refreshPredicates()
     }
 }
 
+void PredicateSetEditorWindow::loadSnapshot(const simcore::db::PredicateSetSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate ? QStringLiteral("Predicate Set Editor - Edit Copy") : QStringLiteral("Predicate Set Editor"));
+    refreshPredicates();
+    for (const auto& predicate : snapshot.predicates) {
+        for (int i = 0; i < predicateList_->count(); ++i) {
+            const auto item = predicateList_->item(i);
+            if (item != nullptr && item->data(Qt::UserRole).toLongLong() == static_cast<qint64>(predicate.predicate_spec_id)) {
+                item->setSelected(true);
+            }
+        }
+    }
+}
+
 void PredicateSetEditorWindow::saveSpec()
 {
     soasimqt2::db::PredicateSetDraft draft{};
@@ -561,11 +630,11 @@ void PredicateSetEditorWindow::postStatusMessage(const QString& text, StatusToas
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-ExplorerSettingsEditorWindow::ExplorerSettingsEditorWindow(QWidget* parent)
+ExplorerSettingsEditorWindow::ExplorerSettingsEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    setWindowFlag(Qt::Window, !embeddedInContainer);
     setWindowTitle(QStringLiteral("Battle Explorer Settings Editor"));
     resize(620, 420);
     createWidgets();
@@ -612,6 +681,17 @@ void ExplorerSettingsEditorWindow::createWidgets()
     connect(saveButton_, &QPushButton::clicked, this, &ExplorerSettingsEditorWindow::saveSpec);
 }
 
+void ExplorerSettingsEditorWindow::loadSnapshot(const simcore::db::ExplorerSettingsSnapshot& snapshot, bool duplicate)
+{
+    duplicateLoad_ = duplicate;
+    duplicateSourceId_ = duplicate ? std::optional<std::int64_t>{snapshot.explorer_settings_id} : std::nullopt;
+    setWindowTitle(duplicate ? QStringLiteral("Battle Explorer Settings Editor - Copy") : QStringLiteral("Battle Explorer Settings Editor"));
+    nameEdit_->setText(resolveExplorerSettingsCopyName(QString::fromStdString(snapshot.name), duplicateLoad_, duplicateSourceId_));
+    descriptionEdit_->setPlainText(QString::fromStdString(snapshot.description));
+    setComboSelection(battlePlanCombo_, snapshot.default_plan_id);
+    setComboSelection(predicateSetCombo_, snapshot.default_predicate_set_id);
+}
+
 void ExplorerSettingsEditorWindow::refreshChoices()
 {
     addNoneOption(battlePlanCombo_);
@@ -636,8 +716,13 @@ void ExplorerSettingsEditorWindow::saveSpec()
         postStatusMessage(QStringLiteral("Battle explorer settings name is required."), StatusToast::Severity::Warn);
         return;
     }
+    const auto resolvedName = resolveExplorerSettingsCopyName(nameEdit_->text(), duplicateLoad_, duplicateSourceId_);
+    if (resolvedName.isEmpty()) {
+        postStatusMessage(QStringLiteral("Battle explorer settings name is required."), StatusToast::Severity::Warn);
+        return;
+    }
     soasimqt2::db::ExplorerSettingsDraft draft{};
-    draft.name = nameEdit_->text().trimmed().toStdString();
+    draft.name = resolvedName.toStdString();
     draft.description = descriptionEdit_->toPlainText().trimmed().toStdString();
     draft.default_plan_id = optionalComboId(battlePlanCombo_);
     draft.default_predicate_set_id = optionalComboId(predicateSetCombo_);

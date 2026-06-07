@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 
 #include "Authoring/IAuthoringDb.h"
 #include <QtWidgets/QWidget>
@@ -99,7 +100,8 @@ private:
 class PredicateSetEditorWindow final : public QWidget
 {
 public:
-    explicit PredicateSetEditorWindow(QWidget* parent = nullptr);
+    explicit PredicateSetEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
+    void loadSnapshot(const simcore::db::PredicateSetSnapshot& snapshot, bool duplicate);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
 
@@ -119,9 +121,10 @@ private:
 class ExplorerSettingsEditorWindow final : public QWidget
 {
 public:
-    explicit ExplorerSettingsEditorWindow(QWidget* parent = nullptr);
+    explicit ExplorerSettingsEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
+    void loadSnapshot(const simcore::db::ExplorerSettingsSnapshot& snapshot, bool duplicate);
 
 private:
     void createWidgets();
@@ -131,6 +134,8 @@ private:
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
+    bool duplicateLoad_ = false;
+    std::optional<std::int64_t> duplicateSourceId_;
     QLineEdit* nameEdit_ = nullptr;
     QPlainTextEdit* descriptionEdit_ = nullptr;
     QComboBox* battlePlanCombo_ = nullptr;

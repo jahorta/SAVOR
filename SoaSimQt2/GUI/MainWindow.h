@@ -9,7 +9,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/SpecLibraryDialog.h"
+#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryDialog.h"
 
 class CoordinatorController;
 class CoordinatorPane;
@@ -22,6 +22,8 @@ class QLabel;
 class QListWidget;
 class QStackedWidget;
 class QWidget;
+class QMenu;
+class QEvent;
 
 class MainWindow : public QMainWindow
 {
@@ -42,15 +44,15 @@ private slots:
     void openTasSpecLibrary();
     void openBattleRunSpecLibrary();
     void openPredicateSpecLibrary();
+    void openPredicateSetSpecLibrary();
     void openBattlePlanSpecLibrary();
+    void openExplorerSettingsSpecLibrary();
 
 private:
     void createWidgets();
     void createMenus();
-    void openSpecLibraryDialog(
-        SpecLibraryDialog::SpecKind kind,
-        QPointer<SpecLibraryDialog>& dialog);
-    QWidget* createTopBar();
+    void openAuthoringLibraryLast();
+    void openAuthoringLibrary(AuthoringLibraryKey key);
     QWidget* createNavigationPane();
     QWidget* createContentPane();
     StatusBarWidget* createStatusBarWidget();
@@ -71,9 +73,6 @@ private:
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
     QDateTime lastCoordinatorRefresh_;
-    QPointer<SpecLibraryDialog> seedProbeSpecLibraryDialog_;
-    QPointer<SpecLibraryDialog> tasSpecLibraryDialog_;
-    QPointer<SpecLibraryDialog> battleRunSpecLibraryDialog_;
-    QPointer<SpecLibraryDialog> predicateSpecLibraryDialog_;
-    QPointer<SpecLibraryDialog> battlePlanSpecLibraryDialog_;
+    QPointer<AuthoringLibraryDialog> authoringLibraryDialog_;
+    AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::Tas;
 };

@@ -489,7 +489,7 @@ void PredicateSpecEditorWindow::createMatchSection()
     const auto addCompareButton = [this, compareLayout, compareBox](const QString& text, const simcore::db::PredicateComparisonOp op) {
         auto* compareButton = new QPushButton(text, compareBox);
         compareButton->setCheckable(true);
-        compareButton->setObjectName("jobsSecondaryButton");
+        compareButton->setObjectName("predicateCompareButton");
         cmpButtonGroup_->addButton(compareButton, static_cast<int>(op));
         compareLayout->addWidget(compareButton);
         connect(compareButton, &QPushButton::toggled, this, [this](const bool checked) {

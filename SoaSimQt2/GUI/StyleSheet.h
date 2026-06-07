@@ -207,6 +207,23 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #dfe6f0;
         border: 1px solid #364153;
     }
+    QPushButton#predicateCompareButton {
+        background-color: #222834;
+        color: #dfe6f0;
+        border: 1px solid #364153;
+        min-height: 30px;
+        border-radius: 6px;
+        padding: 0 10px;
+        font-weight: 600;
+    }
+    QPushButton#predicateCompareButton:checked {
+        background-color: #315bca;
+        color: #ffffff;
+        border: 1px solid #4e75dd;
+    }
+    QPushButton#predicateCompareButton:checked:hover:!disabled {
+        background-color: #3a66dd;
+    }
     QPushButton#jobsPrimaryButton:disabled, QPushButton#jobsSecondaryButton:disabled {
         color: #7d8796;
         background-color: #1a1f28;

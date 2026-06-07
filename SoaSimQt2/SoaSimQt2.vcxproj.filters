@@ -107,6 +107,9 @@
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClCompile>
@@ -234,6 +237,9 @@
       <Filter>GUI\Panes\JobBuilder</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">

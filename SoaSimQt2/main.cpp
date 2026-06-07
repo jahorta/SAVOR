@@ -1,5 +1,6 @@
 #include "GUI/MainWindow.h"
 #include "SimCoreDbRuntime.h"
+#include "GUI/StyleSheet.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
@@ -34,6 +35,7 @@ void initializeDatabase()
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    app.setStyleSheet(SoaSimQt::GUI::kMainWindowStyleSheet);
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::applicationDirPath());
     QCoreApplication::setOrganizationName(QString());

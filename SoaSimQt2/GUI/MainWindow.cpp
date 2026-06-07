@@ -1,12 +1,11 @@
 #include "MainWindow.h"
-#include "GUI/StyleSheet.h"
 #include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
 #include "GUI/Panes/SeedProbePane/SeedProbePage.h"
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/SpecLibraryDialog.h"
+#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryDialog.h"
 #include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
 
 #include <QtCore/QStringList>
@@ -15,6 +14,7 @@
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QMouseEvent>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMenu>
 #include <QtGui/QAction>
@@ -81,7 +81,6 @@ MainWindow::MainWindow(QWidget *parent)
     if (targetScreen) {
         const QSize availableSize = targetScreen->availableGeometry().size();
         defaultWindowSize = defaultWindowSize.boundedTo(availableSize);
-        setMaximumSize(availableSize);
     }
 
     resize(defaultWindowSize);
@@ -153,52 +152,74 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
 
 void MainWindow::createMenus()
 {
-    auto* specsMenu = menuBar()->addMenu(QStringLiteral("Specs"));
+    auto* specsMenu = menuBar()->addMenu(QStringLiteral("Spec Authoring"));
+    connect(specsMenu->addAction(QStringLiteral("Authoring Dialog")), &QAction::triggered, this, &MainWindow::openAuthoringLibraryLast);
+    specsMenu->addSeparator();
     connect(specsMenu->addAction(QStringLiteral("Seed Probe Specs")), &QAction::triggered, this, &MainWindow::openSeedProbeSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("TAS Specs")), &QAction::triggered, this, &MainWindow::openTasSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Battle Run Specs")), &QAction::triggered, this, &MainWindow::openBattleRunSpecLibrary);
-    connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateSpecLibrary);
+    specsMenu->addSeparator();
+    connect(specsMenu->addAction(QStringLiteral("Battle Explorer Settings")), &QAction::triggered, this, &MainWindow::openExplorerSettingsSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Battle Plans")), &QAction::triggered, this, &MainWindow::openBattlePlanSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateSpecLibrary);
+    connect(specsMenu->addAction(QStringLiteral("Predicate Sets")), &QAction::triggered, this, &MainWindow::openPredicateSetSpecLibrary);
 }
 
-void MainWindow::openSpecLibraryDialog(
-    SpecLibraryDialog::SpecKind kind,
-    QPointer<SpecLibraryDialog>& dialog)
+void MainWindow::openAuthoringLibraryLast() {
+    openAuthoringLibrary(lastAuthoringLibrary_);
+}
+
+void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
 {
-    if (dialog) {
-        dialog->raise();
-        dialog->activateWindow();
+    lastAuthoringLibrary_ = key;
+
+    if (authoringLibraryDialog_) {
+        authoringLibraryDialog_->show();
+        authoringLibraryDialog_->selectLibrary(key);
+        authoringLibraryDialog_->raise();
+        authoringLibraryDialog_->activateWindow();
         return;
     }
 
-    dialog = new SpecLibraryDialog(kind, this);
-    connect(dialog.data(), &SpecLibraryDialog::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    dialog->show();
+    authoringLibraryDialog_ = new AuthoringLibraryDialog(this);
+    connect(authoringLibraryDialog_.data(), &AuthoringLibraryDialog::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    authoringLibraryDialog_->selectLibrary(key);
+    authoringLibraryDialog_->show();
 }
 
 void MainWindow::openSeedProbeSpecLibrary()
 {
-    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::SeedProbe, seedProbeSpecLibraryDialog_);
+    openAuthoringLibrary(AuthoringLibraryKey::SeedProbe);
 }
 
 void MainWindow::openTasSpecLibrary()
 {
-    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::Tas, tasSpecLibraryDialog_);
+    openAuthoringLibrary(AuthoringLibraryKey::Tas);
 }
 
 void MainWindow::openBattleRunSpecLibrary()
 {
-    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::BattleRun, battleRunSpecLibraryDialog_);
+    openAuthoringLibrary(AuthoringLibraryKey::BattleRun);
 }
 
 void MainWindow::openPredicateSpecLibrary()
 {
-    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::Predicate, predicateSpecLibraryDialog_);
+    openAuthoringLibrary(AuthoringLibraryKey::Predicate);
+}
+
+void MainWindow::openPredicateSetSpecLibrary()
+{
+    openAuthoringLibrary(AuthoringLibraryKey::PredicateSet);
 }
 
 void MainWindow::openBattlePlanSpecLibrary()
 {
-    openSpecLibraryDialog(SpecLibraryDialog::SpecKind::BattlePlan, battlePlanSpecLibraryDialog_);
+    openAuthoringLibrary(AuthoringLibraryKey::BattlePlan);
+}
+
+void MainWindow::openExplorerSettingsSpecLibrary()
+{
+    openAuthoringLibrary(AuthoringLibraryKey::ExplorerSettings);
 }
 
 void MainWindow::syncStatusBar()
@@ -227,7 +248,6 @@ void MainWindow::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    QWidget* topBar = createTopBar();
     QWidget* navigationPane = createNavigationPane();
     statusBarWidget_ = createStatusBarWidget();
     QWidget* contentPane = createContentPane();
@@ -240,28 +260,9 @@ void MainWindow::createWidgets()
     bodyLayout->addWidget(navigationPane);
     bodyLayout->addWidget(contentPane, 1);
 
-    rootLayout->addWidget(topBar);
     rootLayout->addWidget(body, 1);
     rootLayout->addWidget(statusBarWidget_);
 
-    setStyleSheet(SoaSimQt::GUI::kMainWindowStyleSheet);
-}
-
-QWidget* MainWindow::createTopBar()
-{
-    QWidget* topBar = new QWidget(this);
-    topBar->setObjectName("topBar");
-    topBar->setFixedHeight(kTopBarHeight);
-
-    QHBoxLayout* layout = new QHBoxLayout(topBar);
-    layout->setContentsMargins(0, 0, 0, 0);
-
-    QLabel* title = new QLabel("SoaSimQt", topBar);
-    title->setObjectName("topBarTitle");
-    layout->addWidget(title);
-    layout->addStretch();
-
-    return topBar;
 }
 
 QWidget* MainWindow::createNavigationPane()
