@@ -21,11 +21,18 @@ struct WorkflowPortDefinition {
     bool required = true;
 };
 
+struct WorkflowAuthoredRefRequirement {
+    std::string ref_kind;
+    std::string display_name;
+    bool required = true;
+};
+
 struct WorkflowUnitDefinition {
     std::string unit_kind;
     std::string display_name;
     std::string description;
     bool hidden = false;
+    std::vector<WorkflowAuthoredRefRequirement> authored_refs;
     std::vector<WorkflowPortDefinition> required_inputs;
     std::vector<WorkflowPortDefinition> possible_outputs;
     std::vector<std::string> internal_step_kinds;

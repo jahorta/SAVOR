@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +53,13 @@ struct WorkflowGraphStartRequest {
     std::vector<WorkflowGraphArgumentDraft> arguments;
 };
 
+struct StandaloneWorkflowUnitGraphRequest {
+    std::string unit_kind;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    bool hidden = true;
+};
+
 class SimCoreDbWorkflowService {
 public:
     using WorkflowUnitDefinition = simcore::db::execution::workflow::WorkflowUnitDefinition;
@@ -74,6 +82,80 @@ public:
         const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
         const simcore::db::execution::workflow::WorkflowCompositionService service(&registry);
         return ServiceResult<WorkflowCompositionPreview>::Ok(service.Preview(composition));
+    }
+
+    static ServiceResult<simcore::db::SaveWorkflowGraphResult> EnsureStandaloneWorkflowUnitGraph(
+        const StandaloneWorkflowUnitGraphRequest& request) {
+        if (request.unit_kind.empty()) {
+            return Invalid<simcore::db::SaveWorkflowGraphResult>("workflow unit kind is required");
+        }
+
+        const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+        const auto* unit = registry.Find(request.unit_kind);
+        if (unit == nullptr || unit->hidden) {
+            return NotFound<simcore::db::SaveWorkflowGraphResult>("workflow unit not found");
+        }
+        if (unit->authored_refs.size() > 1) {
+            return Invalid<simcore::db::SaveWorkflowGraphResult>("standalone launch currently supports one authored settings reference per workflow unit");
+        }
+        if (!unit->authored_refs.empty() && unit->authored_refs.front().required) {
+            if (!request.authored_ref_kind.has_value()
+                || !request.authored_ref_id.has_value()
+                || request.authored_ref_kind->empty()
+                || *request.authored_ref_id <= 0) {
+                return Invalid<simcore::db::SaveWorkflowGraphResult>(
+                    "workflow unit requires authored settings: " + unit->authored_refs.front().ref_kind);
+            }
+            if (*request.authored_ref_kind != unit->authored_refs.front().ref_kind) {
+                return Invalid<simcore::db::SaveWorkflowGraphResult>(
+                    "authored settings kind must be " + unit->authored_refs.front().ref_kind);
+            }
+        }
+
+        const auto graphHash = StandaloneWorkflowGraphHash(*unit, request.authored_ref_kind, request.authored_ref_id);
+        const auto existing = SimCoreDbAuthoringService::ListWorkflowGraphs(1000, true);
+        if (!existing.ok) {
+            return ServiceResult<simcore::db::SaveWorkflowGraphResult>::Err(existing.error);
+        }
+        for (const auto& graph : existing.value) {
+            if (graph.graph_hash == graphHash) {
+                return ServiceResult<simcore::db::SaveWorkflowGraphResult>::Ok(simcore::db::SaveWorkflowGraphResult{
+                    .workflow_graph_id = graph.workflow_graph_id,
+                    .workflow_graph_revision_id = graph.workflow_graph_revision_id,
+                });
+            }
+        }
+
+        simcore::db::SaveWorkflowGraphNodeCommand node{};
+        node.node_key = StandaloneNodeKey(*unit);
+        node.unit_kind = unit->unit_kind;
+        node.display_name = unit->display_name;
+        node.authored_ref_kind = request.authored_ref_kind;
+        node.authored_ref_id = request.authored_ref_id;
+        for (const auto& input : unit->required_inputs) {
+            node.inputs.push_back(simcore::db::SaveWorkflowGraphNodeInputCommand{
+                .input_key = input.key,
+                .data_kind = input.data_kind,
+                .display_name = input.display_name,
+                .required = input.required,
+            });
+        }
+        for (const auto& output : unit->possible_outputs) {
+            node.possible_outputs.push_back(simcore::db::SaveWorkflowGraphNodeOutputCommand{
+                .output_key = output.key,
+                .data_kind = output.data_kind,
+                .display_name = output.display_name,
+            });
+        }
+
+        WorkflowGraphDraft draft{};
+        draft.name = StandaloneWorkflowGraphName(*unit, request.authored_ref_kind, request.authored_ref_id);
+        draft.description = "Auto-authored single-unit workflow graph for standalone Qt2 launches.";
+        draft.hidden = request.hidden;
+        draft.graph_version = 1;
+        draft.graph_hash = graphHash;
+        draft.nodes.push_back(std::move(node));
+        return SimCoreDbAuthoringService::SaveWorkflowGraph(draft);
     }
 
     static ServiceResult<simcore::db::UiReadPage<simcore::db::UiWorkflowInstanceSummary>> ListWorkflowInstances(
@@ -286,6 +368,39 @@ public:
     }
 
 private:
+    static std::string StandaloneNodeKey(const WorkflowUnitDefinition& unit) {
+        return unit.unit_kind + "_standalone";
+    }
+
+    static std::string StandaloneWorkflowGraphName(
+        const WorkflowUnitDefinition& unit,
+        const std::optional<std::string>& authored_ref_kind,
+        const std::optional<std::int64_t>& authored_ref_id) {
+        std::string name = "Standalone " + unit.display_name;
+        if (authored_ref_kind.has_value() && authored_ref_id.has_value()) {
+            name += " " + *authored_ref_kind + "#" + std::to_string(*authored_ref_id);
+        }
+        return name;
+    }
+
+    static std::string StandaloneWorkflowGraphHash(
+        const WorkflowUnitDefinition& unit,
+        const std::optional<std::string>& authored_ref_kind,
+        const std::optional<std::int64_t>& authored_ref_id) {
+        std::string content = "standalone-unit:" + unit.unit_kind + "\n";
+        if (authored_ref_kind.has_value() && authored_ref_id.has_value()) {
+            content += "authored:" + *authored_ref_kind + ":" + std::to_string(*authored_ref_id) + "\n";
+        }
+        std::uint64_t hash = 1469598103934665603ull;
+        for (const auto ch : content) {
+            hash ^= static_cast<unsigned char>(ch);
+            hash *= 1099511628211ull;
+        }
+        std::ostringstream out;
+        out << "standalone-fnv1a64-" << std::hex << hash;
+        return out.str();
+    }
+
     static simcore::db::IUiReadDb* UiReadDb() {
         return soasimqt2::SimCoreDbRuntime::instance().uiReadDb();
     }

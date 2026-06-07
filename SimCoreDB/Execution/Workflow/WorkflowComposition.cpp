@@ -97,6 +97,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "tas_movie",
             .display_name = "TAS Movie",
             .description = "Runs a DTM/TAS movie and produces a savestate for downstream chains.",
+            .authored_refs = {
+                { .ref_kind = "tas_spec", .display_name = "TAS spec" },
+            },
             .required_inputs = {
                 Port("dtm_artifact", "state_artifact.dtm_artifact_id", "DTM artifact"),
             },
@@ -112,6 +115,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "seed_probe_chain",
             .display_name = "Seed Probe Chain",
             .description = "Runs neutral, grid, and unique seed probing as one reusable chain.",
+            .authored_refs = {
+                { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
+            },
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },
@@ -127,6 +133,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "battle_chain",
             .display_name = "Battle Chain",
             .description = "Builds battle context, then runs one or more battle turns from candidate input frames.",
+            .authored_refs = {
+                { .ref_kind = "authoring.template", .display_name = "Battle template" },
+            },
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
                 Port("initial_input_frames", "analysis.input_frame_set_id", "Initial input frames"),

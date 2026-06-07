@@ -909,14 +909,9 @@ QString WorkflowGraphEditorWindow::describeNode(const WorkflowCompositionNode& n
 std::optional<std::string> WorkflowGraphEditorWindow::requiredAuthoredRefKindForUnit(
     const std::string& unit_kind) const
 {
-    if (unit_kind == "tas_movie") {
-        return std::string("tas_spec");
-    }
-    if (unit_kind == "seed_probe_chain") {
-        return std::string("seed_probe_spec");
-    }
-    if (unit_kind == "battle_chain") {
-        return std::string("authoring.template");
+    const auto* unit = findUnit(unit_kind);
+    if (unit != nullptr && !unit->authored_refs.empty() && unit->authored_refs.front().required) {
+        return unit->authored_refs.front().ref_kind;
     }
     return std::nullopt;
 }
