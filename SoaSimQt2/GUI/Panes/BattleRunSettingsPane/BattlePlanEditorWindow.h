@@ -9,9 +9,7 @@
 #include "GUI/Common/StatusToast.h"
 #include "Authoring/IAuthoringDb.h"
 
-class QCheckBox;
 class QCloseEvent;
-class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -48,7 +46,9 @@ private:
     void refreshSelectionPanel();
     void syncSelectionPanelToAction();
     void addActionFromLibrarySelection();
-    void addActionToSelectedTurn(std::int64_t presetId);
+    void assignPresetToSelection(std::int64_t presetId);
+    void addActionToSelectedTurn(std::int64_t presetId, int turnIndex = -1);
+    void assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex);
     void duplicateSelectedAction();
     void removeSelectedNode();
     void moveSelectedAction(int delta);
@@ -78,15 +78,10 @@ private:
     QListWidget* actionLibraryList_ = nullptr;
     QTreeWidget* planTree_ = nullptr;
     QLabel* selectionLabel_ = nullptr;
+    QLabel* presetSummaryLabel_ = nullptr;
+    QLabel* presetDetailLabel_ = nullptr;
     QSpinBox* combatantCountSpin_ = nullptr;
     QSpinBox* actorSlotSpin_ = nullptr;
-    QComboBox* macroCombo_ = nullptr;
-    QComboBox* targetKindCombo_ = nullptr;
-    QSpinBox* targetSlotSpin_ = nullptr;
-    QSpinBox* targetMaskSpin_ = nullptr;
-    QSpinBox* sameAsActorSpin_ = nullptr;
-    QCheckBox* itemIdCheck_ = nullptr;
-    QSpinBox* itemIdSpin_ = nullptr;
     QPushButton* addActionButton_ = nullptr;
     QPushButton* duplicateActionButton_ = nullptr;
     QPushButton* removeNodeButton_ = nullptr;

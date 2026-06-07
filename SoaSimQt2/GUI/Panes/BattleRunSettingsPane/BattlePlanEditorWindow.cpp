@@ -10,8 +10,6 @@
 #include <QtGui/QDragMoveEvent>
 #include <QtGui/QDropEvent>
 #include <QtWidgets/QAbstractItemView>
-#include <QtWidgets/QCheckBox>
-#include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
@@ -50,7 +48,7 @@ std::string fingerprintForDraft(const soasimqt2::db::BattlePlanDraft& draft)
         content += "turn:" + std::to_string(turn.turn_index) + "\n";
         for (const auto& action : turn.actions) {
             content += "action:" + std::to_string(action.actor_slot)
-                + ":" + std::to_string(action.action_preset_id)
+                + ":" + std::to_string(action.action_preset_id.value_or(0))
                 + ":" + std::to_string(action.ordinal) + "\n";
         }
     }
@@ -88,6 +86,26 @@ QString targetKindLabel(simcore::db::BattlePlanTargetKind kind)
     return QStringLiteral("Any Enemy");
 }
 
+QString presetDetailText(const simcore::db::BattlePlanActionPresetSnapshot& preset)
+{
+    QString detail = macroLabel(preset.macro);
+    detail += QStringLiteral(" / ");
+    detail += targetKindLabel(preset.target_kind);
+    if (preset.target_kind == simcore::db::BattlePlanTargetKind::SingleEnemy) {
+        detail += QStringLiteral(" %1").arg(preset.target_single_slot.value_or(4));
+    }
+    if (preset.item_id.has_value()) {
+        detail += QStringLiteral(" / item %1").arg(*preset.item_id);
+    }
+    if (preset.target_mask_bits.has_value()) {
+        detail += QStringLiteral(" / mask 0x%1").arg(QString::number(preset.target_mask_bits.value(), 16));
+    }
+    if (preset.target_same_as_actor_slot.has_value()) {
+        detail += QStringLiteral(" / same as actor %1").arg(preset.target_same_as_actor_slot.value());
+    }
+    return detail;
+}
+
 QString actionSummary(const BattlePlanEditorWindow::ActionDraft& action, const simcore::db::BattlePlanActionPresetSnapshot* preset)
 {
     QString detail;
@@ -95,15 +113,10 @@ QString actionSummary(const BattlePlanEditorWindow::ActionDraft& action, const s
         detail = QStringLiteral("missing preset %1").arg(action.action_preset_id);
         return QStringLiteral("Actor %1  %2").arg(action.actor_slot).arg(detail);
     }
-    const auto macro = macroLabel(preset->macro);
-    detail = preset->target_kind.has_value() ? targetKindLabel(preset->target_kind.value()) : QStringLiteral("unknown target");
-    if (preset->target_kind.value_or(simcore::db::BattlePlanTargetKind::AnyEnemy) == simcore::db::BattlePlanTargetKind::SingleEnemy) {
-        detail += QStringLiteral(" %1").arg(preset->target_single_slot.value_or(4));
-    }
-    if (preset->item_id.has_value()) {
-        detail += QStringLiteral(" item %1").arg(*preset->item_id);
-    }
-    return QStringLiteral("Actor %1  %2  (%3)").arg(action.actor_slot).arg(QString::fromStdString(preset->name)).arg(detail);
+    return QStringLiteral("Actor %1  %2  (%3)")
+        .arg(action.actor_slot)
+        .arg(QString::fromStdString(preset->name))
+        .arg(presetDetailText(*preset));
 }
 
 QString presetLibraryLabel(const simcore::db::BattlePlanActionPresetSnapshot& preset)
@@ -151,7 +164,7 @@ public:
         setDragDropMode(QAbstractItemView::DropOnly);
     }
 
-    std::function<void(std::int64_t)> actionDropped;
+    std::function<void(std::int64_t, int, int)> actionDropped;
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override
@@ -184,10 +197,19 @@ protected:
             return;
         }
 
+        int dropTurnIndex = -1;
+        int dropActionIndex = -1;
         if (auto* hit = itemAt(event->position().toPoint()); hit != nullptr) {
+            if (hit->data(0, kNodeKindRole).toInt() == kNodeAction) {
+                dropActionIndex = hit->data(0, kActionIndexRole).toInt();
+                hit = hit->parent();
+            }
+            if (hit != nullptr && hit->data(0, kNodeKindRole).toInt() == kNodeTurn) {
+                dropTurnIndex = hit->data(0, kTurnIndexRole).toInt();
+            }
             setCurrentItem(hit);
         }
-        actionDropped(presetId);
+        actionDropped(presetId, dropTurnIndex, dropActionIndex);
         event->acceptProposedAction();
     }
 };
@@ -325,8 +347,8 @@ void BattlePlanEditorWindow::createWidgets()
     planTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     planTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     planTree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tree->actionDropped = [this](std::int64_t presetId) {
-        addActionToSelectedTurn(presetId);
+    tree->actionDropped = [this](std::int64_t presetId, int turnIndex, int actionIndex) {
+        assignActionPreset(presetId, turnIndex, actionIndex);
     };
     planLayout->addWidget(planTree_, 1);
 
@@ -344,44 +366,16 @@ void BattlePlanEditorWindow::createWidgets()
     combatantCountSpin_->setRange(1, 4);
     actorSlotSpin_ = new QSpinBox(inspectorPanel);
     actorSlotSpin_->setRange(0, 3);
-    macroCombo_ = new QComboBox(inspectorPanel);
-    targetKindCombo_ = new QComboBox(inspectorPanel);
-    targetSlotSpin_ = new QSpinBox(inspectorPanel);
-    targetSlotSpin_->setRange(4, 11);
-    targetMaskSpin_ = new QSpinBox(inspectorPanel);
-    targetMaskSpin_->setRange(0, 0xFFF);
-    targetMaskSpin_->setDisplayIntegerBase(16);
-    sameAsActorSpin_ = new QSpinBox(inspectorPanel);
-    sameAsActorSpin_->setRange(0, 3);
-    itemIdCheck_ = new QCheckBox(QStringLiteral("Set item id"), inspectorPanel);
-    itemIdSpin_ = new QSpinBox(inspectorPanel);
-    itemIdSpin_->setRange(0, 0xFFFF);
-
-    for (const auto macro : {
-        simcore::db::BattlePlanActionMacro::Attack,
-        simcore::db::BattlePlanActionMacro::Defend,
-        simcore::db::BattlePlanActionMacro::Focus,
-        simcore::db::BattlePlanActionMacro::FakeAttack,
-        simcore::db::BattlePlanActionMacro::UseItem }) {
-        macroCombo_->addItem(macroLabel(macro), static_cast<int>(macro));
-    }
-    for (const auto kind : {
-        simcore::db::BattlePlanTargetKind::SingleEnemy,
-        simcore::db::BattlePlanTargetKind::MultipleEnemies,
-        simcore::db::BattlePlanTargetKind::AnyEnemy,
-        simcore::db::BattlePlanTargetKind::SameAsOtherPC }) {
-        targetKindCombo_->addItem(targetKindLabel(kind), static_cast<int>(kind));
-    }
+    presetSummaryLabel_ = new QLabel(QStringLiteral("No preset"), inspectorPanel);
+    presetSummaryLabel_->setObjectName("sectionDescription");
+    presetDetailLabel_ = new QLabel(QStringLiteral(""), inspectorPanel);
+    presetDetailLabel_->setObjectName("sectionDescription");
+    presetDetailLabel_->setWordWrap(true);
 
     inspectorForm->addRow(QStringLiteral("Combatants"), combatantCountSpin_);
     inspectorForm->addRow(QStringLiteral("Actor"), actorSlotSpin_);
-    inspectorForm->addRow(QStringLiteral("Action"), macroCombo_);
-    inspectorForm->addRow(QStringLiteral("Targeting"), targetKindCombo_);
-    inspectorForm->addRow(QStringLiteral("Single target"), targetSlotSpin_);
-    inspectorForm->addRow(QStringLiteral("Target mask"), targetMaskSpin_);
-    inspectorForm->addRow(QStringLiteral("Same-as actor"), sameAsActorSpin_);
-    inspectorForm->addRow(QString(), itemIdCheck_);
-    inspectorForm->addRow(QStringLiteral("Item id"), itemIdSpin_);
+    inspectorForm->addRow(QStringLiteral("Preset"), presetSummaryLabel_);
+    inspectorForm->addRow(QStringLiteral("Details"), presetDetailLabel_);
     inspectorLayout->addLayout(inspectorForm);
     inspectorLayout->addStretch();
 
@@ -424,13 +418,6 @@ void BattlePlanEditorWindow::createWidgets()
     };
     connect(combatantCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
     connect(actorSlotSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
-    connect(macroCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, syncAction);
-    connect(targetKindCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, syncAction);
-    connect(targetSlotSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
-    connect(targetMaskSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
-    connect(sameAsActorSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
-    connect(itemIdCheck_, &QCheckBox::toggled, this, syncAction);
-    connect(itemIdSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
 }
 
 void BattlePlanEditorWindow::populateActionLibrary()
@@ -449,7 +436,9 @@ void BattlePlanEditorWindow::populateActionLibrary()
     for (const auto& preset : actionPresets_) {
         auto* item = new QListWidgetItem(presetLibraryLabel(preset), actionLibraryList_);
         item->setData(kActionPresetIdRole, static_cast<qint64>(preset.action_preset_id));
-        item->setToolTip(QStringLiteral("macro: %1, target: %2").arg(macroLabel(preset.macro)).arg(targetKindLabel(preset.target_kind.value_or(simcore::db::BattlePlanTargetKind::AnyEnemy)));
+        item->setToolTip(QStringLiteral("macro: %1, target: %2")
+            .arg(macroLabel(preset.macro))
+            .arg(targetKindLabel(preset.target_kind)));
     }
     if (actionLibraryList_->count() > 0) {
         actionLibraryList_->setCurrentRow(0);
@@ -521,17 +510,14 @@ void BattlePlanEditorWindow::refreshSelectionPanel()
         : (hasTurn ? QStringLiteral("Selected Turn") : QStringLiteral("No Selection")));
     combatantCountSpin_->setEnabled(hasTurn);
     actorSlotSpin_->setEnabled(hasAction);
-    macroCombo_->setEnabled(false);
-    targetKindCombo_->setEnabled(false);
-    targetSlotSpin_->setEnabled(false);
-    targetMaskSpin_->setEnabled(false);
-    sameAsActorSpin_->setEnabled(false);
-    itemIdCheck_->setEnabled(false);
-    itemIdSpin_->setEnabled(false);
     duplicateActionButton_->setEnabled(hasAction);
     removeNodeButton_->setEnabled(hasTurn || hasAction);
     moveUpButton_->setEnabled(hasAction && selectedActionIndex() > 0);
     moveDownButton_->setEnabled(hasAction && turn != nullptr && selectedActionIndex() + 1 < static_cast<int>(turn->actions.size()));
+    presetSummaryLabel_->setEnabled(hasAction);
+    presetDetailLabel_->setEnabled(hasAction);
+    presetSummaryLabel_->setText(QStringLiteral("No preset assigned"));
+    presetDetailLabel_->setText(QStringLiteral("Drag a preset here to assign it. Double-click also assigns to action if one is selected."));
 
     if (hasTurn) {
         combatantCountSpin_->setValue(turn->player_combatants);
@@ -540,25 +526,13 @@ void BattlePlanEditorWindow::refreshSelectionPanel()
         actorSlotSpin_->setValue(action->actor_slot);
         const auto* preset = actionPresetById(action->action_preset_id);
         if (preset != nullptr) {
-            macroCombo_->setCurrentIndex(std::max(0, macroCombo_->findData(static_cast<int>(preset->macro))));
-            if (preset->target_kind.has_value()) {
-                targetKindCombo_->setCurrentIndex(std::max(0, targetKindCombo_->findData(static_cast<int>(preset->target_kind.value()))));
-            } else {
-                targetKindCombo_->setCurrentIndex(0);
-            }
-            targetSlotSpin_->setValue(preset->target_single_slot.value_or(4));
-            targetMaskSpin_->setValue(preset->target_mask_bits.value_or(0));
-            sameAsActorSpin_->setValue(preset->target_same_as_actor_slot.value_or(0));
-            itemIdCheck_->setChecked(preset->item_id.has_value());
-            itemIdSpin_->setValue(preset->item_id.value_or(0));
+            presetSummaryLabel_->setText(QStringLiteral("%1 [#%2]")
+                .arg(QString::fromStdString(preset->name))
+                .arg(preset->action_preset_id));
+            presetDetailLabel_->setText(presetDetailText(*preset));
         } else {
-            macroCombo_->setCurrentIndex(0);
-            targetKindCombo_->setCurrentIndex(0);
-            targetSlotSpin_->setValue(4);
-            targetMaskSpin_->setValue(0);
-            sameAsActorSpin_->setValue(0);
-            itemIdCheck_->setChecked(false);
-            itemIdSpin_->setValue(0);
+            presetSummaryLabel_->setText(QStringLiteral("Missing preset %1").arg(action->action_preset_id));
+            presetDetailLabel_->setText(QStringLiteral("This action references a preset that no longer exists."));
         }
     }
     refreshingSelection_ = false;
@@ -585,12 +559,60 @@ void BattlePlanEditorWindow::addActionFromLibrarySelection()
     if (auto* item = actionLibraryList_->currentItem(); item != nullptr) {
         presetId = item->data(kActionPresetIdRole).toLongLong();
     }
-    addActionToSelectedTurn(presetId);
+    assignPresetToSelection(presetId);
 }
 
-void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId)
+void BattlePlanEditorWindow::assignPresetToSelection(std::int64_t presetId)
 {
-    auto* turn = selectedTurn();
+    const int turnIndex = selectedTurnIndex();
+    const int actionIndex = selectedActionIndex();
+    if (turnIndex < 0 && turns_.empty()) {
+        return;
+    }
+    if (actionIndex >= 0 && turnIndex >= 0) {
+        assignActionPreset(presetId, turnIndex, actionIndex);
+    } else {
+        addActionToSelectedTurn(presetId, turnIndex);
+    }
+}
+
+void BattlePlanEditorWindow::assignActionPreset(std::int64_t presetId, int turnIndex, int actionIndex)
+{
+    if (presetId <= 0) {
+        postStatusMessage(QStringLiteral("Select a valid action preset before adding."), StatusToast::Severity::Warn);
+        return;
+    }
+    if (turns_.empty()) {
+        return;
+    }
+    int targetTurnIndex = turnIndex;
+    if (targetTurnIndex < 0 || targetTurnIndex >= static_cast<int>(turns_.size())) {
+        if (const int selected = selectedTurnIndex(); selected >= 0 && selected < static_cast<int>(turns_.size())) {
+            targetTurnIndex = selected;
+        } else {
+            targetTurnIndex = 0;
+        }
+    }
+    auto& turn = turns_[static_cast<std::size_t>(targetTurnIndex)];
+
+    if (actionIndex >= 0 && actionIndex < static_cast<int>(turn.actions.size())) {
+        turn.actions[static_cast<std::size_t>(actionIndex)].action_preset_id = presetId;
+        markDirty();
+        rebuildPlanTree();
+        return;
+    }
+
+    addActionToSelectedTurn(presetId, targetTurnIndex);
+}
+
+void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId, int turnIndex)
+{
+    TurnDraft* turn = nullptr;
+    if (turnIndex >= 0 && turnIndex < static_cast<int>(turns_.size())) {
+        turn = &turns_[static_cast<std::size_t>(turnIndex)];
+    } else {
+        turn = selectedTurn();
+    }
     if (turn == nullptr && !turns_.empty()) {
         turn = &turns_.front();
     }
