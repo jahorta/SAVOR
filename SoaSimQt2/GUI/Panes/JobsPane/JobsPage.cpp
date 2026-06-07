@@ -14,8 +14,6 @@
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
-#include <QtWidgets/QDialog>
-#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -24,7 +22,6 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtCore/QDateTime>
 #include <QtWidgets/QSpinBox>
@@ -316,7 +313,11 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
         || row->state == QStringLiteral("SUCCEEDED_WINNER")
         || row->state == QStringLiteral("SUCCEEDED_DUPLICATE");
     const bool canReplayVisual = actionsEnabled && isFinished;
-    const bool canRequeue = actionsEnabled && row->state != QStringLiteral("QUEUED") && row->state != QStringLiteral("CLAIMED") && row->state != QStringLiteral("RUNNING") && row->state != QStringLiteral("FAILED");
+    const bool canRequeue = actionsEnabled
+        && row->state != QStringLiteral("QUEUED")
+        && row->state != QStringLiteral("CLAIMED")
+        && row->state != QStringLiteral("RUNNING")
+        && row->state != QStringLiteral("FAILED");
     const bool canRestart = actionsEnabled && row->state == QStringLiteral("FAILED");
     const bool canCancel = actionsEnabled
         && (row->state == QStringLiteral("QUEUED")
@@ -330,14 +331,18 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
     QAction* replayVisualAction = menu.addAction(QStringLiteral("Replay Visually"));
     menu.addSeparator();
     QAction* requeueAction = menu.addAction(QStringLiteral("Requeue"));
-    QAction* restartAction = menu.addAction(QStringLiteral("Edit INI + Restart"));
+    QAction* requeueVisualAction = menu.addAction(QStringLiteral("Requeue + Visual Debug"));
+    QAction* restartAction = menu.addAction(QStringLiteral("Restart"));
+    QAction* restartVisualAction = menu.addAction(QStringLiteral("Restart + Visual Debug"));
     QAction* cancelAction = menu.addAction(QStringLiteral("Cancel"));
 
     refreshDetailAction->setEnabled(actionsEnabled);
     loadInputIniAction->setEnabled(actionsEnabled);
     replayVisualAction->setEnabled(canReplayVisual);
     requeueAction->setEnabled(canRequeue);
+    requeueVisualAction->setEnabled(canRequeue);
     restartAction->setEnabled(canRestart);
+    restartVisualAction->setEnabled(canRestart);
     cancelAction->setEnabled(canCancel);
 
     QAction* chosen = menu.exec(jobsTable_->viewport()->mapToGlobal(position));
@@ -349,42 +354,28 @@ void JobsPage::showJobsContextMenu(const QPoint& position)
         emit visualReplayRequested(row->jobId);
     } else if (chosen == requeueAction) {
         controller_->requeueSelectedJob();
+    } else if (chosen == requeueVisualAction) {
+        emit visualReplayRequested(row->jobId);
+        controller_->requeueSelectedJob();
     } else if (chosen == restartAction) {
-        handleRestartRequested();
+        handleRestartRequested(false);
+    } else if (chosen == restartVisualAction) {
+        handleRestartRequested(true);
     } else if (chosen == cancelAction) {
         controller_->cancelSelectedJob();
     }
 }
 
-void JobsPage::handleRestartRequested()
+void JobsPage::handleRestartRequested(bool visualDebug)
 {
     const auto& state = controller_->viewState();
-    if (state.selectedJobId <= 0) return;
-    if (!state.detail.inputIniLoaded) {
-        controller_->loadSelectedJobInputIni();
-        emit statusToastRequested(StatusToast{
-            StatusToast::Severity::Info,
-            QStringLiteral("Loading input INI for job %1. Open restart again after it loads.").arg(state.selectedJobId),
-            QString(),
-            1,
-            QDateTime{},
-            4000
-        });
+    if (state.selectedJobId <= 0) {
         return;
     }
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Restart Failed Job"));
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(QStringLiteral("Restart will reset attempts to 0 and queue the failed job again. You can edit the loaded input INI first."), &dialog));
-    QPlainTextEdit* iniEdit = new QPlainTextEdit(&dialog);
-    iniEdit->setPlainText(state.detail.inputIniText);
-    layout->addWidget(iniEdit, 1);
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save INI & Restart"));
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() == QDialog::Accepted) controller_->restartSelectedFailedJob(iniEdit->toPlainText());
+    if (visualDebug) {
+        emit visualReplayRequested(state.selectedJobId);
+    }
+    controller_->restartSelectedFailedJob();
 }
 
 void JobsPage::syncControlsFromController(bool syncAll)

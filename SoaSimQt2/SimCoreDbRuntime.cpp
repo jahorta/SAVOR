@@ -31,7 +31,7 @@ bool EnsureStorageRoot(const std::filesystem::path& root, std::string* error_out
     std::filesystem::create_directories(root / "object_store", ec);
     if (ec) {
         if (error_out != nullptr) {
-            *error_out = "failed creating SimCoreDB object store root: " + ec.message();
+            *error_out = "failed creating SimCoreDB artifact storage root: " + ec.message();
         }
         return false;
     }

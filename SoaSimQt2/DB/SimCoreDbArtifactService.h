@@ -194,7 +194,7 @@ private:
         try {
             const auto root = ObjectStoreRoot();
             if (root.empty()) {
-                return Unavailable<std::filesystem::path>("SimCoreDB object store root is not configured");
+                return Unavailable<std::filesystem::path>("SimCoreDB artifact storage root is not configured");
             }
             const auto destination_dir = root / sha.substr(0, 2) / sha.substr(2, 2);
             std::filesystem::create_directories(destination_dir);

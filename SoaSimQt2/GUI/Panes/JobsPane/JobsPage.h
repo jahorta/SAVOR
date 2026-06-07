@@ -47,7 +47,7 @@ private:
     std::optional<int> selectedProgramKind() const;
     std::optional<QString> selectedState() const;
     std::optional<qint64> selectedJobSetId() const;
-    void handleRestartRequested();
+    void handleRestartRequested(bool visualDebug);
     void showJobsContextMenu(const QPoint& position);
 
     JobsController* controller_ = nullptr;

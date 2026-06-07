@@ -140,21 +140,6 @@
     <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\Panes\JobSetsPane\WorkflowsPage.cpp">
       <Filter>GUI\Panes\JobSets</Filter>
     </ClCompile>
@@ -233,14 +218,8 @@
     <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </QtMoc>
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </QtMoc>
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h">
       <Filter>GUI\Panes\Jobs</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h">
-      <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Widgets\LedgerPickerDialog.h">
       <Filter>GUI\Widgets</Filter>
@@ -274,9 +253,6 @@
     </QtMoc>
     <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
-    </QtMoc>
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h">
-      <Filter>GUI\Panes\JobSets</Filter>
     </QtMoc>
     <QtMoc Include="GUI\Panes\JobSetsPane\WorkflowsPage.h">
       <Filter>GUI\Panes\JobSets</Filter>
@@ -326,27 +302,6 @@
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>
-    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsCoordinator.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </QtMoc>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableModel.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsGroupTableView.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableModel.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsJobsTableView.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsTurnInputsDialog.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsWaveTreeModel.h">
-      <Filter>GUI\Panes\ExplorerRuns</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">
       <Filter>GUI\Panes\Jobs</Filter>
     </ClInclude>
@@ -367,12 +322,6 @@
     </ClInclude>
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
       <Filter>GUI\Widgets</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h">
-      <Filter>GUI\Panes\JobSets</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h">
-      <Filter>GUI\Panes\JobSets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h">
       <Filter>GUI\Panes\SeedProbe</Filter>
@@ -417,6 +366,9 @@
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SimCoreDbExplorerRunService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SimCoreDbJobSetService.h">
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="DB\SimCoreDbJobService.h">

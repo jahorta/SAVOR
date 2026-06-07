@@ -69,7 +69,7 @@ public:
     void loadSelectedJobInputIni();
     void requeueSelectedJob();
     void cancelSelectedJob();
-    void restartSelectedFailedJob(std::optional<QString> iniOverride = std::nullopt);
+    void restartSelectedFailedJob();
 
 signals:
     void stateChanged();

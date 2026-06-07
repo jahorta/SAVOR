@@ -5,20 +5,20 @@
 #include <QtCore/QFutureWatcher>
 #include <QtWidgets/QWidget>
 
+#include "DB/SimCoreDbJobSetService.h"
 #include "DB/SimCoreDbWorkflowService.h"
 #include "GUI/Common/StatusToast.h"
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
-class JobSetsPage;
 class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
-class QTabWidget;
 class QTableWidget;
 class QTimer;
 class QTreeWidget;
@@ -39,20 +39,23 @@ private:
     using WorkflowPageResult = soasimqt2::db::ServiceResult<
         simcore::db::UiReadPage<simcore::db::UiWorkflowInstanceSummary>>;
     using WorkflowDetailResult = soasimqt2::db::ServiceResult<simcore::db::UiWorkflowDetail>;
+    using WorkflowJobSetsResult = soasimqt2::db::ServiceResult<
+        std::vector<soasimqt2::db::WorkflowJobSetRow>>;
 
     void createWidgets();
     void wireSignals();
     void refreshWorkflows();
     void fetchWorkflowDetail(std::int64_t workflowInstanceId);
+    void fetchWorkflowJobSets(const simcore::db::UiWorkflowDetail& detail);
     void applyFilters();
     void requestNextPage();
     void requestPreviousPage();
     void handleWorkflowSelectionChanged();
-    void handleRootTabChanged(int index);
-    void syncJobSetsActiveState();
     void updateWorkflowTable();
     void updateWorkflowDetail();
+    void updateWorkflowJobSets();
     void clearWorkflowDetail(const QString& message);
+    void clearWorkflowJobSets(const QString& message);
     void updateStatusWidgets();
     void postStatusMessage(const QString& text, StatusToast::Severity severity);
 
@@ -64,19 +67,19 @@ private:
     bool pageActive_ = false;
     bool workflowFetchInFlight_ = false;
     bool detailFetchInFlight_ = false;
+    bool jobSetsFetchInFlight_ = false;
     bool pendingWorkflowRefresh_ = false;
+    std::int64_t jobSetsFetchWorkflowInstanceId_ = 0;
     QDateTime lastRefresh_;
     QString errorMessage_;
     QString infoMessage_;
     QString lastToastSignature_;
+    std::vector<soasimqt2::db::WorkflowJobSetRow> workflowJobSets_;
 
     QFutureWatcher<WorkflowPageResult> workflowWatcher_;
     QFutureWatcher<WorkflowDetailResult> detailWatcher_;
+    QFutureWatcher<WorkflowJobSetsResult> jobSetsWatcher_;
     QTimer* refreshTimer_ = nullptr;
-
-    QTabWidget* rootTabs_ = nullptr;
-    QWidget* overviewTab_ = nullptr;
-    JobSetsPage* jobSetsPage_ = nullptr;
 
     QComboBox* stateFilter_ = nullptr;
     QLineEdit* kindFilter_ = nullptr;
@@ -97,5 +100,6 @@ private:
     QTreeWidget* currentStepsTree_ = nullptr;
     QTreeWidget* futureStepsTree_ = nullptr;
     QTreeWidget* pastStepsTree_ = nullptr;
+    QTreeWidget* jobSetsTree_ = nullptr;
     QTreeWidget* alertsTree_ = nullptr;
 };

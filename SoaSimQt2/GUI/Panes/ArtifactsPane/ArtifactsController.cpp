@@ -217,7 +217,7 @@ void ArtifactsController::importArtifact(const QString& sourcePath, const QStrin
 
     refreshRootsState();
     if (!state_.rootsReady) {
-        state_.errorMessage = QStringLiteral("ObjectStore roots are unset. Configure storage before importing artifacts.");
+        state_.errorMessage = QStringLiteral("Artifact storage roots are unset. Configure storage before importing artifacts.");
         emitStateChanged();
         return;
     }
@@ -248,7 +248,7 @@ void ArtifactsController::materializeSelectedArtifact(const QString& outputPath)
 
     refreshRootsState();
     if (!state_.rootsReady) {
-        state_.errorMessage = QStringLiteral("ObjectStore roots are unset. Configure storage before exporting artifacts.");
+        state_.errorMessage = QStringLiteral("Artifact storage roots are unset. Configure storage before exporting artifacts.");
         emitStateChanged();
         return;
     }
@@ -267,7 +267,7 @@ void ArtifactsController::refreshRootsState()
 {
     state_.rootsReady = SimCoreDbArtifactService::StorageReady();
     if (!state_.rootsReady && state_.errorMessage.isEmpty()) {
-        state_.infoMessage = QStringLiteral("ObjectStore roots are unset. Artifacts view/actions are disabled until storage is configured.");
+        state_.infoMessage = QStringLiteral("Artifact storage roots are unset. Artifact view/actions are disabled until storage is configured.");
     }
 }
 

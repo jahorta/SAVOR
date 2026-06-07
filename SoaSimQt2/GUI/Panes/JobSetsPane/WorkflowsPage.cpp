@@ -1,6 +1,5 @@
 #include "WorkflowsPage.h"
 
-#include "JobSetsPage.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
@@ -128,6 +127,20 @@ std::array<const char*, 8> stepHeaders()
     };
 }
 
+std::array<const char*, 8> jobSetHeaders()
+{
+    return {
+        "Step",
+        "Kind",
+        "State",
+        "Job Set",
+        "Program",
+        "Progress",
+        "Jobs",
+        "Created",
+    };
+}
+
 void configureStepTree(QTreeWidget* tree)
 {
     const auto headers = stepHeaders();
@@ -151,6 +164,29 @@ void configureStepTree(QTreeWidget* tree)
     tree->header()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
 }
 
+void configureJobSetsTree(QTreeWidget* tree)
+{
+    const auto headers = jobSetHeaders();
+    QStringList labels;
+    for (const char* header : headers) {
+        labels.push_back(QString::fromLatin1(header));
+    }
+    tree->setColumnCount(labels.size());
+    tree->setHeaderLabels(labels);
+    tree->setRootIsDecorated(true);
+    tree->setAlternatingRowColors(true);
+    tree->setUniformRowHeights(true);
+    tree->header()->setStretchLastSection(false);
+    tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(5, QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
+}
+
 void addStepRow(QTreeWidget* tree, const simcore::db::UiWorkflowStepSummary& step)
 {
     auto* item = new QTreeWidgetItem(tree);
@@ -171,6 +207,14 @@ void setEmptyStepRow(QTreeWidget* tree, const QString& text)
     item->setText(0, text);
     item->setFirstColumnSpanned(true);
 }
+
+void setEmptyTreeRow(QTreeWidget* tree, const QString& text)
+{
+    tree->clear();
+    auto* item = new QTreeWidgetItem(tree);
+    item->setText(0, text);
+    item->setFirstColumnSpanned(true);
+}
 }
 
 WorkflowsPage::WorkflowsPage(QWidget* parent)
@@ -183,7 +227,6 @@ WorkflowsPage::WorkflowsPage(QWidget* parent)
 void WorkflowsPage::setPageActive(bool active)
 {
     if (pageActive_ == active) {
-        syncJobSetsActiveState();
         return;
     }
 
@@ -192,7 +235,6 @@ void WorkflowsPage::setPageActive(bool active)
         if (refreshTimer_ != nullptr) {
             refreshTimer_->stop();
         }
-        syncJobSetsActiveState();
         return;
     }
 
@@ -200,7 +242,6 @@ void WorkflowsPage::setPageActive(bool active)
         refreshTimer_->start(refreshSecondsSpin_->value() * 1000);
     }
     refreshWorkflows();
-    syncJobSetsActiveState();
 }
 
 void WorkflowsPage::createWidgets()
@@ -209,15 +250,7 @@ void WorkflowsPage::createWidgets()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(10);
 
-    rootTabs_ = new QTabWidget(this);
-    overviewTab_ = new QWidget(rootTabs_);
-    rootTabs_->addTab(overviewTab_, QStringLiteral("Workflows"));
-
-    auto* overviewLayout = new QVBoxLayout(overviewTab_);
-    overviewLayout->setContentsMargins(0, 0, 0, 0);
-    overviewLayout->setSpacing(10);
-
-    auto* toolbarPanel = new QFrame(overviewTab_);
+    auto* toolbarPanel = new QFrame(this);
     toolbarPanel->setObjectName("jobSetsToolbarPanel");
     auto* toolbarLayout = new QGridLayout(toolbarPanel);
     toolbarLayout->setContentsMargins(8, 7, 8, 7);
@@ -279,9 +312,9 @@ void WorkflowsPage::createWidgets()
     toolbarLayout->addWidget(refreshSecondsSpin_, 1, 8);
     toolbarLayout->setColumnStretch(1, 1);
 
-    overviewLayout->addWidget(toolbarPanel);
+    rootLayout->addWidget(toolbarPanel);
 
-    auto* statusPanel = new QFrame(overviewTab_);
+    auto* statusPanel = new QFrame(this);
     statusPanel->setObjectName("jobSetsPagingPanel");
     auto* statusLayout = new QHBoxLayout(statusPanel);
     statusLayout->setContentsMargins(8, 7, 8, 7);
@@ -300,9 +333,9 @@ void WorkflowsPage::createWidgets()
     statusLayout->addStretch();
     statusLayout->addWidget(inlineMessageLabel_, 1);
     statusLayout->addWidget(lastRefreshLabel_);
-    overviewLayout->addWidget(statusPanel);
+    rootLayout->addWidget(statusPanel);
 
-    auto* splitter = new QSplitter(Qt::Vertical, overviewTab_);
+    auto* splitter = new QSplitter(Qt::Vertical, this);
     workflowTable_ = new QTableWidget(splitter);
     workflowTable_->setObjectName("jobSetsTreeView");
     workflowTable_->setColumnCount(9);
@@ -351,10 +384,12 @@ void WorkflowsPage::createWidgets()
     currentStepsTree_ = new QTreeWidget(detailTabs);
     futureStepsTree_ = new QTreeWidget(detailTabs);
     pastStepsTree_ = new QTreeWidget(detailTabs);
+    jobSetsTree_ = new QTreeWidget(detailTabs);
     alertsTree_ = new QTreeWidget(detailTabs);
     configureStepTree(currentStepsTree_);
     configureStepTree(futureStepsTree_);
     configureStepTree(pastStepsTree_);
+    configureJobSetsTree(jobSetsTree_);
     alertsTree_->setColumnCount(6);
     alertsTree_->setHeaderLabels(QStringList{
         QStringLiteral("Kind"),
@@ -376,17 +411,13 @@ void WorkflowsPage::createWidgets()
     detailTabs->addTab(currentStepsTree_, QStringLiteral("Current"));
     detailTabs->addTab(futureStepsTree_, QStringLiteral("Future"));
     detailTabs->addTab(pastStepsTree_, QStringLiteral("Past"));
+    detailTabs->addTab(jobSetsTree_, QStringLiteral("Job Sets"));
     detailTabs->addTab(alertsTree_, QStringLiteral("Alerts"));
     detailLayout->addWidget(detailTabs, 1);
     splitter->addWidget(detailPanel);
     splitter->setStretchFactor(0, 2);
     splitter->setStretchFactor(1, 3);
-    overviewLayout->addWidget(splitter, 1);
-
-    jobSetsPage_ = new JobSetsPage(rootTabs_);
-    rootTabs_->addTab(jobSetsPage_, QStringLiteral("Job Sets"));
-
-    rootLayout->addWidget(rootTabs_, 1);
+    rootLayout->addWidget(splitter, 1);
 
     refreshTimer_ = new QTimer(this);
 }
@@ -410,25 +441,24 @@ void WorkflowsPage::wireSignals()
     connect(prevButton_, &QPushButton::clicked, this, &WorkflowsPage::requestPreviousPage);
     connect(nextButton_, &QPushButton::clicked, this, &WorkflowsPage::requestNextPage);
     connect(autoRefreshCheck_, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled && pageActive_ && rootTabs_->currentIndex() == 0) {
+        if (enabled && pageActive_) {
             refreshTimer_->start(refreshSecondsSpin_->value() * 1000);
         } else {
             refreshTimer_->stop();
         }
     });
     connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int seconds) {
-        if (pageActive_ && autoRefreshCheck_->isChecked() && rootTabs_->currentIndex() == 0) {
+        if (pageActive_ && autoRefreshCheck_->isChecked()) {
             refreshTimer_->start(seconds * 1000);
         }
     });
     connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (pageActive_ && autoRefreshCheck_->isChecked() && rootTabs_->currentIndex() == 0
-            && !workflowFetchInFlight_ && !detailFetchInFlight_ && !before_.has_value() && !after_.has_value()) {
+        if (pageActive_ && autoRefreshCheck_->isChecked()
+            && !workflowFetchInFlight_ && !detailFetchInFlight_ && !jobSetsFetchInFlight_
+            && !before_.has_value() && !after_.has_value()) {
             refreshWorkflows();
         }
     });
-    connect(rootTabs_, &QTabWidget::currentChanged, this, &WorkflowsPage::handleRootTabChanged);
-    connect(jobSetsPage_, &JobSetsPage::statusToastRequested, this, &WorkflowsPage::statusToastRequested);
     connect(workflowTable_, &QTableWidget::itemSelectionChanged, this, &WorkflowsPage::handleWorkflowSelectionChanged);
 
     connect(&workflowWatcher_, &QFutureWatcher<WorkflowPageResult>::finished, this, [this]() {
@@ -470,6 +500,7 @@ void WorkflowsPage::wireSignals()
             if (result.ok && result.value.instance.workflow_instance_id == selectedWorkflowInstanceId_) {
                 selectedWorkflowDetail_ = result.value;
                 updateWorkflowDetail();
+                fetchWorkflowJobSets(result.value);
             } else if (!result.ok) {
                 clearWorkflowDetail(QStringLiteral("Workflow detail failed: %1").arg(qstr(result.error.message)));
             }
@@ -477,6 +508,24 @@ void WorkflowsPage::wireSignals()
             clearWorkflowDetail(QStringLiteral("Workflow detail failed: %1").arg(QString::fromUtf8(ex.what())));
         } catch (...) {
             clearWorkflowDetail(QStringLiteral("Workflow detail failed: unknown exception"));
+        }
+        updateStatusWidgets();
+    });
+
+    connect(&jobSetsWatcher_, &QFutureWatcher<WorkflowJobSetsResult>::finished, this, [this]() {
+        jobSetsFetchInFlight_ = false;
+        try {
+            const auto result = jobSetsWatcher_.result();
+            if (result.ok && jobSetsFetchWorkflowInstanceId_ == selectedWorkflowInstanceId_) {
+                workflowJobSets_ = result.value;
+                updateWorkflowJobSets();
+            } else if (!result.ok) {
+                clearWorkflowJobSets(QStringLiteral("Workflow job sets failed: %1").arg(qstr(result.error.message)));
+            }
+        } catch (const std::exception& ex) {
+            clearWorkflowJobSets(QStringLiteral("Workflow job sets failed: %1").arg(QString::fromUtf8(ex.what())));
+        } catch (...) {
+            clearWorkflowJobSets(QStringLiteral("Workflow job sets failed: unknown exception"));
         }
         updateStatusWidgets();
     });
@@ -515,6 +564,18 @@ void WorkflowsPage::fetchWorkflowDetail(std::int64_t workflowInstanceId)
     detailFetchInFlight_ = true;
     detailWatcher_.setFuture(QtConcurrent::run([workflowInstanceId]() {
         return soasimqt2::db::SimCoreDbWorkflowService::GetWorkflowDetail(workflowInstanceId);
+    }));
+    updateStatusWidgets();
+}
+
+void WorkflowsPage::fetchWorkflowJobSets(const simcore::db::UiWorkflowDetail& detail)
+{
+    jobSetsFetchWorkflowInstanceId_ = detail.instance.workflow_instance_id;
+    jobSetsFetchInFlight_ = true;
+    clearWorkflowJobSets(QStringLiteral("Loading workflow job sets..."));
+
+    jobSetsWatcher_.setFuture(QtConcurrent::run([detail]() {
+        return soasimqt2::db::SimCoreDbJobSetService::ListWorkflowJobSets(detail, 25);
     }));
     updateStatusWidgets();
 }
@@ -563,28 +624,9 @@ void WorkflowsPage::handleWorkflowSelectionChanged()
     }
     selectedWorkflowInstanceId_ = workflowId;
     selectedWorkflowDetail_.reset();
+    workflowJobSets_.clear();
     clearWorkflowDetail(QStringLiteral("Loading workflow detail..."));
     fetchWorkflowDetail(workflowId);
-}
-
-void WorkflowsPage::handleRootTabChanged(int index)
-{
-    syncJobSetsActiveState();
-    if (refreshTimer_ == nullptr) {
-        return;
-    }
-    if (pageActive_ && index == 0 && autoRefreshCheck_->isChecked()) {
-        refreshTimer_->start(refreshSecondsSpin_->value() * 1000);
-    } else {
-        refreshTimer_->stop();
-    }
-}
-
-void WorkflowsPage::syncJobSetsActiveState()
-{
-    if (jobSetsPage_ != nullptr) {
-        jobSetsPage_->setPageActive(pageActive_ && rootTabs_ != nullptr && rootTabs_->currentIndex() == 1);
-    }
 }
 
 void WorkflowsPage::updateWorkflowTable()
@@ -733,6 +775,63 @@ void WorkflowsPage::updateWorkflowDetail()
     }
 }
 
+void WorkflowsPage::updateWorkflowJobSets()
+{
+    jobSetsTree_->clear();
+    if (workflowJobSets_.empty()) {
+        setEmptyTreeRow(jobSetsTree_, QStringLiteral("No job sets are attached to this workflow yet."));
+        return;
+    }
+
+    for (const auto& row : workflowJobSets_) {
+        const auto& step = row.step;
+        auto* item = new QTreeWidgetItem(jobSetsTree_);
+        item->setText(0, qstr(step.step_key));
+        item->setText(1, qstr(step.step_kind));
+        item->setText(2, qstr(step.state));
+        item->setText(3, formatOptionalId(step.job_set_id));
+        item->setText(4, qstr(row.program_kind_label));
+        item->setText(5, stepProgressText(step));
+        item->setText(6, QString::number(static_cast<qint64>(step.job_count)));
+        item->setText(7, formatTime(step.created_at_utc));
+
+        if (!row.detail.has_value()) {
+            auto* child = new QTreeWidgetItem(item);
+            child->setText(0, QStringLiteral("Job set detail is not projected yet."));
+            child->setFirstColumnSpanned(true);
+            continue;
+        }
+
+        const auto& detail = *row.detail;
+        item->setText(4, qstr(soasimqt2::db::SimCoreDbJobSetService::ProgramKindLabel(detail.summary.program_kind)));
+        item->setText(5, progressText(detail.summary.completed_jobs, detail.summary.total_jobs, detail.summary.failed_jobs));
+        item->setText(6, QStringLiteral("%1 shown / %2 total")
+            .arg(detail.jobs.size())
+            .arg(static_cast<qint64>(detail.summary.total_jobs)));
+        item->setText(7, formatTime(detail.summary.created_at_utc));
+
+        if (detail.jobs.empty()) {
+            auto* child = new QTreeWidgetItem(item);
+            child->setText(0, QStringLiteral("No jobs projected for this job set."));
+            child->setFirstColumnSpanned(true);
+            continue;
+        }
+
+        for (const auto& job : detail.jobs) {
+            auto* child = new QTreeWidgetItem(item);
+            child->setText(0, QStringLiteral("Job #%1").arg(static_cast<qint64>(job.job_id)));
+            child->setText(1, QStringLiteral("priority %1").arg(job.priority));
+            child->setText(2, qstr(job.state));
+            child->setText(3, QString::number(static_cast<qint64>(job.job_set_id)));
+            child->setText(4, qstr(soasimqt2::db::SimCoreDbJobSetService::ProgramKindLabel(job.program_kind)));
+            child->setText(5, QStringLiteral("attempts %1/%2").arg(job.attempts).arg(job.max_attempts));
+            child->setText(6, qstr(job.error_code));
+            child->setText(7, formatTime(job.queued_at_utc));
+        }
+        item->setExpanded(true);
+    }
+}
+
 void WorkflowsPage::clearWorkflowDetail(const QString& message)
 {
     detailHeaderLabel_->setText(message);
@@ -740,12 +839,19 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
     setEmptyStepRow(currentStepsTree_, message);
     setEmptyStepRow(futureStepsTree_, QStringLiteral("-"));
     setEmptyStepRow(pastStepsTree_, QStringLiteral("-"));
+    clearWorkflowJobSets(QStringLiteral("-"));
     alertsTree_->clear();
+}
+
+void WorkflowsPage::clearWorkflowJobSets(const QString& message)
+{
+    workflowJobSets_.clear();
+    setEmptyTreeRow(jobSetsTree_, message);
 }
 
 void WorkflowsPage::updateStatusWidgets()
 {
-    const bool busy = workflowFetchInFlight_ || detailFetchInFlight_;
+    const bool busy = workflowFetchInFlight_ || detailFetchInFlight_ || jobSetsFetchInFlight_;
     summaryLabel_->setText(QStringLiteral("Workflows: %1 - page size: %2%3")
         .arg(workflowPage_.items.size())
         .arg(pageSizeSpin_->value())

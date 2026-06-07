@@ -463,7 +463,7 @@ void ArtifactsPage::updateStatusWidgets()
     lastRefreshLabel_->setText(state.lastRefresh.isValid() ? QStringLiteral("Last refresh: %1").arg(state.lastRefresh.toString(QStringLiteral("hh:mm:ss AP"))) : QStringLiteral("Last refresh: --"));
 
     if (!state.rootsReady) {
-        rootsBannerLabel_->setText(QStringLiteral("ObjectStore roots are unset. Artifacts view/actions are disabled until storage is configured in Settings."));
+        rootsBannerLabel_->setText(QStringLiteral("Artifact storage roots are unset. Artifact view/actions are disabled until storage is configured in Settings."));
         rootsBannerLabel_->show();
     } else {
         rootsBannerLabel_->hide();

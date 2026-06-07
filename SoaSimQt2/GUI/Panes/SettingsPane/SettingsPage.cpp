@@ -209,7 +209,7 @@ void SettingsPage::createWidgets()
     QHBoxLayout* snapshotLayout = new QHBoxLayout();
 
     QLabel* snapshotDescription = new QLabel(
-        "Save a compressed snapshot of the database plus object-store artifacts, or load a snapshot into a target root. Snapshots do not include temporary cache files.",
+        "Save a compressed snapshot of the database plus artifact storage contents, or load a snapshot into a target root. Snapshots do not include temporary cache files.",
         storageSection.content);
     snapshotDescription->setObjectName("settingsSectionDescription");
     snapshotDescription->setWordWrap(true);

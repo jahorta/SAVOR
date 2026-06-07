@@ -43,7 +43,7 @@ constexpr PageMetadata kPageMetadata[] = {
     { "Workflow Builder", "Composable workflow unit builder with typed input and output compatibility preview." },
     { "Workflow Launcher", "Workflow graph instancing with per-run external input bindings." },
     { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, templates, context validation, estimates, and save/materialize actions." },
-    { "Artifacts", "Object-store artifact browser with search, paging, import, inspector metadata, and materialize/export actions." },
+    { "Artifacts", "Artifact storage browser with search, paging, import, inspector metadata, and materialize/export actions." },
     { "Seed Probe", "Seed probe grid and unique probing results." },
     { "Explorer Runs", "Explorer run history and controls." },
     { "DTM Editor", "Poll-based DTM editing with deterministic annotation sidecar binding." },

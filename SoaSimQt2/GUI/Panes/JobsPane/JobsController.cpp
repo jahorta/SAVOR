@@ -313,19 +313,15 @@ void JobsController::cancelSelectedJob()
     cancelWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() { return SimCoreDbJobService::CancelJob(jobId); }));
 }
 
-void JobsController::restartSelectedFailedJob(std::optional<QString> iniOverride)
+void JobsController::restartSelectedFailedJob()
 {
     const JobLite* job = selectedJob();
     if (!job || restartInFlight_ || state_.actionsBusy || job->state != "FAILED") return;
     actionJobId_ = job->job_id;
     restartInFlight_ = true;
     setBusy(Operation::Restart, true);
-    restartWatcher_.setFuture(runDataServiceCall([jobId = job->job_id, iniOverride]() {
-        std::optional<std::string> overrideText;
-        if (iniOverride.has_value()) {
-            overrideText = iniOverride->toStdString();
-        }
-        return SimCoreDbJobService::RestartFailedJob(jobId, std::move(overrideText));
+    restartWatcher_.setFuture(runDataServiceCall([jobId = job->job_id]() {
+        return SimCoreDbJobService::RestartFailedJob(jobId);
     }));
 }
 

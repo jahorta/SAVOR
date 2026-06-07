@@ -137,11 +137,6 @@
     <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp" />
     <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp" />
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsController.cpp" />
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsPage.cpp" />
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.cpp" />
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.cpp" />
-    <ClCompile Include="GUI\Panes\JobSetsPane\JobSetsTreeView.cpp" />
     <ClCompile Include="GUI\Panes\JobSetsPane\WorkflowsPage.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp" />
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp" />
@@ -190,14 +185,9 @@
     <QtMoc Include="GUI\Panes\JobBuilderPane\JobBuilderPage.h" />
     <ClInclude Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.h" />
     <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h" />
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsController.h" />
     <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h" />
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsPage.h" />
     <QtMoc Include="GUI\Panes\JobSetsPane\WorkflowsPage.h" />
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsProgressDelegate.h" />
-    <ClInclude Include="GUI\Panes\JobSetsPane\JobSetsTreeModel.h" />
-    <QtMoc Include="GUI\Panes\JobSetsPane\JobSetsTreeView.h" />
     <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h" />
     <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h" />
     <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h" />
@@ -217,6 +207,7 @@
     <ClInclude Include="DB\SimCoreDbArtifactService.h" />
     <ClInclude Include="DB\SimCoreDbAuthoringService.h" />
     <ClInclude Include="DB\SimCoreDbExplorerRunService.h" />
+    <ClInclude Include="DB\SimCoreDbJobSetService.h" />
     <ClInclude Include="DB\SimCoreDbJobService.h" />
     <ClInclude Include="DB\SimCoreDbServiceResult.h" />
     <ClInclude Include="DB\SimCoreDbWorkflowService.h" />
