@@ -64,9 +64,8 @@ private:
     int selectedSlotIndex() const;
     const simcore::db::BattlePlanActionPresetSnapshot* actionPresetById(std::int64_t presetId) const;
     int findActionIndexBySlot(const TurnDraft& turn, int slotIndex) const;
-    void ensureTurnActionSlots(TurnDraft& turn) const;
-    void normalizeActionOrder(TurnDraft& turn) const;
-    void removeActionsOutsideSlotRange(TurnDraft& turn, int maxSlots) const;
+    void normalizeTurnSlots(TurnDraft& turn) const;
+    bool hasValidSlotAssignments(const TurnDraft& turn) const;
     QTreeWidgetItem* selectedTreeItem() const;
     int selectedTurnIndex() const;
     int selectedActionIndex() const;

@@ -278,8 +278,7 @@ void BattlePlanEditorWindow::loadSnapshot(const simcore::db::BattlePlanSnapshot&
         if (targetTurn.player_combatants <= 0) {
             targetTurn.player_combatants = 1;
         }
-        ensureTurnActionSlots(targetTurn);
-        normalizeActionOrder(targetTurn);
+        normalizeTurnSlots(targetTurn);
     }
 
     turnCountSpin_->setValue(turnCount);
@@ -467,9 +466,7 @@ void BattlePlanEditorWindow::rebuildPlanTree()
     planTree_->clear();
     for (int turnIndex = 0; turnIndex < static_cast<int>(turns_.size()); ++turnIndex) {
         auto& turn = turns_[static_cast<std::size_t>(turnIndex)];
-        ensureTurnActionSlots(turn);
-        removeActionsOutsideSlotRange(turn, turn.player_combatants);
-        normalizeActionOrder(turn);
+        normalizeTurnSlots(turn);
 
         auto* turnItem = new QTreeWidgetItem(planTree_);
         turnItem->setText(0, QStringLiteral("Turn %1").arg(turn.turn_index));
@@ -561,24 +558,72 @@ void BattlePlanEditorWindow::refreshSelectionPanel()
 
 void BattlePlanEditorWindow::syncSelectionPanelToAction()
 {
-    auto* turn = selectedTurn();
-    auto* action = selectedAction();
+    const int selectedTurnIdx = selectedTurnIndex();
     const int selectedSlot = selectedSlotIndex();
+    auto* turn = selectedTurn();
     if (turn != nullptr) {
-        turn->player_combatants = combatantCountSpin_->value();
-        removeActionsOutsideSlotRange(*turn, turn->player_combatants);
-        normalizeActionOrder(*turn);
-        ensureTurnActionSlots(*turn);
+        bool shouldMarkDirty = false;
+        const int requestedCombatants = combatantCountSpin_->value();
+        if (turn->player_combatants != requestedCombatants) {
+            turn->player_combatants = requestedCombatants;
+            shouldMarkDirty = true;
+        }
+        normalizeTurnSlots(*turn);
         actorSlotSpin_->setMaximum(std::max(0, turn->player_combatants - 1));
-        if (selectedSlot >= 0 && selectedSlot < turn->player_combatants) {
+        if (selectedSlot < 0 || selectedSlot >= turn->player_combatants) {
+            if (shouldMarkDirty) {
+                markDirty();
+                rebuildPlanTree();
+            }
+            return;
+        }
+        const int sourceActionIndex = findActionIndexBySlot(*turn, selectedSlot);
+        if (sourceActionIndex < 0) {
             actorSlotSpin_->setValue(selectedSlot);
+            if (shouldMarkDirty) {
+                markDirty();
+                rebuildPlanTree();
+            }
+            return;
+        }
+
+        const int requestedSlot = std::clamp(actorSlotSpin_->value(), 0, turn->player_combatants - 1);
+        if (requestedSlot == selectedSlot) {
+            if (shouldMarkDirty) {
+                markDirty();
+                rebuildPlanTree();
+            }
+            return;
+        }
+        shouldMarkDirty = true;
+        const int targetActionIndex = findActionIndexBySlot(*turn, requestedSlot);
+        if (targetActionIndex >= 0) {
+            std::swap(turn->actions[static_cast<std::size_t>(sourceActionIndex)].actor_slot,
+                turn->actions[static_cast<std::size_t>(targetActionIndex)].actor_slot);
+        } else {
+            turn->actions[static_cast<std::size_t>(sourceActionIndex)].actor_slot = requestedSlot;
+        }
+        normalizeTurnSlots(*turn);
+
+        if (selectedTurnIdx >= 0 && selectedTurnIdx < static_cast<int>(planTree_->topLevelItemCount())) {
+            if (auto* turnItem = planTree_->topLevelItem(selectedTurnIdx)) {
+                turnItem->setExpanded(true);
+                if (const int restoredSlot = std::clamp(requestedSlot, 0, turn->player_combatants - 1);
+                    restoredSlot < turnItem->childCount()) {
+                    planTree_->setCurrentItem(turnItem->child(restoredSlot));
+                }
+            }
+        }
+        actorSlotSpin_->setValue(requestedSlot);
+        if (shouldMarkDirty) {
+            markDirty();
+            rebuildPlanTree();
+            return;
         }
     }
-    if (action != nullptr) {
-        action->actor_slot = std::clamp(actorSlotSpin_->value(), actorSlotSpin_->minimum(), actorSlotSpin_->maximum());
+    if (turn == nullptr) {
+        return;
     }
-    markDirty();
-    rebuildPlanTree();
 }
 
 void BattlePlanEditorWindow::addActionFromLibrarySelection()
@@ -624,9 +669,7 @@ void BattlePlanEditorWindow::assignActionPreset(std::int64_t presetId, int turnI
         }
     }
     auto& turn = turns_[static_cast<std::size_t>(targetTurnIndex)];
-    ensureTurnActionSlots(turn);
-    removeActionsOutsideSlotRange(turn, turn.player_combatants);
-    normalizeActionOrder(turn);
+    normalizeTurnSlots(turn);
 
     if (slotIndex < 0 && actionIndex >= 0 && actionIndex < static_cast<int>(turn.actions.size())) {
         slotIndex = turn.actions[static_cast<std::size_t>(actionIndex)].actor_slot;
@@ -647,7 +690,7 @@ void BattlePlanEditorWindow::assignActionPreset(std::int64_t presetId, int turnI
         action.actor_slot = slotIndex;
         action.action_preset_id = presetId;
         turn.actions.push_back(std::move(action));
-        normalizeActionOrder(turn);
+        normalizeTurnSlots(turn);
     }
     markDirty();
     rebuildPlanTree();
@@ -671,9 +714,7 @@ void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId, int 
         postStatusMessage(QStringLiteral("Select a valid action preset before adding."), StatusToast::Severity::Warn);
         return;
     }
-    ensureTurnActionSlots(*turn);
-    removeActionsOutsideSlotRange(*turn, turn->player_combatants);
-    normalizeActionOrder(*turn);
+    normalizeTurnSlots(*turn);
     if (slotIndex < 0) {
         slotIndex = selectedSlotIndex();
     }
@@ -689,7 +730,7 @@ void BattlePlanEditorWindow::addActionToSelectedTurn(std::int64_t presetId, int 
         action.action_preset_id = presetId;
         action.actor_slot = slotIndex;
         turn->actions.push_back(std::move(action));
-        normalizeActionOrder(*turn);
+        normalizeTurnSlots(*turn);
     }
     markDirty();
     rebuildPlanTree();
@@ -714,7 +755,7 @@ void BattlePlanEditorWindow::duplicateSelectedAction()
     auto copy = turn->actions[static_cast<std::size_t>(actionIndex)];
     copy.actor_slot = duplicateSlot;
     turn->actions.push_back(std::move(copy));
-    normalizeActionOrder(*turn);
+    normalizeTurnSlots(*turn);
     markDirty();
     rebuildPlanTree();
 }
@@ -729,7 +770,8 @@ void BattlePlanEditorWindow::removeSelectedNode()
     }
     auto& turn = turns_[static_cast<std::size_t>(turnIndex)];
     if (actionIndex >= 0 && actionIndex < static_cast<int>(turn.actions.size()) && slotIndex >= 0) {
-        turn.actions[static_cast<std::size_t>(actionIndex)].action_preset_id = 0;
+        postStatusMessage(QStringLiteral("Slots must remain assigned. Replace with another preset instead."), StatusToast::Severity::Warn);
+        return;
     } else {
         const bool hasAssignedActions = std::any_of(turn.actions.begin(), turn.actions.end(), [](const ActionDraft& action) {
             return action.action_preset_id > 0;
@@ -770,7 +812,7 @@ void BattlePlanEditorWindow::moveSelectedAction(int delta)
         std::swap(turn->actions[static_cast<std::size_t>(actionIndex)].actor_slot,
             turn->actions[static_cast<std::size_t>(targetActionIndex)].actor_slot);
     }
-    normalizeActionOrder(*turn);
+    normalizeTurnSlots(*turn);
     markDirty();
     rebuildPlanTree();
 }
@@ -789,9 +831,7 @@ void BattlePlanEditorWindow::ensureTurnCount(int count)
         if (turn.player_combatants <= 0) {
             turn.player_combatants = 1;
         }
-        ensureTurnActionSlots(turn);
-        removeActionsOutsideSlotRange(turn, turn.player_combatants);
-        normalizeActionOrder(turn);
+        normalizeTurnSlots(turn);
     }
     rebuildPlanTree();
 }
@@ -812,12 +852,12 @@ void BattlePlanEditorWindow::saveBattlePlan()
         const auto& sourceTurn = turns_[static_cast<std::size_t>(turnIndex)];
         auto& targetTurn = draft.turns[static_cast<std::size_t>(turnIndex)];
         targetTurn.turn_index = turnIndex + 1;
+        if (!hasValidSlotAssignments(sourceTurn)) {
+            postStatusMessage(QStringLiteral("Every combatant slot must be assigned."), StatusToast::Severity::Warn);
+            return;
+        }
         for (int slotIndex = 0; slotIndex < sourceTurn.player_combatants; ++slotIndex) {
             const int actionIndex = findActionIndexBySlot(sourceTurn, slotIndex);
-            if (actionIndex < 0) {
-                postStatusMessage(QStringLiteral("Every combatant slot must be assigned."), StatusToast::Severity::Warn);
-                return;
-            }
             const auto& sourceAction = sourceTurn.actions[static_cast<std::size_t>(actionIndex)];
             if (sourceAction.action_preset_id <= 0) {
                 postStatusMessage(QStringLiteral("Each action must be assigned to an action preset."), StatusToast::Severity::Warn);
@@ -937,36 +977,58 @@ int BattlePlanEditorWindow::findActionIndexBySlot(const TurnDraft& turn, int slo
     return -1;
 }
 
-void BattlePlanEditorWindow::ensureTurnActionSlots(TurnDraft& turn) const
+void BattlePlanEditorWindow::normalizeTurnSlots(TurnDraft& turn) const
 {
-    for (int slotIndex = 0; slotIndex < turn.player_combatants; ++slotIndex) {
-        if (findActionIndexBySlot(turn, slotIndex) < 0) {
-            ActionDraft placeholder{};
-            placeholder.actor_slot = slotIndex;
-            placeholder.action_preset_id = 0;
-            turn.actions.push_back(std::move(placeholder));
+    const int maxSlots = std::max(1, turn.player_combatants);
+    turn.player_combatants = maxSlots;
+    std::vector<ActionDraft> normalized;
+    normalized.reserve(static_cast<std::size_t>(maxSlots));
+
+    for (int slotIndex = 0; slotIndex < maxSlots; ++slotIndex) {
+        ActionDraft slotAction{};
+        slotAction.actor_slot = slotIndex;
+        slotAction.action_preset_id = 0;
+        bool foundValue = false;
+        for (const auto& action : turn.actions) {
+            if (action.actor_slot != slotIndex) {
+                continue;
+            }
+            if (!foundValue || action.action_preset_id > 0) {
+                slotAction = action;
+                slotAction.actor_slot = slotIndex;
+                foundValue = true;
+            }
+            if (action.action_preset_id > 0) {
+                slotAction.action_preset_id = action.action_preset_id;
+            }
+        }
+        normalized.push_back(std::move(slotAction));
+    }
+    normalized.shrink_to_fit();
+    turn.actions = std::move(normalized);
+}
+
+bool BattlePlanEditorWindow::hasValidSlotAssignments(const TurnDraft& turn) const
+{
+    for (int slotIndex = 0; slotIndex < std::max(1, turn.player_combatants); ++slotIndex) {
+        const int actionIndex = findActionIndexBySlot(turn, slotIndex);
+        if (actionIndex < 0) {
+            return false;
+        }
+        const auto& action = turn.actions[static_cast<std::size_t>(actionIndex)];
+        if (action.action_preset_id <= 0) {
+            return false;
+        }
+        if (action.actor_slot != slotIndex) {
+            return false;
         }
     }
-    normalizeActionOrder(turn);
-}
-
-void BattlePlanEditorWindow::normalizeActionOrder(TurnDraft& turn) const
-{
-    std::sort(turn.actions.begin(), turn.actions.end(), [](const ActionDraft& left, const ActionDraft& right) {
-        return left.actor_slot < right.actor_slot;
-    });
-}
-
-void BattlePlanEditorWindow::removeActionsOutsideSlotRange(TurnDraft& turn, int maxSlots) const
-{
-    if (maxSlots < 0) {
-        maxSlots = 0;
+    for (const auto& action : turn.actions) {
+        if (action.actor_slot < 0 || action.actor_slot >= std::max(1, turn.player_combatants)) {
+            return false;
+        }
     }
-    turn.actions.erase(
-        std::remove_if(turn.actions.begin(), turn.actions.end(), [maxSlots](const ActionDraft& action) {
-            return action.actor_slot < 0 || action.actor_slot >= maxSlots;
-        }),
-        turn.actions.end());
+    return true;
 }
 
 const simcore::db::BattlePlanActionPresetSnapshot* BattlePlanEditorWindow::actionPresetById(std::int64_t presetId) const
