@@ -36,6 +36,11 @@ public:
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
         WorkflowTransitionDecision decision{};
         if (context.step_key == "Grid") {
+            if (context.failed_total > 0) {
+                decision.should_advance = false;
+                decision.blocked_reason = "seedprobe.grid.step_has_failures";
+                return decision;
+            }
             decision.should_advance = true;
             decision.next_step_key = std::string("Unique");
             return decision;
@@ -46,6 +51,12 @@ public:
             || context.step_key.compare(context.step_key.size() - suffix.size(), suffix.size(), suffix) != 0) {
             decision.should_advance = false;
             decision.blocked_reason = "unsupported_step_key";
+            return decision;
+        }
+
+        if (context.failed_total > 0) {
+            decision.should_advance = false;
+            decision.blocked_reason = "seedprobe.grid.step_has_failures";
             return decision;
         }
 

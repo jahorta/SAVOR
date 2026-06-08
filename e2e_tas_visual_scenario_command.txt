@@ -1,0 +1,1 @@
+bin\x64\Debug\SimCoreDBe2e.exe --scenario tasmovie --dtm-file "D:\SoATAS\beginning_in_first_battle.dtm" --iso "D:\SoATAS\SkiesofArcadiaLegends(USA).gcm" --dolphin-base-dir "D:\SoATAS\dolphin-2506a-x64" --workspace-root "C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDBe2e\.simcoredbe2e\.tas_movie" --timeout-ms 600000 --visual-worker

@@ -224,6 +224,12 @@ WorkflowTransitionDecision NeutralToGridTransitionHandler::EvaluateTransition(co
         return decision;
     }
 
+    if (context.failed_total > 0) {
+        decision.should_advance = false;
+        decision.blocked_reason = "seedprobe.neutral.step_has_failures";
+        return decision;
+    }
+
     decision.should_advance = true;
     decision.next_step_key = std::string("Grid");
     return decision;

@@ -75,6 +75,14 @@
     <PostBuildEvent>
       <Command>C:\Qt\6.10.2\msvc2022_64\bin\windeployqt.exe "$(TargetPath)"</Command>
     </PostBuildEvent>
+    <ClCompile>
+      <DisableSpecificWarnings>4996</DisableSpecificWarnings>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <DisableSpecificWarnings>4996</DisableSpecificWarnings>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="Configuration">
     <ClCompile>

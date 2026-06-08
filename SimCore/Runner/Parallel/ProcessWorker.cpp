@@ -49,11 +49,14 @@ namespace simcore {
         if (p.visual) {
             cmd << " --visual";
         }
+        if (p.visual_debug) {
+            cmd << " --visual-debug";
+        }
         if (p.render_widget_handle != 0) {
             cmd << " --render-hwnd " << p.render_widget_handle;
         }
         if (p.visual) {
-            if (!p.visual_control_pipe_name.empty()) {
+            if (p.visual_debug && !p.visual_control_pipe_name.empty()) {
                 cmd << " --visual-control-pipe \"" << p.visual_control_pipe_name << "\"";
             }
             if (!p.visual_host_events_pipe_name.empty()) {
@@ -109,9 +112,9 @@ namespace simcore {
     {
         out_ = outq;
         id_ = p.worker_id;
-        visual_control_pipe_name_ = p.visual_control_pipe_name.empty() && p.visual
+        visual_control_pipe_name_ = p.visual_debug && p.visual_control_pipe_name.empty()
             ? make_visual_control_pipe_name(p.worker_id)
-            : p.visual_control_pipe_name;
+            : (p.visual_debug ? p.visual_control_pipe_name : std::string{});
         visual_host_events_pipe_name_ = p.visual_host_events_pipe_name;
         p.visual_control_pipe_name = visual_control_pipe_name_;
         p.visual_host_events_pipe_name = visual_host_events_pipe_name_;

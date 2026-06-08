@@ -13,13 +13,16 @@ Real-worker end-to-end harness for SimCoreDB workflow scenarios.
 
 ```bash
 SimCoreDBe2e \
-  --scenario seedprobe_real_worker_smoke \
+  --scenario seedprobe \
   --savestate-file <path-to-start.sav> \
   --iso <path-to-game.iso> \
   --dolphin-base-dir <path> \
   --timeout-ms 30000 \
   --poll-ms 100
 ```
+`--scenario` is optional, defaults to `seedprobe`.
+You can pass it multiple times or use `--scenario all` to run:
+`tasmovie`, `seedprobe`, `battle`, `tasmovie_seedprobe`, `tasmovie_seedprobe_battle` in that order.
 
 Optional:
 
@@ -31,7 +34,7 @@ Optional:
 
 ## Current scenario
 
-- `seedprobe_real_worker_smoke`
+- `seedprobe`
   - starts DB contexts through `DBService`,
   - seeds a starting savestate in StateDB,
   - seeds seedprobe spec rows in AuthoringDB,

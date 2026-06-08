@@ -643,13 +643,15 @@ namespace simcore {
         if (!movie.PlayInput(dtm_path, new std::optional<std::string>{}))
             return false;
         
+        Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, true);
+        
         auto boot = BootParameters::GenerateFromFile(m_last_game_iso_path);
         if (!BootManager::BootCore(*m_system, std::move(boot), m_wsi))
             return false;
 
         while (!Core::IsRunning(*m_system))
             std::this_thread::sleep_until(steady_clock::now() + milliseconds(10));
-        
+
         return true;
     }
 
@@ -1603,11 +1605,10 @@ namespace simcore {
         if (progflags & (uint32_t)CoreProgressFlags::BattleProgress) armBattleBreakpoints();
         else disarmBattleBreakpoints();
 
-        auto& power_pc_for_run = m_system->GetPowerPC();
-        if (watch_movie && !armed_singleton().pcs.empty()) {
+        if (!armed_singleton().pcs.empty()) {
             SCLOGD("[DW/run] pc-breakpoint debug=%d mode=%d forced_interpreter=0 bp_count=%zu",
                 Config::IsDebuggingEnabled() ? 1 : 0,
-                static_cast<int>(power_pc_for_run.GetMode()),
+                static_cast<int>(m_system->GetPowerPC().GetMode()),
                 armed_singleton().pcs.size());
         }
 
@@ -1983,6 +1984,9 @@ namespace simcore {
         Config::SetCurrent(Config::MAIN_USE_PANIC_HANDLERS, true);
         Config::SetCurrent(Config::MAIN_ABORT_ON_PANIC_ALERT, false);
         InstallHeadlessDolphinAlertHandler();
+
+        SCLOGT("Enabling Dolphin debugging for breakpoint-driven runs.");
+        Config::SetCurrent(Config::MAIN_ENABLE_DEBUGGING, true);
 
         Config::SetCurrent(Config::MAIN_WIIMOTE_CONTINUOUS_SCANNING, false);
         Config::SetCurrent(Config::MAIN_CONNECT_WIIMOTES_FOR_CONTROLLER_INTERFACE, false);

@@ -169,6 +169,11 @@ bool RunSeedProbePrelude(
             .iso_path = options.iso_path.string(),
             .dolphin_base_dir = options.dolphin_base_dir.string(),
             .worker_dir_root = battle_worker_dir_root.string(),
+            .visual_workers = options.visual_worker,
+            .auto_resume_visual_workers = false,
+            .visual_screenshot_dir = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default")
+                    / "visual-screenshots").string(),
         },
         simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
         &registry);
@@ -915,13 +920,18 @@ bool RunBattleSingleTurnRealWorkerScenario(
         db_service->ExecutionDb(),
         db_service->StateDb(),
         simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 4u,
+            .desired_workers = static_cast<std::size_t>(options.worker_count),
             .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
             .worker_exe_path = worker_exe.string(),
             .iso_path = options.iso_path.string(),
             .dolphin_base_dir = options.dolphin_base_dir.string(),
             .worker_dir_root = options.worker_dir_root.value_or(
                 options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default") / ".workers").string(),
+            .visual_workers = options.visual_worker,
+            .auto_resume_visual_workers = false,
+            .visual_screenshot_dir = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default")
+                    / "visual-screenshots").string(),
         },
         simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
         &registry);
@@ -1257,13 +1267,18 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         db_service->ExecutionDb(),
         db_service->StateDb(),
         simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig{
-            .desired_workers = 15u,
+            .desired_workers = static_cast<std::size_t>(options.worker_count),
             .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
             .worker_exe_path = worker_exe.string(),
             .iso_path = options.iso_path.string(),
             .dolphin_base_dir = options.dolphin_base_dir.string(),
             .worker_dir_root = options.worker_dir_root.value_or(
                 options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default") / ".workers").string(),
+            .visual_workers = options.visual_worker,
+            .auto_resume_visual_workers = false,
+            .visual_screenshot_dir = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "simcoredbe2e-default")
+                    / "visual-screenshots").string(),
         },
         simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
         &registry);

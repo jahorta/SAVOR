@@ -1,16 +1,17 @@
-﻿C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(538,5): warning MSB8028: The intermediate directory (x64\Debug\) contains files shared from another project (SimCoreDBValidation.vcxproj).  This can lead to incorrect clean and rebuild behavior.
+﻿C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Microsoft.CppBuild.targets(551,5): warning MSB8028: The intermediate directory (x64\Debug\) contains files shared from another project (SimCoreDBValidation.vcxproj).  This can lead to incorrect clean and rebuild behavior.
   ExportCurrentDbSchemas.cpp
   SimCoreDBSchemaExport.cpp
-C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(29,48): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(73,48): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
   (compiling source file 'SimCoreDBSchemaExport.cpp')
   
-C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(57,59): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(101,59): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
   (compiling source file 'SimCoreDBSchemaExport.cpp')
   
-C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(58,53): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(102,53): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
   (compiling source file 'SimCoreDBSchemaExport.cpp')
   
-C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(102,38): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+C:\Users\jahor\source\repos\jahorta\SOASim\SimCoreDB\Execution\ProgramDB\SeedProbe\SeedProbeContracts.h(146,38): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
   (compiling source file 'SimCoreDBSchemaExport.cpp')
   
+  sqlite3.c
   SimCoreDBValidation.vcxproj -> C:\Users\jahor\source\repos\jahorta\SOASim\bin\x64\Debug\SimCoreDBSchemaExport.exe

@@ -17,6 +17,7 @@ struct WorkflowTerminalAdvancementResult {
     bool advanced_next_step = false;
     int spawned_step_count = 0;
     bool workflow_completed = false;
+    bool workflow_failed = false;
     std::optional<std::string> blocked_reason;
 };
 

@@ -34,8 +34,8 @@ namespace simcore::runner::parallel::simcoredb {
 struct DBWorkflowWorkerCoordinatorConfig {
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
-    uint32_t worker_start_timeout_ms = 10000;
-    uint32_t worker_start_retry_backoff_ms = 1000;
+    uint32_t worker_start_timeout_ms = 20000;
+    uint32_t worker_start_retry_backoff_ms = 5000;
     uint32_t max_worker_start_attempts = 3;
     uint32_t max_concurrent_worker_starts = 1;
     std::string worker_exe_path;
@@ -43,6 +43,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     std::string dolphin_base_dir;
     std::string worker_dir_root;
     bool visual_workers = false;
+    bool visual_debug_workers = false;
     bool auto_resume_visual_workers = false;
     std::string visual_screenshot_dir;
 };

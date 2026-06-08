@@ -23,6 +23,7 @@ namespace simcore {
 			std::string user_dir;     // unique per worker
 			bool vm_control{ false };
 			bool visual{ false };
+			bool visual_debug{ false };
 			uint64_t render_widget_handle{ 0 };
 			std::string visual_control_pipe_name;
 			std::string visual_host_events_pipe_name;

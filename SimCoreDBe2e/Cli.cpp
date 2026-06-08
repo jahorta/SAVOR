@@ -2,11 +2,99 @@
 
 #include <algorithm>
 #include <cctype>
+#include <array>
 #include <iostream>
+#include <string_view>
 #include <sstream>
+#include <vector>
 
 namespace simcore::e2e {
 namespace {
+
+constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
+    "tasmovie",
+    "seedprobe",
+    "battle",
+    "tasmovie_seedprobe",
+    "tasmovie_seedprobe_battle",
+});
+
+struct ScenarioRequirement {
+    bool requires_dtm_file = false;
+    bool requires_savestate_file = false;
+    bool requires_savestate_file_for_seedprobe_placeholder = false;
+};
+
+ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
+    if (scenario == "seedprobe") {
+        return {.requires_savestate_file = true};
+    }
+    if (scenario == "tasmovie") {
+        return {.requires_dtm_file = true};
+    }
+    if (scenario == "battle") {
+        return {.requires_savestate_file = true};
+    }
+    if (scenario == "tasmovie_seedprobe") {
+        return {
+            .requires_dtm_file = true,
+            .requires_savestate_file = true,
+            .requires_savestate_file_for_seedprobe_placeholder = true,
+        };
+    }
+    if (scenario == "tasmovie_seedprobe_battle") {
+        return {.requires_dtm_file = true};
+    }
+    return {};
+}
+
+bool IsSupportedScenario(const std::string_view scenario) {
+    if (scenario == "all") {
+        return true;
+    }
+    for (const auto& supported : kAllScenarioOrder) {
+        if (scenario == supported) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsTasMovieScenario(const std::string_view scenario) {
+    return scenario == "tasmovie" || scenario == "tasmovie_seedprobe" || scenario == "tasmovie_seedprobe_battle";
+}
+
+bool IsTasMovieSeedProbeScenario(const std::string_view scenario) {
+    return scenario == "tasmovie_seedprobe";
+}
+
+std::vector<std::string> ExpandScenarioArguments(const std::vector<std::string>& requested_scenarios) {
+    std::vector<std::string> expanded;
+    for (const auto& requested : requested_scenarios) {
+        if (requested == "all") {
+            for (const auto& scenario : kAllScenarioOrder) {
+                expanded.push_back(std::string(scenario));
+            }
+        } else {
+            expanded.push_back(requested);
+        }
+    }
+    return expanded;
+}
+
+std::vector<std::string> RemoveDuplicateScenarios(
+    const std::vector<std::string>& scenarios,
+    std::vector<std::string>* duplicates_out) {
+    std::vector<std::string> deduplicated;
+    for (const auto& scenario : scenarios) {
+        if (std::find(deduplicated.begin(), deduplicated.end(), scenario) == deduplicated.end()) {
+            deduplicated.push_back(scenario);
+        } else if (duplicates_out != nullptr) {
+            duplicates_out->push_back(scenario);
+        }
+    }
+    return deduplicated;
+}
 
 std::string LowerAscii(std::string value) {
     std::transform(
@@ -150,28 +238,31 @@ void PrintUsage() {
     std::cout << "SimCoreDBe2e - real-worker end-to-end workflow harness\n\n";
     std::cout << "Usage:\n";
     std::cout << "  SimCoreDBe2e"
-              << " --savestate-file <path>"
-              << " [--dtm-file <path>]"
               << " --iso <path>"
               << " --dolphin-base-dir <path>"
-              << " [--scenario seedprobe_real_worker_smoke]"
-              << " [--timeout-ms 30000]"
-              << " [--poll-ms 100]"
+              << " [--savestate-file <path>]"
+              << " [--dtm-file <path>]"
+              << " [--scenario seedprobe|all]"
+              << " [--timeout-ms <100..800000000 - default 30000>]"
+              << " [--poll-ms <100..5000 - default 100>]"
+              << " [--worker-count <1..30 - default 1>"
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
-              << " [--visual-worker]"
+              << " [--visual-worker *]"
               << " [--visual-screenshot-dir <path>]"
-              << " [--durable-lines normal]\n\n";
+              << " [--durable-lines <mode>]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
+    std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: seedprobe_real_worker_smoke, seedprobe_workflow_graph_real_worker_smoke, tasmovie_real_worker_smoke, "
-              << "tasmovie_seedprobe_real_worker_smoke, battle_single_turn_real_worker_smoke, "
-              << "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke\n\n";
+    std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
+              << "tasmovie_seedprobe, tasmovie_seedprobe_battle\n";
+    std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
 }
 
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out) {
     CliOptions options{};
+    std::vector<std::string> requested_scenarios;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -185,7 +276,13 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         };
 
         if (arg == "--scenario") {
-            if (!require_value("--scenario", &options.scenario)) return false;
+            std::string scenario;
+            if (!require_value("--scenario", &scenario)) return false;
+            if (!IsSupportedScenario(scenario)) {
+                if (error_out) *error_out = "unknown --scenario: " + scenario;
+                return false;
+            }
+            requested_scenarios.push_back(std::move(scenario));
         } else if (arg == "--timeout-ms") {
             std::string v;
             if (!require_value("--timeout-ms", &v)) return false;
@@ -194,6 +291,10 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--poll-ms", &v)) return false;
             options.poll_ms = std::stoll(v);
+        } else if (arg == "--worker-count") {
+            std::string v;
+            if (!require_value("--worker-count", &v)) return false;
+            options.worker_count = std::stoll(v);
         } else if (arg == "--savestate-file") {
             std::string v;
             if (!require_value("--savestate-file", &v)) return false;
@@ -241,21 +342,68 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
     }
 
-    const bool is_tasmovie = options.scenario == "tasmovie_real_worker_smoke"
-        || options.scenario == "tasmovie_seedprobe_real_worker_smoke"
-        || options.scenario == "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke";
-    const bool is_tasmovie_seedprobe = options.scenario == "tasmovie_seedprobe_real_worker_smoke";
+    if (requested_scenarios.empty()) {
+        requested_scenarios = {"seedprobe"};
+    }
 
-    if (!is_tasmovie && options.savestate_file.empty()) {
-        if (error_out) *error_out = "--savestate-file is required";
+    std::vector<std::string> ignored_duplicate_scenarios;
+    options.scenarios = RemoveDuplicateScenarios(
+        ExpandScenarioArguments(requested_scenarios),
+        &ignored_duplicate_scenarios);
+    for (const auto& scenario : ignored_duplicate_scenarios) {
+        std::cerr << "[warn] duplicate scenario '" << scenario << "' ignored\n";
+    }
+    if (!options.scenarios.empty()) {
+        options.scenario = options.scenarios.front();
+    }
+
+    bool is_tasmovie = false;
+    bool is_tasmovie_seedprobe = false;
+    bool needs_savestate = false;
+    bool needs_dtm = false;
+    std::vector<std::string> savestate_required_scenarios;
+    std::vector<std::string> dtm_required_scenarios;
+    std::vector<std::string> placeholder_savestate_required_scenarios;
+
+    const auto join = [](const std::vector<std::string>& names) {
+        std::ostringstream oss;
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i > 0) {
+                oss << ", ";
+            }
+            oss << names[i];
+        }
+        return oss.str();
+    };
+
+    for (const auto& scenario : options.scenarios) {
+        is_tasmovie = is_tasmovie || IsTasMovieScenario(scenario);
+        is_tasmovie_seedprobe = is_tasmovie_seedprobe || IsTasMovieSeedProbeScenario(scenario);
+        const auto req = GetScenarioRequirement(scenario);
+        needs_savestate = needs_savestate || req.requires_savestate_file;
+        needs_dtm = needs_dtm || req.requires_dtm_file;
+
+        if (req.requires_savestate_file) {
+            savestate_required_scenarios.push_back(scenario);
+        }
+        if (req.requires_dtm_file) {
+            dtm_required_scenarios.push_back(scenario);
+        }
+        if (req.requires_savestate_file_for_seedprobe_placeholder) {
+            placeholder_savestate_required_scenarios.push_back(scenario);
+        }
+    }
+
+    if (needs_savestate && options.savestate_file.empty()) {
+        if (error_out) *error_out = "--savestate-file is required for: " + join(savestate_required_scenarios);
         return false;
     }
     if (!options.savestate_file.empty() && !std::filesystem::exists(options.savestate_file)) {
         if (error_out) *error_out = "savestate file does not exist: " + options.savestate_file.string();
         return false;
     }
-    if (is_tasmovie && options.dtm_file.empty()) {
-        if (error_out) *error_out = "--dtm-file is required for TasMovie scenarios";
+    if (needs_dtm && options.dtm_file.empty()) {
+        if (error_out) *error_out = "--dtm-file is required for: " + join(dtm_required_scenarios);
         return false;
     }
     if (!options.dtm_file.empty() && !std::filesystem::exists(options.dtm_file)) {
@@ -263,7 +411,8 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         return false;
     }
     if (is_tasmovie_seedprobe && options.savestate_file.empty()) {
-        if (error_out) *error_out = "--savestate-file is required as the placeholder SeedProbe run state for the chained TasMovie scenario";
+        if (error_out) *error_out = "--savestate-file is required as the placeholder SeedProbe run state for: "
+                                   + join(placeholder_savestate_required_scenarios);
         return false;
     }
     if (options.iso_path.empty() || !std::filesystem::exists(options.iso_path)) {
@@ -274,9 +423,25 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--dolphin-base-dir is required and must exist";
         return false;
     }
-    if (options.timeout_ms <= 0 || options.poll_ms <= 0) {
-        if (error_out) *error_out = "--timeout-ms and --poll-ms must be > 0";
+    if (options.timeout_ms < 100 || options.poll_ms < 100) {
+        if (error_out) *error_out = "--timeout-ms and --poll-ms must be > 100";
         return false;
+    }    
+    if (options.timeout_ms > 800000000) {
+        if (error_out) *error_out = "--timeout-ms must be <= 800000000";
+        return false;
+    }
+    if (options.poll_ms > 5000) {
+        if (error_out) *error_out = "--timeout-ms and --poll-ms must be <= 5000";
+        return false;
+    }
+
+    if (options.visual_worker) {
+        options.worker_count = 1;
+    }
+
+    if (!options.worker_dir_root.has_value() && options.workspace_root.has_value()) {
+		options.worker_dir_root = std::filesystem::path(*options.workspace_root) / ".workers";
     }
 
     *options_out = std::move(options);

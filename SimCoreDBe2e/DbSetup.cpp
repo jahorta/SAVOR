@@ -145,7 +145,7 @@ bool SeedAuthoringSpec(
             .max_value = 207,
             .cap_trigger_top = true,
             .ignore_trigger_minmax = true,
-            .combo_attempts_per_target = 40,
+            .combo_attempts_per_target = 20,
             .combo_sampler_tries = 4,
             .auto_schedule_battle_run = false,
             .created_at_utc = UtcNow(),

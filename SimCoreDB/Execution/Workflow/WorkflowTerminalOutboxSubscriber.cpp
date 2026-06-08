@@ -151,7 +151,8 @@ bool LoadStepTerminalSnapshot(
     snapshot_out->completion.expected_total = sqlite3_column_int(st.st, 10);
     snapshot_out->completion.discovered_total = sqlite3_column_int(st.st, 11);
     snapshot_out->completion.terminal_total = sqlite3_column_int(st.st, 12);
-    snapshot_out->failed_total = sqlite3_column_int(st.st, 13);
+    snapshot_out->completion.failed_total = sqlite3_column_int(st.st, 13);
+    snapshot_out->failed_total = snapshot_out->completion.failed_total;
 
     return true;
 }
@@ -375,6 +376,10 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
         .workflow_instance_id = snapshot.workflow_instance_id,
         .workflow_step_id = snapshot.workflow_step_id,
         .job_set_id = snapshot.job_set_id,
+        .expected_total = snapshot.completion.expected_total,
+        .discovered_total = snapshot.completion.discovered_total,
+        .terminal_total = snapshot.completion.terminal_total,
+        .failed_total = snapshot.completion.failed_total,
         .workflow_kind = snapshot.workflow_kind,
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
@@ -427,6 +432,72 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
             }
             return true;
         }
+        return true;
+    }
+
+    if (terminal.gate.terminal_fail) {
+        if (!command_service_->MarkStepBlocked(
+            {
+                .workflow_step_id = snapshot.workflow_step_id,
+                .blocked_reason = std::nullopt,
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (!command_service_->MarkStepTerminal(
+            {
+                .workflow_step_id = snapshot.workflow_step_id,
+                .terminal_state = "FAILED",
+                .output_ref_kind = snapshot.output_ref_kind,
+                .output_ref_id = snapshot.output_ref_id,
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (!command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+                .message = std::optional<std::string>("transition_terminal_failed"),
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (!command_service_->TerminalFailWorkflowInstance(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .failure_code = "STEP_FAILED",
+                .failure_message = "workflow step completed with failed jobs",
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (!command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowTransitionBlocked.v1",
+                .message = std::optional<std::string>("transition_terminal_failed"),
+                .requested_by = "workflow_terminal_subscriber",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
         return true;
     }
 

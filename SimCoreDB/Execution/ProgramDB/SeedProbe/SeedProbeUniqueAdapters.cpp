@@ -109,6 +109,12 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
         return decision;
     }
 
+    if (context.step_key == "Grid" && context.failed_total > 0) {
+        decision.should_advance = false;
+        decision.blocked_reason = "seedprobe.grid.step_has_failures";
+        return decision;
+    }
+
     if (context.workflow_kind == "workflow_graph_tasmovie_seedprobe_battle"
         && context.step_key.size() >= 7
         && context.step_key.compare(context.step_key.size() - 7, 7, "/Unique") == 0) {

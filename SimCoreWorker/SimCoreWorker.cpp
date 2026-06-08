@@ -103,6 +103,7 @@ int main(int argc, char** argv)
     std::string iso, sav, qtbase, userdir, logfile; 
     uint32_t timeout_ms = 10000;
     bool visual = false;
+    bool visual_debug = false;
     uint64_t render_hwnd = 0;
     std::string visual_control_pipe;
     std::string visual_host_events_pipe;
@@ -115,10 +116,14 @@ int main(int argc, char** argv)
         else if (k == "--qtbase") qtbase = argv_next(i, argc, argv);
         else if (k == "--userdir") userdir = argv_next(i, argc, argv);
         else if (k == "--visual") visual = true;
+        else if (k == "--visual-debug") visual_debug = true;
         else if (k == "--render-hwnd") render_hwnd = parse_u64(argv_next(i, argc, argv));
         else if (k == "--visual-control-pipe") visual_control_pipe = argv_next(i, argc, argv);
         else if (k == "--visual-host-events-pipe") visual_host_events_pipe = argv_next(i, argc, argv);
         else if (k == "--visual-screenshot-dir") visual_screenshot_dir = argv_next(i, argc, argv);
+    }
+    if (visual_debug) {
+        visual = true;
     }
 
     set_this_thread_name_utf8((std::string("WorkerMain-") + std::to_string(worker_id)).c_str());
@@ -140,9 +145,9 @@ int main(int argc, char** argv)
         ? std::filesystem::path(exe_dir_w())
         : std::filesystem::path(qtbase);
 
-    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s resolved_base=%s userdir=%s timeout=%u visual=%d render_hwnd=%llu",
+    SCLOGD("[Worker %zu] args iso=%s sav=%s qtbase=%s resolved_base=%s userdir=%s timeout=%u visual=%d visual_debug=%d render_hwnd=%llu",
         worker_id, iso.c_str(), sav.c_str(), qtbase.c_str(), worker_base_dir.string().c_str(), userdir.c_str(),
-        timeout_ms, visual ? 1 : 0, static_cast<unsigned long long>(render_hwnd));
+        timeout_ms, visual ? 1 : 0, visual_debug ? 1 : 0, static_cast<unsigned long long>(render_hwnd));
 
     // Use inherited anonymous pipes as binary channels
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -225,9 +230,13 @@ int main(int argc, char** argv)
             (void)WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &bytes_written, nullptr);
             CloseHandle(hPipe);
             });
-        vm.SetVisualDebugMode(true);
-        vm.SetVisualDebugPaused(true);
+        if (visual_debug) {
+            vm.SetVisualDebugMode(true);
+            vm.SetVisualDebugPaused(true);
+        }
+    }
 
+    if (visual_debug) {
         visual_control_thread = std::thread([&host, &vm, &visual_control_stop, &visual_cmd_mtx, &visual_last_pipe_cmd,
             visual_control_pipe]() {
             HANDLE hPipe = INVALID_HANDLE_VALUE;
@@ -362,7 +371,7 @@ int main(int argc, char** argv)
                 continue;
             }
             main_active = true;
-            if (visual) {
+            if (visual_debug) {
                 (void)host.pauseEmulationBlocking(1500);
                 vm.SetVisualDebugPaused(true);
             }

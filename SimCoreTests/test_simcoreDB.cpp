@@ -416,6 +416,25 @@ TEST(Stage2AdapterChain, CompletionGateMismatchThenTerminalFail) {
     EXPECT_EQ(second.blocked_reason.value_or(""), "STEP_BLOCKED_COUNT_MISMATCH_TERMINAL_FAIL");
 }
 
+TEST(Stage2AdapterChain, CompletionGateAllowsTerminalFailureWhenAllJobsFinished) {
+    using namespace simcore::db::execution::workflow;
+
+    StepCompletionGateService gate;
+    const StepCompletionSnapshot snapshot{
+        .workflow_step_id = 501,
+        .job_set_id = 901,
+        .expected_total = 10,
+        .discovered_total = 10,
+        .terminal_total = 10,
+        .failed_total = 1,
+    };
+
+    const auto decision = gate.Evaluate(snapshot);
+    EXPECT_TRUE(decision.can_transition);
+    EXPECT_TRUE(decision.terminal_fail);
+    EXPECT_FALSE(decision.blocked_reason.has_value());
+}
+
 TEST(Stage1StepInputAggregation, AllInputsRequiredGatingAndEventSequence) {
     using namespace simcore::runner::parallel::simcoredb;
 

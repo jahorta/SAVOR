@@ -401,7 +401,7 @@ void PredicateEditorDialog::loadRow(const PredicateSpecRow& row)
     turnMaskEdit_->setText(QStringLiteral("0x%1").arg(static_cast<quint32>(row.turn_mask), 0, 16));
     activeCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::Active)) != 0);
     abortCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::AbortOnFail)) != 0);
-    captureCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::CaptureBaseline)) != 0);
+    //captureCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::CaptureBaseline)) != 0);
     lhsNegateCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::LhsIsNeg)) != 0);
     rhsNegateCheck_->setChecked((row.flags & static_cast<int>(simcore::pred::PredFlag::RhsIsNeg)) != 0);
 
@@ -530,7 +530,7 @@ PredicateSpecRow PredicateEditorDialog::buildRow(bool* ok, QString* errorText) c
 
     if (activeCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::Active);
     if (abortCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::AbortOnFail);
-    if (captureCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::CaptureBaseline);
+    //if (captureCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::CaptureBaseline);
     if (lhsNegateCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::LhsIsNeg);
     if (rhsNegateCheck_->isChecked()) row.flags |= static_cast<int>(simcore::pred::PredFlag::RhsIsNeg);
 

@@ -38,6 +38,12 @@ StepCompletionGateDecision StepCompletionGateService::Evaluate(const StepComplet
         return decision;
     }
 
+    if (snapshot.failed_total > 0) {
+        decision.can_transition = true;
+        decision.terminal_fail = true;
+        return decision;
+    }
+
     decision.can_transition = true;
     return decision;
 }
@@ -140,7 +146,15 @@ AdapterChainOrchestrator::StepTerminalResult AdapterChainOrchestrator::OnStepTer
         result.gate = completion_gate_->Evaluate(snapshot);
     }
 
-    if (!result.gate.can_transition || registry_ == nullptr) {
+    if (snapshot.failed_total > 0
+        && snapshot.discovered_total > 0
+        && snapshot.terminal_total >= snapshot.discovered_total) {
+        result.gate.can_transition = true;
+        result.gate.terminal_fail = true;
+        result.gate.blocked_reason.reset();
+    }
+
+    if (!result.gate.can_transition || result.gate.terminal_fail || registry_ == nullptr) {
         return result;
     }
 

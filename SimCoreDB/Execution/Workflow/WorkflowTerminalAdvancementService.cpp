@@ -51,11 +51,16 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .expected_total = snapshot.expected_total,
         .discovered_total = snapshot.discovered_total,
         .terminal_total = snapshot.terminal_total,
+		.failed_total = snapshot.failed_total,
     };
     const programdb::WorkflowTransitionContext context{
         .workflow_instance_id = snapshot.workflow_instance_id,
         .workflow_step_id = snapshot.workflow_step_id,
         .job_set_id = snapshot.job_set_id,
+        .expected_total = snapshot.expected_total,
+        .discovered_total = snapshot.discovered_total,
+        .terminal_total = snapshot.terminal_total,
+        .failed_total = snapshot.failed_total,
         .workflow_kind = snapshot.workflow_kind,
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
@@ -117,6 +122,53 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         return false;
     }
     result.step_marked_terminal = true;
+
+    if (terminal.gate.terminal_fail) {
+        if (!command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowTransitionEvaluated.v1",
+                .message = std::optional<std::string>("transition_terminal_failed"),
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+        result.transition_evaluated = true;
+
+        if (!command_service_->TerminalFailWorkflowInstance(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .failure_code = "STEP_FAILED",
+                .failure_message = "workflow step completed with failed jobs",
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+        result.workflow_failed = true;
+
+        if (!command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowTransitionBlocked.v1",
+                .message = std::optional<std::string>("transition_terminal_failed"),
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+            if (error_out) *error_out = command_error;
+            return false;
+        }
+
+        if (result_out) {
+            *result_out = result;
+        }
+        return true;
+    }
 
     if (!command_service_->AppendLifecycleEvent(
         {

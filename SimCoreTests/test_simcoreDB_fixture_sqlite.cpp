@@ -807,6 +807,67 @@ VALUES(3000, 30, 1, 1, 'seedprobe_spec', 44, 'fp-3', 0, 'SUCCEEDED', 0, 1, unixe
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceFailsWorkflowWhenTerminalJobSetHasFailures) {
+    using namespace simcore::db::execution::workflow;
+
+    const simcore::db::migrations::MigrationSourceOptions embedded_options{ .source_kind = simcore::db::migrations::MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(simcore::db::migrations::ApplyContextMigrations(db_, simcore::db::migrations::MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(4, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc, expected_total)
+VALUES(40, 1, 'workflow', unixepoch()*1000, 1);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(400, 4, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 40, 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(401, 4, 'next', 'seedprobe.next', 'WAITING', 0, 0, 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(4000, 40, 1, 1, 'seedprobe_spec', 44, 'fp-4', 0, 'FAILED', 0, 1, unixepoch()*1000);
+)SQL"));
+
+    simcore::db::execution::programdb::ProgramKindRegistry registry;
+    simcore::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "seedprobe.neutral";
+    descriptor.workflow_transition = std::make_shared<AlwaysAdvanceTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind("seedprobe.neutral", descriptor));
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
+    SqliteWorkflowOrchestrationQueryService query_service(db_);
+    SqliteWorkflowOrchestrationCommandService command_service(db_);
+    WorkflowTerminalAdvancementService advancement(&orchestrator, &query_service, &command_service);
+
+    WorkflowTerminalAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceForTerminalJob(4000, &result, &err)) << err;
+    EXPECT_TRUE(result.snapshot_found);
+    EXPECT_TRUE(result.gate_can_transition);
+    EXPECT_TRUE(result.step_marked_terminal);
+    EXPECT_TRUE(result.transition_evaluated);
+    EXPECT_FALSE(result.advanced_next_step);
+    EXPECT_FALSE(result.workflow_completed);
+    EXPECT_TRUE(result.workflow_failed);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT i.state, source.state, source.blocked_reason, next.state "
+        "FROM exec_workflow_instance i "
+        "JOIN exec_workflow_step source ON source.workflow_instance_id=i.workflow_instance_id AND source.workflow_step_id=400 "
+        "JOIN exec_workflow_step next ON next.workflow_instance_id=i.workflow_instance_id AND next.step_key='next' "
+        "WHERE i.workflow_instance_id=4;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "FAILED");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "FAILED");
+    EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 3)), "WAITING");
+    sqlite3_finalize(st);
+}
+
 TEST_F(SqliteDbFixture, Stage3fWorkflowProjectorOutboxReplayUsesSubscriptionCursorAndIsIdempotent) {
     using namespace simcore::db::migrations;
     using namespace simcore::db::execution::workflow;

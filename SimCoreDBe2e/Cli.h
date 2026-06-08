@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace simcore::e2e {
 
@@ -54,9 +55,13 @@ constexpr std::uint32_t kDurableLineAllMask =
     | DurableLineBit(DurableLineCategory::Debug);
 
 struct CliOptions {
-    std::string scenario = "seedprobe_real_worker_smoke";
+    std::vector<std::string> scenarios = {"seedprobe"};
+    // The currently running scenario (set in main for each requested scenario) so
+    // existing scenario implementations can report durable logs under scenario names.
+    std::string scenario = "seedprobe";
     std::int64_t timeout_ms = 30000;
     std::int64_t poll_ms = 100;
+    std::int64_t worker_count = 1;
     std::uint32_t durable_line_mask = kDurableLineNormalMask;
     std::filesystem::path savestate_file;
     std::filesystem::path dtm_file;

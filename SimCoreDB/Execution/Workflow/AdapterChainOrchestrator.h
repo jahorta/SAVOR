@@ -26,6 +26,7 @@ struct StepCompletionSnapshot {
     int expected_total = 0;
     int discovered_total = 0;
     int terminal_total = 0;
+	int failed_total = 0;
 };
 
 struct StepCompletionGateDecision {

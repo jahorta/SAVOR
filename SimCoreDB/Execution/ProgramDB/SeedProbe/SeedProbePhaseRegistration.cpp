@@ -130,6 +130,12 @@ public:
             return decision;
         }
 
+        if (context.failed_total > 0) {
+            decision.should_advance = false;
+            decision.blocked_reason = "seed_probe_chain previous_step_failed";
+            return decision;
+        }
+
         decision.should_advance = true;
         decision.spawn_steps.push_back(
             WorkflowTransitionDecision::DynamicStep{

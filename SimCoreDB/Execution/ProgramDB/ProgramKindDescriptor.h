@@ -83,6 +83,10 @@ struct WorkflowTransitionContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
+    int expected_total = 0;
+    int discovered_total = 0;
+    int terminal_total = 0;
+    int failed_total = 0;
     std::string workflow_kind;
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string step_key;

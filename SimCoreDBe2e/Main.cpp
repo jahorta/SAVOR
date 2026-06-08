@@ -23,22 +23,12 @@ int main(int argc, char** argv) {
     }
 
     const std::map<std::string, bool (*)(const CliOptions&, const char*, DBService*, std::string*)> scenarios{
-        { "seedprobe_real_worker_smoke", &RunSeedProbeRealWorkerSmoke },
-        { "seedprobe_workflow_graph_real_worker_smoke", &RunSeedProbeWorkflowGraphRealWorkerSmoke },
-        { "tasmovie_real_worker_smoke", &RunTasMovieRealWorkerSmoke },
-        { "tasmovie_seedprobe_real_worker_smoke", &RunTasMovieSeedProbeRealWorkerSmoke },
-        { "battle_single_turn_real_worker_smoke", &RunBattleSingleTurnRealWorkerScenario },
-        { "tasmovie_seedprobe_battle_workflow_graph_real_worker_smoke", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
+        { "seedprobe", &RunSeedProbeWorkflowGraphRealWorkerSmoke },
+        { "tasmovie", &RunTasMovieRealWorkerSmoke },
+        { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
+        { "battle", &RunBattleSingleTurnRealWorkerScenario },
+        { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
     };
-
-    const auto it = scenarios.find(options.scenario);
-    if (it == scenarios.end()) {
-        std::cerr << "unknown --scenario: " << options.scenario << "\n";
-        return 2;
-    }
-
-    std::cout << "Running scenario '" << options.scenario << "' timeout=" << options.timeout_ms
-              << "ms poll=" << options.poll_ms << "ms\n";
 
     const auto migration_root = ResolveMigrationRoot(options.migration_root);
     const auto db_paths = BuildDbPaths(options);
@@ -56,13 +46,26 @@ int main(int argc, char** argv) {
     }
 
     std::string scenario_error;
-    if (!it->second(options, argv[0], &service, &scenario_error)) {
-        service.Stop();
-        std::cerr << "[FAIL] " << options.scenario << " - " << scenario_error << "\n";
-        return 1;
+    for (const auto& scenario_name : options.scenarios) {
+        const auto it = scenarios.find(scenario_name);
+        if (it == scenarios.end()) {
+            std::cerr << "unknown --scenario: " << scenario_name << "\n";
+            service.Stop();
+            return 2;
+        }
+
+        options.scenario = scenario_name;
+        std::cout << "Running scenario '" << scenario_name << "' timeout=" << options.timeout_ms
+                  << "ms poll=" << options.poll_ms << "ms\n";
+
+        if (!it->second(options, argv[0], &service, &scenario_error)) {
+            service.Stop();
+            std::cerr << "[FAIL] " << scenario_name << " - " << scenario_error << "\n";
+            return 1;
+        }
+        std::cout << "[PASS] " << scenario_name << "\n";
     }
 
     service.Stop();
-    std::cout << "[PASS] " << options.scenario << "\n";
     return 0;
 }

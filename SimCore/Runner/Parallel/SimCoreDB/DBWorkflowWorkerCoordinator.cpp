@@ -910,7 +910,7 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
         MarkWorkerError(slot, "ctl_activate_main failed");
         return false;
     }
-    if (worker_cfg_.visual_workers && worker_cfg_.auto_resume_visual_workers) {
+    if (worker_cfg_.visual_debug_workers && worker_cfg_.auto_resume_visual_workers) {
         bool resumed = false;
         for (int attempt = 0; attempt < 20 && !resumed; ++attempt) {
             resumed = slot.worker->visual_resume_emulation();
@@ -1264,7 +1264,7 @@ void DBWorkflowWorkerCoordinator::ReconcileTerminalWorkflowSteps() {
             "OnStepTerminalSweep",
             advancement.advanced_next_step
                 ? "advanced"
-                : advancement.workflow_completed ? "workflow_completed" : advancement.gate_can_transition ? "terminal" : "blocked",
+                : advancement.workflow_completed ? "workflow_completed" : advancement.workflow_failed ? "workflow_failed" : advancement.gate_can_transition ? "terminal" : "blocked",
             std::nullopt,
             snapshot.job_set_id,
             advancement.blocked_reason);
@@ -1643,6 +1643,7 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
                     const char* status = advancement.advanced_next_step
                         ? "advanced"
                         : advancement.workflow_completed ? "workflow_completed"
+                        : advancement.workflow_failed ? "workflow_failed"
                         : advancement.gate_can_transition ? "terminal"
                         : "blocked";
                     EmitAdapterTraceEvent(
@@ -1662,7 +1663,8 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
                          << " step_terminal=" << (advancement.step_marked_terminal ? "true" : "false")
                          << " gate=" << (advancement.gate_can_transition ? "true" : "false")
                          << " next_step=" << (advancement.advanced_next_step ? "true" : "false")
-                         << " workflow_completed=" << (advancement.workflow_completed ? "true" : "false");
+                         << " workflow_completed=" << (advancement.workflow_completed ? "true" : "false")
+                         << " workflow_failed=" << (advancement.workflow_failed ? "true" : "false");
                     if (advancement.blocked_reason.has_value()) {
                         line << " blocked_reason=" << *advancement.blocked_reason;
                     }
@@ -1843,7 +1845,8 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(size_t worker_idx) {
     ps.exe_path = runtime_worker_exe.string();
     ps.iso_path = worker_cfg_.iso_path;
     ps.dolphin_base_dir.clear();
-    ps.visual = worker_cfg_.visual_workers;
+    ps.visual = worker_cfg_.visual_workers || worker_cfg_.visual_debug_workers;
+    ps.visual_debug = worker_cfg_.visual_debug_workers;
     if (ps.visual) {
         ps.render_widget_handle = slot.visual_render_widget_handle;
         ps.visual_host_events_pipe_name = slot.visual_host_events_pipe_name;
@@ -2044,6 +2047,7 @@ void DBWorkflowWorkerCoordinator::VisualDebugReplayThread(std::uint64_t session_
     ps.iso_path = worker_cfg_.iso_path;
     ps.dolphin_base_dir.clear();
     ps.visual = true;
+    ps.visual_debug = true;
     ps.render_widget_handle = render_widget_handle;
     ps.visual_host_events_pipe_name = host_events_pipe_name;
     ps.visual_screenshot_dir = worker_cfg_.visual_screenshot_dir;
