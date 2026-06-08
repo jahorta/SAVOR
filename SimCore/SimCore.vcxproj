@@ -351,6 +351,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Utils\DeltaColorizer.h" />
     <ClInclude Include="Utils\EnsureSys.h" />
     <ClInclude Include="Utils\Hash.h" />
+    <ClInclude Include="Utils\Base64.h" />
     <ClInclude Include="Utils\Hex.h" />
     <ClInclude Include="Utils\IniDoc.h" />
     <ClInclude Include="Utils\IniKV.h" />

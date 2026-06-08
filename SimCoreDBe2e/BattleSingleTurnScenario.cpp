@@ -210,6 +210,7 @@ bool RunSeedProbePrelude(
     const auto timeout_ms = ComputeSeedProbePreludeTimeoutMs(options);
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
+    const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
     bool completed = false;
     bool failed = false;
     std::string latest_state = "workflow=unavailable";
@@ -229,10 +230,8 @@ bool RunSeedProbePrelude(
             graph);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
-            for (const auto& line : event_lines) {
-                progress_renderer.WriteEventLine(std::cout, line);
-            }
-            progress_renderer.Render(std::cout);
+            progress_renderer.WriteEventLines(std::cout, event_lines);
+            progress_renderer.RenderIfDue(std::cout, std::chrono::steady_clock::now(), interactive_refresh_cadence);
         } else {
             for (const auto& line : event_lines) {
                 std::cout << line << '\n';
@@ -278,10 +277,11 @@ bool RunSeedProbePrelude(
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
     }
     coordinator.Stop();
-    for (const auto& line : drain_lines()) {
-        if (interactive_stdout) {
-            progress_renderer.WriteEventLine(std::cout, line);
-        } else {
+    const auto final_event_lines = drain_lines();
+    if (interactive_stdout) {
+        progress_renderer.WriteEventLines(std::cout, final_event_lines);
+    } else {
+        for (const auto& line : final_event_lines) {
             std::cout << line << '\n';
         }
     }
@@ -972,6 +972,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
     const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
+    const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
     bool completed = false;
     bool failed = false;
     std::string latest_state = "workflow=unavailable";
@@ -997,10 +998,8 @@ bool RunBattleSingleTurnRealWorkerScenario(
             &progress_snapshot);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
-            for (const auto& line : event_lines) {
-                progress_renderer.WriteEventLine(std::cout, line);
-            }
-            progress_renderer.Render(std::cout);
+            progress_renderer.WriteEventLines(std::cout, event_lines);
+            progress_renderer.RenderIfDue(std::cout, std::chrono::steady_clock::now(), interactive_refresh_cadence);
         } else {
             for (const auto& line : event_lines) {
                 std::cout << line << '\n';
@@ -1046,10 +1045,11 @@ bool RunBattleSingleTurnRealWorkerScenario(
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
     }
     coordinator.Stop();
-    for (const auto& line : drain_lines()) {
-        if (interactive_stdout) {
-            progress_renderer.WriteEventLine(std::cout, line);
-        } else {
+    const auto final_event_lines = drain_lines();
+    if (interactive_stdout) {
+        progress_renderer.WriteEventLines(std::cout, final_event_lines);
+    } else {
+        for (const auto& line : final_event_lines) {
             std::cout << line << '\n';
         }
     }
@@ -1319,6 +1319,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
+    const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
     bool completed = false;
     bool failed = false;
     std::string latest_state = "workflow=unavailable";
@@ -1344,10 +1345,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             &progress_snapshot);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
-            for (const auto& line : event_lines) {
-                progress_renderer.WriteEventLine(std::cout, line);
-            }
-            progress_renderer.Render(std::cout);
+            progress_renderer.WriteEventLines(std::cout, event_lines);
+            progress_renderer.RenderIfDue(std::cout, std::chrono::steady_clock::now(), interactive_refresh_cadence);
         } else {
             for (const auto& line : event_lines) {
                 std::cout << line << '\n';
@@ -1394,10 +1393,11 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     coordinator.Stop();
-    for (const auto& line : drain_lines()) {
-        if (interactive_stdout) {
-            progress_renderer.WriteEventLine(std::cout, line);
-        } else {
+    const auto final_event_lines = drain_lines();
+    if (interactive_stdout) {
+        progress_renderer.WriteEventLines(std::cout, final_event_lines);
+    } else {
+        for (const auto& line : final_event_lines) {
             std::cout << line << '\n';
         }
     }

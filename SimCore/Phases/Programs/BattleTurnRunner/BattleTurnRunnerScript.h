@@ -133,6 +133,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpGotoIfKeys(simcore::keys::battle::TURN_OUTPUT_INDEX, simcore::PSCmp::GT, simcore::keys::battle::LAST_TURN, LabelRetOutOfTurns));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
+		ps.ops.push_back(simcore::OpGetBattleContext());
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
 
         // ============  Label Return Out of Turns  ===================
@@ -145,6 +146,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(simcore::OpLabel(LabelRetVictory));
         ps.ops.push_back(simcore::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), simcore::keys::seed::RNG_SEED));
         ps.ops.push_back(simcore::OpSaveSavestateFrom(simcore::keys::battle::OUTPUT_SAVESTATE_PATH));
+        ps.ops.push_back(simcore::OpGetBattleContext());
         ps.ops.push_back(simcore::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Victory));
 
         // ============  Label Return Defeat  ===================

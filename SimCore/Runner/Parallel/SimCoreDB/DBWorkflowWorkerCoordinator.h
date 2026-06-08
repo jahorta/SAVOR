@@ -214,6 +214,7 @@ private:
 
     void WorkflowStepCoordinatorLoop();
     void WorkerJobCoordinatorLoop();
+    void WorkerLifecycleCoordinatorLoop();
     void DrainProgressLoop();
     void DrainResultsLoop();
     void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
@@ -297,6 +298,7 @@ private:
     std::atomic<uint64_t> epoch_{ 1 };
     std::thread workflow_step_thread_;
     std::thread worker_job_thread_;
+    std::thread worker_lifecycle_thread_;
     std::thread job_materializer_thread_;
     std::thread progress_drainer_thread_;
     std::thread results_drainer_thread_;

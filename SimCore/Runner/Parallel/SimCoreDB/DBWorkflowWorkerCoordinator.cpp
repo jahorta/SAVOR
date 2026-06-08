@@ -482,7 +482,7 @@ DBWorkflowWorkerCoordinator::~DBWorkflowWorkerCoordinator() {
 }
 
 void DBWorkflowWorkerCoordinator::Start() {
-    if (workflow_step_thread_.joinable() || worker_job_thread_.joinable()) {
+    if (workflow_step_thread_.joinable() || worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
         return;
     }
 
@@ -516,6 +516,7 @@ void DBWorkflowWorkerCoordinator::Start() {
     results_drainer_thread_ = std::thread([this]() { DrainResultsLoop(); });
     job_materializer_thread_ = std::thread([this]() { job_materialization_service_.MaterializeClaimedJobPayloadLoop(stop_); });
     workflow_step_thread_ = std::thread([this]() { WorkflowStepCoordinatorLoop(); });
+    worker_lifecycle_thread_ = std::thread([this]() { WorkerLifecycleCoordinatorLoop(); });
     worker_job_thread_ = std::thread([this]() { WorkerJobCoordinatorLoop(); });
 }
 
@@ -532,6 +533,9 @@ void DBWorkflowWorkerCoordinator::Stop() {
     }
     if (worker_job_thread_.joinable()) {
         worker_job_thread_.join();
+    }
+    if (worker_lifecycle_thread_.joinable()) {
+        worker_lifecycle_thread_.join();
     }
     if (job_materializer_thread_.joinable()) {
         job_materializer_thread_.join();
@@ -1282,8 +1286,6 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
             continue;
         }
 
-        ReconcileWorkerPool();
-
         const auto now = std::chrono::steady_clock::now();
         const auto worker_target = ActiveWorkerCount();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
@@ -1326,8 +1328,19 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
 
         if (claimed_count == 0 && !dispatched_any) {
             std::unique_lock<std::mutex> lock(queue_mtx_);
-            queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
+            const auto sleep_ms = worker_cfg_.controller_sleep_ms ? worker_cfg_.controller_sleep_ms : 5;
+            queue_cv_.wait_for(lock, std::chrono::milliseconds(sleep_ms));
         }
+    }
+}
+
+void DBWorkflowWorkerCoordinator::WorkerLifecycleCoordinatorLoop() {
+    while (!stop_.load()) {
+        ReconcileWorkerPool();
+
+        std::unique_lock<std::mutex> lock(queue_mtx_);
+        const auto sleep_ms = worker_cfg_.controller_sleep_ms ? worker_cfg_.controller_sleep_ms : 5;
+        queue_cv_.wait_for(lock, std::chrono::milliseconds(sleep_ms));
     }
 }
 
@@ -2314,6 +2327,7 @@ void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const simcore::PRResult&
             MarkWorkerError(slot, "worker became unavailable after result");
         }
     }
+    queue_cv_.notify_all();
 }
 
 

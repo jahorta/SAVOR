@@ -801,6 +801,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     const auto timeout_ms = ComputeSeedProbeTimeoutMs(options.timeout_ms);
     const bool interactive_stdout = IsSeedProbeInteractiveStdout();
     MultiLineProgressRenderer progress_renderer;
+    const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
     const auto started = std::chrono::steady_clock::now();
     std::size_t poll_count = 0;
     std::size_t ticks_since_snapshot = 0;
@@ -841,10 +842,13 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         }
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
+            std::vector<std::string> display_event_lines;
+            display_event_lines.reserve(event_lines.size());
             for (const auto& line : event_lines) {
-                progress_renderer.WriteEventLine(std::cout, line.text);
+                display_event_lines.push_back(line.text);
             }
-            progress_renderer.Render(std::cout);
+            progress_renderer.WriteEventLines(std::cout, display_event_lines);
+            progress_renderer.RenderIfDue(std::cout, std::chrono::steady_clock::now(), interactive_refresh_cadence);
         } else {
             for (const auto& line : event_lines) {
                 std::cout << line.text << '\n';
@@ -894,10 +898,15 @@ bool RunSeedProbeRealWorkerSmokeImpl(
 
     coordinator.Stop();
     const auto final_event_lines = drain_event_lines();
-    for (const auto& line : final_event_lines) {
-        if (interactive_stdout) {
-            progress_renderer.WriteEventLine(std::cout, line.text);
-        } else {
+    if (interactive_stdout) {
+        std::vector<std::string> display_event_lines;
+        display_event_lines.reserve(final_event_lines.size());
+        for (const auto& line : final_event_lines) {
+            display_event_lines.push_back(line.text);
+        }
+        progress_renderer.WriteEventLines(std::cout, display_event_lines);
+    } else {
+        for (const auto& line : final_event_lines) {
             std::cout << line.text << '\n';
         }
     }
@@ -928,14 +937,21 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         append_event_lines(&final_failed_durable_lines, std::move(final_failed_step_lines));
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
+            std::vector<std::string> display_event_lines;
+            display_event_lines.reserve(final_failed_durable_lines.size());
             for (const auto& line : final_failed_durable_lines) {
-                progress_renderer.WriteEventLine(std::cout, line.text);
+                display_event_lines.push_back(line.text);
             }
+            progress_renderer.WriteEventLines(std::cout, display_event_lines);
         } else {
             for (const auto& line : final_failed_durable_lines) {
                 std::cout << line.text << '\n';
             }
         }
+    }
+    if (interactive_stdout) {
+        progress_renderer.SetLines(latest_lines);
+        progress_renderer.Render(std::cout);
     }
 
     std::string final_status = "success";

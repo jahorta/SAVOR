@@ -30,6 +30,7 @@
 #include "../../../../SimCore/Runner/IPC/Wire.h"
 #include "../../../../SimCore/Runner/Parallel/PRTypes.h"
 #include "../../../../SimCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SimCore/Utils/Base64.h"
 #include "../../../../SimCore/Utils/Hash.h"
 #include "../../../../SimCore/Utils/IniDoc.h"
 
@@ -101,6 +102,8 @@ struct ResultsIni {
     std::string applied_input_tape_text;
     std::string savestate_path;
     std::int64_t output_savestate_id = 0;
+    std::string context_blob_base64;
+    int context_version = 0;
 
     std::string to_ini() const {
         IniDoc ini;
@@ -119,6 +122,10 @@ struct ResultsIni {
         ini.set(kResultsSection, "applied_input_tape_text", applied_input_tape_text);
         ini.set(kResultsSection, "savestate_path", savestate_path);
         ini.set(kResultsSection, "output_savestate_id", std::to_string(output_savestate_id));
+        if (!context_blob_base64.empty()) {
+            ini.set(kResultsSection, "context_blob_base64", context_blob_base64);
+            ini.set(kResultsSection, "context_version", std::to_string(context_version));
+        }
         return ini.to_string_sorted();
     }
 
@@ -140,6 +147,8 @@ struct ResultsIni {
         out.applied_input_tape_text = ini.get(kResultsSection, "applied_input_tape_text", "");
         out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
         out.output_savestate_id = ini.get_i64(kResultsSection, "output_savestate_id", 0);
+        out.context_blob_base64 = ini.get(kResultsSection, "context_blob_base64", "");
+        out.context_version = static_cast<int>(ini.get_i64(kResultsSection, "context_version", 0));
         return out;
     }
 };
@@ -266,10 +275,17 @@ bool ActionNeedsTarget(soa::battle::actions::BattleAction action) {
         || action == soa::battle::actions::BattleAction::UseItem;
 }
 
+bool IsAliveEnemySlot(const soa::battle::ctx::BattleContext& context, int slot) {
+    return slot >= 4
+        && slot <= 11
+        && context.slots_[slot].present == 1
+        && context.slots_[slot].is_alive == 1;
+}
+
 std::vector<int> PresentEnemySlots(const soa::battle::ctx::BattleContext& context) {
     std::vector<int> slots;
     for (int slot = 4; slot <= 11; ++slot) {
-        if (context.slots_[slot].present == 1) {
+        if (IsAliveEnemySlot(context, slot)) {
             slots.push_back(slot);
         }
     }
@@ -281,7 +297,7 @@ std::vector<int> EnemySlotsFromMask(
     int mask_bits) {
     std::vector<int> slots;
     for (int slot = 4; slot <= 11; ++slot) {
-        if ((mask_bits & (1 << slot)) != 0 && context.slots_[slot].present == 1) {
+        if ((mask_bits & (1 << slot)) != 0 && IsAliveEnemySlot(context, slot)) {
             slots.push_back(slot);
         }
     }
@@ -306,7 +322,7 @@ std::vector<int> EnemySlotsByKind(
 
     std::vector<int> slots;
     for (int slot = 4; slot <= 11; ++slot) {
-        if (context.slots_[slot].present == 1 && static_cast<int>(context.slots_[slot].id) == enemy_kind_id) {
+        if (IsAliveEnemySlot(context, slot) && static_cast<int>(context.slots_[slot].id) == enemy_kind_id) {
             slots.push_back(slot);
             if (quantifier == "First") {
                 break;
@@ -326,7 +342,7 @@ std::vector<int> TargetDomain(
     switch (preset.target_kind) {
     case simcore::db::BattlePlanTargetKind::SingleEnemy: {
         const int slot = preset.target_single_slot.value_or(-1);
-        return slot >= 4 && slot <= 11 && context.slots_[slot].present == 1
+        return IsAliveEnemySlot(context, slot)
             ? std::vector<int>{ slot }
             : std::vector<int>{};
     }
@@ -693,27 +709,10 @@ public:
             scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=turn_missing");
             return scheduled;
         }
-        const auto context_probe = wave->context_probe_id.has_value()
-            ? analysis_db_->GetBattleContextProbe(*wave->context_probe_id)
-            : analysis_db_->GetLatestBattleContextForWave(wave->wave_id);
-        if (!context_probe.has_value() || !context_probe->context_blob.has_value() || context_probe->context_blob->empty()) {
-            scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=context_probe_missing");
-            return scheduled;
-        }
-        soa::battle::ctx::BattleContext battle_context{};
-        if (!soa::battle::ctx::codec::decode(*context_probe->context_blob, battle_context)) {
-            scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=context_decode_failed");
-            return scheduled;
-        }
-        const auto concrete_specs = CompileConcreteTurnSpecs(battle_context, *turn);
-        if (concrete_specs.empty()) {
-            scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=no_valid_target_variants");
-            return scheduled;
-        }
-
         std::int64_t source_savestate_id = battle_set->entry_savestate_id;
         int fake_used_before = 0;
         std::optional<std::int64_t> parent_exec_job_id;
+        std::optional<std::string> context_blob;
         if (wave->parent_turn_job_id.has_value()) {
             const auto parent_jobs = analysis_db_->ListBattleTurnJobsForBattleTurn(battle_set->battle_set_id, wave->turn_index - 1);
             auto parent_it = std::find_if(parent_jobs.begin(), parent_jobs.end(), [&](const auto& row) {
@@ -726,6 +725,36 @@ public:
             source_savestate_id = *parent_it->output_savestate_id;
             fake_used_before = parent_it->fake_attacks_used_before + parent_it->fake_attacks_this_turn;
             parent_exec_job_id = parent_it->exec_job_id;
+            if (!parent_it->result_context_blob_base64.has_value() || parent_it->result_context_blob_base64->empty()) {
+                scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=parent_turn_job_context_missing");
+                return scheduled;
+            }
+            const auto decoded = simcore::utils::Base64Decode(*parent_it->result_context_blob_base64);
+            if (!decoded.has_value() || decoded->empty()) {
+                scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=parent_turn_job_context_base64_decode_failed");
+                return scheduled;
+            }
+            context_blob = *decoded;
+        } else {
+            const auto context_probe = wave->context_probe_id.has_value()
+                ? analysis_db_->GetBattleContextProbe(*wave->context_probe_id)
+                : analysis_db_->GetLatestBattleContextForWave(wave->wave_id);
+            if (!context_probe.has_value() || !context_probe->context_blob.has_value() || context_probe->context_blob->empty()) {
+                scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=context_probe_missing");
+                return scheduled;
+            }
+            context_blob = *context_probe->context_blob;
+        }
+
+        soa::battle::ctx::BattleContext battle_context{};
+        if (!context_blob.has_value() || !soa::battle::ctx::codec::decode(*context_blob, battle_context)) {
+            scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=context_decode_failed");
+            return scheduled;
+        }
+        const auto concrete_specs = CompileConcreteTurnSpecs(battle_context, *turn);
+        if (concrete_specs.empty()) {
+            scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=no_valid_target_variants");
+            return scheduled;
         }
 
         const int max_fake = std::max(run_spec->min_fake_attacks, run_spec->max_fake_attacks);
@@ -1006,6 +1035,11 @@ public:
             }
         }
         result.ps.ctx.get(simcore::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
+        std::string context_blob;
+        if (result.ps.ctx.get(simcore::keys::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
+            out.context_blob_base64 = simcore::utils::Base64Encode(context_blob);
+            out.context_version = soa::battle::ctx::codec::ver;
+        }
         return out.to_ini();
     }
 
@@ -1025,10 +1059,12 @@ public:
         }
         auto parsed = ResultsIni::parse(result_ini);
         const auto parsed_outcome = static_cast<simcore::battle::Outcome>(parsed.battle_outcome);
+        const bool requires_result_context = parsed_outcome == simcore::battle::Outcome::ReachedNextTurn;
         const bool failed = parsed.w_err != 0
             || parsed.dw_err != 0
             || IsBadMaterialize(parsed)
-            || parsed_outcome == simcore::battle::Outcome::Unknown;
+            || parsed_outcome == simcore::battle::Outcome::Unknown
+            || (requires_result_context && parsed.context_blob_base64.empty());
 
         std::optional<std::int64_t> output_savestate_id;
         if (!failed && IsContinuationOutcome(parsed_outcome)) {
@@ -1068,6 +1104,12 @@ public:
         update.pred_abort_run = static_cast<int>(parsed.pred_abort_run);
         update.output_savestate_id = output_savestate_id;
         update.applied_input_artifact_id = applied_artifact_id;
+        if (!failed && !parsed.context_blob_base64.empty()) {
+            update.result_context_blob_base64 = parsed.context_blob_base64;
+            update.result_context_version = parsed.context_version > 0
+                ? std::optional<int>(parsed.context_version)
+                : std::nullopt;
+        }
         update.recorded_at_utc = simcore::db::types::UtcNow();
         std::string error;
         if (!analysis_db_->UpdateBattleTurnJobResult(update, &error)) {
@@ -1288,6 +1330,9 @@ public:
         std::map<std::int64_t, Survivor> best_by_rng;
         std::vector<Survivor> all_survivors;
         for (const auto& job : turn_jobs) {
+            if (job.job_state != simcore::db::BattleTurnJobState::Succeeded) {
+                continue;
+            }
             if (!job.rng_seed.has_value() || !job.output_savestate_id.has_value() || !job.battle_outcome.has_value()) {
                 continue;
             }
@@ -1302,13 +1347,20 @@ public:
             all_survivors.push_back(survivor);
             auto best_it = best_by_rng.find(*job.rng_seed);
             const int fake_used = job.fake_attacks_used_before + job.fake_attacks_this_turn;
+            int preds_passed = 0;
+            if (job.pred_passed.has_value()) {
+                preds_passed = *job.pred_passed;
+            }
             if (best_it == best_by_rng.end()) {
                 best_by_rng.emplace(*job.rng_seed, survivor);
             } else {
                 const int best_fake = best_it->second.job.fake_attacks_used_before + best_it->second.job.fake_attacks_this_turn;
-                if (fake_used < best_fake || (fake_used == best_fake && job.turn_job_id < best_it->second.job.turn_job_id)) {
+				const int best_preds_passed = best_it->second.job.pred_passed.has_value() ? *best_it->second.job.pred_passed : 0;
+                bool is_better = preds_passed > best_preds_passed || (preds_passed == best_preds_passed && fake_used < best_fake);
+                if (is_better) {
                     best_it->second = survivor;
-                }
+				}
+
             }
         }
 

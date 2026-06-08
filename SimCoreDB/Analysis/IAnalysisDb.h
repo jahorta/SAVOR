@@ -441,6 +441,8 @@ struct RecordBattleTurnJobCommand {
     std::optional<int> pred_abort_run;
     std::optional<std::int64_t> output_savestate_id;
     std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<std::string> result_context_blob_base64;
+    std::optional<int> result_context_version;
     std::optional<types::UtcTimePoint> recorded_at_utc;
     std::string event_id;
     std::string correlation_id;
@@ -570,6 +572,8 @@ struct BattleTurnJobSnapshot {
     std::optional<int> pred_abort_run;
     std::optional<std::int64_t> output_savestate_id;
     std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<std::string> result_context_blob_base64;
+    std::optional<int> result_context_version;
     std::optional<types::UtcTimePoint> recorded_at_utc;
 };
 

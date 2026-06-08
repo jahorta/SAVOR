@@ -61,6 +61,13 @@ std::string ColumnText(sqlite3_stmt* st, int index) {
         static_cast<std::size_t>(sqlite3_column_bytes(st, index)));
 }
 
+std::optional<std::string> ColumnTextOptional(sqlite3_stmt* st, int index) {
+    if (sqlite3_column_type(st, index) == SQLITE_NULL) {
+        return std::nullopt;
+    }
+    return ColumnText(st, index);
+}
+
 std::string ColumnBlob(sqlite3_stmt* st, int index) {
     const auto* blob = sqlite3_column_blob(st, index);
     if (blob == nullptr) {
@@ -2325,8 +2332,8 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
     Statement insert_job;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_turn_job(wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,recorded_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21);",
+            "INSERT INTO ab_turn_job(wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,result_context_blob_base64,result_context_version,recorded_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23);",
             -1,
             &insert_job.st,
             nullptr)
@@ -2371,8 +2378,12 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
     else sqlite3_bind_null(insert_job.st, 19);
     if (command.applied_input_artifact_id.has_value()) sqlite3_bind_int64(insert_job.st, 20, command.applied_input_artifact_id.value());
     else sqlite3_bind_null(insert_job.st, 20);
-    if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(insert_job.st, 21, command.recorded_at_utc->time_since_epoch().count());
+    if (command.result_context_blob_base64.has_value()) sqlite3_bind_text(insert_job.st, 21, command.result_context_blob_base64->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(insert_job.st, 21);
+    if (command.result_context_version.has_value()) sqlite3_bind_int(insert_job.st, 22, *command.result_context_version);
+    else sqlite3_bind_null(insert_job.st, 22);
+    if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(insert_job.st, 23, command.recorded_at_utc->time_since_epoch().count());
+    else sqlite3_bind_null(insert_job.st, 23);
 
     if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -2466,7 +2477,7 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
             "UPDATE ab_turn_job SET "
             "job_state=?2,ended_at_utc=?3,has_results=?4,vi_start=?5,vi_end=?6,delta_vi=?7,rng_seed=?8,"
             "battle_outcome=?9,plan_materialize_err=?10,pred_passed=?11,pred_total=?12,pred_abort_run=?13,"
-            "output_savestate_id=?14,applied_input_artifact_id=?15,recorded_at_utc=?16 "
+            "output_savestate_id=?14,applied_input_artifact_id=?15,result_context_blob_base64=?16,result_context_version=?17,recorded_at_utc=?18 "
             "WHERE exec_job_id=?1;",
             -1,
             &st.st,
@@ -2492,8 +2503,12 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
     if (command.pred_abort_run.has_value()) sqlite3_bind_int(st.st, 13, *command.pred_abort_run); else sqlite3_bind_null(st.st, 13);
     if (command.output_savestate_id.has_value()) sqlite3_bind_int64(st.st, 14, *command.output_savestate_id); else sqlite3_bind_null(st.st, 14);
     if (command.applied_input_artifact_id.has_value()) sqlite3_bind_int64(st.st, 15, *command.applied_input_artifact_id); else sqlite3_bind_null(st.st, 15);
-    if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(st.st, 16, command.recorded_at_utc->time_since_epoch().count());
+    if (command.result_context_blob_base64.has_value()) sqlite3_bind_text(st.st, 16, command.result_context_blob_base64->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(st.st, 16);
+    if (command.result_context_version.has_value()) sqlite3_bind_int(st.st, 17, *command.result_context_version);
+    else sqlite3_bind_null(st.st, 17);
+    if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(st.st, 18, command.recorded_at_utc->time_since_epoch().count());
+    else sqlite3_bind_null(st.st, 18);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
@@ -3116,7 +3131,9 @@ BattleTurnJobSnapshot ReadBattleTurnJob(sqlite3_stmt* st) {
     row.pred_abort_run = ColumnIntOptional(st, 18);
     row.output_savestate_id = ColumnInt64Optional(st, 19);
     row.applied_input_artifact_id = ColumnInt64Optional(st, 20);
-    row.recorded_at_utc = ColumnTimeOptional(st, 21);
+    row.result_context_blob_base64 = ColumnTextOptional(st, 21);
+    row.result_context_version = ColumnIntOptional(st, 22);
+    row.recorded_at_utc = ColumnTimeOptional(st, 23);
     return row;
 }
 } // namespace
@@ -3184,7 +3201,7 @@ std::optional<BattleTurnJobSnapshot> SqliteAnalysisDb::GetBattleTurnJobForExecJo
     constexpr const char* kSql =
         "SELECT turn_job_id,wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,"
         "started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,"
-        "pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,recorded_at_utc "
+        "pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,result_context_blob_base64,result_context_version,recorded_at_utc "
         "FROM ab_turn_job WHERE exec_job_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -3205,7 +3222,7 @@ std::vector<BattleTurnJobSnapshot> SqliteAnalysisDb::ListBattleTurnJobsForWave(s
     constexpr const char* kSql =
         "SELECT turn_job_id,wave_id,exec_job_id,plan_id,fake_attacks_this_turn,fake_attacks_used_before,job_state,"
         "started_at_utc,ended_at_utc,has_results,vi_start,vi_end,delta_vi,rng_seed,battle_outcome,plan_materialize_err,"
-        "pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,recorded_at_utc "
+        "pred_passed,pred_total,pred_abort_run,output_savestate_id,applied_input_artifact_id,result_context_blob_base64,result_context_version,recorded_at_utc "
         "FROM ab_turn_job WHERE wave_id=?1 ORDER BY turn_job_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -3228,7 +3245,7 @@ std::vector<BattleTurnJobSnapshot> SqliteAnalysisDb::ListBattleTurnJobsForBattle
     constexpr const char* kSql =
         "SELECT j.turn_job_id,j.wave_id,j.exec_job_id,j.plan_id,j.fake_attacks_this_turn,j.fake_attacks_used_before,j.job_state,"
         "j.started_at_utc,j.ended_at_utc,j.has_results,j.vi_start,j.vi_end,j.delta_vi,j.rng_seed,j.battle_outcome,j.plan_materialize_err,"
-        "j.pred_passed,j.pred_total,j.pred_abort_run,j.output_savestate_id,j.applied_input_artifact_id,j.recorded_at_utc "
+        "j.pred_passed,j.pred_total,j.pred_abort_run,j.output_savestate_id,j.applied_input_artifact_id,j.result_context_blob_base64,j.result_context_version,j.recorded_at_utc "
         "FROM ab_turn_job j "
         "JOIN ab_turn_wave w ON w.wave_id=j.wave_id "
         "WHERE w.battle_set_id=?1 AND w.turn_index=?2 "

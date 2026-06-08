@@ -277,6 +277,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />
+    <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />

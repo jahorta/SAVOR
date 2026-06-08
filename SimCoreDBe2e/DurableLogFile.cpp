@@ -39,6 +39,23 @@ std::string TimestampForFileName() {
     return oss.str();
 }
 
+std::string TimestampForLine() {
+    const auto now = std::chrono::system_clock::now();
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &tt);
+#else
+    gmtime_r(&tt, &tm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S")
+        << '.' << std::setw(3) << std::setfill('0') << millis
+        << "Z";
+    return oss.str();
+}
+
 } // namespace
 
 bool DurableLogFile::Open(const CliOptions& options, const std::string& scenario_name, std::string* error_out) {
@@ -69,7 +86,7 @@ void DurableLogFile::AppendLine(const std::string& line) {
     if (!stream_.is_open()) {
         return;
     }
-    stream_ << line << '\n';
+    stream_ << '[' << TimestampForLine() << "] " << line << '\n';
     stream_.flush();
 }
 

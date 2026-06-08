@@ -423,6 +423,9 @@
     <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
