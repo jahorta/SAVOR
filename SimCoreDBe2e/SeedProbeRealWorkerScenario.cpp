@@ -653,7 +653,6 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     const CliOptions& options,
     const char* argv0,
     simcore::db::core::DBService* db_service,
-    bool workflow_graph_style,
     std::string* error_out) {
     if (db_service == nullptr) {
         if (error_out) *error_out = "db service is required";
@@ -691,7 +690,6 @@ bool RunSeedProbeRealWorkerSmokeImpl(
 
     std::int64_t workflow_instance_id = 0;
     std::int64_t probe_run_id = 0;
-    (void)workflow_graph_style;
     if (!SeedWorkflowGraphExecution(
             db_service->AuthoringDb(),
             execution_db,
@@ -793,6 +791,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     ScopedWorkflowCoordinatorService workflow_coordinator;
     if (!workflow_coordinator.Start(
             execution_db,
+            db_service->AuthoringDb(),
             &program_kind_registry,
             options,
             &err,
@@ -999,7 +998,7 @@ bool RunSeedProbeRealWorkerSmoke(
     const char* argv0,
     simcore::db::core::DBService* db_service,
     std::string* error_out) {
-    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, false, error_out);
+    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, error_out);
 }
 
 bool RunSeedProbeWorkflowGraphRealWorkerSmoke(
@@ -1007,7 +1006,7 @@ bool RunSeedProbeWorkflowGraphRealWorkerSmoke(
     const char* argv0,
     simcore::db::core::DBService* db_service,
     std::string* error_out) {
-    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, true, error_out);
+    return RunSeedProbeRealWorkerSmokeImpl(options, argv0, db_service, error_out);
 }
 
 } // namespace simcore::e2e

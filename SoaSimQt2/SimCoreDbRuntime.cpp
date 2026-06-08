@@ -91,7 +91,10 @@ bool SimCoreDbRuntime::start(const std::filesystem::path& root, std::string* err
         std::make_unique<simcore::db::execution::workflow::WorkflowCoordinatorService>(
             service_->ExecutionDb(),
             &program_registry_,
-            buildWorkflowConfig());
+            buildWorkflowConfig(),
+            {},
+            nullptr,
+            service_->AuthoringDb());
     std::string workflow_error;
     if (!workflow_coordinator->Start(&workflow_error)) {
         if (error_out != nullptr) {

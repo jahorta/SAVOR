@@ -92,6 +92,17 @@ public:
             {});
     }
 
+    std::vector<workflow::WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const override {
+        return owner_->ExecuteRead<std::vector<workflow::WorkflowStepOutputRecord>>(
+            [this, workflow_instance_id]() {
+                auto* service = owner_->inner_ != nullptr ? owner_->inner_->WorkflowQueryService() : nullptr;
+                return service != nullptr
+                    ? service->ListStepOutputs(workflow_instance_id)
+                    : std::vector<workflow::WorkflowStepOutputRecord>{};
+            },
+            {});
+    }
+
 private:
     const QueuedExecutionDb* owner_ = nullptr;
 };
@@ -160,6 +171,18 @@ public:
     bool MarkStepTerminal(const workflow::WorkflowMarkStepTerminalCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->MarkStepTerminal(cmd, err);
+        });
+    }
+
+    bool RecordStepOutput(const workflow::WorkflowRecordStepOutputCommand& command, std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->RecordStepOutput(cmd, err);
+        });
+    }
+
+    bool RecordInputBinding(const workflow::WorkflowRecordInputBindingCommand& command, std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->RecordInputBinding(cmd, err);
         });
     }
 
@@ -415,6 +438,25 @@ std::vector<ExecutionJobEventRecord> QueuedExecutionDb::ListJobEvents(std::int64
     return ExecuteRead<std::vector<ExecutionJobEventRecord>>(
         [this, job_id, limit]() {
             return inner_ != nullptr ? inner_->ListJobEvents(job_id, limit) : std::vector<ExecutionJobEventRecord>{};
+        },
+        {});
+}
+
+bool QueuedExecutionDb::RecordJobOutput(const RecordExecutionJobOutputCommand& command, std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, error_out]() {
+            return inner_ != nullptr ? inner_->RecordJobOutput(command, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::vector<ExecutionJobOutputRecord> QueuedExecutionDb::ListJobOutputsForWorkflowStep(std::int64_t workflow_step_id) const {
+    return ExecuteRead<std::vector<ExecutionJobOutputRecord>>(
+        [this, workflow_step_id]() {
+            return inner_ != nullptr
+                ? inner_->ListJobOutputsForWorkflowStep(workflow_step_id)
+                : std::vector<ExecutionJobOutputRecord>{};
         },
         {});
 }

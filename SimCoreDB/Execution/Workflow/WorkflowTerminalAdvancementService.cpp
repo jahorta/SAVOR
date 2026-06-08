@@ -1,14 +1,33 @@
 #include "WorkflowTerminalAdvancementService.h"
 
+#include "../IExecutionDb.h"
+
 namespace simcore::db::execution::workflow {
 
 WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
     const AdapterChainOrchestrator* orchestrator,
+    simcore::db::IExecutionDb* execution_db,
     IWorkflowOrchestrationQueryService* query_service,
-    IWorkflowOrchestrationCommandService* command_service)
+    IWorkflowOrchestrationCommandService* command_service,
+    const WorkflowGraphRoutingService* graph_routing_service)
     : orchestrator_(orchestrator)
+    , execution_db_(execution_db)
     , query_service_(query_service)
-    , command_service_(command_service) {
+    , command_service_(command_service)
+    , graph_routing_service_(graph_routing_service) {
+}
+
+WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
+    const AdapterChainOrchestrator* orchestrator,
+    IWorkflowOrchestrationQueryService* query_service,
+    IWorkflowOrchestrationCommandService* command_service,
+    const WorkflowGraphRoutingService* graph_routing_service)
+    : WorkflowTerminalAdvancementService(
+        orchestrator,
+        nullptr,
+        query_service,
+        command_service,
+        graph_routing_service) {
 }
 
 bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
@@ -53,6 +72,24 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .terminal_total = snapshot.terminal_total,
 		.failed_total = snapshot.failed_total,
     };
+    std::optional<std::string> output_ref_kind = result_payload.has_value() && !result_payload->output_ref_kind.empty()
+        ? std::optional<std::string>(result_payload->output_ref_kind)
+        : result_payload.has_value() && !result_payload->result_kind.empty()
+            ? std::optional<std::string>(result_payload->result_kind)
+            : snapshot.output_ref_kind;
+    std::optional<std::int64_t> output_ref_id = result_payload.has_value() && result_payload->output_ref_id > 0
+        ? std::optional<std::int64_t>(result_payload->output_ref_id)
+        : result_payload.has_value() && result_payload->result_ref_id > 0
+            ? std::optional<std::int64_t>(result_payload->result_ref_id)
+            : snapshot.output_ref_id;
+    if ((!output_ref_id.has_value() || *output_ref_id <= 0) && execution_db_ != nullptr) {
+        const auto job_outputs = execution_db_->ListJobOutputsForWorkflowStep(snapshot.workflow_step_id);
+        if (!job_outputs.empty()) {
+            output_ref_kind = job_outputs.front().ref_kind;
+            output_ref_id = job_outputs.front().ref_id;
+        }
+    }
+
     const programdb::WorkflowTransitionContext context{
         .workflow_instance_id = snapshot.workflow_instance_id,
         .workflow_step_id = snapshot.workflow_step_id,
@@ -65,12 +102,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
         .input_ref_id = snapshot.input_ref_id,
-        .output_ref_kind = result_payload.has_value() && !result_payload->result_kind.empty()
-            ? std::optional<std::string>(result_payload->result_kind)
-            : snapshot.output_ref_kind,
-        .output_ref_id = result_payload.has_value() && result_payload->result_ref_id > 0
-            ? std::optional<std::int64_t>(result_payload->result_ref_id)
-            : snapshot.output_ref_id,
+        .output_ref_kind = output_ref_kind,
+        .output_ref_id = output_ref_id,
     };
 
     const auto terminal = orchestrator_->OnStepTerminal(snapshot.step_kind, context, completion, nullptr);
@@ -231,7 +264,8 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
             }
             result.spawned_step_count = static_cast<int>(append.steps.size());
             result.advanced_next_step = result.spawned_step_count > 0;
-        } else if (terminal.transition->next_step_key.has_value()) {
+        } else if (terminal.transition->next_step_key.has_value()
+            && snapshot.workflow_kind != "workflow_graph") {
             if (!command_service_->MarkStepReady(
                 {
                     .workflow_instance_id = snapshot.workflow_instance_id,
@@ -243,15 +277,43 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
                 return false;
             }
             result.advanced_next_step = true;
-        } else if (!command_service_->CompleteWorkflowInstance(
-            {
-                .workflow_instance_id = snapshot.workflow_instance_id,
-                .requested_by = "workflow_terminal_advancement",
-            },
-            &command_error)) {
+        } else if (snapshot.workflow_kind != "workflow_graph") {
+            if (!command_service_->CompleteWorkflowInstance(
+                    {
+                        .workflow_instance_id = snapshot.workflow_instance_id,
+                        .requested_by = "workflow_terminal_advancement",
+                    },
+                    &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
+            result.workflow_completed = true;
+        }
+    }
+
+    if (snapshot.workflow_kind == "workflow_graph" && graph_routing_service_ != nullptr) {
+        WorkflowGraphRoutingResult graph_result{};
+        if (!graph_routing_service_->RouteTerminalStep(snapshot, &graph_result, &command_error)) {
             if (error_out) *error_out = command_error;
             return false;
-        } else {
+        }
+        if (graph_result.blocked_reason.has_value()) {
+            result.blocked_reason = graph_result.blocked_reason;
+            if (!command_service_->MarkStepBlocked(
+                    {
+                        .workflow_step_id = snapshot.workflow_step_id,
+                        .blocked_reason = graph_result.blocked_reason,
+                        .requested_by = "workflow_graph_routing",
+                    },
+                    &command_error)) {
+                if (error_out) *error_out = command_error;
+                return false;
+            }
+        }
+        if (graph_result.advanced_ready_step) {
+            result.advanced_next_step = true;
+        }
+        if (graph_result.workflow_completed) {
             result.workflow_completed = true;
         }
     }

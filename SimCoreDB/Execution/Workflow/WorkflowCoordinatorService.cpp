@@ -1,5 +1,6 @@
 #include "WorkflowCoordinatorService.h"
 
+#include "WorkflowGraphRoutingService.h"
 #include "WorkflowTerminalAdvancementService.h"
 
 #include <algorithm>
@@ -32,8 +33,10 @@ WorkflowCoordinatorService::WorkflowCoordinatorService(
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     WorkflowCoordinatorConfig config,
     EventLineCallback event_line_callback,
-    StepCompletionGateService* step_completion_gate)
+    StepCompletionGateService* step_completion_gate,
+    simcore::db::IAuthoringDb* authoring_db)
     : execution_db_(execution_db)
+    , authoring_db_(authoring_db)
     , program_kind_registry_(program_kind_registry)
     , config_(config)
     , event_line_callback_(std::move(event_line_callback))
@@ -178,10 +181,17 @@ bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
         return false;
     }
 
-    WorkflowTerminalAdvancementService terminal_advancement(
-        &adapter_chain_orchestrator_,
+    WorkflowGraphRoutingService graph_routing(
+        execution_db_,
+        authoring_db_,
         queries,
         commands);
+    WorkflowTerminalAdvancementService terminal_advancement(
+        &adapter_chain_orchestrator_,
+        execution_db_,
+        queries,
+        commands,
+        authoring_db_ != nullptr ? &graph_routing : nullptr);
 
     bool advanced_any = false;
     for (const auto& snapshot : snapshots) {

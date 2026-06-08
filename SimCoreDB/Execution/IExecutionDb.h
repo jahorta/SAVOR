@@ -76,6 +76,25 @@ struct ExecutionJobEventRecord {
     std::optional<std::int64_t> artifact_id;
 };
 
+struct ExecutionJobOutputRecord {
+    std::int64_t job_output_id = 0;
+    std::int64_t job_id = 0;
+    std::string output_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::int64_t created_at_utc = 0;
+};
+
+struct RecordExecutionJobOutputCommand {
+    std::int64_t job_id = 0;
+    std::string output_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string requested_by;
+};
+
 struct ExecutionJobSetProgressDetails {
     std::int64_t job_set_id = 0;
     std::int64_t total_jobs = 0;
@@ -174,6 +193,17 @@ struct IExecutionDb {
     virtual std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const {
         (void)job_id;
         (void)limit;
+        return {};
+    }
+    virtual bool RecordJobOutput(const RecordExecutionJobOutputCommand& command, std::string* error_out = nullptr) {
+        (void)command;
+        if (error_out) {
+            *error_out = "record job output is not supported by this execution db";
+        }
+        return false;
+    }
+    virtual std::vector<ExecutionJobOutputRecord> ListJobOutputsForWorkflowStep(std::int64_t workflow_step_id) const {
+        (void)workflow_step_id;
         return {};
     }
     virtual std::optional<std::string> GetJobInputIni(std::int64_t job_id, std::string* error_out = nullptr) const {

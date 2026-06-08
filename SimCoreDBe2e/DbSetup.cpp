@@ -54,6 +54,7 @@ ScopedWorkflowCoordinatorService::~ScopedWorkflowCoordinatorService() {
 
 bool ScopedWorkflowCoordinatorService::Start(
     simcore::db::IExecutionDb* execution_db,
+    simcore::db::IAuthoringDb* authoring_db,
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
     const CliOptions& options,
     std::string* error_out,
@@ -61,9 +62,9 @@ bool ScopedWorkflowCoordinatorService::Start(
     if (service_ != nullptr && service_->IsRunning()) {
         return true;
     }
-    if (execution_db == nullptr || program_kind_registry == nullptr) {
+    if (execution_db == nullptr || authoring_db == nullptr || program_kind_registry == nullptr) {
         if (error_out != nullptr) {
-            *error_out = "workflow coordinator requires execution db and program registry";
+            *error_out = "workflow coordinator requires execution db, authoring db, and program registry";
         }
         return false;
     }
@@ -77,7 +78,9 @@ bool ScopedWorkflowCoordinatorService::Start(
         execution_db,
         program_kind_registry,
         config,
-        std::move(event_line_callback));
+        std::move(event_line_callback),
+        nullptr,
+        authoring_db);
     std::string err;
     if (!service->Start(&err)) {
         if (error_out != nullptr) {
@@ -313,7 +316,7 @@ bool SeedTasMovieWorkflow(
                             { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
                         },
                         .possible_outputs = {
-                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
                         },
                     },
                 },
@@ -328,7 +331,7 @@ bool SeedTasMovieWorkflow(
     }
 
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    command.workflow_kind = "workflow_graph_tasmovie";
+    command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
     command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
@@ -378,7 +381,7 @@ bool SeedTasMovieSeedProbeWorkflow(
                             { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
                         },
                         .possible_outputs = {
-                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
                         },
                     },
                     {
@@ -396,7 +399,7 @@ bool SeedTasMovieSeedProbeWorkflow(
                     },
                 },
                 .edges = {
-                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                    { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 },
                 .created_at_utc = UtcNow(),
                 .event_id = "simcoredbe2e.authoring.workflow_graph.tasmovie_seedprobe",
@@ -409,13 +412,14 @@ bool SeedTasMovieSeedProbeWorkflow(
     }
 
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    command.workflow_kind = "workflow_graph_tasmovie_seedprobe";
+    command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
     command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
     command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .dependencies = { "tas_1" }, .priority = 1, .max_attempts = 1 });
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",

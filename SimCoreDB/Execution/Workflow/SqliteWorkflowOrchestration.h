@@ -26,6 +26,7 @@ public:
     std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const override;
     std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const override;
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const override;
+    std::vector<WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const override;
 
 private:
     sqlite3* db_ = nullptr;
@@ -48,6 +49,8 @@ public:
     bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) override;
     bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) override;
     bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) override;
+    bool RecordStepOutput(const WorkflowRecordStepOutputCommand& command, std::string* error_out) override;
+    bool RecordInputBinding(const WorkflowRecordInputBindingCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;
     bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) override;
     bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) override;

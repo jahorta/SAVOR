@@ -20,6 +20,10 @@
 #include "AdapterChainOrchestrator.h"
 #include "WorkflowOrchestration.h"
 
+namespace simcore::db {
+struct IAuthoringDb;
+}
+
 namespace simcore::db::execution::workflow {
 
 struct WorkflowCoordinatorConfig {
@@ -64,7 +68,8 @@ public:
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
         WorkflowCoordinatorConfig config = {},
         EventLineCallback event_line_callback = {},
-        StepCompletionGateService* step_completion_gate = nullptr);
+        StepCompletionGateService* step_completion_gate = nullptr,
+        simcore::db::IAuthoringDb* authoring_db = nullptr);
     ~WorkflowCoordinatorService();
 
     WorkflowCoordinatorService(const WorkflowCoordinatorService&) = delete;
@@ -131,6 +136,7 @@ private:
     void EmitEventLine(const std::string& line) const;
 
     simcore::db::IExecutionDb* execution_db_ = nullptr;
+    simcore::db::IAuthoringDb* authoring_db_ = nullptr;
     const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry_ = nullptr;
     WorkflowCoordinatorConfig config_{};
     EventLineCallback event_line_callback_;

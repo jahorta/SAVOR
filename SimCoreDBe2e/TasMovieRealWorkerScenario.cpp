@@ -371,6 +371,7 @@ bool RunTasMovieScenario(
     ScopedWorkflowCoordinatorService workflow_coordinator;
     if (!workflow_coordinator.Start(
             db_service->ExecutionDb(),
+            db_service->AuthoringDb(),
             &registry,
             options,
             &err,

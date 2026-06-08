@@ -41,6 +41,7 @@ struct WorkflowStepRecord {
     std::int64_t workflow_step_id = 0;
     std::int64_t workflow_instance_id = 0;
     std::string step_key;
+    std::string graph_node_key;
     std::string step_kind;
     WorkflowStepState state = WorkflowStepState::Waiting;
     std::optional<std::string> blocked_reason;
@@ -100,6 +101,7 @@ struct WorkflowReadyStepRecord {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
     std::string step_key;
+    std::string graph_node_key;
     std::string step_kind;
     int priority = 0;
     std::optional<std::string> input_ref_kind;
@@ -111,7 +113,9 @@ struct WorkflowStepTerminalSnapshot {
     std::int64_t workflow_step_id = 0;
     std::int64_t job_set_id = 0;
     std::string workflow_kind;
+    std::optional<std::int64_t> workflow_graph_revision_id;
     std::string step_key;
+    std::string graph_node_key;
     std::string step_kind;
     std::optional<std::string> input_ref_kind;
     std::optional<std::int64_t> input_ref_id;
@@ -121,6 +125,17 @@ struct WorkflowStepTerminalSnapshot {
     int discovered_total = 0;
     int terminal_total = 0;
     int failed_total = 0;
+};
+
+struct WorkflowStepOutputRecord {
+    std::int64_t workflow_step_output_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string graph_node_key;
+    std::string output_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
 };
 
 struct WorkflowRetryStepCommand {
@@ -177,6 +192,27 @@ struct WorkflowMarkStepTerminalCommand {
     std::string terminal_state; // COMPLETED | FAILED
     std::optional<std::string> output_ref_kind;
     std::optional<std::int64_t> output_ref_id;
+    std::string requested_by;
+};
+
+struct WorkflowRecordStepOutputCommand {
+    std::int64_t workflow_step_id = 0;
+    std::string output_key;
+    std::string output_data_kind;
+    std::string output_ref_kind;
+    std::int64_t output_ref_id = 0;
+    std::string requested_by;
+};
+
+struct WorkflowRecordInputBindingCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_graph_revision_id = 0;
+    std::string node_key;
+    std::string input_key;
+    std::string data_kind;
+    std::string ref_kind;
+    std::int64_t ref_id = 0;
+    std::string source_kind;
     std::string requested_by;
 };
 
@@ -274,6 +310,7 @@ struct IWorkflowOrchestrationQueryService {
     virtual std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const = 0;
     virtual std::vector<WorkflowStepRecord> ListBlockedSteps(std::int64_t workflow_instance_id) const = 0;
     virtual std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t workflow_instance_id) const = 0;
+    virtual std::vector<WorkflowStepOutputRecord> ListStepOutputs(std::int64_t workflow_instance_id) const = 0;
 };
 
 struct IWorkflowOrchestrationCommandService {
@@ -292,6 +329,8 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool TerminalFailWorkflowInstance(const WorkflowTerminalFailInstanceCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepMaterialized(const WorkflowMarkStepMaterializedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepTerminal(const WorkflowMarkStepTerminalCommand& command, std::string* error_out) = 0;
+    virtual bool RecordStepOutput(const WorkflowRecordStepOutputCommand& command, std::string* error_out) = 0;
+    virtual bool RecordInputBinding(const WorkflowRecordInputBindingCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) = 0;
     virtual bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) = 0;

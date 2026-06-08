@@ -711,7 +711,7 @@ TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndM
         CoordinatorIntegrationConfig{},
         &registry);
 
-    coordinator.EnqueueReadyStep({
+    const auto scheduled = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 301,
         .workflow_step_id = 302,
         .step_key = "Only",
@@ -720,59 +720,17 @@ TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndM
         .input_ref_id = 44,
     });
 
-    coordinator.Start();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-    while (execution_db.command_service.materialized_calls.empty()
-        && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    coordinator.Stop();
-
+    ASSERT_TRUE(scheduled.has_value());
     EXPECT_EQ(persistence->encode_calls.load(), 1);
     ASSERT_EQ(execution_db.command_service.materialized_calls.size(), 1u);
     EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 302);
     EXPECT_EQ(execution_db.command_service.materialized_calls.front().job_set_id, 17044);
 }
 
-TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMaterializesStep) {
+TEST(Stage1CoordinatorIntegration, ManualSignalPublishesWorkflowCreatedAndMaterializesStep) {
     using namespace simcore::runner::parallel::simcoredb;
-    using namespace simcore::db::execution::workflow;
 
-    class SignalQueryService final : public NullWorkflowQueryService {
-    public:
-        std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t) const override {
-            ++scan_count;
-            if (!ready_enabled.load()) {
-                return {};
-            }
-            if (ready_consumed.exchange(true)) {
-                return {};
-            }
-            return { ready_step };
-        }
-
-        void EnableReadyStep(const WorkflowReadyStepRecord& step) {
-            ready_step = step;
-            ready_consumed.store(false);
-            ready_enabled.store(true);
-        }
-
-        mutable std::atomic<int> scan_count{ 0 };
-        std::atomic<bool> ready_enabled{ false };
-        mutable std::atomic<bool> ready_consumed{ false };
-        WorkflowReadyStepRecord ready_step{};
-    };
-
-    class SignalExecutionDb final : public RecordingExecutionDb {
-    public:
-        simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* WorkflowQueryService() override {
-            return &signal_query_service;
-        }
-
-        SignalQueryService signal_query_service;
-    };
-
-    SignalExecutionDb execution_db;
+    RecordingExecutionDb execution_db;
     DBWorkflowWorkerCoordinator coordinator(
         &execution_db,
         DBWorkflowWorkerCoordinatorConfig{
@@ -793,10 +751,8 @@ TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMat
         EXPECT_EQ(signal.workflow_instance_id, 999);
     });
 
-    coordinator.Start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    execution_db.signal_query_service.EnableReadyStep({
+    EXPECT_TRUE(coordinator.PublishWorkflowCreated({ .workflow_instance_id = 999 }));
+    const auto scheduled = coordinator.MaterializeWorkflowStep({
         .workflow_instance_id = 999,
         .workflow_step_id = 333,
         .step_key = "Grid",
@@ -804,19 +760,12 @@ TEST(Stage1CoordinatorIntegration, ReadyScanPublishesWorkflowCreatedSignalAndMat
         .priority = 4,
     });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-    while ((execution_db.command_service.materialized_calls.empty() || workflow_created_callbacks == 0)
-        && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    coordinator.Stop();
-
+    ASSERT_TRUE(scheduled.has_value());
     ASSERT_FALSE(execution_db.command_service.materialized_calls.empty());
     EXPECT_EQ(execution_db.command_service.materialized_calls.front().workflow_step_id, 333);
     EXPECT_EQ(workflow_created_callbacks, 1);
     const auto telemetry = coordinator.SnapshotTelemetry();
     EXPECT_EQ(telemetry.workflow_created_signal_count, 1);
-    EXPECT_GT(execution_db.signal_query_service.scan_count.load(), 0);
 }
 
 TEST(Stage3cCoordinatorReplacement, DisabledWorkflowIntegrationSkipsWorkflowPersistencePath) {

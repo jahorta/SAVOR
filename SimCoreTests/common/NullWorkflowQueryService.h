@@ -33,4 +33,7 @@ public:
     std::vector<std::pair<std::int64_t, std::int64_t>> GetStepToJobSetMap(std::int64_t) const override {
         return {};
     }
+    std::vector<simcore::db::execution::workflow::WorkflowStepOutputRecord> ListStepOutputs(std::int64_t) const override {
+        return {};
+    }
 };

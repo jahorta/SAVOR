@@ -97,6 +97,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -294,6 +297,9 @@
     <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowGraphRoutingService.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
@@ -487,6 +493,9 @@
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202604111000_execution_graph_routing.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">

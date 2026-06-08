@@ -503,7 +503,7 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         sqlite3_close(db);
     }
 
-    TEST(Stage3Phase3Telemetry, CapturesMaterializationAndDispatchCounters) {
+    TEST(Stage3Phase3Telemetry, CapturesDispatchCountersWithoutWorkflowMaterialization) {
         using namespace simcore::runner::parallel::simcoredb;
         using namespace simcore::db::execution::workflow;
 
@@ -521,22 +521,12 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 };
             });
 
-        coordinator.EnqueueReadyStep({
-            .workflow_instance_id = 10,
-            .workflow_step_id = 20,
-            .step_key = "Neutral",
-            .step_kind = "seedprobe.neutral",
-            .priority = 1,
-            });
-
         coordinator.Start();
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
         coordinator.Stop();
 
         const auto telemetry = coordinator.SnapshotTelemetry();
-        EXPECT_GE(telemetry.materialization_count, 1);
-        EXPECT_GE(telemetry.last_materialization_latency_ms, 0);
-        EXPECT_GE(telemetry.max_materialization_latency_ms, 0);
+        EXPECT_EQ(telemetry.materialization_count, 0);
         EXPECT_GE(telemetry.dispatch_attempt_count, 0);
         EXPECT_GE(telemetry.dispatch_success_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_count, 0);

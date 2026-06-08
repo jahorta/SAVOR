@@ -208,6 +208,7 @@ bool RunSeedProbePrelude(
     ScopedWorkflowCoordinatorService workflow_coordinator;
     if (!workflow_coordinator.Start(
             db_service->ExecutionDb(),
+            db_service->AuthoringDb(),
             &registry,
             options,
             &err,
@@ -582,6 +583,7 @@ bool SeedBattleAuthoringRows(
 }
 
 bool SeedBattleAnalysisAndWorkflowRows(
+    simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IAnalysisDb* analysis_db,
     simcore::db::IExecutionDb* execution_db,
     std::int64_t entry_savestate_id,
@@ -592,8 +594,8 @@ bool SeedBattleAnalysisAndWorkflowRows(
     std::int64_t* wave_id_out,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
-    if (analysis_db == nullptr || execution_db == nullptr) {
-        if (error_out) *error_out = "analysis/execution db unavailable";
+    if (authoring_db == nullptr || analysis_db == nullptr || execution_db == nullptr) {
+        if (error_out) *error_out = "authoring/analysis/execution db unavailable";
         return false;
     }
     const auto now = simcore::db::types::UtcNow();
@@ -651,20 +653,59 @@ bool SeedBattleAnalysisAndWorkflowRows(
         return false;
     }
 
+    simcore::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = "SimCoreDBe2e battle single-turn graph",
+                .description = "Graph-wrapped battle context probe scenario",
+                .graph_version = 1,
+                .graph_hash = "simcoredbe2e.workflow_graph.battle_single_turn.v1",
+                .nodes = {
+                    {
+                        .node_key = "battle_context_1",
+                        .unit_kind = "battle.context_probe",
+                        .display_name = "Battle Context Probe",
+                        .inputs = {
+                            { .input_key = "turn_wave", .data_kind = "analysis_battle.turn_wave_id", .display_name = "Turn wave" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "battle_context", .data_kind = "analysisbattle.context_probe", .display_name = "Battle context" },
+                        },
+                    },
+                },
+                .created_at_utc = now,
+                .event_id = "simcoredbe2e.authoring.workflow_graph.battle_single_turn",
+                .correlation_id = "simcoredbe2e.workflow_graph.battle_single_turn",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand workflow{};
-    workflow.workflow_kind = "BATTLE_SINGLE_TURN_CHAIN";
+    workflow.workflow_kind = "workflow_graph";
     workflow.root_scope_kind = "run";
     workflow.root_scope_id = battle_set_id;
+    workflow.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     workflow.created_by = "simcoredbe2e";
     workflow.created_at_utc = now.time_since_epoch().count();
     simcore::db::execution::workflow::WorkflowCreateStepSpec step{};
-    step.step_key = "BattleContext/t1/w" + std::to_string(wave_id);
+    step.step_key = "battle_context_1";
     step.step_kind = "battle.context_probe";
     step.priority = 1;
     step.max_attempts = 1;
     step.input_ref_kind = std::string(kWaveRefKind);
     step.input_ref_id = wave_id;
     workflow.steps.push_back(std::move(step));
+    workflow.input_bindings.push_back({
+        .node_key = "battle_context_1",
+        .input_key = "turn_wave",
+        .data_kind = "analysis_battle.turn_wave_id",
+        .ref_kind = kWaveRefKind,
+        .ref_id = wave_id,
+        .source_kind = "external",
+    });
     if (!execution_db->CreateWorkflowInstance(workflow, workflow_instance_id_out, error_out)) {
         return false;
     }
@@ -707,7 +748,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                             { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
                         },
                         .possible_outputs = {
-                            { .output_key = "output_savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
                         },
                     },
                     {
@@ -739,8 +780,8 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                     },
                 },
                 .edges = {
-                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
-                    { .from_node_key = "tas_1", .output_key = "output_savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+                    { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+                    { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
                     { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
                 },
                 .created_at_utc = simcore::db::types::UtcNow(),
@@ -754,13 +795,15 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     }
 
     simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
-    command.workflow_kind = "workflow_graph_tasmovie_seedprobe_battle";
+    command.workflow_kind = "workflow_graph";
     command.root_scope_kind = "manual";
     command.root_scope_id = dtm_artifact_id;
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
     command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .dependencies = { "tas_1" }, .priority = 1, .max_attempts = 1 });
+    command.steps.push_back({ .step_key = "battle_1", .step_kind = "battle_chain", .dependencies = { "tas_1", "probe_1" }, .priority = 1, .max_attempts = 1 });
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",
@@ -873,6 +916,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
     std::int64_t wave_id = 0;
     std::int64_t workflow_instance_id = 0;
     if (!SeedBattleAnalysisAndWorkflowRows(
+            db_service->AuthoringDb(),
             db_service->AnalysisDb(),
             db_service->ExecutionDb(),
             entry_savestate_id,
@@ -985,6 +1029,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
     ScopedWorkflowCoordinatorService workflow_coordinator;
     if (!workflow_coordinator.Start(
             db_service->ExecutionDb(),
+            db_service->AuthoringDb(),
             &registry,
             options,
             &err,
@@ -1346,6 +1391,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     ScopedWorkflowCoordinatorService workflow_coordinator;
     if (!workflow_coordinator.Start(
             db_service->ExecutionDb(),
+            db_service->AuthoringDb(),
             &registry,
             options,
             &err,

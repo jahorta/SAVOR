@@ -32,6 +32,7 @@ public:
 
     bool Start(
         simcore::db::IExecutionDb* execution_db,
+        simcore::db::IAuthoringDb* authoring_db,
         const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
         const CliOptions& options,
         std::string* error_out,

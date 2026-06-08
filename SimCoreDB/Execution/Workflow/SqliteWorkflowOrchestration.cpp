@@ -108,20 +108,23 @@ std::optional<WorkflowStepTerminalSnapshot> ReadStepTerminalSnapshot(sqlite3_stm
     snapshot.job_set_id = sqlite3_column_int64(st, 2);
 
     const auto* workflow_kind = sqlite3_column_text(st, 3);
-    const auto* step_key = sqlite3_column_text(st, 4);
-    const auto* step_kind = sqlite3_column_text(st, 5);
+    snapshot.workflow_graph_revision_id = ColumnInt64Optional(st, 4);
+    const auto* step_key = sqlite3_column_text(st, 5);
+    const auto* graph_node_key = sqlite3_column_text(st, 6);
+    const auto* step_kind = sqlite3_column_text(st, 7);
     snapshot.workflow_kind = workflow_kind ? reinterpret_cast<const char*>(workflow_kind) : "";
     snapshot.step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
+    snapshot.graph_node_key = graph_node_key ? reinterpret_cast<const char*>(graph_node_key) : snapshot.step_key;
     snapshot.step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
-    snapshot.input_ref_kind = ColumnTextOptional(st, 6);
-    snapshot.input_ref_id = ColumnInt64Optional(st, 7);
-    snapshot.output_ref_kind = ColumnTextOptional(st, 8);
-    snapshot.output_ref_id = ColumnInt64Optional(st, 9);
+    snapshot.input_ref_kind = ColumnTextOptional(st, 8);
+    snapshot.input_ref_id = ColumnInt64Optional(st, 9);
+    snapshot.output_ref_kind = ColumnTextOptional(st, 10);
+    snapshot.output_ref_id = ColumnInt64Optional(st, 11);
 
-    snapshot.expected_total = sqlite3_column_int(st, 10);
-    snapshot.discovered_total = sqlite3_column_int(st, 11);
-    snapshot.terminal_total = sqlite3_column_int(st, 12);
-    snapshot.failed_total = sqlite3_column_int(st, 13);
+    snapshot.expected_total = sqlite3_column_int(st, 12);
+    snapshot.discovered_total = sqlite3_column_int(st, 13);
+    snapshot.terminal_total = sqlite3_column_int(st, 14);
+    snapshot.failed_total = sqlite3_column_int(st, 15);
     return snapshot;
 }
 
@@ -173,7 +176,7 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
 
     Statement st;
     if (!Prepare(db_,
-        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, s.step_kind, s.priority, s.input_ref_kind, s.input_ref_id "
+        "SELECT s.workflow_instance_id, s.workflow_step_id, s.step_key, COALESCE(s.graph_node_key, s.step_key), s.step_kind, s.priority, s.input_ref_kind, s.input_ref_id "
         "FROM exec_workflow_step s "
         "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "WHERE i.state='RUNNING' AND s.state='READY' AND s.job_set_id IS NULL "
@@ -190,10 +193,11 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
         row.workflow_instance_id = sqlite3_column_int64(st.st, 0);
         row.workflow_step_id = sqlite3_column_int64(st.st, 1);
         row.step_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
-        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
-        row.priority = sqlite3_column_int(st.st, 4);
-        row.input_ref_kind = ColumnTextOptional(st.st, 5);
-        row.input_ref_id = ColumnInt64Optional(st.st, 6);
+        row.graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+        row.priority = sqlite3_column_int(st.st, 5);
+        row.input_ref_kind = ColumnTextOptional(st.st, 6);
+        row.input_ref_id = ColumnInt64Optional(st.st, 7);
         rows.push_back(std::move(row));
     }
 
@@ -221,7 +225,8 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "    AND job_set_ancestry.depth < 64"
         "), "
         "step_root AS ("
-        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
+        "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
         "  FROM job_set_ancestry a "
         "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
@@ -236,7 +241,8 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
         "  WHERE job_set_descendants.depth < 64"
         ") "
-        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.workflow_graph_revision_id, "
+        "r.step_key, r.graph_node_key, r.step_kind, "
         "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, "
         "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
         "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
@@ -269,7 +275,8 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
     Statement st;
     if (!Prepare(db_,
         "WITH RECURSIVE step_root AS ("
-        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
+        "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
@@ -277,25 +284,25 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "    AND s.state IN ('MATERIALIZED','RUNNING') "
         "    AND s.job_set_id IS NOT NULL "
         "), "
-        "job_set_descendants(workflow_instance_id, workflow_step_id, root_job_set_id, workflow_kind, step_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, depth) AS ("
-        "  SELECT workflow_instance_id, workflow_step_id, job_set_id, workflow_kind, step_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, 0 "
+        "job_set_descendants(workflow_instance_id, workflow_step_id, root_job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, depth) AS ("
+        "  SELECT workflow_instance_id, workflow_step_id, job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, 0 "
         "  FROM step_root "
         "  UNION ALL "
-        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind, "
-        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, child.job_set_id, d.depth + 1 "
+        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, "
+        "d.step_key, d.graph_node_key, d.step_kind, d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, child.job_set_id, d.depth + 1 "
         "  FROM exec_job_set child "
         "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
         "  WHERE d.depth < 64"
         "), "
         "expected_summary AS ("
-        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind, "
+        "  SELECT d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
         "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, "
         "    CASE WHEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN 1 ELSE 0 END), 0) > 0 "
         "      THEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN COALESCE(js.expected_total, 0) ELSE 0 END), 0) "
         "      ELSE COALESCE(MAX(CASE WHEN d.depth=0 THEN js.expected_total ELSE NULL END), 0) END AS expected_total "
         "  FROM job_set_descendants d "
         "  LEFT JOIN exec_job_set js ON js.job_set_id=d.job_set_id "
-        "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.step_key, d.step_kind, "
+        "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
         "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id "
         "), "
         "job_summary AS ("
@@ -307,7 +314,8 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "  LEFT JOIN exec_job j ON j.job_set_id=d.job_set_id "
         "  GROUP BY d.workflow_step_id "
         ") "
-        "SELECT e.workflow_instance_id, e.workflow_step_id, e.root_job_set_id, e.workflow_kind, e.step_key, e.step_kind, "
+        "SELECT e.workflow_instance_id, e.workflow_step_id, e.root_job_set_id, e.workflow_kind, e.workflow_graph_revision_id, "
+        "e.step_key, e.graph_node_key, e.step_kind, "
         "e.input_ref_kind, e.input_ref_id, e.output_ref_kind, e.output_ref_id, "
         "e.expected_total, j.discovered_total, j.terminal_total, j.failed_total "
         "FROM expected_summary e "
@@ -355,7 +363,7 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
 
     Statement step_st;
     if (!Prepare(db_,
-        "SELECT workflow_step_id, workflow_instance_id, step_key, step_kind, state, blocked_reason, job_set_id, "
+        "SELECT workflow_step_id, workflow_instance_id, step_key, COALESCE(graph_node_key, step_key), step_kind, state, blocked_reason, job_set_id, "
         "input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, attempts, max_attempts "
         "FROM exec_workflow_step WHERE workflow_instance_id=?1 ORDER BY workflow_step_id;",
         &step_st,
@@ -369,17 +377,18 @@ std::optional<WorkflowGraphSnapshot> SqliteWorkflowOrchestrationQueryService::Ge
         row.workflow_step_id = sqlite3_column_int64(step_st.st, 0);
         row.workflow_instance_id = sqlite3_column_int64(step_st.st, 1);
         row.step_key = reinterpret_cast<const char*>(sqlite3_column_text(step_st.st, 2));
-        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(step_st.st, 3));
-        row.state = ParseStepState(sqlite3_column_text(step_st.st, 4));
-        row.blocked_reason = ColumnTextOptional(step_st.st, 5);
-        row.job_set_id = ColumnInt64Optional(step_st.st, 6);
-        row.input_ref_kind = ColumnTextOptional(step_st.st, 7);
-        row.input_ref_id = ColumnInt64Optional(step_st.st, 8);
-        row.output_ref_kind = ColumnTextOptional(step_st.st, 9);
-        row.output_ref_id = ColumnInt64Optional(step_st.st, 10);
-        row.priority = sqlite3_column_int(step_st.st, 11);
-        row.attempts = sqlite3_column_int(step_st.st, 12);
-        row.max_attempts = sqlite3_column_int(step_st.st, 13);
+        row.graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(step_st.st, 3));
+        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(step_st.st, 4));
+        row.state = ParseStepState(sqlite3_column_text(step_st.st, 5));
+        row.blocked_reason = ColumnTextOptional(step_st.st, 6);
+        row.job_set_id = ColumnInt64Optional(step_st.st, 7);
+        row.input_ref_kind = ColumnTextOptional(step_st.st, 8);
+        row.input_ref_id = ColumnInt64Optional(step_st.st, 9);
+        row.output_ref_kind = ColumnTextOptional(step_st.st, 10);
+        row.output_ref_id = ColumnInt64Optional(step_st.st, 11);
+        row.priority = sqlite3_column_int(step_st.st, 12);
+        row.attempts = sqlite3_column_int(step_st.st, 13);
+        row.max_attempts = sqlite3_column_int(step_st.st, 14);
         snapshot.steps.push_back(std::move(row));
     }
 
@@ -461,7 +470,7 @@ std::vector<WorkflowStepRecord> SqliteWorkflowOrchestrationQueryService::ListBlo
 
     Statement st;
     if (!Prepare(db_,
-        "SELECT workflow_step_id, workflow_instance_id, step_key, step_kind, state, blocked_reason, job_set_id, priority, attempts, max_attempts "
+        "SELECT workflow_step_id, workflow_instance_id, step_key, COALESCE(graph_node_key, step_key), step_kind, state, blocked_reason, job_set_id, priority, attempts, max_attempts "
         "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND blocked_reason IS NOT NULL "
         "ORDER BY priority DESC, workflow_step_id ASC;",
         &st,
@@ -475,13 +484,14 @@ std::vector<WorkflowStepRecord> SqliteWorkflowOrchestrationQueryService::ListBlo
         row.workflow_step_id = sqlite3_column_int64(st.st, 0);
         row.workflow_instance_id = sqlite3_column_int64(st.st, 1);
         row.step_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
-        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
-        row.state = ParseStepState(sqlite3_column_text(st.st, 4));
-        row.blocked_reason = ColumnTextOptional(st.st, 5);
-        row.job_set_id = ColumnInt64Optional(st.st, 6);
-        row.priority = sqlite3_column_int(st.st, 7);
-        row.attempts = sqlite3_column_int(st.st, 8);
-        row.max_attempts = sqlite3_column_int(st.st, 9);
+        row.graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+        row.step_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+        row.state = ParseStepState(sqlite3_column_text(st.st, 5));
+        row.blocked_reason = ColumnTextOptional(st.st, 6);
+        row.job_set_id = ColumnInt64Optional(st.st, 7);
+        row.priority = sqlite3_column_int(st.st, 8);
+        row.attempts = sqlite3_column_int(st.st, 9);
+        row.max_attempts = sqlite3_column_int(st.st, 10);
         rows.push_back(std::move(row));
     }
 
@@ -509,6 +519,36 @@ SqliteWorkflowOrchestrationQueryService::GetStepToJobSetMap(std::int64_t workflo
     return pairs;
 }
 
+std::vector<WorkflowStepOutputRecord>
+SqliteWorkflowOrchestrationQueryService::ListStepOutputs(std::int64_t workflow_instance_id) const {
+    std::vector<WorkflowStepOutputRecord> rows;
+
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT workflow_step_output_id, workflow_instance_id, workflow_step_id, graph_node_key, output_key, data_kind, ref_kind, ref_id "
+        "FROM exec_workflow_step_output WHERE workflow_instance_id=?1 ORDER BY workflow_step_output_id;",
+        &st,
+        nullptr)) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, workflow_instance_id);
+
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        WorkflowStepOutputRecord row;
+        row.workflow_step_output_id = sqlite3_column_int64(st.st, 0);
+        row.workflow_instance_id = sqlite3_column_int64(st.st, 1);
+        row.workflow_step_id = sqlite3_column_int64(st.st, 2);
+        row.graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+        row.output_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+        row.data_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
+        row.ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+        row.ref_id = sqlite3_column_int64(st.st, 7);
+        rows.push_back(std::move(row));
+    }
+
+    return rows;
+}
+
 SqliteWorkflowOrchestrationCommandService::SqliteWorkflowOrchestrationCommandService(sqlite3* db)
     : db_(db) {
 }
@@ -517,8 +557,12 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     const WorkflowCreateInstanceCommand& command,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
-    if (command.workflow_kind.empty()) {
-        if (error_out) *error_out = "workflow_kind is required";
+    if (command.workflow_kind != "workflow_graph") {
+        if (error_out) *error_out = "workflow_kind must be workflow_graph";
+        return false;
+    }
+    if (!command.workflow_graph_revision_id.has_value() || *command.workflow_graph_revision_id <= 0) {
+        if (error_out) *error_out = "workflow_graph_revision_id is required";
         return false;
     }
     if (command.root_scope_kind.empty()) {
@@ -527,18 +571,6 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     }
     if (command.steps.empty()) {
         if (error_out) *error_out = "at least one workflow step is required";
-        return false;
-    }
-    if (command.workflow_graph_revision_id.has_value() && *command.workflow_graph_revision_id <= 0) {
-        if (error_out) *error_out = "workflow_graph_revision_id must be > 0";
-        return false;
-    }
-    if (!command.input_bindings.empty() && !command.workflow_graph_revision_id.has_value()) {
-        if (error_out) *error_out = "workflow_graph_revision_id is required when input_bindings are provided";
-        return false;
-    }
-    if (!command.arguments.empty() && !command.workflow_graph_revision_id.has_value()) {
-        if (error_out) *error_out = "workflow_graph_revision_id is required when arguments are provided";
         return false;
     }
     std::unordered_set<std::string> input_binding_keys;
@@ -639,8 +671,8 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
     for (const auto& step : command.steps) {
         Statement insert_step;
         if (!Prepare(db_,
-            "INSERT INTO exec_workflow_step(workflow_instance_id, step_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc) "
-            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12);",
+            "INSERT INTO exec_workflow_step(workflow_instance_id, step_key, graph_node_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc) "
+            "VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12);",
             &insert_step,
             error_out)) {
             rollback();
@@ -1392,6 +1424,217 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepTerminal(
     return true;
 }
 
+bool SqliteWorkflowOrchestrationCommandService::RecordStepOutput(
+    const WorkflowRecordStepOutputCommand& command,
+    std::string* error_out) {
+    if (command.workflow_step_id <= 0) {
+        if (error_out) *error_out = "workflow_step_id must be > 0";
+        return false;
+    }
+    if (command.output_key.empty()) {
+        if (error_out) *error_out = "output_key is required";
+        return false;
+    }
+    if (command.output_data_kind.empty()) {
+        if (error_out) *error_out = "output_data_kind is required";
+        return false;
+    }
+    if (command.output_ref_kind.empty()) {
+        if (error_out) *error_out = "output_ref_kind is required";
+        return false;
+    }
+    if (command.output_ref_id <= 0) {
+        if (error_out) *error_out = "output_ref_id must be > 0";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement read;
+    if (!Prepare(db_,
+        "SELECT workflow_instance_id, COALESCE(graph_node_key, step_key) "
+        "FROM exec_workflow_step WHERE workflow_step_id=?1;",
+        &read,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(read.st, 1, command.workflow_step_id);
+    if (sqlite3_step(read.st) != SQLITE_ROW) {
+        if (error_out) *error_out = "workflow step not found";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    const auto workflow_instance_id = sqlite3_column_int64(read.st, 0);
+    const std::string graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 1));
+    const auto now = NowUtc();
+
+    Statement update;
+    if (!Prepare(db_,
+        "UPDATE exec_workflow_step "
+        "SET output_ref_kind=COALESCE(output_ref_kind, ?2), "
+        "output_ref_id=COALESCE(output_ref_id, ?3) "
+        "WHERE workflow_step_id=?1 "
+        "  AND state IN ('READY','MATERIALIZED','RUNNING','COMPLETED','FAILED') "
+        "  AND (output_ref_kind IS NULL OR output_ref_kind=?2) "
+        "  AND (output_ref_id IS NULL OR output_ref_id=?3);",
+        &update,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, command.workflow_step_id);
+    sqlite3_bind_text(update.st, 2, command.output_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update.st, 3, command.output_ref_id);
+
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error_out) *error_out = "record step output precondition failed";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement insert;
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_step_output("
+        "workflow_instance_id, workflow_step_id, graph_node_key, output_key, data_kind, ref_kind, ref_id, created_at_utc) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) "
+        "ON CONFLICT(workflow_instance_id, graph_node_key, output_key) DO UPDATE SET "
+        "workflow_step_id=CASE WHEN data_kind=excluded.data_kind AND ref_kind=excluded.ref_kind AND ref_id=excluded.ref_id THEN workflow_step_id ELSE workflow_step_id END;",
+        &insert,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, workflow_instance_id);
+    sqlite3_bind_int64(insert.st, 2, command.workflow_step_id);
+    sqlite3_bind_text(insert.st, 3, graph_node_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 4, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 5, command.output_data_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 6, command.output_ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 7, command.output_ref_id);
+    sqlite3_bind_int64(insert.st, 8, now);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement verify;
+    if (!Prepare(db_,
+        "SELECT data_kind, ref_kind, ref_id FROM exec_workflow_step_output "
+        "WHERE workflow_instance_id=?1 AND graph_node_key=?2 AND output_key=?3;",
+        &verify,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(verify.st, 1, workflow_instance_id);
+    sqlite3_bind_text(verify.st, 2, graph_node_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(verify.st, 3, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(verify.st) != SQLITE_ROW
+        || command.output_data_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 0))
+        || command.output_ref_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 1))
+        || command.output_ref_id != sqlite3_column_int64(verify.st, 2)) {
+        if (error_out) *error_out = "step output already exists with incompatible shape";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+bool SqliteWorkflowOrchestrationCommandService::RecordInputBinding(
+    const WorkflowRecordInputBindingCommand& command,
+    std::string* error_out) {
+    if (command.workflow_instance_id <= 0) {
+        if (error_out) *error_out = "workflow_instance_id must be > 0";
+        return false;
+    }
+    if (command.workflow_graph_revision_id <= 0) {
+        if (error_out) *error_out = "workflow_graph_revision_id must be > 0";
+        return false;
+    }
+    if (command.node_key.empty() || command.input_key.empty()) {
+        if (error_out) *error_out = "node_key and input_key are required";
+        return false;
+    }
+    if (command.data_kind.empty() || command.ref_kind.empty() || command.ref_id <= 0) {
+        if (error_out) *error_out = "data_kind, ref_kind, and ref_id are required";
+        return false;
+    }
+
+    if (!Exec(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    const auto now = NowUtc();
+    Statement insert;
+    if (!Prepare(db_,
+        "INSERT INTO exec_workflow_instance_input_binding("
+        "workflow_instance_id, workflow_graph_revision_id, node_key, input_key, data_kind, ref_kind, ref_id, source_kind, created_at_utc) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) "
+        "ON CONFLICT(workflow_instance_id, node_key, input_key) DO UPDATE SET "
+        "workflow_graph_revision_id=CASE WHEN data_kind=excluded.data_kind AND ref_kind=excluded.ref_kind AND ref_id=excluded.ref_id THEN workflow_graph_revision_id ELSE workflow_graph_revision_id END;",
+        &insert,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, command.workflow_instance_id);
+    sqlite3_bind_int64(insert.st, 2, command.workflow_graph_revision_id);
+    sqlite3_bind_text(insert.st, 3, command.node_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 4, command.input_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 5, command.data_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 6, command.ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 7, command.ref_id);
+    if (!command.source_kind.empty()) sqlite3_bind_text(insert.st, 8, command.source_kind.c_str(), -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_text(insert.st, 8, "upstream", -1, SQLITE_STATIC);
+    sqlite3_bind_int64(insert.st, 9, now);
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    Statement verify;
+    if (!Prepare(db_,
+        "SELECT data_kind, ref_kind, ref_id FROM exec_workflow_instance_input_binding "
+        "WHERE workflow_instance_id=?1 AND node_key=?2 AND input_key=?3;",
+        &verify,
+        error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(verify.st, 1, command.workflow_instance_id);
+    sqlite3_bind_text(verify.st, 2, command.node_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(verify.st, 3, command.input_key.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(verify.st) != SQLITE_ROW
+        || command.data_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 0))
+        || command.ref_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 1))
+        || command.ref_id != sqlite3_column_int64(verify.st, 2)) {
+        if (error_out) *error_out = "input binding already exists with incompatible shape";
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+
+    if (!Exec(db_, "COMMIT;", error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
 bool SqliteWorkflowOrchestrationCommandService::MarkStepBlocked(
     const WorkflowMarkStepBlockedCommand& command,
     std::string* error_out) {
@@ -1605,10 +1848,12 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
         return false;
     }
 
+    std::string graph_node_key;
     if (command.parent_workflow_step_id.has_value()) {
         Statement parent;
         if (!Prepare(db_,
-            "SELECT workflow_step_id FROM exec_workflow_step WHERE workflow_instance_id=?1 AND workflow_step_id=?2;",
+            "SELECT workflow_step_id, COALESCE(graph_node_key, step_key) "
+            "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND workflow_step_id=?2;",
             &parent,
             error_out)) {
             Exec(db_, "ROLLBACK;", nullptr);
@@ -1621,6 +1866,7 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
             Exec(db_, "ROLLBACK;", nullptr);
             return false;
         }
+        graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(parent.st, 1));
     }
 
     const auto now = NowUtc();
@@ -1630,7 +1876,7 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
         std::optional<std::int64_t> workflow_step_id;
         Statement existing;
         if (!Prepare(db_,
-            "SELECT workflow_step_id, step_kind, input_ref_kind, input_ref_id "
+            "SELECT workflow_step_id, step_kind, input_ref_kind, input_ref_id, COALESCE(graph_node_key, step_key) "
             "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND step_key=?2;",
             &existing,
             error_out)) {
@@ -1643,9 +1889,11 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
             const std::string existing_kind = reinterpret_cast<const char*>(sqlite3_column_text(existing.st, 1));
             const auto existing_input_kind = ColumnTextOptional(existing.st, 2);
             const auto existing_input_id = ColumnInt64Optional(existing.st, 3);
+            const std::string existing_graph_node_key = reinterpret_cast<const char*>(sqlite3_column_text(existing.st, 4));
             if (existing_kind != step.step_kind
                 || existing_input_kind != step.input_ref_kind
-                || existing_input_id != step.input_ref_id) {
+                || existing_input_id != step.input_ref_id
+                || (!graph_node_key.empty() && existing_graph_node_key != graph_node_key)) {
                 if (error_out) *error_out = "dynamic step key already exists with incompatible shape";
                 Exec(db_, "ROLLBACK;", nullptr);
                 return false;
@@ -1655,8 +1903,8 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
             Statement insert_step;
             if (!Prepare(db_,
                 "INSERT INTO exec_workflow_step("
-                "workflow_instance_id, step_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc) "
-                "VALUES(?1, ?2, ?3, 'READY', ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?10);",
+                "workflow_instance_id, step_key, graph_node_key, step_kind, state, guard_kind, guard_value, priority, attempts, max_attempts, input_ref_kind, input_ref_id, created_at_utc, ready_at_utc) "
+                "VALUES(?1, ?2, ?3, ?4, 'READY', ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?11);",
                 &insert_step,
                 error_out)) {
                 Exec(db_, "ROLLBACK;", nullptr);
@@ -1664,18 +1912,20 @@ bool SqliteWorkflowOrchestrationCommandService::AppendDynamicSteps(
             }
             sqlite3_bind_int64(insert_step.st, 1, command.workflow_instance_id);
             sqlite3_bind_text(insert_step.st, 2, step.step_key.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(insert_step.st, 3, step.step_kind.c_str(), -1, SQLITE_TRANSIENT);
-            if (step.guard_kind.has_value()) sqlite3_bind_text(insert_step.st, 4, step.guard_kind->c_str(), -1, SQLITE_TRANSIENT);
-            else sqlite3_bind_null(insert_step.st, 4);
-            if (step.guard_value.has_value()) sqlite3_bind_text(insert_step.st, 5, step.guard_value->c_str(), -1, SQLITE_TRANSIENT);
+            const auto dynamic_graph_node_key = graph_node_key.empty() ? step.step_key : graph_node_key;
+            sqlite3_bind_text(insert_step.st, 3, dynamic_graph_node_key.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(insert_step.st, 4, step.step_kind.c_str(), -1, SQLITE_TRANSIENT);
+            if (step.guard_kind.has_value()) sqlite3_bind_text(insert_step.st, 5, step.guard_kind->c_str(), -1, SQLITE_TRANSIENT);
             else sqlite3_bind_null(insert_step.st, 5);
-            sqlite3_bind_int(insert_step.st, 6, step.priority);
-            sqlite3_bind_int(insert_step.st, 7, step.max_attempts);
-            if (step.input_ref_kind.has_value()) sqlite3_bind_text(insert_step.st, 8, step.input_ref_kind->c_str(), -1, SQLITE_TRANSIENT);
-            else sqlite3_bind_null(insert_step.st, 8);
-            if (step.input_ref_id.has_value()) sqlite3_bind_int64(insert_step.st, 9, *step.input_ref_id);
+            if (step.guard_value.has_value()) sqlite3_bind_text(insert_step.st, 6, step.guard_value->c_str(), -1, SQLITE_TRANSIENT);
+            else sqlite3_bind_null(insert_step.st, 6);
+            sqlite3_bind_int(insert_step.st, 7, step.priority);
+            sqlite3_bind_int(insert_step.st, 8, step.max_attempts);
+            if (step.input_ref_kind.has_value()) sqlite3_bind_text(insert_step.st, 9, step.input_ref_kind->c_str(), -1, SQLITE_TRANSIENT);
             else sqlite3_bind_null(insert_step.st, 9);
-            sqlite3_bind_int64(insert_step.st, 10, now);
+            if (step.input_ref_id.has_value()) sqlite3_bind_int64(insert_step.st, 10, *step.input_ref_id);
+            else sqlite3_bind_null(insert_step.st, 10);
+            sqlite3_bind_int64(insert_step.st, 11, now);
 
             if (sqlite3_step(insert_step.st) != SQLITE_DONE) {
                 if (error_out) *error_out = sqlite3_errmsg(db_);

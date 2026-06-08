@@ -469,6 +469,125 @@ std::vector<ExecutionJobEventRecord> SqliteExecutionDb::ListJobEvents(std::int64
     return rows;
 }
 
+bool SqliteExecutionDb::RecordJobOutput(
+    const RecordExecutionJobOutputCommand& command,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (command.output_key.empty() || command.data_kind.empty() || command.ref_kind.empty() || command.ref_id <= 0) {
+        if (error_out) *error_out = "output_key, data_kind, ref_kind, and ref_id are required";
+        return false;
+    }
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    Statement insert;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO exec_job_output(job_id, output_key, data_kind, ref_kind, ref_id, created_at_utc) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6) "
+            "ON CONFLICT(job_id, output_key) DO UPDATE SET "
+            "created_at_utc=CASE WHEN data_kind=excluded.data_kind AND ref_kind=excluded.ref_kind AND ref_id=excluded.ref_id THEN created_at_utc ELSE created_at_utc END;",
+            -1,
+            &insert.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(insert.st, 1, command.job_id);
+    sqlite3_bind_text(insert.st, 2, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 3, command.data_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert.st, 4, command.ref_kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert.st, 5, command.ref_id);
+    sqlite3_bind_int64(insert.st, 6, NowUtcMillis());
+    if (sqlite3_step(insert.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Rollback(db_);
+        return false;
+    }
+
+    Statement verify;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT data_kind, ref_kind, ref_id FROM exec_job_output WHERE job_id=?1 AND output_key=?2;",
+            -1,
+            &verify.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Rollback(db_);
+        return false;
+    }
+    sqlite3_bind_int64(verify.st, 1, command.job_id);
+    sqlite3_bind_text(verify.st, 2, command.output_key.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(verify.st) != SQLITE_ROW
+        || command.data_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 0))
+        || command.ref_kind != reinterpret_cast<const char*>(sqlite3_column_text(verify.st, 1))
+        || command.ref_id != sqlite3_column_int64(verify.st, 2)) {
+        if (error_out) *error_out = "job output already exists with incompatible shape";
+        Rollback(db_);
+        return false;
+    }
+
+    return Commit(db_, error_out);
+}
+
+std::vector<ExecutionJobOutputRecord> SqliteExecutionDb::ListJobOutputsForWorkflowStep(
+    std::int64_t workflow_step_id) const {
+    std::vector<ExecutionJobOutputRecord> rows;
+    if (db_ == nullptr || workflow_step_id <= 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "WITH RECURSIVE step_root(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_workflow_step WHERE workflow_step_id=?1 AND job_set_id IS NOT NULL"
+            "), "
+            "job_set_descendants(job_set_id, depth) AS ("
+            "  SELECT job_set_id, 0 FROM step_root "
+            "  UNION ALL "
+            "  SELECT child.job_set_id, job_set_descendants.depth + 1 "
+            "  FROM exec_job_set child "
+            "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
+            "  WHERE job_set_descendants.depth < 64"
+            ") "
+            "SELECT o.job_output_id, o.job_id, o.output_key, o.data_kind, o.ref_kind, o.ref_id, o.created_at_utc "
+            "FROM exec_job_output o "
+            "JOIN exec_job j ON j.job_id=o.job_id "
+            "JOIN job_set_descendants d ON d.job_set_id=j.job_set_id "
+            "ORDER BY o.job_output_id;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, workflow_step_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        ExecutionJobOutputRecord row{};
+        row.job_output_id = sqlite3_column_int64(st.st, 0);
+        row.job_id = sqlite3_column_int64(st.st, 1);
+        row.output_key = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 2));
+        row.data_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 3));
+        row.ref_kind = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 4));
+        row.ref_id = sqlite3_column_int64(st.st, 5);
+        row.created_at_utc = sqlite3_column_int64(st.st, 6);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 std::optional<std::string> SqliteExecutionDb::GetJobInputIni(std::int64_t job_id, std::string* error_out) const {
     const auto job = GetJob(job_id);
     if (!job.has_value()) {

@@ -1532,6 +1532,43 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
                     result_map_event_callback_(line);
                 }
             }
+            const auto mapped_output_ref_kind = mapped.has_value() && !mapped->output_ref_kind.empty()
+                ? mapped->output_ref_kind
+                : (mapped.has_value() ? mapped->result_kind : std::string{});
+            const auto mapped_output_ref_id = mapped.has_value() && mapped->output_ref_id > 0
+                ? mapped->output_ref_id
+                : (mapped.has_value() ? mapped->result_ref_id : 0);
+            if (mapped.has_value()
+                && !mapped->output_key.empty()
+                && !mapped->output_data_kind.empty()
+                && !mapped_output_ref_kind.empty()
+                && mapped_output_ref_id > 0
+                && execution_db_ != nullptr) {
+                std::string output_error;
+                if (!execution_db_->RecordJobOutput(
+                        {
+                            .job_id = static_cast<std::int64_t>(result.job_id),
+                            .output_key = mapped->output_key,
+                            .data_kind = mapped->output_data_kind,
+                            .ref_kind = mapped_output_ref_kind,
+                            .ref_id = mapped_output_ref_id,
+                            .requested_by = "workflow_worker_result_mapper",
+                        },
+                        &output_error)) {
+                    std::ostringstream line;
+                    line << "[execution-job-output-record-failed] job=" << result.job_id
+                         << " worker=" << result.worker_id
+                         << " step=" << context->step.step_key
+                         << " kind=" << context->step.step_kind
+                         << " output_key=" << mapped->output_key
+                         << " output_ref_kind=" << mapped_output_ref_kind
+                         << " output_ref_id=" << mapped_output_ref_id;
+                    if (!output_error.empty()) {
+                        line << " error=" << output_error;
+                    }
+                    EmitDurableEventLine(line.str());
+                }
+            }
             if (!mapped.has_value() && !adapter_error.empty()) {
                 std::ostringstream line;
                 line << "[seedprobe-result-map-failed] job=" << result.job_id

@@ -115,26 +115,6 @@ WorkflowTransitionDecision SeedProbeUniqueTransitionHandler::EvaluateTransition(
         return decision;
     }
 
-    if (context.workflow_kind == "workflow_graph_tasmovie_seedprobe_battle"
-        && context.step_key.size() >= 7
-        && context.step_key.compare(context.step_key.size() - 7, 7, "/Unique") == 0) {
-        if (!context.input_ref_id.has_value() || *context.input_ref_id <= 0) {
-            decision.blocked_reason = "seedprobe_graph_unique_missing_probe_run";
-            return decision;
-        }
-        decision.should_advance = true;
-        decision.spawn_steps.push_back(
-            WorkflowTransitionDecision::DynamicStep{
-                .step_key = "battle_1",
-                .step_kind = "battle_chain",
-                .input_ref_kind = std::string("sp_probe_run"),
-                .input_ref_id = *context.input_ref_id,
-                .priority = 5,
-                .max_attempts = 1,
-            });
-        return decision;
-    }
-
     if (context.step_key != "Grid") {
         decision.should_advance = true;
         return decision;
@@ -500,6 +480,10 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
         payload.result_ref_id = unique_seed_id;
         payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUPERSEDED")));
     }
+    payload.output_key = "unique_input_frames";
+    payload.output_data_kind = "analysis.input_frame_set_id";
+    payload.output_ref_kind = job->program_ref_kind;
+    payload.output_ref_id = job->program_ref_id;
 
     if (matched_expected_delta) {
         int rows_superseded = 0;

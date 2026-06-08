@@ -71,6 +71,10 @@ struct ResultArtifactRef {
 struct ResultMapPayload {
     std::string result_kind;
     std::int64_t result_ref_id = 0;
+    std::string output_key;
+    std::string output_data_kind;
+    std::string output_ref_kind;
+    std::int64_t output_ref_id = 0;
     std::vector<std::string> event_lines;
 };
 

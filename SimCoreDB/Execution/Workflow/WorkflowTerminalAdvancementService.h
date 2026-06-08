@@ -5,7 +5,12 @@
 #include <string>
 
 #include "AdapterChainOrchestrator.h"
+#include "WorkflowGraphRoutingService.h"
 #include "WorkflowOrchestration.h"
+
+namespace simcore::db {
+struct IExecutionDb;
+}
 
 namespace simcore::db::execution::workflow {
 
@@ -25,8 +30,15 @@ class WorkflowTerminalAdvancementService {
 public:
     WorkflowTerminalAdvancementService(
         const AdapterChainOrchestrator* orchestrator,
+        simcore::db::IExecutionDb* execution_db,
         IWorkflowOrchestrationQueryService* query_service,
-        IWorkflowOrchestrationCommandService* command_service);
+        IWorkflowOrchestrationCommandService* command_service,
+        const WorkflowGraphRoutingService* graph_routing_service = nullptr);
+    WorkflowTerminalAdvancementService(
+        const AdapterChainOrchestrator* orchestrator,
+        IWorkflowOrchestrationQueryService* query_service,
+        IWorkflowOrchestrationCommandService* command_service,
+        const WorkflowGraphRoutingService* graph_routing_service = nullptr);
 
     bool AdvanceForTerminalJob(
         std::int64_t job_id,
@@ -42,8 +54,10 @@ public:
 
 private:
     const AdapterChainOrchestrator* orchestrator_ = nullptr;
+    simcore::db::IExecutionDb* execution_db_ = nullptr;
     IWorkflowOrchestrationQueryService* query_service_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;
+    const WorkflowGraphRoutingService* graph_routing_service_ = nullptr;
 };
 
 } // namespace simcore::db::execution::workflow

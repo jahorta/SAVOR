@@ -48,6 +48,18 @@ public:
         terminal_calls.push_back(command);
         return true;
     }
+    bool RecordStepOutput(
+        const simcore::db::execution::workflow::WorkflowRecordStepOutputCommand& command,
+        std::string*) override {
+        step_output_calls.push_back(command);
+        return true;
+    }
+    bool RecordInputBinding(
+        const simcore::db::execution::workflow::WorkflowRecordInputBindingCommand& command,
+        std::string*) override {
+        input_binding_calls.push_back(command);
+        return true;
+    }
     bool MarkStepBlocked(
         const simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand& command,
         std::string*) override {
@@ -75,6 +87,8 @@ public:
 
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepMaterializedCommand> materialized_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepTerminalCommand> terminal_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowRecordStepOutputCommand> step_output_calls;
+    std::vector<simcore::db::execution::workflow::WorkflowRecordInputBindingCommand> input_binding_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepBlockedCommand> blocked_calls;
     std::vector<simcore::db::execution::workflow::WorkflowMarkStepReadyCommand> ready_calls;
     std::vector<simcore::db::execution::workflow::WorkflowAppendDynamicStepsCommand> dynamic_step_calls;

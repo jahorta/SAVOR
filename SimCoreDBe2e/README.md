@@ -39,6 +39,6 @@ Optional:
   - seeds a starting savestate in StateDB,
   - seeds seedprobe spec rows in AuthoringDB,
   - creates `sp_probe_set` + `sp_probe_run` rows in AnalysisDB,
-  - builds/validates the `SEED_PROBE_CHAIN` workflow from definition and creates an execution workflow instance via API,
+  - saves an authored workflow graph revision and creates a `workflow_graph` execution instance via API,
   - runs `DBWorkflowWorkerCoordinator` with one worker,
   - polls UiReadDB subscription state while coordinator loop is active.

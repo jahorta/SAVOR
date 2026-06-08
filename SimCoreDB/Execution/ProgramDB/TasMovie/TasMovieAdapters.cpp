@@ -164,24 +164,7 @@ public:
     WorkflowTransitionDecision EvaluateTransition(const WorkflowTransitionContext& context) const override {
         WorkflowTransitionDecision decision{};
         if (context.workflow_kind.rfind("workflow_graph", 0) == 0 && context.step_key != "TasMovie") {
-            if (context.workflow_kind == "workflow_graph_tasmovie") {
-                decision.should_advance = true;
-                return decision;
-            }
-            if (!context.output_ref_id.has_value() || *context.output_ref_id <= 0) {
-                decision.blocked_reason = "tasmovie_graph_missing_savestate_output";
-                return decision;
-            }
             decision.should_advance = true;
-            decision.spawn_steps.push_back(
-                WorkflowTransitionDecision::DynamicStep{
-                    .step_key = "probe_1",
-                    .step_kind = "seed_probe_chain",
-                    .input_ref_kind = std::string("state.savestate"),
-                    .input_ref_id = *context.output_ref_id,
-                    .priority = 10,
-                    .max_attempts = 1,
-                });
             return decision;
         }
 
@@ -659,6 +642,10 @@ public:
         AppendJobCompleted(execution_db_, job_id, "SUCCEEDED", &payload.event_lines);
         payload.result_kind = "state.tasmovie.savestate";
         payload.result_ref_id = savestate_id;
+        payload.output_key = "savestate";
+        payload.output_data_kind = "state.savestate_id";
+        payload.output_ref_kind = "state.savestate";
+        payload.output_ref_id = savestate_id;
         std::ostringstream line;
         line << "[tasmovie-result] job=" << job_id
              << " savestate_id=" << savestate_id

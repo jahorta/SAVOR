@@ -612,6 +612,12 @@ public:
 
         AppendJobCompleted(execution_db_, job_id, failed ? "FAILED" : "SUCCEEDED", &payload.event_lines);
         payload.result_ref_id = probe.has_value() ? probe->context_probe_id : 0;
+        if (!failed && payload.result_ref_id > 0) {
+            payload.output_key = "battle_context";
+            payload.output_data_kind = kContextProbeRefKind;
+            payload.output_ref_kind = kContextProbeRefKind;
+            payload.output_ref_id = payload.result_ref_id;
+        }
         payload.event_lines.push_back("[battle-context-probe-result] job=" + std::to_string(job_id)
             + " context_probe_id=" + std::to_string(probe.has_value() ? probe->context_probe_id : 0)
             + " status=" + (failed ? "FAILED" : "SUCCEEDED"));
@@ -640,7 +646,9 @@ public:
             decision.blocked_reason = "db_unavailable";
             return decision;
         }
-        if (context.workflow_kind.rfind("workflow_graph", 0) == 0 && context.step_key == "battle_1") {
+        if (context.output_ref_id.has_value()
+            && *context.output_ref_id > 0
+            && (!context.output_ref_kind.has_value() || *context.output_ref_kind == kContextProbeRefKind)) {
             if (!context.output_ref_id.has_value()
                 || *context.output_ref_id <= 0
                 || (context.output_ref_kind.has_value() && *context.output_ref_kind != kContextProbeRefKind)) {
