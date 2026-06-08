@@ -42,11 +42,11 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName("SoaSimQt");
 
     initializeDatabase();
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+    MainWindow window;
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&window]() {
+        window.shutdownCoordinator();
         soasimqt2::SimCoreDbRuntime::instance().stop();
     });
-
-    MainWindow window;
     window.show();
     return app.exec();
 }

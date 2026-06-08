@@ -88,8 +88,14 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    shutdownCoordinator();
+}
+
+void MainWindow::shutdownCoordinator()
+{
     statusBarRefreshTimer_.stop();
     if (coordinatorController_) {
+        coordinatorController_->stopCoordinator();
         disconnect(coordinatorController_, nullptr, this, nullptr);
     }
 }
