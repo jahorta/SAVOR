@@ -7,6 +7,10 @@
 #include "SeedProbeProjector.h"
 #include "ProjectorContract.h"
 
+#include "../../Execution/Workflow/WorkflowProjector.h"
+
+#include <cstdlib>
+
 namespace simcore::db::uiread::projectors {
 
 UiOutboxRelayCoordinator::UiOutboxRelayCoordinator(sqlite3* db)
@@ -43,6 +47,7 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
 
     JobProjector job_projector(db_);
     BattleProjector battle_projector(db_);
+    execution::workflow::WorkflowProjector workflow_projector(db_);
 
     const auto project_jobs = [&job_projector](const events::EventEnvelope&, std::string* handler_error) {
         return job_projector.ProjectAll(handler_error);
@@ -50,22 +55,46 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
     const auto project_battles = [&battle_projector](const events::EventEnvelope&, std::string* handler_error) {
         return battle_projector.ProjectAll(handler_error);
     };
+    const auto project_jobs_and_battles = [&job_projector, &battle_projector](
+        const events::EventEnvelope&,
+        std::string* handler_error) {
+        if (!job_projector.ProjectAll(handler_error)) {
+            return false;
+        }
+        return battle_projector.ProjectAll(handler_error);
+    };
+    const auto project_workflow_and_jobs = [&workflow_projector, &job_projector](
+        const events::EventEnvelope& envelope,
+        std::string* handler_error) {
+        const auto workflow_instance_id = static_cast<std::int64_t>(
+            std::strtoll(envelope.aggregate_id.c_str(), nullptr, 10));
+        if (workflow_instance_id <= 0) {
+            if (handler_error != nullptr) {
+                *handler_error = "aggregate_id must parse to workflow_instance_id";
+            }
+            return false;
+        }
+        if (!workflow_projector.ProjectInstance(workflow_instance_id, handler_error)) {
+            return false;
+        }
+        return job_projector.ProjectAll(handler_error);
+    };
 
     const std::vector<events::OutboxRelayDispatchBinding> bindings{
         { { "Execution.JobSetCreated.v1", 1 }, project_jobs },
         { { "Execution.JobQueued.v1", 1 }, project_jobs },
-        { { "Execution.JobClaimed.v1", 1 }, project_battles },
-        { { "Execution.JobLeaseRenewed.v1", 1 }, project_battles },
-        { { "Execution.JobProgressed.v1", 1 }, project_battles },
-        { { "Execution.JobCompleted.v1", 1 }, project_battles },
-        { { "Execution.JobEventArchived.v1", 1 }, project_battles },
-        { { "Execution.JobRestored.v1", 1 }, project_battles },
-        { { "Execution.WorkflowInstanceCreated.v1", 1 }, project_jobs },
-        { { "Execution.WorkflowStepReady.v1", 1 }, project_jobs },
-        { { "Execution.WorkflowStepMaterialized.v1", 1 }, project_jobs },
-        { { "Execution.WorkflowStepCompleted.v1", 1 }, project_jobs },
-        { { "Execution.WorkflowStepFailed.v1", 1 }, project_jobs },
-        { { "Execution.WorkflowInstanceCompleted.v1", 1 }, project_jobs },
+        { { "Execution.JobClaimed.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobLeaseRenewed.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobProgressed.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobCompleted.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobEventArchived.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobRestored.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.WorkflowInstanceCreated.v1", 1 }, project_workflow_and_jobs },
+        { { "Execution.WorkflowStepReady.v1", 1 }, project_workflow_and_jobs },
+        { { "Execution.WorkflowStepMaterialized.v1", 1 }, project_workflow_and_jobs },
+        { { "Execution.WorkflowStepCompleted.v1", 1 }, project_workflow_and_jobs },
+        { { "Execution.WorkflowStepFailed.v1", 1 }, project_workflow_and_jobs },
+        { { "Execution.WorkflowInstanceCompleted.v1", 1 }, project_workflow_and_jobs },
     };
 
     return RelayWithConfig(

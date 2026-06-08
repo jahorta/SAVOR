@@ -205,8 +205,6 @@ void CoordinatorController::setTargetWorkers(int targetWorkers)
     persistInt(kTargetWorkersKey, targetWorkers_);
     if (coordinator_) {
         coordinator_->SetDesiredWorkerCount(static_cast<size_t>(targetWorkers_));
-        updateSnapshotCache();
-        emit snapshotChanged();
     }
     emit stateChanged();
 }

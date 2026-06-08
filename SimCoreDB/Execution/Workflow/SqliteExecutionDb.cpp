@@ -1096,7 +1096,7 @@ bool SqliteExecutionDb::RenewExecutionJobLease(
         "UPDATE exec_job "
             "SET lease_expires_at_utc=?1 "
             "WHERE job_id=?2 "
-            "AND state='QUEUED' "
+            "AND state IN ('QUEUED','RUNNING') "
             "AND claimed_by_token=?3 "
             "AND COALESCE(lease_expires_at_utc, 0) > ?4;",
         -1,
@@ -1135,8 +1135,8 @@ bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
     Statement st;
     if (sqlite3_prepare_v2(db_,
         "UPDATE exec_job "
-            "SET claimed_by_token=NULL, lease_expires_at_utc=NULL "
-            "WHERE state='QUEUED' "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL "
+            "WHERE state IN ('QUEUED','RUNNING') "
             "AND claimed_by_token IS NOT NULL "
             "AND claimed_by_token<>'' "
             "AND COALESCE(lease_expires_at_utc, 0) <= ?1;",

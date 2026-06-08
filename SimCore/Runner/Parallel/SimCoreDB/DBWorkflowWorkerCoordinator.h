@@ -277,6 +277,8 @@ private:
     simcore::db::IExecutionDb* execution_db_ = nullptr;
     simcore::db::IStateDb* state_db_ = nullptr;
     DBWorkflowWorkerCoordinatorConfig worker_cfg_{};
+    std::atomic<size_t> desired_worker_count_{ 1 };
+    std::atomic<size_t> worker_slot_count_{ 0 };
     CoordinatorIntegrationConfig integration_cfg_{};
     std::function<ScheduledJobSet(const WorkflowReadyStep&)> schedule_ready_step_fn_;
     StepInputAggregationService input_aggregation_service_;

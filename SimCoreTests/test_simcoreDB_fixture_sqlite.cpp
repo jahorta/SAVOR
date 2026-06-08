@@ -1677,13 +1677,88 @@ VALUES(1702, 1701, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim', 5, 'QUEUED', 0, 3
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=1702;",
+        "SELECT state, claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=1702;",
         -1,
         &st,
         nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
-    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "worker-claim-regression");
-    EXPECT_NE(sqlite3_column_type(st, 1), SQLITE_NULL);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "QUEUED");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "worker-claim-regression");
+    EXPECT_NE(sqlite3_column_type(st, 2), SQLITE_NULL);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dRunningExecutionJobLeasesRenewAndExpireBackToQueued) {
+    using namespace simcore::db::execution::jobs;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1759, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1761, 7, 'stage3d-running-lease', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1760, 1759, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1761, 8, 0, 2, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1762, 1761, 7, 1, 'seed_probe', 33, 'fp-stage3d-running-lease', 5, 'QUEUED', 0, 3, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-running-lease", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, 1762);
+
+    auto* job_commands = execution_db.JobCommandService();
+    ASSERT_NE(job_commands, nullptr);
+    ASSERT_TRUE(job_commands->AppendLifecycleEvent(
+        {
+            .kind = JobLifecycleEventKind::JobClaimed,
+            .job_id = 1762,
+            .requested_by = "test-dispatch",
+        },
+        &err))
+        << err;
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT state, claimed_by_token, started_at_utc FROM exec_job WHERE job_id=1762;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "RUNNING");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "worker-running-lease");
+    EXPECT_NE(sqlite3_column_type(st, 2), SQLITE_NULL);
+    sqlite3_finalize(st);
+
+    bool renewed = false;
+    ASSERT_TRUE(execution_db.RenewExecutionJobLease(1762, "worker-running-lease", 30000, &renewed, &err)) << err;
+    EXPECT_TRUE(renewed);
+
+    ASSERT_TRUE(ExecSql(db_, "UPDATE exec_job SET lease_expires_at_utc=1 WHERE job_id=1762;"));
+    int rows_requeued = 0;
+    ASSERT_TRUE(execution_db.RequeueExpiredExecutionLeases(&rows_requeued, &err)) << err;
+    EXPECT_EQ(rows_requeued, 1);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT state, claimed_by_token, lease_expires_at_utc, started_at_utc FROM exec_job WHERE job_id=1762;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "QUEUED");
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
+    EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
+    EXPECT_EQ(sqlite3_column_type(st, 3), SQLITE_NULL);
     sqlite3_finalize(st);
 }
 
@@ -4370,6 +4445,76 @@ TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateStateDatabaseForArtifact
     ASSERT_EQ(page.items.size(), 1);
     EXPECT_EQ(page.items.front().artifact_id, artifact_id);
     EXPECT_EQ(page.items.front().filename, "attached-source.sav");
+
+    service.Stop();
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateExecutionDatabaseForWorkflowSummary) {
+    namespace migrations = simcore::db::migrations;
+    namespace workflow = simcore::db::execution::workflow;
+
+    const auto separate_root = temp_root_ / "separate-workflow";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+
+    simcore::db::DbConfigPaths config_paths{};
+    config_paths.execution_db_path = separate_root / "execution.sqlite";
+    config_paths.state_db_path = separate_root / "state.sqlite";
+    config_paths.analysis_db_path = separate_root / "analysis.sqlite";
+    config_paths.authoring_db_path = separate_root / "authoring.sqlite";
+    config_paths.ui_read_db_path = separate_root / "uiread.sqlite";
+    config_paths.archive_db_path = separate_root / "archive.sqlite";
+
+    simcore::db::core::DBService service(
+        config_paths,
+        migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+
+    std::string err;
+    ASSERT_TRUE(service.Start(&err)) << err;
+
+    auto* execution_db = service.ExecutionDb();
+    auto* ui_read_db = service.UiReadDb();
+    ASSERT_NE(execution_db, nullptr);
+    ASSERT_NE(ui_read_db, nullptr);
+
+    workflow::WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "workflow_graph";
+    create.root_scope_kind = "manual";
+    create.created_by = "test";
+    create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+    create.steps.push_back({
+        .step_key = "Manual",
+        .step_kind = "test.manual",
+        .priority = 1,
+        .max_attempts = 1,
+    });
+
+    std::int64_t workflow_instance_id = 0;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(
+        create,
+        &workflow_instance_id,
+        &err))
+        << err;
+
+    ASSERT_TRUE(service.RunUiReadProjectionOnce(&err)) << err;
+
+    simcore::db::UiWorkflowInstanceListQuery query{};
+    query.limit = 10;
+    const auto page = ui_read_db->ListWorkflowInstances(query);
+    const auto instance_it = std::find_if(
+        page.items.begin(),
+        page.items.end(),
+        [workflow_instance_id](const auto& row) {
+            return row.workflow_instance_id == workflow_instance_id;
+        });
+    ASSERT_NE(instance_it, page.items.end());
+    EXPECT_EQ(instance_it->workflow_kind, "workflow_graph");
+    EXPECT_EQ(instance_it->state, "RUNNING");
+
+    const auto detail = ui_read_db->GetWorkflowDetail(workflow_instance_id);
+    ASSERT_TRUE(detail.has_value());
+    ASSERT_EQ(detail->steps.size(), 1u);
+    EXPECT_EQ(detail->steps.front().step_key, "Manual");
+    EXPECT_EQ(detail->steps.front().state, "READY");
 
     service.Stop();
 }

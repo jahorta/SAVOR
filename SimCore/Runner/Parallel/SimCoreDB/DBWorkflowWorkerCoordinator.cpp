@@ -439,6 +439,7 @@ DBWorkflowWorkerCoordinator::DBWorkflowWorkerCoordinator(
     : execution_db_(execution_db)
     , state_db_(state_db)
     , worker_cfg_(std::move(worker_cfg))
+    , desired_worker_count_(std::max<size_t>(1, worker_cfg_.desired_workers))
     , integration_cfg_(integration_cfg)
     , schedule_ready_step_fn_(ResolveWorkflowScheduleFn(
         execution_db,
@@ -488,10 +489,11 @@ void DBWorkflowWorkerCoordinator::Start() {
     job_materialization_service_.ResetForStart();
 
     {
+        const auto desired_workers = desired_worker_count_.load(std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(workers_mtx_);
         workers_.clear();
-        workers_.reserve(worker_cfg_.desired_workers);
-        for (size_t i = 0; i < worker_cfg_.desired_workers; ++i) {
+        workers_.reserve(desired_workers);
+        for (size_t i = 0; i < desired_workers; ++i) {
             auto slot = std::make_unique<WorkerSlot>();
             slot->id = i;
             slot->worker = std::make_unique<simcore::ProcessWorker>();
@@ -504,6 +506,7 @@ void DBWorkflowWorkerCoordinator::Start() {
             RegisterWorkerSlotTelemetry(*slot);
             workers_.push_back(std::move(slot));
         }
+        worker_slot_count_.store(workers_.size(), std::memory_order_relaxed);
     }
 
     progress_drainer_thread_ = std::thread([this]() { DrainProgressLoop(); });
@@ -558,6 +561,7 @@ void DBWorkflowWorkerCoordinator::Stop() {
             StopWorkerSlot(*slot);
         }
         workers_.clear();
+        worker_slot_count_.store(0, std::memory_order_relaxed);
     }
 }
 
@@ -574,12 +578,9 @@ bool DBWorkflowWorkerCoordinator::IsPaused() const {
 
 void DBWorkflowWorkerCoordinator::SetDesiredWorkerCount(size_t desired_workers) {
     const size_t clamped_workers = std::max<size_t>(1, desired_workers);
-    {
-        std::lock_guard<std::mutex> lock(workers_mtx_);
-        if (worker_cfg_.desired_workers == clamped_workers) {
-            return;
-        }
-        worker_cfg_.desired_workers = clamped_workers;
+    const size_t previous = desired_worker_count_.exchange(clamped_workers, std::memory_order_relaxed);
+    if (previous == clamped_workers) {
+        return;
     }
     queue_cv_.notify_all();
 }
@@ -772,6 +773,23 @@ bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, 
         std::lock_guard<std::mutex> worker_lock(workers_mtx_);
         dispatched_job_context_by_id_.erase(static_cast<std::uint64_t>(job_id));
         return false;
+    }
+    if (execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr) {
+        std::string error;
+        if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
+                {
+                    .kind = simcore::db::execution::jobs::JobLifecycleEventKind::JobClaimed,
+                    .job_id = job_id,
+                    .requested_by = "workflow_dispatch_coordinator",
+                },
+                &error)) {
+            std::ostringstream line;
+            line << "[workflow-job-claim-persist-failed] job=" << job_id;
+            if (!error.empty()) {
+                line << " error=" << error;
+            }
+            EmitDurableEventLine(line.str());
+        }
     }
     std::lock_guard<std::mutex> worker_lock(workers_mtx_);
     if (worker_idx < workers_.size()) {
@@ -970,8 +988,7 @@ std::optional<std::string> DBWorkflowWorkerCoordinator::PrepareWorkerSavestatePa
 }
 
 size_t DBWorkflowWorkerCoordinator::ActiveWorkerCount() const {
-    std::lock_guard<std::mutex> lock(workers_mtx_);
-    return workers_.size();
+    return worker_slot_count_.load(std::memory_order_relaxed);
 }
 
 void DBWorkflowWorkerCoordinator::SetProgressCallback(ProgressCallback callback) {
@@ -1041,7 +1058,6 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
 }
 
 std::vector<WorkerSnapshot> DBWorkflowWorkerCoordinator::SnapshotWorkers() const {
-    std::lock_guard<std::mutex> lock(workers_mtx_);
     return worker_status_.GetClusterSnapshot();
 }
 
@@ -1545,10 +1561,11 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
 void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
     std::vector<std::thread> completed_startup_threads;
     std::unique_lock<std::mutex> lock(workers_mtx_);
+    const auto desired_workers = desired_worker_count_.load(std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
     const auto max_start_attempts = std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts);
     const auto max_concurrent_starts = std::max<std::uint32_t>(1u, worker_cfg_.max_concurrent_worker_starts);
-    while (workers_.size() < worker_cfg_.desired_workers) {
+    while (workers_.size() < desired_workers) {
         const auto worker_idx = workers_.size();
         auto slot = std::make_unique<WorkerSlot>();
         slot->id = worker_idx;
@@ -1561,6 +1578,7 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         }
         workers_.push_back(std::move(slot));
     }
+    worker_slot_count_.store(workers_.size(), std::memory_order_relaxed);
 
     for (auto& slot : workers_) {
         if (!slot->startup_in_progress && slot->startup_thread.joinable()) {
@@ -1627,7 +1645,7 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         }
     }
 
-    while (workers_.size() > worker_cfg_.desired_workers) {
+    while (workers_.size() > desired_workers) {
         auto& slot = workers_.back();
         if (slot->startup_in_progress || slot->startup_thread.joinable() || slot->in_flight_job_id.has_value()) {
             break;
@@ -1635,6 +1653,7 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
         StopWorkerSlot(*slot);
         workers_.pop_back();
     }
+    worker_slot_count_.store(workers_.size(), std::memory_order_relaxed);
 
     lock.unlock();
     for (auto& thread : completed_startup_threads) {
