@@ -202,8 +202,6 @@ void JobsPage::createWidgets()
     inputIniActions->addStretch();
     inputIniLayout->addLayout(inputIniActions);
     inputIniLayout->addWidget(payloadText_, 1);
-    progressText_ = createReadOnlyTextEdit();
-    resultsText_ = createReadOnlyTextEdit();
     QWidget* artifactsTab = new QWidget(inspectorTabs_);
     QVBoxLayout* artifactsLayout = new QVBoxLayout(artifactsTab);
     artifactsTable_ = new ArtifactsTableView(artifactsTab);
@@ -214,8 +212,6 @@ void JobsPage::createWidgets()
     inspectorTabs_->addTab(eventsText_, QStringLiteral("Events"));
     inspectorTabs_->addTab(inputIniTab, QStringLiteral("Input INI"));
     inspectorTabs_->addTab(artifactsTab, QStringLiteral("Artifacts"));
-    inspectorTabs_->addTab(progressText_, QStringLiteral("Progress"));
-    inspectorTabs_->addTab(resultsText_, QStringLiteral("Results"));
     inspectorLayout->addWidget(inspectorTabs_, 1);
 
     splitter->addWidget(tablePanel); splitter->addWidget(inspectorPanel); splitter->setStretchFactor(0, 2); splitter->setStretchFactor(1, 1);
@@ -429,16 +425,14 @@ void JobsPage::refreshModel()
 
     std::vector<JobsTableModel::Row> rows;
     rows.reserve(state.page.items.size());
-    for (const JobLite& job : state.page.items) {
+    for (const simcore::db::UiJobSummary& job : state.page.items) {
         rows.push_back(JobsTableModel::Row{
             job.job_id,
             job.job_set_id,
-            job.savestate_id,
             state.programNames.value(job.program_kind, QStringLiteral("kind %1").arg(job.program_kind)),
             QString::fromStdString(job.state),
             job.attempts,
-            QDateTime::fromSecsSinceEpoch(job.queued_at).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
-            state.progressSummary.value(job.job_id, QStringLiteral("..."))
+            QDateTime::fromSecsSinceEpoch(job.queued_at_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
         });
     }
     jobsModel_->setRows(rows);
@@ -463,12 +457,12 @@ void JobsPage::refreshModel()
 void JobsPage::updateInspector()
 {
     const auto& state = controller_->viewState();
-    const JobLite* selected = nullptr;
-    for (const JobLite& job : state.page.items) if (job.job_id == state.selectedJobId) { selected = &job; break; }
+    const simcore::db::UiJobSummary* selected = nullptr;
+    for (const simcore::db::UiJobSummary& job : state.page.items) if (job.job_id == state.selectedJobId) { selected = &job; break; }
     if (!selected) {
         inspectorSummary_->setText(QStringLiteral("Select a job to inspect details."));
         overviewPriorityValue_->setText(QStringLiteral("--")); overviewQueuedValue_->setText(QStringLiteral("--")); overviewSelectionHint_->setText(QStringLiteral("No jobs match the current filters."));
-        eventsText_->clear(); payloadText_->clear(); progressText_->clear(); resultsText_->clear(); artifactsModel_->setArtifacts({});
+        eventsText_->clear(); payloadText_->clear(); artifactsModel_->setArtifacts({});
         loadInputIniButton_->setEnabled(false);
         return;
     }
@@ -476,18 +470,16 @@ void JobsPage::updateInspector()
     inspectorSummary_->setText(QStringLiteral("Job %1 | Set %2 | ProgramKind %3 | State %4")
         .arg(selected->job_id).arg(selected->job_set_id).arg(state.programNames.value(selected->program_kind, QStringLiteral("kind %1").arg(selected->program_kind))).arg(QString::fromStdString(selected->state)));
     overviewPriorityValue_->setText(QString::number(selected->priority));
-    overviewQueuedValue_->setText(QDateTime::fromSecsSinceEpoch(selected->queued_at).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    overviewSelectionHint_->setText(QStringLiteral("Attempts: %1\nProgress: %2").arg(selected->attempts).arg(state.progressSummary.value(selected->job_id, QStringLiteral("..."))));
+    overviewQueuedValue_->setText(QDateTime::fromSecsSinceEpoch(selected->queued_at_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    overviewSelectionHint_->setText(QStringLiteral("Attempts: %1").arg(selected->attempts));
 
     const ItemViewScrollSnapshot artifactsScrollSnapshot = captureItemViewScrollSnapshot(artifactsTable_);
     const ScrollAreaScrollSnapshot eventsScrollSnapshot = captureScrollAreaScrollSnapshot(eventsText_);
     const ScrollAreaScrollSnapshot payloadScrollSnapshot = captureScrollAreaScrollSnapshot(payloadText_);
-    const ScrollAreaScrollSnapshot progressScrollSnapshot = captureScrollAreaScrollSnapshot(progressText_);
-    const ScrollAreaScrollSnapshot resultsScrollSnapshot = captureScrollAreaScrollSnapshot(resultsText_);
 
     QStringList eventLines;
-    for (const JobEventLite& event : state.detail.events) {
-        eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.ts).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(event.payload_preview.has_value() ? QStringLiteral("  %1").arg(QString::fromStdString(*event.payload_preview)) : QString());
+    for (const simcore::db::ExecutionJobEventRecord& event : state.detail.events) {
+        eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.event_ts_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(!event.message.empty() ? QStringLiteral("  %1").arg(QString::fromStdString(event.message)) : QString());
     }
     eventsText_->setPlainText(eventLines.join('\n'));
     if (state.detail.inputIniLoading) {
@@ -498,13 +490,9 @@ void JobsPage::updateInspector()
         payloadText_->setPlainText(QStringLiteral("Input INI is loaded on request."));
     }
     loadInputIniButton_->setEnabled(!state.actionsBusy && !state.detail.inputIniLoading && state.selectedJobId > 0);
-    progressText_->setPlainText(state.detail.decodedProgressText);
-    resultsText_->setPlainText(state.detail.resultsText);
     artifactsModel_->setArtifacts(state.detail.artifacts);
     restoreScrollAreaScrollSnapshot(eventsText_, eventsScrollSnapshot);
     restoreScrollAreaScrollSnapshot(payloadText_, payloadScrollSnapshot);
-    restoreScrollAreaScrollSnapshot(progressText_, progressScrollSnapshot);
-    restoreScrollAreaScrollSnapshot(resultsText_, resultsScrollSnapshot);
     restoreItemViewScrollSnapshot(artifactsTable_, artifactsScrollSnapshot);
 
 }

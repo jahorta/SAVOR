@@ -7,9 +7,9 @@
 #include <QtCore/QObject>
 #include <QtCore/QString>
 
-#include "DB/Querying/DataService.h"
-#include "DB/Querying/PagedQuery.h"
-#include "DB/Querying/JobEventListDTO.h"
+#include "DB/SimCoreDbServiceResult.h"
+#include "Execution/IExecutionDb.h"
+#include "UIRead/IUiReadDb.h"
 
 #include <optional>
 #include <vector>
@@ -26,10 +26,8 @@ public:
     struct JobDetailState {
         qint64 jobId = 0;
         QString inputIniText;
-        QString resultsText;
-        QString decodedProgressText;
-        std::vector<JobEventLite> events;
-        std::vector<simcore::db::ArtifactRefLite> artifacts;
+        std::vector<simcore::db::ExecutionJobEventRecord> events;
+        std::vector<simcore::db::UiJobArtifact> artifacts;
         bool loading = false;
         bool loaded = false;
         bool inputIniLoading = false;
@@ -38,8 +36,7 @@ public:
 
     struct ViewState {
         QHash<int, QString> programNames;
-        Page<JobLite> page;
-        QHash<qint64, QString> progressSummary;
+        simcore::db::UiReadPage<simcore::db::UiJobSummary> page;
         JobDetailState detail;
         QString errorMessage;
         QString infoMessage;
@@ -49,7 +46,7 @@ public:
         int refreshSeconds = 2;
         int pageLimit = 100;
         QDateTime lastRefresh;
-        JobsListScope scope{};
+        simcore::db::UiReadJobListQuery scope{};
         qint64 selectedJobId = 0;
     };
 
@@ -75,21 +72,15 @@ signals:
     void stateChanged();
 
 private:
-    using ProgramKindsResult = simcore::db::DbResult<std::vector<simcore::db::ProgramKindKV>>;
-    struct JobPageBundle {
-        Page<JobLite> page;
-        QHash<qint64, QString> progressSummary;
-    };
-    using JobPageResult = simcore::db::DbResult<JobPageBundle>;
+    using ProgramKindsResult = soasimqt2::db::ServiceResult<std::vector<simcore::db::UiProgramKind>>;
+    using JobPageResult = soasimqt2::db::ServiceResult<simcore::db::UiReadPage<simcore::db::UiJobSummary>>;
     struct JobDetailBundle {
-        QString resultsText;
-        QString decodedProgressText;
-        std::vector<JobEventLite> events;
-        std::vector<simcore::db::ArtifactRefLite> artifacts;
+        std::vector<simcore::db::ExecutionJobEventRecord> events;
+        std::vector<simcore::db::UiJobArtifact> artifacts;
     };
-    using JobDetailResult = simcore::db::DbResult<JobDetailBundle>;
-    using InputIniResult = simcore::db::DbResult<QString>;
-    using VoidResult = simcore::db::DbResult<void>;
+    using JobDetailResult = soasimqt2::db::ServiceResult<JobDetailBundle>;
+    using InputIniResult = soasimqt2::db::ServiceResult<QString>;
+    using VoidResult = soasimqt2::db::ServiceResult<void>;
 
     enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, Cancel, Restart };
 
@@ -99,7 +90,7 @@ private:
     void setBusy(Operation operation, bool busy);
     bool canAutoRefresh() const;
     bool anyWorkInFlight() const;
-    const JobLite* selectedJob() const;
+    const simcore::db::UiJobSummary* selectedJob() const;
     QString programKindLabel(int id) const;
     void emitStateChanged();
     void loadSettings();
@@ -107,10 +98,10 @@ private:
     void syncFetchStateFromView();
 
     ViewState state_;
-    JobsListScope fetchScope_{};
+    simcore::db::UiReadJobListQuery fetchScope_{};
     int fetchPageLimit_ = 100;
-    std::optional<KeysetCursor> before_;
-    std::optional<KeysetCursor> after_;
+    std::optional<simcore::db::UiReadListCursor> before_;
+    std::optional<simcore::db::UiReadListCursor> after_;
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;

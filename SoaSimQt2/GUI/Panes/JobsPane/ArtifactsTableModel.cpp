@@ -29,7 +29,7 @@ QVariant ArtifactsTableModel::data(const QModelIndex& index, int role) const
     if (role == Qt::TextAlignmentRole && (index.column() == 1 || index.column() == 2)) return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
     if (role != Qt::DisplayRole) return {};
     switch (index.column()) {
-    case 0: return QString::fromStdString(artifact.role);
+    case 0: return QString::fromStdString(artifact.role_kind);
     case 1: return artifact.artifact_id;
     case 2: return QString::number(static_cast<qulonglong>(artifact.size_bytes));
     case 3: return QString::fromStdString(artifact.filename);
@@ -37,7 +37,7 @@ QVariant ArtifactsTableModel::data(const QModelIndex& index, int role) const
     }
 }
 
-void ArtifactsTableModel::setArtifacts(const std::vector<simcore::db::ArtifactRefLite>& artifacts)
+void ArtifactsTableModel::setArtifacts(const std::vector<simcore::db::UiJobArtifact>& artifacts)
 {
     int targetRow = 0;
     while (targetRow < static_cast<int>(artifacts.size())) {
@@ -48,7 +48,7 @@ void ArtifactsTableModel::setArtifacts(const std::vector<simcore::db::ArtifactRe
             continue;
         }
 
-        auto existingIt = std::find_if(artifacts_.begin() + std::min(targetRow, static_cast<int>(artifacts_.size())), artifacts_.end(), [targetArtifactId](const simcore::db::ArtifactRefLite& artifact) {
+        auto existingIt = std::find_if(artifacts_.begin() + std::min(targetRow, static_cast<int>(artifacts_.size())), artifacts_.end(), [targetArtifactId](const simcore::db::UiJobArtifact& artifact) {
             return artifact.artifact_id == targetArtifactId;
         });
 
@@ -99,10 +99,10 @@ void ArtifactsTableModel::setArtifacts(const std::vector<simcore::db::ArtifactRe
     }
 }
 
-bool ArtifactsTableModel::artifactAffectsDisplay(const simcore::db::ArtifactRefLite& lhs, const simcore::db::ArtifactRefLite& rhs)
+bool ArtifactsTableModel::artifactAffectsDisplay(const simcore::db::UiJobArtifact& lhs, const simcore::db::UiJobArtifact& rhs)
 {
     return lhs.artifact_id != rhs.artifact_id
-        || lhs.role != rhs.role
+        || lhs.role_kind != rhs.role_kind
         || lhs.filename != rhs.filename
         || lhs.size_bytes != rhs.size_bytes;
 }

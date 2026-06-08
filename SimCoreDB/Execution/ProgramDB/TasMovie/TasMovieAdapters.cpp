@@ -37,6 +37,10 @@ TasMovieBlueprintConfig ParseBlueprint(const std::string& input_ini) {
     const auto ini = IniDoc::parse(input_ini);
     TasMovieBlueprintConfig cfg{};
     cfg.base_dtm_artifact_id = ini.get_i64(kBlueprintSection, "base_dtm_artifact_id", 0);
+    const auto tas_spec_id = ini.get_i64(kBlueprintSection, "tas_spec_id", 0);
+    if (tas_spec_id > 0) {
+        cfg.tas_spec_id = tas_spec_id;
+    }
     cfg.rtc_low = ini.get_i64(kBlueprintSection, "rtc_low", 0);
     cfg.rtc_high = ini.get_i64(kBlueprintSection, "rtc_high", 0);
     cfg.priority = static_cast<int>(ini.get_i64(kBlueprintSection, "priority", 0));
@@ -61,6 +65,9 @@ std::int64_t ParseJobRtc(const std::string& input_ini) {
 std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) {
     IniDoc ini;
     ini.set(kBlueprintSection, "base_dtm_artifact_id", ToString(cfg.base_dtm_artifact_id));
+    if (cfg.tas_spec_id.has_value()) {
+        ini.set(kBlueprintSection, "tas_spec_id", ToString(*cfg.tas_spec_id));
+    }
     ini.set(kBlueprintSection, "rtc_low", ToString(cfg.rtc_low));
     ini.set(kBlueprintSection, "rtc_high", ToString(cfg.rtc_high));
     ini.set(kBlueprintSection, "priority", ToString(cfg.priority));
@@ -78,10 +85,20 @@ std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) 
 std::string VariantFingerprint(const TasMovieBlueprintConfig& cfg, std::int64_t tas_variant_id, std::int64_t rtc) {
     return "PK=2;PV=" + std::to_string(kProgramVersion)
         + ";phase=tasmovie;variant_id=" + std::to_string(tas_variant_id)
+        + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
         + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
         + ";rtc=" + std::to_string(rtc)
         + ";run_ms=" + std::to_string(cfg.run_ms)
         + ";vi=" + std::to_string(cfg.vi_stall_ms);
+}
+
+std::string VariantIdentitySuffix(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) {
+    std::string suffix = "base-" + std::to_string(cfg.base_dtm_artifact_id);
+    if (cfg.tas_spec_id.has_value()) {
+        suffix += "-tas-spec-" + std::to_string(*cfg.tas_spec_id);
+    }
+    suffix += "-rtc-" + std::to_string(rtc);
+    return suffix;
 }
 
 std::filesystem::path WorkingRoot(const std::filesystem::path& configured) {
@@ -230,15 +247,16 @@ public:
         std::int64_t jobs_failed = 0;
         for (std::int64_t rtc = cfg.rtc_low; rtc <= cfg.rtc_high; ++rtc) {
             std::int64_t tas_variant_id = 0;
+            const auto identity_suffix = VariantIdentitySuffix(cfg, rtc);
             if (!state_db_->CreateTasVariant(
                     {
-                        .name = "tasmovie-base-" + std::to_string(cfg.base_dtm_artifact_id) + "-rtc-" + std::to_string(rtc),
+                        .name = "tasmovie-" + identity_suffix,
                         .base_dtm_artifact_id = cfg.base_dtm_artifact_id,
                         .mutation_mode = "RTC_OVERRIDE",
                         .rtc_value = rtc,
                         .created_at_utc = simcore::db::types::UtcNow(),
-                        .event_id = EventId("tasmovie.variant", rtc, "created"),
-                        .correlation_id = "tasmovie-base-" + std::to_string(cfg.base_dtm_artifact_id),
+                        .event_id = "tasmovie.variant." + identity_suffix + ".created",
+                        .correlation_id = "tasmovie-" + identity_suffix,
                         .causation_id = "workflow-input-" + std::to_string(domain_ref_id),
                     },
                     &tas_variant_id,
@@ -269,7 +287,9 @@ public:
         persisted.program_ref_kind = "state_artifact";
         persisted.program_ref_id = cfg.base_dtm_artifact_id;
         persisted.program_version = kProgramVersion;
-        persisted.fingerprint = "PK=2;PV=2;phase=tasmovie;base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id);
+        persisted.fingerprint = "PK=2;PV=2;phase=tasmovie"
+            + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
+            + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id);
         scheduled.persistence = std::move(persisted);
 
         std::ostringstream event;
@@ -372,6 +392,7 @@ public:
             if (!spec.has_value()) {
                 return {};
             }
+            cfg.tas_spec_id = *node->authored_ref_id;
             cfg.priority = spec->priority;
             cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
             cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
@@ -405,6 +426,7 @@ public:
             + std::to_string(context.workflow_instance_id)
             + " workflow_step_id=" + std::to_string(context.workflow_step_id)
             + " base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
+            + " tas_spec_id=" + (cfg.tas_spec_id.has_value() ? std::to_string(*cfg.tas_spec_id) : "none")
             + " rtc_low=" + std::to_string(cfg.rtc_low)
             + " rtc_high=" + std::to_string(cfg.rtc_high)
             + " rtc_argument=" + (rtc_argument.has_value() ? std::to_string(*rtc_argument) : "none"));

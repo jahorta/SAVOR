@@ -28,12 +28,10 @@ QVariant JobsTableModel::headerData(int section, Qt::Orientation orientation, in
     switch (section) {
     case JobIdColumn: return QStringLiteral("id");
     case JobSetIdColumn: return QStringLiteral("job_set_id");
-    case SaveStateIdColumn: return QStringLiteral("savestate_id");
     case ProgramKindColumn: return QStringLiteral("program_kind");
     case StateColumn: return QStringLiteral("state");
     case AttemptsColumn: return QStringLiteral("attempts");
     case QueuedAtColumn: return QStringLiteral("queued_at");
-    case ProgressColumn: return QStringLiteral("progress");
     default: return {};
     }
 }
@@ -50,7 +48,7 @@ QVariant JobsTableModel::data(const QModelIndex& index, int role) const
     }
 
     if (role == Qt::TextAlignmentRole) {
-        if (index.column() == JobIdColumn || index.column() == JobSetIdColumn || index.column() == SaveStateIdColumn || index.column() == AttemptsColumn) {
+        if (index.column() == JobIdColumn || index.column() == JobSetIdColumn || index.column() == AttemptsColumn) {
             return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
         }
     }
@@ -62,16 +60,10 @@ QVariant JobsTableModel::data(const QModelIndex& index, int role) const
     switch (index.column()) {
     case JobIdColumn: return row->jobId;
     case JobSetIdColumn: return row->jobSetId;
-    case SaveStateIdColumn: return row->savestateId.has_value() ? QVariant::fromValue(*row->savestateId) : QVariant(QStringLiteral("Null"));
     case ProgramKindColumn: return row->programKind;
     case StateColumn: return row->state;
     case AttemptsColumn: return row->attempts;
     case QueuedAtColumn: return row->queuedAt;
-    case ProgressColumn:
-    {
-        QString progress = row->progress.split("\n").first();
-        return progress;
-    }
     default: return {};
     }
 }
@@ -150,10 +142,8 @@ bool JobsTableModel::rowsAffectDisplay(const Row& lhs, const Row& rhs)
 {
     return lhs.jobId != rhs.jobId
         || lhs.jobSetId != rhs.jobSetId
-        || lhs.savestateId != rhs.savestateId
         || lhs.programKind != rhs.programKind
         || lhs.state != rhs.state
         || lhs.attempts != rhs.attempts
-        || lhs.queuedAt != rhs.queuedAt
-        || lhs.progress != rhs.progress;
+        || lhs.queuedAt != rhs.queuedAt;
 }

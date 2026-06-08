@@ -2,7 +2,7 @@
 
 #include <QtCore/QAbstractTableModel>
 
-#include "DB/Querying/DataService.h"
+#include "UIRead/IUiReadDb.h"
 
 #include <vector>
 
@@ -16,10 +16,10 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QVariant data(const QModelIndex& index, int role) const override;
 
-    void setArtifacts(const std::vector<simcore::db::ArtifactRefLite>& artifacts);
+    void setArtifacts(const std::vector<simcore::db::UiJobArtifact>& artifacts);
 
 private:
-    static bool artifactAffectsDisplay(const simcore::db::ArtifactRefLite& lhs, const simcore::db::ArtifactRefLite& rhs);
+    static bool artifactAffectsDisplay(const simcore::db::UiJobArtifact& lhs, const simcore::db::UiJobArtifact& rhs);
 
-    std::vector<simcore::db::ArtifactRefLite> artifacts_;
+    std::vector<simcore::db::UiJobArtifact> artifacts_;
 };

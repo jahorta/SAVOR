@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <utility>
 
-using simcore::db::ProgramKindKV;
 using soasimqt2::db::SimCoreDbJobService;
 
 namespace {
@@ -54,7 +53,7 @@ JobsController::JobsController(QObject* parent)
             setBusy(Operation::FetchKinds, false);
             if (result.ok) {
                 state_.programNames.clear();
-                for (const ProgramKindKV& kind : result.value) {
+                for (const simcore::db::UiProgramKind& kind : result.value) {
                     state_.programNames.insert(kind.id, QString::fromStdString(kind.name));
                 }
                 state_.errorMessage.clear();
@@ -76,14 +75,13 @@ JobsController::JobsController(QObject* parent)
             const auto result = pageWatcher_.result();
             pageInFlight_ = false;
             if (result.ok) {
-                state_.page = result.value.page;
-                state_.progressSummary = result.value.progressSummary;
+                state_.page = result.value;
                 state_.lastRefresh = QDateTime::currentDateTime();
                 state_.errorMessage.clear();
                 state_.infoMessage.clear();
 
                 bool foundSelection = false;
-                for (const JobLite& item : state_.page.items) {
+                for (const simcore::db::UiJobSummary& item : state_.page.items) {
                     if (item.job_id == state_.selectedJobId) {
                         foundSelection = true;
                         break;
@@ -100,14 +98,12 @@ JobsController::JobsController(QObject* parent)
                 }
             } else {
                 state_.page = {};
-                state_.progressSummary.clear();
                 state_.detail = {};
                 state_.errorMessage = QStringLiteral("Jobs failed: %1").arg(QString::fromStdString(result.error.message));
             }
         } catch (...) {
             pageInFlight_ = false;
             state_.page = {};
-            state_.progressSummary.clear();
             state_.detail = {};
             state_.errorMessage = describeException("Jobs failed");
         }
@@ -124,8 +120,6 @@ JobsController::JobsController(QObject* parent)
             state_.detail.loading = false;
             if (result.ok && state_.selectedJobId == detailRequestJobId_) {
                 state_.detail.jobId = detailRequestJobId_;
-                state_.detail.resultsText = result.value.resultsText;
-                state_.detail.decodedProgressText = result.value.decodedProgressText;
                 state_.detail.events = std::move(result.value.events);
                 state_.detail.artifacts = std::move(result.value.artifacts);
                 state_.detail.loaded = true;
@@ -295,7 +289,7 @@ void JobsController::refreshSelectedJobDetail() { if (state_.selectedJobId > 0) 
 
 void JobsController::requeueSelectedJob()
 {
-    const JobLite* job = selectedJob();
+    const simcore::db::UiJobSummary* job = selectedJob();
     if (!job || requeueInFlight_ || state_.actionsBusy) return;
     actionJobId_ = job->job_id;
     requeueInFlight_ = true;
@@ -305,7 +299,7 @@ void JobsController::requeueSelectedJob()
 
 void JobsController::cancelSelectedJob()
 {
-    const JobLite* job = selectedJob();
+    const simcore::db::UiJobSummary* job = selectedJob();
     if (!job || cancelInFlight_ || state_.actionsBusy) return;
     actionJobId_ = job->job_id;
     cancelInFlight_ = true;
@@ -315,7 +309,7 @@ void JobsController::cancelSelectedJob()
 
 void JobsController::restartSelectedFailedJob()
 {
-    const JobLite* job = selectedJob();
+    const simcore::db::UiJobSummary* job = selectedJob();
     if (!job || restartInFlight_ || state_.actionsBusy || job->state != "FAILED") return;
     actionJobId_ = job->job_id;
     restartInFlight_ = true;
@@ -342,25 +336,8 @@ void JobsController::kickPageFetch()
     pageInFlight_ = true;
     pendingPageFetch_ = false;
     state_.errorMessage.clear();
-    PagedQuery<> query; query.before = before_; query.after = after_; query.limit = fetchPageLimit_;
-    pageWatcher_.setFuture(runDataServiceCall([scope = fetchScope_, query]() -> JobPageResult {
-        auto pageResult = SimCoreDbJobService::FetchJobsPage(scope, query.before, query.after, query.limit);
-        if (!pageResult.ok) return JobPageResult::Err(pageResult.error);
-        JobPageBundle bundle{};
-        bundle.page = pageResult.value;
-        std::vector<int64_t> ids;
-        ids.reserve(bundle.page.items.size());
-        for (const JobLite& job : bundle.page.items) ids.push_back(job.job_id);
-        auto progressResult = SimCoreDbJobService::BulkLatestProgressByJobs(ids);
-        if (!progressResult.ok) return JobPageResult::Err(progressResult.error);
-        for (const auto& item : progressResult.value) {
-            if (item.payload.has_value()) {
-                QString summary = QString::fromStdString(*item.payload);
-                if (summary.size() > 120) summary = summary.left(120);
-                bundle.progressSummary.insert(item.job_id, summary);
-            }
-        }
-        return JobPageResult::Ok(std::move(bundle));
+    pageWatcher_.setFuture(runDataServiceCall([scope = fetchScope_, before = before_, after = after_, limit = fetchPageLimit_]() -> JobPageResult {
+        return SimCoreDbJobService::FetchJobsPage(scope, before, after, limit);
     }));
     emitStateChanged();
 }
@@ -377,11 +354,9 @@ void JobsController::kickDetailFetch(qint64 jobId, bool force)
     state_.detail.jobId = jobId;
     detailWatcher_.setFuture(runDataServiceCall([jobId]() -> JobDetailResult {
         JobDetailBundle bundle{};
-        JobEventsListScope scope{}; scope.job_id = jobId;
-        PagedQuery<> query; query.limit = 128;
-        auto eventsResult = SimCoreDbJobService::FetchJobEventsPage(scope, query);
+        auto eventsResult = SimCoreDbJobService::FetchJobEvents(jobId, 128);
         if (!eventsResult.ok) return JobDetailResult::Err(eventsResult.error);
-        bundle.events = eventsResult.value.items;
+        bundle.events = std::move(eventsResult.value);
 
         auto artifactsResult = SimCoreDbJobService::FetchJobArtifactRefs(jobId);
         if (artifactsResult.ok) bundle.artifacts = std::move(artifactsResult.value);
@@ -424,9 +399,9 @@ bool JobsController::anyWorkInFlight() const
     return kindsInFlight_ || pageInFlight_ || detailInFlight_ || inputIniInFlight_ || requeueInFlight_ || cancelInFlight_ || restartInFlight_;
 }
 
-const JobLite* JobsController::selectedJob() const
+const simcore::db::UiJobSummary* JobsController::selectedJob() const
 {
-    for (const JobLite& job : state_.page.items) if (job.job_id == state_.selectedJobId) return &job;
+    for (const simcore::db::UiJobSummary& job : state_.page.items) if (job.job_id == state_.selectedJobId) return &job;
     return nullptr;
 }
 

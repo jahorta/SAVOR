@@ -9,7 +9,6 @@
 
 #include "../../../Analysis/IAnalysisDb.h"
 #include "../../../Authoring/IAuthoringDb.h"
-#include "../../../../SimCore/DB/DBCore/DbResult.h"
 #include "../../../../SimCore/Utils/Hex.h"
 #include "../../../../SimCore/Utils/IniDoc.h"
 #include "../../../../SimCore/Phases/Programs/SeedProbe/SeedProbePayload.h"

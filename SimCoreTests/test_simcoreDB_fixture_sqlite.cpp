@@ -40,6 +40,7 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeUniqueAdapters.h"
+#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "UIRead/Projectors/ProjectorContract.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowCoordinatorBridge.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
@@ -3014,6 +3015,269 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
     EXPECT_EQ(materialized.front().runtime_init.bootstrap_profile, "seedprobe.neutral.required_savestate");
     EXPECT_EQ(materialized.front().runtime_init.savestate_ref_id, 44001);
     EXPECT_TRUE(materialized.front().payload.has_value());
+}
+
+TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSpecScopedDedupe) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::programdb::tasmovie;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* state_db = db_service_->StateDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    const auto source_path = temp_root_ / "graph-dedupe-base.dtm";
+    {
+        std::ofstream out(source_path, std::ios::binary);
+        out << "dtm-bytes";
+    }
+
+    std::string err;
+    std::int64_t base_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "stage5-tasmovie-graph-dedupe-base-dtm",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+            .compression_kind = 0,
+            .filename = source_path.string(),
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = types::UtcNow(),
+            .event_id = "test.state.artifact.tasmovie.graph-dedupe-base",
+            .correlation_id = "test.tasmovie.graph-dedupe",
+            .causation_id = "test",
+        },
+        &base_artifact_id,
+        &err))
+        << err;
+
+    auto save_tas_spec = [&](std::string_view suffix, std::int64_t run_ms) {
+        const auto base_name = std::string("graph tas spec ") + std::string(suffix);
+        std::int64_t tas_spec_id = 0;
+        EXPECT_TRUE(authoring_db->SaveTasSpec(
+            {
+                .base_name = base_name,
+                .priority = 1,
+                .run_ms = run_ms,
+                .vi_stall_ms = 2500,
+                .headroom_x10 = 50,
+                .progress_enable = true,
+                .base_dtm_artifact_id = base_artifact_id,
+                .rtc_low = 0,
+                .rtc_high = 0,
+                .created_at_utc = types::UtcNow(),
+                .event_id = std::string("test.authoring.tas-spec.graph-dedupe.") + std::string(suffix),
+                .correlation_id = "test.tasmovie.graph-dedupe",
+                .causation_id = "test",
+            },
+            &tas_spec_id,
+            nullptr,
+            &err))
+            << err;
+        if (tas_spec_id > 0) {
+            return tas_spec_id;
+        }
+        for (const auto& spec : authoring_db->ListTasSpecs(10)) {
+            if (spec.base_name == base_name && spec.run_ms == run_ms) {
+                return spec.tas_spec_id;
+            }
+        }
+        return std::int64_t{0};
+    };
+
+    const auto first_tas_spec_id = save_tas_spec("first", 60000);
+    const auto second_tas_spec_id = save_tas_spec("second", 90000);
+    ASSERT_GT(first_tas_spec_id, 0);
+    ASSERT_GT(second_tas_spec_id, 0);
+    ASSERT_NE(first_tas_spec_id, second_tas_spec_id);
+
+    ProgramKindRegistry registry;
+    TasMoviePhaseRegistrationConfig config{};
+    config.authoring_db = authoring_db;
+    config.working_dir_root = temp_root_ / "tasmovie";
+    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, config);
+
+    DBWorkflowWorkerCoordinator coordinator(
+        execution_db,
+        DBWorkflowWorkerCoordinatorConfig{},
+        CoordinatorIntegrationConfig{ .workflow_enabled = true },
+        &registry);
+
+    auto materialize_for_spec = [&](std::int64_t tas_spec_id, std::string_view suffix) {
+        SaveWorkflowGraphResult saved{};
+        if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = std::string("graph-materialize-tasmovie-") + std::string(suffix),
+                .description = "TasMovie launch graph",
+                .graph_version = 1,
+                .graph_hash = std::string("graph-materialize-tasmovie-hash-") + std::string(suffix),
+                .nodes = {
+                    {
+                        .node_key = "tas_movie_standalone",
+                        .unit_kind = "tas_movie",
+                        .display_name = "Tas Movie",
+                        .authored_ref_kind = std::string("tas_spec"),
+                        .authored_ref_id = tas_spec_id,
+                        .inputs = {
+                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        },
+                    },
+                },
+                .created_at_utc = types::UtcNow(),
+                .event_id = std::string("test.authoring.workflow.tasmovie.graph-dedupe.") + std::string(suffix),
+                .correlation_id = "test.tasmovie.graph-dedupe",
+            },
+            &saved,
+            &err)) {
+            ADD_FAILURE() << err;
+            return std::int64_t{0};
+        }
+        const auto authoring_graph = authoring_db->GetWorkflowGraphRevision(saved.workflow_graph_revision_id);
+        if (!authoring_graph.has_value()
+            || authoring_graph->nodes.empty()
+            || authoring_graph->nodes.front().authored_ref_kind.value_or("") != "tas_spec"
+            || authoring_graph->nodes.front().authored_ref_id.value_or(0) != tas_spec_id) {
+            ADD_FAILURE() << "saved workflow graph did not preserve tas_spec authored ref";
+            return std::int64_t{0};
+        }
+
+        std::int64_t workflow_instance_id = 0;
+        WorkflowCreateInstanceCommand command{};
+        command.workflow_kind = "workflow_graph";
+        command.root_scope_kind = "manual";
+        command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+        command.created_by = "sqlite-fixture";
+        command.created_at_utc = types::UtcNow().time_since_epoch().count();
+        command.steps.push_back({
+            .step_key = "tas_movie_standalone",
+            .step_kind = "tas_movie",
+            .priority = 10,
+            .max_attempts = 1,
+        });
+        command.input_bindings.push_back({
+            .node_key = "tas_movie_standalone",
+            .input_key = "dtm_artifact",
+            .data_kind = "state_artifact.dtm_artifact_id",
+            .ref_kind = "state_artifact",
+            .ref_id = base_artifact_id,
+            .source_kind = "external",
+        });
+        command.arguments.push_back({
+            .node_key = "tas_movie_standalone",
+            .argument_key = "rtc",
+            .value_type = "integer",
+            .integer_value = 0,
+            .source_kind = "launcher",
+        });
+        if (!execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) {
+            ADD_FAILURE() << err;
+            return std::int64_t{0};
+        }
+
+        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        if (!graph.has_value()) {
+            ADD_FAILURE() << "workflow graph not found";
+            return std::int64_t{0};
+        }
+        if (graph->steps.size() != 1u) {
+            ADD_FAILURE() << "expected exactly one workflow step";
+            return std::int64_t{0};
+        }
+        if (graph->instance.workflow_graph_revision_id.value_or(0) != saved.workflow_graph_revision_id) {
+            ADD_FAILURE() << "workflow instance revision mismatch";
+            return std::int64_t{0};
+        }
+
+        const auto scheduled = coordinator.MaterializeWorkflowStep(
+            WorkflowReadyStep{
+                .workflow_instance_id = workflow_instance_id,
+                .workflow_step_id = graph->steps.front().workflow_step_id,
+                .step_key = "tas_movie_standalone",
+                .step_kind = "tas_movie",
+                .priority = 10,
+            });
+        if (!scheduled.has_value()) {
+            ADD_FAILURE() << "TasMovie step did not materialize";
+            return std::int64_t{0};
+        }
+        if (scheduled->job_set_id <= 0) {
+            ADD_FAILURE() << "TasMovie step materialized without a job set";
+            return std::int64_t{0};
+        }
+        const auto expected_trace = "tas_spec_id=" + std::to_string(tas_spec_id);
+        const auto has_expected_trace = std::any_of(
+            scheduled->event_lines.begin(),
+            scheduled->event_lines.end(),
+            [&](const std::string& line) {
+                return line.find(expected_trace) != std::string::npos;
+            });
+        if (!has_expected_trace) {
+            std::ostringstream trace;
+            for (const auto& line : scheduled->event_lines) {
+                trace << "\n" << line;
+            }
+            ADD_FAILURE() << "TasMovie materialization trace missing " << expected_trace
+                << " for tas_spec_id=" << tas_spec_id
+                << trace.str();
+            return std::int64_t{0};
+        }
+        return scheduled->job_set_id;
+    };
+
+    const auto first_job_set_id = materialize_for_spec(first_tas_spec_id, "first");
+    const auto second_job_set_id = materialize_for_spec(second_tas_spec_id, "second");
+    ASSERT_GT(first_job_set_id, 0);
+    ASSERT_GT(second_job_set_id, 0);
+    ASSERT_NE(first_job_set_id, second_job_set_id);
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM state_tas_movie_variant "
+        "WHERE base_dtm_artifact_id=?1 AND rtc_value=0;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int64(st, 1, base_artifact_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE program_kind=?1 AND job_set_id IN (?2,?3);",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int(st, 1, static_cast<int>(simcore::PK_TasMovie));
+    sqlite3_bind_int64(st, 2, first_job_set_id);
+    sqlite3_bind_int64(st, 3, second_job_set_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE fingerprint LIKE ?1 OR fingerprint LIKE ?2;",
+        -1,
+        &st,
+        nullptr));
+    const auto first_like = "%;tas_spec_id=" + std::to_string(first_tas_spec_id) + ";%";
+    const auto second_like = "%;tas_spec_id=" + std::to_string(second_tas_spec_id) + ";%";
+    sqlite3_bind_text(st, 1, first_like.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, second_like.c_str(), -1, SQLITE_TRANSIENT);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
+    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) {

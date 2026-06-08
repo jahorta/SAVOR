@@ -15,6 +15,7 @@ namespace simcore::db::execution::programdb::tasmovie {
 
 struct TasMovieBlueprintConfig {
     std::int64_t base_dtm_artifact_id = 0;
+    std::optional<std::int64_t> tas_spec_id;
     std::int64_t rtc_low = 0;
     std::int64_t rtc_high = 0;
     int priority = 0;

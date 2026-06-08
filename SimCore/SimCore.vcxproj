@@ -132,26 +132,7 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)Utils\soa_struct_reflector.py" "$(ProjectDir)Core\Memory\Soa\SoaStructs.h" "$(ProjectDir)Core\Memory\Soa\SoaStructs.reflect.h"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ErrorActionPreference='Stop';" ^
-  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
-  "$out='$(IntDir)GeneratedMigrations.h';" ^
-  "$stamp='$(IntDir)Migrations.files.txt';" ^
-  "$srcDir='$(ProjectDir)DB\migration';" ^
-  "$files=Get-ChildItem -Path $srcDir -Filter *.sql -File | Sort-Object Name;" ^
-  "$names=($files | ForEach-Object Name) -join [Environment]::NewLine;" ^
-  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
-  "if($prev -eq $names){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
-  "$head='// generated' + [Environment]::NewLine + '#pragma once' + [Environment]::NewLine + '#include &lt;vector&gt;' + [Environment]::NewLine + '#include &lt;string&gt;' + [Environment]::NewLine + 'namespace simcore{namespace db{ static inline const std::vector&lt;std::pair&lt;std::string,std::string&gt;&gt; kEmbeddedMigrations = {';" ^
-  "$tmp = $out + '.tmp';" ^
-  "Set-Content -Path $tmp -Value $head -Encoding UTF8;" ^
-  "foreach($f in $files){ $name=$f.Name; $txt=[IO.File]::ReadAllText($f.FullName); Add-Content -Path $tmp -Value ('  {\"'+$name+'\", R\"SQL('+$txt+')SQL\"},') -Encoding UTF8; }" ^
-  "Add-Content -Path $tmp -Value ('}; }} // ns') -Encoding UTF8;" ^
-  "Move-Item -Force -Path $tmp -Destination $out;" ^
-  "Set-Content -Path $stamp -Value $names -Encoding UTF8;" ^
-  "Write-Host 'Embedded migrations header regenerated due to new files.'"</Command>
+      <Command>python "$(ProjectDir)Utils\soa_struct_reflector.py" "$(ProjectDir)Core\Memory\Soa\SoaStructs.h" "$(ProjectDir)Core\Memory\Soa\SoaStructs.reflect.h"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -182,26 +163,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <PreBuildEvent>
-      <Command>python "$(ProjectDir)Utils\soa_struct_reflector.py" "$(ProjectDir)Core\Memory\Soa\SoaStructs.h" "$(ProjectDir)Core\Memory\Soa\SoaStructs.reflect.h"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ErrorActionPreference='Stop';" ^
-  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
-  "$out='$(IntDir)GeneratedMigrations.h';" ^
-  "$stamp='$(IntDir)Migrations.files.txt';" ^
-  "$srcDir='$(ProjectDir)DB\migration';" ^
-  "$files=Get-ChildItem -Path $srcDir -Filter *.sql -File | Sort-Object Name;" ^
-  "$names=($files | ForEach-Object Name) -join [Environment]::NewLine;" ^
-  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
-  "if($prev -eq $names){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
-  "$head='// generated' + [Environment]::NewLine + '#pragma once' + [Environment]::NewLine + '#include &lt;vector&gt;' + [Environment]::NewLine + '#include &lt;string&gt;' + [Environment]::NewLine + 'namespace simcore{namespace db{ static inline const std::vector&lt;std::pair&lt;std::string,std::string&gt;&gt; kEmbeddedMigrations = {';" ^
-  "$tmp = $out + '.tmp';" ^
-  "Set-Content -Path $tmp -Value $head -Encoding UTF8;" ^
-  "foreach($f in $files){ $name=$f.Name; $txt=[IO.File]::ReadAllText($f.FullName); Add-Content -Path $tmp -Value ('  {\"'+$name+'\", R\"SQL('+$txt+')SQL\"},') -Encoding UTF8; }" ^
-  "Add-Content -Path $tmp -Value ('}; }} // ns') -Encoding UTF8;" ^
-  "Move-Item -Force -Path $tmp -Destination $out;" ^
-  "Set-Content -Path $stamp -Value $names -Encoding UTF8;" ^
-  "Write-Host 'Embedded migrations header regenerated due to new files.'"</Command>
+      <Command>python "$(ProjectDir)Utils\soa_struct_reflector.py" "$(ProjectDir)Core\Memory\Soa\SoaStructs.h" "$(ProjectDir)Core\Memory\Soa\SoaStructs.reflect.h"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -235,72 +197,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Core\Memory\Soa\SoaStructs.h" />
     <ClInclude Include="Core\Memory\Soa\SoaStructs.reflect.h" />
     <ClInclude Include="Core\Shims\StateBufferShim.h" />
-    <ClInclude Include="DB\AddressProgramRepo.h" />
-    <ClInclude Include="DB\AuthoringTemplatesRepo.h" />
-    <ClInclude Include="DB\BattleContextRepo.h" />
-    <ClInclude Include="DB\BattlePlanAtomRepo.h" />
-    <ClInclude Include="DB\BattlePlanRepo.h" />
-    <ClInclude Include="DB\BattlePlanTurnRepo.h" />
-    <ClInclude Include="DB\DBCore\Common.h" />
-    <ClInclude Include="DB\DBCore\ConfigRepo.h" />
-    <ClInclude Include="DB\DBCore\CoordinatorClock.h" />
-    <ClInclude Include="DB\DBCore\DbEnv.h" />
-    <ClInclude Include="DB\DBCore\DbEventsRepo.h" />
-    <ClInclude Include="DB\DBCore\DbHealth.h" />
-    <ClInclude Include="DB\DBCore\DbResult.h" />
-    <ClInclude Include="DB\DBCore\DbRetryPolicy.h" />
-    <ClInclude Include="DB\DBCore\DbSnapshotService.h" />
-    <ClInclude Include="DB\DBCore\DbService.h" />
-    <ClInclude Include="DB\DBCore\MigrationRunner.h" />
-    <ClInclude Include="DB\DBCore\MigrationRunner_Embedded.h" />
-    <ClInclude Include="DB\DBCore\ObjectStore.h" />
-    <ClInclude Include="DB\DBCore\RegisterProgramKinds.h" />
-    <ClInclude Include="DB\DeltaSeedRepo.h" />
-    <ClInclude Include="DB\ExplorerRunRepo.h" />
-    <ClInclude Include="DB\ExplorerSettingsPlanLinkRepo.h" />
-    <ClInclude Include="DB\ExplorerSettingsPredicateRepo.h" />
-    <ClInclude Include="DB\ExplorerSettingsRepo.h" />
-    <ClInclude Include="DB\PredicateSpecRepo.h" />
-    <ClInclude Include="DB\ProgramDB\BattleContextDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\ExplorerRunDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\IProgramDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\SeedProbeDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h" />
-    <ClInclude Include="DB\ProgramDB\TasFrameDetectorDBCodec.h" />
-    <ClInclude Include="DB\ProgramKindsRepo.h" />
-    <ClInclude Include="DB\Querying\DataService.h" />
-    <ClInclude Include="DB\Querying\IdRepoListDTO.h" />
-    <ClInclude Include="DB\Querying\JobEventListDTO.h" />
-    <ClInclude Include="DB\Querying\JobListDTO.h" />
-    <ClInclude Include="DB\Querying\JobSetListDTO.h" />
-    <ClInclude Include="DB\Querying\PagedQuery.h" />
-    <ClInclude Include="DB\Querying\Paging.h" />
-    <ClInclude Include="DB\Querying\SnapshotMailbox.h" />
-    <ClInclude Include="DB\SavestateRepo.h" />
-    <ClInclude Include="DB\Scheduling\JobEventsRepo.h" />
-    <ClInclude Include="DB\Scheduling\JobSetsRepo.h" />
-    <ClInclude Include="DB\Scheduling\JobsRepo.h" />
-    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h" />
-    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h" />
-    <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h" />
-    <ClInclude Include="DB\Scheduling\TriggersRepo.h" />
-    <ClInclude Include="DB\SeedProbeRepo.h" />
-    <ClInclude Include="DB\TagRepo.h" />
-    <ClInclude Include="DB\TasFrameDetectRepo.h" />
-    <ClInclude Include="DB\TasMovieRepo.h" />
-    <ClInclude Include="DB\TurnActionPresetRepo.h" />
-    <ClInclude Include="DB\UiConfigRowRepo.h" />
-    <ClInclude Include="DB\VersionStampRepo.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Phases\BattleExplorer.h" />
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h" />
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h" />
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h" />
     <ClInclude Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.h" />
@@ -317,7 +218,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClInclude Include="Runner\Breakpoints\BPRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
-    <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.h" />
     <ClInclude Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.h" />
@@ -383,57 +283,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgramBuilder.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrRegistry.cpp" />
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
-    <ClCompile Include="DB\AddressProgramRepo.cpp" />
-    <ClCompile Include="DB\AuthoringTemplatesRepo.cpp" />
-    <ClCompile Include="DB\BattleContextRepo.cpp" />
-    <ClCompile Include="DB\BattlePlanAtomRepo.cpp" />
-    <ClCompile Include="DB\BattlePlanRepo.cpp" />
-    <ClCompile Include="DB\BattlePlanTurnRepo.cpp" />
-    <ClCompile Include="DB\DBCore\ConfigRepo.cpp" />
-    <ClCompile Include="DB\DBCore\CoordinatorClock.cpp" />
-    <ClCompile Include="DB\DBCore\DbEnv.cpp" />
-    <ClCompile Include="DB\DBCore\DbEventsRepo.cpp" />
-    <ClCompile Include="DB\DBCore\DbHealth.cpp" />
-    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp" />
-    <ClCompile Include="DB\DBCore\DbService.cpp" />
-    <ClCompile Include="DB\DBCore\MigrationRunner.cpp" />
-    <ClCompile Include="DB\DBCore\ObjectStore.cpp" />
-    <ClCompile Include="DB\DBCore\RegisterProgramKinds.cpp" />
-    <ClCompile Include="DB\DeltaSeedRepo.cpp" />
-    <ClCompile Include="DB\ExplorerRunRepo.cpp" />
-    <ClCompile Include="DB\ExplorerSettingsPlanLinkRepo.cpp" />
-    <ClCompile Include="DB\ExplorerSettingsPredicateRepo.cpp" />
-    <ClCompile Include="DB\ExplorerSettingsRepo.cpp" />
-    <ClCompile Include="DB\PredicateSpecRepo.cpp" />
-    <ClCompile Include="DB\ProgramDB\BattleContextDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\ExplorerRunDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\TasFrameDetectorDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\SeedProbeDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp" />
-    <ClCompile Include="DB\ProgramKindsRepo.cpp" />
-    <ClCompile Include="DB\Querying\DataService.cpp" />
-    <ClCompile Include="DB\SavestateRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\JobsRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp" />
-    <ClCompile Include="DB\Scheduling\TriggersRepo.cpp" />
-    <ClCompile Include="DB\SeedProbeRepo.cpp" />
-    <ClCompile Include="DB\TagRepo.cpp" />
-    <ClCompile Include="DB\TasFrameDetectRepo.cpp" />
-    <ClCompile Include="DB\TasMovieRepo.cpp" />
-    <ClCompile Include="DB\TurnActionPresetRepo.cpp" />
-    <ClCompile Include="DB\UiConfigRowRepo.cpp" />
-    <ClCompile Include="DB\VersionStampRepo.cpp" />
     <ClCompile Include="Phases\BattleExplorer.cpp" />
-    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp" />
-    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
-    <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
@@ -443,8 +294,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
     <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
-    <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp" />
-    <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowWorkerCoordinator.cpp" />
     <ClCompile Include="Runner\Parallel\SimCoreDB\WorkflowCoordinatorBridge.cpp" />
@@ -724,46 +573,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="DB\migration\0001.sql" />
-    <None Include="DB\migration\0002.sql" />
-    <None Include="DB\migration\0003.sql" />
-    <None Include="DB\migration\0004.sql" />
-    <None Include="DB\migration\0005.sql" />
-    <None Include="DB\migration\0006.sql" />
-    <None Include="DB\migration\0007.sql" />
-    <None Include="DB\migration\0008.sql" />
-    <None Include="DB\migration\0009.sql" />
-    <None Include="DB\migration\0010.sql" />
-    <None Include="DB\migration\0011.sql" />
-    <None Include="DB\migration\0012.sql" />
-    <None Include="DB\migration\0013.sql" />
-    <None Include="DB\migration\0014.sql" />
-    <None Include="DB\migration\0015.sql" />
-    <None Include="DB\migration\0016.sql" />
-    <None Include="DB\migration\0017.sql" />
-    <None Include="DB\migration\0018.sql" />
-    <None Include="DB\migration\0019.sql" />
-    <None Include="DB\migration\0020.sql" />
-    <None Include="DB\migration\0021.sql" />
-    <None Include="DB\migration\0022.sql" />
-    <None Include="DB\migration\0023.sql" />
-    <None Include="DB\migration\0024.sql" />
-    <None Include="DB\migration\0025.sql" />
-    <None Include="DB\migration\0026.sql" />
-    <None Include="DB\migration\0027.sql" />
-    <None Include="DB\migration\0028.sql" />
-    <None Include="DB\migration\0029.sql" />
-    <None Include="DB\migration\0030.sql" />
-    <None Include="DB\migration\0031.sql" />
-    <None Include="DB\migration\0032.sql" />
-    <None Include="DB\migration\0033.sql" />
-    <None Include="DB\migration\0034.sql" />
-    <None Include="DB\migration\0035.sql" />
-    <None Include="DB\migration\0036.sql" />
-    <None Include="DB\migration\0037.sql" />
-    <None Include="DB\migration\0038.sql" />
-    <None Include="DB\migration\0039.sql" />
-    <None Include="DB\update_generated_migrations_command.txt" />
     <None Include="Interesting SOA Addresses.md">
       <SubType>
       </SubType>

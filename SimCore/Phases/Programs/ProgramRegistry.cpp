@@ -11,15 +11,23 @@
 #include "BattleContext/BattleContextPayload.h"
 #include "BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "BattleTurnRunner/BattleTurnRunnerScript.h"
-#include "../../DB/ProgramDB/SeedProbeDBCodec.h"
-#include "../../DB/ProgramDB/TasMovieDBCodec.h"
-#include "../../DB/ProgramDB/TasFrameDetectorDBCodec.h"
-#include "../../DB/ProgramDB/ExplorerRunDBCodec.h"
-#include "../../DB/ProgramDB/BattleContextDBCodec.h"
-#include "../../DB/ProgramDB/BattleSingleTurnRunDBCodec.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace simcore::programs {
+
+    namespace {
+        constexpr const char* kSeedProbeBlueprintSection = "SeedProbe.Blueprint";
+        constexpr const char* kSeedProbeResultsSection = "SeedProbe.Results";
+        constexpr const char* kTasMovieBlueprintSection = "TasMovie.Blueprint";
+        constexpr const char* kTasMovieResultsSection = "TasMovie.Results";
+        constexpr const char* kTasFrameDetectorBlueprintSection = "TasFrameDetector.Blueprint";
+        constexpr const char* kTasFrameDetectorResultsSection = "TasFrameDetector.Results";
+        constexpr const char* kBattleRunBlueprintSection = "BattleRun.Blueprint";
+        constexpr const char* kBattleRunResultsSection = "BattleRun.Results";
+        constexpr const char* kBattleContextBlueprintSection = "BattleContext.Blueprint";
+        constexpr const char* kBattleContextResultsSection = "BattleContext.Results";
+        constexpr const char* kBattleSingleTurnResultsSection = "BattleSingleTurn.Results";
+    }
 
     PhaseScript build_main_program(uint8_t program_kind)
     {
@@ -75,28 +83,28 @@ namespace simcore::programs {
     const RetryTuningInfo* get_retry_tuning_info(uint8_t program_kind)
     {
         static const RetryTuningInfo seedprobe_info{
-            simcore::db::codec::seedprobe::BlueprintIni::SECTION_NAME,
-            simcore::db::codec::seedprobe::ResultsIni::SECTION_NAME
+            kSeedProbeBlueprintSection,
+            kSeedProbeResultsSection
         };
         static const RetryTuningInfo tasmovie_info{
-            simcore::db::codec::tas::BlueprintIni::SECTION_NAME,
-            simcore::db::codec::tas::ResultsIni::SECTION_NAME
+            kTasMovieBlueprintSection,
+            kTasMovieResultsSection
         };
         static const RetryTuningInfo tas_input_stream_info{
-            simcore::db::codec::tasframedetector::BlueprintIni::SECTION_NAME,
-            simcore::db::codec::tasframedetector::ResultsIni::SECTION_NAME
+            kTasFrameDetectorBlueprintSection,
+            kTasFrameDetectorResultsSection
         };
         static const RetryTuningInfo battleturn_info{
-            simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME,
-            simcore::db::codec::battle::run::ResultsIni::SECTION_NAME
+            kBattleRunBlueprintSection,
+            kBattleRunResultsSection
         };
         static const RetryTuningInfo battlecontext_info{
-            simcore::db::battle::ctx::BlueprintIni::SECTION_NAME,
-            simcore::db::battle::ctx::ResultsIni::SECTION_NAME
+            kBattleContextBlueprintSection,
+            kBattleContextResultsSection
         };
         static const RetryTuningInfo battlest_info{
-            simcore::db::codec::battle::run::BlueprintIni::SECTION_NAME,
-            simcore::db::codec::battle::singleturn::ResultsIni::SECTION_NAME
+            kBattleRunBlueprintSection,
+            kBattleSingleTurnResultsSection
         };
 
         switch (program_kind) {

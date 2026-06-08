@@ -70,33 +70,6 @@
     <Filter Include="Phases\SeedProbe">
       <UniqueIdentifier>{9970f495-ed71-4548-bb91-77f7142e3522}</UniqueIdentifier>
     </Filter>
-    <Filter Include="DB">
-      <UniqueIdentifier>{07954794-7b78-495a-b539-797c40af33f9}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\Migration">
-      <UniqueIdentifier>{9ae008db-3dc2-4b7a-b1df-5692a1c350b8}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\Core">
-      <UniqueIdentifier>{dd7b8fe8-953c-4cc7-a17e-ee7ac9b98360}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\PhaseRepos">
-      <UniqueIdentifier>{1385e30c-bd1f-4e11-bba3-9bb95341a6ad}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\CatalogRepos">
-      <UniqueIdentifier>{4c95c6c0-ff90-4a2d-b7d9-122f63a1df53}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\ProgramCodecs">
-      <UniqueIdentifier>{cdeaa0cf-dc17-4849-beb2-0c34fa2ddbf4}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\Scheduling">
-      <UniqueIdentifier>{72a966a8-4d7c-4dd8-a4af-05d9c1f627a1}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="DB\Querying">
-      <UniqueIdentifier>{3f74286f-bc0e-497f-9b87-4bbacf2387f4}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Phases\DBPhaseBuilders">
-      <UniqueIdentifier>{a3628a6d-558f-4dc7-a8b4-568c8607faee}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Tas">
       <UniqueIdentifier>{3323c09c-2ff3-43bc-a6ae-4d4bb181334e}</UniqueIdentifier>
     </Filter>
@@ -324,134 +297,8 @@
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h">
       <Filter>Phases\BattleContext</Filter>
     </ClInclude>
-    <ClInclude Include="DB\DBCore\DbEnv.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbResult.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbRetryPolicy.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbSnapshotService.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbService.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\MigrationRunner.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\MigrationRunner_Embedded.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\ObjectStore.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ExplorerRunRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DeltaSeedRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\SeedProbeRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\TasMovieRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ExplorerSettingsRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\PredicateSpecRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\AddressProgramRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\BattlePlanAtomRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\BattlePlanTurnRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ExplorerSettingsPredicateRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\VersionStampRepo.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbHealth.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\CoordinatorClock.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\DbEventsRepo.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\RegisterProgramKinds.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\ExplorerRunDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\IProgramDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\SeedProbeDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\TasMovieDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\TasFrameDetectorDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\JobEventsRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\JobSetsRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\JobsRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\VisualReplayEventsRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\VisualReplayRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\Hash.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\BattlePlanRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\SeedProbeWinnersRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\SavestateRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\BattleContextRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\BattleContextDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\ConfigRepo.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ExplorerSettingsPlanLinkRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Scheduling\TriggersRepo.h">
-      <Filter>DB\Scheduling</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\DB\DBWorkerCoordinatorConfig.h">
-      <Filter>Runner\Parallel</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.h">
       <Filter>Runner\Parallel</Filter>
@@ -501,74 +348,14 @@
     <ClInclude Include="Runner\Parallel\WorkerTelemetry.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
-    <ClInclude Include="DB\Querying\DataService.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\JobEventListDTO.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\JobListDTO.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\JobSetListDTO.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\PagedQuery.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\Paging.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\SnapshotMailbox.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramKindsRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\ModulePath.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderPreview.h">
-      <Filter>Phases\DBPhaseBuilders</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.h">
-      <Filter>Phases\DBPhaseBuilders</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\DBPhaseBuilder\PhaseBuilderService.h">
-      <Filter>Phases\DBPhaseBuilders</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\Querying\IdRepoListDTO.h">
-      <Filter>DB\Querying</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\DBCore\Common.h">
-      <Filter>DB\Core</Filter>
-    </ClInclude>
-    <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.h">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\AuthoringTemplatesRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\TurnActionPresetRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\UiConfigRowRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\TagRepo.h">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\TasFrameDetectRepo.h">
-      <Filter>DB\PhaseRepos</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Script\ScriptProgress.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Utils\String.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.h">
-      <Filter>DB\ProgramCodecs</Filter>
     </ClInclude>
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
       <Filter>Core\Input</Filter>
@@ -686,126 +473,6 @@
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp">
       <Filter>Phases\BattleContext</Filter>
     </ClCompile>
-    <ClCompile Include="DB\DBCore\DbEnv.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\DbService.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\MigrationRunner.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\ObjectStore.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DeltaSeedRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ExplorerRunRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\TasMovieRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\SeedProbeRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ExplorerSettingsRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\PredicateSpecRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\AddressProgramRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\BattlePlanAtomRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\BattlePlanTurnRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ExplorerSettingsPredicateRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\VersionStampRepo.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\CoordinatorClock.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\DbHealth.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\DbEventsRepo.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\RegisterProgramKinds.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\ExplorerRunDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\SeedProbeDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\TasMovieDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\TasFrameDetectorDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\IProgramDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\JobEventsRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\JobSetsRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\JobsRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\VisualReplayEventsRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\VisualReplayRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\BattlePlanRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\SeedProbeWinnersRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\SavestateRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\BattleContextRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramDB\BattleContextDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\DBCore\ConfigRepo.cpp">
-      <Filter>DB\Core</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ExplorerSettingsPlanLinkRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Scheduling\TriggersRepo.cpp">
-      <Filter>DB\Scheduling</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\DB\DBTriggerEngine.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\DB\DBWorkerCoordinator.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
     <ClCompile Include="Runner\Parallel\SimCoreDB\DBWorkflowCoordinatorFactory.cpp">
       <Filter>Runner\Parallel</Filter>
     </ClCompile>
@@ -838,36 +505,6 @@
     </ClCompile>
     <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\Querying\DataService.cpp">
-      <Filter>DB\Querying</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\ProgramKindsRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderSchemas.cpp">
-      <Filter>Phases\DBPhaseBuilders</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\DBPhaseBuilder\PhaseBuilderService.cpp">
-      <Filter>Phases\DBPhaseBuilders</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerDBSettingsWriter.cpp">
-      <Filter>Phases\BattleRunner</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\AuthoringTemplatesRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\TurnActionPresetRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\UiConfigRowRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\TagRepo.cpp">
-      <Filter>DB\CatalogRepos</Filter>
-    </ClCompile>
-    <ClCompile Include="DB\TasFrameDetectRepo.cpp">
-      <Filter>DB\PhaseRepos</Filter>
     </ClCompile>
     <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
       <Filter>DolphinSource</Filter>
@@ -1061,9 +698,6 @@
     <ClCompile Include="_Dolphin_src\Core\HW\SystemTimers.cpp">
       <Filter>DolphinSource</Filter>
     </ClCompile>
-    <ClCompile Include="DB\ProgramDB\BattleSingleTurnRunDBCodec.cpp">
-      <Filter>DB\ProgramCodecs</Filter>
-    </ClCompile>
     <ClCompile Include="Tas\DtmAnnotationFile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1073,126 +707,6 @@
     <None Include="_TODO.md" />
     <None Include="Utils\soa_struct_reflector.py">
       <Filter>Utils</Filter>
-    </None>
-    <None Include="DB\migration\0003.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0001.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0002.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0004.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0005.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\update_generated_migrations_command.txt">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0006.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0007.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0008.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0009.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0010.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0011.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0012.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0013.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0014.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0015.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0016.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0017.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0018.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0019.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0020.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0021.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0022.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0023.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0024.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0025.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0026.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0027.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0028.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0029.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0030.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0031.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0032.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0033.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0034.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0035.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0036.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0037.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0038.sql">
-      <Filter>DB\Migration</Filter>
-    </None>
-    <None Include="DB\migration\0039.sql">
-      <Filter>DB\Migration</Filter>
     </None>
   </ItemGroup>
 </Project>

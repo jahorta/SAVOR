@@ -82,10 +82,8 @@ private:
     QLabel* overviewQueuedValue_ = nullptr;
     QLabel* overviewSelectionHint_ = nullptr;
     QTextEdit* eventsText_ = nullptr;
-    QTextEdit* progressText_ = nullptr;
     QTextEdit* payloadText_ = nullptr;
     QPushButton* loadInputIniButton_ = nullptr;
-    QTextEdit* resultsText_ = nullptr;
     ArtifactsTableView* artifactsTable_ = nullptr;
 
     bool refreshingModel_ = false;

@@ -2,7 +2,6 @@
 
 #include <QtCore/QAbstractTableModel>
 
-#include <optional>
 #include <vector>
 
 class JobsTableModel final : public QAbstractTableModel
@@ -11,23 +10,19 @@ public:
     struct Row {
         qint64 jobId = 0;
         qint64 jobSetId = 0;
-        std::optional<qint64> savestateId;
         QString programKind;
         QString state;
         int attempts = 0;
         QString queuedAt;
-        QString progress;
     };
 
     enum Column {
         JobIdColumn = 0,
         JobSetIdColumn,
-        SaveStateIdColumn,
         ProgramKindColumn,
         StateColumn,
         AttemptsColumn,
         QueuedAtColumn,
-        ProgressColumn,
         ColumnCount
     };
 
