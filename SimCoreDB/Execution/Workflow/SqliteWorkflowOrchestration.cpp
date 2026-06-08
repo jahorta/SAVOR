@@ -312,10 +312,7 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "e.expected_total, j.discovered_total, j.terminal_total, j.failed_total "
         "FROM expected_summary e "
         "JOIN job_summary j ON j.workflow_step_id=e.workflow_step_id "
-        "WHERE e.expected_total > 0 "
-        "  AND j.discovered_total > 0 "
-        "  AND e.expected_total = j.discovered_total "
-        "  AND j.terminal_total >= j.discovered_total "
+        "WHERE (j.discovered_total = 0 OR j.terminal_total >= j.discovered_total) "
         "ORDER BY e.workflow_step_id ASC "
         "LIMIT ?1;",
         &st,

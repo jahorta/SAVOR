@@ -8,10 +8,6 @@
 #include <QtCore/QSettings>
 #include <QtCore/QStringList>
 
-#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
-#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
-#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Runner/IPC/Wire.h"
 
 #include <algorithm>
@@ -116,22 +112,23 @@ void CoordinatorController::startCoordinator()
         return;
     }
 
-    QString registryError;
-    if (!buildProgramRegistry(&registryError)) {
-        validationMessage_ = registryError;
+    auto& runtime = soasimqt2::SimCoreDbRuntime::instance();
+    auto* programRegistry = runtime.programKindRegistry();
+    if (programRegistry == nullptr) {
+        validationMessage_ = QStringLiteral("Workflow program registry is unavailable.");
         emit stateChanged();
         return;
     }
 
-    auto* executionDb = soasimqt2::SimCoreDbRuntime::instance().executionDb();
-    auto* stateDb = soasimqt2::SimCoreDbRuntime::instance().stateDb();
+    auto* executionDb = runtime.executionDb();
+    auto* stateDb = runtime.stateDb();
 
     try {
         auto coordinator = std::make_unique<simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator>(
             executionDb,
             buildWorkerConfig(),
-            buildIntegrationConfig(),
-            &programRegistry_,
+            simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{},
+            programRegistry,
             simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator::ReadyStepPersistFn{},
             nullptr,
             stateDb);
@@ -460,14 +457,14 @@ void CoordinatorController::updateSnapshotCache()
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
         statusSnapshot_ = {};
-        telemetrySnapshot_ = {};
+        telemetrySnapshot_ = soasimqt2::SimCoreDbRuntime::instance().workflowCoordinatorTelemetry();
         return;
     }
 
     snapshotCache_ = coordinator_->SnapshotWorkers();
     visualSnapshotCache_.clear();
     statusSnapshot_ = coordinator_->SnapshotStatus();
-    telemetrySnapshot_ = coordinator_->SnapshotTelemetry();
+    telemetrySnapshot_ = soasimqt2::SimCoreDbRuntime::instance().workflowCoordinatorTelemetry();
 }
 
 simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig CoordinatorController::buildWorkerConfig() const
@@ -481,85 +478,6 @@ simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig Coordina
     cfg.visual_workers = visualWorkerPoolEnabled_;
     cfg.auto_resume_visual_workers = visualWorkerPoolEnabled_;
     return cfg;
-}
-
-simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig CoordinatorController::buildIntegrationConfig() const
-{
-    return simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig{
-        .workflow_enabled = true,
-        .strict_smoke_terminal_on_failure = false,
-    };
-}
-
-bool CoordinatorController::buildProgramRegistry(QString* errorMessage)
-{
-    auto& runtime = soasimqt2::SimCoreDbRuntime::instance();
-    auto* executionDb = runtime.executionDb();
-    auto* stateDb = runtime.stateDb();
-    auto* analysisDb = runtime.analysisDb();
-    auto* authoringDb = runtime.authoringDb();
-
-    if (executionDb == nullptr || stateDb == nullptr || analysisDb == nullptr || authoringDb == nullptr) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("SimCoreDB services are incomplete.");
-        }
-        return false;
-    }
-
-    programRegistry_ = simcore::db::execution::programdb::ProgramKindRegistry{};
-    const auto appDir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
-    const auto workspaceRoot = appDir / "workflow-runtime";
-
-    simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tasConfig{};
-    tasConfig.authoring_db = authoringDb;
-    tasConfig.working_dir_root = workspaceRoot / "tasmovie";
-    simcore::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
-        &programRegistry_,
-        executionDb,
-        stateDb,
-        analysisDb,
-        std::move(tasConfig));
-
-    simcore::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seedConfig{};
-    seedConfig.authoring_db = authoringDb;
-    simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
-        &programRegistry_,
-        executionDb,
-        analysisDb,
-        std::move(seedConfig));
-
-    simcore::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig contextConfig{};
-    contextConfig.authoring_db = authoringDb;
-    contextConfig.working_dir_root = workspaceRoot / "battle-context";
-    simcore::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
-        &programRegistry_,
-        executionDb,
-        analysisDb,
-        std::move(contextConfig));
-
-    simcore::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battleConfig{};
-    battleConfig.authoring_db = authoringDb;
-    battleConfig.working_dir_root = workspaceRoot / "battle-single-turn";
-    simcore::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
-        &programRegistry_,
-        executionDb,
-        stateDb,
-        analysisDb,
-        std::move(battleConfig));
-
-    if (!programRegistry_.HasRequiredAdapters(static_cast<std::int32_t>(simcore::PK_TasMovie))
-        || !programRegistry_.HasRequiredAdaptersForStepKind("tas_movie")
-        || !programRegistry_.HasRequiredAdaptersForStepKind("seed_probe_chain")
-        || !programRegistry_.HasRequiredAdaptersForStepKind("battle_chain")
-        || !programRegistry_.HasRequiredAdaptersForStepKind("battle.context_probe")
-        || !programRegistry_.HasRequiredAdaptersForStepKind("battle.single_turn")) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("Workflow program descriptor registration is incomplete.");
-        }
-        return false;
-    }
-
-    return true;
 }
 
 void CoordinatorController::applyVisualWorkerSurfaces()

@@ -212,14 +212,12 @@ private:
         std::int64_t job_set_id = 0;
     };
 
-    void WorkflowStepCoordinatorLoop();
     void WorkerJobCoordinatorLoop();
     void WorkerLifecycleCoordinatorLoop();
     void DrainProgressLoop();
     void DrainResultsLoop();
     void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
     void ReconcileWorkerPool();
-    void ReconcileTerminalWorkflowSteps();
     bool StartWorkerSlot(size_t worker_idx);
     void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
     void ResetWorkerSlotRuntime(WorkerSlot& slot);
@@ -296,7 +294,6 @@ private:
     std::atomic<bool> stop_{ false };
     std::atomic<bool> paused_{ false };
     std::atomic<uint64_t> epoch_{ 1 };
-    std::thread workflow_step_thread_;
     std::thread worker_job_thread_;
     std::thread worker_lifecycle_thread_;
     std::thread job_materializer_thread_;

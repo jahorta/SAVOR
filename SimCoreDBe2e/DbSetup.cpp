@@ -1,5 +1,9 @@
 #include "DbSetup.h"
 
+#include <algorithm>
+#include <chrono>
+#include <utility>
+
 #include "Common/Types/UtcTimestamp.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Tas/DtmFile.h"
@@ -42,6 +46,65 @@ simcore::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
         .object_store_root = root / "object_store",
         .archive_store_root = root / "archive_store",
     };
+}
+
+ScopedWorkflowCoordinatorService::~ScopedWorkflowCoordinatorService() {
+    Stop();
+}
+
+bool ScopedWorkflowCoordinatorService::Start(
+    simcore::db::IExecutionDb* execution_db,
+    const simcore::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
+    const CliOptions& options,
+    std::string* error_out,
+    EventLineCallback event_line_callback) {
+    if (service_ != nullptr && service_->IsRunning()) {
+        return true;
+    }
+    if (execution_db == nullptr || program_kind_registry == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "workflow coordinator requires execution db and program registry";
+        }
+        return false;
+    }
+
+    simcore::db::execution::workflow::WorkflowCoordinatorConfig config{};
+    config.workflow_enabled = true;
+    config.strict_smoke_terminal_on_failure = false;
+    config.poll_interval = std::chrono::milliseconds(std::max<std::int64_t>(1, options.poll_ms));
+
+    auto service = std::make_unique<simcore::db::execution::workflow::WorkflowCoordinatorService>(
+        execution_db,
+        program_kind_registry,
+        config,
+        std::move(event_line_callback));
+    std::string err;
+    if (!service->Start(&err)) {
+        if (error_out != nullptr) {
+            *error_out = "workflow coordinator startup failed: " + err;
+        }
+        return false;
+    }
+    service_ = std::move(service);
+    return true;
+}
+
+void ScopedWorkflowCoordinatorService::Stop() {
+    if (service_ != nullptr) {
+        service_->Stop();
+        service_.reset();
+    }
+}
+
+bool ScopedWorkflowCoordinatorService::IsRunning() const {
+    return service_ != nullptr && service_->IsRunning();
+}
+
+simcore::db::execution::workflow::WorkflowCoordinatorTelemetry
+ScopedWorkflowCoordinatorService::SnapshotTelemetry() const {
+    return service_ != nullptr
+        ? service_->SnapshotTelemetry()
+        : simcore::db::execution::workflow::WorkflowCoordinatorTelemetry{};
 }
 
 bool SeedStateSavestate(

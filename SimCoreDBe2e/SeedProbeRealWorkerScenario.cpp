@@ -790,10 +790,24 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         enqueue_event_line(line);
     });
 
+    ScopedWorkflowCoordinatorService workflow_coordinator;
+    if (!workflow_coordinator.Start(
+            execution_db,
+            &program_kind_registry,
+            options,
+            &err,
+            [&](const std::string& line) {
+                enqueue_event_line(line);
+            })) {
+        if (error_out) *error_out = err;
+        return false;
+    }
+
     coordinator.Start();
     auto* ui_read_db = db_service->UiReadDb();
     if (ui_read_db == nullptr) {
         coordinator.Stop();
+        workflow_coordinator.Stop();
         if (error_out) *error_out = "DBService ui read db unavailable";
         return false;
     }
@@ -897,6 +911,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     }
 
     coordinator.Stop();
+    workflow_coordinator.Stop();
     const auto final_event_lines = drain_event_lines();
     if (interactive_stdout) {
         std::vector<std::string> display_event_lines;

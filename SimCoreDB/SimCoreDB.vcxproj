@@ -206,6 +206,7 @@
     <ClInclude Include="Execution\Workflow\WorkflowComposition.h" />
     <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
     <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h" />
     <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h" />
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
@@ -258,6 +259,7 @@
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />

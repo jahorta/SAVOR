@@ -10,7 +10,7 @@
 
 #include "Runner/Parallel/PRTypes.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
-#include "Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/Workflow/WorkflowCoordinatorService.h"
 
 class CoordinatorController : public QObject
 {
@@ -77,8 +77,6 @@ private:
     void updateValidationMessage();
     void updateSnapshotCache();
     simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinatorConfig buildWorkerConfig() const;
-    simcore::runner::parallel::simcoredb::CoordinatorIntegrationConfig buildIntegrationConfig() const;
-    bool buildProgramRegistry(QString* errorMessage);
     QString visualReplayStateToText(simcore::runner::parallel::simcoredb::VisualReplayRuntimeState state) const;
     void applyVisualWorkerSurfaces();
     QString workerExePath() const;
@@ -90,11 +88,10 @@ private:
     };
 
     std::unique_ptr<simcore::runner::parallel::simcoredb::DBWorkflowWorkerCoordinator> coordinator_;
-    simcore::db::execution::programdb::ProgramKindRegistry programRegistry_;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
     simcore::PRStatus statusSnapshot_{};
-    simcore::runner::parallel::simcoredb::WorkflowCoordinatorTelemetry telemetrySnapshot_{};
+    simcore::db::execution::workflow::WorkflowCoordinatorTelemetry telemetrySnapshot_{};
     int targetWorkers_ = 1;
     int eventBufferCapacity_ = 64;
     bool paused_ = false;

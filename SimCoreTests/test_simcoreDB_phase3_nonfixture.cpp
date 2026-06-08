@@ -1,8 +1,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <future>
 #include <fstream>
+#include <memory>
 #include <thread>
 #include <utility>
 
@@ -16,6 +18,7 @@
 #include "Authoring/QueuedAuthoringDb.h"
 #include "Execution/QueuedExecutionDb.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
+#include "Execution/Workflow/WorkflowCoordinatorService.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
 #include "Runner/Parallel/SimCoreDB/WorkflowDispatchCoordinator.h"
@@ -28,6 +31,154 @@
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
+    namespace {
+        bool QueryText(sqlite3* db, const char* sql, std::string* value_out) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+                return false;
+            }
+            const int rc = sqlite3_step(st);
+            if (rc != SQLITE_ROW) {
+                sqlite3_finalize(st);
+                return false;
+            }
+            const auto* text = sqlite3_column_text(st, 0);
+            *value_out = text != nullptr ? reinterpret_cast<const char*>(text) : "";
+            sqlite3_finalize(st);
+            return true;
+        }
+
+        bool QueryInt64(sqlite3* db, const char* sql, std::int64_t* value_out) {
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+                return false;
+            }
+            const int rc = sqlite3_step(st);
+            if (rc != SQLITE_ROW) {
+                sqlite3_finalize(st);
+                return false;
+            }
+            *value_out = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+            return true;
+        }
+
+        bool WaitForCondition(std::function<bool()> condition, std::chrono::milliseconds timeout = std::chrono::milliseconds{ 1000 }) {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (condition()) {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{ 5 });
+            }
+            return condition();
+        }
+
+        class TestJobPersistenceAdapter final : public simcore::db::execution::programdb::IJobPersistenceAdapter {
+        public:
+            explicit TestJobPersistenceAdapter(simcore::db::IExecutionDb* execution_db)
+                : execution_db_(execution_db) {
+            }
+
+            simcore::db::execution::programdb::WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+                simcore::db::execution::programdb::WorkflowStepScheduleResult result{};
+                if (execution_db_ == nullptr) {
+                    return result;
+                }
+
+                std::string error;
+                std::int64_t job_set_id = 0;
+                if (!execution_db_->CreateJobSet(
+                    {
+                        .program_kind = 1,
+                        .purpose = "workflow-test",
+                        .created_by = std::string("WorkflowCoordinatorServiceTest"),
+                        .priority_boost = 0,
+                        .expected_total = 1,
+                        .domain_ref_kind = std::string("unit.input"),
+                        .domain_ref_id = domain_ref_id,
+                    },
+                    &job_set_id,
+                    &error)
+                    || job_set_id <= 0) {
+                    return result;
+                }
+
+                std::int64_t job_id = 0;
+                if (!execution_db_->EnqueueJob(
+                    {
+                        .job_set_id = job_set_id,
+                        .program_kind = 1,
+                        .program_version = 1,
+                        .program_ref_kind = "unit.input",
+                        .program_ref_id = domain_ref_id,
+                        .fingerprint = "workflow-coordinator-test-" + std::to_string(domain_ref_id),
+                        .priority = 0,
+                        .max_attempts = 1,
+                    },
+                    &job_id,
+                    &error)
+                    || job_id <= 0) {
+                    return {};
+                }
+
+                result.root_job_set_id = job_set_id;
+                result.persistence = {
+                    .program_ref_kind = "unit.input",
+                    .program_ref_id = domain_ref_id,
+                    .fingerprint = "workflow-coordinator-test-" + std::to_string(domain_ref_id),
+                    .program_version = 1,
+                };
+                return result;
+            }
+
+            std::int64_t DecodeDomainRefId(const simcore::db::execution::programdb::JobPersistenceRecord& persisted) const override {
+                return persisted.program_ref_id;
+            }
+
+        private:
+            simcore::db::IExecutionDb* execution_db_ = nullptr;
+        };
+
+        class AdvanceToNextStepHandler final : public simcore::db::execution::programdb::IWorkflowTransitionHandler {
+        public:
+            simcore::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
+                const simcore::db::execution::programdb::WorkflowTransitionContext&) const override {
+                simcore::db::execution::programdb::WorkflowTransitionDecision decision{};
+                decision.should_advance = true;
+                decision.next_step_key = "Next";
+                return decision;
+            }
+        };
+
+        simcore::db::execution::programdb::ProgramKindRegistry BuildWorkflowCoordinatorTestRegistry(
+            simcore::db::IExecutionDb* execution_db,
+            bool include_transition = false) {
+            simcore::db::execution::programdb::ProgramKindRegistry registry;
+            simcore::db::execution::programdb::ProgramKindDescriptor descriptor{};
+            descriptor.program_kind = 1;
+            descriptor.program_name = "WorkflowCoordinatorServiceTest";
+            descriptor.job_persistence = std::make_shared<TestJobPersistenceAdapter>(execution_db);
+            if (include_transition) {
+                descriptor.workflow_transition = std::make_shared<AdvanceToNextStepHandler>();
+            }
+            descriptor.supports_workflow_orchestration = true;
+            (void)registry.RegisterForStepKind("unit.ready", descriptor);
+            (void)registry.RegisterForStepKind("unit.step", descriptor);
+            return registry;
+        }
+
+        simcore::db::execution::workflow::WorkflowCoordinatorConfig FastWorkflowCoordinatorConfig() {
+            return simcore::db::execution::workflow::WorkflowCoordinatorConfig{
+                .workflow_enabled = true,
+                .strict_smoke_terminal_on_failure = false,
+                .poll_interval = std::chrono::milliseconds{ 5 },
+                .ready_scan_limit = 16,
+                .terminal_scan_limit = 16,
+            };
+        }
+    }
+
     TEST(Stage3Phase2Contracts, DbLifecyclePreservesCanonicalEventOrderingAndOutboxContracts) {
         using namespace simcore::db::execution::workflow;
         using namespace simcore::db::migrations;
@@ -175,6 +326,181 @@ VALUES(2604, 2601, 2602, 2603, unixepoch()*1000);
         sqlite3_close(db);
         std::error_code ec;
         std::filesystem::remove_all(temp_dir, ec);
+    }
+
+    TEST(WorkflowCoordinatorService, MaterializesReadyStepWithoutWorkerCoordinator) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(6101, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, input_ref_kind, input_ref_id, attempts, max_attempts, created_at_utc, ready_at_utc)
+VALUES(6102, 6101, 'Ready', 'unit.ready', 'READY', 'unit.input', 6103, 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db, true);
+        WorkflowCoordinatorService service(&execution_db, &registry, FastWorkflowCoordinatorConfig());
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string state;
+            std::int64_t job_count = 0;
+            return QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6102;", &state)
+                && state == "MATERIALIZED"
+                && QueryInt64(db, "SELECT COUNT(1) FROM exec_job WHERE job_set_id=(SELECT job_set_id FROM exec_workflow_step WHERE workflow_step_id=6102);", &job_count)
+                && job_count == 1;
+        }));
+        service.Stop();
+
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_GE(telemetry.materialization_count, 1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, TerminalScanMarksSucceededMaterializedStepAndAdvancesGraph) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(6201, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(6202, 1, 'workflow-test', 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES(6203, 6202, 1, 1, 'unit.input', 6203, 'workflow-terminal-success', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(6204, 6201, 'Current', 'unit.step', 'MATERIALIZED', 6202, 0, 1, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc)
+VALUES(6205, 6201, 'Next', 'unit.ready', 'WAITING', 0, 1, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db, true);
+        WorkflowCoordinatorService service(&execution_db, &registry, FastWorkflowCoordinatorConfig());
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string current_state;
+            std::string next_state;
+            return QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6204;", &current_state)
+                && QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6205;", &next_state)
+                && current_state == "COMPLETED"
+                && next_state == "READY";
+        }));
+        service.Stop();
+
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_GE(telemetry.terminal_completed_step_count, 1);
+        EXPECT_GE(telemetry.transition_advanced_count, 1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, TerminalScanMarksFailedWhenAnyDescendantJobFails) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(6301, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(6302, 1, 'workflow-test', 2, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc, ended_at_utc)
+VALUES
+    (6303, 6302, 1, 1, 'unit.input', 6303, 'workflow-terminal-failed-1', 0, 'COMPLETED', 1, 1, unixepoch()*1000, unixepoch()*1000),
+    (6304, 6302, 1, 1, 'unit.input', 6304, 'workflow-terminal-failed-2', 0, 'FAILED', 1, 1, unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(6305, 6301, 'Current', 'unit.step', 'MATERIALIZED', 6302, 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db);
+        WorkflowCoordinatorService service(&execution_db, &registry, FastWorkflowCoordinatorConfig());
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string step_state;
+            std::string workflow_state;
+            return QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6305;", &step_state)
+                && QueryText(db, "SELECT state FROM exec_workflow_instance WHERE workflow_instance_id=6301;", &workflow_state)
+                && step_state == "FAILED"
+                && workflow_state == "FAILED";
+        }));
+        service.Stop();
+
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_GE(telemetry.terminal_failed_step_count, 1);
+        EXPECT_GE(telemetry.workflow_failed_count, 1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, TerminalScanMarksMaterializedEmptyJobSetCompletedWithEmptyEvent) {
+        using namespace simcore::db::execution::workflow;
+        using namespace simcore::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(6401, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(6402, 1, 'workflow-test-empty', 0, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db);
+        const auto snapshots = execution_db.WorkflowQueryService()->ListTerminalReadyStepSnapshots(16);
+        ASSERT_EQ(snapshots.size(), 1u);
+        EXPECT_EQ(snapshots.front().workflow_step_id, 6403);
+        EXPECT_EQ(snapshots.front().discovered_total, 0);
+        WorkflowCoordinatorService service(&execution_db, &registry, FastWorkflowCoordinatorConfig());
+        ASSERT_TRUE(service.Start(&err)) << err;
+        const bool completed_empty_step = WaitForCondition([&]() {
+            std::string step_state;
+            std::int64_t empty_events = 0;
+            return QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6403;", &step_state)
+                && QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=6403 AND event_kind='Execution.WorkflowStepEmpty.v1';", &empty_events)
+                && step_state == "COMPLETED"
+                && empty_events == 1;
+        });
+        service.Stop();
+
+        std::string failure_message;
+        std::string final_step_state;
+        std::int64_t final_empty_events = 0;
+        (void)QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6403;", &final_step_state);
+        (void)QueryInt64(db,
+            "SELECT COUNT(1) FROM exec_workflow_event WHERE workflow_step_id=6403 AND event_kind='Execution.WorkflowStepEmpty.v1';",
+            &final_empty_events);
+        (void)QueryText(db,
+            "SELECT COALESCE(message, '') FROM exec_workflow_event "
+            "WHERE workflow_step_id=6403 AND event_kind='Execution.WorkflowStepCoordinatorFailure.v1' "
+            "ORDER BY workflow_event_id DESC LIMIT 1;",
+            &failure_message);
+
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_TRUE(completed_empty_step)
+            << "state=" << final_step_state
+            << " empty_events=" << final_empty_events
+            << " terminal_scans=" << telemetry.terminal_scan_count
+            << " terminal_steps=" << telemetry.terminal_step_count
+            << " failure=" << failure_message;
+        EXPECT_GE(telemetry.terminal_empty_step_count, 1);
+        sqlite3_close(db);
     }
 
     TEST(Stage3Phase3Telemetry, CapturesMaterializationAndDispatchCounters) {

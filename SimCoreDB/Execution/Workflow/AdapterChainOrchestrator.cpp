@@ -13,13 +13,12 @@ std::string GateKey(const StepCompletionSnapshot& snapshot) {
 StepCompletionGateDecision StepCompletionGateService::Evaluate(const StepCompletionSnapshot& snapshot) {
     StepCompletionGateDecision decision{};
 
-    if (snapshot.expected_total <= 0 || snapshot.discovered_total <= 0) {
-        decision.can_transition = false;
-        decision.blocked_reason = "STEP_BLOCKED_EMPTY_JOB_SET";
+    if (snapshot.discovered_total <= 0) {
+        decision.can_transition = true;
         return decision;
     }
 
-    if (snapshot.expected_total != snapshot.discovered_total) {
+    if (snapshot.expected_total > 0 && snapshot.expected_total != snapshot.discovered_total) {
         const auto key = GateKey(snapshot);
         const int attempts = ++mismatch_attempts_[key];
         decision.can_transition = false;

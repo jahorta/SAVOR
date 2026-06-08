@@ -1,7 +1,5 @@
 #include "DBWorkflowWorkerCoordinator.h"
 
-#include "../../../../SimCoreDB/Execution/Workflow/WorkflowTerminalAdvancementService.h"
-
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -482,16 +480,12 @@ DBWorkflowWorkerCoordinator::~DBWorkflowWorkerCoordinator() {
 }
 
 void DBWorkflowWorkerCoordinator::Start() {
-    if (workflow_step_thread_.joinable() || worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
+    if (worker_job_thread_.joinable() || worker_lifecycle_thread_.joinable()) {
         return;
     }
 
     stop_.store(false);
     job_materialization_service_.ResetForStart();
-    {
-        std::lock_guard<std::mutex> lock(queue_mtx_);
-        seen_workflow_instance_ids_.clear();
-    }
 
     {
         std::lock_guard<std::mutex> lock(workers_mtx_);
@@ -515,7 +509,6 @@ void DBWorkflowWorkerCoordinator::Start() {
     progress_drainer_thread_ = std::thread([this]() { DrainProgressLoop(); });
     results_drainer_thread_ = std::thread([this]() { DrainResultsLoop(); });
     job_materializer_thread_ = std::thread([this]() { job_materialization_service_.MaterializeClaimedJobPayloadLoop(stop_); });
-    workflow_step_thread_ = std::thread([this]() { WorkflowStepCoordinatorLoop(); });
     worker_lifecycle_thread_ = std::thread([this]() { WorkerLifecycleCoordinatorLoop(); });
     worker_job_thread_ = std::thread([this]() { WorkerJobCoordinatorLoop(); });
 }
@@ -528,9 +521,6 @@ void DBWorkflowWorkerCoordinator::Stop() {
     progress_q_.close();
     results_q_.close();
 
-    if (workflow_step_thread_.joinable()) {
-        workflow_step_thread_.join();
-    }
     if (worker_job_thread_.joinable()) {
         worker_job_thread_.join();
     }
@@ -1199,85 +1189,6 @@ std::vector<std::string> DBWorkflowWorkerCoordinator::TakeVisualDebugLogLines() 
     return lines;
 }
 
-void DBWorkflowWorkerCoordinator::WorkflowStepCoordinatorLoop() {
-    ReconcileTerminalWorkflowSteps();
-    PollReadyStepsFromDb();
-
-    while (!stop_.load()) {
-        if (paused_.load()) {
-            std::unique_lock<std::mutex> lock(queue_mtx_);
-            queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
-            continue;
-        }
-
-        ReconcileTerminalWorkflowSteps();
-        PollReadyStepsFromDb();
-        WorkflowReadyStep step;
-        if (!TryDequeueReadyStep(&step)) {
-            std::unique_lock<std::mutex> lock(queue_mtx_);
-            queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
-            continue;
-        }
-
-        ProcessReadyWorkflowStep(step);
-    }
-}
-
-void DBWorkflowWorkerCoordinator::ReconcileTerminalWorkflowSteps() {
-    if (!integration_cfg_.workflow_enabled
-        || execution_db_ == nullptr
-        || execution_db_->WorkflowQueryService() == nullptr
-        || execution_db_->WorkflowCommandService() == nullptr
-        || adapter_chain_orchestrator_ == nullptr) {
-        return;
-    }
-
-    const auto snapshots = execution_db_->WorkflowQueryService()->ListTerminalReadyStepSnapshots(8);
-    if (snapshots.empty()) {
-        return;
-    }
-
-    simcore::db::execution::workflow::WorkflowTerminalAdvancementService terminal_advancement(
-        adapter_chain_orchestrator_.get(),
-        execution_db_->WorkflowQueryService(),
-        execution_db_->WorkflowCommandService());
-
-    for (const auto& snapshot : snapshots) {
-        simcore::db::execution::workflow::WorkflowTerminalAdvancementResult advancement{};
-        std::string advancement_error;
-        const WorkflowReadyStep step{
-            .workflow_instance_id = snapshot.workflow_instance_id,
-            .workflow_step_id = snapshot.workflow_step_id,
-            .step_key = snapshot.step_key,
-            .step_kind = snapshot.step_kind,
-            .priority = 0,
-        };
-        if (!terminal_advancement.AdvanceSnapshot(snapshot, &advancement, &advancement_error)) {
-            EmitAdapterTraceEvent(
-                step,
-                "OnStepTerminalSweep",
-                "failed",
-                std::nullopt,
-                snapshot.job_set_id,
-                advancement_error.empty() ? std::nullopt : std::optional<std::string>(advancement_error));
-            continue;
-        }
-
-        EmitAdapterTraceEvent(
-            step,
-            "OnStepTerminalSweep",
-            advancement.advanced_next_step
-                ? "advanced"
-                : advancement.workflow_completed ? "workflow_completed" : advancement.workflow_failed ? "workflow_failed" : advancement.gate_can_transition ? "terminal" : "blocked",
-            std::nullopt,
-            snapshot.job_set_id,
-            advancement.blocked_reason);
-        if (advancement.advanced_next_step || advancement.workflow_completed) {
-            queue_cv_.notify_all();
-        }
-    }
-}
-
 void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
     while (!stop_.load()) {
         if (paused_.load()) {
@@ -1620,81 +1531,6 @@ void DBWorkflowWorkerCoordinator::DrainResultsLoop() {
                     static_cast<std::int64_t>(result.job_id),
                     context->job_set_id,
                     "ADAPTER_RESULT_PERSIST_FAILED:" + adapter_error);
-            } else if (execution_db_ != nullptr
-                && execution_db_->WorkflowQueryService() != nullptr
-                && execution_db_->WorkflowCommandService() != nullptr) {
-                simcore::db::execution::workflow::WorkflowTerminalAdvancementService terminal_advancement(
-                    adapter_chain_orchestrator_.get(),
-                    execution_db_->WorkflowQueryService(),
-                    execution_db_->WorkflowCommandService());
-                simcore::db::execution::workflow::WorkflowTerminalAdvancementResult advancement{};
-                std::string advancement_error;
-                if (!terminal_advancement.AdvanceForTerminalJob(
-                        static_cast<std::int64_t>(result.job_id),
-                        &advancement,
-                        &advancement_error,
-                        mapped)) {
-                    EmitAdapterTraceEvent(
-                        context->step,
-                        "OnStepTerminal",
-                        "failed",
-                        static_cast<std::int64_t>(result.job_id),
-                        context->job_set_id,
-                        advancement_error.empty() ? std::nullopt : std::optional<std::string>(advancement_error));
-                    std::ostringstream line;
-                    line << "[seedprobe-terminal-advance] job=" << result.job_id
-                         << " step=" << context->step.step_key
-                         << " kind=" << context->step.step_kind
-                         << " workflow_step_id=" << context->step.workflow_step_id
-                         << " job_set=" << context->job_set_id
-                         << " status=failed";
-                    if (!advancement_error.empty()) {
-                        line << " error=" << advancement_error;
-                    }
-                    EmitDurableEventLine(line.str());
-                } else if (advancement.snapshot_found) {
-                    const char* status = advancement.advanced_next_step
-                        ? "advanced"
-                        : advancement.workflow_completed ? "workflow_completed"
-                        : advancement.workflow_failed ? "workflow_failed"
-                        : advancement.gate_can_transition ? "terminal"
-                        : "blocked";
-                    EmitAdapterTraceEvent(
-                        context->step,
-                        "OnStepTerminal",
-                        status,
-                        static_cast<std::int64_t>(result.job_id),
-                        context->job_set_id,
-                        advancement.blocked_reason);
-                    std::ostringstream line;
-                    line << "[seedprobe-terminal-advance] job=" << result.job_id
-                         << " step=" << context->step.step_key
-                         << " kind=" << context->step.step_kind
-                         << " workflow_step_id=" << context->step.workflow_step_id
-                         << " job_set=" << context->job_set_id
-                         << " status=" << status
-                         << " step_terminal=" << (advancement.step_marked_terminal ? "true" : "false")
-                         << " gate=" << (advancement.gate_can_transition ? "true" : "false")
-                         << " next_step=" << (advancement.advanced_next_step ? "true" : "false")
-                         << " workflow_completed=" << (advancement.workflow_completed ? "true" : "false")
-                         << " workflow_failed=" << (advancement.workflow_failed ? "true" : "false");
-                    if (advancement.blocked_reason.has_value()) {
-                        line << " blocked_reason=" << *advancement.blocked_reason;
-                    }
-                    EmitDurableEventLine(line.str());
-                    if (advancement.advanced_next_step || advancement.workflow_completed) {
-                        queue_cv_.notify_all();
-                    }
-                } else {
-                    std::ostringstream line;
-                    line << "[seedprobe-terminal-advance] job=" << result.job_id
-                         << " step=" << context->step.step_key
-                         << " kind=" << context->step.step_kind
-                         << " workflow_step_id=" << context->step.workflow_step_id
-                         << " job_set=" << context->job_set_id
-                         << " status=snapshot_missing";
-                    EmitDurableEventLine(line.str());
-                }
             }
         }
 
@@ -2356,17 +2192,10 @@ void DBWorkflowWorkerCoordinator::MarkDeterministicFailure(
     std::optional<std::int64_t> job_id,
     std::optional<std::int64_t> job_set_id,
     const std::string& reason) const {
-    if (execution_db_ == nullptr || execution_db_->WorkflowCommandService() == nullptr) {
+    if (execution_db_ == nullptr) {
         return;
     }
     std::string error;
-    (void)execution_db_->WorkflowCommandService()->MarkStepTerminal(
-        {
-            .workflow_step_id = step.workflow_step_id,
-            .terminal_state = "FAILED",
-            .requested_by = "adapter_chain_orchestrator",
-        },
-        &error);
     if (execution_db_->JobCommandService() != nullptr && job_id.has_value() && job_set_id.has_value()) {
         (void)execution_db_->JobCommandService()->AppendLifecycleEvent(
             {

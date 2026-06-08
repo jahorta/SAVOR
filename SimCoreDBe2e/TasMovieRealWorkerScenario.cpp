@@ -368,6 +368,19 @@ bool RunTasMovieScenario(
         last_progress_by_worker[progress.worker_id] = progress;
     });
 
+    ScopedWorkflowCoordinatorService workflow_coordinator;
+    if (!workflow_coordinator.Start(
+            db_service->ExecutionDb(),
+            &registry,
+            options,
+            &err,
+            [&](const std::string& line) {
+                push_line(line);
+            })) {
+        if (error_out) *error_out = err;
+        return false;
+    }
+
     coordinator.Start();
     const auto started = std::chrono::steady_clock::now();
     const bool interactive_stdout = IsInteractiveStdout();
@@ -439,6 +452,7 @@ bool RunTasMovieScenario(
         std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
     }
     coordinator.Stop();
+    workflow_coordinator.Stop();
     const auto final_event_lines = drain_lines();
     if (interactive_stdout) {
         progress_renderer.WriteEventLines(std::cout, final_event_lines);

@@ -94,6 +94,9 @@
     <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
+    <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h">
+      <Filter>Workflows</Filter>
+    </ClInclude>
     <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h">
       <Filter>Workflows</Filter>
     </ClInclude>
@@ -286,6 +289,9 @@
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp">
+      <Filter>Workflows</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp">

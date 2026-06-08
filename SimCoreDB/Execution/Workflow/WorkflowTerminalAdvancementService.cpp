@@ -123,6 +123,20 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
     }
     result.step_marked_terminal = true;
 
+    if (snapshot.discovered_total == 0
+        && !command_service_->AppendLifecycleEvent(
+            {
+                .workflow_instance_id = snapshot.workflow_instance_id,
+                .workflow_step_id = snapshot.workflow_step_id,
+                .event_kind = "Execution.WorkflowStepEmpty.v1",
+                .message = std::optional<std::string>("terminal_reason=EMPTY"),
+                .requested_by = "workflow_terminal_advancement",
+            },
+            &command_error)) {
+        if (error_out) *error_out = command_error;
+        return false;
+    }
+
     if (terminal.gate.terminal_fail) {
         if (!command_service_->AppendLifecycleEvent(
             {

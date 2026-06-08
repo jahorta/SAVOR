@@ -1,7 +1,16 @@
 #include "SimCoreDbRuntime.h"
 
+#include <QtCore/QCoreApplication>
+
 #include <filesystem>
 #include <system_error>
+#include <utility>
+
+#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
+#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
+#include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
+#include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
+#include "Runner/IPC/Wire.h"
 
 namespace soasimqt2 {
 namespace {
@@ -72,10 +81,35 @@ bool SimCoreDbRuntime::start(const std::filesystem::path& root, std::string* err
     }
     root_ = root;
     service_ = std::move(service);
+
+    if (!buildProgramRegistry(error_out)) {
+        stop();
+        return false;
+    }
+
+    auto workflow_coordinator =
+        std::make_unique<simcore::db::execution::workflow::WorkflowCoordinatorService>(
+            service_->ExecutionDb(),
+            &program_registry_,
+            buildWorkflowConfig());
+    std::string workflow_error;
+    if (!workflow_coordinator->Start(&workflow_error)) {
+        if (error_out != nullptr) {
+            *error_out = "workflow coordinator startup failed: " + workflow_error;
+        }
+        stop();
+        return false;
+    }
+    workflow_coordinator_ = std::move(workflow_coordinator);
     return true;
 }
 
 void SimCoreDbRuntime::stop() {
+    if (workflow_coordinator_ != nullptr) {
+        workflow_coordinator_->Stop();
+        workflow_coordinator_.reset();
+    }
+    program_registry_ = simcore::db::execution::programdb::ProgramKindRegistry{};
     if (service_ != nullptr) {
         service_->Stop();
         service_.reset();
@@ -187,6 +221,96 @@ simcore::db::execution::workflow::IWorkflowOrchestrationQueryService* SimCoreDbR
 simcore::db::execution::workflow::IWorkflowOrchestrationCommandService* SimCoreDbRuntime::workflowCommandService() {
     auto* db = executionDb();
     return db != nullptr ? db->WorkflowCommandService() : nullptr;
+}
+
+simcore::db::execution::programdb::ProgramKindRegistry* SimCoreDbRuntime::programKindRegistry() {
+    return service_ != nullptr && service_->IsRunning() ? &program_registry_ : nullptr;
+}
+
+simcore::db::execution::workflow::WorkflowCoordinatorTelemetry SimCoreDbRuntime::workflowCoordinatorTelemetry() const {
+    return workflow_coordinator_ != nullptr
+        ? workflow_coordinator_->SnapshotTelemetry()
+        : simcore::db::execution::workflow::WorkflowCoordinatorTelemetry{};
+}
+
+bool SimCoreDbRuntime::workflowCoordinatorRunning() const {
+    return workflow_coordinator_ != nullptr && workflow_coordinator_->IsRunning();
+}
+
+bool SimCoreDbRuntime::buildProgramRegistry(std::string* error_out) {
+    auto* execution_db = executionDb();
+    auto* state_db = stateDb();
+    auto* analysis_db = analysisDb();
+    auto* authoring_db = authoringDb();
+
+    if (execution_db == nullptr || state_db == nullptr || analysis_db == nullptr || authoring_db == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = "SimCoreDB services are incomplete";
+        }
+        return false;
+    }
+
+    program_registry_ = simcore::db::execution::programdb::ProgramKindRegistry{};
+    const auto app_dir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
+    const auto workspace_root = app_dir / "workflow-runtime";
+
+    simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    tas_config.authoring_db = authoring_db;
+    tas_config.working_dir_root = workspace_root / "tasmovie";
+    simcore::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
+        &program_registry_,
+        execution_db,
+        state_db,
+        analysis_db,
+        std::move(tas_config));
+
+    simcore::db::execution::programdb::seedprobe::SeedProbePhaseRegistrationConfig seed_config{};
+    seed_config.authoring_db = authoring_db;
+    simcore::db::execution::programdb::seedprobe::RegisterSeedProbePhaseDescriptors(
+        &program_registry_,
+        execution_db,
+        analysis_db,
+        std::move(seed_config));
+
+    simcore::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
+    context_config.authoring_db = authoring_db;
+    context_config.working_dir_root = workspace_root / "battle-context";
+    simcore::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
+        &program_registry_,
+        execution_db,
+        analysis_db,
+        std::move(context_config));
+
+    simcore::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
+    battle_config.authoring_db = authoring_db;
+    battle_config.working_dir_root = workspace_root / "battle-single-turn";
+    simcore::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
+        &program_registry_,
+        execution_db,
+        state_db,
+        analysis_db,
+        std::move(battle_config));
+
+    if (!program_registry_.HasRequiredAdapters(static_cast<std::int32_t>(simcore::PK_TasMovie))
+        || !program_registry_.HasRequiredAdaptersForStepKind("tas_movie")
+        || !program_registry_.HasRequiredAdaptersForStepKind("seed_probe_chain")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle_chain")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.context_probe")
+        || !program_registry_.HasRequiredAdaptersForStepKind("battle.single_turn")) {
+        if (error_out != nullptr) {
+            *error_out = "Workflow program descriptor registration is incomplete";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+simcore::db::execution::workflow::WorkflowCoordinatorConfig SimCoreDbRuntime::buildWorkflowConfig() {
+    return simcore::db::execution::workflow::WorkflowCoordinatorConfig{
+        .workflow_enabled = true,
+        .strict_smoke_terminal_on_failure = false,
+    };
 }
 
 } // namespace soasimqt2
