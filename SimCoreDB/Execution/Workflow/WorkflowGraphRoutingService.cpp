@@ -18,6 +18,13 @@ bool IsTerminal(WorkflowStepState state) {
         || state == WorkflowStepState::Skipped;
 }
 
+bool IsTerminalActivation(WorkflowUnitActivationState state) {
+    return state == WorkflowUnitActivationState::Completed
+        || state == WorkflowUnitActivationState::Failed
+        || state == WorkflowUnitActivationState::Skipped
+        || state == WorkflowUnitActivationState::Canceled;
+}
+
 std::string BindingKey(const std::string& node_key, const std::string& input_key) {
     return node_key + "\n" + input_key;
 }
@@ -59,6 +66,11 @@ const WorkflowStepOutputRecord* FindOutput(
 bool HasActiveWorkForGraphNode(
     const WorkflowGraphSnapshot& execution_graph,
     const std::string& graph_node_key) {
+    for (const auto& activation : execution_graph.unit_activations) {
+        if (activation.graph_node_key == graph_node_key && !IsTerminalActivation(activation.state)) {
+            return true;
+        }
+    }
     return std::any_of(
         execution_graph.steps.begin(),
         execution_graph.steps.end(),
@@ -69,6 +81,15 @@ bool HasActiveWorkForGraphNode(
 }
 
 bool AllExecutionStepsTerminal(const WorkflowGraphSnapshot& execution_graph) {
+    if (!execution_graph.unit_activations.empty()) {
+        return std::all_of(
+            execution_graph.unit_activations.begin(),
+            execution_graph.unit_activations.end(),
+            [](const auto& activation) {
+                return activation.parent_workflow_unit_activation_id.has_value()
+                    || IsTerminalActivation(activation.state);
+            });
+    }
     return std::all_of(
         execution_graph.steps.begin(),
         execution_graph.steps.end(),
@@ -122,7 +143,26 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
         return false;
     }
 
-    const auto graph_node_key = snapshot.graph_node_key.empty() ? snapshot.step_key : snapshot.graph_node_key;
+    auto graph_node_key = snapshot.graph_node_key.empty() ? snapshot.step_key : snapshot.graph_node_key;
+    if (snapshot.workflow_unit_activation_id.has_value()) {
+        const auto activation_it = std::find_if(
+            execution_graph->unit_activations.begin(),
+            execution_graph->unit_activations.end(),
+            [&](const auto& activation) {
+                return activation.workflow_unit_activation_id == *snapshot.workflow_unit_activation_id;
+            });
+        if (activation_it != execution_graph->unit_activations.end()) {
+            if (!activation_it->graph_node_key.empty()) {
+                graph_node_key = activation_it->graph_node_key;
+            }
+            if (!IsTerminalActivation(activation_it->state)) {
+                if (result_out) {
+                    *result_out = result;
+                }
+                return true;
+            }
+        }
+    }
     const auto job_outputs = execution_db_->ListJobOutputsForWorkflowStep(snapshot.workflow_step_id);
     for (const auto& job_output : job_outputs) {
         std::string command_error;

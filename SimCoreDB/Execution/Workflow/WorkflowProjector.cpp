@@ -63,17 +63,68 @@ bool WorkflowProjector::ProjectInstance(std::int64_t workflow_instance_id, std::
     }
     sqlite3_finalize(inst);
 
+    sqlite3_stmt* activations = nullptr;
+    constexpr const char* kActivations =
+        "INSERT INTO ui_workflow_unit_activation("
+        "workflow_unit_activation_id,workflow_instance_id,parent_workflow_unit_activation_id,activation_key,graph_node_key,unit_kind,display_name,state,"
+        "activation_params_json,authored_ref_kind,authored_ref_id,failure_code,failure_text,created_at_utc,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc) "
+        "SELECT workflow_unit_activation_id,workflow_instance_id,parent_workflow_unit_activation_id,activation_key,graph_node_key,unit_kind,display_name,state,"
+        "activation_params_json,authored_ref_kind,authored_ref_id,failure_code,failure_text,created_at_utc,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc "
+        "FROM exec_workflow_unit_activation WHERE workflow_instance_id=?1 "
+        "ON CONFLICT(workflow_unit_activation_id) DO UPDATE SET "
+        "parent_workflow_unit_activation_id=excluded.parent_workflow_unit_activation_id,"
+        "state=excluded.state,activation_params_json=excluded.activation_params_json,"
+        "failure_code=excluded.failure_code,failure_text=excluded.failure_text,"
+        "ready_at_utc=excluded.ready_at_utc,started_at_utc=excluded.started_at_utc,"
+        "completed_at_utc=excluded.completed_at_utc,failed_at_utc=excluded.failed_at_utc;";
+    if (sqlite3_prepare_v2(db_, kActivations, -1, &activations, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(activations, 1, workflow_instance_id);
+    if (sqlite3_step(activations) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        sqlite3_finalize(activations);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_finalize(activations);
+
+    sqlite3_stmt* activation_edges = nullptr;
+    constexpr const char* kActivationEdges =
+        "INSERT INTO ui_workflow_unit_activation_edge("
+        "workflow_unit_activation_edge_id,workflow_instance_id,from_workflow_unit_activation_id,to_workflow_unit_activation_id,output_key,input_key,condition_kind,condition_value,created_at_utc) "
+        "SELECT workflow_unit_activation_edge_id,workflow_instance_id,from_workflow_unit_activation_id,to_workflow_unit_activation_id,output_key,input_key,condition_kind,condition_value,created_at_utc "
+        "FROM exec_workflow_unit_activation_edge WHERE workflow_instance_id=?1 "
+        "ON CONFLICT(workflow_unit_activation_edge_id) DO UPDATE SET "
+        "output_key=excluded.output_key,input_key=excluded.input_key,condition_kind=excluded.condition_kind,condition_value=excluded.condition_value;";
+    if (sqlite3_prepare_v2(db_, kActivationEdges, -1, &activation_edges, nullptr) != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(activation_edges, 1, workflow_instance_id);
+    if (sqlite3_step(activation_edges) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        sqlite3_finalize(activation_edges);
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
+    }
+    sqlite3_finalize(activation_edges);
+
     sqlite3_stmt* steps = nullptr;
     constexpr const char* kSteps =
         "INSERT INTO ui_workflow_step("
-        "workflow_step_id,workflow_instance_id,step_key,step_kind,state,blocked_reason,job_set_id,job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
-        "SELECT s.workflow_step_id,s.workflow_instance_id,s.step_key,s.step_kind,s.state,s.blocked_reason,s.job_set_id,"
+        "workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,blocked_reason,job_set_id,job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
+        "SELECT s.workflow_step_id,s.workflow_instance_id,s.workflow_unit_activation_id,s.step_key,s.step_kind,s.state,s.blocked_reason,s.job_set_id,"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id),"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='COMPLETED'),"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED'),"
         "s.priority,s.attempts,s.max_attempts,s.ready_at_utc,s.started_at_utc,s.completed_at_utc,s.failed_at_utc,s.created_at_utc "
         "FROM exec_workflow_step s WHERE s.workflow_instance_id=?1 "
         "ON CONFLICT(workflow_step_id) DO UPDATE SET "
+        "workflow_unit_activation_id=excluded.workflow_unit_activation_id,"
         "state=excluded.state,blocked_reason=excluded.blocked_reason,job_set_id=excluded.job_set_id,"
         "job_count=excluded.job_count,job_completed_count=excluded.job_completed_count,job_failed_count=excluded.job_failed_count,"
         "attempts=excluded.attempts,max_attempts=excluded.max_attempts,ready_at_utc=excluded.ready_at_utc,"

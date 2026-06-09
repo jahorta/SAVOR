@@ -28,6 +28,16 @@ enum class WorkflowStepState {
     Skipped = 6,
 };
 
+enum class WorkflowUnitActivationState {
+    Waiting = 0,
+    Ready = 1,
+    Running = 2,
+    Completed = 3,
+    Failed = 4,
+    Skipped = 5,
+    Canceled = 6,
+};
+
 struct WorkflowInstanceRecord {
     std::int64_t workflow_instance_id = 0;
     std::string workflow_kind;
@@ -37,9 +47,26 @@ struct WorkflowInstanceRecord {
     std::optional<std::int64_t> workflow_graph_revision_id;
 };
 
+struct WorkflowUnitActivationRecord {
+    std::int64_t workflow_unit_activation_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> parent_workflow_unit_activation_id;
+    std::string activation_key;
+    std::string graph_node_key;
+    std::string unit_kind;
+    std::string display_name;
+    WorkflowUnitActivationState state = WorkflowUnitActivationState::Waiting;
+    std::string activation_params_json;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::optional<std::string> failure_code;
+    std::optional<std::string> failure_text;
+};
+
 struct WorkflowStepRecord {
     std::int64_t workflow_step_id = 0;
     std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> workflow_unit_activation_id;
     std::string step_key;
     std::string graph_node_key;
     std::string step_kind;
@@ -60,6 +87,17 @@ struct WorkflowEdgeRecord {
     std::int64_t workflow_instance_id = 0;
     std::int64_t from_step_id = 0;
     std::int64_t to_step_id = 0;
+    std::optional<std::string> condition_kind;
+    std::optional<std::string> condition_value;
+};
+
+struct WorkflowUnitActivationEdgeRecord {
+    std::int64_t workflow_unit_activation_edge_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t from_workflow_unit_activation_id = 0;
+    std::int64_t to_workflow_unit_activation_id = 0;
+    std::optional<std::string> output_key;
+    std::optional<std::string> input_key;
     std::optional<std::string> condition_kind;
     std::optional<std::string> condition_value;
 };
@@ -91,6 +129,8 @@ struct WorkflowInstanceArgumentRecord {
 
 struct WorkflowGraphSnapshot {
     WorkflowInstanceRecord instance;
+    std::vector<WorkflowUnitActivationRecord> unit_activations;
+    std::vector<WorkflowUnitActivationEdgeRecord> unit_activation_edges;
     std::vector<WorkflowStepRecord> steps;
     std::vector<WorkflowEdgeRecord> edges;
     std::vector<WorkflowInstanceInputBindingRecord> input_bindings;
@@ -100,6 +140,7 @@ struct WorkflowGraphSnapshot {
 struct WorkflowReadyStepRecord {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> workflow_unit_activation_id;
     std::string step_key;
     std::string graph_node_key;
     std::string step_kind;
@@ -111,6 +152,7 @@ struct WorkflowReadyStepRecord {
 struct WorkflowStepTerminalSnapshot {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
+    std::optional<std::int64_t> workflow_unit_activation_id;
     std::int64_t job_set_id = 0;
     std::string workflow_kind;
     std::optional<std::int64_t> workflow_graph_revision_id;
@@ -239,6 +281,48 @@ struct WorkflowAppendDynamicStepSpec {
     int max_attempts = 1;
 };
 
+struct WorkflowCreateUnitStepSpec {
+    std::string step_key;
+    std::string step_key_suffix;
+    std::string step_kind;
+    std::vector<std::string> dependencies;
+    std::optional<std::string> guard_kind;
+    std::optional<std::string> guard_value;
+    int priority = 0;
+    int max_attempts = 1;
+    std::optional<std::string> input_ref_kind;
+    std::optional<std::int64_t> input_ref_id;
+};
+
+struct WorkflowCreateUnitActivationSpec {
+    std::string activation_key;
+    std::optional<std::string> parent_activation_key;
+    std::string graph_node_key;
+    std::string unit_kind;
+    std::string display_name;
+    std::string activation_params_json;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::vector<std::string> dependencies;
+    std::vector<WorkflowCreateUnitStepSpec> steps;
+};
+
+struct WorkflowScheduleUnitActivationCommand {
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> parent_workflow_unit_activation_id;
+    std::optional<std::int64_t> source_workflow_step_id;
+    std::optional<std::int64_t> source_workflow_unit_activation_id;
+    std::string activation_key;
+    std::string graph_node_key;
+    std::string unit_kind;
+    std::string display_name;
+    std::string activation_params_json;
+    std::optional<std::string> authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::vector<WorkflowCreateUnitStepSpec> steps;
+    std::string requested_by;
+};
+
 struct WorkflowAppendDynamicStepsCommand {
     std::int64_t workflow_instance_id = 0;
     std::optional<std::int64_t> parent_workflow_step_id;
@@ -291,6 +375,7 @@ struct WorkflowCreateInstanceCommand {
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string created_by;
     std::int64_t created_at_utc = 0;
+    std::vector<WorkflowCreateUnitActivationSpec> unit_activations;
     std::vector<WorkflowCreateStepSpec> steps;
     std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
     std::vector<WorkflowCreateInstanceArgumentSpec> arguments;
@@ -333,6 +418,7 @@ struct IWorkflowOrchestrationCommandService {
     virtual bool RecordInputBinding(const WorkflowRecordInputBindingCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) = 0;
     virtual bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) = 0;
+    virtual bool ScheduleUnitActivation(const WorkflowScheduleUnitActivationCommand& command, std::string* error_out) = 0;
     virtual bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) = 0;
     virtual bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) = 0;
 };

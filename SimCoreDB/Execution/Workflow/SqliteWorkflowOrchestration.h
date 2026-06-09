@@ -53,6 +53,7 @@ public:
     bool RecordInputBinding(const WorkflowRecordInputBindingCommand& command, std::string* error_out) override;
     bool MarkStepBlocked(const WorkflowMarkStepBlockedCommand& command, std::string* error_out) override;
     bool MarkStepReady(const WorkflowMarkStepReadyCommand& command, std::string* error_out) override;
+    bool ScheduleUnitActivation(const WorkflowScheduleUnitActivationCommand& command, std::string* error_out) override;
     bool AppendDynamicSteps(const WorkflowAppendDynamicStepsCommand& command, std::string* error_out) override;
     bool AppendLifecycleEvent(const WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override;
 

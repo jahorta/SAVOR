@@ -61,6 +61,16 @@ bool isTerminalStepState(const std::string& state)
     return state == "COMPLETED" || state == "SKIPPED";
 }
 
+bool isTerminalActivationState(const std::string& state)
+{
+    return state == "COMPLETED" || state == "SKIPPED";
+}
+
+bool isFutureActivationState(const simcore::db::UiWorkflowUnitActivationSummary& activation)
+{
+    return activation.state == "WAITING";
+}
+
 bool isFutureStepState(const simcore::db::UiWorkflowStepSummary& step)
 {
     return step.state == "WAITING" && step.blocked_reason.empty();
@@ -94,6 +104,23 @@ QString stepProgressText(const simcore::db::UiWorkflowStepSummary& step)
 
 QString activeStepText(const simcore::db::UiWorkflowDetail& detail)
 {
+    const simcore::db::UiWorkflowUnitActivationSummary* fallbackActivation = nullptr;
+    for (const auto& activation : detail.unit_activations) {
+        if (!isTerminalActivationState(activation.state) && !isFutureActivationState(activation)) {
+            return QStringLiteral("%1 (%2)")
+                .arg(qstr(activation.display_name.empty() ? activation.activation_key : activation.display_name))
+                .arg(qstr(activation.state));
+        }
+        if (fallbackActivation == nullptr && isFutureActivationState(activation)) {
+            fallbackActivation = &activation;
+        }
+    }
+    if (fallbackActivation != nullptr) {
+        return QStringLiteral("%1 (%2)")
+            .arg(qstr(fallbackActivation->display_name.empty() ? fallbackActivation->activation_key : fallbackActivation->display_name))
+            .arg(qstr(fallbackActivation->state));
+    }
+
     const simcore::db::UiWorkflowStepSummary* fallback = nullptr;
     for (const auto& step : detail.steps) {
         if (isCurrentStepState(step)) {
@@ -150,7 +177,7 @@ void configureStepTree(QTreeWidget* tree)
     }
     tree->setColumnCount(labels.size());
     tree->setHeaderLabels(labels);
-    tree->setRootIsDecorated(false);
+    tree->setRootIsDecorated(true);
     tree->setAlternatingRowColors(true);
     tree->setUniformRowHeights(true);
     tree->header()->setStretchLastSection(false);
@@ -198,6 +225,57 @@ void addStepRow(QTreeWidget* tree, const simcore::db::UiWorkflowStepSummary& ste
     item->setText(5, QStringLiteral("%1/%2").arg(step.attempts).arg(step.max_attempts));
     item->setText(6, qstr(step.blocked_reason));
     item->setText(7, formatOptionalTime(step.started_at_utc));
+}
+
+void addStepChildRow(QTreeWidgetItem* parent, const simcore::db::UiWorkflowStepSummary& step)
+{
+    auto* item = new QTreeWidgetItem(parent);
+    item->setText(0, qstr(step.step_key));
+    item->setText(1, qstr(step.step_kind));
+    item->setText(2, qstr(step.state));
+    item->setText(3, formatOptionalId(step.job_set_id));
+    item->setText(4, stepProgressText(step));
+    item->setText(5, QStringLiteral("%1/%2").arg(step.attempts).arg(step.max_attempts));
+    item->setText(6, qstr(step.blocked_reason));
+    item->setText(7, formatOptionalTime(step.started_at_utc));
+}
+
+void addActivationRow(
+    QTreeWidget* tree,
+    const simcore::db::UiWorkflowUnitActivationSummary& activation,
+    const simcore::db::UiWorkflowDetail& detail)
+{
+    std::int64_t total = 0;
+    std::int64_t completed = 0;
+    std::int64_t failed = 0;
+    for (const auto& step : detail.steps) {
+        if (!step.workflow_unit_activation_id.has_value()
+            || *step.workflow_unit_activation_id != activation.workflow_unit_activation_id) {
+            continue;
+        }
+        total += step.job_count;
+        completed += step.job_completed_count;
+        failed += step.job_failed_count;
+    }
+
+    auto* item = new QTreeWidgetItem(tree);
+    const auto label = activation.display_name.empty() ? activation.activation_key : activation.display_name;
+    item->setText(0, QStringLiteral("%1 [%2]").arg(qstr(label)).arg(qstr(activation.activation_key)));
+    item->setText(1, qstr(activation.unit_kind));
+    item->setText(2, qstr(activation.state));
+    item->setText(3, QStringLiteral("-"));
+    item->setText(4, progressText(completed, total, failed));
+    item->setText(5, QStringLiteral("-"));
+    item->setText(6, qstr(activation.failure_text));
+    item->setText(7, formatOptionalTime(activation.started_at_utc));
+
+    for (const auto& step : detail.steps) {
+        if (step.workflow_unit_activation_id.has_value()
+            && *step.workflow_unit_activation_id == activation.workflow_unit_activation_id) {
+            addStepChildRow(item, step);
+        }
+    }
+    item->setExpanded(true);
 }
 
 void setEmptyStepRow(QTreeWidget* tree, const QString& text)
@@ -722,15 +800,33 @@ void WorkflowsPage::updateWorkflowDetail()
         totalJobs += step.job_count;
         completedJobs += step.job_completed_count;
         failedJobs += step.job_failed_count;
-        if (isTerminalStepState(step.state)) {
-            addStepRow(pastStepsTree_, step);
+    }
+
+    for (const auto& activation : detail.unit_activations) {
+        if (isTerminalActivationState(activation.state)) {
+            addActivationRow(pastStepsTree_, activation, detail);
             ++pastCount;
-        } else if (isFutureStepState(step)) {
-            addStepRow(futureStepsTree_, step);
+        } else if (isFutureActivationState(activation)) {
+            addActivationRow(futureStepsTree_, activation, detail);
             ++futureCount;
         } else {
-            addStepRow(currentStepsTree_, step);
+            addActivationRow(currentStepsTree_, activation, detail);
             ++currentCount;
+        }
+    }
+
+    if (detail.unit_activations.empty()) {
+        for (const auto& step : detail.steps) {
+            if (isTerminalStepState(step.state)) {
+                addStepRow(pastStepsTree_, step);
+                ++pastCount;
+            } else if (isFutureStepState(step)) {
+                addStepRow(futureStepsTree_, step);
+                ++futureCount;
+            } else {
+                addStepRow(currentStepsTree_, step);
+                ++currentCount;
+            }
         }
     }
 
@@ -780,6 +876,37 @@ void WorkflowsPage::updateWorkflowJobSets()
     jobSetsTree_->clear();
     if (workflowJobSets_.empty()) {
         setEmptyTreeRow(jobSetsTree_, QStringLiteral("No job sets are attached to this workflow yet."));
+        return;
+    }
+
+    for (const auto& activation : selectedWorkflowDetail_->unit_activations) {
+        auto* activationItem = new QTreeWidgetItem(jobSetsTree_);
+        const auto label = activation.display_name.empty() ? activation.activation_key : activation.display_name;
+        activationItem->setText(0, QStringLiteral("%1 [%2]").arg(qstr(label)).arg(qstr(activation.activation_key)));
+        activationItem->setText(1, qstr(activation.unit_kind));
+        activationItem->setText(2, qstr(activation.state));
+        activationItem->setFirstColumnSpanned(false);
+
+        for (const auto& row : workflowJobSets_) {
+            if (!row.step.workflow_unit_activation_id.has_value()
+                || *row.step.workflow_unit_activation_id != activation.workflow_unit_activation_id) {
+                continue;
+            }
+            const auto& step = row.step;
+            auto* item = new QTreeWidgetItem(activationItem);
+            item->setText(0, qstr(step.step_key));
+            item->setText(1, qstr(step.step_kind));
+            item->setText(2, qstr(step.state));
+            item->setText(3, formatOptionalId(step.job_set_id));
+            item->setText(4, qstr(row.program_kind_label));
+            item->setText(5, stepProgressText(step));
+            item->setText(6, QString::number(static_cast<qint64>(step.job_count)));
+            item->setText(7, formatTime(step.created_at_utc));
+        }
+        activationItem->setExpanded(true);
+    }
+
+    if (!selectedWorkflowDetail_->unit_activations.empty()) {
         return;
     }
 

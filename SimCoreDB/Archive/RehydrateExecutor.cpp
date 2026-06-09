@@ -491,28 +491,82 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                     const auto created_by = spec.target_namespace + ":rehydrate";
                     sqlite3_bind_text(st.st, 4, created_by.c_str(), -1, SQLITE_TRANSIENT);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
-                } else if (kind == "workflow_steps") {
+                } else if (kind == "workflow_unit_activations") {
                     bool ok_id = false;
                     bool ok_instance = false;
-                    bool ok_set = false;
-                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_id);
+                    bool ok_parent = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_unit_activation_id", &ok_id);
                     const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
-                    const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
+                    const auto old_parent = JsonExtractInt(execution_db_, line, "$.parent_workflow_unit_activation_id", &ok_parent);
                     if (!ok_id || !ok_instance) continue;
-                    const auto new_id = map_id("workflow_step", old_id);
+                    const auto new_id = map_id("workflow_unit_activation", old_id);
                     const auto new_instance = map_id("workflow_instance", old_instance);
-                    const auto new_set = ok_set ? map_id("job_set", old_set) : 0;
-                    if (new_id == 0 || new_instance == 0 || (ok_set && new_set == 0)) break;
+                    const auto new_parent = ok_parent ? map_id("workflow_unit_activation", old_parent) : 0;
+                    if (new_id == 0 || new_instance == 0 || (ok_parent && new_parent == 0)) break;
                     Statement st;
                     if (!Prepare(execution_db_,
-                            "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,guard_kind,guard_value,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,blocked_reason,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
-                            "VALUES(?1,?2,json_extract(?3,'$.step_key'),json_extract(?3,'$.step_kind'),json_extract(?3,'$.state'),json_extract(?3,'$.guard_kind'),json_extract(?3,'$.guard_value'),json_extract(?3,'$.priority'),json_extract(?3,'$.attempts'),json_extract(?3,'$.max_attempts'),?4,json_extract(?3,'$.input_ref_kind'),json_extract(?3,'$.input_ref_id'),json_extract(?3,'$.output_ref_kind'),json_extract(?3,'$.output_ref_id'),json_extract(?3,'$.blocked_reason'),json_extract(?3,'$.ready_at_utc'),json_extract(?3,'$.started_at_utc'),json_extract(?3,'$.completed_at_utc'),json_extract(?3,'$.failed_at_utc'),json_extract(?3,'$.created_at_utc'));",
+                            "INSERT INTO exec_workflow_unit_activation(workflow_unit_activation_id,workflow_instance_id,parent_workflow_unit_activation_id,activation_key,graph_node_key,unit_kind,display_name,state,activation_params_json,authored_ref_kind,authored_ref_id,failure_code,failure_text,created_at_utc,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.activation_key'),json_extract(?4,'$.graph_node_key'),json_extract(?4,'$.unit_kind'),json_extract(?4,'$.display_name'),json_extract(?4,'$.state'),COALESCE(json_extract(?4,'$.activation_params_json'),''),json_extract(?4,'$.authored_ref_kind'),json_extract(?4,'$.authored_ref_id'),json_extract(?4,'$.failure_code'),json_extract(?4,'$.failure_text'),json_extract(?4,'$.created_at_utc'),json_extract(?4,'$.ready_at_utc'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.failed_at_utc'));",
                             &st,
                             &db_error)) break;
                     sqlite3_bind_int64(st.st, 1, new_id);
                     sqlite3_bind_int64(st.st, 2, new_instance);
-                    sqlite3_bind_text(st.st, 3, line.c_str(), -1, SQLITE_TRANSIENT);
-                    if (ok_set) sqlite3_bind_int64(st.st, 4, new_set); else sqlite3_bind_null(st.st, 4);
+                    if (ok_parent) sqlite3_bind_int64(st.st, 3, new_parent); else sqlite3_bind_null(st.st, 3);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_unit_activation_edges") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    bool ok_from = false;
+                    bool ok_to = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_unit_activation_edge_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
+                    const auto old_from = JsonExtractInt(execution_db_, line, "$.from_workflow_unit_activation_id", &ok_from);
+                    const auto old_to = JsonExtractInt(execution_db_, line, "$.to_workflow_unit_activation_id", &ok_to);
+                    if (!ok_id || !ok_instance || !ok_from || !ok_to) continue;
+                    const auto new_id = map_id("workflow_unit_activation_edge", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_from = map_id("workflow_unit_activation", old_from);
+                    const auto new_to = map_id("workflow_unit_activation", old_to);
+                    if (new_id == 0 || new_instance == 0 || new_from == 0 || new_to == 0) break;
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_unit_activation_edge(workflow_unit_activation_edge_id,workflow_instance_id,from_workflow_unit_activation_id,to_workflow_unit_activation_id,output_key,input_key,condition_kind,condition_value,created_at_utc) "
+                            "VALUES(?1,?2,?3,?4,json_extract(?5,'$.output_key'),json_extract(?5,'$.input_key'),json_extract(?5,'$.condition_kind'),json_extract(?5,'$.condition_value'),json_extract(?5,'$.created_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    sqlite3_bind_int64(st.st, 3, new_from);
+                    sqlite3_bind_int64(st.st, 4, new_to);
+                    sqlite3_bind_text(st.st, 5, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (!StepDone(execution_db_, st.st, &db_error)) break;
+                } else if (kind == "workflow_steps") {
+                    bool ok_id = false;
+                    bool ok_instance = false;
+                    bool ok_set = false;
+                    bool ok_activation = false;
+                    const auto old_id = JsonExtractInt(execution_db_, line, "$.workflow_step_id", &ok_id);
+                    const auto old_instance = JsonExtractInt(execution_db_, line, "$.workflow_instance_id", &ok_instance);
+                    const auto old_set = JsonExtractInt(execution_db_, line, "$.job_set_id", &ok_set);
+                    const auto old_activation = JsonExtractInt(execution_db_, line, "$.workflow_unit_activation_id", &ok_activation);
+                    if (!ok_id || !ok_instance) continue;
+                    const auto new_id = map_id("workflow_step", old_id);
+                    const auto new_instance = map_id("workflow_instance", old_instance);
+                    const auto new_set = ok_set ? map_id("job_set", old_set) : 0;
+                    const auto new_activation = ok_activation ? map_id("workflow_unit_activation", old_activation) : 0;
+                    if (new_id == 0 || new_instance == 0 || (ok_set && new_set == 0) || (ok_activation && new_activation == 0)) break;
+                    Statement st;
+                    if (!Prepare(execution_db_,
+                            "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,graph_node_key,step_kind,state,guard_kind,guard_value,priority,attempts,max_attempts,job_set_id,input_ref_kind,input_ref_id,output_ref_kind,output_ref_id,blocked_reason,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc) "
+                            "VALUES(?1,?2,?3,json_extract(?4,'$.step_key'),json_extract(?4,'$.graph_node_key'),json_extract(?4,'$.step_kind'),json_extract(?4,'$.state'),json_extract(?4,'$.guard_kind'),json_extract(?4,'$.guard_value'),json_extract(?4,'$.priority'),json_extract(?4,'$.attempts'),json_extract(?4,'$.max_attempts'),?5,json_extract(?4,'$.input_ref_kind'),json_extract(?4,'$.input_ref_id'),json_extract(?4,'$.output_ref_kind'),json_extract(?4,'$.output_ref_id'),json_extract(?4,'$.blocked_reason'),json_extract(?4,'$.ready_at_utc'),json_extract(?4,'$.started_at_utc'),json_extract(?4,'$.completed_at_utc'),json_extract(?4,'$.failed_at_utc'),json_extract(?4,'$.created_at_utc'));",
+                            &st,
+                            &db_error)) break;
+                    sqlite3_bind_int64(st.st, 1, new_id);
+                    sqlite3_bind_int64(st.st, 2, new_instance);
+                    if (ok_activation) sqlite3_bind_int64(st.st, 3, new_activation); else sqlite3_bind_null(st.st, 3);
+                    sqlite3_bind_text(st.st, 4, line.c_str(), -1, SQLITE_TRANSIENT);
+                    if (ok_set) sqlite3_bind_int64(st.st, 5, new_set); else sqlite3_bind_null(st.st, 5);
                     if (!StepDone(execution_db_, st.st, &db_error)) break;
                 } else if (kind == "workflow_edges") {
                     bool ok_id = false;

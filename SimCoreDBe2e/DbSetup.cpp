@@ -249,8 +249,8 @@ bool SeedWorkflowGraphExecution(
                 .nodes = {
                     {
                         .node_key = "probe_1",
-                        .unit_kind = "seed_probe_chain",
-                        .display_name = "Seed Probe Chain",
+                        .unit_kind = "battle_seed_probe",
+                        .display_name = "Battle Seed Probe",
                         .authored_ref_kind = std::string("seed_probe_spec"),
                         .authored_ref_id = seed_probe_spec_id,
                         .inputs = {
@@ -277,7 +277,18 @@ bool SeedWorkflowGraphExecution(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
-    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 });
+    command.unit_activations.push_back({
+        .activation_key = "probe_1",
+        .graph_node_key = "probe_1",
+        .unit_kind = "battle_seed_probe",
+        .display_name = "Battle Seed Probe",
+        .activation_params_json = "{}",
+        .authored_ref_kind = std::string("seed_probe_spec"),
+        .authored_ref_id = seed_probe_spec_id,
+        .steps = {
+            { .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 },
+        },
+    });
     command.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -337,7 +348,16 @@ bool SeedTasMovieWorkflow(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
-    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
+    command.unit_activations.push_back({
+        .activation_key = "tas_1",
+        .graph_node_key = "tas_1",
+        .unit_kind = "tas_movie",
+        .display_name = "TAS Movie",
+        .activation_params_json = "{}",
+        .steps = {
+            { .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 },
+        },
+    });
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",
@@ -386,8 +406,8 @@ bool SeedTasMovieSeedProbeWorkflow(
                     },
                     {
                         .node_key = "probe_1",
-                        .unit_kind = "seed_probe_chain",
-                        .display_name = "Seed Probe Chain",
+                        .unit_kind = "battle_seed_probe",
+                        .display_name = "Battle Seed Probe",
                         .authored_ref_kind = std::string("seed_probe_spec"),
                         .authored_ref_id = seed_probe_spec_id,
                         .inputs = {
@@ -418,8 +438,29 @@ bool SeedTasMovieSeedProbeWorkflow(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = UtcNow().time_since_epoch().count();
-    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
-    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .dependencies = { "tas_1" }, .priority = 1, .max_attempts = 1 });
+    command.unit_activations.push_back({
+        .activation_key = "tas_1",
+        .graph_node_key = "tas_1",
+        .unit_kind = "tas_movie",
+        .display_name = "TAS Movie",
+        .activation_params_json = "{}",
+        .steps = {
+            { .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 },
+        },
+    });
+    command.unit_activations.push_back({
+        .activation_key = "probe_1",
+        .graph_node_key = "probe_1",
+        .unit_kind = "battle_seed_probe",
+        .display_name = "Battle Seed Probe",
+        .activation_params_json = "{}",
+        .authored_ref_kind = std::string("seed_probe_spec"),
+        .authored_ref_id = seed_probe_spec_id,
+        .dependencies = { "tas_1" },
+        .steps = {
+            { .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 },
+        },
+    });
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",

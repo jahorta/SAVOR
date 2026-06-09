@@ -204,6 +204,12 @@ public:
         });
     }
 
+    bool ScheduleUnitActivation(const workflow::WorkflowScheduleUnitActivationCommand& command, std::string* error_out) override {
+        return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
+            return service->ScheduleUnitActivation(cmd, err);
+        });
+    }
+
     bool AppendLifecycleEvent(const workflow::WorkflowAppendLifecycleEventCommand& command, std::string* error_out) override {
         return Execute(command, error_out, [](auto* service, const auto& cmd, auto* err) {
             return service->AppendLifecycleEvent(cmd, err);

@@ -76,6 +76,43 @@ bool RunWorkflowIntegrityChecks(sqlite3* db, WorkflowIntegrityReport* report_out
         return false;
     }
 
+    constexpr const char* kMissingStepActivationSql =
+        "SELECT COUNT(1) "
+        "FROM exec_workflow_step s "
+        "LEFT JOIN exec_workflow_unit_activation a ON a.workflow_unit_activation_id=s.workflow_unit_activation_id "
+        "WHERE EXISTS ("
+        "  SELECT 1 FROM exec_workflow_unit_activation ax "
+        "  WHERE ax.workflow_instance_id=s.workflow_instance_id"
+        ") "
+        "AND (s.workflow_unit_activation_id IS NULL "
+        "OR a.workflow_unit_activation_id IS NULL "
+        "OR a.workflow_instance_id<>s.workflow_instance_id);";
+    if (!QueryScalarInt(db, kMissingStepActivationSql, &report.missing_step_activation_count, error_out)) {
+        return false;
+    }
+
+    constexpr const char* kDanglingActivationEdgesSql =
+        "SELECT COUNT(1) "
+        "FROM exec_workflow_unit_activation_edge e "
+        "LEFT JOIN exec_workflow_unit_activation fa ON fa.workflow_unit_activation_id=e.from_workflow_unit_activation_id "
+        "LEFT JOIN exec_workflow_unit_activation ta ON ta.workflow_unit_activation_id=e.to_workflow_unit_activation_id "
+        "WHERE fa.workflow_unit_activation_id IS NULL OR ta.workflow_unit_activation_id IS NULL "
+        "OR fa.workflow_instance_id<>e.workflow_instance_id OR ta.workflow_instance_id<>e.workflow_instance_id;";
+    if (!QueryScalarInt(db, kDanglingActivationEdgesSql, &report.dangling_activation_edge_count, error_out)) {
+        return false;
+    }
+
+    constexpr const char* kNonTerminalRootActivationInCompletedInstanceSql =
+        "SELECT COUNT(1) "
+        "FROM exec_workflow_unit_activation a "
+        "JOIN exec_workflow_instance i ON i.workflow_instance_id=a.workflow_instance_id "
+        "WHERE i.state='COMPLETED' "
+        "AND a.parent_workflow_unit_activation_id IS NULL "
+        "AND a.state NOT IN ('COMPLETED','FAILED','SKIPPED','CANCELED');";
+    if (!QueryScalarInt(db, kNonTerminalRootActivationInCompletedInstanceSql, &report.non_terminal_root_activation_in_completed_instance_count, error_out)) {
+        return false;
+    }
+
     if (report_out) {
         *report_out = report;
     }

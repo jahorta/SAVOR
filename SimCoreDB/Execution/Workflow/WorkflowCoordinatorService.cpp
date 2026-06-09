@@ -1,5 +1,6 @@
 #include "WorkflowCoordinatorService.h"
 
+#include "WorkflowComposition.h"
 #include "WorkflowGraphRoutingService.h"
 #include "WorkflowTerminalAdvancementService.h"
 
@@ -342,11 +343,44 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
     context.workflow_graph_revision_id = graph->instance.workflow_graph_revision_id;
     context.step_key = step.step_key;
     context.step_kind = step.step_kind;
+    context.workflow_unit_activation_id = step.workflow_unit_activation_id;
+    const WorkflowUnitActivationRecord* owning_activation = nullptr;
+    if (step.workflow_unit_activation_id.has_value()) {
+        for (const auto& activation : graph->unit_activations) {
+            if (activation.workflow_unit_activation_id == *step.workflow_unit_activation_id) {
+                owning_activation = &activation;
+                break;
+            }
+        }
+    }
+    if (owning_activation == nullptr) {
+        for (const auto& activation : graph->unit_activations) {
+            if (activation.graph_node_key == step.step_key || activation.activation_key == step.step_key) {
+                owning_activation = &activation;
+                break;
+            }
+        }
+    }
+    if (owning_activation != nullptr) {
+        context.activation_key = owning_activation->activation_key;
+        context.activation_graph_node_key = owning_activation->graph_node_key;
+        context.unit_kind = owning_activation->unit_kind;
+        context.activation_params_json = owning_activation->activation_params_json;
+        const auto units = BuildDefaultWorkflowUnitRegistry();
+        const auto* unit = units.Find(owning_activation->unit_kind);
+        if (unit != nullptr) {
+            context.unit_variant = unit->unit_variant;
+            context.breakpoint_profile_key = unit->breakpoint_profile_key;
+        }
+    }
+    const auto expected_node_key = context.activation_graph_node_key.empty()
+        ? step.step_key
+        : context.activation_graph_node_key;
     if (step.input_ref_id.has_value() && *step.input_ref_id > 0) {
         if (step.step_kind == "seed_probe_chain" && step.input_ref_kind == "state.savestate") {
             context.input_bindings.push_back(
                 programdb::WorkflowGraphInputBinding{
-                    .node_key = step.step_key,
+                    .node_key = expected_node_key,
                     .input_key = "entry_savestate",
                     .data_kind = "state.savestate_id",
                     .ref_kind = *step.input_ref_kind,
@@ -366,7 +400,7 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
         }
     }
     for (const auto& binding : graph->input_bindings) {
-        if (binding.node_key != step.step_key) {
+        if (binding.node_key != expected_node_key) {
             continue;
         }
         context.input_bindings.push_back(
@@ -380,7 +414,7 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
             });
     }
     for (const auto& argument : graph->arguments) {
-        if (!argument.node_key.empty() && argument.node_key != step.step_key) {
+        if (!argument.node_key.empty() && argument.node_key != expected_node_key) {
             continue;
         }
         context.arguments.push_back(

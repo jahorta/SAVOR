@@ -27,15 +27,26 @@ struct WorkflowAuthoredRefRequirement {
     bool required = true;
 };
 
+struct WorkflowUnitStepTemplate {
+    std::string step_key_suffix;
+    std::string step_kind;
+    int priority = 0;
+    int max_attempts = 1;
+};
+
 struct WorkflowUnitDefinition {
     std::string unit_kind;
     std::string display_name;
     std::string description;
     bool hidden = false;
+    std::string unit_variant;
+    std::string breakpoint_profile_key;
+    std::string default_activation_params_json;
     std::vector<WorkflowAuthoredRefRequirement> authored_refs;
     std::vector<WorkflowPortDefinition> required_inputs;
     std::vector<WorkflowPortDefinition> possible_outputs;
     std::vector<std::string> internal_step_kinds;
+    std::vector<WorkflowUnitStepTemplate> step_templates;
 };
 
 struct WorkflowExternalInputBinding {

@@ -212,6 +212,7 @@ struct UiWorkflowInstanceSummary {
 struct UiWorkflowStepSummary {
     std::int64_t workflow_step_id = 0;
     std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> workflow_unit_activation_id;
     std::string step_key;
     std::string step_kind;
     std::string state;
@@ -230,11 +231,44 @@ struct UiWorkflowStepSummary {
     std::int64_t created_at_utc = 0;
 };
 
+struct UiWorkflowUnitActivationSummary {
+    std::int64_t workflow_unit_activation_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::optional<std::int64_t> parent_workflow_unit_activation_id;
+    std::string activation_key;
+    std::string graph_node_key;
+    std::string unit_kind;
+    std::string display_name;
+    std::string state;
+    std::string activation_params_json;
+    std::string authored_ref_kind;
+    std::optional<std::int64_t> authored_ref_id;
+    std::string failure_code;
+    std::string failure_text;
+    std::int64_t created_at_utc = 0;
+    std::optional<std::int64_t> ready_at_utc;
+    std::optional<std::int64_t> started_at_utc;
+    std::optional<std::int64_t> completed_at_utc;
+    std::optional<std::int64_t> failed_at_utc;
+};
+
 struct UiWorkflowEdgeSummary {
     std::int64_t workflow_edge_id = 0;
     std::int64_t workflow_instance_id = 0;
     std::int64_t from_step_id = 0;
     std::int64_t to_step_id = 0;
+    std::string condition_kind;
+    std::string condition_value;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiWorkflowUnitActivationEdgeSummary {
+    std::int64_t workflow_unit_activation_edge_id = 0;
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t from_workflow_unit_activation_id = 0;
+    std::int64_t to_workflow_unit_activation_id = 0;
+    std::string output_key;
+    std::string input_key;
     std::string condition_kind;
     std::string condition_value;
     std::int64_t created_at_utc = 0;
@@ -255,6 +289,8 @@ struct UiWorkflowAlertSummary {
 
 struct UiWorkflowDetail {
     UiWorkflowInstanceSummary instance;
+    std::vector<UiWorkflowUnitActivationSummary> unit_activations;
+    std::vector<UiWorkflowUnitActivationEdgeSummary> unit_activation_edges;
     std::vector<UiWorkflowStepSummary> steps;
     std::vector<UiWorkflowEdgeSummary> edges;
     std::vector<UiWorkflowAlertSummary> alerts;

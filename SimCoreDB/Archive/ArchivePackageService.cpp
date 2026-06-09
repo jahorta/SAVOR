@@ -391,6 +391,22 @@ std::vector<ExportSpec> BuildExportSpecs(const CreateArchivePackageRequest& requ
     });
 
     specs.push_back(ExportSpec{
+        "workflow_unit_activations",
+        scoped_instances
+            + "SELECT * FROM exec_workflow_unit_activation "
+              "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances) "
+              "ORDER BY workflow_unit_activation_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
+        "workflow_unit_activation_edges",
+        scoped_instances
+            + "SELECT * FROM exec_workflow_unit_activation_edge "
+              "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances) "
+              "ORDER BY workflow_unit_activation_edge_id ASC;"
+    });
+
+    specs.push_back(ExportSpec{
         "workflow_steps",
         scoped_instances
             + "SELECT * FROM exec_workflow_step "
@@ -952,6 +968,51 @@ bool SqliteArchivePackageService::ApplySourcePurgePolicyForRoot(
             "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
             ") "
             "DELETE FROM exec_workflow_edge "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_unit_activation_edge "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "UPDATE exec_workflow_step SET workflow_unit_activation_id=NULL "
+            "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
+        ok = ok && run_delete(
+            "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT c.job_set_id FROM exec_job_set c "
+            "  JOIN scoped_job_sets p ON c.parent_job_set_id=p.job_set_id"
+            "), scoped_instances(workflow_instance_id) AS ("
+            "  SELECT workflow_instance_id FROM exec_workflow_instance "
+            "  WHERE root_scope_kind='job_set' AND root_scope_id IN (SELECT job_set_id FROM scoped_job_sets) "
+            "  UNION "
+            "  SELECT DISTINCT workflow_instance_id FROM exec_workflow_step "
+            "  WHERE job_set_id IN (SELECT job_set_id FROM scoped_job_sets)"
+            ") "
+            "DELETE FROM exec_workflow_unit_activation "
             "WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM scoped_instances);");
         ok = ok && run_delete(
             "WITH RECURSIVE scoped_job_sets(job_set_id) AS ("

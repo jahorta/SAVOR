@@ -690,14 +690,23 @@ bool SeedBattleAnalysisAndWorkflowRows(
     workflow.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     workflow.created_by = "simcoredbe2e";
     workflow.created_at_utc = now.time_since_epoch().count();
-    simcore::db::execution::workflow::WorkflowCreateStepSpec step{};
-    step.step_key = "battle_context_1";
-    step.step_kind = "battle.context_probe";
-    step.priority = 1;
-    step.max_attempts = 1;
-    step.input_ref_kind = std::string(kWaveRefKind);
-    step.input_ref_id = wave_id;
-    workflow.steps.push_back(std::move(step));
+    workflow.unit_activations.push_back({
+        .activation_key = "battle_context_1",
+        .graph_node_key = "battle_context_1",
+        .unit_kind = "battle.context_probe",
+        .display_name = "Battle Context Probe",
+        .activation_params_json = "{}",
+        .steps = {
+            {
+                .step_key = "battle_context_1",
+                .step_kind = "battle.context_probe",
+                .priority = 1,
+                .max_attempts = 1,
+                .input_ref_kind = std::string(kWaveRefKind),
+                .input_ref_id = wave_id,
+            },
+        },
+    });
     workflow.input_bindings.push_back({
         .node_key = "battle_context_1",
         .input_key = "turn_wave",
@@ -753,8 +762,8 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                     },
                     {
                         .node_key = "probe_1",
-                        .unit_kind = "seed_probe_chain",
-                        .display_name = "Seed Probe Chain",
+                        .unit_kind = "battle_seed_probe",
+                        .display_name = "Battle Seed Probe",
                         .authored_ref_kind = std::string("seed_probe_spec"),
                         .authored_ref_id = seed_probe_spec_id,
                         .inputs = {
@@ -801,9 +810,42 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-    command.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 });
-    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .dependencies = { "tas_1" }, .priority = 1, .max_attempts = 1 });
-    command.steps.push_back({ .step_key = "battle_1", .step_kind = "battle_chain", .dependencies = { "tas_1", "probe_1" }, .priority = 1, .max_attempts = 1 });
+    command.unit_activations.push_back({
+        .activation_key = "tas_1",
+        .graph_node_key = "tas_1",
+        .unit_kind = "tas_movie",
+        .display_name = "TAS Movie",
+        .activation_params_json = "{}",
+        .steps = {
+            { .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 },
+        },
+    });
+    command.unit_activations.push_back({
+        .activation_key = "probe_1",
+        .graph_node_key = "probe_1",
+        .unit_kind = "battle_seed_probe",
+        .display_name = "Battle Seed Probe",
+        .activation_params_json = "{}",
+        .authored_ref_kind = std::string("seed_probe_spec"),
+        .authored_ref_id = seed_probe_spec_id,
+        .dependencies = { "tas_1" },
+        .steps = {
+            { .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 },
+        },
+    });
+    command.unit_activations.push_back({
+        .activation_key = "battle_1",
+        .graph_node_key = "battle_1",
+        .unit_kind = "battle_chain",
+        .display_name = "Battle Chain",
+        .activation_params_json = "{}",
+        .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+        .authored_ref_id = battle_chain_spec_id,
+        .dependencies = { "tas_1", "probe_1" },
+        .steps = {
+            { .step_key = "battle_1", .step_kind = "battle_chain", .priority = 1, .max_attempts = 1 },
+        },
+    });
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",

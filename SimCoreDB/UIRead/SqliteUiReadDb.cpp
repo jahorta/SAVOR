@@ -195,22 +195,46 @@ UiWorkflowStepSummary ReadWorkflowStepRow(sqlite3_stmt* st) {
     UiWorkflowStepSummary row{};
     row.workflow_step_id = sqlite3_column_int64(st, 0);
     row.workflow_instance_id = sqlite3_column_int64(st, 1);
-    row.step_key = ColumnText(st, 2);
-    row.step_kind = ColumnText(st, 3);
-    row.state = ColumnText(st, 4);
-    row.blocked_reason = ColumnText(st, 5);
-    row.job_set_id = ColumnInt64Optional(st, 6);
-    row.job_count = sqlite3_column_int64(st, 7);
-    row.job_completed_count = sqlite3_column_int64(st, 8);
-    row.job_failed_count = sqlite3_column_int64(st, 9);
-    row.priority = sqlite3_column_int(st, 10);
-    row.attempts = sqlite3_column_int(st, 11);
-    row.max_attempts = sqlite3_column_int(st, 12);
-    row.ready_at_utc = ColumnInt64Optional(st, 13);
-    row.started_at_utc = ColumnInt64Optional(st, 14);
-    row.completed_at_utc = ColumnInt64Optional(st, 15);
-    row.failed_at_utc = ColumnInt64Optional(st, 16);
-    row.created_at_utc = sqlite3_column_int64(st, 17);
+    row.workflow_unit_activation_id = ColumnInt64Optional(st, 2);
+    row.step_key = ColumnText(st, 3);
+    row.step_kind = ColumnText(st, 4);
+    row.state = ColumnText(st, 5);
+    row.blocked_reason = ColumnText(st, 6);
+    row.job_set_id = ColumnInt64Optional(st, 7);
+    row.job_count = sqlite3_column_int64(st, 8);
+    row.job_completed_count = sqlite3_column_int64(st, 9);
+    row.job_failed_count = sqlite3_column_int64(st, 10);
+    row.priority = sqlite3_column_int(st, 11);
+    row.attempts = sqlite3_column_int(st, 12);
+    row.max_attempts = sqlite3_column_int(st, 13);
+    row.ready_at_utc = ColumnInt64Optional(st, 14);
+    row.started_at_utc = ColumnInt64Optional(st, 15);
+    row.completed_at_utc = ColumnInt64Optional(st, 16);
+    row.failed_at_utc = ColumnInt64Optional(st, 17);
+    row.created_at_utc = sqlite3_column_int64(st, 18);
+    return row;
+}
+
+UiWorkflowUnitActivationSummary ReadWorkflowUnitActivationRow(sqlite3_stmt* st) {
+    UiWorkflowUnitActivationSummary row{};
+    row.workflow_unit_activation_id = sqlite3_column_int64(st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st, 1);
+    row.parent_workflow_unit_activation_id = ColumnInt64Optional(st, 2);
+    row.activation_key = ColumnText(st, 3);
+    row.graph_node_key = ColumnText(st, 4);
+    row.unit_kind = ColumnText(st, 5);
+    row.display_name = ColumnText(st, 6);
+    row.state = ColumnText(st, 7);
+    row.activation_params_json = ColumnText(st, 8);
+    row.authored_ref_kind = ColumnText(st, 9);
+    row.authored_ref_id = ColumnInt64Optional(st, 10);
+    row.failure_code = ColumnText(st, 11);
+    row.failure_text = ColumnText(st, 12);
+    row.created_at_utc = sqlite3_column_int64(st, 13);
+    row.ready_at_utc = ColumnInt64Optional(st, 14);
+    row.started_at_utc = ColumnInt64Optional(st, 15);
+    row.completed_at_utc = ColumnInt64Optional(st, 16);
+    row.failed_at_utc = ColumnInt64Optional(st, 17);
     return row;
 }
 
@@ -223,6 +247,20 @@ UiWorkflowEdgeSummary ReadWorkflowEdgeRow(sqlite3_stmt* st) {
     row.condition_kind = ColumnText(st, 4);
     row.condition_value = ColumnText(st, 5);
     row.created_at_utc = sqlite3_column_int64(st, 6);
+    return row;
+}
+
+UiWorkflowUnitActivationEdgeSummary ReadWorkflowUnitActivationEdgeRow(sqlite3_stmt* st) {
+    UiWorkflowUnitActivationEdgeSummary row{};
+    row.workflow_unit_activation_edge_id = sqlite3_column_int64(st, 0);
+    row.workflow_instance_id = sqlite3_column_int64(st, 1);
+    row.from_workflow_unit_activation_id = sqlite3_column_int64(st, 2);
+    row.to_workflow_unit_activation_id = sqlite3_column_int64(st, 3);
+    row.output_key = ColumnText(st, 4);
+    row.input_key = ColumnText(st, 5);
+    row.condition_kind = ColumnText(st, 6);
+    row.condition_value = ColumnText(st, 7);
+    row.created_at_utc = sqlite3_column_int64(st, 8);
     return row;
 }
 
@@ -667,9 +705,36 @@ std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
         return std::nullopt;
     }
 
+    sqlite3_stmt* activations = nullptr;
+    constexpr const char* kActivationsSql =
+        "SELECT workflow_unit_activation_id,workflow_instance_id,parent_workflow_unit_activation_id,activation_key,graph_node_key,"
+        "unit_kind,display_name,state,COALESCE(activation_params_json,''),COALESCE(authored_ref_kind,''),authored_ref_id,"
+        "COALESCE(failure_code,''),COALESCE(failure_text,''),created_at_utc,ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc "
+        "FROM ui_workflow_unit_activation WHERE workflow_instance_id=?1 ORDER BY created_at_utc ASC, workflow_unit_activation_id ASC;";
+    if (sqlite3_prepare_v2(db_, kActivationsSql, -1, &activations, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(activations, 1, workflow_instance_id);
+        while (sqlite3_step(activations) == SQLITE_ROW) {
+            detail->unit_activations.push_back(ReadWorkflowUnitActivationRow(activations));
+        }
+    }
+    sqlite3_finalize(activations);
+
+    sqlite3_stmt* activation_edges = nullptr;
+    constexpr const char* kActivationEdgesSql =
+        "SELECT workflow_unit_activation_edge_id,workflow_instance_id,from_workflow_unit_activation_id,to_workflow_unit_activation_id,"
+        "COALESCE(output_key,''),COALESCE(input_key,''),COALESCE(condition_kind,''),COALESCE(condition_value,''),created_at_utc "
+        "FROM ui_workflow_unit_activation_edge WHERE workflow_instance_id=?1 ORDER BY created_at_utc ASC, workflow_unit_activation_edge_id ASC;";
+    if (sqlite3_prepare_v2(db_, kActivationEdgesSql, -1, &activation_edges, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(activation_edges, 1, workflow_instance_id);
+        while (sqlite3_step(activation_edges) == SQLITE_ROW) {
+            detail->unit_activation_edges.push_back(ReadWorkflowUnitActivationEdgeRow(activation_edges));
+        }
+    }
+    sqlite3_finalize(activation_edges);
+
     sqlite3_stmt* steps = nullptr;
     constexpr const char* kStepsSql =
-        "SELECT workflow_step_id,workflow_instance_id,step_key,step_kind,state,COALESCE(blocked_reason,''),job_set_id,"
+        "SELECT workflow_step_id,workflow_instance_id,workflow_unit_activation_id,step_key,step_kind,state,COALESCE(blocked_reason,''),job_set_id,"
         "job_count,job_completed_count,job_failed_count,priority,attempts,max_attempts,"
         "ready_at_utc,started_at_utc,completed_at_utc,failed_at_utc,created_at_utc "
         "FROM ui_workflow_step WHERE workflow_instance_id=?1 ORDER BY created_at_utc ASC, workflow_step_id ASC;";

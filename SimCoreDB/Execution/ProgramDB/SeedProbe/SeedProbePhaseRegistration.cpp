@@ -16,6 +16,23 @@ const WorkflowGraphInputBinding* FindBinding(
     return nullptr;
 }
 
+std::string ProbeFlavorForContext(const WorkflowGraphStepScheduleContext& context) {
+    if (context.unit_kind == "dungeon_seed_probe" || context.unit_variant == "dungeon") {
+        return "DUNGEON_PRE";
+    }
+    if (context.unit_kind == "overworld_seed_probe" || context.unit_variant == "overworld") {
+        return "OVERWORLD_PRE";
+    }
+    return "BATTLE_PRE";
+}
+
+std::string BreakpointPolicyForContext(const WorkflowGraphStepScheduleContext& context) {
+    if (!context.breakpoint_profile_key.empty()) {
+        return context.breakpoint_profile_key;
+    }
+    return "default";
+}
+
 class SeedProbeChainGraphJobPersistenceAdapter final : public IWorkflowGraphJobPersistenceAdapter {
 public:
     SeedProbeChainGraphJobPersistenceAdapter(
@@ -44,14 +61,21 @@ public:
         }
 
         const simcore::db::WorkflowGraphNodeSnapshot* node = nullptr;
+        const auto node_key = context.activation_graph_node_key.empty()
+            ? context.step_key
+            : context.activation_graph_node_key;
         for (const auto& candidate : graph->nodes) {
-            if (candidate.node_key == context.step_key) {
+            if (candidate.node_key == node_key) {
                 node = &candidate;
                 break;
             }
         }
+        const auto unit_kind = !context.unit_kind.empty() ? context.unit_kind : (node != nullptr ? node->unit_kind : "");
         if (node == nullptr
-            || node->unit_kind != "seed_probe_chain"
+            || (unit_kind != "seed_probe_chain"
+                && unit_kind != "battle_seed_probe"
+                && unit_kind != "dungeon_seed_probe"
+                && unit_kind != "overworld_seed_probe")
             || node->authored_ref_kind.value_or("") != "seed_probe_spec"
             || !node->authored_ref_id.has_value()
             || *node->authored_ref_id <= 0) {
@@ -72,8 +96,8 @@ public:
         if (!analysis_db_->CreateSeedProbeSet(
                 {
                     .name = "workflow-seed-probe-" + aggregate,
-                    .probe_flavor = "BATTLE_PRE",
-                    .breakpoint_policy_name = "default",
+                    .probe_flavor = ProbeFlavorForContext(context),
+                    .breakpoint_policy_name = BreakpointPolicyForContext(context),
                     .segment_source_kind = "workflow_graph",
                     .created_at_utc = now,
                     .event_id = "workflow-seedprobe-set-" + aggregate,

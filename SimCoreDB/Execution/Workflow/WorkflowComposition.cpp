@@ -24,6 +24,44 @@ std::string BindingLabel(std::string_view node_key, std::string_view port_key) {
     return std::string(node_key) + "." + std::string(port_key);
 }
 
+std::vector<WorkflowUnitStepTemplate> SingleStep(std::string step_kind) {
+    return {
+        WorkflowUnitStepTemplate{
+            .step_key_suffix = "",
+            .step_kind = std::move(step_kind),
+            .priority = 1,
+            .max_attempts = 1,
+        },
+    };
+}
+
+WorkflowUnitDefinition SeedProbeUnit(
+    std::string unit_kind,
+    std::string display_name,
+    std::string description,
+    std::string variant,
+    std::string breakpoint_profile) {
+    return WorkflowUnitDefinition{
+        .unit_kind = std::move(unit_kind),
+        .display_name = std::move(display_name),
+        .description = std::move(description),
+        .unit_variant = std::move(variant),
+        .breakpoint_profile_key = std::move(breakpoint_profile),
+        .default_activation_params_json = "{}",
+        .authored_refs = {
+            { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
+        },
+        .required_inputs = {
+            Port("entry_savestate", "state.savestate_id", "Entry savestate"),
+        },
+        .possible_outputs = {
+            Port("unique_input_frames", "analysis.input_frame_set_id", "Unique input frames"),
+        },
+        .internal_step_kinds = { "seed_probe_chain", "seedprobe.grid", "seedprobe.unique" },
+        .step_templates = SingleStep("seed_probe_chain"),
+    };
+}
+
 } // namespace
 
 bool WorkflowUnitRegistry::RegisterUnit(WorkflowUnitDefinition definition, std::string* error_out) {
@@ -97,6 +135,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "tas_movie",
             .display_name = "TAS Movie",
             .description = "Runs a DTM/TAS movie and produces a savestate for downstream chains.",
+            .default_activation_params_json = "{}",
             .authored_refs = {
                 { .ref_kind = "tas_spec", .display_name = "TAS spec" },
             },
@@ -107,6 +146,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("savestate", "state.savestate_id", "Output savestate"),
             },
             .internal_step_kinds = { "tasmovie.play" },
+            .step_templates = SingleStep("tas_movie"),
         },
         &ignored);
 
@@ -115,6 +155,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "seed_probe_chain",
             .display_name = "Seed Probe Chain",
             .description = "Runs neutral, grid, and unique seed probing as one reusable chain.",
+            .unit_variant = "generic",
+            .breakpoint_profile_key = "seedprobe.default",
+            .default_activation_params_json = "{}",
             .authored_refs = {
                 { .ref_kind = "seed_probe_spec", .display_name = "Seed probe spec" },
             },
@@ -124,8 +167,36 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .possible_outputs = {
                 Port("unique_input_frames", "analysis.input_frame_set_id", "Unique input frames"),
             },
-            .internal_step_kinds = { "seedprobe.neutral", "seedprobe.grid", "seedprobe.unique" },
+            .internal_step_kinds = { "seed_probe_chain", "seedprobe.grid", "seedprobe.unique" },
+            .step_templates = SingleStep("seed_probe_chain"),
         },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        SeedProbeUnit(
+            "battle_seed_probe",
+            "Battle Seed Probe",
+            "Runs the seed probe chain with the battle breakpoint profile.",
+            "battle",
+            "seedprobe.battle"),
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        SeedProbeUnit(
+            "dungeon_seed_probe",
+            "Dungeon Seed Probe",
+            "Runs the seed probe chain with the dungeon breakpoint profile.",
+            "dungeon",
+            "seedprobe.dungeon"),
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        SeedProbeUnit(
+            "overworld_seed_probe",
+            "Overworld Seed Probe",
+            "Runs the seed probe chain with the overworld breakpoint profile.",
+            "overworld",
+            "seedprobe.overworld"),
         &ignored);
 
     (void)registry.RegisterUnit(
@@ -133,6 +204,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .unit_kind = "battle_chain",
             .display_name = "Battle Chain",
             .description = "Builds battle context, then runs one or more battle turns from candidate input frames.",
+            .unit_variant = "battle",
+            .breakpoint_profile_key = "battle.default",
+            .default_activation_params_json = "{}",
             .authored_refs = {
                 { .ref_kind = "authoring.battle_chain_spec", .display_name = "Battle chain spec" },
             },
@@ -145,6 +219,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("battle_followup", "analysis.battle_followup_id", "Battle follow-up"),
             },
             .internal_step_kinds = { "battle.context_probe", "battle.single_turn" },
+            .step_templates = SingleStep("battle_chain"),
         },
         &ignored);
 
@@ -154,6 +229,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .display_name = "Overworld Explorer",
             .description = "Placeholder contract for future overworld traversal from a terminal savestate.",
             .hidden = true,
+            .unit_variant = "overworld",
+            .breakpoint_profile_key = "overworld.default",
+            .default_activation_params_json = "{}",
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },
@@ -161,6 +239,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
             },
             .internal_step_kinds = {},
+            .step_templates = SingleStep("overworld_explorer"),
         },
         &ignored);
 
@@ -170,6 +249,9 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             .display_name = "Dungeon Explorer",
             .description = "Placeholder contract for future dungeon traversal from a terminal savestate.",
             .hidden = true,
+            .unit_variant = "dungeon",
+            .breakpoint_profile_key = "dungeon.default",
+            .default_activation_params_json = "{}",
             .required_inputs = {
                 Port("entry_savestate", "state.savestate_id", "Entry savestate"),
             },
@@ -177,6 +259,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
                 Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
             },
             .internal_step_kinds = {},
+            .step_templates = SingleStep("dungeon_explorer"),
         },
         &ignored);
 

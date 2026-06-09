@@ -51,6 +51,13 @@ struct WorkflowGraphStepScheduleContext {
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string step_key;
     std::string step_kind;
+    std::optional<std::int64_t> workflow_unit_activation_id;
+    std::string activation_key;
+    std::string activation_graph_node_key;
+    std::string unit_kind;
+    std::string unit_variant;
+    std::string breakpoint_profile_key;
+    std::string activation_params_json;
     std::vector<WorkflowGraphInputBinding> input_bindings;
     std::vector<WorkflowGraphArgument> arguments;
 };

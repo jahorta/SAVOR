@@ -287,6 +287,7 @@ public:
             });
         }
 
+        const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
         for (const auto& node : graph.nodes) {
             for (const auto& input : node.inputs) {
                 if (!input.required) {
@@ -299,15 +300,37 @@ public:
                 }
             }
 
-            simcore::db::execution::workflow::WorkflowCreateStepSpec step{};
-            step.step_key = node.node_key;
-            step.step_kind = node.unit_kind;
+            const auto* unit = registry.Find(node.unit_kind);
+            simcore::db::execution::workflow::WorkflowCreateUnitActivationSpec activation{};
+            activation.activation_key = node.node_key;
+            activation.graph_node_key = node.node_key;
+            activation.unit_kind = node.unit_kind;
+            activation.display_name = node.display_name.empty() ? node.unit_kind : node.display_name;
+            activation.activation_params_json = unit != nullptr ? unit->default_activation_params_json : "{}";
+            activation.authored_ref_kind = node.authored_ref_kind;
+            activation.authored_ref_id = node.authored_ref_id;
             const auto deps = dependencies_by_node.find(node.node_key);
             if (deps != dependencies_by_node.end()) {
-                step.dependencies = deps->second;
+                activation.dependencies = deps->second;
             }
-            step.max_attempts = 1;
-            command.steps.push_back(std::move(step));
+            if (unit != nullptr && !unit->step_templates.empty()) {
+                for (const auto& tmpl : unit->step_templates) {
+                    activation.steps.push_back(simcore::db::execution::workflow::WorkflowCreateUnitStepSpec{
+                        .step_key_suffix = tmpl.step_key_suffix,
+                        .step_kind = tmpl.step_kind,
+                        .priority = tmpl.priority,
+                        .max_attempts = tmpl.max_attempts,
+                    });
+                }
+            } else {
+                activation.steps.push_back(simcore::db::execution::workflow::WorkflowCreateUnitStepSpec{
+                    .step_key = node.node_key,
+                    .step_kind = node.unit_kind,
+                    .priority = 1,
+                    .max_attempts = 1,
+                });
+            }
+            command.unit_activations.push_back(std::move(activation));
         }
 
         std::int64_t workflow_instance_id = 0;
