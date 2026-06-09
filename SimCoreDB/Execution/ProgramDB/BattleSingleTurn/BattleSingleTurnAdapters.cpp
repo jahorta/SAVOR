@@ -1296,6 +1296,10 @@ public:
                 return decision;
             }
         }
+        if (battle_set->status == simcore::db::BattleSetStatus::Victory) {
+            decision.should_advance = true;
+            return decision;
+        }
 
         std::int64_t pool_id = 0;
         std::string error;
@@ -1403,6 +1407,8 @@ public:
         }
         if (any_victory) {
             (void)analysis_db_->UpdateBattleSetStatus(current_wave->battle_set_id, simcore::db::BattleSetStatus::Victory, now, nullptr);
+            decision.should_advance = true;
+            return decision;
         }
         if (!run_spec->auto_wave_trigger_enable) {
             decision.should_advance = true;
@@ -1494,6 +1500,7 @@ ProgramKindDescriptor BuildBattleSingleTurnDescriptor(
         analysis_db,
         config.authoring_db);
     descriptor.supports_workflow_orchestration = true;
+    descriptor.allow_mixed_success_failed_transition = true;
     return descriptor;
 }
 

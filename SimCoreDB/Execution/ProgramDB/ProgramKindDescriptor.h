@@ -166,6 +166,7 @@ struct ProgramKindDescriptor {
     std::shared_ptr<IWorkflowTransitionHandler> workflow_transition;
 
     bool supports_workflow_orchestration = false;
+    bool allow_mixed_success_failed_transition = false;
 };
 
 } // namespace simcore::db::execution::programdb

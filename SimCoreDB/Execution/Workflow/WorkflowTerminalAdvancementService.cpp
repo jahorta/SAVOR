@@ -141,7 +141,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         return false;
     }
 
-    const auto terminal_state = snapshot.failed_total > 0 ? "FAILED" : "COMPLETED";
+    const auto terminal_state = terminal.gate.terminal_fail ? "FAILED" : "COMPLETED";
     if (!command_service_->MarkStepTerminal(
         {
             .workflow_step_id = snapshot.workflow_step_id,

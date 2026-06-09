@@ -189,6 +189,7 @@ namespace simcore {
 		ViStalled = 2,  // VI didn't advance for the configured stall window
 		MovieEnded = 3,  // movie playback ended before any breakpoint fired
 		Aborted = 4,  // reserved for future external aborts
+		InputPlaybackFailed = 5,  // input tape playback failed after retries
 
 		Unknown = 0xffffffff,  // catch-all
 	};
@@ -201,6 +202,7 @@ namespace simcore {
 		case RunToBpOutcome::ViStalled: return "ViStalled";
 		case RunToBpOutcome::MovieEnded: return "MovieEnded";
 		case RunToBpOutcome::Aborted: return "Aborted";
+		case RunToBpOutcome::InputPlaybackFailed: return "InputPlaybackFailed";
 		case RunToBpOutcome::Unknown: return "Unknown";
 		default: return "UnrecognizedRunOutcome";
 		}

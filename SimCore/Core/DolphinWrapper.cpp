@@ -818,12 +818,13 @@ namespace simcore {
         }
 
         SCLOGDX(SC_TAGS("input"),
-            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u",
+            "[input-tape] label=%s begin source_frames=%zu playback_frames=%zu safe_mode=%u max_unacked_replays=%u frame_step_timeout_ms=%u",
             options.label,
             plan.size(),
             playback_plan.size(),
             options.safe_mode ? 1u : 0u,
-            options.max_unacked_replays);
+            options.max_unacked_replays,
+            options.frame_step_timeout_ms);
 
         result.attempted_frames.reserve(playback_plan.size());
         result.vi_durations.reserve(playback_plan.size());
@@ -847,7 +848,7 @@ namespace simcore {
                     pc_before,
                     DescribeFrameCompact(frame).c_str());
 
-                const bool step_ok = stepOneFrameBlocking();
+                const bool step_ok = stepOneFrameBlocking(static_cast<int>(options.frame_step_timeout_ms));
                 const auto stats = m_pad.getPollStats();
                 const uint32_t vi_after = static_cast<uint32_t>(getViFieldCountApprox() & 0xFFFFFFFFull);
                 const uint32_t pc_after = getPC();

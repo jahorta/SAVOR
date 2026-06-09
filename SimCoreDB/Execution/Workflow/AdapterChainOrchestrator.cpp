@@ -138,6 +138,7 @@ AdapterChainOrchestrator::StepTerminalResult AdapterChainOrchestrator::OnStepTer
     const StepCompletionSnapshot& snapshot,
     AdapterChainTrace* trace) const {
     StepTerminalResult result{};
+    const auto* descriptor = registry_ != nullptr ? registry_->FindForStepKind(step_kind) : nullptr;
 
     if (completion_gate_ == nullptr) {
         result.gate.can_transition = true;
@@ -149,7 +150,10 @@ AdapterChainOrchestrator::StepTerminalResult AdapterChainOrchestrator::OnStepTer
         && snapshot.discovered_total > 0
         && snapshot.terminal_total >= snapshot.discovered_total) {
         result.gate.can_transition = true;
-        result.gate.terminal_fail = true;
+        const int succeeded_total = snapshot.terminal_total - snapshot.failed_total;
+        result.gate.terminal_fail = succeeded_total <= 0
+            || descriptor == nullptr
+            || !descriptor->allow_mixed_success_failed_transition;
         result.gate.blocked_reason.reset();
     }
 
@@ -157,7 +161,6 @@ AdapterChainOrchestrator::StepTerminalResult AdapterChainOrchestrator::OnStepTer
         return result;
     }
 
-    const auto* descriptor = registry_->FindForStepKind(step_kind);
     if (descriptor == nullptr || descriptor->workflow_transition == nullptr) {
         return result;
     }

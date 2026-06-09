@@ -123,7 +123,7 @@ namespace phase::battle::turnrunner {
 
         ps.ops.push_back(simcore::OpLabel(LabelRetryExhausted));
         ps.ops.push_back(simcore::OpGotoIf(DW_Outcome, simcore::PSCmp::NE, 0u, LabelRetDWErr));
-        ps.ops.push_back(simcore::OpSetU32(DW_Outcome, static_cast<uint32_t>(simcore::RunToBpOutcome::Aborted)));
+        ps.ops.push_back(simcore::OpSetU32(DW_Outcome, static_cast<uint32_t>(simcore::RunToBpOutcome::InputPlaybackFailed)));
         ps.ops.push_back(simcore::OpGoto(LabelRetDWErr));
 
         // ============  Label Return Reached Next  ===================

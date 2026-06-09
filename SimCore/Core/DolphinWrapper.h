@@ -78,6 +78,7 @@ namespace simcore {
 
         struct InputTapePlaybackOptions {
             uint32_t max_unacked_replays = 2;
+            uint32_t frame_step_timeout_ms = 5000;
             bool safe_mode = false;
             const char* label = "input_tape";
         };
