@@ -677,7 +677,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     }
 
     std::int64_t seed_probe_spec_id = 0;
-    if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
+    if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, &seed_probe_spec_id, &err)) {
         if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
         return false;
     }

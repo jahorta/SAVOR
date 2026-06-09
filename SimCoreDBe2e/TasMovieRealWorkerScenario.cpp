@@ -79,8 +79,8 @@ std::int64_t ComputeTasMovieScenarioTimeoutMs(
     }
     constexpr std::int64_t kSeedProbeAverageUniqueCountEstimate = 25;
     const std::int64_t grid_probe_count =
-        static_cast<std::int64_t>(kSeedProbeSamplesPerAxis)
-        * static_cast<std::int64_t>(kSeedProbeSamplesPerAxis)
+        static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
+        * static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
         * 3;
     const auto seedprobe_budget_ms =
         options.timeout_ms * (1 + grid_probe_count + kSeedProbeAverageUniqueCountEstimate);
@@ -228,7 +228,7 @@ bool RunTasMovieScenario(
     std::int64_t probe_run_id = 0;
     if (chain_seedprobe) {
         std::int64_t seed_probe_spec_id = 0;
-        if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
+        if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, &seed_probe_spec_id, &err)) {
             if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
             return false;
         }
@@ -237,12 +237,13 @@ bool RunTasMovieScenario(
                 db_service->ExecutionDb(),
                 dtm_artifact_id,
                 seed_probe_spec_id,
+                options,
                 &workflow_instance_id,
                 &err)) {
             if (error_out) *error_out = "failed seeding chained workflow rows: " + err;
             return false;
         }
-    } else if (!SeedTasMovieWorkflow(db_service->AuthoringDb(), db_service->ExecutionDb(), dtm_artifact_id, &workflow_instance_id, &err)) {
+    } else if (!SeedTasMovieWorkflow(db_service->AuthoringDb(), db_service->ExecutionDb(), dtm_artifact_id, options, &workflow_instance_id, &err)) {
         if (error_out) *error_out = "failed seeding TasMovie workflow rows: " + err;
         return false;
     }
@@ -251,12 +252,12 @@ bool RunTasMovieScenario(
     simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = 0;
-    tas_config.blueprint.rtc_high = 0;
+    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
+    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;
-    tas_config.blueprint.headroom_x10 = 35;
+    tas_config.blueprint.headroom_x10 = static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(35));
     const auto scenario_timeout_ms = ComputeTasMovieScenarioTimeoutMs(
         options,
         chain_seedprobe,

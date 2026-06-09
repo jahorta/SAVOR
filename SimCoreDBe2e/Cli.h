@@ -72,6 +72,12 @@ struct CliOptions {
     std::optional<std::filesystem::path> worker_dir_root;
     bool visual_worker = false;
     std::optional<std::filesystem::path> visual_screenshot_dir;
+    std::optional<int> tasmovie_headroom_x10;
+    std::optional<int> tasmovie_rtc;
+    std::optional<int> seedprobe_samples_per_axis;
+    std::optional<int> seedprobe_combo_attempts_per_target;
+    std::optional<int> battle_fake_attack_low;
+    std::optional<int> battle_fake_attack_high;
 };
 
 void PrintUsage();

@@ -59,6 +59,7 @@ bool SeedStateDtmArtifact(
 
 bool SeedAuthoringSpec(
     simcore::db::IAuthoringDb* authoring_db,
+    const CliOptions& options,
     std::int64_t* seed_probe_spec_id_out,
     std::string* error_out);
 
@@ -74,6 +75,7 @@ bool SeedTasMovieWorkflow(
     simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 
@@ -82,6 +84,7 @@ bool SeedTasMovieSeedProbeWorkflow(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 

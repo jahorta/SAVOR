@@ -193,6 +193,7 @@ bool SeedStateDtmArtifact(
 
 bool SeedAuthoringSpec(
     simcore::db::IAuthoringDb* authoring_db,
+    const CliOptions& options,
     std::int64_t* seed_probe_spec_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || seed_probe_spec_id_out == nullptr) {
@@ -206,12 +207,12 @@ bool SeedAuthoringSpec(
             .priority = 1,
             .run_ms = 10000,
             .vi_stall_ms = 2000,
-            .samples_per_axis = kSeedProbeSamplesPerAxis,
+            .samples_per_axis = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,
             .ignore_trigger_minmax = true,
-            .combo_attempts_per_target = 20,
+            .combo_attempts_per_target = options.seedprobe_combo_attempts_per_target.value_or(20),
             .combo_sampler_tries = 4,
             .auto_schedule_battle_run = false,
             .created_at_utc = UtcNow(),
@@ -304,6 +305,7 @@ bool SeedTasMovieWorkflow(
     simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr || dtm_artifact_id <= 0) {
@@ -366,6 +368,13 @@ bool SeedTasMovieWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
+    command.arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = options.tasmovie_rtc.value_or(0),
+        .source_kind = "scenario",
+    });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
@@ -374,6 +383,7 @@ bool SeedTasMovieSeedProbeWorkflow(
     simcore::db::IExecutionDb* execution_db,
     std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr) {
@@ -468,6 +478,13 @@ bool SeedTasMovieSeedProbeWorkflow(
         .ref_kind = "state_artifact",
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
+    });
+    command.arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = options.tasmovie_rtc.value_or(0),
+        .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }

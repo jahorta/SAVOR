@@ -129,7 +129,7 @@ bool RunSeedProbePrelude(
     }
 
     std::int64_t seed_probe_spec_id = 0;
-    if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
+    if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, &seed_probe_spec_id, &err)) {
         if (error_out) *error_out = "failed seeding SeedProbe authoring spec: " + err;
         return false;
     }
@@ -730,6 +730,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     std::int64_t dtm_artifact_id,
     std::int64_t seed_probe_spec_id,
     std::int64_t battle_chain_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
@@ -854,9 +855,9 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
-    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = 4, .source_kind = "scenario" });
-    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = 22, .source_kind = "scenario" });
-    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = 25, .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = options.tasmovie_rtc.value_or(4), .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
@@ -944,8 +945,8 @@ bool RunBattleSingleTurnRealWorkerScenario(
     std::int64_t explorer_settings_id = 0;
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
-            0,
-            2,
+            options.battle_fake_attack_low.value_or(0),
+            options.battle_fake_attack_high.value_or(2),
             true,
             &battle_run_spec_id,
             &explorer_settings_id,
@@ -1252,7 +1253,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     std::int64_t seed_probe_spec_id = 0;
-    if (!SeedAuthoringSpec(db_service->AuthoringDb(), &seed_probe_spec_id, &err)) {
+    if (!SeedAuthoringSpec(db_service->AuthoringDb(), options, &seed_probe_spec_id, &err)) {
         if (error_out) *error_out = "failed seeding AuthoringDB seedprobe spec: " + err;
         return false;
     }
@@ -1261,8 +1262,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     std::int64_t explorer_settings_id = 0;
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
-            0,
-            0,
+            options.battle_fake_attack_low.value_or(0),
+            options.battle_fake_attack_high.value_or(0),
             false,
             &battle_run_spec_id,
             &explorer_settings_id,
@@ -1296,6 +1297,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             dtm_artifact_id,
             seed_probe_spec_id,
             battle_chain_spec_id,
+            options,
             &workflow_instance_id,
             &err)) {
         if (error_out) *error_out = "failed seeding graph workflow execution rows: " + err;
@@ -1306,12 +1308,12 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     simcore::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = 0;
-    tas_config.blueprint.rtc_high = 0;
+    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
+    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;
-    tas_config.blueprint.headroom_x10 = 50;
+    tas_config.blueprint.headroom_x10 = static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(50));
     tas_config.working_dir_root = options.workspace_root.value_or(
         std::filesystem::temp_directory_path() / "simcoredbe2e-default") / "tasmovie";
     simcore::db::execution::programdb::tasmovie::RegisterTasMoviePhaseDescriptor(
@@ -1361,9 +1363,13 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
-    const auto tas_budget_ms = ComputeTasMovieRunMs(options.dtm_file, 35, options.timeout_ms * 2) + options.timeout_ms;
+    const auto tas_budget_ms = ComputeTasMovieRunMs(options.dtm_file, tas_config.blueprint.headroom_x10, options.timeout_ms * 2) + options.timeout_ms;
     const auto seedprobe_budget_ms = options.timeout_ms
-        * (1 + (static_cast<std::int64_t>(kSeedProbeSamplesPerAxis) * kSeedProbeSamplesPerAxis * 3) + 25);
+        * (1
+            + (static_cast<std::int64_t>(options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis))
+                * options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis)
+                * 3)
+            + 25);
     const auto battle_budget_ms = run_spec.has_value()
         ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
         : std::max<std::int64_t>(options.timeout_ms, 300000);
@@ -1375,8 +1381,9 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
               << " explorer_settings_id=" << explorer_settings_id
               << " battle_chain_spec_id=" << battle_chain_spec_id
               << " workflow_instance_id=" << workflow_instance_id
-              << " rtc=4"
-              << " fake_attacks=22..25\n";
+              << " rtc=" << options.tasmovie_rtc.value_or(4)
+              << " fake_attacks=" << options.battle_fake_attack_low.value_or(0)
+              << ".." << options.battle_fake_attack_high.value_or(0) << "\n";
 
     auto coordinator = simcore::runner::parallel::simcoredb::BuildDbBackedWorkflowCoordinator(
         db_service->ExecutionDb(),

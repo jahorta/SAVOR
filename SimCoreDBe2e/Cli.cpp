@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <exception>
 #include <iostream>
 #include <string_view>
 #include <sstream>
@@ -251,8 +252,15 @@ void PrintUsage() {
               << " [--worker-dir-root <path>]"
               << " [--visual-worker *]"
               << " [--visual-screenshot-dir <path>]"
-              << " [--durable-lines <mode>]\n\n";
+              << " [--durable-lines <mode>]"
+              << " [--tasmovie-headroom <x10>]"
+              << " [--tasmovie-rtc <value>]"
+              << " [--seedprobe-samples-per-axis <count>]"
+              << " [--seedprobe-combo-attempts-per-target <count>]"
+              << " [--battle-fake-attack-low <count>]"
+              << " [--battle-fake-attack-high <count>]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
+    std::cout << "TAS rtc sets both rtc_low and rtc_high. TAS headroom is the existing x10 value.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
@@ -272,6 +280,17 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
                 return false;
             }
             *out = argv[++i];
+            return true;
+        };
+        const auto require_int = [&](const char* flag, int* out) {
+            std::string v;
+            if (!require_value(flag, &v)) return false;
+            try {
+                *out = std::stoi(v);
+            } catch (const std::exception&) {
+                if (error_out) *error_out = std::string("invalid integer for ") + flag + ": " + v;
+                return false;
+            }
             return true;
         };
 
@@ -333,6 +352,30 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value(arg.c_str(), &v)) return false;
             if (!ParseDurableLineMask(v, &options.durable_line_mask, error_out)) return false;
+        } else if (arg == "--tasmovie-headroom" || arg == "--tasmovie-headroom-x10" || arg == "--headroom") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.tasmovie_headroom_x10 = v;
+        } else if (arg == "--tasmovie-rtc" || arg == "--rtc") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.tasmovie_rtc = v;
+        } else if (arg == "--seedprobe-samples-per-axis" || arg == "--samples-per-axis") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.seedprobe_samples_per_axis = v;
+        } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.seedprobe_combo_attempts_per_target = v;
+        } else if (arg == "--battle-fake-attack-low" || arg == "--fake-attack-low") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_attack_low = v;
+        } else if (arg == "--battle-fake-attack-high" || arg == "--fake-attack-high") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_attack_high = v;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -433,6 +476,36 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
     if (options.poll_ms > 5000) {
         if (error_out) *error_out = "--timeout-ms and --poll-ms must be <= 5000";
+        return false;
+    }
+    if (options.tasmovie_headroom_x10.has_value() && (*options.tasmovie_headroom_x10 < 0 || *options.tasmovie_headroom_x10 > 255)) {
+        if (error_out) *error_out = "--tasmovie-headroom must be between 0 and 255";
+        return false;
+    }
+    if (options.tasmovie_rtc.has_value() && (*options.tasmovie_rtc < 0 || *options.tasmovie_rtc > 255)) {
+        if (error_out) *error_out = "--tasmovie-rtc must be between 0 and 255";
+        return false;
+    }
+    if (options.seedprobe_samples_per_axis.has_value() && *options.seedprobe_samples_per_axis <= 0) {
+        if (error_out) *error_out = "--seedprobe-samples-per-axis must be > 0";
+        return false;
+    }
+    if (options.seedprobe_combo_attempts_per_target.has_value() && *options.seedprobe_combo_attempts_per_target <= 0) {
+        if (error_out) *error_out = "--seedprobe-combo-attempts-per-target must be > 0";
+        return false;
+    }
+    if (options.battle_fake_attack_low.has_value() && *options.battle_fake_attack_low < 0) {
+        if (error_out) *error_out = "--battle-fake-attack-low must be >= 0";
+        return false;
+    }
+    if (options.battle_fake_attack_high.has_value() && *options.battle_fake_attack_high < 0) {
+        if (error_out) *error_out = "--battle-fake-attack-high must be >= 0";
+        return false;
+    }
+    if (options.battle_fake_attack_low.has_value()
+        && options.battle_fake_attack_high.has_value()
+        && *options.battle_fake_attack_low > *options.battle_fake_attack_high) {
+        if (error_out) *error_out = "--battle-fake-attack-low must be <= --battle-fake-attack-high";
         return false;
     }
 
