@@ -1210,7 +1210,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout";
+            : "workflow did not reach COMPLETED state before timeout - timed out";
         return false;
     }
     return true;
@@ -1600,7 +1600,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     if (!completed) {
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
-            : "workflow did not reach COMPLETED state before timeout";
+            : "workflow did not reach COMPLETED state before timeout - timed out";
         return false;
     }
     if (probe_run_id <= 0 || unique_rows.empty()) {
