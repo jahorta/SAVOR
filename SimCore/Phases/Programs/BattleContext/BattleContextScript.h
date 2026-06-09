@@ -25,7 +25,6 @@ namespace phase::battle::ctx {
         ps.ops.push_back(OpLabel(LabelCaptureContext));
         ps.ops.push_back(OpGetBattleContext());
         ps.ops.push_back(OpEmitResult(simcore::keys::battle::CTX_BLOB));
-        ps.ops.push_back(OpReturnResult(keys::battle::BATTLE_OUTCOME, 0)); // success code 0
         return ps;
     }
 
