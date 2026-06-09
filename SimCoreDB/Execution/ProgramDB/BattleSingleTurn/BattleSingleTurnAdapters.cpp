@@ -1296,11 +1296,6 @@ public:
                 return decision;
             }
         }
-        if (battle_set->status == simcore::db::BattleSetStatus::Victory) {
-            decision.should_advance = true;
-            return decision;
-        }
-
         std::int64_t pool_id = 0;
         std::string error;
         if (!analysis_db_->EnsureBattleSelectionPool(
@@ -1376,10 +1371,45 @@ public:
             return decision;
         }
 
+        auto victory_is_better = [](const Survivor& candidate, const Survivor& best) {
+            const int candidate_preds = candidate.job.pred_passed.has_value() ? *candidate.job.pred_passed : 0;
+            const int best_preds = best.job.pred_passed.has_value() ? *best.job.pred_passed : 0;
+            if (candidate_preds != best_preds) {
+                return candidate_preds > best_preds;
+            }
+            const int candidate_fake = candidate.job.fake_attacks_used_before + candidate.job.fake_attacks_this_turn;
+            const int best_fake = best.job.fake_attacks_used_before + best.job.fake_attacks_this_turn;
+            if (candidate_fake != best_fake) {
+                return candidate_fake < best_fake;
+            }
+            if (candidate.job.rng_seed.has_value() != best.job.rng_seed.has_value()) {
+                return candidate.job.rng_seed.has_value();
+            }
+            if (candidate.job.rng_seed.has_value() && best.job.rng_seed.has_value()
+                && *candidate.job.rng_seed != *best.job.rng_seed) {
+                return *candidate.job.rng_seed < *best.job.rng_seed;
+            }
+            return candidate.job.turn_job_id < best.job.turn_job_id;
+        };
+
+        std::optional<Survivor> best_victory;
+        for (const auto& survivor : all_survivors) {
+            if (!survivor.job.battle_outcome.has_value() || !IsVictory(*survivor.job.battle_outcome)) {
+                continue;
+            }
+            if (!best_victory.has_value() || victory_is_better(survivor, *best_victory)) {
+                best_victory = survivor;
+            }
+        }
+
         std::vector<std::int64_t> winner_job_ids;
-        for (const auto& [rng, survivor] : best_by_rng) {
-            (void)rng;
-            winner_job_ids.push_back(survivor.job.turn_job_id);
+        if (best_victory.has_value()) {
+            winner_job_ids.push_back(best_victory->job.turn_job_id);
+        } else {
+            for (const auto& [rng, survivor] : best_by_rng) {
+                (void)rng;
+                winner_job_ids.push_back(survivor.job.turn_job_id);
+            }
         }
         std::sort(winner_job_ids.begin(), winner_job_ids.end());
 
@@ -1400,12 +1430,7 @@ public:
                 nullptr);
         }
 
-        bool any_victory = false;
-        for (const auto& [rng, winner] : best_by_rng) {
-            (void)rng;
-            any_victory = any_victory || (winner.job.battle_outcome.has_value() && IsVictory(*winner.job.battle_outcome));
-        }
-        if (any_victory) {
+        if (best_victory.has_value()) {
             (void)analysis_db_->UpdateBattleSetStatus(current_wave->battle_set_id, simcore::db::BattleSetStatus::Victory, now, nullptr);
             decision.should_advance = true;
             return decision;
@@ -1419,7 +1444,7 @@ public:
         if (!plan.has_value() || FindTurn(*plan, current_wave->turn_index + 1) == nullptr) {
             (void)analysis_db_->UpdateBattleSetStatus(
                 current_wave->battle_set_id,
-                (any_victory || battle_set->status == simcore::db::BattleSetStatus::Victory)
+                battle_set->status == simcore::db::BattleSetStatus::Victory
                     ? simcore::db::BattleSetStatus::Victory
                     : simcore::db::BattleSetStatus::Completed,
                 now,
