@@ -28,6 +28,7 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
+#include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowCoordinatorFactory.h"
 #include "Runner/Parallel/SimCoreDB/DBWorkflowWorkerCoordinator.h"
@@ -690,23 +691,25 @@ bool SeedBattleAnalysisAndWorkflowRows(
     workflow.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     workflow.created_by = "simcoredbe2e";
     workflow.created_at_utc = now.time_since_epoch().count();
-    workflow.unit_activations.push_back({
-        .activation_key = "battle_context_1",
-        .graph_node_key = "battle_context_1",
-        .unit_kind = "battle.context_probe",
-        .display_name = "Battle Context Probe",
-        .activation_params_json = "{}",
-        .steps = {
-            {
-                .step_key = "battle_context_1",
-                .step_kind = "battle.context_probe",
-                .priority = 1,
-                .max_attempts = 1,
-                .input_ref_kind = std::string(kWaveRefKind),
-                .input_ref_id = wave_id,
-            },
-        },
-    });
+    const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto battle_context_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "battle_context_1",
+        "battle_context_1",
+        "battle.context_probe",
+        "Battle Context Probe",
+        std::nullopt,
+        std::nullopt,
+        {},
+        &activation_error);
+    if (!battle_context_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    battle_context_activation->steps.front().input_ref_kind = std::string(kWaveRefKind);
+    battle_context_activation->steps.front().input_ref_id = wave_id;
+    workflow.unit_activations.push_back(std::move(*battle_context_activation));
     workflow.input_bindings.push_back({
         .node_key = "battle_context_1",
         .input_key = "turn_wave",
@@ -811,42 +814,53 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "simcoredbe2e";
     command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-    command.unit_activations.push_back({
-        .activation_key = "tas_1",
-        .graph_node_key = "tas_1",
-        .unit_kind = "tas_movie",
-        .display_name = "TAS Movie",
-        .activation_params_json = "{}",
-        .steps = {
-            { .step_key = "tas_1", .step_kind = "tas_movie", .priority = 1, .max_attempts = 1 },
-        },
-    });
-    command.unit_activations.push_back({
-        .activation_key = "probe_1",
-        .graph_node_key = "probe_1",
-        .unit_kind = "battle_seed_probe",
-        .display_name = "Battle Seed Probe",
-        .activation_params_json = "{}",
-        .authored_ref_kind = std::string("seed_probe_spec"),
-        .authored_ref_id = seed_probe_spec_id,
-        .dependencies = { "tas_1" },
-        .steps = {
-            { .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 1, .max_attempts = 1 },
-        },
-    });
-    command.unit_activations.push_back({
-        .activation_key = "battle_1",
-        .graph_node_key = "battle_1",
-        .unit_kind = "battle_chain",
-        .display_name = "Battle Chain",
-        .activation_params_json = "{}",
-        .authored_ref_kind = std::string("authoring.battle_chain_spec"),
-        .authored_ref_id = battle_chain_spec_id,
-        .dependencies = { "tas_1", "probe_1" },
-        .steps = {
-            { .step_key = "battle_1", .step_kind = "battle_chain", .priority = 1, .max_attempts = 1 },
-        },
-    });
+    const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto tas_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "tas_1",
+        "tas_1",
+        "tas_movie",
+        "TAS Movie",
+        std::nullopt,
+        std::nullopt,
+        {},
+        &activation_error);
+    if (!tas_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*tas_activation));
+    auto probe_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "probe_1",
+        "probe_1",
+        "battle_seed_probe",
+        "Battle Seed Probe",
+        std::optional<std::string>("seed_probe_spec"),
+        seed_probe_spec_id,
+        { "tas_1" },
+        &activation_error);
+    if (!probe_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*probe_activation));
+    auto battle_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "battle_1",
+        "battle_1",
+        "battle_chain",
+        "Battle Chain",
+        std::optional<std::string>("authoring.battle_chain_spec"),
+        battle_chain_spec_id,
+        { "tas_1", "probe_1" },
+        &activation_error);
+    if (!battle_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*battle_activation));
     command.input_bindings.push_back({
         .node_key = "tas_1",
         .input_key = "dtm_artifact",

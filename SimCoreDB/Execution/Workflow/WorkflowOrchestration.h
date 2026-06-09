@@ -338,18 +338,6 @@ struct WorkflowAppendLifecycleEventCommand {
     std::string requested_by;
 };
 
-struct WorkflowCreateStepSpec {
-    std::string step_key;
-    std::string step_kind;
-    std::vector<std::string> dependencies;
-    std::optional<std::string> guard_kind;
-    std::optional<std::string> guard_value;
-    int priority = 0;
-    int max_attempts = 1;
-    std::optional<std::string> input_ref_kind;
-    std::optional<std::int64_t> input_ref_id;
-};
-
 struct WorkflowCreateInstanceInputBindingSpec {
     std::string node_key;
     std::string input_key;
@@ -376,7 +364,6 @@ struct WorkflowCreateInstanceCommand {
     std::string created_by;
     std::int64_t created_at_utc = 0;
     std::vector<WorkflowCreateUnitActivationSpec> unit_activations;
-    std::vector<WorkflowCreateStepSpec> steps;
     std::vector<WorkflowCreateInstanceInputBindingSpec> input_bindings;
     std::vector<WorkflowCreateInstanceArgumentSpec> arguments;
 };

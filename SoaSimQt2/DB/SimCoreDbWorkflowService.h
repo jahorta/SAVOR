@@ -14,6 +14,7 @@
 #include "DB/SimCoreDbAuthoringService.h"
 #include "Execution/Workflow/WorkflowComposition.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
+#include "Execution/Workflow/WorkflowUnitActivationFactory.h"
 #include "UIRead/IUiReadDb.h"
 
 namespace soasimqt2::db {
@@ -300,37 +301,26 @@ public:
                 }
             }
 
-            const auto* unit = registry.Find(node.unit_kind);
-            simcore::db::execution::workflow::WorkflowCreateUnitActivationSpec activation{};
-            activation.activation_key = node.node_key;
-            activation.graph_node_key = node.node_key;
-            activation.unit_kind = node.unit_kind;
-            activation.display_name = node.display_name.empty() ? node.unit_kind : node.display_name;
-            activation.activation_params_json = unit != nullptr ? unit->default_activation_params_json : "{}";
-            activation.authored_ref_kind = node.authored_ref_kind;
-            activation.authored_ref_id = node.authored_ref_id;
             const auto deps = dependencies_by_node.find(node.node_key);
+            std::vector<std::string> dependencies;
             if (deps != dependencies_by_node.end()) {
-                activation.dependencies = deps->second;
+                dependencies = deps->second;
             }
-            if (unit != nullptr && !unit->step_templates.empty()) {
-                for (const auto& tmpl : unit->step_templates) {
-                    activation.steps.push_back(simcore::db::execution::workflow::WorkflowCreateUnitStepSpec{
-                        .step_key_suffix = tmpl.step_key_suffix,
-                        .step_kind = tmpl.step_kind,
-                        .priority = tmpl.priority,
-                        .max_attempts = tmpl.max_attempts,
-                    });
-                }
-            } else {
-                activation.steps.push_back(simcore::db::execution::workflow::WorkflowCreateUnitStepSpec{
-                    .step_key = node.node_key,
-                    .step_kind = node.unit_kind,
-                    .priority = 1,
-                    .max_attempts = 1,
-                });
+            std::string activation_error;
+            auto activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+                registry,
+                node.node_key,
+                node.node_key,
+                node.unit_kind,
+                node.display_name,
+                node.authored_ref_kind,
+                node.authored_ref_id,
+                std::move(dependencies),
+                &activation_error);
+            if (!activation.has_value()) {
+                return Invalid<std::int64_t>(activation_error);
             }
-            command.unit_activations.push_back(std::move(activation));
+            command.unit_activations.push_back(std::move(*activation));
         }
 
         std::int64_t workflow_instance_id = 0;

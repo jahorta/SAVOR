@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -58,6 +59,31 @@
 #include "common/simcoredb_helpers.h"
 
 namespace simcoreDB {
+namespace workflow = simcore::db::execution::workflow;
+
+workflow::WorkflowCreateUnitActivationSpec TestUnitActivation(
+    std::string activation_key,
+    std::string unit_kind,
+    std::string display_name,
+    std::vector<std::string> dependencies = {},
+    int priority = 1,
+    int max_attempts = 1) {
+    workflow::WorkflowCreateUnitActivationSpec activation{};
+    activation.activation_key = activation_key;
+    activation.graph_node_key = activation_key;
+    activation.unit_kind = unit_kind;
+    activation.display_name = display_name;
+    activation.activation_params_json = "{}";
+    activation.dependencies = std::move(dependencies);
+    activation.steps.push_back({
+        .step_key = activation_key,
+        .step_kind = unit_kind,
+        .priority = priority,
+        .max_attempts = max_attempts,
+    });
+    return activation;
+}
+
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
     using namespace simcore::db::migrations;
 
@@ -159,10 +185,19 @@ TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentCh
     create.workflow_graph_revision_id = 1;
     create.created_by = "sqlite-fixture";
     create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-    create.steps.push_back({ .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 9002 });
-    create.steps.push_back({ .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 });
-    create.steps.push_back({ .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 });
-    create.steps.push_back({ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 });
+    create.unit_activations.push_back({
+        .activation_key = "SeedProbe",
+        .graph_node_key = "SeedProbe",
+        .unit_kind = "test_seedprobe_chain",
+        .display_name = "Test Seed Probe Chain",
+        .activation_params_json = "{}",
+        .steps = {
+            { .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 9002 },
+            { .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 },
+            { .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 },
+            { .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 },
+        },
+    });
     ASSERT_TRUE(execution_db.WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &error)) << error;
 
     const auto graph = execution_db.WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -1482,10 +1517,19 @@ TEST_F(SqliteDbFixture, Stage3cEndToEndWorkflowSeedProbeWithRestartMidRun) {
     create.workflow_graph_revision_id = 1;
     create.created_by = "stage3c-e2e";
     create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-    create.steps.push_back({ .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 1 });
-    create.steps.push_back({ .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 });
-    create.steps.push_back({ .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 });
-    create.steps.push_back({ .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 });
+    create.unit_activations.push_back({
+        .activation_key = "SeedProbe",
+        .graph_node_key = "SeedProbe",
+        .unit_kind = "test_seedprobe_chain",
+        .display_name = "Test Seed Probe Chain",
+        .activation_params_json = "{}",
+        .steps = {
+            { .step_key = "Neutral", .step_kind = "seedprobe.neutral", .priority = 1, .max_attempts = 2, .input_ref_kind = std::string("sp_probe_run"), .input_ref_id = 1 },
+            { .step_key = "Grid", .step_kind = "seedprobe.grid", .dependencies = { "Neutral" }, .priority = 1, .max_attempts = 2 },
+            { .step_key = "Unique", .step_kind = "seedprobe.unique", .dependencies = { "Grid" }, .priority = 1, .max_attempts = 2 },
+            { .step_key = "Done", .step_kind = "seedprobe.done", .dependencies = { "Unique" }, .priority = 1, .max_attempts = 1 },
+        },
+    });
     ASSERT_TRUE(execution_db.WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
     ASSERT_GT(workflow_instance_id, 0);
 
@@ -3159,8 +3203,8 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "sqlite-fixture";
     command.created_at_utc = now.time_since_epoch().count();
-    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 10, .max_attempts = 1 });
-    command.steps.push_back({ .step_key = "battle_1", .step_kind = "battle_chain", .dependencies = { "probe_1" }, .priority = 5, .max_attempts = 1 });
+    command.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", {}, 10, 1));
+    command.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", { "probe_1" }, 5, 1));
     command.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -3229,7 +3273,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     rejected.root_scope_kind = "manual";
     rejected.created_by = "sqlite-fixture";
     rejected.created_at_utc = now.time_since_epoch().count();
-    rejected.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain" });
+    rejected.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain"));
     rejected.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -3248,7 +3292,7 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
     legacy.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     legacy.created_by = "sqlite-fixture";
     legacy.created_at_utc = now.time_since_epoch().count();
-    legacy.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain" });
+    legacy.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain"));
     EXPECT_FALSE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(legacy, &rejected_instance_id, &err));
     EXPECT_NE(err.find("workflow_kind must be workflow_graph"), std::string::npos);
 }
@@ -3323,9 +3367,9 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     create.created_by = "sqlite-fixture";
     create.created_at_utc = now.time_since_epoch().count();
-    create.steps.push_back({ .step_key = "tas_1", .step_kind = "tas_movie", .priority = 10, .max_attempts = 1 });
-    create.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .dependencies = { "tas_1" }, .priority = 5, .max_attempts = 1 });
-    create.steps.push_back({ .step_key = "battle_1", .step_kind = "battle_chain", .dependencies = { "tas_1", "probe_1" }, .priority = 1, .max_attempts = 1 });
+    create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
+    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", { "tas_1" }, 5, 1));
+    create.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", { "tas_1", "probe_1" }, 1, 1));
     ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
 
     auto step_id = [&](const std::string& step_key) -> std::int64_t {
@@ -3601,7 +3645,7 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
     command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
     command.created_by = "sqlite-fixture";
     command.created_at_utc = types::UtcNow().time_since_epoch().count();
-    command.steps.push_back({ .step_key = "probe_1", .step_kind = "seed_probe_chain", .priority = 10, .max_attempts = 1 });
+    command.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", {}, 10, 1));
     command.input_bindings.push_back({
         .node_key = "probe_1",
         .input_key = "entry_savestate",
@@ -3818,12 +3862,7 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
         command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
         command.created_by = "sqlite-fixture";
         command.created_at_utc = types::UtcNow().time_since_epoch().count();
-        command.steps.push_back({
-            .step_key = "tas_movie_standalone",
-            .step_kind = "tas_movie",
-            .priority = 10,
-            .max_attempts = 1,
-        });
+        command.unit_activations.push_back(TestUnitActivation("tas_movie_standalone", "tas_movie", "TAS Movie", {}, 10, 1));
         command.input_bindings.push_back({
             .node_key = "tas_movie_standalone",
             .input_key = "dtm_artifact",
@@ -5070,12 +5109,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateExecutionDatabaseForWork
     create.workflow_graph_revision_id = 1;
     create.created_by = "test";
     create.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
-    create.steps.push_back({
-        .step_key = "Manual",
-        .step_kind = "test.manual",
-        .priority = 1,
-        .max_attempts = 1,
-    });
+    create.unit_activations.push_back(TestUnitActivation("Manual", "test.manual", "Manual Test Unit"));
 
     std::int64_t workflow_instance_id = 0;
     ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(

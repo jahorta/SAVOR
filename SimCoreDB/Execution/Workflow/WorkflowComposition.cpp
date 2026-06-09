@@ -201,6 +201,25 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
 
     (void)registry.RegisterUnit(
         WorkflowUnitDefinition{
+            .unit_kind = "battle.context_probe",
+            .display_name = "Battle Context Probe",
+            .description = "Builds the initial battle context from a turn wave.",
+            .unit_variant = "battle",
+            .breakpoint_profile_key = "battle.context_probe",
+            .default_activation_params_json = "{}",
+            .required_inputs = {
+                Port("turn_wave", "analysis_battle.turn_wave_id", "Turn wave"),
+            },
+            .possible_outputs = {
+                Port("battle_context", "analysisbattle.context_probe", "Battle context"),
+            },
+            .internal_step_kinds = { "battle.context_probe" },
+            .step_templates = SingleStep("battle.context_probe"),
+        },
+        &ignored);
+
+    (void)registry.RegisterUnit(
+        WorkflowUnitDefinition{
             .unit_kind = "battle_chain",
             .display_name = "Battle Chain",
             .description = "Builds battle context, then runs one or more battle turns from candidate input frames.",

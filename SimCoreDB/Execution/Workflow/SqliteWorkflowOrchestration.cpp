@@ -137,34 +137,20 @@ std::string StepKeyForActivation(
     return activation_key + "/" + step.step_key_suffix;
 }
 
-std::vector<WorkflowCreateUnitActivationSpec> EffectiveUnitActivations(
-    const WorkflowCreateInstanceCommand& command) {
-    if (!command.unit_activations.empty()) {
-        return command.unit_activations;
+bool EffectiveUnitActivations(
+    const WorkflowCreateInstanceCommand& command,
+    std::vector<WorkflowCreateUnitActivationSpec>* activations_out,
+    std::string* error_out) {
+    if (command.unit_activations.empty()) {
+        if (error_out != nullptr) {
+            *error_out = "at least one workflow unit activation is required";
+        }
+        return false;
     }
-
-    std::vector<WorkflowCreateUnitActivationSpec> activations;
-    activations.reserve(command.steps.size());
-    for (const auto& step : command.steps) {
-        WorkflowCreateUnitActivationSpec activation{};
-        activation.activation_key = step.step_key;
-        activation.graph_node_key = step.step_key;
-        activation.unit_kind = step.step_kind;
-        activation.display_name = step.step_kind;
-        activation.dependencies = step.dependencies;
-        WorkflowCreateUnitStepSpec child{};
-        child.step_key = step.step_key;
-        child.step_kind = step.step_kind;
-        child.guard_kind = step.guard_kind;
-        child.guard_value = step.guard_value;
-        child.priority = step.priority;
-        child.max_attempts = step.max_attempts;
-        child.input_ref_kind = step.input_ref_kind;
-        child.input_ref_id = step.input_ref_id;
-        activation.steps.push_back(std::move(child));
-        activations.push_back(std::move(activation));
+    if (activations_out != nullptr) {
+        *activations_out = command.unit_activations;
     }
-    return activations;
+    return true;
 }
 
 bool RecomputeUnitActivationState(
@@ -765,9 +751,8 @@ bool SqliteWorkflowOrchestrationCommandService::CreateWorkflowInstance(
         if (error_out) *error_out = "root_scope_kind is required";
         return false;
     }
-    auto activations = EffectiveUnitActivations(command);
-    if (activations.empty()) {
-        if (error_out) *error_out = "at least one workflow unit activation is required";
+    std::vector<WorkflowCreateUnitActivationSpec> activations;
+    if (!EffectiveUnitActivations(command, &activations, error_out)) {
         return false;
     }
     std::unordered_set<std::string> input_binding_keys;
