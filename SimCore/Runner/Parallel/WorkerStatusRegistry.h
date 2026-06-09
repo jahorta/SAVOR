@@ -23,6 +23,7 @@ public:
     void RecordEvent(int64_t worker_id, WorkerEventKind k, std::optional<int64_t> job_id = std::nullopt, const std::string& note = {});
     void RecordHeartbeat(int64_t worker_id);
     void RecordDbSuccess(int64_t worker_id);
+    void RecordProgress(int64_t worker_id, const std::string& text, std::optional<int64_t> job_id = std::nullopt);
     void RecordError(int64_t worker_id, const std::string& err);
 
     WorkerStateKind GetWorkerState(int64_t worker_id) const;
@@ -84,6 +85,9 @@ private:
         int64_t last_successful_db_call_mono_ns{};
         int consecutive_failures{};
         std::string last_error;
+        int64_t last_error_mono_ns{};
+        std::string last_progress;
+        int64_t last_progress_mono_ns{};
 
         mutable std::mutex ev_mtx;
         Ring events;

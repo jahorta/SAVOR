@@ -72,6 +72,10 @@ void WorkerStatusRegistry::SetCurrentJob(int64_t worker_id, std::optional<int64_
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
+    if (wr.job_id != job_id) {
+        wr.last_progress.clear();
+        wr.last_progress_mono_ns = 0;
+    }
     wr.job_id = job_id;
     wr.program_kind = program_kind;
 }
@@ -112,14 +116,31 @@ void WorkerStatusRegistry::RecordDbSuccess(int64_t worker_id) {
     it->second.consecutive_failures = 0;
 }
 
+void WorkerStatusRegistry::RecordProgress(int64_t worker_id, const std::string& text, std::optional<int64_t> job_id) {
+    std::shared_lock rk(mtx_);
+    auto it = workers_.find(worker_id);
+    if (it == workers_.end()) return;
+    auto& wr = it->second;
+    const auto now = NowMonoNs();
+    wr.last_progress = text;
+    wr.last_progress_mono_ns = now;
+    WorkerEvent e{ now, WorkerEventKind::Progress, job_id, text };
+    std::lock_guard ek(wr.ev_mtx);
+    wr.events.push(e);
+}
+
 void WorkerStatusRegistry::RecordError(int64_t worker_id, const std::string& err) {
     std::shared_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
+    const auto now = NowMonoNs();
     wr.last_error = err;
+    wr.last_error_mono_ns = now;
     wr.consecutive_failures += 1;
-    RecordEvent(worker_id, WorkerEventKind::Error, std::nullopt, err);
+    WorkerEvent e{ now, WorkerEventKind::Error, std::nullopt, err };
+    std::lock_guard ek(wr.ev_mtx);
+    wr.events.push(e);
 }
 
 WorkerStateKind WorkerStatusRegistry::GetWorkerState(int64_t worker_id) const {
@@ -154,6 +175,9 @@ std::vector<WorkerSnapshot> WorkerStatusRegistry::GetClusterSnapshot() const {
         s.last_successful_db_call_mono_ns = wr.last_successful_db_call_mono_ns;
         s.consecutive_failures = wr.consecutive_failures;
         s.last_error = wr.last_error;
+        s.last_error_mono_ns = wr.last_error_mono_ns;
+        s.last_progress = wr.last_progress;
+        s.last_progress_mono_ns = wr.last_progress_mono_ns;
 
         std::lock_guard ek(wr.ev_mtx);
         s.recent_events = wr.events.snapshot();

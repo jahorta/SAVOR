@@ -26,11 +26,8 @@ private:
         State,
         Job,
         Kind,
-        Lease,
-        Attempts,
         LastHeartbeat,
-        DbOk,
-        Error,
+        Status,
         Count
     };
 

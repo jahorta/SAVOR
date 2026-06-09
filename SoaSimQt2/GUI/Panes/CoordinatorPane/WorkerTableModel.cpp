@@ -1,6 +1,6 @@
 #include "WorkerTableModel.h"
 
-#include "Runner/IPC/Wire.h"
+#include "DB/ProgramKindNameResolver.h"
 
 #include <QtCore/QString>
 #include <QtCore/QVariant>
@@ -25,27 +25,22 @@ const char* workerStateLabel(WorkerStateKind state)
     }
 }
 
-std::string workerProgramKindLabel(const std::optional<int>& kind)
-{
-    if (!kind.has_value()) {
-        return "(none)";
-    }
-
-    switch (*kind) {
-    case simcore::PK_None: return "None";
-    case simcore::PK_SeedProbe: return "SeedProbe";
-    case simcore::PK_TasMovie: return "TasMovie";
-    case simcore::PK_TasInputStreamDetector: return "TasInputStreamDetector";
-    case simcore::PK_BattleTurnRunner: return "BattleTurnRunner";
-    case simcore::PK_BattleContextProbe: return "BattleContextProbe";
-    case simcore::PK_BattleSingleTurnRunner: return "BattleSingleTurnRunner";
-    default: return "kind " + std::to_string(*kind);
-    }
-}
-
 QString formatOptionalInt64(const std::optional<int64_t>& value, const QString& fallback = QStringLiteral("--"))
 {
     return value.has_value() ? QString::number(*value) : fallback;
+}
+
+QString workerStatusText(const WorkerSnapshot& row)
+{
+    const bool hasProgress = !row.last_progress.empty();
+    const bool hasError = !row.last_error.empty();
+    if (hasProgress && (!hasError || row.last_progress_mono_ns >= row.last_error_mono_ns)) {
+        return QString::fromStdString(row.last_progress);
+    }
+    if (hasError) {
+        return QString::fromStdString(row.last_error);
+    }
+    return QStringLiteral("--");
 }
 }
 
@@ -88,12 +83,9 @@ QVariant WorkerTableModel::data(const QModelIndex& index, int role) const
     case Pid: return QString::number(row.pid);
     case State: return QString::fromUtf8(workerStateLabel(row.state));
     case Job: return formatOptionalInt64(row.job_id, QStringLiteral("0"));
-    case Kind: return QString::fromStdString(workerProgramKindLabel(row.program_kind));
-    case Lease: return formatOptionalInt64(row.lease_expires_at);
-    case Attempts: return QStringLiteral("%1 / %2").arg(row.attempts).arg(row.max_attempts);
+    case Kind: return QString::fromStdString(soasimqt2::db::ResolveProgramKindName(row.program_kind));
     case LastHeartbeat: return QString::number(row.last_heartbeat_mono_ns);
-    case DbOk: return QString::number(row.last_successful_db_call_mono_ns);
-    case Error: return QString::fromStdString(row.last_error);
+    case Status: return workerStatusText(row);
     default: return {};
     }
 }
@@ -114,11 +106,8 @@ QVariant WorkerTableModel::headerData(int section, Qt::Orientation orientation, 
     case State: return QStringLiteral("State");
     case Job: return QStringLiteral("Job");
     case Kind: return QStringLiteral("Kind");
-    case Lease: return QStringLiteral("Lease");
-    case Attempts: return QStringLiteral("Attempts");
     case LastHeartbeat: return QStringLiteral("Last HB");
-    case DbOk: return QStringLiteral("DB OK");
-    case Error: return QStringLiteral("Err");
+    case Status: return QStringLiteral("Status");
     default: return {};
     }
 }

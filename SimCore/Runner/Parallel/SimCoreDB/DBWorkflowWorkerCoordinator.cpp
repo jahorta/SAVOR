@@ -1433,6 +1433,10 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
             max_progress_batch_size_.store(batch_size);
         }
         for (const auto& item : batch) {
+            worker_status_.RecordProgress(
+                static_cast<std::int64_t>(item.worker_id),
+                item.text,
+                static_cast<std::int64_t>(item.job_id));
             if (execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr && item.job_id > 0) {
                 std::ostringstream message;
                 message << "worker=" << item.worker_id << " progress=" << item.text;

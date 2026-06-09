@@ -9,7 +9,7 @@ enum class WorkerStateKind {
 };
 
 enum class WorkerEventKind {
-    Spawned, Claimed, MarkRunning, RenewLease, Heartbeat, Finished,
+    Spawned, Claimed, MarkRunning, RenewLease, Heartbeat, Progress, Finished,
     Draining, Exiting, Error, Crash
 };
 
@@ -39,6 +39,9 @@ struct WorkerSnapshot {
     int64_t last_successful_db_call_mono_ns{};
     int consecutive_failures{};
     std::string last_error;
+    int64_t last_error_mono_ns{};
+    std::string last_progress;
+    int64_t last_progress_mono_ns{};
 
     std::vector<WorkerEvent> recent_events;
 };
