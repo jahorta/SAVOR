@@ -37,7 +37,7 @@
 namespace simcore::db::execution::programdb::battle {
 namespace {
 
-constexpr const char* kContextProbeStepKind = "battle.context_probe";
+constexpr const char* kBattleSingleTurnStepKind = "battle.single_turn";
 constexpr const char* kWaveRefKind = "analysis_battle.turn_wave";
 constexpr const char* kTurnJobRefKind = "analysis_battle.turn_job";
 constexpr const char* kJobSection = "BattleSingleTurn.Job";
@@ -1448,9 +1448,9 @@ public:
                 continue;
             }
             WorkflowTransitionDecision::DynamicStep step{};
-            step.step_key = "BattleContext/t" + std::to_string(current_wave->turn_index + 1)
+            step.step_key = "BattleTurn/t" + std::to_string(current_wave->turn_index + 1)
                 + "/w" + std::to_string(next_wave_id);
-            step.step_kind = kContextProbeStepKind;
+            step.step_kind = kBattleSingleTurnStepKind;
             step.input_ref_kind = kWaveRefKind;
             step.input_ref_id = next_wave_id;
             step.priority = current_wave->turn_index + 1;

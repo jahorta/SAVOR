@@ -38,6 +38,7 @@
 #include "Execution/Workflow/WorkflowGraphRoutingService.h"
 #include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
 #include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
+#include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
@@ -237,6 +238,222 @@ TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentCh
     ASSERT_TRUE(after_retry.has_value());
     EXPECT_EQ(after_retry->steps.size(), with_dynamic->steps.size());
     EXPECT_EQ(after_retry->edges.size(), with_dynamic->edges.size());
+}
+
+TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromReturnedContext) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::programdb::battle;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* authoring_db = db_service_->AuthoringDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(authoring_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000000));
+    std::string err;
+
+    std::int64_t battle_run_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
+        {
+            .name = "direct-context-chain",
+            .priority = 7,
+            .run_ms = 10000,
+            .vi_stall_ms = 1000,
+            .progress_enable = false,
+            .use_single_turn_runner = true,
+            .auto_wave_trigger_enable = true,
+            .min_fake_attacks = 0,
+            .max_fake_attacks = 0,
+            .created_at_utc = now,
+            .event_id = "direct-context-run-spec",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &battle_run_spec_id,
+        &err)) << err;
+
+    std::int64_t plan_id = 0;
+    ASSERT_TRUE(authoring_db->SavePlan(
+        {
+            .name = "two-turn-plan",
+            .fingerprint = "two-turn-plan-fp",
+            .num_turns = 2,
+            .created_at_utc = now,
+            .event_id = "direct-context-plan",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &plan_id,
+        &err)) << err;
+
+    std::int64_t action_preset_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattlePlanActionPreset(
+        {
+            .name = "attack-first-target",
+            .macro = BattlePlanActionMacro::Attack,
+            .target_kind = BattlePlanTargetKind::SingleEnemy,
+            .target_single_slot = 0,
+            .created_at_utc = now,
+            .event_id = "direct-context-preset",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &action_preset_id,
+        &err)) << err;
+
+    for (int turn_index = 1; turn_index <= 2; ++turn_index) {
+        std::int64_t plan_turn_id = 0;
+        ASSERT_TRUE(authoring_db->SaveBattlePlanTurn(
+            {
+                .plan_id = plan_id,
+                .turn_index = turn_index,
+                .actions = {
+                    {
+                        .actor_slot = 0,
+                        .action_preset_id = action_preset_id,
+                        .ordinal = 0,
+                    },
+                },
+                .replace_existing_actions = true,
+                .created_at_utc = now,
+                .event_id = "direct-context-turn-" + std::to_string(turn_index),
+                .correlation_id = "direct-context",
+                .causation_id = "test",
+            },
+            &plan_turn_id,
+            &err)) << err;
+    }
+
+    std::int64_t explorer_settings_id = 0;
+    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
+        {
+            .name = "direct-context-settings",
+            .description = "Use returned battle context for follow-up turns",
+            .default_plan_id = plan_id,
+            .created_at_utc = now,
+            .event_id = "direct-context-settings",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &explorer_settings_id,
+        &err)) << err;
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "direct-context-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = battle_run_spec_id,
+            .explorer_settings_id = explorer_settings_id,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .event_id = "direct-context-battle-set",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 12345,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .event_id = "direct-context-seed",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .event_id = "direct-context-wave-1",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 7001,
+            .plan_id = plan_id,
+            .fake_attacks_this_turn = 0,
+            .fake_attacks_used_before = 0,
+            .job_state = BattleTurnJobState::Succeeded,
+            .started_at_utc = now,
+            .ended_at_utc = now,
+            .has_results = true,
+            .rng_seed = 424242,
+            .battle_outcome = simcore::battle::Outcome::ReachedNextTurn,
+            .pred_passed = 1,
+            .pred_total = 1,
+            .pred_abort_run = 0,
+            .output_savestate_id = 202,
+            .result_context_blob_base64 = std::string("AQID"),
+            .result_context_version = 1,
+            .recorded_at_utc = now,
+            .event_id = "direct-context-turn-job",
+            .correlation_id = "direct-context",
+            .causation_id = "test",
+        },
+        &turn_job_id,
+        &err)) << err;
+
+    const auto descriptor = BuildBattleSingleTurnDescriptor(
+        nullptr,
+        nullptr,
+        analysis_db,
+        BattleSingleTurnPhaseRegistrationConfig{
+            .authoring_db = authoring_db,
+            .working_dir_root = temp_root_,
+        });
+    ASSERT_NE(descriptor.workflow_transition, nullptr);
+
+    const auto decision = descriptor.workflow_transition->EvaluateTransition(
+        WorkflowTransitionContext{
+            .workflow_instance_id = 9001,
+            .workflow_step_id = 9002,
+            .job_set_id = 9003,
+            .workflow_kind = "workflow_graph",
+            .step_key = "BattleTurn/t1/w" + std::to_string(wave_id),
+            .input_ref_kind = std::string("analysis_battle.turn_wave"),
+            .input_ref_id = wave_id,
+        });
+
+    ASSERT_TRUE(decision.should_advance);
+    EXPECT_FALSE(decision.blocked_reason.has_value());
+    ASSERT_EQ(decision.spawn_steps.size(), 1);
+    EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
+    EXPECT_EQ(decision.spawn_steps[0].input_ref_kind.value_or(""), "analysis_battle.turn_wave");
+    EXPECT_EQ(decision.spawn_steps[0].priority, 2);
+    EXPECT_NE(decision.spawn_steps[0].step_key.find("BattleTurn/t2/w"), std::string::npos);
+    EXPECT_EQ(decision.spawn_steps[0].step_key.find("BattleContext/"), std::string::npos);
+
+    const auto waves = analysis_db->ListBattleTurnWaves(battle_set_id);
+    ASSERT_EQ(waves.size(), 2);
+    const auto child_it = std::find_if(waves.begin(), waves.end(), [&](const auto& wave) {
+        return wave.wave_id == decision.spawn_steps[0].input_ref_id.value_or(0);
+    });
+    ASSERT_NE(child_it, waves.end());
+    EXPECT_EQ(child_it->turn_index, 2);
+    EXPECT_EQ(child_it->status, BattleTurnWaveStatus::Ready);
+    EXPECT_FALSE(child_it->context_probe_id.has_value());
+    EXPECT_EQ(child_it->parent_wave_id.value_or(0), wave_id);
+    EXPECT_EQ(child_it->parent_turn_job_id.value_or(0), turn_job_id);
 }
 
 TEST_F(SqliteDbFixture, Stage3cReadinessGuardRequiresStage3bWorkflowSchemaVersion) {
