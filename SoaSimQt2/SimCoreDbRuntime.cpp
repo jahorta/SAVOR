@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <system_error>
 #include <utility>
+#include <memory>
 
 #include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnPhaseRegistration.h"
@@ -87,12 +88,16 @@ bool SimCoreDbRuntime::start(const std::filesystem::path& root, std::string* err
         return false;
     }
 
+	std::function<void(const std::string&)> event_line_callback = [](const std::string& line) {
+        (void)line;
+		};
+
     auto workflow_coordinator =
         std::make_unique<simcore::db::execution::workflow::WorkflowCoordinatorService>(
             service_->ExecutionDb(),
             &program_registry_,
             buildWorkflowConfig(),
-            {},
+            std::move(event_line_callback),
             nullptr,
             service_->AuthoringDb());
     std::string workflow_error;
