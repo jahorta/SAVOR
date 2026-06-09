@@ -1576,4 +1576,209 @@ VALUES
         CleanupPhase4Db(service, temp_dir);
     }
 
+    TEST(WorkflowUnitActivation, SchemaCreatesActivationTablesAndStepOwnershipColumn) {
+        std::filesystem::path temp_dir;
+        std::unique_ptr<simcore::db::core::DBService> service;
+        simcore::db::execution::workflow::SqliteExecutionDb* execution_db = nullptr;
+        std::string err;
+        ASSERT_TRUE(OpenPhase4ExecutionDb("unit-activation-schema", &temp_dir, &service, &execution_db, &err)) << err;
+
+        std::int64_t activation_tables = 0;
+        std::int64_t step_activation_columns = 0;
+        ASSERT_TRUE(execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM sqlite_master "
+            "WHERE type='table' AND name IN ('exec_workflow_unit_activation','exec_workflow_unit_activation_edge');",
+            &activation_tables,
+            &err))
+            << err;
+        ASSERT_TRUE(execution_db->ValidationQueryInt(
+            "SELECT COUNT(1) FROM pragma_table_info('exec_workflow_step') WHERE name='workflow_unit_activation_id';",
+            &step_activation_columns,
+            &err))
+            << err;
+        EXPECT_EQ(activation_tables, 2);
+        EXPECT_EQ(step_activation_columns, 1);
+
+        CleanupPhase4Db(service, temp_dir);
+    }
+
+    TEST(WorkflowUnitActivation, CreateInstanceOwnsStepsAndDerivesActivationState) {
+        using namespace simcore::db::execution::workflow;
+
+        std::filesystem::path temp_dir;
+        std::unique_ptr<simcore::db::core::DBService> service;
+        SqliteExecutionDb* execution_db = nullptr;
+        std::string err;
+        ASSERT_TRUE(OpenPhase4ExecutionDb("unit-activation-create", &temp_dir, &service, &execution_db, &err)) << err;
+
+        auto* commands = execution_db->WorkflowCommandService();
+        auto* queries = execution_db->WorkflowQueryService();
+        ASSERT_NE(commands, nullptr);
+        ASSERT_NE(queries, nullptr);
+
+        WorkflowCreateUnitStepSpec child{};
+        child.step_key = "probe_1";
+        child.step_kind = "seed_probe_chain";
+        child.priority = 0;
+        child.max_attempts = 1;
+
+        WorkflowCreateUnitActivationSpec activation{};
+        activation.activation_key = "probe_1";
+        activation.graph_node_key = "probe_1";
+        activation.unit_kind = "battle_seed_probe";
+        activation.display_name = "Battle Seed Probe";
+        activation.activation_params_json = "{\"breakpoint_profile_key\":\"seedprobe.battle\"}";
+        activation.authored_ref_kind = "seed_probe_spec";
+        activation.authored_ref_id = 42;
+        activation.steps.push_back(child);
+
+        WorkflowCreateInstanceCommand command{};
+        command.workflow_kind = "workflow_graph";
+        command.workflow_graph_revision_id = 7;
+        command.root_scope_kind = "manual";
+        command.created_by = "SimCoreTests";
+        command.unit_activations.push_back(activation);
+
+        std::int64_t workflow_instance_id = 0;
+        ASSERT_TRUE(commands->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
+        ASSERT_GT(workflow_instance_id, 0);
+
+        auto graph = queries->GetWorkflowGraph(workflow_instance_id);
+        ASSERT_TRUE(graph.has_value());
+        ASSERT_EQ(graph->unit_activations.size(), 1u);
+        ASSERT_EQ(graph->steps.size(), 1u);
+        EXPECT_EQ(graph->unit_activations.front().activation_key, "probe_1");
+        EXPECT_EQ(graph->unit_activations.front().unit_kind, "battle_seed_probe");
+        EXPECT_EQ(graph->unit_activations.front().state, WorkflowUnitActivationState::Ready);
+        ASSERT_TRUE(graph->steps.front().workflow_unit_activation_id.has_value());
+        EXPECT_EQ(*graph->steps.front().workflow_unit_activation_id, graph->unit_activations.front().workflow_unit_activation_id);
+
+        std::int64_t job_set_id = 0;
+        ASSERT_TRUE(execution_db->CreateJobSet(
+            {
+                .program_kind = 1,
+                .purpose = "workflow-unit-activation-test",
+                .created_by = std::string("SimCoreTests"),
+                .priority_boost = 0,
+                .expected_total = 1,
+                .domain_ref_kind = std::string("unit.input"),
+                .domain_ref_id = 9001,
+            },
+            &job_set_id,
+            &err))
+            << err;
+        ASSERT_TRUE(commands->MarkStepMaterialized(
+            {
+                .workflow_step_id = graph->steps.front().workflow_step_id,
+                .job_set_id = job_set_id,
+                .requested_by = "SimCoreTests",
+            },
+            &err))
+            << err;
+
+        graph = queries->GetWorkflowGraph(workflow_instance_id);
+        ASSERT_TRUE(graph.has_value());
+        ASSERT_EQ(graph->unit_activations.size(), 1u);
+        EXPECT_EQ(graph->unit_activations.front().state, WorkflowUnitActivationState::Running);
+
+        ASSERT_TRUE(commands->MarkStepTerminal(
+            {
+                .workflow_step_id = graph->steps.front().workflow_step_id,
+                .terminal_state = "COMPLETED",
+                .requested_by = "SimCoreTests",
+            },
+            &err))
+            << err;
+
+        graph = queries->GetWorkflowGraph(workflow_instance_id);
+        ASSERT_TRUE(graph.has_value());
+        ASSERT_EQ(graph->unit_activations.size(), 1u);
+        EXPECT_EQ(graph->unit_activations.front().state, WorkflowUnitActivationState::Completed);
+
+        CleanupPhase4Db(service, temp_dir);
+    }
+
+    TEST(WorkflowUnitActivation, ScheduleUnitActivationAppendsRuntimeGroupWithEdgeAndOwnedStep) {
+        using namespace simcore::db::execution::workflow;
+
+        std::filesystem::path temp_dir;
+        std::unique_ptr<simcore::db::core::DBService> service;
+        SqliteExecutionDb* execution_db = nullptr;
+        std::string err;
+        ASSERT_TRUE(OpenPhase4ExecutionDb("unit-activation-schedule", &temp_dir, &service, &execution_db, &err)) << err;
+
+        auto* commands = execution_db->WorkflowCommandService();
+        auto* queries = execution_db->WorkflowQueryService();
+        ASSERT_NE(commands, nullptr);
+        ASSERT_NE(queries, nullptr);
+
+        WorkflowCreateUnitStepSpec source_child{};
+        source_child.step_key = "tas_1";
+        source_child.step_kind = "tas_movie";
+        source_child.priority = 0;
+        source_child.max_attempts = 1;
+
+        WorkflowCreateUnitActivationSpec source{};
+        source.activation_key = "tas_1";
+        source.graph_node_key = "tas_1";
+        source.unit_kind = "tas_movie";
+        source.display_name = "TAS Movie";
+        source.steps.push_back(source_child);
+
+        WorkflowCreateInstanceCommand create{};
+        create.workflow_kind = "workflow_graph";
+        create.workflow_graph_revision_id = 8;
+        create.root_scope_kind = "manual";
+        create.created_by = "SimCoreTests";
+        create.unit_activations.push_back(source);
+
+        std::int64_t workflow_instance_id = 0;
+        ASSERT_TRUE(commands->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
+        auto graph = queries->GetWorkflowGraph(workflow_instance_id);
+        ASSERT_TRUE(graph.has_value());
+        ASSERT_EQ(graph->unit_activations.size(), 1u);
+        const auto source_activation_id = graph->unit_activations.front().workflow_unit_activation_id;
+
+        WorkflowCreateUnitStepSpec scheduled_child{};
+        scheduled_child.step_key = "dungeon_1";
+        scheduled_child.step_kind = "dungeon_explorer";
+        scheduled_child.priority = 0;
+        scheduled_child.max_attempts = 1;
+
+        WorkflowScheduleUnitActivationCommand schedule{};
+        schedule.workflow_instance_id = workflow_instance_id;
+        schedule.source_workflow_unit_activation_id = source_activation_id;
+        schedule.activation_key = "dungeon_1";
+        schedule.graph_node_key = "dungeon_1";
+        schedule.unit_kind = "dungeon_explorer";
+        schedule.display_name = "Dungeon Explorer";
+        schedule.activation_params_json = "{\"reason\":\"decider\"}";
+        schedule.steps.push_back(scheduled_child);
+
+        ASSERT_TRUE(commands->ScheduleUnitActivation(schedule, &err)) << err;
+
+        graph = queries->GetWorkflowGraph(workflow_instance_id);
+        ASSERT_TRUE(graph.has_value());
+        ASSERT_EQ(graph->unit_activations.size(), 2u);
+        const auto scheduled_activation_it = std::find_if(
+            graph->unit_activations.begin(),
+            graph->unit_activations.end(),
+            [](const auto& activation) { return activation.activation_key == "dungeon_1"; });
+        ASSERT_NE(scheduled_activation_it, graph->unit_activations.end());
+        const auto scheduled_activation_id = scheduled_activation_it->workflow_unit_activation_id;
+        ASSERT_EQ(graph->unit_activation_edges.size(), 1u);
+        EXPECT_EQ(graph->unit_activation_edges.front().from_workflow_unit_activation_id, source_activation_id);
+        EXPECT_EQ(graph->unit_activation_edges.front().to_workflow_unit_activation_id, scheduled_activation_id);
+
+        const auto child_it = std::find_if(
+            graph->steps.begin(),
+            graph->steps.end(),
+            [](const auto& step) { return step.step_key == "dungeon_1"; });
+        ASSERT_NE(child_it, graph->steps.end());
+        ASSERT_TRUE(child_it->workflow_unit_activation_id.has_value());
+        EXPECT_EQ(*child_it->workflow_unit_activation_id, scheduled_activation_id);
+
+        CleanupPhase4Db(service, temp_dir);
+    }
+
 }
