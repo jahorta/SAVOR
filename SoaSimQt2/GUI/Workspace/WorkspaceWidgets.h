@@ -322,6 +322,13 @@ public:
 
     QVBoxLayout* canvasLayout() const { return canvasLayout_; }
 
+    void setPageVerticalScrollBarPolicy(Qt::ScrollBarPolicy policy)
+    {
+        if (scrollArea_ != nullptr) {
+            scrollArea_->setVerticalScrollBarPolicy(policy);
+        }
+    }
+
     void setContext(
         const UiEntityRef& entity,
         const QString& title,

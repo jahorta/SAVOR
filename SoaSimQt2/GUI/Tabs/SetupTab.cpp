@@ -21,6 +21,8 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QToolButton>
@@ -353,6 +355,8 @@ SetupTab::SetupTab(CoordinatorController* coordinatorController, Actions actions
 
 void SetupTab::build()
 {
+    setPageVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
     const bool dbReady = soasimqt2::SimCoreDbRuntime::instance().isRunning();
     const bool artifactStorageReady = soasimqt2::db::SimCoreDbArtifactService::StorageReady();
     const auto graphs = soasimqt2::db::SimCoreDbAuthoringService::ListWorkflowGraphs(100, true);
@@ -382,6 +386,7 @@ void SetupTab::build()
 
     auto* workbench = new QFrame(this);
     workbench->setObjectName("workspaceCardGrid");
+    workbench->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* workbenchLayout = new QHBoxLayout(workbench);
     workbenchLayout->setContentsMargins(0, 0, 0, 0);
     workbenchLayout->setSpacing(10);
@@ -390,6 +395,7 @@ void SetupTab::build()
         graphs.ok ? graphs.value : std::vector<simcore::db::WorkflowGraphSnapshot>{});
 
     auto* createWorkflowPanel = createSectionPanel(QStringLiteral("Workflows"), workbench);
+    createWorkflowPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* createLayout = qobject_cast<QVBoxLayout*>(createWorkflowPanel->layout());
     auto* createActions = new QHBoxLayout();
     createActions->setContentsMargins(0, 0, 0, 0);
@@ -413,6 +419,7 @@ void SetupTab::build()
     createLayout->addLayout(createActions);
 
     auto* workflowTable = new QTableWidget(createWorkflowPanel);
+    workflowTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     workflowTable->setColumnCount(3);
     workflowTable->setHorizontalHeaderLabels(QStringList{
         QStringLiteral("Workflow"),
@@ -424,6 +431,7 @@ void SetupTab::build()
     workflowTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     workflowTable->setAlternatingRowColors(true);
     workflowTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    workflowTable->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     workflowTable->verticalHeader()->hide();
     workflowTable->horizontalHeader()->setStretchLastSection(false);
     workflowTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -440,6 +448,7 @@ void SetupTab::build()
     workbenchLayout->addWidget(createWorkflowPanel, 1);
 
     auto* launchPanel = createSectionPanel(QStringLiteral("Launch workflow"), workbench);
+    launchPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* launchLayout = qobject_cast<QVBoxLayout*>(launchPanel->layout());
     auto* form = new QFormLayout();
     form->setContentsMargins(0, 0, 0, 0);
@@ -449,12 +458,21 @@ void SetupTab::build()
     form->addRow(QStringLiteral("Workflow"), workflowCombo);
     launchLayout->addLayout(form);
 
-    auto* launchGroupsHost = new QFrame(launchPanel);
+    auto* launchGroupsScroll = new QScrollArea(launchPanel);
+    launchGroupsScroll->setWidgetResizable(true);
+    launchGroupsScroll->setFrameShape(QFrame::NoFrame);
+    launchGroupsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    launchGroupsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    launchGroupsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    auto* launchGroupsHost = new QFrame(launchGroupsScroll);
     launchGroupsHost->setObjectName("workspaceCardGrid");
+    launchGroupsHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto* launchGroupsLayout = new QVBoxLayout(launchGroupsHost);
     launchGroupsLayout->setContentsMargins(0, 0, 0, 0);
     launchGroupsLayout->setSpacing(8);
-    launchLayout->addWidget(launchGroupsHost);
+    launchGroupsScroll->setWidget(launchGroupsHost);
+    launchLayout->addWidget(launchGroupsScroll, 1);
 
     auto launchEditors = std::make_shared<LaunchEditors>();
     auto refreshLaunchSelection = [workflowGraphs, workflowCombo, launchGroupsLayout, launchGroupsHost, launchEditors]() {
@@ -565,8 +583,8 @@ void SetupTab::build()
                     edgeLabel->setObjectName("sectionDescription");
                     edgeLabel->setWordWrap(true);
                     overrideCheck = new QCheckBox(QStringLiteral("Override"), rowHost);
-                    rowLayout->addWidget(edgeLabel, 2);
                     rowLayout->addWidget(overrideCheck);
+                    rowLayout->addWidget(edgeLabel, 2);
                 }
 
                 auto* refKindEdit = new QLineEdit(defaultRefKindForDataKind(qs(input.data_kind)), rowHost);
@@ -602,6 +620,7 @@ void SetupTab::build()
             none->setObjectName("sectionDescription");
             launchGroupsLayout->addWidget(none);
         }
+        launchGroupsLayout->addStretch();
     };
     QObject::connect(workflowCombo, &QComboBox::currentIndexChanged, launchPanel, [refreshLaunchSelection](int) {
         refreshLaunchSelection();
@@ -958,10 +977,9 @@ void SetupTab::build()
         }
     });
     launchLayout->addWidget(launchButton);
-    launchLayout->addStretch();
     workbenchLayout->addWidget(launchPanel, 2);
 
-    canvasLayout()->addWidget(workbench);
+    canvasLayout()->addWidget(workbench, 1);
 
     auto* footer = new QFrame(this);
     footer->setObjectName("workspaceCardGrid");
@@ -990,5 +1008,4 @@ void SetupTab::build()
     }
     footerLayout->addStretch();
     canvasLayout()->addWidget(footer);
-    canvasLayout()->addStretch();
 }
