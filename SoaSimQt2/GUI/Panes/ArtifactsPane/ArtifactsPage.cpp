@@ -431,25 +431,36 @@ void ArtifactsPage::updateInspector()
     }
 
     if (!selected) {
-        inspectorSummary_->setText(QStringLiteral("Select an artifact to inspect metadata and export it."));
-        inspectorIdValue_->setText(QStringLiteral("--"));
-        inspectorFilenameValue_->setText(QStringLiteral("--"));
-        inspectorSizeValue_->setText(QStringLiteral("--"));
-        inspectorKindValue_->setText(QStringLiteral("--"));
-        inspectorCreatedValue_->setText(QStringLiteral("--"));
-        inspectorShaText_->clear();
+        lastInspectorSignature_.clear();
+        updateLabelText(inspectorSummary_, QStringLiteral("Select an artifact to inspect metadata and export it."));
+        updateLabelText(inspectorIdValue_, QStringLiteral("--"));
+        updateLabelText(inspectorFilenameValue_, QStringLiteral("--"));
+        updateLabelText(inspectorSizeValue_, QStringLiteral("--"));
+        updateLabelText(inspectorKindValue_, QStringLiteral("--"));
+        updateLabelText(inspectorCreatedValue_, QStringLiteral("--"));
+        updatePlainText(inspectorShaText_, QString());
         restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
         exportButton_->setEnabled(false);
         return;
     }
 
-    inspectorSummary_->setText(QStringLiteral("Artifact %1 is ready for inspection or materialization.").arg(selected->artifact_id));
-    inspectorIdValue_->setText(QString::number(selected->artifact_id));
-    inspectorFilenameValue_->setText(QString::fromStdString(selected->filename));
-    inspectorSizeValue_->setText(ArtifactsBrowserTableModel::formatSize(static_cast<qint64>(selected->size_bytes)));
-    inspectorKindValue_->setText(QString::fromStdString(selected->artifact_kind));
-    inspectorCreatedValue_->setText(ArtifactsBrowserTableModel::formatCreatedAt(selected->created_at_utc));
-    inspectorShaText_->setPlainText(QString::fromStdString(selected->sha256));
+    const QString inspectorSignature = QStringLiteral("%1:%2:%3:%4:%5:%6")
+        .arg(selected->artifact_id)
+        .arg(QString::fromStdString(selected->filename))
+        .arg(QString::fromStdString(selected->artifact_kind))
+        .arg(static_cast<qint64>(selected->size_bytes))
+        .arg(QString::fromStdString(selected->sha256))
+        .arg(selected->created_at_utc);
+    if (lastInspectorSignature_ != inspectorSignature) {
+        lastInspectorSignature_ = inspectorSignature;
+        updateLabelText(inspectorSummary_, QStringLiteral("Artifact %1 is ready for inspection or materialization.").arg(selected->artifact_id));
+        updateLabelText(inspectorIdValue_, QString::number(selected->artifact_id));
+        updateLabelText(inspectorFilenameValue_, QString::fromStdString(selected->filename));
+        updateLabelText(inspectorSizeValue_, ArtifactsBrowserTableModel::formatSize(static_cast<qint64>(selected->size_bytes)));
+        updateLabelText(inspectorKindValue_, QString::fromStdString(selected->artifact_kind));
+        updateLabelText(inspectorCreatedValue_, ArtifactsBrowserTableModel::formatCreatedAt(selected->created_at_utc));
+        updatePlainText(inspectorShaText_, QString::fromStdString(selected->sha256));
+    }
     restoreScrollAreaScrollSnapshot(inspectorShaText_, inspectorShaScrollSnapshot);
     exportButton_->setEnabled(state.rootsReady && !state.exportBusy && !state.importBusy);
 }
@@ -512,4 +523,22 @@ void ArtifactsPage::updateStatusWidgets()
             emit statusToastRequested(StatusToast{ toastSeverity, toastMessage, QString(), 1, QDateTime{}, 4000 });
         }
     }
+}
+
+bool ArtifactsPage::updateLabelText(QLabel* label, const QString& text)
+{
+    if (label == nullptr || label->text() == text) {
+        return false;
+    }
+    label->setText(text);
+    return true;
+}
+
+bool ArtifactsPage::updatePlainText(QTextEdit* edit, const QString& text)
+{
+    if (edit == nullptr || edit->toPlainText() == text) {
+        return false;
+    }
+    edit->setPlainText(text);
+    return true;
 }

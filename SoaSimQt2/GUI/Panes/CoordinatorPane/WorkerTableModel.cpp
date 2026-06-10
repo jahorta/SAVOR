@@ -1,10 +1,12 @@
 #include "WorkerTableModel.h"
 
 #include "DB/ProgramKindNameResolver.h"
+#include "GUI/Refresh/RowUpdate.h"
 
 #include <QtCore/QString>
 #include <QtCore/QVariant>
 
+#include <algorithm>
 #include <string>
 
 namespace {
@@ -114,7 +116,86 @@ QVariant WorkerTableModel::headerData(int section, Qt::Orientation orientation, 
 
 void WorkerTableModel::setSnapshots(std::vector<WorkerSnapshot> snapshots)
 {
-    beginResetModel();
-    snapshots_ = std::move(snapshots);
-    endResetModel();
+    const auto equalRows = [](const WorkerSnapshot& lhs, const WorkerSnapshot& rhs) {
+        return !WorkerTableModel::rowsAffectDisplay(lhs, rhs);
+    };
+    if (soasimqt2::gui::RowsEqual(snapshots_, snapshots, equalRows)) {
+        return;
+    }
+
+    int targetRow = 0;
+    while (targetRow < static_cast<int>(snapshots.size())) {
+        const auto targetWorkerId = snapshots[static_cast<size_t>(targetRow)].worker_id;
+
+        if (targetRow < static_cast<int>(snapshots_.size())
+            && snapshots_[static_cast<size_t>(targetRow)].worker_id == targetWorkerId) {
+            ++targetRow;
+            continue;
+        }
+
+        auto existingIt = std::find_if(
+            snapshots_.begin() + std::min(targetRow, static_cast<int>(snapshots_.size())),
+            snapshots_.end(),
+            [targetWorkerId](const WorkerSnapshot& row) {
+                return row.worker_id == targetWorkerId;
+            });
+
+        if (existingIt != snapshots_.end()) {
+            const int sourceRow = static_cast<int>(std::distance(snapshots_.begin(), existingIt));
+            beginMoveRows(QModelIndex(), sourceRow, sourceRow, QModelIndex(), targetRow);
+            WorkerSnapshot moved = std::move(snapshots_[static_cast<size_t>(sourceRow)]);
+            snapshots_.erase(snapshots_.begin() + sourceRow);
+            snapshots_.insert(snapshots_.begin() + targetRow, std::move(moved));
+            endMoveRows();
+            ++targetRow;
+            continue;
+        }
+
+        beginInsertRows(QModelIndex(), targetRow, targetRow);
+        snapshots_.insert(snapshots_.begin() + targetRow, snapshots[static_cast<size_t>(targetRow)]);
+        endInsertRows();
+        ++targetRow;
+    }
+
+    while (static_cast<int>(snapshots_.size()) > static_cast<int>(snapshots.size())) {
+        const int staleRow = static_cast<int>(snapshots_.size()) - 1;
+        beginRemoveRows(QModelIndex(), staleRow, staleRow);
+        snapshots_.pop_back();
+        endRemoveRows();
+    }
+
+    int changeStart = -1;
+    for (int row = 0; row < static_cast<int>(snapshots.size()); ++row) {
+        const WorkerSnapshot& incoming = snapshots[static_cast<size_t>(row)];
+        if (rowsAffectDisplay(snapshots_[static_cast<size_t>(row)], incoming)) {
+            snapshots_[static_cast<size_t>(row)] = incoming;
+            if (changeStart < 0) {
+                changeStart = row;
+            }
+            continue;
+        }
+
+        if (changeStart >= 0) {
+            emit dataChanged(index(changeStart, 0), index(row - 1, Count - 1));
+            changeStart = -1;
+        }
+    }
+
+    if (changeStart >= 0) {
+        emit dataChanged(index(changeStart, 0), index(static_cast<int>(snapshots.size()) - 1, Count - 1));
+    }
+}
+
+bool WorkerTableModel::rowsAffectDisplay(const WorkerSnapshot& lhs, const WorkerSnapshot& rhs)
+{
+    return lhs.worker_id != rhs.worker_id
+        || lhs.pid != rhs.pid
+        || lhs.state != rhs.state
+        || lhs.job_id != rhs.job_id
+        || lhs.program_kind != rhs.program_kind
+        || lhs.last_heartbeat_mono_ns != rhs.last_heartbeat_mono_ns
+        || lhs.last_progress != rhs.last_progress
+        || lhs.last_progress_mono_ns != rhs.last_progress_mono_ns
+        || lhs.last_error != rhs.last_error
+        || lhs.last_error_mono_ns != rhs.last_error_mono_ns;
 }

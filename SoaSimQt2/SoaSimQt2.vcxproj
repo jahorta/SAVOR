@@ -158,6 +158,9 @@
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp" />
     <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp" />
+    <ClCompile Include="GUI\Tabs\AnalysisTab.cpp" />
+    <ClCompile Include="GUI\Tabs\RunningTab.cpp" />
+    <ClCompile Include="GUI\Tabs\SetupTab.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp" />
     <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp" />
     <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp" />
@@ -206,6 +209,9 @@
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h" />
     <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h" />
     <ClInclude Include="GUI\StyleSheet.h" />
+    <ClInclude Include="GUI\Tabs\AnalysisTab.h" />
+    <ClInclude Include="GUI\Tabs\RunningTab.h" />
+    <ClInclude Include="GUI\Tabs\SetupTab.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />

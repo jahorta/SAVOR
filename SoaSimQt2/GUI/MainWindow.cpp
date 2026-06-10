@@ -1,58 +1,83 @@
 #include "MainWindow.h"
-#include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
-#include "GUI/Panes/JobsPane/JobsPage.h"
-#include "GUI/Panes/SeedProbePane/SeedProbePage.h"
+
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
-#include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
-#include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryDialog.h"
 #include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
+#include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
+#include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
+#include "GUI/Panes/JobsPane/JobsPage.h"
+#include "GUI/Panes/JobSetsPane/WorkflowsPage.h"
+#include "GUI/Panes/SeedProbePane/SeedProbePage.h"
+#include "GUI/Tabs/AnalysisTab.h"
+#include "GUI/Tabs/RunningTab.h"
+#include "GUI/Tabs/SetupTab.h"
+#include "DB/SimCoreDbArtifactService.h"
+#include "DB/SimCoreDbAuthoringService.h"
+#include "DB/SimCoreDbExplorerRunService.h"
+#include "DB/SimCoreDbJobService.h"
+#include "DB/SimCoreDbWorkflowService.h"
+#include "SimCoreDbRuntime.h"
 
 #include <QtCore/QStringList>
-
-#include <iterator>
+#include <QtGui/QAction>
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
-#include <QtGui/QMouseEvent>
-#include <QtWidgets/QMenuBar>
-#include <QtWidgets/QMenu>
-#include <QtGui/QAction>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QFrame>
+#include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QListWidget>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QPushButton>
 #include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
+#include <optional>
+
 namespace {
-constexpr int kLeftNavWidth = 250;
 constexpr int kTopBarHeight = 24;
 
-struct PageMetadata {
-    const char* title;
-    const char* description;
-};
+QString focusedToolKey(MainWindow::FocusedTool tool)
+{
+    switch (tool) {
+    case MainWindow::FocusedTool::Workflows: return QStringLiteral("workflows");
+    case MainWindow::FocusedTool::Jobs: return QStringLiteral("jobs");
+    case MainWindow::FocusedTool::Workers: return QStringLiteral("workers");
+    case MainWindow::FocusedTool::WorkflowLauncher: return QStringLiteral("workflow_launcher");
+    case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("battle_run_settings");
+    case MainWindow::FocusedTool::Artifacts: return QStringLiteral("artifacts");
+    case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("seed_probe");
+    case MainWindow::FocusedTool::ExplorerRuns: return QStringLiteral("explorer_runs");
+    case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("dtm_editor");
+    case MainWindow::FocusedTool::Settings: return QStringLiteral("settings");
+    }
+    return QStringLiteral("unknown");
+}
 
-constexpr PageMetadata kPageMetadata[] = {
-    { "Workflows", "Workflow execution workspace grouped by instance, step, and job set drilldown." },
-    { "Jobs", "Live Jobs workspace with backend filters, cursor paging, inspector tabs, auto-refresh, and job actions." },
-    { "Workers", "Coordinator controls, persisted runtime settings, and live worker telemetry." },
-    { "Workflow Launcher", "Workflow graph authoring and instancing with per-run external input bindings." },
-    { "Battle Run Settings", "Qt-native battle run settings authoring with preset libraries, predicates, battle chain specs, context validation, estimates, and save/materialize actions." },
-    { "Artifacts", "Artifact storage browser with search, paging, import, inspector metadata, and materialize/export actions." },
-    { "Seed Probe", "Seed probe grid and unique probing results." },
-    { "Explorer Runs", "Explorer run history and controls." },
-    { "DTM Editor", "Poll-based DTM editing with deterministic annotation sidecar binding." },
-    { "Settings", "Application-wide storage settings with shared DB relocation flow and room for future sections." }
-};
-} // namespace
+QString focusedToolTitle(MainWindow::FocusedTool tool)
+{
+    switch (tool) {
+    case MainWindow::FocusedTool::Workflows: return QStringLiteral("Workflows");
+    case MainWindow::FocusedTool::Jobs: return QStringLiteral("Jobs");
+    case MainWindow::FocusedTool::Workers: return QStringLiteral("Workers");
+    case MainWindow::FocusedTool::WorkflowLauncher: return QStringLiteral("Workflow Launcher");
+    case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("Battle Run Settings");
+    case MainWindow::FocusedTool::Artifacts: return QStringLiteral("Artifacts");
+    case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("Seed Probe");
+    case MainWindow::FocusedTool::ExplorerRuns: return QStringLiteral("Explorer Runs");
+    case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("DTM Editor");
+    case MainWindow::FocusedTool::Settings: return QStringLiteral("Settings");
+    }
+    return QStringLiteral("Tool");
+}
+}
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    
     coordinatorController_ = new CoordinatorController(this);
     createWidgets();
     createMenus();
@@ -68,7 +93,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     constexpr int kDefaultWindowWidth = 1440;
     constexpr int kDefaultWindowHeight = 900;
-
     QScreen* targetScreen = screen();
     if (!targetScreen) {
         targetScreen = QGuiApplication::screenAt(QCursor::pos());
@@ -79,10 +103,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     QSize defaultWindowSize(kDefaultWindowWidth, kDefaultWindowHeight);
     if (targetScreen) {
-        const QSize availableSize = targetScreen->availableGeometry().size();
-        defaultWindowSize = defaultWindowSize.boundedTo(availableSize);
+        defaultWindowSize = defaultWindowSize.boundedTo(targetScreen->availableGeometry().size());
     }
-
     resize(defaultWindowSize);
 }
 
@@ -100,46 +122,14 @@ void MainWindow::shutdownCoordinator()
     }
 }
 
-void MainWindow::handleNavigationChanged(int currentRow)
+void MainWindow::handleWorkspaceChanged(int currentIndex)
 {
-    if (!contentStack_ || currentRow < 0 || currentRow >= contentStack_->count()) {
-        return;
-    }
-
-    contentStack_->setCurrentIndex(currentRow);
-    if (workflowsPage_) {
-        workflowsPage_->setPageActive(currentRow == 0);
-    }
-    if (jobsPage_) {
-        jobsPage_->setPageActive(currentRow == 1);
-    }
-    if (coordinatorPane_) {
-        coordinatorPane_->setPageActive(currentRow == 2);
-    }
-    if (seedProbePage_) {
-        seedProbePage_->setPageActive(currentRow == 6);
-    }
-    if (explorerRunsPage_) {
-        explorerRunsPage_->setPageActive(currentRow == 7);
-    }
-    if (dtmEditorPage_) {
-        dtmEditorPage_->setPageActive(currentRow == 8);
-    }
-
-    if (contentTitleLabel_ && contentDescriptionLabel_ && currentRow < static_cast<int>(std::size(kPageMetadata))) {
-        contentTitleLabel_->setText(kPageMetadata[currentRow].title);
-        contentDescriptionLabel_->setText(kPageMetadata[currentRow].description);
-    }
+    setWorkspaceIndex(currentIndex);
 }
 
 void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFocusTarget target)
 {
-    if (!navigationList_ || !settingsPage_) {
-        return;
-    }
-
-        navigationList_->setCurrentRow(9);
-
+    setWorkspaceIndex(0);
     SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
     switch (target) {
     case CoordinatorPane::SettingsFocusTarget::IsoPath:
@@ -152,8 +142,15 @@ void MainWindow::handleCoordinatorSettingsNavigation(CoordinatorPane::SettingsFo
         focusTarget = SettingsPage::CoordinatorFocusTarget::Section;
         break;
     }
+    openSettingsTool(focusTarget);
+}
 
-    settingsPage_->focusCoordinatorSettings(focusTarget);
+void MainWindow::handleVisualReplayRequested(qint64 jobId)
+{
+    ensureVisualReplayHost();
+    if (visualReplayHost_) {
+        visualReplayHost_->requestVisualReplay(jobId);
+    }
 }
 
 void MainWindow::createMenus()
@@ -171,14 +168,14 @@ void MainWindow::createMenus()
     connect(specsMenu->addAction(QStringLiteral("Predicate Sets")), &QAction::triggered, this, &MainWindow::openPredicateSetSpecLibrary);
 }
 
-void MainWindow::openAuthoringLibraryLast() {
+void MainWindow::openAuthoringLibraryLast()
+{
     openAuthoringLibrary(lastAuthoringLibrary_);
 }
 
 void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
 {
     lastAuthoringLibrary_ = key;
-
     if (authoringLibraryDialog_) {
         authoringLibraryDialog_->show();
         authoringLibraryDialog_->selectLibrary(key);
@@ -193,189 +190,346 @@ void MainWindow::openAuthoringLibrary(AuthoringLibraryKey key)
     authoringLibraryDialog_->show();
 }
 
-void MainWindow::openSeedProbeSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::SeedProbe);
-}
-
-void MainWindow::openTasSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::Tas);
-}
-
-void MainWindow::openBattleRunSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::BattleRun);
-}
-
-void MainWindow::openPredicateSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::Predicate);
-}
-
-void MainWindow::openPredicateSetSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::PredicateSet);
-}
-
-void MainWindow::openBattlePlanSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::BattlePlan);
-}
-
-void MainWindow::openExplorerSettingsSpecLibrary()
-{
-    openAuthoringLibrary(AuthoringLibraryKey::ExplorerSettings);
-}
+void MainWindow::openSeedProbeSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::SeedProbe); }
+void MainWindow::openTasSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Tas); }
+void MainWindow::openBattleRunSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattleRun); }
+void MainWindow::openPredicateSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::Predicate); }
+void MainWindow::openPredicateSetSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::PredicateSet); }
+void MainWindow::openBattlePlanSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::BattlePlan); }
+void MainWindow::openExplorerSettingsSpecLibrary() { openAuthoringLibrary(AuthoringLibraryKey::ExplorerSettings); }
 
 void MainWindow::syncStatusBar()
 {
     if (!statusBarWidget_) {
         return;
     }
-
     if (coordinatorController_ && coordinatorController_->isRunning()) {
         lastCoordinatorRefresh_ = QDateTime::currentDateTime();
     }
-
-    const StatusBarSnapshot snapshot = StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_);
-    statusBarWidget_->setSnapshot(snapshot);
+    statusBarWidget_->setSnapshot(StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_));
     emitCoordinatorStateChanged();
 }
 
 void MainWindow::createWidgets()
 {
-
     QWidget* root = new QWidget(this);
     root->setObjectName("mainRoot");
+    root->setStyleSheet(QStringLiteral(
+        "QFrame#workspaceHeroPanel {"
+        "  border: 1px solid #33443f;"
+        "  border-radius: 14px;"
+        "  background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #17211f, stop:1 #0f1719);"
+        "  color: #eef7f2;"
+        "}"
+        "QFrame#workspaceMetricTile {"
+        "  border: 1px solid #3a4d49;"
+        "  border-radius: 12px;"
+        "  background: #1b2826;"
+        "  color: #eef7f2;"
+        "}"
+        "QFrame#workspaceInfoPanel {"
+        "  border: 1px solid #5a4e34;"
+        "  border-radius: 12px;"
+        "  background: #251f13;"
+        "  color: #fff2cf;"
+        "}"
+        "QFrame#workspaceToolCard {"
+        "  border: 1px solid #35413f;"
+        "  border-radius: 12px;"
+        "  background: #151d20;"
+        "  color: #edf5f1;"
+        "}"
+        "QFrame#workspaceToolCard:hover {"
+        "  border-color: #5f9c8d;"
+        "  background: #1a2729;"
+        "}"
+        "QFrame#workspaceContextDrawer {"
+        "  border: 1px solid #33443f;"
+        "  border-radius: 12px;"
+        "  background: #121b1e;"
+        "  color: #edf5f1;"
+        "}"
+        "QFrame#workspaceHeroPanel QLabel,"
+        "QFrame#workspaceMetricTile QLabel,"
+        "QFrame#workspaceToolCard QLabel,"
+        "QFrame#workspaceContextDrawer QLabel {"
+        "  color: #edf5f1;"
+        "}"
+        "QFrame#workspaceInfoPanel QLabel {"
+        "  color: #fff2cf;"
+        "}"));
     setCentralWidget(root);
 
-    QVBoxLayout* rootLayout = new QVBoxLayout(root);
+    auto* rootLayout = new QVBoxLayout(root);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    QWidget* navigationPane = createNavigationPane();
     statusBarWidget_ = createStatusBarWidget();
-    QWidget* contentPane = createContentPane();
+    workspaceStack_ = new QStackedWidget(root);
+    workspaceStack_->setObjectName("workspaceStack");
+    workspaceStack_->addWidget(new SetupTab(coordinatorController_, SetupTab::Actions{
+        [this]() { openFocusedTool(FocusedTool::WorkflowLauncher); },
+        [this]() { openAuthoringLibraryLast(); },
+        [this]() { openWorkflowGraphEditor(); },
+        [this](const simcore::db::WorkflowGraphSnapshot& snapshot, bool duplicate) {
+            openWorkflowGraphEditor(snapshot, duplicate);
+        },
+        [this]() { openSettingsTool(); },
+        [this]() { openFocusedTool(FocusedTool::Artifacts); },
+        [this]() { openFocusedTool(FocusedTool::DtmEditor); },
+        [this]() { openFocusedTool(FocusedTool::BattleRunSettings); }
+    }, root));
+    workspaceStack_->addWidget(new RunningTab(coordinatorController_, RunningTab::Actions{
+        [this]() { openFocusedTool(FocusedTool::Workflows); },
+        [this]() { openFocusedTool(FocusedTool::Jobs); },
+        [this]() { openFocusedTool(FocusedTool::Workers); }
+    }, root));
+    workspaceStack_->addWidget(new AnalysisTab(AnalysisTab::Actions{
+        [this]() { openFocusedTool(FocusedTool::SeedProbe); },
+        [this]() { openFocusedTool(FocusedTool::ExplorerRuns); },
+        [this]() { openFocusedTool(FocusedTool::Artifacts); },
+        [this]() { openFocusedTool(FocusedTool::Workflows); }
+    }, root));
 
-    QWidget* body = new QWidget(root);
-    body->setObjectName("bodyRegion");
-    QHBoxLayout* bodyLayout = new QHBoxLayout(body);
-    bodyLayout->setContentsMargins(0, 0, 0, 0);
-    bodyLayout->setSpacing(0);
-    bodyLayout->addWidget(navigationPane);
-    bodyLayout->addWidget(contentPane, 1);
-
-    rootLayout->addWidget(body, 1);
-    rootLayout->addWidget(statusBarWidget_);
-
-}
-
-QWidget* MainWindow::createNavigationPane()
-{
-    QFrame* navFrame = new QFrame(this);
-    navFrame->setObjectName("navigationPane");
-    navFrame->setFixedWidth(kLeftNavWidth);
-
-    QVBoxLayout* layout = new QVBoxLayout(navFrame);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    QLabel* header = new QLabel("NAVIGATION", navFrame);
-    header->setObjectName("navHeader");
-    layout->addWidget(header);
-
-    navigationList_ = new QListWidget(navFrame);
-    navigationList_->setObjectName("navigationList");
-    navigationList_->addItems(QStringList{
-        "Workflows",
-        "Jobs",
-        "Workers",
-        "Workflow Launcher",
-        "Battle Run Settings",
-        "Artifacts",
-        "Seed Probe",
-        "Explorer Runs",
-        "DTM Editor",
-        "Settings"
+    workspaceSelector_ = new soasimqt2::gui::WorkspaceSelectorBar(root);
+    workspaceSelector_->setSelectionChangedCallback([this](int index) {
+        handleWorkspaceChanged(index);
     });
 
-    connect(navigationList_, &QListWidget::currentRowChanged, this, &MainWindow::handleNavigationChanged);
-
-    layout->addWidget(navigationList_, 1);
-    return navFrame;
+    rootLayout->addWidget(workspaceStack_, 1);
+    rootLayout->addWidget(workspaceSelector_);
+    rootLayout->addWidget(statusBarWidget_);
+    refreshWorkspaceBadges();
+    setWorkspaceIndex(0);
 }
 
-QWidget* MainWindow::createContentPane()
+void MainWindow::refreshWorkspaceBadges()
 {
-    QWidget* contentPane = new QWidget(this);
-    contentPane->setObjectName("contentPane");
-
-    QVBoxLayout* layout = new QVBoxLayout(contentPane);
-    layout->setContentsMargins(16, 8, 16, 8);
-    layout->setSpacing(10);
-
-    QHBoxLayout* topLayout = new QHBoxLayout(contentPane);
-    topLayout->setContentsMargins(0, 0, 0, 0);
-    topLayout->setSpacing(10);
-
-    contentTitleLabel_ = new QLabel(contentPane);
-    contentTitleLabel_->setObjectName("pageTitle");
-
-    contentDescriptionLabel_ = new QLabel(contentPane);
-    contentDescriptionLabel_->setObjectName("pageDescription");
-    contentDescriptionLabel_->setWordWrap(true);
-
-    topLayout->addWidget(contentTitleLabel_, 0);
-    topLayout->addWidget(contentDescriptionLabel_, 1);
-
-    layout->addLayout(topLayout);
-
-    contentStack_ = new QStackedWidget(contentPane);
-    workflowsPage_ = new WorkflowsPage(contentPane);
-    connect(workflowsPage_, &WorkflowsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(workflowsPage_);
-    jobsPage_ = new JobsPage(contentPane);
-    connect(jobsPage_, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(jobsPage_);
-    coordinatorPane_ = new CoordinatorPane(coordinatorController_, contentStack_);
-    contentStack_->addWidget(coordinatorPane_);
-    connect(coordinatorPane_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    connect(coordinatorPane_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
-    connect(jobsPage_, &JobsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
-    auto* workflowLauncherPage = new WorkflowLauncherPage(contentStack_);
-    connect(workflowLauncherPage, &WorkflowLauncherPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(workflowLauncherPage);
-    auto* battleRunSettingsPage = new BattleRunSettingsPage(contentStack_);
-    connect(battleRunSettingsPage, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(battleRunSettingsPage);
-    auto* artifactsPage = new ArtifactsPage(contentPane);
-    connect(artifactsPage, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(artifactsPage);
-    seedProbePage_ = new SeedProbePage(contentStack_);
-    connect(seedProbePage_, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(seedProbePage_);
-    explorerRunsPage_ = new ExplorerRunsPage(contentStack_);
-    connect(explorerRunsPage_, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    connect(explorerRunsPage_, &ExplorerRunsPage::visualReplayRequested, coordinatorPane_, &CoordinatorPane::requestVisualReplay);
-    contentStack_->addWidget(explorerRunsPage_);
-    dtmEditorPage_ = new DtmEditorPage(contentStack_);
-    connect(dtmEditorPage_, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(dtmEditorPage_);
-    settingsPage_ = new SettingsPage(coordinatorController_, contentStack_);
-    connect(settingsPage_, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-    contentStack_->addWidget(settingsPage_);
-
-    layout->addWidget(contentStack_, 1);
-
-    if (navigationList_) {
-        navigationList_->setCurrentRow(0);
-    } else if constexpr (std::size(kPageMetadata) > 0) {
-        contentTitleLabel_->setText(kPageMetadata[0].title);
-        contentDescriptionLabel_->setText(kPageMetadata[0].description);
+    if (workspaceSelector_ == nullptr) {
+        return;
     }
 
-    return contentPane;
+    const bool setupWarning = !soasimqt2::SimCoreDbRuntime::instance().isRunning()
+        || !soasimqt2::db::SimCoreDbArtifactService::StorageReady()
+        || (coordinatorController_ != nullptr && !coordinatorController_->validationMessage().isEmpty());
+    workspaceSelector_->setBadge(0, setupWarning ? QStringLiteral("!") : QString());
+
+    simcore::db::UiReadJobListQuery query{};
+    const auto jobs = soasimqt2::db::SimCoreDbJobService::FetchJobsPage(query, std::nullopt, std::nullopt, 50);
+    int activeJobs = 0;
+    if (jobs.ok) {
+        for (const auto& job : jobs.value.items) {
+            const QString state = QString::fromStdString(job.state);
+            if (state == QStringLiteral("RUNNING") || state == QStringLiteral("CLAIMED") || state == QStringLiteral("QUEUED")) {
+                ++activeJobs;
+            }
+        }
+    }
+    workspaceSelector_->setBadge(1, activeJobs > 0 ? QString::number(activeJobs) : QString());
+
+    soasimqt2::db::ExplorerRunGroupQuery explorerQuery{};
+    explorerQuery.limit = 10;
+    const auto explorer = soasimqt2::db::SimCoreDbExplorerRunService::ListGroups(explorerQuery);
+    workspaceSelector_->setBadge(2, explorer.ok && !explorer.value.groups.empty()
+        ? QString::number(static_cast<int>(explorer.value.groups.size()))
+        : QString());
+}
+
+void MainWindow::openFocusedTool(FocusedTool tool)
+{
+    if (tool == FocusedTool::Settings) {
+        openSettingsTool();
+        return;
+    }
+
+    const QString key = focusedToolKey(tool);
+    QDialog* dialog = createFocusedDialog(key, focusedToolTitle(tool));
+    if (dialog == nullptr) {
+        return;
+    }
+
+    QWidget* page = nullptr;
+    switch (tool) {
+    case FocusedTool::Workflows: {
+        auto* workflows = new WorkflowsPage(dialog);
+        workflows->setPageActive(true);
+        connect(dialog, &QDialog::finished, workflows, [workflows]() { workflows->setPageActive(false); });
+        connect(workflows, &WorkflowsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = workflows;
+        break;
+    }
+    case FocusedTool::Jobs: {
+        auto* jobs = new JobsPage(dialog);
+        jobs->setPageActive(true);
+        connect(dialog, &QDialog::finished, jobs, [jobs]() { jobs->setPageActive(false); });
+        connect(jobs, &JobsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        connect(jobs, &JobsPage::visualReplayRequested, this, &MainWindow::handleVisualReplayRequested);
+        page = jobs;
+        break;
+    }
+    case FocusedTool::Workers: {
+        auto* workers = new CoordinatorPane(coordinatorController_, dialog);
+        workers->setPageActive(true);
+        connect(dialog, &QDialog::finished, workers, [workers]() { workers->setPageActive(false); });
+        connect(workers, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        connect(workers, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
+        page = workers;
+        break;
+    }
+    case FocusedTool::WorkflowLauncher: {
+        auto* launcher = new WorkflowLauncherPage(dialog);
+        connect(launcher, &WorkflowLauncherPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = launcher;
+        break;
+    }
+    case FocusedTool::BattleRunSettings: {
+        auto* battle = new BattleRunSettingsPage(dialog);
+        connect(battle, &BattleRunSettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = battle;
+        break;
+    }
+    case FocusedTool::Artifacts: {
+        auto* artifacts = new ArtifactsPage(dialog);
+        connect(artifacts, &ArtifactsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = artifacts;
+        break;
+    }
+    case FocusedTool::SeedProbe: {
+        auto* seedProbe = new SeedProbePage(dialog);
+        seedProbe->setPageActive(true);
+        connect(dialog, &QDialog::finished, seedProbe, [seedProbe]() { seedProbe->setPageActive(false); });
+        connect(seedProbe, &SeedProbePage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = seedProbe;
+        break;
+    }
+    case FocusedTool::ExplorerRuns: {
+        auto* explorer = new ExplorerRunsPage(dialog);
+        explorer->setPageActive(true);
+        connect(dialog, &QDialog::finished, explorer, [explorer]() { explorer->setPageActive(false); });
+        connect(explorer, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        connect(explorer, &ExplorerRunsPage::visualReplayRequested, this, &MainWindow::handleVisualReplayRequested);
+        page = explorer;
+        break;
+    }
+    case FocusedTool::DtmEditor: {
+        auto* dtm = new DtmEditorPage(dialog);
+        dtm->setPageActive(true);
+        connect(dialog, &QDialog::finished, dtm, [dtm]() { dtm->setPageActive(false); });
+        connect(dtm, &DtmEditorPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+        page = dtm;
+        break;
+    }
+    case FocusedTool::Settings:
+        break;
+    }
+
+    if (page != nullptr) {
+        dialog->layout()->addWidget(page);
+    }
+    dialog->show();
+}
+
+void MainWindow::openWorkflowGraphEditor()
+{
+    if (workflowGraphEditor_) {
+        workflowGraphEditor_->show();
+        workflowGraphEditor_->raise();
+        workflowGraphEditor_->activateWindow();
+        return;
+    }
+
+    auto* editor = new WorkflowGraphEditorWindow(nullptr);
+    workflowGraphEditor_ = editor;
+    editor->setStatusCallback([this](const QString& text, StatusToast::Severity severity) {
+        if (statusBarWidget_ != nullptr) {
+            statusBarWidget_->postToast(StatusToast{ severity, text });
+        }
+    });
+    editor->setSavedCallback([this]() { refreshWorkspaceBadges(); });
+    connect(editor, &QObject::destroyed, this, [this]() { workflowGraphEditor_.clear(); });
+    editor->show();
+}
+
+void MainWindow::openWorkflowGraphEditor(const simcore::db::WorkflowGraphSnapshot& snapshot, bool duplicate)
+{
+    openWorkflowGraphEditor();
+    if (workflowGraphEditor_) {
+        workflowGraphEditor_->loadSnapshot(snapshot, duplicate);
+        workflowGraphEditor_->show();
+        workflowGraphEditor_->raise();
+        workflowGraphEditor_->activateWindow();
+    }
+}
+
+void MainWindow::openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget)
+{
+    const QString key = focusedToolKey(FocusedTool::Settings);
+    if (QDialog* existing = focusedDialogs_.value(key); existing != nullptr) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        if (auto* settings = existing->findChild<SettingsPage*>()) {
+            settings->focusCoordinatorSettings(focusTarget);
+        }
+        return;
+    }
+
+    QDialog* dialog = createFocusedDialog(key, focusedToolTitle(FocusedTool::Settings));
+    if (dialog == nullptr) {
+        return;
+    }
+    auto* settings = new SettingsPage(coordinatorController_, dialog);
+    settings->setObjectName("focusedSettingsPage");
+    connect(settings, &SettingsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    dialog->layout()->addWidget(settings);
+    settings->focusCoordinatorSettings(focusTarget);
+    dialog->show();
+}
+
+QDialog* MainWindow::createFocusedDialog(const QString& key, const QString& title)
+{
+    if (QDialog* existing = focusedDialogs_.value(key); existing != nullptr) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return nullptr;
+    }
+
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName("focusedToolDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(title);
+    dialog->resize(1240, 780);
+    auto* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(10);
+    focusedDialogs_.insert(key, dialog);
+    connect(dialog, &QObject::destroyed, this, [this, key]() {
+        focusedDialogs_.remove(key);
+    });
+    return dialog;
+}
+
+void MainWindow::setWorkspaceIndex(int index)
+{
+    if (workspaceStack_ == nullptr || index < 0 || index >= workspaceStack_->count()) {
+        return;
+    }
+    workspaceStack_->setCurrentIndex(index);
+    if (workspaceSelector_ != nullptr) {
+        workspaceSelector_->setCurrentIndex(index);
+    }
+}
+
+void MainWindow::ensureVisualReplayHost()
+{
+    if (visualReplayHost_ != nullptr) {
+        return;
+    }
+    visualReplayHost_ = new CoordinatorPane(coordinatorController_, this);
+    visualReplayHost_->hide();
+    connect(visualReplayHost_, &CoordinatorPane::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
+    connect(visualReplayHost_, &CoordinatorPane::settingsNavigationRequested, this, &MainWindow::handleCoordinatorSettingsNavigation);
 }
 
 StatusBarWidget* MainWindow::createStatusBarWidget()
@@ -388,7 +542,6 @@ void MainWindow::emitCoordinatorStateChanged()
     if (!coordinatorController_) {
         return;
     }
-
     emit coordinatorStateChanged(
         coordinatorController_->isRunning(),
         coordinatorController_->isPaused(),

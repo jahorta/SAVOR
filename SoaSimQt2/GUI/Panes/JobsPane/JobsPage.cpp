@@ -384,12 +384,21 @@ void JobsPage::syncControlsFromController(bool syncAll)
             targetData = state.scope.program_kind.has_value() ? QVariant(*state.scope.program_kind) : QVariant();
         }
 
-        kindFilter_->clear();
-        kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
         QList<int> ids = state.programNames.keys();
         std::sort(ids.begin(), ids.end());
+        QStringList kindSignatureParts;
+        kindSignatureParts.reserve(ids.size());
         for (int id : ids) {
-            kindFilter_->addItem(state.programNames.value(id), id);
+            kindSignatureParts.push_back(QStringLiteral("%1:%2").arg(id).arg(state.programNames.value(id)));
+        }
+        const QString kindSignature = kindSignatureParts.join(QLatin1Char('|'));
+        if (syncAll || kindSignature != lastProgramKindSignature_) {
+            lastProgramKindSignature_ = kindSignature;
+            kindFilter_->clear();
+            kindFilter_->addItem(QStringLiteral("All kinds"), QVariant());
+            for (int id : ids) {
+                kindFilter_->addItem(state.programNames.value(id), id);
+            }
         }
         const int idx = targetData.isValid() ? kindFilter_->findData(targetData) : 0;
         kindFilter_->setCurrentIndex(idx >= 0 ? idx : 0);
@@ -460,18 +469,22 @@ void JobsPage::updateInspector()
     const simcore::db::UiJobSummary* selected = nullptr;
     for (const simcore::db::UiJobSummary& job : state.page.items) if (job.job_id == state.selectedJobId) { selected = &job; break; }
     if (!selected) {
-        inspectorSummary_->setText(QStringLiteral("Select a job to inspect details."));
-        overviewPriorityValue_->setText(QStringLiteral("--")); overviewQueuedValue_->setText(QStringLiteral("--")); overviewSelectionHint_->setText(QStringLiteral("No jobs match the current filters."));
-        eventsText_->clear(); payloadText_->clear(); artifactsModel_->setArtifacts({});
+        updateLabelText(inspectorSummary_, QStringLiteral("Select a job to inspect details."));
+        updateLabelText(overviewPriorityValue_, QStringLiteral("--"));
+        updateLabelText(overviewQueuedValue_, QStringLiteral("--"));
+        updateLabelText(overviewSelectionHint_, QStringLiteral("No jobs match the current filters."));
+        updatePlainText(eventsText_, QString());
+        updatePlainText(payloadText_, QString());
+        artifactsModel_->setArtifacts({});
         loadInputIniButton_->setEnabled(false);
         return;
     }
 
-    inspectorSummary_->setText(QStringLiteral("Job %1 | Set %2 | ProgramKind %3 | State %4")
+    updateLabelText(inspectorSummary_, QStringLiteral("Job %1 | Set %2 | ProgramKind %3 | State %4")
         .arg(selected->job_id).arg(selected->job_set_id).arg(state.programNames.value(selected->program_kind, QStringLiteral("kind %1").arg(selected->program_kind))).arg(QString::fromStdString(selected->state)));
-    overviewPriorityValue_->setText(QString::number(selected->priority));
-    overviewQueuedValue_->setText(QDateTime::fromSecsSinceEpoch(selected->queued_at_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    overviewSelectionHint_->setText(QStringLiteral("Attempts: %1").arg(selected->attempts));
+    updateLabelText(overviewPriorityValue_, QString::number(selected->priority));
+    updateLabelText(overviewQueuedValue_, QDateTime::fromSecsSinceEpoch(selected->queued_at_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    updateLabelText(overviewSelectionHint_, QStringLiteral("Attempts: %1").arg(selected->attempts));
 
     const ItemViewScrollSnapshot artifactsScrollSnapshot = captureItemViewScrollSnapshot(artifactsTable_);
     const ScrollAreaScrollSnapshot eventsScrollSnapshot = captureScrollAreaScrollSnapshot(eventsText_);
@@ -481,13 +494,13 @@ void JobsPage::updateInspector()
     for (const simcore::db::ExecutionJobEventRecord& event : state.detail.events) {
         eventLines << QStringLiteral("%1  %2%3").arg(QDateTime::fromSecsSinceEpoch(event.event_ts_utc).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))).arg(QString::fromStdString(event.event_kind)).arg(!event.message.empty() ? QStringLiteral("  %1").arg(QString::fromStdString(event.message)) : QString());
     }
-    eventsText_->setPlainText(eventLines.join('\n'));
+    updatePlainText(eventsText_, eventLines.join('\n'));
     if (state.detail.inputIniLoading) {
-        payloadText_->setPlainText(QStringLiteral("Loading input INI..."));
+        updatePlainText(payloadText_, QStringLiteral("Loading input INI..."));
     } else if (state.detail.inputIniLoaded) {
-        payloadText_->setPlainText(state.detail.inputIniText);
+        updatePlainText(payloadText_, state.detail.inputIniText);
     } else {
-        payloadText_->setPlainText(QStringLiteral("Input INI is loaded on request."));
+        updatePlainText(payloadText_, QStringLiteral("Input INI is loaded on request."));
     }
     loadInputIniButton_->setEnabled(!state.actionsBusy && !state.detail.inputIniLoading && state.selectedJobId > 0);
     artifactsModel_->setArtifacts(state.detail.artifacts);
@@ -495,6 +508,24 @@ void JobsPage::updateInspector()
     restoreScrollAreaScrollSnapshot(payloadText_, payloadScrollSnapshot);
     restoreItemViewScrollSnapshot(artifactsTable_, artifactsScrollSnapshot);
 
+}
+
+bool JobsPage::updateLabelText(QLabel* label, const QString& text)
+{
+    if (label == nullptr || label->text() == text) {
+        return false;
+    }
+    label->setText(text);
+    return true;
+}
+
+bool JobsPage::updatePlainText(QTextEdit* edit, const QString& text)
+{
+    if (edit == nullptr || edit->toPlainText() == text) {
+        return false;
+    }
+    edit->setPlainText(text);
+    return true;
 }
 
 void JobsPage::updateStatusWidgets()

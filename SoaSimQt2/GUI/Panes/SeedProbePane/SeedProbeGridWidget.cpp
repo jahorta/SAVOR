@@ -71,6 +71,21 @@ void SeedProbeGridWidget::setTitle(const QString& title)
 
 void SeedProbeGridWidget::setGridData(const GridData& data)
 {
+    const bool unchanged = data_.hasData == data.hasData
+        && data_.minNeg == data.minNeg
+        && data_.maxPos == data.maxPos
+        && data_.cells.size() == data.cells.size()
+        && std::equal(data_.cells.begin(), data_.cells.end(), data.cells.begin(), [](const Cell& lhs, const Cell& rhs) {
+            return lhs.x == rhs.x
+                && lhs.y == rhs.y
+                && lhs.xSpan == rhs.xSpan
+                && lhs.ySpan == rhs.ySpan
+                && lhs.delta == rhs.delta;
+        });
+    if (unchanged) {
+        return;
+    }
+
     data_ = data;
     update();
 }

@@ -1,5 +1,7 @@
 #include "ArtifactsBrowserTableModel.h"
 
+#include "GUI/Refresh/RowUpdate.h"
+
 #include <QtCore/QDateTime>
 
 namespace {
@@ -71,6 +73,18 @@ QVariant ArtifactsBrowserTableModel::data(const QModelIndex& index, int role) co
 
 void ArtifactsBrowserTableModel::setRows(const std::vector<Row>& rows)
 {
+    const auto equalRows = [](const Row& lhs, const Row& rhs) {
+        return lhs.artifact.artifact_id == rhs.artifact.artifact_id
+            && lhs.artifact.filename == rhs.artifact.filename
+            && lhs.artifact.artifact_kind == rhs.artifact.artifact_kind
+            && lhs.artifact.size_bytes == rhs.artifact.size_bytes
+            && lhs.artifact.sha256 == rhs.artifact.sha256
+            && lhs.artifact.created_at_utc == rhs.artifact.created_at_utc;
+    };
+    if (soasimqt2::gui::RowsEqual(rows_, rows, equalRows)) {
+        return;
+    }
+
     beginResetModel();
     rows_ = rows;
     endResetModel();

@@ -202,6 +202,37 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #ffffff;
         border: 1px solid #4e75dd;
     }
+    QToolButton#newEntityButton {
+        min-width: 42px;
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 0 8px;
+        background-color: #315bca;
+        border: 1px solid #4e75dd;
+    }
+    QToolButton#newEntityButton:hover {
+        background-color: #3a66dd;
+    }
+    QToolButton#newEntityButton::menu-indicator {
+        image: none;
+        width: 0;
+    }
+    QMenu {
+        background-color: #171c24;
+        border: 1px solid #364153;
+        border-radius: 6px;
+        color: #e7ebf0;
+        padding: 6px;
+    }
+    QMenu::item {
+        min-width: 140px;
+        padding: 8px 18px;
+        border-radius: 4px;
+    }
+    QMenu::item:selected {
+        background-color: #315bca;
+        color: #ffffff;
+    }
     QPushButton#jobsSecondaryButton {
         background-color: #222834;
         color: #dfe6f0;

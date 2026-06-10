@@ -1,5 +1,7 @@
 #include "SeedProbeTableModels.h"
 
+#include "GUI/Refresh/RowUpdate.h"
+
 SeedProbeListModel::SeedProbeListModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
@@ -7,6 +9,16 @@ SeedProbeListModel::SeedProbeListModel(QObject* parent)
 
 void SeedProbeListModel::setRows(const QVector<Row>& rows)
 {
+    const auto equalRows = [](const Row& lhs, const Row& rhs) {
+        return lhs.probeId == rhs.probeId
+            && lhs.status == rhs.status
+            && lhs.savestateId == rhs.savestateId
+            && lhs.filename == rhs.filename;
+    };
+    if (soasimqt2::gui::RowsEqual(rows_, rows, equalRows)) {
+        return;
+    }
+
     beginResetModel();
     rows_ = rows;
     endResetModel();
@@ -75,6 +87,13 @@ SeedProbeUniqueTableModel::SeedProbeUniqueTableModel(QObject* parent)
 
 void SeedProbeUniqueTableModel::setRows(const QVector<Row>& rows)
 {
+    const auto equalRows = [](const Row& lhs, const Row& rhs) {
+        return lhs.input == rhs.input && lhs.seedHex == rhs.seedHex;
+    };
+    if (soasimqt2::gui::RowsEqual(rows_, rows, equalRows)) {
+        return;
+    }
+
     beginResetModel();
     rows_ = rows;
     endResetModel();

@@ -43,6 +43,8 @@ private:
     void updateInspector();
     void updateStatusWidgets();
     void updateLoadingIndicatorState();
+    bool updateLabelText(QLabel* label, const QString& text);
+    bool updatePlainText(QTextEdit* edit, const QString& text);
     QTextEdit* createReadOnlyTextEdit();
     std::optional<int> selectedProgramKind() const;
     std::optional<QString> selectedState() const;
@@ -88,5 +90,6 @@ private:
 
     bool refreshingModel_ = false;
     std::optional<qint64> pendingSelectedJobId_;
+    QString lastProgramKindSignature_;
 
 };

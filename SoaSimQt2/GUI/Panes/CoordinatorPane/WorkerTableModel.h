@@ -20,6 +20,8 @@ public:
     void setSnapshots(std::vector<WorkerSnapshot> snapshots);
 
 private:
+    static bool rowsAffectDisplay(const WorkerSnapshot& lhs, const WorkerSnapshot& rhs);
+
     enum Column {
         Id = 0,
         Pid,

@@ -4,6 +4,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QStringList>
 #include <QtCore/QTimeZone>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
@@ -146,7 +147,7 @@ void ExplorerRunsPage::createWidgets()
     groupsTable_->setAlternatingRowColors(true);
     groupsTable_->verticalHeader()->hide();
     groupsTable_->horizontalHeader()->setStretchLastSection(true);
-    groupsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    groupsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     groupsTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     groupsLayout->addWidget(groupsTable_, 1);
 
@@ -185,7 +186,7 @@ void ExplorerRunsPage::createWidgets()
     jobsTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     jobsTable_->verticalHeader()->hide();
     jobsTable_->horizontalHeader()->setStretchLastSection(true);
-    jobsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    jobsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     jobsTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     jobsLayout->addWidget(jobsTable_, 1);
 
@@ -288,6 +289,25 @@ void ExplorerRunsPage::syncControls()
 void ExplorerRunsPage::refreshGroupsTable()
 {
     const auto& state = controller_->viewState();
+    QStringList signatureParts;
+    signatureParts.reserve(static_cast<int>(state.groupPage.groups.size()) + 1);
+    signatureParts.push_back(QString::number(state.selectedJobSetId));
+    for (const auto& group : state.groupPage.groups) {
+        signatureParts.push_back(QStringLiteral("%1:%2:%3:%4:%5:%6:%7")
+            .arg(group.job_set_id)
+            .arg(group.created_at_utc)
+            .arg(group.completed_jobs)
+            .arg(group.total_jobs)
+            .arg(group.succeeded_jobs)
+            .arg(group.failed_jobs)
+            .arg(group.canceled_jobs));
+    }
+    const QString signature = signatureParts.join(QLatin1Char('|'));
+    if (lastGroupsSignature_ == signature) {
+        return;
+    }
+    lastGroupsSignature_ = signature;
+
     const QSignalBlocker blocker(groupsTable_);
     refreshingSelection_ = true;
     groupsTable_->setRowCount(static_cast<int>(state.groupPage.groups.size()));
@@ -308,6 +328,22 @@ void ExplorerRunsPage::refreshGroupsTable()
 void ExplorerRunsPage::refreshWaveTree()
 {
     const auto& state = controller_->viewState();
+    QString signature;
+    if (state.selectedGroup.has_value()) {
+        const auto& summary = state.selectedGroup->summary;
+        signature = QStringLiteral("%1:%2:%3:%4:%5:%6")
+            .arg(summary.job_set_id)
+            .arg(summary.completed_jobs)
+            .arg(summary.total_jobs)
+            .arg(summary.failed_jobs)
+            .arg(summary.canceled_jobs)
+            .arg(state.selectedGroup->hierarchy_projection_available ? 1 : 0);
+    }
+    if (lastWaveSignature_ == signature) {
+        return;
+    }
+    lastWaveSignature_ = signature;
+
     const QSignalBlocker blocker(waveTree_);
     waveTree_->clear();
     if (!state.selectedGroup.has_value()) {
@@ -329,6 +365,22 @@ void ExplorerRunsPage::refreshWaveTree()
 void ExplorerRunsPage::refreshJobsTable()
 {
     const auto& state = controller_->viewState();
+    QStringList signatureParts;
+    signatureParts.push_back(QString::number(state.selectedJobId));
+    if (state.selectedGroup.has_value()) {
+        signatureParts.reserve(static_cast<int>(state.selectedGroup->jobs.size()) + 1);
+        for (const auto& job : state.selectedGroup->jobs) {
+            signatureParts.push_back(QStringLiteral("%1:%2")
+                .arg(job.job_id)
+                .arg(QString::fromStdString(job.state)));
+        }
+    }
+    const QString signature = signatureParts.join(QLatin1Char('|'));
+    if (lastJobsSignature_ == signature) {
+        return;
+    }
+    lastJobsSignature_ = signature;
+
     const QSignalBlocker blocker(jobsTable_);
     refreshingSelection_ = true;
     const auto rows = state.selectedGroup.has_value()
@@ -356,9 +408,9 @@ void ExplorerRunsPage::refreshDetail()
 {
     const auto& state = controller_->viewState();
     if (!state.selectedJob.has_value()) {
-        blueprintText_->setPlainText(QStringLiteral("Select a job to inspect typed details."));
-        progressText_->clear();
-        resultsText_->setPlainText(QStringLiteral("Typed explorer-run result projection is not available yet. Raw result INI is intentionally not loaded or parsed here."));
+        updatePlainText(blueprintText_, QStringLiteral("Select a job to inspect typed details."));
+        updatePlainText(progressText_, QString());
+        updatePlainText(resultsText_, QStringLiteral("Typed explorer-run result projection is not available yet. Raw result INI is intentionally not loaded or parsed here."));
         return;
     }
 
@@ -386,7 +438,7 @@ void ExplorerRunsPage::refreshDetail()
                 .arg(artifact.size_bytes);
         }
     }
-    blueprintText_->setPlainText(blueprint);
+    updatePlainText(blueprintText_, blueprint);
 
     QString events;
     for (const auto& event : detail.events) {
@@ -401,10 +453,10 @@ void ExplorerRunsPage::refreshDetail()
         }
         events += QLatin1Char('\n');
     }
-    progressText_->setPlainText(events.isEmpty()
+    updatePlainText(progressText_, events.isEmpty()
         ? QStringLiteral("No typed job events were projected for this job.")
         : events);
-    resultsText_->setPlainText(QStringLiteral("Typed result metrics pending:\nOutcome, predicates, delta VI, fake attacks, RNG seed, winner, duplicate, output savestate, and next-wave eligibility need SimCoreDB/UIRead projection fields. This page does not parse result INI."));
+    updatePlainText(resultsText_, QStringLiteral("Typed result metrics pending:\nOutcome, predicates, delta VI, fake attacks, RNG seed, winner, duplicate, output savestate, and next-wave eligibility need SimCoreDB/UIRead projection fields. This page does not parse result INI."));
 }
 
 void ExplorerRunsPage::updateStatusWidgets()
@@ -521,4 +573,13 @@ QString ExplorerRunsPage::groupStatusText(std::int64_t completed, std::int64_t t
         return failed > 0 || canceled > 0 ? QStringLiteral("Terminal with issues") : QStringLiteral("Completed");
     }
     return QStringLiteral("Running or queued");
+}
+
+bool ExplorerRunsPage::updatePlainText(QTextEdit* edit, const QString& text)
+{
+    if (edit == nullptr || edit->toPlainText() == text) {
+        return false;
+    }
+    edit->setPlainText(text);
+    return true;
 }

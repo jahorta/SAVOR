@@ -4,13 +4,13 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/RefreshCoordinator.h"
 
 class CoordinatorController;
 class QCheckBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
-class QTimer;
 class QTreeView;
 class WorkerTableModel;
 class VisualReplayDialog;
@@ -58,7 +58,7 @@ private:
     void syncVisualWorkerDashboard();
 
     CoordinatorController* controller_ = nullptr;
-    QTimer* refreshTimer_ = nullptr;
+    soasimqt2::gui::RefreshCoordinator* refreshCoordinator_ = nullptr;
     WorkerTableModel* workerTableModel_ = nullptr;
 
     QPushButton* startButton_ = nullptr;

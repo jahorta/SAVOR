@@ -43,6 +43,7 @@ private:
     bool isFinishedState(const QString& state) const;
     QString formatTimestamp(qint64 epochMillis) const;
     QString groupStatusText(std::int64_t completed, std::int64_t total, std::int64_t failed, std::int64_t canceled) const;
+    bool updatePlainText(QTextEdit* edit, const QString& text);
 
     ExplorerRunsController* controller_ = nullptr;
     QCheckBox* autoRefreshCheck_ = nullptr;
@@ -66,5 +67,8 @@ private:
     QTextEdit* progressText_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     QString lastToastSignature_;
+    QString lastGroupsSignature_;
+    QString lastWaveSignature_;
+    QString lastJobsSignature_;
     bool refreshingSelection_ = false;
 };

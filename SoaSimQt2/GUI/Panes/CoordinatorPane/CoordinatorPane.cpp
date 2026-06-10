@@ -10,7 +10,6 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
-#include <QtCore/QTimer>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFrame>
@@ -33,9 +32,14 @@ CoordinatorPane::CoordinatorPane(CoordinatorController* controller, QWidget* par
 {
     createWidgets();
 
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(kRefreshIntervalMs);
-    connect(refreshTimer_, &QTimer::timeout, controller_, &CoordinatorController::refreshSnapshot);
+    refreshCoordinator_ = new soasimqt2::gui::RefreshCoordinator(this);
+    refreshCoordinator_->setRefreshIntervalMs(kRefreshIntervalMs);
+    refreshCoordinator_->setRefreshRequestedCallback([this](soasimqt2::gui::RefreshReason) {
+        if (controller_ != nullptr) {
+            controller_->refreshSnapshot();
+        }
+        refreshCoordinator_->finishRefresh(true);
+    });
 
     connect(controller_, &CoordinatorController::stateChanged, this, &CoordinatorPane::refreshUi);
     connect(controller_, &CoordinatorController::snapshotChanged, this, &CoordinatorPane::refreshUi);
@@ -45,16 +49,11 @@ CoordinatorPane::CoordinatorPane(CoordinatorController* controller, QWidget* par
 
 void CoordinatorPane::setPageActive(bool active)
 {
-    if (!refreshTimer_ || controller_ == nullptr) {
+    if (refreshCoordinator_ == nullptr || controller_ == nullptr) {
         return;
     }
 
-    if (active) {
-        refreshTimer_->start();
-        controller_->refreshSnapshot();
-    } else {
-        refreshTimer_->stop();
-    }
+    refreshCoordinator_->setActive(active);
 }
 
 void CoordinatorPane::refreshUi()
@@ -169,7 +168,7 @@ void CoordinatorPane::configureTable(QTreeView* tableView)
     tableView->setUniformRowHeights(true);
     tableView->setIndentation(0);
     tableView->header()->setStretchLastSection(true);
-    tableView->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tableView->header()->setSectionResizeMode(QHeaderView::Interactive);
     tableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 }
 

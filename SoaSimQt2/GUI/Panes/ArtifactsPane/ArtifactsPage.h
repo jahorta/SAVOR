@@ -41,6 +41,8 @@ private:
     void refreshModel();
     void updateInspector();
     void updateStatusWidgets();
+    bool updateLabelText(QLabel* label, const QString& text);
+    bool updatePlainText(QTextEdit* edit, const QString& text);
 
     ArtifactsController* controller_ = nullptr;
     ArtifactsBrowserTableModel* tableModel_ = nullptr;
@@ -71,4 +73,5 @@ private:
     QTextEdit* inspectorShaText_ = nullptr;
     QPushButton* exportButton_ = nullptr;
     QString lastToastSignature_;
+    QString lastInspectorSignature_;
 };

@@ -3,6 +3,7 @@
 #include "SeedProbeController.h"
 #include "SeedProbeGridWidget.h"
 #include "SeedProbeTableModels.h"
+#include "GUI/Refresh/RowUpdate.h"
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QDateTime>
@@ -148,9 +149,9 @@ void SeedProbePage::createWidgets()
     listTable_->setUniformRowHeights(true);
     listTable_->setIndentation(0);
     listTable_->header()->setStretchLastSection(true);
-    listTable_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    listTable_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    listTable_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    listTable_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    listTable_->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    listTable_->header()->setSectionResizeMode(2, QHeaderView::Interactive);
     leftLayout->addWidget(listTable_, 1);
 
     QScrollArea* detailScroll = new QScrollArea(splitter);
@@ -214,7 +215,7 @@ void SeedProbePage::createWidgets()
     uniqueTable_->setModel(uniqueModel_);
     uniqueTable_->header()->setStretchLastSection(true);
     uniqueTable_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    uniqueTable_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    uniqueTable_->header()->setSectionResizeMode(1, QHeaderView::Interactive);
     uniqueTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     uniqueTable_->setSelectionMode(QAbstractItemView::NoSelection);
     uniqueTable_->setRootIsDecorated(false);
@@ -320,11 +321,11 @@ void SeedProbePage::refreshDetails()
 {
     const auto& state = controller_->viewState();
     const ItemViewScrollSnapshot uniqueScrollSnapshot = captureItemViewScrollSnapshot(uniqueTable_);
-    neutralSeedValue_->setText(state.neutralSeedText.isEmpty() ? QStringLiteral("--") : state.neutralSeedText);
-    probeIdValue_->setText(state.probeIdText.isEmpty() ? QStringLiteral("--") : state.probeIdText);
-    statusValue_->setText(state.statusText.isEmpty() ? QStringLiteral("--") : state.statusText);
-    codecValue_->setText(state.codecVersionText.isEmpty() ? QStringLiteral("--") : state.codecVersionText);
-    savestateValue_->setText(state.savestateText.isEmpty() ? QStringLiteral("--") : state.savestateText);
+    updateLabelText(neutralSeedValue_, state.neutralSeedText.isEmpty() ? QStringLiteral("--") : state.neutralSeedText);
+    updateLabelText(probeIdValue_, state.probeIdText.isEmpty() ? QStringLiteral("--") : state.probeIdText);
+    updateLabelText(statusValue_, state.statusText.isEmpty() ? QStringLiteral("--") : state.statusText);
+    updateLabelText(codecValue_, state.codecVersionText.isEmpty() ? QStringLiteral("--") : state.codecVersionText);
+    updateLabelText(savestateValue_, state.savestateText.isEmpty() ? QStringLiteral("--") : state.savestateText);
 
     SeedProbeGridWidget::GridData mainData;
     mainData.minNeg = state.mainGrid.minNeg;
@@ -406,6 +407,11 @@ void SeedProbePage::updateStatusWidgets()
 
 void SeedProbePage::rebuildLegend(const QVector<int>& deltas)
 {
+    if (lastLegendDeltas_ == deltas) {
+        return;
+    }
+    lastLegendDeltas_ = deltas;
+
     while (QLayoutItem* item = legendLayout_->takeAt(0)) {
         if (QWidget* widget = item->widget()) {
             widget->deleteLater();
@@ -431,4 +437,13 @@ void SeedProbePage::rebuildLegend(const QVector<int>& deltas)
         legendLayout_->addWidget(createLegendSwatch(label, SeedProbeGridWidget::colorForDelta(value, deltas.front(), deltas.back()), this));
     }
     legendLayout_->addStretch();
+}
+
+bool SeedProbePage::updateLabelText(QLabel* label, const QString& text)
+{
+    if (label == nullptr || label->text() == text) {
+        return false;
+    }
+    label->setText(text);
+    return true;
 }

@@ -34,6 +34,7 @@ private:
     void refreshDetails();
     void updateStatusWidgets();
     void rebuildLegend(const QVector<int>& deltas);
+    bool updateLabelText(QLabel* label, const QString& text);
 
     SeedProbeController* controller_ = nullptr;
     SeedProbeListModel* listModel_ = nullptr;
@@ -67,4 +68,5 @@ private:
     QHBoxLayout* legendLayout_ = nullptr;
     QTreeView* uniqueTable_ = nullptr;
     QString lastToastSignature_;
+    QVector<int> lastLegendDeltas_;
 };

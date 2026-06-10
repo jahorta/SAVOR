@@ -3,6 +3,7 @@
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtCore/QTimeZone>
 #include <QtWidgets/QCheckBox>
@@ -181,14 +182,14 @@ void configureStepTree(QTreeWidget* tree)
     tree->setAlternatingRowColors(true);
     tree->setUniformRowHeights(true);
     tree->header()->setStretchLastSection(false);
-    tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(2, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(3, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(4, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(5, QHeaderView::Interactive);
     tree->header()->setSectionResizeMode(6, QHeaderView::Stretch);
-    tree->header()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(7, QHeaderView::Interactive);
 }
 
 void configureJobSetsTree(QTreeWidget* tree)
@@ -204,14 +205,14 @@ void configureJobSetsTree(QTreeWidget* tree)
     tree->setAlternatingRowColors(true);
     tree->setUniformRowHeights(true);
     tree->header()->setStretchLastSection(false);
-    tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(2, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(3, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(4, QHeaderView::Interactive);
     tree->header()->setSectionResizeMode(5, QHeaderView::Stretch);
-    tree->header()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(6, QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(7, QHeaderView::Interactive);
 }
 
 void addStepRow(QTreeWidget* tree, const simcore::db::UiWorkflowStepSummary& step)
@@ -434,15 +435,15 @@ void WorkflowsPage::createWidgets()
     workflowTable_->setAlternatingRowColors(true);
     workflowTable_->verticalHeader()->hide();
     workflowTable_->horizontalHeader()->setStretchLastSection(false);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
     workflowTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(8, QHeaderView::ResizeToContents);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Interactive);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Interactive);
     splitter->addWidget(workflowTable_);
 
     auto* detailPanel = new QWidget(splitter);
@@ -480,12 +481,12 @@ void WorkflowsPage::createWidgets()
     alertsTree_->setRootIsDecorated(false);
     alertsTree_->setAlternatingRowColors(true);
     alertsTree_->setUniformRowHeights(true);
-    alertsTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    alertsTree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    alertsTree_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    alertsTree_->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    alertsTree_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    alertsTree_->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    alertsTree_->header()->setSectionResizeMode(2, QHeaderView::Interactive);
+    alertsTree_->header()->setSectionResizeMode(3, QHeaderView::Interactive);
     alertsTree_->header()->setSectionResizeMode(4, QHeaderView::Stretch);
-    alertsTree_->header()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    alertsTree_->header()->setSectionResizeMode(5, QHeaderView::Interactive);
     detailTabs->addTab(currentStepsTree_, QStringLiteral("Current"));
     detailTabs->addTab(futureStepsTree_, QStringLiteral("Future"));
     detailTabs->addTab(pastStepsTree_, QStringLiteral("Past"));
@@ -709,6 +710,26 @@ void WorkflowsPage::handleWorkflowSelectionChanged()
 
 void WorkflowsPage::updateWorkflowTable()
 {
+    QStringList signatureParts;
+    signatureParts.reserve(static_cast<int>(workflowPage_.items.size()) + 1);
+    signatureParts.push_back(QString::number(static_cast<qint64>(selectedWorkflowInstanceId_)));
+    for (const auto& workflow : workflowPage_.items) {
+        signatureParts.push_back(QStringLiteral("%1:%2:%3:%4:%5:%6")
+            .arg(static_cast<qint64>(workflow.workflow_instance_id))
+            .arg(qstr(workflow.workflow_kind))
+            .arg(qstr(workflow.state))
+            .arg(static_cast<qint64>(workflow.blocked_step_count))
+            .arg(static_cast<qint64>(workflow.failed_step_count))
+            .arg(static_cast<qint64>(workflow.completed_at_utc.value_or(0))));
+    }
+    const QString signature = signatureParts.join(QLatin1Char('|'));
+    if (lastWorkflowTableSignature_ == signature) {
+        prevButton_->setEnabled(workflowPage_.prev.has_value() && !workflowFetchInFlight_);
+        nextButton_->setEnabled(workflowPage_.next.has_value() && !workflowFetchInFlight_);
+        return;
+    }
+    lastWorkflowTableSignature_ = signature;
+
     const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(workflowTable_);
     const std::int64_t priorSelection = selectedWorkflowInstanceId_;
     std::int64_t targetSelection = 0;
@@ -753,6 +774,7 @@ void WorkflowsPage::updateWorkflowTable()
     }
 
     restoreItemViewScrollSnapshot(workflowTable_, scrollSnapshot);
+    lastWorkflowDetailSignature_.clear();
     prevButton_->setEnabled(workflowPage_.prev.has_value() && !workflowFetchInFlight_);
     nextButton_->setEnabled(workflowPage_.next.has_value() && !workflowFetchInFlight_);
 
@@ -776,6 +798,40 @@ void WorkflowsPage::updateWorkflowDetail()
     }
 
     const auto& detail = *selectedWorkflowDetail_;
+    QStringList signatureParts;
+    signatureParts.push_back(QStringLiteral("%1:%2:%3")
+        .arg(static_cast<qint64>(detail.instance.workflow_instance_id))
+        .arg(qstr(detail.instance.workflow_kind))
+        .arg(qstr(detail.instance.state)));
+    for (const auto& activation : detail.unit_activations) {
+        signatureParts.push_back(QStringLiteral("a:%1:%2:%3:%4")
+            .arg(static_cast<qint64>(activation.workflow_unit_activation_id))
+            .arg(qstr(activation.activation_key))
+            .arg(qstr(activation.unit_kind))
+            .arg(qstr(activation.state)));
+    }
+    for (const auto& step : detail.steps) {
+        signatureParts.push_back(QStringLiteral("s:%1:%2:%3:%4:%5:%6")
+            .arg(static_cast<qint64>(step.workflow_step_id))
+            .arg(qstr(step.step_key))
+            .arg(qstr(step.step_kind))
+            .arg(qstr(step.state))
+            .arg(static_cast<qint64>(step.job_completed_count))
+            .arg(static_cast<qint64>(step.job_failed_count)));
+    }
+    for (const auto& alert : detail.alerts) {
+        signatureParts.push_back(QStringLiteral("l:%1:%2:%3:%4")
+            .arg(qstr(alert.alert_kind))
+            .arg(qstr(alert.alert_code))
+            .arg(alert.is_active ? 1 : 0)
+            .arg(formatTime(alert.last_seen_at_utc)));
+    }
+    const QString signature = signatureParts.join(QLatin1Char('|'));
+    if (lastWorkflowDetailSignature_ == signature) {
+        return;
+    }
+    lastWorkflowDetailSignature_ = signature;
+
     detailHeaderLabel_->setText(QStringLiteral("Workflow #%1")
         .arg(static_cast<qint64>(detail.instance.workflow_instance_id)));
     detailMetaLabel_->setText(QStringLiteral("%1 - %2 - root %3 #%4 - created by %5")
@@ -873,6 +929,32 @@ void WorkflowsPage::updateWorkflowDetail()
 
 void WorkflowsPage::updateWorkflowJobSets()
 {
+    QStringList signatureParts;
+    signatureParts.push_back(QString::number(static_cast<qint64>(selectedWorkflowInstanceId_)));
+    for (const auto& row : workflowJobSets_) {
+        const auto& step = row.step;
+        signatureParts.push_back(QStringLiteral("%1:%2:%3:%4:%5:%6:%7")
+            .arg(static_cast<qint64>(step.workflow_step_id))
+            .arg(qstr(step.step_key))
+            .arg(qstr(step.step_kind))
+            .arg(qstr(step.state))
+            .arg(formatOptionalId(step.job_set_id))
+            .arg(static_cast<qint64>(step.job_completed_count))
+            .arg(static_cast<qint64>(step.job_failed_count)));
+        if (row.detail.has_value()) {
+            signatureParts.push_back(QStringLiteral("d:%1:%2:%3:%4")
+                .arg(static_cast<qint64>(row.detail->summary.job_set_id))
+                .arg(static_cast<qint64>(row.detail->summary.completed_jobs))
+                .arg(static_cast<qint64>(row.detail->summary.failed_jobs))
+                .arg(static_cast<qint64>(row.detail->jobs.size())));
+        }
+    }
+    const QString signature = signatureParts.join(QLatin1Char('|'));
+    if (lastWorkflowJobSetsSignature_ == signature) {
+        return;
+    }
+    lastWorkflowJobSetsSignature_ = signature;
+
     jobSetsTree_->clear();
     if (workflowJobSets_.empty()) {
         setEmptyTreeRow(jobSetsTree_, QStringLiteral("No job sets are attached to this workflow yet."));
@@ -961,6 +1043,8 @@ void WorkflowsPage::updateWorkflowJobSets()
 
 void WorkflowsPage::clearWorkflowDetail(const QString& message)
 {
+    lastWorkflowDetailSignature_.clear();
+    lastWorkflowJobSetsSignature_.clear();
     detailHeaderLabel_->setText(message);
     detailMetaLabel_->clear();
     setEmptyStepRow(currentStepsTree_, message);
@@ -972,6 +1056,7 @@ void WorkflowsPage::clearWorkflowDetail(const QString& message)
 
 void WorkflowsPage::clearWorkflowJobSets(const QString& message)
 {
+    lastWorkflowJobSetsSignature_.clear();
     workflowJobSets_.clear();
     setEmptyTreeRow(jobSetsTree_, message);
 }

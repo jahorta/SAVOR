@@ -200,7 +200,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
                 .program_kind = 3,
                 .purpose = "SeedProbe Unique",
                 .created_by = std::string("seedprobe_unique_adapter"),
-                .expected_total = static_cast<int>(planned.samples.size()),
+                .expected_total = static_cast<int>(planned.singletons.size() + planned.samples.size()),
                 .domain_ref_kind = std::string("sp_probe_run"),
                 .domain_ref_id = domain_ref_id,
                 .meta_note = std::string("phase=Unique"),
@@ -218,6 +218,57 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
     std::int64_t child_expected_total = 0;
     std::int64_t jobs_enqueued = 0;
     std::int64_t jobs_failed = 0;
+    for (const auto& singleton : planned.singletons) {
+        std::int64_t child_job_set_id = 0;
+        constexpr int child_expected = 1;
+        planned_frames += child_expected;
+        child_expected_total += child_expected;
+        if (!execution_db_->CreateJobSet(
+                {
+                    .parent_job_set_id = root_job_set_id,
+                    .program_kind = 3,
+                    .purpose = "SeedProbe Unique Singleton",
+                    .created_by = std::string("seedprobe_unique_adapter"),
+                    .expected_total = child_expected,
+                    .domain_ref_kind = std::string("sp_probe_run"),
+                    .domain_ref_id = domain_ref_id,
+                    .meta_note = std::string("expected_delta=") + std::to_string(singleton.target_delta)
+                        + ";seed=" + std::to_string(singleton.seed)
+                        + ";source=singleton",
+                },
+                &child_job_set_id,
+                &error)
+            || child_job_set_id <= 0) {
+            ++child_sets_failed;
+            jobs_failed += child_expected;
+            continue;
+        }
+        ++child_sets_created;
+
+        auto frame = singleton.frame;
+        auto frame_hex = frame.to_frame_hex();
+        simcore::db::EnqueueJobCommand enqueue{};
+        enqueue.job_set_id = child_job_set_id;
+        enqueue.program_kind = 3;
+        enqueue.program_version = resolved_blueprint.program_version;
+        enqueue.program_ref_kind = "sp_probe_run";
+        enqueue.program_ref_id = domain_ref_id;
+        enqueue.fingerprint = BuildUniqueFingerprint(
+            resolved_blueprint,
+            domain_ref_id,
+            frame_hex,
+            probe_result_id,
+            singleton.target_delta);
+        enqueue.priority = 1;
+        enqueue.max_attempts = 2;
+        std::int64_t job_id = 0;
+        if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
+            ++jobs_enqueued;
+        } else {
+            ++jobs_failed;
+        }
+    }
+
     for (auto& sample : planned.samples) {
         std::int64_t child_job_set_id = 0;
         const auto child_expected = static_cast<int>(sample.frames.size());
@@ -273,6 +324,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
           << " root_job_set=" << root_job_set_id
           << " combo_attempts_per_target=" << resolved_unique.combo_attempts_per_target
           << " combo_sampler_tries=" << resolved_unique.combo_sampler_tries
+          << " planned_singletons=" << planned.singletons.size()
           << " planned_samples=" << planned.samples.size()
           << " planned_frames=" << planned_frames
           << " child_sets_created=" << child_sets_created

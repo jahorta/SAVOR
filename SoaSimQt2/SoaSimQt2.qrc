@@ -1,4 +1,5 @@
 ﻿<RCC>
     <qresource prefix="MainWindow">
+        <file>Resources/Icons/new-document-plus.svg</file>
     </qresource>
 </RCC>

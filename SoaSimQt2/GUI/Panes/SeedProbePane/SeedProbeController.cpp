@@ -210,6 +210,7 @@ SeedProbeController::SeedProbeController(QObject* parent)
     });
 
     connect(&runningRefreshWatcher_, &QFutureWatcher<RunningProbeUpdateResult>::finished, this, [this]() {
+        bool changed = false;
         try {
             const auto result = runningRefreshWatcher_.result();
             runningRefreshInFlight_ = false;
@@ -219,22 +220,28 @@ SeedProbeController::SeedProbeController(QObject* parent)
                 for (const RunningProbeUpdate& update : result.value) {
                     for (ProbeSummary& row : state_.probeRows) {
                         if (row.probeId == update.probeId) {
+                            changed = changed || row.status != update.statusText;
                             row.status = update.statusText;
                             break;
                         }
                     }
                     if (state_.selectedProbeId == update.probeId) {
+                        changed = changed || state_.statusText != update.statusText;
                         state_.statusText = update.statusText;
                     }
                 }
             } else {
                 state_.errorMessage = QStringLiteral("Seed probe refresh failed: %1").arg(result.errorMessage);
+                changed = true;
             }
         } catch (...) {
             runningRefreshInFlight_ = false;
             state_.errorMessage = describeException("Seed probe refresh failed");
+            changed = true;
         }
-        emitStateChanged();
+        if (changed) {
+            emitStateChanged();
+        }
     });
 
     connect(&detailWatcher_, &QFutureWatcher<DetailBundleResult>::finished, this, [this]() {

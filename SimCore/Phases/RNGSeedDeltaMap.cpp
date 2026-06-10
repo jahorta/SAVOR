@@ -295,14 +295,22 @@ namespace simcore {
         // Always include the neutral frame first.
         std::unordered_set<int32_t> seen_singleton_deltas;
         seen_singleton_deltas.insert(0);
-        out.singletons.push_back(neutral_frame());
+        out.singletons.push_back(SingletonSample{
+            .target_delta = 0,
+            .seed = grid.base_seed,
+            .frame = neutral_frame(),
+        });
 
         for (const auto& e : grid.entries) {
             if (!e.ok) continue;
             const int32_t d = static_cast<int32_t>(e.delta);
             if (seen_singleton_deltas.insert(d).second) {
                 // Pick a representative frame for this singleton delta
-                out.singletons.push_back(make_singleton_frame(e.family, e.x, e.y));
+                out.singletons.push_back(SingletonSample{
+                    .target_delta = d,
+                    .seed = e.seed,
+                    .frame = make_singleton_frame(e.family, e.x, e.y),
+                });
             }
         }
 

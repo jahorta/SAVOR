@@ -316,7 +316,10 @@ bool RunSeedProbePrelude(
     }
     if (final_graph.has_value()) {
         for (const auto& step : final_graph->steps) {
-            if ((step.step_key == "probe_1" || step.step_kind == "seed_probe_chain")
+            if ((step.step_key == "probe_1"
+                    || step.step_key == "probe_1/Grid"
+                    || step.step_key == "probe_1/Unique"
+                    || step.step_kind == "seed_probe_chain")
                 && step.input_ref_kind.has_value()
                 && *step.input_ref_kind == "sp_probe_run"
                 && step.input_ref_id.has_value()
@@ -881,7 +884,9 @@ std::int64_t ResolveProbeRunIdFromGraph(
         return 0;
     }
     for (const auto& step : graph->steps) {
-        if ((step.step_key == "probe_1" || step.step_key == "probe_1/Unique")
+        if ((step.step_key == "probe_1"
+                || step.step_key == "probe_1/Grid"
+                || step.step_key == "probe_1/Unique")
             && step.input_ref_kind.has_value()
             && *step.input_ref_kind == "sp_probe_run"
             && step.input_ref_id.has_value()

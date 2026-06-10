@@ -36,10 +36,16 @@ namespace simcore {
         std::vector<GCInputFrame> frames;
     };
 
+    struct SingletonSample {
+        int32_t target_delta = 0;
+        uint32_t seed = 0;
+        GCInputFrame frame;
+    };
+
     struct JCTComboSamples {
-        std::vector<GCInputFrame> singletons; // unique singleton frames used (includes neutral)
-        std::vector<int32_t> expected;        // sorted unique (non-singleton) combo targets
-        std::vector<ComboSampleSet> samples;  // samples[i].target_delta == expected[i]
+        std::vector<SingletonSample> singletons; // unique singleton frames used (includes neutral)
+        std::vector<int32_t> expected;           // sorted unique (non-singleton) combo targets
+        std::vector<ComboSampleSet> samples;     // samples[i].target_delta == expected[i]
     };
 
     /**

@@ -26,7 +26,7 @@ void JobsTableView::attachModel(JobsTableModel* model)
 {
     setModel(model);
 
-    header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header()->setSectionResizeMode(QHeaderView::Interactive);
     header()->setSectionResizeMode(JobsTableModel::QueuedAtColumn, QHeaderView::Stretch);
 }
 

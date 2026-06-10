@@ -74,6 +74,9 @@ private:
     QString errorMessage_;
     QString infoMessage_;
     QString lastToastSignature_;
+    QString lastWorkflowTableSignature_;
+    QString lastWorkflowDetailSignature_;
+    QString lastWorkflowJobSetsSignature_;
     std::vector<soasimqt2::db::WorkflowJobSetRow> workflowJobSets_;
 
     QFutureWatcher<WorkflowPageResult> workflowWatcher_;

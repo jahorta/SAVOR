@@ -58,6 +58,9 @@
     <Filter Include="GUI\Widgets\VisualReplay">
       <UniqueIdentifier>{354d8c69-ffaf-4ea9-bc49-e4a7c83d8399}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Tabs">
+      <UniqueIdentifier>{f954d0f7-e1d7-45c3-a7f1-2c08355de992}</UniqueIdentifier>
+    </Filter>
     <Filter Include="DB">
       <UniqueIdentifier>{22712b76-2522-41b1-b291-83e88bdb6a5b}</UniqueIdentifier>
     </Filter>
@@ -196,6 +199,15 @@
     </ClCompile>
     <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
+    <ClCompile Include="GUI\Tabs\AnalysisTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Tabs\RunningTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Tabs\SetupTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
@@ -355,5 +367,14 @@
       <Filter>DB</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
+    <ClInclude Include="GUI\Tabs\AnalysisTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Tabs\RunningTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Tabs\SetupTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
