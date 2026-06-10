@@ -48,6 +48,6 @@
 /SimCoreDBSchemaExport/x64/
 /SimCoreDBSchemaExport/.db_val/
 /SimCoreDBe2e/x64/
-/SimCoreDBe2e/.simcoredbe2e
+/SimCoreDBe2e/.simcoredbe2e*
 *.mld
 /SoaSimQt3D/x64/Debug
