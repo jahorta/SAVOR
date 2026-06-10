@@ -16,6 +16,7 @@
     <ClCompile Include="test_simcoreDB_fixture_sqlite.cpp" />
     <ClCompile Include="test_simcoreDB_phase3_nonfixture.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
+    <ClCompile Include="test_worker_runtime_materialization.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scoped_wrapper.h" />

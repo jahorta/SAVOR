@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -147,6 +148,11 @@ public:
     void SetResultMapEventCallback(ResultMapEventCallback callback);
     void EnqueueProgressForTest(const simcore::PRProgress& progress);
     void EnqueueResultForTest(const simcore::PRResult& result);
+    static bool MaterializeWorkerRuntimeForTest(
+        size_t worker_idx,
+        const DBWorkflowWorkerCoordinatorConfig& worker_cfg,
+        std::filesystem::path* runtime_worker_exe_out,
+        std::string* error_out = nullptr);
 
     PRStatus SnapshotStatus() const;
     WorkflowCoordinatorTelemetry SnapshotTelemetry() const;

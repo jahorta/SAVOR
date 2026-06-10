@@ -38,7 +38,6 @@ TEST(Wrapper, ImportFromDolphinQtBase_CopiesSysAndUserIfPortable)
     ASSERT_TRUE(w.SetDolphinQtBaseDir(qt, &err)) << "Error at " << err;
     ASSERT_TRUE(w.SyncFromDolphinQtBase(false, &err)) << "Error at " << err;
 
-    // Assert files now exist only under OUR user dir
-    EXPECT_TRUE(fs::exists(user / "Sys" / "GC" / "dsp_coef.bin"));
+    // Assert User files now exist under OUR user dir. Sys materialization is handled by the worker coordinator.
     EXPECT_TRUE(fs::exists(user / "Config" / "Dolphin.ini"));
 }

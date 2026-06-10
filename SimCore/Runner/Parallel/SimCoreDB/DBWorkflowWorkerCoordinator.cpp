@@ -1014,6 +1014,14 @@ void DBWorkflowWorkerCoordinator::EnqueueResultForTest(const simcore::PRResult& 
     results_q_.push(result);
 }
 
+bool DBWorkflowWorkerCoordinator::MaterializeWorkerRuntimeForTest(
+    size_t worker_idx,
+    const DBWorkflowWorkerCoordinatorConfig& worker_cfg,
+    std::filesystem::path* runtime_worker_exe_out,
+    std::string* error_out) {
+    return EnsureWorkflowWorkerRuntimeSlot(worker_idx, worker_cfg, runtime_worker_exe_out, error_out);
+}
+
 PRStatus DBWorkflowWorkerCoordinator::SnapshotStatus() const {
     PRStatus status{};
     status.epoch = epoch_.load();

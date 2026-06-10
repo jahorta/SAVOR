@@ -56,8 +56,7 @@ TEST(Boot, BootDolphinWrapper_SyncsPortableBaseAndSavesConfig)
 
     ASSERT_TRUE(simboot::BootDolphinWrapper(dw, opts, &err)) << "Boot failed: " << err;
 
-    // 3) Validate the wrapper paths
-    EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Sys" / "GC" / "dsp_coef.bin"));
+    // 3) Validate the wrapper paths. Sys materialization is handled by the worker coordinator.
     EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Config" / "Dolphin.ini"));
     EXPECT_EQ(fs::weakly_canonical(dw.GetDolphinQtBaseDir()),
         fs::weakly_canonical(qt));
@@ -98,7 +97,6 @@ TEST(Boot, BootDolphinWrapperFromSavedConfig_Reloads)
     // 1) Boot from that saved config
     ASSERT_TRUE(simboot::BootDolphinWrapperFromSavedConfig(dw, &err, cfg_path)) << "Boot-from-config failed: " << err;
 
-    // 2) Validate copied files exist in our user dir
-    EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Sys" / "GC" / "dsp_coef.bin"));
+    // 2) Validate copied User files exist in our user dir.
     EXPECT_TRUE(fs::exists(dw.GetUserDirectory() / "Config" / "Dolphin.ini"));
 }
