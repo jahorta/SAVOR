@@ -40,6 +40,7 @@
 #include "Execution/Workflow/WorkflowTerminalAdvancementService.h"
 #include "Execution/Workflow/WorkflowTerminalOutboxSubscriber.h"
 #include "Execution/ProgramDB/BattleSingleTurn/BattleSingleTurnAdapters.h"
+#include "Execution/ProgramDB/BattleContext/BattleContextProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeNeutralAdapters.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeGridAdapters.h"
@@ -2938,6 +2939,314 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     EXPECT_EQ(decisions[0].decision_reason.value_or(""), "best delta vi");
 }
 
+TEST_F(SqliteDbFixture, Stage5AuthoringInputSetsAreIdempotentByOrderedFrameContent) {
+    using namespace simcore::db;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    ASSERT_NE(authoring_db, nullptr);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000901));
+    std::string err;
+
+    const std::vector<AuthoringInputSetFrameCommand> frames = {
+        { .main_x = 128, .main_y = 128, .cstick_x = 128, .cstick_y = 128, .trigger_x = 0, .trigger_y = 0 },
+        { .main_x = 160, .main_y = 128, .cstick_x = 128, .cstick_y = 128, .trigger_x = 0, .trigger_y = 0 },
+    };
+
+    std::int64_t first_id = 0;
+    ASSERT_TRUE(authoring_db->EnsureAuthoringInputSet(
+        { .name = "neutral-plus-right", .frames = frames, .created_at_utc = now },
+        &first_id,
+        &err)) << err;
+    ASSERT_GT(first_id, 0);
+
+    std::int64_t duplicate_id = 0;
+    ASSERT_TRUE(authoring_db->EnsureAuthoringInputSet(
+        { .name = "same-content-different-name", .frames = frames, .created_at_utc = now },
+        &duplicate_id,
+        &err)) << err;
+    EXPECT_EQ(duplicate_id, first_id);
+
+    auto reversed = frames;
+    std::reverse(reversed.begin(), reversed.end());
+    std::int64_t reversed_id = 0;
+    ASSERT_TRUE(authoring_db->EnsureAuthoringInputSet(
+        { .name = "same-frames-different-order", .frames = reversed, .created_at_utc = now },
+        &reversed_id,
+        &err)) << err;
+    EXPECT_GT(reversed_id, 0);
+    EXPECT_NE(reversed_id, first_id);
+
+    std::int64_t empty_id = 0;
+    EXPECT_FALSE(authoring_db->EnsureAuthoringInputSet(
+        { .name = "empty", .frames = {}, .created_at_utc = now },
+        &empty_id,
+        &err));
+
+    const auto stored = authoring_db->ListAuthoringInputSetFrames(first_id);
+    ASSERT_EQ(stored.size(), frames.size());
+    EXPECT_EQ(stored[0].main_x, 128);
+    EXPECT_EQ(stored[1].main_x, 160);
+}
+
+TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecordsUniqueFrames) {
+    using namespace simcore::db;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000902));
+    std::string err;
+
+    std::int64_t seed_probe_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "input-set-owner-spec",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 0,
+            .samples_per_axis = 1,
+            .min_value = 0,
+            .max_value = 0,
+            .combo_attempts_per_target = 1,
+            .created_at_utc = now,
+            .event_id = "au-seedprobe-input-set-owner",
+            .correlation_id = "au-seedprobe-input-set-owner",
+        },
+        &seed_probe_spec_id,
+        &err)) << err;
+
+    std::int64_t probe_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "input-set-owner-probe-set",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "test",
+            .segment_source_kind = "fixture",
+            .created_at_utc = now,
+            .event_id = "an-probe-set-input-set-owner",
+            .correlation_id = "an-probe-set-input-set-owner",
+        },
+        &probe_set_id,
+        &err)) << err;
+
+    std::int64_t probe_run_id = 0;
+    ASSERT_TRUE(analysis_db->RequestSeedProbeRun(
+        {
+            .probe_set_id = probe_set_id,
+            .entry_savestate_id = 77001,
+            .seed_probe_spec_id = seed_probe_spec_id,
+            .codec_version = 1,
+            .status = "requested",
+            .requested_at_utc = now,
+            .event_id = "an-probe-run-input-set-owner",
+            .correlation_id = "an-probe-run-input-set-owner",
+        },
+        &probe_run_id,
+        &err)) << err;
+
+    const auto probe_run = analysis_db->GetSeedProbeRun(probe_run_id);
+    ASSERT_TRUE(probe_run.has_value());
+    ASSERT_GT(probe_run->unique_input_set_id, 0);
+    EXPECT_TRUE(analysis_db->ListAnalysisInputSetFrames(probe_run->unique_input_set_id).empty());
+
+    std::int64_t input_frame_id = 0;
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeInputFrame(0x8080, 0x8080, 0x0000, &input_frame_id, &err)) << err;
+
+    ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 0, &err)) << err;
+    const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
+    ASSERT_TRUE(probe_result_id.has_value());
+
+    RecordSeedProbeUniqueSeedCommand unique_cmd{
+        .probe_result_id = *probe_result_id,
+        .input_frame_id = input_frame_id,
+        .seed_value = 0,
+        .seed_delta = 0,
+        .recorded_at_utc = now,
+        .event_id = "an-probe-unique-input-set-owner",
+        .correlation_id = "an-probe-unique-input-set-owner",
+    };
+    bool inserted = false;
+    std::int64_t unique_seed_id = 0;
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(unique_cmd, &inserted, &unique_seed_id, &err)) << err;
+    EXPECT_TRUE(inserted);
+    EXPECT_GT(unique_seed_id, 0);
+    ASSERT_TRUE(analysis_db->EnsureSeedProbeUniqueSeedDelta(unique_cmd, &inserted, &unique_seed_id, &err)) << err;
+    EXPECT_FALSE(inserted);
+
+    const auto frames = analysis_db->ListAnalysisInputSetFrames(probe_run->unique_input_set_id);
+    ASSERT_EQ(frames.size(), 1);
+    EXPECT_EQ(frames[0].ordinal, 0);
+    EXPECT_EQ(frames[0].input_frame_id, input_frame_id);
+}
+
+TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRunFrameSetRefs) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::programdb;
+    using namespace simcore::db::execution::programdb::battlecontext;
+    using namespace simcore::db::execution::workflow;
+    using namespace simcore::runner::parallel::simcoredb;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000903));
+    std::string err;
+
+    std::int64_t battle_run_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
+        {
+            .name = "input-set-battle-run",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 0,
+            .use_single_turn_runner = true,
+            .min_fake_attacks = 0,
+            .max_fake_attacks = 0,
+            .created_at_utc = now,
+            .event_id = "au-battle-run-input-set",
+            .correlation_id = "au-battle-input-set",
+        },
+        &battle_run_spec_id,
+        &err)) << err;
+
+    std::int64_t explorer_settings_id = 0;
+    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
+        {
+            .name = "input-set-battle-settings",
+            .created_at_utc = now,
+            .event_id = "au-explorer-input-set",
+            .correlation_id = "au-battle-input-set",
+        },
+        &explorer_settings_id,
+        &err)) << err;
+
+    std::int64_t battle_chain_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattleChainSpec(
+        {
+            .name = "input-set-battle-chain",
+            .battle_run_spec_id = battle_run_spec_id,
+            .explorer_settings_id = explorer_settings_id,
+            .created_at_utc = now,
+            .event_id = "au-battle-chain-input-set",
+            .correlation_id = "au-battle-input-set",
+        },
+        &battle_chain_spec_id,
+        &err)) << err;
+
+    std::int64_t authored_input_set_id = 0;
+    ASSERT_TRUE(authoring_db->EnsureAuthoringInputSet(
+        {
+            .name = "neutral-for-battle",
+            .frames = {
+                { .main_x = 128, .main_y = 128, .cstick_x = 128, .cstick_y = 128, .trigger_x = 0, .trigger_y = 0 },
+            },
+            .created_at_utc = now,
+        },
+        &authored_input_set_id,
+        &err)) << err;
+
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "battle-input-set-contract",
+            .description = "Battle Chain input set ref-kind contract",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-battle-input-set-contract",
+            .nodes = {
+                {
+                    .node_key = "battle_1",
+                    .unit_kind = "battle_chain",
+                    .display_name = "Battle Chain",
+                    .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                    .authored_ref_id = battle_chain_spec_id,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                        { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                    },
+                },
+            },
+            .created_at_utc = now,
+            .event_id = "au-workflow-battle-input-set-contract",
+            .correlation_id = "au-battle-input-set",
+        },
+        &saved,
+        &err)) << err;
+
+    auto create_instance = [&](std::string ref_kind, std::int64_t ref_id) {
+        std::int64_t workflow_instance_id = 0;
+        WorkflowCreateInstanceCommand command{};
+        command.workflow_kind = "workflow_graph";
+        command.root_scope_kind = "manual";
+        command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+        command.created_by = "sqlite-fixture";
+        command.created_at_utc = now.time_since_epoch().count();
+        command.unit_activations.push_back(TestUnitActivation("battle_1", "battle_chain", "Battle Chain", {}, 5, 1));
+        command.input_bindings.push_back({
+            .node_key = "battle_1",
+            .input_key = "entry_savestate",
+            .data_kind = "state.savestate_id",
+            .ref_kind = "state.savestate",
+            .ref_id = 88001,
+            .source_kind = "external",
+        });
+        command.input_bindings.push_back({
+            .node_key = "battle_1",
+            .input_key = "initial_input_frames",
+            .data_kind = "analysis.input_frame_set_id",
+            .ref_kind = std::move(ref_kind),
+            .ref_id = ref_id,
+            .source_kind = "external",
+        });
+        EXPECT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err)) << err;
+        return workflow_instance_id;
+    };
+
+    ProgramKindRegistry registry;
+    BattleContextProbePhaseRegistrationConfig config{};
+    config.authoring_db = authoring_db;
+    RegisterBattleContextProbePhaseDescriptor(&registry, execution_db, analysis_db, config);
+
+    DBWorkflowWorkerCoordinator coordinator(
+        execution_db,
+        DBWorkflowWorkerCoordinatorConfig{},
+        CoordinatorIntegrationConfig{ .workflow_enabled = true },
+        &registry);
+
+    const auto valid_instance_id = create_instance("au.input_set", authored_input_set_id);
+    const auto valid_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(valid_instance_id);
+    ASSERT_TRUE(valid_graph.has_value());
+    ASSERT_EQ(valid_graph->steps.size(), 1u);
+    const auto valid_scheduled = coordinator.MaterializeWorkflowStep(
+        WorkflowReadyStep{
+            .workflow_instance_id = valid_instance_id,
+            .workflow_step_id = valid_graph->steps.front().workflow_step_id,
+            .step_key = "battle_1",
+            .step_kind = "battle_chain",
+            .priority = 5,
+        });
+    ASSERT_TRUE(valid_scheduled.has_value());
+    EXPECT_GT(valid_scheduled->job_set_id, 0);
+
+    const auto invalid_instance_id = create_instance("sp_probe_run", 99001);
+    const auto invalid_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(invalid_instance_id);
+    ASSERT_TRUE(invalid_graph.has_value());
+    ASSERT_EQ(invalid_graph->steps.size(), 1u);
+    const auto invalid_scheduled = coordinator.MaterializeWorkflowStep(
+        WorkflowReadyStep{
+            .workflow_instance_id = invalid_instance_id,
+            .workflow_step_id = invalid_graph->steps.front().workflow_step_id,
+            .step_key = "battle_1",
+            .step_kind = "battle_chain",
+            .priority = 5,
+        });
+    EXPECT_FALSE(invalid_scheduled.has_value());
+}
+
 TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithoutExternalInputs) {
     using namespace simcore::db;
     std::string err;
@@ -3525,7 +3834,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .job_id = probe_job_id,
             .output_key = "unique_input_frames",
             .data_kind = "analysis.input_frame_set_id",
-            .ref_kind = "sp_probe_run",
+            .ref_kind = "an.input_set",
             .ref_id = 8001,
             .requested_by = "worker_result_drain",
         },
@@ -3567,6 +3876,143 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     EXPECT_EQ(std::count_if(outputs.begin(), outputs.end(), [](const auto& output) {
         return output.graph_node_key == "probe_1" && output.output_key == "unique_input_frames";
     }), 1);
+}
+
+TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) {
+    using namespace simcore::db;
+    using namespace simcore::db::execution::workflow;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    std::string err;
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000790));
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "route-external-override",
+            .description = "Override an authored edge input at launch",
+            .graph_version = 1,
+            .graph_hash = "graph-hash-route-external-override",
+            .nodes = {
+                {
+                    .node_key = "tas_1",
+                    .unit_kind = "tas_movie",
+                    .display_name = "TAS Movie",
+                    .possible_outputs = {
+                        { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                    },
+                },
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "seed_probe_chain",
+                    .display_name = "Seed Probe Chain",
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                },
+            },
+            .edges = {
+                { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
+            },
+            .created_at_utc = now,
+            .event_id = "au-workflow-graph-routing-override",
+            .correlation_id = "au-workflow-graph-routing-override",
+        },
+        &saved,
+        &err)) << err;
+
+    std::int64_t workflow_instance_id = 0;
+    WorkflowCreateInstanceCommand create{};
+    create.workflow_kind = "workflow_graph";
+    create.root_scope_kind = "manual";
+    create.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    create.created_by = "sqlite-fixture";
+    create.created_at_utc = now.time_since_epoch().count();
+    create.unit_activations.push_back(TestUnitActivation("tas_1", "tas_movie", "TAS Movie", {}, 10, 1));
+    create.unit_activations.push_back(TestUnitActivation("probe_1", "seed_probe_chain", "Seed Probe Chain", { "tas_1" }, 5, 1));
+    create.input_bindings.push_back({
+        .node_key = "probe_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = 9901,
+        .source_kind = "external_override",
+    });
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(create, &workflow_instance_id, &err)) << err;
+
+    const auto graph_before = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph_before.has_value());
+    const auto tas_step_it = std::find_if(
+        graph_before->steps.begin(),
+        graph_before->steps.end(),
+        [](const auto& step) { return step.step_key == "tas_1"; });
+    ASSERT_NE(tas_step_it, graph_before->steps.end());
+
+    std::int64_t tas_job_set_id = 0;
+    ASSERT_TRUE(execution_db->CreateJobSet(
+        {
+            .program_kind = 10,
+            .purpose = "TAS Movie",
+            .created_by = std::string("test"),
+            .expected_total = 1,
+        },
+        &tas_job_set_id,
+        &err)) << err;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepMaterialized(
+        { .workflow_step_id = tas_step_it->workflow_step_id, .job_set_id = tas_job_set_id, .requested_by = "test" },
+        &err)) << err;
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->MarkStepTerminal(
+        { .workflow_step_id = tas_step_it->workflow_step_id, .terminal_state = "COMPLETED", .requested_by = "test" },
+        &err)) << err;
+
+    WorkflowGraphRoutingService router(
+        execution_db,
+        authoring_db,
+        execution_db->WorkflowQueryService(),
+        execution_db->WorkflowCommandService());
+    WorkflowGraphRoutingResult route_result{};
+    ASSERT_TRUE(router.RouteTerminalStep(
+        {
+            .workflow_instance_id = workflow_instance_id,
+            .workflow_step_id = tas_step_it->workflow_step_id,
+            .job_set_id = tas_job_set_id,
+            .workflow_kind = "workflow_graph",
+            .workflow_graph_revision_id = saved.workflow_graph_revision_id,
+            .step_key = "tas_1",
+            .graph_node_key = "tas_1",
+            .step_kind = "tas_movie",
+            .expected_total = 1,
+            .discovered_total = 1,
+            .terminal_total = 1,
+            .failed_total = 0,
+        },
+        &route_result,
+        &err)) << err;
+    EXPECT_FALSE(route_result.routed_input_binding);
+    EXPECT_TRUE(route_result.advanced_ready_step);
+
+    const auto graph_after = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph_after.has_value());
+    const auto probe_step_it = std::find_if(
+        graph_after->steps.begin(),
+        graph_after->steps.end(),
+        [](const auto& step) { return step.step_key == "probe_1"; });
+    ASSERT_NE(probe_step_it, graph_after->steps.end());
+    EXPECT_EQ(probe_step_it->state, WorkflowStepState::Ready);
+
+    const auto override_count = std::count_if(
+        graph_after->input_bindings.begin(),
+        graph_after->input_bindings.end(),
+        [](const auto& binding) {
+            return binding.node_key == "probe_1"
+                && binding.input_key == "entry_savestate"
+                && binding.ref_id == 9901
+                && binding.source_kind == "external_override";
+        });
+    EXPECT_EQ(override_count, 1);
 }
 
 TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInstanceInputBinding) {

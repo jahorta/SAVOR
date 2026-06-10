@@ -532,10 +532,16 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
         payload.result_ref_id = unique_seed_id;
         payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("SUPERSEDED")));
     }
+    const auto probe_run = analysis_db_->GetSeedProbeRun(job->program_ref_id);
+    if (!probe_run.has_value() || probe_run->unique_input_set_id <= 0) {
+        payload.result_kind = "analysisseedprobe.unique.input_set_missing";
+        payload.event_lines.push_back(ApplyTerminalJobState(execution_db_, job_id, std::optional<std::string>("FAILED")));
+        return payload;
+    }
     payload.output_key = "unique_input_frames";
     payload.output_data_kind = "analysis.input_frame_set_id";
-    payload.output_ref_kind = job->program_ref_kind;
-    payload.output_ref_id = job->program_ref_id;
+    payload.output_ref_kind = "an.input_set";
+    payload.output_ref_id = probe_run->unique_input_set_id;
 
     if (matched_expected_delta) {
         int rows_superseded = 0;

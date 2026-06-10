@@ -135,6 +135,22 @@ std::optional<SeedProbeUniqueSeedRow> QueuedAnalysisDb::GetSeedProbeUniqueSeed(s
         std::nullopt);
 }
 
+std::optional<AnalysisInputSetFrameRow> QueuedAnalysisDb::GetAnalysisInputFrame(std::int64_t input_frame_id) const {
+    return ExecuteRead<std::optional<AnalysisInputSetFrameRow>>(
+        [this, input_frame_id]() {
+            return inner_ != nullptr ? inner_->GetAnalysisInputFrame(input_frame_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<AnalysisInputSetFrameRow> QueuedAnalysisDb::ListAnalysisInputSetFrames(std::int64_t input_set_id) const {
+    return ExecuteRead<std::vector<AnalysisInputSetFrameRow>>(
+        [this, input_set_id]() {
+            return inner_ != nullptr ? inner_->ListAnalysisInputSetFrames(input_set_id) : std::vector<AnalysisInputSetFrameRow>{};
+        },
+        {});
+}
+
 bool QueuedAnalysisDb::EnsureSeedProbeInputFrame(
     std::int64_t main_axis_xy_id,
     std::int64_t cstick_axis_xy_id,

@@ -16,6 +16,19 @@ CREATE TABLE IF NOT EXISTS sp_probe_set (
     CONSTRAINT uq_sp_probe_set_name UNIQUE (name)
 );
 
+CREATE TABLE IF NOT EXISTS an_input_set (
+    input_set_id INTEGER PRIMARY KEY,
+    content_hash TEXT NULL,
+    source_ref_kind TEXT NULL,
+    source_ref_id INTEGER NULL,
+    created_at_utc INTEGER NOT NULL,
+    CONSTRAINT uq_an_input_set_content_hash UNIQUE (content_hash)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_an_input_set_source
+    ON an_input_set(source_ref_kind, source_ref_id)
+    WHERE source_ref_kind IS NOT NULL AND source_ref_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS sp_probe_run (
     probe_run_id INTEGER PRIMARY KEY,
     probe_set_id INTEGER NOT NULL,
@@ -23,9 +36,11 @@ CREATE TABLE IF NOT EXISTS sp_probe_run (
     seed_probe_spec_id INTEGER NOT NULL,
     codec_version INTEGER NOT NULL,
     status TEXT NOT NULL,
+    unique_input_set_id INTEGER NOT NULL,
     requested_at_utc INTEGER NOT NULL,
     completed_at_utc INTEGER NULL,
-    FOREIGN KEY(probe_set_id) REFERENCES sp_probe_set(probe_set_id)
+    FOREIGN KEY(probe_set_id) REFERENCES sp_probe_set(probe_set_id),
+    FOREIGN KEY(unique_input_set_id) REFERENCES an_input_set(input_set_id)
 );
 
 CREATE TABLE IF NOT EXISTS sp_probe_result (
@@ -56,6 +71,16 @@ CREATE TABLE IF NOT EXISTS sp_input_frame (
     FOREIGN KEY(cstick_axis_xy_id) REFERENCES sp_axis_xy(axis_xy_id),
     FOREIGN KEY(trigger_axis_xy_id) REFERENCES sp_axis_xy(axis_xy_id),
     CONSTRAINT uq_sp_input_frame_axes UNIQUE (main_axis_xy_id, cstick_axis_xy_id, trigger_axis_xy_id)
+);
+
+CREATE TABLE IF NOT EXISTS an_input_set_frame (
+    input_set_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    input_frame_id INTEGER NOT NULL,
+    added_at_utc INTEGER NOT NULL,
+    PRIMARY KEY(input_set_id, ordinal),
+    FOREIGN KEY(input_set_id) REFERENCES an_input_set(input_set_id),
+    FOREIGN KEY(input_frame_id) REFERENCES sp_input_frame(input_frame_id)
 );
 
 CREATE TABLE IF NOT EXISTS sp_neutral_seed (
@@ -130,6 +155,9 @@ CREATE INDEX IF NOT EXISTS ix_sp_grid_seed_probe_result_family
 
 CREATE INDEX IF NOT EXISTS ix_sp_unique_seed_probe_result
     ON sp_unique_seed(probe_result_id, input_frame_id);
+
+CREATE INDEX IF NOT EXISTS ix_an_input_set_frame_input_set
+    ON an_input_set_frame(input_set_id, ordinal);
 
 CREATE INDEX IF NOT EXISTS ix_sp_outbox_unpublished
     ON sp_outbox_message(published_at_utc, outbox_id);

@@ -293,6 +293,7 @@ struct SeedProbeRunSnapshot {
     std::int64_t entry_savestate_id = 0;
     int codec_version = 0;
     std::string status;
+    std::int64_t unique_input_set_id = 0;
     types::UtcTimePoint requested_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
 };
@@ -333,6 +334,17 @@ struct SeedProbeUniqueSeedRow {
     std::int64_t probe_result_id = 0;
     std::int64_t seed_value = 0;
     std::int64_t seed_delta = 0;
+    std::int32_t main_x = 0;
+    std::int32_t main_y = 0;
+    std::int32_t cstick_x = 0;
+    std::int32_t cstick_y = 0;
+    std::int32_t trigger_x = 0;
+    std::int32_t trigger_y = 0;
+};
+
+struct AnalysisInputSetFrameRow {
+    std::int64_t input_frame_id = 0;
+    int ordinal = 0;
     std::int32_t main_x = 0;
     std::int32_t main_y = 0;
     std::int32_t cstick_x = 0;
@@ -395,6 +407,7 @@ struct CreateBattleSetCommand {
 struct AddBattleSeedCandidateCommand {
     std::int64_t battle_set_id = 0;
     std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_input_frame_id;
     std::int64_t seed_value = 0;
     BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
     BattleSeedCandidateStatus candidate_status = BattleSeedCandidateStatus::Unknown;
@@ -500,6 +513,7 @@ struct BattleSeedCandidateRow {
     std::int64_t seed_candidate_id = 0;
     std::int64_t battle_set_id = 0;
     std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_input_frame_id;
     std::int64_t seed_value = 0;
     BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
     BattleSeedCandidateStatus candidate_status = BattleSeedCandidateStatus::Unknown;
@@ -595,6 +609,8 @@ struct IAnalysisDb {
     virtual std::vector<SeedProbeGridSeedRow> ListSeedProbeGridSeeds(std::int64_t probe_run_id) const = 0;
     virtual std::vector<SeedProbeUniqueSeedRow> ListSeedProbeUniqueSeeds(std::int64_t probe_run_id) const = 0;
     virtual std::optional<SeedProbeUniqueSeedRow> GetSeedProbeUniqueSeed(std::int64_t unique_seed_id) const = 0;
+    virtual std::optional<AnalysisInputSetFrameRow> GetAnalysisInputFrame(std::int64_t input_frame_id) const = 0;
+    virtual std::vector<AnalysisInputSetFrameRow> ListAnalysisInputSetFrames(std::int64_t input_set_id) const = 0;
     virtual bool EnsureSeedProbeInputFrame(
         std::int64_t main_axis_xy_id,
         std::int64_t cstick_axis_xy_id,

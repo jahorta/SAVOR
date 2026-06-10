@@ -33,6 +33,27 @@ CREATE TABLE IF NOT EXISTS au_seed_probe_spec (
     CONSTRAINT uq_au_seed_probe_spec_name UNIQUE (name)
 );
 
+CREATE TABLE IF NOT EXISTS au_input_set (
+    input_set_id INTEGER PRIMARY KEY,
+    name TEXT NULL,
+    content_hash TEXT NOT NULL,
+    created_at_utc INTEGER NOT NULL,
+    CONSTRAINT uq_au_input_set_content_hash UNIQUE (content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS au_input_set_frame (
+    input_set_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    main_x INTEGER NOT NULL CHECK(main_x BETWEEN 0 AND 255),
+    main_y INTEGER NOT NULL CHECK(main_y BETWEEN 0 AND 255),
+    cstick_x INTEGER NOT NULL CHECK(cstick_x BETWEEN 0 AND 255),
+    cstick_y INTEGER NOT NULL CHECK(cstick_y BETWEEN 0 AND 255),
+    trigger_x INTEGER NOT NULL CHECK(trigger_x BETWEEN 0 AND 255),
+    trigger_y INTEGER NOT NULL CHECK(trigger_y BETWEEN 0 AND 255),
+    PRIMARY KEY(input_set_id, ordinal),
+    FOREIGN KEY(input_set_id) REFERENCES au_input_set(input_set_id)
+);
+
 CREATE TABLE IF NOT EXISTS au_tas_spec_base (
     tas_spec_base_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,

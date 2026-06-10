@@ -606,6 +606,17 @@ simcore::GCInputFrame InitialFrameFromUniqueSeed(const simcore::db::SeedProbeUni
     return frame;
 }
 
+simcore::GCInputFrame InitialFrameFromInputSetFrame(const simcore::db::AnalysisInputSetFrameRow& seed) {
+    simcore::GCInputFrame frame{};
+    frame.main_x = ClampByte(seed.main_x);
+    frame.main_y = ClampByte(seed.main_y);
+    frame.c_x = ClampByte(seed.cstick_x);
+    frame.c_y = ClampByte(seed.cstick_y);
+    frame.trig_l = ClampByte(seed.trigger_x);
+    frame.trig_r = ClampByte(seed.trigger_y);
+    return frame;
+}
+
 std::string BuildInputIni(const JobIni& job) {
     IniDoc ini;
     job.set_section(ini);
@@ -972,6 +983,11 @@ public:
                 if (const auto unique = analysis_db_->GetSeedProbeUniqueSeed(*candidate->source_unique_seed_id); unique.has_value()) {
                     spec.has_initial_input = true;
                     spec.initial = InitialFrameFromUniqueSeed(*unique);
+                }
+            } else if (candidate.has_value() && candidate->source_input_frame_id.has_value()) {
+                if (const auto frame = analysis_db_->GetAnalysisInputFrame(*candidate->source_input_frame_id); frame.has_value()) {
+                    spec.has_initial_input = true;
+                    spec.initial = InitialFrameFromInputSetFrame(*frame);
                 }
             }
         }

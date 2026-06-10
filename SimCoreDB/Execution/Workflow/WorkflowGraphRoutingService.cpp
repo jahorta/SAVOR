@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -184,12 +185,29 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
     const auto outputs = query_service_->ListStepOutputs(snapshot.workflow_instance_id);
     std::vector<std::string> touched_targets;
     std::unordered_set<std::string> satisfied_bindings;
+    std::unordered_map<std::string, const WorkflowInstanceInputBindingRecord*> binding_by_key;
     for (const auto& binding : execution_graph->input_bindings) {
-        satisfied_bindings.insert(BindingKey(binding.node_key, binding.input_key));
+        const auto key = BindingKey(binding.node_key, binding.input_key);
+        satisfied_bindings.insert(key);
+        binding_by_key.emplace(key, &binding);
     }
+    const auto touch_target = [&touched_targets](const std::string& node_key) {
+        if (std::find(touched_targets.begin(), touched_targets.end(), node_key) == touched_targets.end()) {
+            touched_targets.push_back(node_key);
+        }
+    };
 
     for (const auto& edge : authored_graph->edges) {
         if (edge.from_node_key != graph_node_key) {
+            continue;
+        }
+
+        const auto target_binding_key = BindingKey(edge.to_node_key, edge.input_key);
+        const auto existing_binding = binding_by_key.find(target_binding_key);
+        if (existing_binding != binding_by_key.end()
+            && existing_binding->second->source_kind == "external_override") {
+            satisfied_bindings.insert(target_binding_key);
+            touch_target(edge.to_node_key);
             continue;
         }
 
@@ -243,10 +261,8 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
             return false;
         }
         result.routed_input_binding = true;
-        satisfied_bindings.insert(BindingKey(edge.to_node_key, edge.input_key));
-        if (std::find(touched_targets.begin(), touched_targets.end(), edge.to_node_key) == touched_targets.end()) {
-            touched_targets.push_back(edge.to_node_key);
-        }
+        satisfied_bindings.insert(target_binding_key);
+        touch_target(edge.to_node_key);
     }
 
     for (const auto& target_node_key : touched_targets) {

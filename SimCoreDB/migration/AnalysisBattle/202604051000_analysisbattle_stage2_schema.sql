@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS ab_seed_candidate (
     seed_candidate_id INTEGER PRIMARY KEY,
     battle_set_id INTEGER NOT NULL,
     source_unique_seed_id INTEGER NULL,
+    source_input_frame_id INTEGER NULL,
     seed_value INTEGER NOT NULL,
     source_kind TEXT NOT NULL CHECK(source_kind IN ('SP_UNIQUE', 'MANUAL', 'SYNTHETIC')),
     candidate_status TEXT NOT NULL,

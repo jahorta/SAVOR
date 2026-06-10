@@ -117,6 +117,27 @@ std::vector<SeedProbeSpecSnapshot> QueuedAuthoringDb::ListSeedProbeSpecs(
         {});
 }
 
+bool QueuedAuthoringDb::EnsureAuthoringInputSet(
+    const EnsureAuthoringInputSetCommand& command,
+    std::int64_t* input_set_id_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, command, input_set_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->EnsureAuthoringInputSet(command, input_set_id_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+std::vector<AuthoringInputSetFrameSnapshot> QueuedAuthoringDb::ListAuthoringInputSetFrames(
+    std::int64_t input_set_id) const {
+    return ExecuteRead<std::vector<AuthoringInputSetFrameSnapshot>>(
+        [this, input_set_id]() {
+            return inner_ != nullptr ? inner_->ListAuthoringInputSetFrames(input_set_id) : std::vector<AuthoringInputSetFrameSnapshot>{};
+        },
+        {});
+}
+
 bool QueuedAuthoringDb::SaveTasSpec(
     const SaveTasSpecCommand& command,
     std::int64_t* tas_spec_id_out,

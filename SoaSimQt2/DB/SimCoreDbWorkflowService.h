@@ -206,7 +206,12 @@ public:
             return Invalid<std::int64_t>("workflow graph revision has no nodes");
         }
 
+        const auto binding_key = [](const std::string& node_key, const std::string& input_key) {
+            return node_key + "\n" + input_key;
+        };
+
         std::unordered_map<std::string, const simcore::db::WorkflowGraphNodeSnapshot*> node_by_key;
+        std::unordered_map<std::string, const simcore::db::WorkflowGraphNodeInputSnapshot*> input_by_key;
         node_by_key.reserve(graph.nodes.size());
         for (const auto& node : graph.nodes) {
             if (node.node_key.empty() || node.unit_kind.empty()) {
@@ -214,6 +219,9 @@ public:
             }
             if (!node_by_key.emplace(node.node_key, &node).second) {
                 return Invalid<std::int64_t>("workflow graph contains duplicate node keys");
+            }
+            for (const auto& input : node.inputs) {
+                input_by_key.emplace(binding_key(node.node_key, input.input_key), &input);
             }
         }
 
@@ -225,7 +233,7 @@ public:
                 return Invalid<std::int64_t>("workflow graph contains an edge with an unknown node");
             }
             dependencies_by_node[edge.to_node_key].push_back(edge.from_node_key);
-            supplied_by_edge.insert(edge.to_node_key + "\n" + edge.input_key);
+            supplied_by_edge.insert(binding_key(edge.to_node_key, edge.input_key));
         }
 
         std::unordered_set<std::string> supplied_by_binding;
@@ -245,7 +253,22 @@ public:
             if (binding.input_key.empty() || binding.data_kind.empty() || binding.ref_kind.empty() || binding.ref_id <= 0) {
                 return Invalid<std::int64_t>("input binding requires input key, data kind, ref kind, and ref id");
             }
-            const auto key = binding.node_key + "\n" + binding.input_key;
+            const auto key = binding_key(binding.node_key, binding.input_key);
+            const auto input_it = input_by_key.find(key);
+            if (input_it == input_by_key.end()) {
+                return Invalid<std::int64_t>("input binding references an unknown workflow input");
+            }
+            if (!input_it->second->data_kind.empty() && input_it->second->data_kind != binding.data_kind) {
+                return Invalid<std::int64_t>("input binding data kind does not match workflow input");
+            }
+            if (binding.data_kind == "analysis.input_frame_set_id"
+                && binding.ref_kind != "an.input_set"
+                && binding.ref_kind != "au.input_set") {
+                return Invalid<std::int64_t>("analysis.input_frame_set_id binding requires an.input_set or au.input_set");
+            }
+            if (binding.source_kind == "external_override" && supplied_by_edge.find(key) == supplied_by_edge.end()) {
+                return Invalid<std::int64_t>("external_override input binding requires an authored edge");
+            }
             if (!supplied_by_binding.emplace(key).second) {
                 return Invalid<std::int64_t>("duplicate input binding for " + binding.node_key + "." + binding.input_key);
             }
@@ -294,7 +317,7 @@ public:
                 if (!input.required) {
                     continue;
                 }
-                const auto key = node.node_key + "\n" + input.input_key;
+                const auto key = binding_key(node.node_key, input.input_key);
                 if (supplied_by_edge.find(key) == supplied_by_edge.end()
                     && supplied_by_binding.find(key) == supplied_by_binding.end()) {
                     return Invalid<std::int64_t>("required input is not supplied: " + node.node_key + "." + input.input_key);

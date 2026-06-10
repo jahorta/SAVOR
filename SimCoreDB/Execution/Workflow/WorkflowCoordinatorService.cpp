@@ -387,10 +387,11 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
                     .ref_id = *step.input_ref_id,
                     .source_kind = "upstream",
                 });
-        } else if (step.step_kind == "battle_chain" && step.input_ref_kind == "sp_probe_run") {
+        } else if (step.step_kind == "battle_chain"
+            && (*step.input_ref_kind == "an.input_set" || *step.input_ref_kind == "au.input_set")) {
             context.input_bindings.push_back(
                 programdb::WorkflowGraphInputBinding{
-                    .node_key = step.step_key,
+                    .node_key = expected_node_key,
                     .input_key = "initial_input_frames",
                     .data_kind = "analysis.input_frame_set_id",
                     .ref_kind = *step.input_ref_kind,

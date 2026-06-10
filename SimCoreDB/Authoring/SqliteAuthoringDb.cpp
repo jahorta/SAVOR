@@ -4,11 +4,13 @@
 #include <chrono>
 #include <charconv>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
+#include "../../SimCore/Utils/Hash.h"
 
 namespace simcore::db {
 
@@ -165,6 +167,27 @@ std::vector<BPKey> ParseBpKeyList(std::string_view text) {
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
+}
+
+bool ValidFrameByte(std::int32_t value) {
+    return value >= 0 && value <= 255;
+}
+
+std::string HashAuthoringInputSetFrames(const std::vector<AuthoringInputSetFrameCommand>& frames) {
+    std::ostringstream out;
+    out << "au.input_set.v1\n";
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const auto& frame = frames[i];
+        out << i << ':'
+            << frame.main_x << ','
+            << frame.main_y << ','
+            << frame.cstick_x << ','
+            << frame.cstick_y << ','
+            << frame.trigger_x << ','
+            << frame.trigger_y << '\n';
+    }
+    const auto text = out.str();
+    return hash::sha256(text.data(), text.size());
 }
 
 
@@ -606,6 +629,166 @@ std::vector<SeedProbeSpecSnapshot> SqliteAuthoringDb::ListSeedProbeSpecs(
         if (auto snapshot = GetSeedProbeSpec(sqlite3_column_int64(st.st, 0)); snapshot.has_value()) {
             out.push_back(std::move(*snapshot));
         }
+    }
+    return out;
+}
+
+bool SqliteAuthoringDb::EnsureAuthoringInputSet(
+    const EnsureAuthoringInputSetCommand& command,
+    std::int64_t* input_set_id_out,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (command.frames.empty()) {
+        if (error_out) *error_out = "authoring input set requires at least one frame";
+        return false;
+    }
+    for (const auto& frame : command.frames) {
+        if (!ValidFrameByte(frame.main_x)
+            || !ValidFrameByte(frame.main_y)
+            || !ValidFrameByte(frame.cstick_x)
+            || !ValidFrameByte(frame.cstick_y)
+            || !ValidFrameByte(frame.trigger_x)
+            || !ValidFrameByte(frame.trigger_y)) {
+            if (error_out) *error_out = "authoring input set frame values must be between 0 and 255";
+            return false;
+        }
+    }
+
+    const auto content_hash = HashAuthoringInputSetFrames(command.frames);
+    if (content_hash.empty()) {
+        if (error_out) *error_out = "failed to hash authoring input set";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+
+    Statement existing;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT input_set_id FROM au_input_set WHERE content_hash=?1 LIMIT 1;",
+            -1,
+            &existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_text(existing.st, 1, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(existing.st) == SQLITE_ROW) {
+        if (input_set_id_out) {
+            *input_set_id_out = sqlite3_column_int64(existing.st, 0);
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        return true;
+    }
+
+    Statement insert_set;
+    if (sqlite3_prepare_v2(
+            db_,
+            "INSERT INTO au_input_set(name,content_hash,created_at_utc) VALUES(?1,?2,?3);",
+            -1,
+            &insert_set.st,
+            nullptr)
+        != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (command.name.empty()) sqlite3_bind_null(insert_set.st, 1);
+    else sqlite3_bind_text(insert_set.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_set.st, 2, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_set.st, 3, ToEpochMillis(command.created_at_utc));
+    if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto input_set_id = sqlite3_last_insert_rowid(db_);
+
+    for (int ordinal = 0; ordinal < static_cast<int>(command.frames.size()); ++ordinal) {
+        const auto& frame = command.frames[static_cast<std::size_t>(ordinal)];
+        Statement insert_frame;
+        if (sqlite3_prepare_v2(
+                db_,
+                "INSERT INTO au_input_set_frame(input_set_id,ordinal,main_x,main_y,cstick_x,cstick_y,trigger_x,trigger_y) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,?8);",
+                -1,
+                &insert_frame.st,
+                nullptr)
+            != SQLITE_OK) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(insert_frame.st, 1, input_set_id);
+        sqlite3_bind_int(insert_frame.st, 2, ordinal);
+        sqlite3_bind_int(insert_frame.st, 3, frame.main_x);
+        sqlite3_bind_int(insert_frame.st, 4, frame.main_y);
+        sqlite3_bind_int(insert_frame.st, 5, frame.cstick_x);
+        sqlite3_bind_int(insert_frame.st, 6, frame.cstick_y);
+        sqlite3_bind_int(insert_frame.st, 7, frame.trigger_x);
+        sqlite3_bind_int(insert_frame.st, 8, frame.trigger_y);
+        if (sqlite3_step(insert_frame.st) != SQLITE_DONE) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (input_set_id_out) {
+        *input_set_id_out = input_set_id;
+    }
+    return true;
+}
+
+std::vector<AuthoringInputSetFrameSnapshot> SqliteAuthoringDb::ListAuthoringInputSetFrames(
+    std::int64_t input_set_id) const {
+    std::vector<AuthoringInputSetFrameSnapshot> out;
+    if (db_ == nullptr || input_set_id <= 0) {
+        return out;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT ordinal,main_x,main_y,cstick_x,cstick_y,trigger_x,trigger_y "
+            "FROM au_input_set_frame WHERE input_set_id=?1 ORDER BY ordinal ASC;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int64(st.st, 1, input_set_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        out.push_back(AuthoringInputSetFrameSnapshot{
+            .ordinal = sqlite3_column_int(st.st, 0),
+            .main_x = sqlite3_column_int(st.st, 1),
+            .main_y = sqlite3_column_int(st.st, 2),
+            .cstick_x = sqlite3_column_int(st.st, 3),
+            .cstick_y = sqlite3_column_int(st.st, 4),
+            .trigger_x = sqlite3_column_int(st.st, 5),
+            .trigger_y = sqlite3_column_int(st.st, 6),
+        });
     }
     return out;
 }

@@ -18,6 +18,8 @@ constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
     "battle",
     "tasmovie_seedprobe",
     "tasmovie_seedprobe_battle",
+    "tasmovie_seedprobe_battle_override",
+    "tasmovie_battle",
 });
 
 struct ScenarioRequirement {
@@ -46,6 +48,13 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "tasmovie_seedprobe_battle") {
         return {.requires_dtm_file = true};
     }
+    if (scenario == "tasmovie_seedprobe_battle_override" || scenario == "tasmovie_battle") {
+        return {
+            .requires_dtm_file = true,
+            .requires_savestate_file = true,
+            .requires_savestate_file_for_seedprobe_placeholder = true,
+        };
+    }
     return {};
 }
 
@@ -62,7 +71,11 @@ bool IsSupportedScenario(const std::string_view scenario) {
 }
 
 bool IsTasMovieScenario(const std::string_view scenario) {
-    return scenario == "tasmovie" || scenario == "tasmovie_seedprobe" || scenario == "tasmovie_seedprobe_battle";
+    return scenario == "tasmovie"
+        || scenario == "tasmovie_seedprobe"
+        || scenario == "tasmovie_seedprobe_battle"
+        || scenario == "tasmovie_seedprobe_battle_override"
+        || scenario == "tasmovie_battle";
 }
 
 bool IsTasMovieSeedProbeScenario(const std::string_view scenario) {
@@ -264,7 +277,8 @@ void PrintUsage() {
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
-              << "tasmovie_seedprobe, tasmovie_seedprobe_battle\n";
+              << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
+              << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
 }
 

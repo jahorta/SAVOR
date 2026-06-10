@@ -238,6 +238,24 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #dfe6f0;
         border: 1px solid #364153;
     }
+    QPushButton#drawerCloseButton {
+        min-width: 32px;
+        max-width: 32px;
+        min-height: 32px;
+        max-height: 32px;
+        padding: 0;
+        border-radius: 6px;
+        background-color: #222834;
+        color: #ffffff;
+        border: 1px solid #364153;
+    }
+    QPushButton#drawerCloseButton:hover:!disabled {
+        background-color: #2b3240;
+        border-color: #465368;
+    }
+    QPushButton#drawerCloseButton:pressed {
+        background-color: #1b202a;
+    }
     QPushButton#predicateCompareButton {
         background-color: #222834;
         color: #dfe6f0;

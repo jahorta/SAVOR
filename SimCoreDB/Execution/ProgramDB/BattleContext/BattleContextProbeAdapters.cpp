@@ -41,6 +41,8 @@ struct JobIni {
     std::int64_t wave_id = 0;
     std::int64_t source_savestate_id = 0;
     std::int64_t probe_run_id = 0;
+    std::string input_set_ref_kind;
+    std::int64_t input_set_ref_id = 0;
     std::int64_t unique_seed_id = 0;
     std::int64_t battle_chain_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
@@ -51,6 +53,8 @@ struct JobIni {
         ini.set(kJobSection, "wave_id", std::to_string(wave_id));
         ini.set(kJobSection, "source_savestate_id", std::to_string(source_savestate_id));
         ini.set(kJobSection, "probe_run_id", std::to_string(probe_run_id));
+        ini.set(kJobSection, "input_set_ref_kind", input_set_ref_kind);
+        ini.set(kJobSection, "input_set_ref_id", std::to_string(input_set_ref_id));
         ini.set(kJobSection, "unique_seed_id", std::to_string(unique_seed_id));
         ini.set(kJobSection, "battle_chain_spec_id", std::to_string(battle_chain_spec_id));
         ini.set(kJobSection, "battle_run_spec_id", std::to_string(battle_run_spec_id));
@@ -64,6 +68,8 @@ struct JobIni {
         out.wave_id = ini.get_i64(kJobSection, "wave_id", 0);
         out.source_savestate_id = ini.get_i64(kJobSection, "source_savestate_id", 0);
         out.probe_run_id = ini.get_i64(kJobSection, "probe_run_id", 0);
+        out.input_set_ref_kind = ini.get(kJobSection, "input_set_ref_kind", "");
+        out.input_set_ref_id = ini.get_i64(kJobSection, "input_set_ref_id", 0);
         out.unique_seed_id = ini.get_i64(kJobSection, "unique_seed_id", 0);
         out.battle_chain_spec_id = ini.get_i64(kJobSection, "battle_chain_spec_id", 0);
         out.battle_run_spec_id = ini.get_i64(kJobSection, "battle_run_spec_id", 0);
@@ -115,6 +121,20 @@ struct ResultsIni {
         return out;
     }
 };
+
+struct InputSetCandidate {
+    std::optional<std::int64_t> source_unique_seed_id;
+    std::int64_t source_input_frame_id = 0;
+    std::int64_t seed_value = 0;
+    simcore::db::BattleSeedCandidateSourceKind source_kind = simcore::db::BattleSeedCandidateSourceKind::Unknown;
+};
+
+std::vector<InputSetCandidate> ResolveInputSetCandidates(
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db,
+    const std::string& ref_kind,
+    std::int64_t ref_id,
+    std::string* error_out);
 
 std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
     return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
@@ -487,14 +507,24 @@ public:
             return payload;
         } else {
             const auto job_ini = JobIni::parse(exec_job->input_ini);
-            const auto unique_rows = analysis_db_->ListSeedProbeUniqueSeeds(job_ini.probe_run_id);
+            std::string input_set_error;
+            const auto input_set_candidates = ResolveInputSetCandidates(
+                analysis_db_,
+                authoring_db_,
+                job_ini.input_set_ref_kind,
+                job_ini.input_set_ref_id,
+                &input_set_error);
             if (job_ini.source_savestate_id <= 0
-                || job_ini.probe_run_id <= 0
+                || job_ini.input_set_ref_kind.empty()
+                || job_ini.input_set_ref_id <= 0
                 || job_ini.battle_run_spec_id <= 0
                 || job_ini.explorer_settings_id <= 0
-                || unique_rows.empty()) {
+                || input_set_candidates.empty()) {
                 AppendJobCompleted(execution_db_, job_id, "FAILED", &payload.event_lines);
                 payload.result_kind = "analysisbattle.context_probe.context_missing";
+                if (!input_set_error.empty()) {
+                    payload.event_lines.push_back("[battle-context-probe-result] input_set_error=" + input_set_error);
+                }
                 return payload;
             }
 
@@ -509,7 +539,7 @@ public:
                         .created_at_utc = now,
                         .event_id = "workflow-battle-context-probe-" + aggregate,
                         .correlation_id = "workflow-battle-" + aggregate,
-                        .causation_id = "probe-run-" + std::to_string(job_ini.probe_run_id),
+                        .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                     },
                     &context_probe_id,
                     &error)
@@ -533,7 +563,7 @@ public:
                         .created_at_utc = now,
                         .event_id = "workflow-battle-set-" + aggregate,
                         .correlation_id = "workflow-battle-" + aggregate,
-                        .causation_id = "probe-run-" + std::to_string(job_ini.probe_run_id),
+                        .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                     },
                     &battle_set_id,
                     &error)
@@ -545,19 +575,21 @@ public:
             }
 
             std::size_t waves_created = 0;
-            for (const auto& unique : unique_rows) {
+            for (const auto& candidate : input_set_candidates) {
                 std::int64_t seed_candidate_id = 0;
+                const auto candidate_suffix = std::to_string(waves_created);
                 if (!analysis_db_->AddBattleSeedCandidate(
                         {
                             .battle_set_id = battle_set_id,
-                            .source_unique_seed_id = unique.unique_seed_id,
-                            .seed_value = unique.seed_value,
-                            .source_kind = simcore::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
+                            .source_unique_seed_id = candidate.source_unique_seed_id,
+                            .source_input_frame_id = candidate.source_input_frame_id,
+                            .seed_value = candidate.seed_value,
+                            .source_kind = candidate.source_kind,
                             .candidate_status = simcore::db::BattleSeedCandidateStatus::Ready,
                             .created_at_utc = now,
-                            .event_id = "workflow-battle-candidate-" + aggregate + "-" + std::to_string(unique.unique_seed_id),
+                            .event_id = "workflow-battle-candidate-" + aggregate + "-" + candidate_suffix,
                             .correlation_id = "workflow-battle-" + aggregate,
-                            .causation_id = "unique-seed-" + std::to_string(unique.unique_seed_id),
+                            .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                         },
                         &seed_candidate_id,
                         &error)
@@ -577,7 +609,7 @@ public:
                             .seed_candidate_id = seed_candidate_id,
                             .status = simcore::db::BattleTurnWaveStatus::Ready,
                             .created_at_utc = now,
-                            .event_id = "workflow-battle-wave-" + aggregate + "-" + std::to_string(unique.unique_seed_id),
+                            .event_id = "workflow-battle-wave-" + aggregate + "-" + candidate_suffix,
                             .correlation_id = "workflow-battle-" + aggregate,
                             .causation_id = "battle-context-probe-" + std::to_string(context_probe_id),
                         },
@@ -750,6 +782,73 @@ std::optional<std::int64_t> FindIntegerArgument(
     return std::nullopt;
 }
 
+std::int64_t AxisXYId(std::int32_t x, std::int32_t y) {
+    return (static_cast<std::int64_t>(std::clamp(x, 0, 255)) << 8)
+        | static_cast<std::int64_t>(std::clamp(y, 0, 255));
+}
+
+std::vector<InputSetCandidate> ResolveInputSetCandidates(
+    simcore::db::IAnalysisDb* analysis_db,
+    simcore::db::IAuthoringDb* authoring_db,
+    const std::string& ref_kind,
+    std::int64_t ref_id,
+    std::string* error_out) {
+    std::vector<InputSetCandidate> out;
+    if (ref_id <= 0) {
+        if (error_out) *error_out = "input set ref id must be > 0";
+        return out;
+    }
+    if (ref_kind == "an.input_set") {
+        if (analysis_db == nullptr) {
+            if (error_out) *error_out = "analysis db unavailable";
+            return out;
+        }
+        const auto frames = analysis_db->ListAnalysisInputSetFrames(ref_id);
+        out.reserve(frames.size());
+        for (const auto& frame : frames) {
+            out.push_back(InputSetCandidate{
+                .source_input_frame_id = frame.input_frame_id,
+                .seed_value = frame.ordinal,
+                .source_kind = simcore::db::BattleSeedCandidateSourceKind::Synthetic,
+            });
+        }
+        if (out.empty() && error_out) *error_out = "an.input_set has no frames";
+        return out;
+    }
+    if (ref_kind == "au.input_set") {
+        if (analysis_db == nullptr || authoring_db == nullptr) {
+            if (error_out) *error_out = "analysis/authoring db unavailable";
+            return out;
+        }
+        const auto frames = authoring_db->ListAuthoringInputSetFrames(ref_id);
+        out.reserve(frames.size());
+        for (const auto& frame : frames) {
+            std::int64_t input_frame_id = 0;
+            std::string ensure_error;
+            if (!analysis_db->EnsureSeedProbeInputFrame(
+                    AxisXYId(frame.main_x, frame.main_y),
+                    AxisXYId(frame.cstick_x, frame.cstick_y),
+                    AxisXYId(frame.trigger_x, frame.trigger_y),
+                    &input_frame_id,
+                    &ensure_error)
+                || input_frame_id <= 0) {
+                if (error_out) *error_out = "failed to materialize au.input_set frame: " + ensure_error;
+                out.clear();
+                return out;
+            }
+            out.push_back(InputSetCandidate{
+                .source_input_frame_id = input_frame_id,
+                .seed_value = frame.ordinal,
+                .source_kind = simcore::db::BattleSeedCandidateSourceKind::Manual,
+            });
+        }
+        if (out.empty() && error_out) *error_out = "au.input_set has no frames";
+        return out;
+    }
+    if (error_out) *error_out = "initial_input_frames must use an.input_set or au.input_set";
+    return out;
+}
+
 std::int64_t ResolveEffectiveBattleRunSpecId(
     simcore::db::IAuthoringDb* authoring_db,
     const simcore::db::BattleRunSpecSnapshot& base_run_spec,
@@ -860,17 +959,25 @@ public:
         }
 
         const auto* input_frames = FindGraphBinding(context, "initial_input_frames", "analysis.input_frame_set_id");
-        if (input_frames == nullptr || input_frames->ref_kind != "sp_probe_run") {
+        if (input_frames == nullptr
+            || (input_frames->ref_kind != "an.input_set" && input_frames->ref_kind != "au.input_set")) {
             return {};
         }
-        const auto probe_run = analysis_db_->GetSeedProbeRun(input_frames->ref_id);
-        if (!probe_run.has_value()) {
+        std::string input_set_error;
+        const auto input_set_candidates = ResolveInputSetCandidates(
+            analysis_db_,
+            authoring_db_,
+            input_frames->ref_kind,
+            input_frames->ref_id,
+            &input_set_error);
+        if (input_set_candidates.empty()) {
             return {};
         }
-        const auto unique_rows = analysis_db_->ListSeedProbeUniqueSeeds(input_frames->ref_id);
-        if (unique_rows.empty()) {
+        const auto* entry_savestate = FindGraphBinding(context, "entry_savestate", "state.savestate_id");
+        if (entry_savestate == nullptr || entry_savestate->ref_kind != "state.savestate" || entry_savestate->ref_id <= 0) {
             return {};
         }
+        const auto source_savestate_id = entry_savestate->ref_id;
 
         const auto now = simcore::db::types::UtcNow();
         const auto aggregate = std::to_string(context.workflow_instance_id)
@@ -878,10 +985,10 @@ public:
         std::string error;
 
         WorkflowStepScheduleResult scheduled{};
-        scheduled.persistence.program_ref_kind = "sp_probe_run";
+        scheduled.persistence.program_ref_kind = input_frames->ref_kind;
         scheduled.persistence.program_ref_id = input_frames->ref_id;
         scheduled.persistence.program_version = kProgramVersion;
-        scheduled.persistence.fingerprint = "battle.chain.probe_run." + std::to_string(input_frames->ref_id)
+        scheduled.persistence.fingerprint = "battle.chain.input_set." + input_frames->ref_kind + "." + std::to_string(input_frames->ref_id)
             + ".battle_chain_spec." + std::to_string(*node->authored_ref_id);
 
         const auto effective_battle_run_spec_id = ResolveEffectiveBattleRunSpecId(
@@ -901,9 +1008,10 @@ public:
                     .created_by = "battle.chain.adapters",
                     .created_at_utc = now.time_since_epoch().count(),
                     .expected_total = 1,
-                    .domain_ref_kind = std::string("sp_probe_run"),
+                    .domain_ref_kind = input_frames->ref_kind,
                     .domain_ref_id = input_frames->ref_id,
-                    .meta_note = "phase=battle_chain.context_probe;battle_chain_spec_id=" + std::to_string(*node->authored_ref_id),
+                    .meta_note = "phase=battle_chain.context_probe;input_set_ref_kind=" + input_frames->ref_kind
+                        + ";battle_chain_spec_id=" + std::to_string(*node->authored_ref_id),
                 },
                 &job_set_id,
                 &error)
@@ -914,8 +1022,9 @@ public:
         scheduled.root_job_set_id = job_set_id;
 
         JobIni job_ini{};
-        job_ini.source_savestate_id = probe_run->entry_savestate_id;
-        job_ini.probe_run_id = input_frames->ref_id;
+        job_ini.source_savestate_id = source_savestate_id;
+        job_ini.input_set_ref_kind = input_frames->ref_kind;
+        job_ini.input_set_ref_id = input_frames->ref_id;
         job_ini.battle_chain_spec_id = *node->authored_ref_id;
         job_ini.battle_run_spec_id = effective_battle_run_spec_id;
         job_ini.explorer_settings_id = battle_chain_spec->explorer_settings_id;
@@ -928,7 +1037,7 @@ public:
                     .program_version = kProgramVersion,
                     .program_ref_kind = std::string(kGraphContextProbeRefKind),
                     .program_ref_id = input_frames->ref_id,
-                    .savestate_id = probe_run->entry_savestate_id,
+                    .savestate_id = source_savestate_id,
                     .fingerprint = FingerprintFor(job_ini),
                     .priority = 1,
                     .max_attempts = 1,
@@ -945,8 +1054,9 @@ public:
             "[workflow-graph-battle-bootstrap] workflow_instance_id="
             + std::to_string(context.workflow_instance_id)
             + " workflow_step_id=" + std::to_string(context.workflow_step_id)
-            + " probe_run_id=" + std::to_string(input_frames->ref_id)
-            + " unique_count=" + std::to_string(unique_rows.size())
+            + " input_set_ref_kind=" + input_frames->ref_kind
+            + " input_set_ref_id=" + std::to_string(input_frames->ref_id)
+            + " input_count=" + std::to_string(input_set_candidates.size())
             + " battle_chain_spec_id=" + std::to_string(*node->authored_ref_id)
             + " battle_run_spec_id=" + std::to_string(effective_battle_run_spec_id)
             + " job=" + std::to_string(exec_job_id));

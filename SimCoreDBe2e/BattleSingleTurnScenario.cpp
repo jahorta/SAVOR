@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -730,6 +731,34 @@ bool SeedBattleAnalysisAndWorkflowRows(
     return true;
 }
 
+bool EnsureNeutralAuthoringInputSet(
+    simcore::db::IAuthoringDb* authoring_db,
+    std::int64_t* input_set_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || input_set_id_out == nullptr) {
+        if (error_out) *error_out = "authoring db/input set output unavailable";
+        return false;
+    }
+
+    return authoring_db->EnsureAuthoringInputSet(
+        {
+            .name = "SimCoreDBe2e neutral input",
+            .frames = {
+                {
+                    .main_x = 128,
+                    .main_y = 128,
+                    .cstick_x = 128,
+                    .cstick_y = 128,
+                    .trigger_x = 0,
+                    .trigger_y = 0,
+                },
+            },
+            .created_at_utc = simcore::db::types::UtcNow(),
+        },
+        input_set_id_out,
+        error_out);
+}
+
 bool SeedTasMovieSeedProbeBattleGraphExecution(
     simcore::db::IAuthoringDb* authoring_db,
     simcore::db::IExecutionDb* execution_db,
@@ -737,6 +766,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
     std::int64_t seed_probe_spec_id,
     std::int64_t battle_chain_spec_id,
     const CliOptions& options,
+    std::optional<std::int64_t> override_input_set_id,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
@@ -870,6 +900,142 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
         .data_kind = "state_artifact.dtm_artifact_id",
         .ref_kind = "state_artifact",
         .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
+    if (override_input_set_id.has_value()) {
+        command.input_bindings.push_back({
+            .node_key = "battle_1",
+            .input_key = "initial_input_frames",
+            .data_kind = "analysis.input_frame_set_id",
+            .ref_kind = "au.input_set",
+            .ref_id = *override_input_set_id,
+            .source_kind = "external_override",
+        });
+    }
+    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = options.tasmovie_rtc.value_or(4), .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
+bool SeedTasMovieBattleGraphExecution(
+    simcore::db::IAuthoringDb* authoring_db,
+    simcore::db::IExecutionDb* execution_db,
+    std::int64_t dtm_artifact_id,
+    std::int64_t battle_chain_spec_id,
+    std::int64_t input_set_id,
+    const CliOptions& options,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
+        if (error_out) *error_out = "authoring/execution db unavailable";
+        return false;
+    }
+    if (dtm_artifact_id <= 0 || battle_chain_spec_id <= 0 || input_set_id <= 0) {
+        if (error_out) *error_out = "dtm artifact, battle chain spec, and input set ids must be > 0";
+        return false;
+    }
+
+    simcore::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = "SimCoreDBe2e TAS Battle graph",
+                .description = "TasMovie -> Battle graph-style e2e scenario with external input frames",
+                .graph_version = 1,
+                .graph_hash = "simcoredbe2e.workflow_graph.tasmovie_battle.v1",
+                .nodes = {
+                    {
+                        .node_key = "tas_1",
+                        .unit_kind = "tas_movie",
+                        .display_name = "TAS Movie",
+                        .inputs = {
+                            { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "savestate", .data_kind = "state.savestate_id", .display_name = "Output savestate" },
+                        },
+                    },
+                    {
+                        .node_key = "battle_1",
+                        .unit_kind = "battle_chain",
+                        .display_name = "Battle Chain",
+                        .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                        .authored_ref_id = battle_chain_spec_id,
+                        .inputs = {
+                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                            { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "battle_context", .data_kind = "analysisbattle.context_probe", .display_name = "Battle context" },
+                        },
+                    },
+                },
+                .edges = {
+                    { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
+                },
+                .created_at_utc = simcore::db::types::UtcNow(),
+                .event_id = "simcoredbe2e.authoring.workflow_graph.tasmovie_battle",
+                .correlation_id = "simcoredbe2e.workflow_graph.tasmovie_battle",
+                .causation_id = "simcoredbe2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    simcore::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.root_scope_id = dtm_artifact_id;
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "simcoredbe2e";
+    command.created_at_utc = simcore::db::types::UtcNow().time_since_epoch().count();
+    const auto registry = simcore::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto tas_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "tas_1",
+        "tas_1",
+        "tas_movie",
+        "TAS Movie",
+        std::nullopt,
+        std::nullopt,
+        {},
+        &activation_error);
+    if (!tas_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*tas_activation));
+    auto battle_activation = simcore::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "battle_1",
+        "battle_1",
+        "battle_chain",
+        "Battle Chain",
+        std::optional<std::string>("authoring.battle_chain_spec"),
+        battle_chain_spec_id,
+        { "tas_1" },
+        &activation_error);
+    if (!battle_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*battle_activation));
+    command.input_bindings.push_back({
+        .node_key = "tas_1",
+        .input_key = "dtm_artifact",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = dtm_artifact_id,
+        .source_kind = "external",
+    });
+    command.input_bindings.push_back({
+        .node_key = "battle_1",
+        .input_key = "initial_input_frames",
+        .data_kind = "analysis.input_frame_set_id",
+        .ref_kind = "au.input_set",
+        .ref_id = input_set_id,
         .source_kind = "external",
     });
     command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = options.tasmovie_rtc.value_or(4), .source_kind = "scenario" });
@@ -1310,17 +1476,48 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     }
 
     std::int64_t workflow_instance_id = 0;
-    if (!SeedTasMovieSeedProbeBattleGraphExecution(
-            db_service->AuthoringDb(),
-            db_service->ExecutionDb(),
-            dtm_artifact_id,
-            seed_probe_spec_id,
-            battle_chain_spec_id,
-            options,
-            &workflow_instance_id,
-            &err)) {
-        if (error_out) *error_out = "failed seeding graph workflow execution rows: " + err;
-        return false;
+    std::optional<std::int64_t> external_input_set_id;
+    const bool override_input_frames = options.scenario == "tasmovie_seedprobe_battle_override";
+    const bool tasmovie_battle_only = options.scenario == "tasmovie_battle";
+    if (override_input_frames || tasmovie_battle_only) {
+        std::int64_t seeded_input_set_id = 0;
+        if (!EnsureNeutralAuthoringInputSet(
+                db_service->AuthoringDb(),
+                &seeded_input_set_id,
+                &err)) {
+            if (error_out) *error_out = "failed seeding authored neutral input set: " + err;
+            return false;
+        }
+        external_input_set_id = seeded_input_set_id;
+    }
+
+    if (tasmovie_battle_only) {
+        if (!SeedTasMovieBattleGraphExecution(
+                db_service->AuthoringDb(),
+                db_service->ExecutionDb(),
+                dtm_artifact_id,
+                battle_chain_spec_id,
+                *external_input_set_id,
+                options,
+                &workflow_instance_id,
+                &err)) {
+            if (error_out) *error_out = "failed seeding TAS Battle graph workflow execution rows: " + err;
+            return false;
+        }
+    } else {
+        if (!SeedTasMovieSeedProbeBattleGraphExecution(
+                db_service->AuthoringDb(),
+                db_service->ExecutionDb(),
+                dtm_artifact_id,
+                seed_probe_spec_id,
+                battle_chain_spec_id,
+                options,
+                external_input_set_id,
+                &workflow_instance_id,
+                &err)) {
+            if (error_out) *error_out = "failed seeding graph workflow execution rows: " + err;
+            return false;
+        }
     }
 
     simcore::db::execution::programdb::ProgramKindRegistry registry;
@@ -1400,6 +1597,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
               << " explorer_settings_id=" << explorer_settings_id
               << " battle_chain_spec_id=" << battle_chain_spec_id
               << " workflow_instance_id=" << workflow_instance_id
+              << " external_input_set_id=" << external_input_set_id.value_or(0)
               << " rtc=" << options.tasmovie_rtc.value_or(4)
               << " fake_attacks=" << options.battle_fake_attack_low.value_or(0)
               << ".." << options.battle_fake_attack_high.value_or(0) << "\n";
@@ -1578,7 +1776,8 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         progress_renderer.Render(std::cout);
     }
 
-    const auto probe_run_id = ResolveProbeRunIdFromGraph(final_graph);
+    const auto graph_probe_run_id = ResolveProbeRunIdFromGraph(final_graph);
+    const auto probe_run_id = graph_probe_run_id;
     const auto unique_rows = db_service->AnalysisDb()->ListSeedProbeUniqueSeeds(probe_run_id);
     const auto context_probe_id = ResolveBattleContextProbeIdFromGraph(final_graph);
     const auto context_probe = db_service->AnalysisDb()->GetBattleContextProbe(context_probe_id);
@@ -1602,15 +1801,23 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             }
         }
     }
+    const auto authored_input_frames = external_input_set_id.has_value()
+        ? db_service->AuthoringDb()->ListAuthoringInputSetFrames(*external_input_set_id)
+        : std::vector<simcore::db::AuthoringInputSetFrameSnapshot>{};
+    const auto expected_first_turn_waves = external_input_set_id.has_value()
+        ? authored_input_frames.size()
+        : unique_rows.size();
 
     std::cout << "[tasmovie-seedprobe-battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
     std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
     std::cout << "  " << latest_state << '\n';
     std::cout << "  probe_run_id=" << probe_run_id
+              << " graph_probe_run_id=" << graph_probe_run_id
               << " unique_count=" << unique_rows.size()
               << " context_probe_id=" << context_probe_id
               << " context_status=" << (context_probe.has_value() ? static_cast<int>(context_probe->probe_status) : 0)
               << " first_turn_waves=" << waves.size()
+              << " expected_first_turn_waves=" << expected_first_turn_waves
               << " all_waves=" << all_waves.size()
               << " turn_jobs=" << job_count
               << " succeeded_turn_jobs=" << succeeded_count
@@ -1622,17 +1829,23 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             : "workflow did not reach COMPLETED state before timeout - timed out";
         return false;
     }
-    if (probe_run_id <= 0 || unique_rows.empty()) {
+    if (!tasmovie_battle_only && (probe_run_id <= 0 || unique_rows.empty())) {
         if (error_out) *error_out = "graph workflow completed without a SeedProbe run with uniques";
+        return false;
+    }
+    if (expected_first_turn_waves == 0) {
+        if (error_out) *error_out = external_input_set_id.has_value()
+            ? "graph workflow completed with an empty authored battle input set"
+            : "graph workflow completed without battle input frames";
         return false;
     }
     if (context_probe_id <= 0 || !context_probe.has_value()) {
         if (error_out) *error_out = "graph workflow completed without a battle context probe output";
         return false;
     }
-    if (waves.size() != unique_rows.size()) {
+    if (waves.size() != expected_first_turn_waves) {
         if (error_out) *error_out = "battle context wave fanout mismatch: waves="
-            + std::to_string(waves.size()) + " uniques=" + std::to_string(unique_rows.size());
+            + std::to_string(waves.size()) + " expected=" + std::to_string(expected_first_turn_waves);
         return false;
     }
     if (victory_count == 0) {
@@ -1640,6 +1853,22 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         return false;
     }
     return true;
+}
+
+bool RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario(
+    const CliOptions& options,
+    const char* argv0,
+    simcore::db::core::DBService* db_service,
+    std::string* error_out) {
+    return RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(options, argv0, db_service, error_out);
+}
+
+bool RunTasMovieBattleWorkflowGraphRealWorkerScenario(
+    const CliOptions& options,
+    const char* argv0,
+    simcore::db::core::DBService* db_service,
+    std::string* error_out) {
+    return RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(options, argv0, db_service, error_out);
 }
 
 } // namespace simcore::e2e

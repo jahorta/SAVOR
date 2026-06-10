@@ -28,6 +28,8 @@ int main(int argc, char** argv) {
         { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
         { "battle", &RunBattleSingleTurnRealWorkerScenario },
         { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
+        { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
+        { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },
     };
 
     const auto migration_root = ResolveMigrationRoot(options.migration_root);

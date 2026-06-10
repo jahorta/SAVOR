@@ -865,7 +865,7 @@ QString WorkflowLauncherPage::defaultRefKindForDataKind(const QString& data_kind
         return QStringLiteral("state.savestate");
     }
     if (data_kind == QStringLiteral("analysis.input_frame_set_id")) {
-        return QStringLiteral("sp_probe_run");
+        return QStringLiteral("au.input_set");
     }
     if (data_kind == QStringLiteral("analysis.battle_followup_id")) {
         return QStringLiteral("analysis.battle_followup");

@@ -231,6 +231,120 @@ std::optional<std::int64_t> ProbeRunIdForResult(sqlite3* db, std::int64_t probe_
     return sqlite3_column_int64(st.st, 0);
 }
 
+std::optional<std::int64_t> CreateAnalysisInputSetForPendingProbeRun(
+    sqlite3* db,
+    std::int64_t created_at_utc,
+    std::string* error_out) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO an_input_set(content_hash,source_ref_kind,source_ref_id,created_at_utc) "
+            "VALUES(NULL,'sp_probe_run',NULL,?1);",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, created_at_utc);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return std::nullopt;
+    }
+    return sqlite3_last_insert_rowid(db);
+}
+
+bool AttachAnalysisInputSetToProbeRun(
+    sqlite3* db,
+    std::int64_t input_set_id,
+    std::int64_t probe_run_id,
+    std::string* error_out) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "UPDATE an_input_set SET source_ref_id=?2 WHERE input_set_id=?1 AND source_ref_kind='sp_probe_run';",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(st.st, 1, input_set_id);
+    sqlite3_bind_int64(st.st, 2, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    return sqlite3_changes(db) > 0;
+}
+
+std::optional<std::int64_t> UniqueInputSetIdForProbeRun(sqlite3* db, std::int64_t probe_run_id) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT unique_input_set_id FROM sp_probe_run WHERE probe_run_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, probe_run_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
+bool AppendFrameToAnalysisInputSet(
+    sqlite3* db,
+    std::int64_t input_set_id,
+    std::int64_t input_frame_id,
+    std::int64_t added_at_utc,
+    std::string* error_out) {
+    Statement ordinal_st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT COALESCE(MAX(ordinal),-1)+1 FROM an_input_set_frame WHERE input_set_id=?1;",
+            -1,
+            &ordinal_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(ordinal_st.st, 1, input_set_id);
+    if (sqlite3_step(ordinal_st.st) != SQLITE_ROW) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    const auto ordinal = sqlite3_column_int(ordinal_st.st, 0);
+
+    Statement insert_st;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO an_input_set_frame(input_set_id,ordinal,input_frame_id,added_at_utc) "
+            "VALUES(?1,?2,?3,?4);",
+            -1,
+            &insert_st.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(insert_st.st, 1, input_set_id);
+    sqlite3_bind_int(insert_st.st, 2, ordinal);
+    sqlite3_bind_int64(insert_st.st, 3, input_frame_id);
+    sqlite3_bind_int64(insert_st.st, 4, added_at_utc);
+    if (sqlite3_step(insert_st.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    return true;
+}
+
 std::optional<std::int64_t> BattleSetIdForWave(sqlite3* db, std::int64_t wave_id) {
     Statement st;
     if (sqlite3_prepare_v2(
@@ -732,6 +846,80 @@ std::optional<SeedProbeUniqueSeedRow> SqliteAnalysisDb::GetSeedProbeUniqueSeed(s
     };
 }
 
+std::optional<AnalysisInputSetFrameRow> SqliteAnalysisDb::GetAnalysisInputFrame(std::int64_t input_frame_id) const {
+    if (db_ == nullptr || input_frame_id <= 0) {
+        return std::nullopt;
+    }
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT f.input_frame_id,m.x,m.y,c.x,c.y,t.x,t.y "
+            "FROM sp_input_frame f "
+            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+            "WHERE f.input_frame_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st.st, 1, input_frame_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+    return AnalysisInputSetFrameRow{
+        .input_frame_id = sqlite3_column_int64(st.st, 0),
+        .ordinal = 0,
+        .main_x = sqlite3_column_int(st.st, 1),
+        .main_y = sqlite3_column_int(st.st, 2),
+        .cstick_x = sqlite3_column_int(st.st, 3),
+        .cstick_y = sqlite3_column_int(st.st, 4),
+        .trigger_x = sqlite3_column_int(st.st, 5),
+        .trigger_y = sqlite3_column_int(st.st, 6),
+    };
+}
+
+std::vector<AnalysisInputSetFrameRow> SqliteAnalysisDb::ListAnalysisInputSetFrames(std::int64_t input_set_id) const {
+    std::vector<AnalysisInputSetFrameRow> rows;
+    if (db_ == nullptr || input_set_id <= 0) {
+        return rows;
+    }
+
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db_,
+            "SELECT sf.input_frame_id,sf.ordinal,m.x,m.y,c.x,c.y,t.x,t.y "
+            "FROM an_input_set_frame sf "
+            "JOIN sp_input_frame f ON f.input_frame_id=sf.input_frame_id "
+            "JOIN sp_axis_xy m ON m.axis_xy_id=f.main_axis_xy_id "
+            "JOIN sp_axis_xy c ON c.axis_xy_id=f.cstick_axis_xy_id "
+            "JOIN sp_axis_xy t ON t.axis_xy_id=f.trigger_axis_xy_id "
+            "WHERE sf.input_set_id=?1 "
+            "ORDER BY sf.ordinal ASC;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return rows;
+    }
+    sqlite3_bind_int64(st.st, 1, input_set_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows.push_back(AnalysisInputSetFrameRow{
+            .input_frame_id = sqlite3_column_int64(st.st, 0),
+            .ordinal = sqlite3_column_int(st.st, 1),
+            .main_x = sqlite3_column_int(st.st, 2),
+            .main_y = sqlite3_column_int(st.st, 3),
+            .cstick_x = sqlite3_column_int(st.st, 4),
+            .cstick_y = sqlite3_column_int(st.st, 5),
+            .trigger_x = sqlite3_column_int(st.st, 6),
+            .trigger_y = sqlite3_column_int(st.st, 7),
+        });
+    }
+    return rows;
+}
+
 bool SqliteAnalysisDb::EnsureSeedProbeInputFrame(
     std::int64_t main_axis_xy_id,
     std::int64_t cstick_axis_xy_id,
@@ -950,6 +1138,20 @@ bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
+    const auto unique_input_set_id = UniqueInputSetIdForProbeRun(db_, *probe_run_id);
+    if (!unique_input_set_id.has_value()
+        || !AppendFrameToAnalysisInputSet(
+            db_,
+            *unique_input_set_id,
+            command.input_frame_id,
+            command.recorded_at_utc.time_since_epoch().count(),
+            error_out)) {
+        if (error_out != nullptr && error_out->empty()) {
+            *error_out = "probe_run unique input set is missing";
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
 
     if (!InsertSeedProbeOutboxEvent(
             db_,
@@ -1090,11 +1292,20 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
         return false;
     }
 
+    const auto unique_input_set_id = CreateAnalysisInputSetForPendingProbeRun(
+        db_,
+        command.requested_at_utc.time_since_epoch().count(),
+        error_out);
+    if (!unique_input_set_id.has_value()) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1109,7 +1320,8 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     sqlite3_bind_int64(insert_run.st, 3, command.seed_probe_spec_id);
     sqlite3_bind_int(insert_run.st, 4, command.codec_version);
     sqlite3_bind_text(insert_run.st, 5, command.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_run.st, 6, command.requested_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(insert_run.st, 6, *unique_input_set_id);
+    sqlite3_bind_int64(insert_run.st, 7, command.requested_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -1119,6 +1331,10 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     }
 
     const auto probe_run_id = sqlite3_last_insert_rowid(db_);
+    if (!AttachAnalysisInputSetToProbeRun(db_, *unique_input_set_id, probe_run_id, error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
 
     Statement insert_result;
     if (sqlite3_prepare_v2(
@@ -1194,11 +1410,17 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     }
 
     const auto now = types::UtcNow().time_since_epoch().count();
+    const auto unique_input_set_id = CreateAnalysisInputSetForPendingProbeRun(db_, now, error_out);
+    if (!unique_input_set_id.has_value()) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1212,7 +1434,8 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     sqlite3_bind_int64(insert_run.st, 3, probe_set_id); // neutral queueing path binds spec to set id
     sqlite3_bind_int(insert_run.st, 4, 1);
     sqlite3_bind_text(insert_run.st, 5, "queued", -1, SQLITE_STATIC);
-    sqlite3_bind_int64(insert_run.st, 6, now);
+    sqlite3_bind_int64(insert_run.st, 6, *unique_input_set_id);
+    sqlite3_bind_int64(insert_run.st, 7, now);
     if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -1222,6 +1445,10 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     }
 
     const auto probe_run_id = sqlite3_last_insert_rowid(db_);
+    if (!AttachAnalysisInputSetToProbeRun(db_, *unique_input_set_id, probe_run_id, error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
     Statement insert_result;
     if (sqlite3_prepare_v2(
             db_,
@@ -1266,7 +1493,7 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     if (sqlite3_prepare_v2(
             db_,
             "SELECT probe_run_id, probe_set_id, seed_probe_spec_id, entry_savestate_id, codec_version, status, "
-            "requested_at_utc, completed_at_utc "
+            "unique_input_set_id, requested_at_utc, completed_at_utc "
             "FROM sp_probe_run WHERE probe_run_id=?1 LIMIT 1;",
             -1,
             &st.st,
@@ -1286,9 +1513,10 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 3);
     snapshot.codec_version = sqlite3_column_int(st.st, 4);
     snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
-    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 6)));
-    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
-        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
+    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 6);
+    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
+    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
+        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 8)));
     }
     return snapshot;
 }
@@ -1997,8 +2225,8 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     Statement insert_candidate;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_seed_candidate(battle_set_id,source_unique_seed_id,seed_value,source_kind,candidate_status,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6);",
+            "INSERT INTO ab_seed_candidate(battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7);",
             -1,
             &insert_candidate.st,
             nullptr)
@@ -2011,12 +2239,14 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     sqlite3_bind_int64(insert_candidate.st, 1, command.battle_set_id);
     if (command.source_unique_seed_id.has_value()) sqlite3_bind_int64(insert_candidate.st, 2, command.source_unique_seed_id.value());
     else sqlite3_bind_null(insert_candidate.st, 2);
-    sqlite3_bind_int64(insert_candidate.st, 3, command.seed_value);
+    if (command.source_input_frame_id.has_value()) sqlite3_bind_int64(insert_candidate.st, 3, command.source_input_frame_id.value());
+    else sqlite3_bind_null(insert_candidate.st, 3);
+    sqlite3_bind_int64(insert_candidate.st, 4, command.seed_value);
     const auto source_kind = ToDbString(command.source_kind);
     const auto candidate_status = ToDbString(command.candidate_status);
-    sqlite3_bind_text(insert_candidate.st, 4, source_kind.data(), static_cast<int>(source_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_candidate.st, 5, candidate_status.data(), static_cast<int>(candidate_status.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_candidate.st, 6, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_text(insert_candidate.st, 5, source_kind.data(), static_cast<int>(source_kind.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_candidate.st, 6, candidate_status.data(), static_cast<int>(candidate_status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_candidate.st, 7, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_candidate.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -2951,7 +3181,7 @@ std::vector<BattleSeedCandidateRow> SqliteAnalysisDb::ListBattleSeedCandidates(s
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,seed_value,source_kind,candidate_status,created_at_utc "
+        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
         "FROM ab_seed_candidate WHERE battle_set_id=?1 ORDER BY seed_candidate_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -2962,10 +3192,11 @@ std::vector<BattleSeedCandidateRow> SqliteAnalysisDb::ListBattleSeedCandidates(s
         row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
         row.battle_set_id = sqlite3_column_int64(st.st, 1);
         row.source_unique_seed_id = ColumnInt64Optional(st.st, 2);
-        row.seed_value = sqlite3_column_int64(st.st, 3);
-        row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 4));
-        row.candidate_status = ParseBattleSeedCandidateStatus(ColumnText(st.st, 5));
-        row.created_at_utc = ColumnTime(st.st, 6);
+        row.source_input_frame_id = ColumnInt64Optional(st.st, 3);
+        row.seed_value = sqlite3_column_int64(st.st, 4);
+        row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 5));
+        row.candidate_status = ParseBattleSeedCandidateStatus(ColumnText(st.st, 6));
+        row.created_at_utc = ColumnTime(st.st, 7);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -2977,7 +3208,7 @@ std::optional<BattleSeedCandidateRow> SqliteAnalysisDb::GetBattleSeedCandidate(s
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,seed_value,source_kind,candidate_status,created_at_utc "
+        "SELECT seed_candidate_id,battle_set_id,source_unique_seed_id,source_input_frame_id,seed_value,source_kind,candidate_status,created_at_utc "
         "FROM ab_seed_candidate WHERE seed_candidate_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -2990,10 +3221,11 @@ std::optional<BattleSeedCandidateRow> SqliteAnalysisDb::GetBattleSeedCandidate(s
     row.seed_candidate_id = sqlite3_column_int64(st.st, 0);
     row.battle_set_id = sqlite3_column_int64(st.st, 1);
     row.source_unique_seed_id = ColumnInt64Optional(st.st, 2);
-    row.seed_value = sqlite3_column_int64(st.st, 3);
-    row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 4));
-    row.candidate_status = ParseBattleSeedCandidateStatus(ColumnText(st.st, 5));
-    row.created_at_utc = ColumnTime(st.st, 6);
+    row.source_input_frame_id = ColumnInt64Optional(st.st, 3);
+    row.seed_value = sqlite3_column_int64(st.st, 4);
+    row.source_kind = ParseBattleSeedCandidateSourceKind(ColumnText(st.st, 5));
+    row.candidate_status = ParseBattleSeedCandidateStatus(ColumnText(st.st, 6));
+    row.created_at_utc = ColumnTime(st.st, 7);
     return row;
 }
 

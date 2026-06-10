@@ -119,6 +119,31 @@ struct SeedProbeSpecSnapshot {
     bool auto_schedule_battle_run = false;
 };
 
+struct AuthoringInputSetFrameCommand {
+    std::int32_t main_x = 0;
+    std::int32_t main_y = 0;
+    std::int32_t cstick_x = 0;
+    std::int32_t cstick_y = 0;
+    std::int32_t trigger_x = 0;
+    std::int32_t trigger_y = 0;
+};
+
+struct EnsureAuthoringInputSetCommand {
+    std::string name;
+    std::vector<AuthoringInputSetFrameCommand> frames;
+    types::UtcTimePoint created_at_utc{};
+};
+
+struct AuthoringInputSetFrameSnapshot {
+    int ordinal = 0;
+    std::int32_t main_x = 0;
+    std::int32_t main_y = 0;
+    std::int32_t cstick_x = 0;
+    std::int32_t cstick_y = 0;
+    std::int32_t trigger_x = 0;
+    std::int32_t trigger_y = 0;
+};
+
 struct SaveTasSpecCommand {
     std::string base_name;
     int priority = 0;
@@ -505,6 +530,14 @@ struct IAuthoringDb {
 
     virtual std::vector<SeedProbeSpecSnapshot> ListSeedProbeSpecs(
         int max_count) const = 0;
+
+    virtual bool EnsureAuthoringInputSet(
+        const EnsureAuthoringInputSetCommand& command,
+        std::int64_t* input_set_id_out = nullptr,
+        std::string* error_out = nullptr) = 0;
+
+    virtual std::vector<AuthoringInputSetFrameSnapshot> ListAuthoringInputSetFrames(
+        std::int64_t input_set_id) const = 0;
 
     virtual bool SaveTasSpec(
         const SaveTasSpecCommand& command,

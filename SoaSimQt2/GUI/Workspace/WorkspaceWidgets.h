@@ -1,11 +1,17 @@
 #pragma once
 
 #include <QtCore/QSettings>
+#include <QtCore/QSize>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtCore/QVector>
+#include <QtGui/QColor>
+#include <QtGui/QIcon>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QPainter>
+#include <QtGui/QPen>
+#include <QtGui/QPixmap>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHBoxLayout>
@@ -22,6 +28,24 @@
 #include <utility>
 
 namespace soasimqt2::gui {
+
+namespace {
+
+QIcon createDrawerCloseIcon()
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPen pen(QColor(255, 255, 255), 3.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.drawLine(6, 6, 18, 18);
+    painter.drawLine(18, 6, 6, 18);
+    return QIcon(pixmap);
+}
+
+} // namespace
 
 struct UiEntityRef {
     QString workspace;
@@ -257,11 +281,14 @@ public:
         drawerHeader->setSpacing(8);
         drawerTitle_ = new QLabel(drawer_);
         drawerTitle_->setObjectName("panelTitle");
-        pinButton_ = new QPushButton(QStringLiteral("Pin"), drawer_);
-        pinButton_->setCheckable(true);
-        pinButton_->setObjectName("jobsSecondaryButton");
+        closeDrawerButton_ = new QPushButton(drawer_);
+        closeDrawerButton_->setObjectName("drawerCloseButton");
+        closeDrawerButton_->setIcon(createDrawerCloseIcon());
+        closeDrawerButton_->setIconSize(QSize(24, 24));
+        closeDrawerButton_->setToolTip(QStringLiteral("Close"));
+        closeDrawerButton_->setFixedSize(32, 32);
         drawerHeader->addWidget(drawerTitle_, 1);
-        drawerHeader->addWidget(pinButton_);
+        drawerHeader->addWidget(closeDrawerButton_);
         drawerLayout->addLayout(drawerHeader);
 
         auto* drawerScroll = new QScrollArea(drawer_);
@@ -278,21 +305,15 @@ public:
         drawerScrollLayout->addWidget(drawerBody_);
         drawerScrollLayout->addStretch();
         drawerScroll->setWidget(drawerScrollContent);
-        drawerActions_ = new QVBoxLayout();
+        drawerActions_ = new QGridLayout();
         drawerActions_->setSpacing(8);
+        drawerActions_->setColumnStretch(0, 1);
+        drawerActions_->setColumnStretch(1, 1);
 
-        connect(pinButton_, &QPushButton::toggled, this, [this](bool pinned) {
-            drawerPinned_ = pinned;
-            persistDrawerState();
-        });
-
-        auto* closeButton = new QPushButton(QStringLiteral("Close"), drawer_);
-        closeButton->setObjectName("jobsSecondaryButton");
-        connect(closeButton, &QPushButton::clicked, this, [this]() { closeDrawer(true); });
+        connect(closeDrawerButton_, &QPushButton::clicked, this, [this]() { closeDrawer(true); });
 
         drawerLayout->addWidget(drawerScroll, 1);
         drawerLayout->addLayout(drawerActions_);
-        drawerLayout->addWidget(closeButton);
 
         rootLayout->addWidget(body, 1);
         loadDrawerState();
@@ -317,7 +338,8 @@ public:
             }
             delete item;
         }
-        for (const auto& action : actions) {
+        for (int i = 0; i < actions.size(); ++i) {
+            const auto& action = actions[i];
             auto* button = new QPushButton(action.first, drawer_);
             button->setObjectName("jobsPrimaryButton");
             connect(button, &QPushButton::clicked, drawer_, [callback = action.second]() {
@@ -325,16 +347,18 @@ public:
                     callback();
                 }
             });
-            drawerActions_->addWidget(button);
+            if (i == actions.size() - 1 && actions.size() % 2 != 0) {
+                drawerActions_->addWidget(button, i / 2, 0, 1, 2);
+            } else {
+                drawerActions_->addWidget(button, i / 2, i % 2);
+            }
         }
-        setDrawerMode(drawerPinned_ ? lastOpenMode_ : preferredMode);
+        setDrawerMode(preferredMode);
     }
 
     void closeDrawer(bool force = false)
     {
-        if (drawerPinned_ && !force) {
-            return;
-        }
+        (void)force;
         setDrawerMode(ContextDrawerMode::Collapsed);
     }
 
@@ -465,7 +489,6 @@ private:
     {
         QSettings settings;
         settings.beginGroup(QStringLiteral("Workspace/%1/Drawer").arg(workspaceKey_));
-        drawerPinned_ = settings.value(QStringLiteral("pinned"), false).toBool();
         drawerWidth_ = settings.value(QStringLiteral("width"), 520).toInt();
         const int mode = settings.value(QStringLiteral("mode"), static_cast<int>(ContextDrawerMode::Expanded)).toInt();
         if (mode == static_cast<int>(ContextDrawerMode::Peek)) {
@@ -476,14 +499,12 @@ private:
             lastOpenMode_ = ContextDrawerMode::Expanded;
         }
         settings.endGroup();
-        pinButton_->setChecked(drawerPinned_);
     }
 
     void persistDrawerState() const
     {
         QSettings settings;
         settings.beginGroup(QStringLiteral("Workspace/%1/Drawer").arg(workspaceKey_));
-        settings.setValue(QStringLiteral("pinned"), drawerPinned_);
         settings.setValue(QStringLiteral("mode"), static_cast<int>(lastOpenMode_));
         settings.setValue(QStringLiteral("width"), drawerWidth_);
         settings.endGroup();
@@ -498,14 +519,13 @@ private:
     DrawerResizeHandle* drawerHandle_ = nullptr;
     QLabel* drawerTitle_ = nullptr;
     QLabel* drawerBody_ = nullptr;
-    QPushButton* pinButton_ = nullptr;
-    QVBoxLayout* drawerActions_ = nullptr;
+    QPushButton* closeDrawerButton_ = nullptr;
+    QGridLayout* drawerActions_ = nullptr;
     UiEntityRef currentEntity_;
     ContextDrawerMode drawerMode_ = ContextDrawerMode::Collapsed;
     ContextDrawerMode lastOpenMode_ = ContextDrawerMode::Expanded;
     static constexpr int kMinDrawerWidth = 320;
     int drawerWidth_ = 520;
-    bool drawerPinned_ = false;
 };
 
 } // namespace soasimqt2::gui
