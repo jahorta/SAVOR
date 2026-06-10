@@ -259,6 +259,126 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     return tag;
 }
 
+[[nodiscard]] std::string readFixedAsciiName(std::span<const std::uint8_t> bytes,
+    const std::size_t offset,
+    const std::size_t maxLength) {
+    std::string out{};
+    if (offset >= bytes.size()) {
+        return out;
+    }
+
+    const auto end = std::min(bytes.size(), offset + maxLength);
+    for (std::size_t i = offset; i < end; ++i) {
+        const auto ch = bytes[i];
+        if (ch == 0U) {
+            break;
+        }
+        if (std::isprint(static_cast<unsigned char>(ch)) == 0) {
+            break;
+        }
+        out.push_back(static_cast<char>(ch));
+    }
+    return out;
+}
+
+[[nodiscard]] std::vector<std::string> parseEntryTextureNames(std::span<const std::uint8_t> payload,
+    const std::uint32_t texturesPointer) {
+    constexpr std::uint32_t kNjtlTag = 0x4E4A544CU;
+    constexpr std::uint32_t kGjtlTag = 0x474A544CU;
+    constexpr std::size_t textureRecordStride = 12U;
+    std::vector<std::string> names{};
+    std::size_t njtlOffset = static_cast<std::size_t>(texturesPointer);
+    if (njtlOffset + 16U > payload.size()) {
+        return names;
+    }
+
+    auto tag = common::readU32AtBE(payload, njtlOffset).value_or(0U);
+    if (tag != kNjtlTag && tag != kGjtlTag) {
+        const auto count = common::readU32AtBE(payload, njtlOffset + 4U);
+        if (count.has_value() && *count <= 4096U &&
+            njtlOffset + 8U + (static_cast<std::size_t>(*count) * textureRecordStride) <= payload.size()) {
+            names.reserve(*count);
+            for (std::uint32_t i = 0; i < *count; ++i) {
+                const auto namePointer = common::readU32AtBE(
+                    payload,
+                    njtlOffset + 8U + (static_cast<std::size_t>(i) * textureRecordStride));
+                if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= payload.size()) {
+                    names.push_back({});
+                    continue;
+                }
+                names.push_back(readFixedAsciiName(payload, *namePointer, payload.size() - *namePointer));
+            }
+            return names;
+        }
+    }
+
+    if (tag != kNjtlTag && tag != kGjtlTag) {
+        const auto wrappedNjtlPointer = common::readU32AtBE(payload, njtlOffset + 0x08U).value_or(0U);
+        if (wrappedNjtlPointer == 0U || static_cast<std::size_t>(wrappedNjtlPointer) + 16U > payload.size()) {
+            return names;
+        }
+        njtlOffset = static_cast<std::size_t>(wrappedNjtlPointer);
+        tag = common::readU32AtBE(payload, njtlOffset).value_or(0U);
+    }
+    if (tag != kNjtlTag && tag != kGjtlTag) {
+        return names;
+    }
+
+    const auto blockSize = common::readU32AtBE(payload, njtlOffset + 4U);
+    const auto count = common::readU32AtBE(payload, njtlOffset + 12U);
+    if (!blockSize.has_value() || !count.has_value() || *count > 4096U) {
+        return names;
+    }
+
+    constexpr std::size_t blockHeaderSize = 8U;
+    constexpr std::size_t textureRecordTableOffset = 8U;
+    constexpr std::size_t textureRecordSize = 12U;
+    const std::size_t payloadStart = njtlOffset + blockHeaderSize;
+    if (payloadStart >= payload.size()) {
+        return names;
+    }
+
+    const std::size_t payloadSize = std::min<std::size_t>(*blockSize, payload.size() - payloadStart);
+    const auto texturePayload = std::span<const std::uint8_t>(
+        payload.data() + static_cast<std::ptrdiff_t>(payloadStart),
+        payloadSize);
+
+    names.reserve(*count);
+    for (std::uint32_t i = 0; i < *count; ++i) {
+        const std::size_t recordOffset = textureRecordTableOffset + (static_cast<std::size_t>(i) * textureRecordSize);
+        const auto namePointer = common::readU32AtBE(texturePayload, recordOffset);
+        if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= texturePayload.size()) {
+            names.push_back({});
+            continue;
+        }
+        names.push_back(readFixedAsciiName(texturePayload, *namePointer, texturePayload.size() - *namePointer));
+    }
+
+    return names;
+}
+
+[[nodiscard]] ParsedEntryListItem makeEntryListItem(std::span<const std::uint8_t> payload,
+    const model::IndexEntry& entry) {
+    ParsedEntryListItem item{};
+    item.tableIndex = entry.tableIndex;
+    item.entryId = entry.entryId;
+    item.tblId = entry.tblId;
+    item.fxnName = entry.fxnName;
+    item.objectCount = entry.objectCount;
+    item.groundCount = entry.groundCount;
+    item.motionCount = entry.motionCount;
+    item.texturesPointer = entry.texturesPointer;
+    item.groundLinks = entry.groundLinks ? entry.groundLinks->values : std::vector<std::uint32_t>{};
+    item.paramList2 = entry.paramList2 ? entry.paramList2->values : std::vector<std::uint32_t>{};
+    item.functionParameters = entry.functionParameters ? entry.functionParameters->values : std::vector<std::uint32_t>{};
+    item.objectAddresses = entry.objectAddresses ? entry.objectAddresses->values : std::vector<std::uint32_t>{};
+    item.groundAddresses = entry.groundAddresses ? entry.groundAddresses->values : std::vector<std::uint32_t>{};
+    item.motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{};
+    item.textureNames = parseEntryTextureNames(payload, entry.texturesPointer);
+    item.textureCount = item.textureNames.size();
+    return item;
+}
+
 [[nodiscard]] bool isNjLikeTag(const std::string& tag) {
     return tag == "NJCM" ||
         tag == "GJCM" ||
@@ -731,6 +851,35 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         entries.push_back(std::move(*entryOpt));
     }
 
+    result.entryList.reserve(entries.size());
+    for (const auto& entry : entries) {
+        result.entryList.push_back(makeEntryListItem(payload, entry));
+    }
+
+    if (options.entryListOnly) {
+        for (const auto& entry : result.entryList) {
+            addHistogram(histogram, options, entry.fxnName);
+        }
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = "Entry list-only mode parsed " + std::to_string(result.entryList.size()) + " MLD index entries.",
+        });
+        if (options.emitFxnHistogram) {
+            result.fxnHistogram.reserve(histogram.size());
+            for (const auto& [fxn, count] : histogram) {
+                result.fxnHistogram.emplace_back(fxn, count);
+            }
+            std::sort(result.fxnHistogram.begin(), result.fxnHistogram.end(),
+                [](const auto& a, const auto& b) {
+                    return a.first < b.first;
+                });
+        }
+        std::cout << "[SoaSimMLD] Step 4/5: Entry list-only mode skipping payload/chunk decode.\n";
+        std::cout << "[SoaSimMLD] Step 5/5: Parse complete. Entries=" << entries.size()
+                  << ", GRND=0.\n";
+        return result;
+    }
+
     std::cout << "[SoaSimMLD] Step 4/5: Decoding entry payloads/chunks...\n";
 
     std::unordered_set<std::uint32_t> uniqueGroundAddresses{};
@@ -1083,6 +1232,7 @@ std::string formatParseSummary(const ParseResult& parseResult) {
     out << "collisions=" << parseResult.world.collisions.size() << '\n';
     out << "triggers=" << parseResult.world.triggers.size() << '\n';
     out << "unknownEntries=" << parseResult.world.unknownEntries.size() << '\n';
+    out << "entryList=" << parseResult.entryList.size() << '\n';
     out << "searchSurfaces=" << parseResult.searchWorld.surfaces.size() << '\n';
     out << "searchRegions=" << parseResult.searchWorld.regions.size() << '\n';
     out << "extractedNjBlocks=" << parseResult.extractedNjBlocks.size() << '\n';

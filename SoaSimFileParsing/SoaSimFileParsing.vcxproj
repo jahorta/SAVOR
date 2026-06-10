@@ -148,6 +148,9 @@
     <ProjectReference Include="..\SoaSimSCT\SoaSimSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SoaSimContentGraph\SoaSimContentGraph.vcxproj">
+      <Project>{208F502E-EBB9-4AF0-A886-356757A46D41}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\Sa3Dport\Sa3Dport.vcxproj">
       <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
     </ProjectReference>

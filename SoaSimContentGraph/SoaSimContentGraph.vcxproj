@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</ProjectGuid>
-    <RootNamespace>SoaSimSCT</RootNamespace>
+    <ProjectGuid>{208F502E-EBB9-4AF0-A886-356757A46D41}</ProjectGuid>
+    <RootNamespace>SoaSimContentGraph</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -81,6 +81,8 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -94,28 +96,36 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="SoaSimSCT.h" />
-    <ClInclude Include="SctModel.h" />
-    <ClInclude Include="SctParser.h" />
-    <ClInclude Include="SctParseProbe.h" />
-    <ClInclude Include="SctOpcodeMetadata.h" />
-    <ClInclude Include="SctScptDecodeHelpers.h" />
+    <ClInclude Include="ContentGraph.h" />
+    <ClInclude Include="ContentGraphCorpusBuilder.h" />
+    <ClInclude Include="ContentGraphIds.h" />
+    <ClInclude Include="ContentGraphJsonExporter.h" />
+    <ClInclude Include="ContentGraphTypes.h" />
+    <ClInclude Include="MldGraphBuilder.h" />
+    <ClInclude Include="SctGraphBuilder.h" />
+    <ClInclude Include="SoaSimContentGraph.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SctParser.cpp" />
-    <ClCompile Include="SctParseProbe.cpp" />
-    <ClCompile Include="SctScptDecodeHelpers.cpp" />
+    <ClCompile Include="ContentGraph.cpp" />
+    <ClCompile Include="ContentGraphCorpusBuilder.cpp" />
+    <ClCompile Include="ContentGraphIds.cpp" />
+    <ClCompile Include="ContentGraphJsonExporter.cpp" />
+    <ClCompile Include="ContentGraphTypes.cpp" />
+    <ClCompile Include="MldGraphBuilder.cpp" />
+    <ClCompile Include="SctGraphBuilder.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Compression\Compression.vcxproj">
-      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
+    <ProjectReference Include="..\SoaSimMLD\SoaSimMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="SALSA_default_instructions_reference.md" />
+    <ProjectReference Include="..\SoaSimSCT\SoaSimSCT.vcxproj">
+      <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

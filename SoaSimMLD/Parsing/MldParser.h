@@ -42,10 +42,30 @@ struct ParseOptions {
     bool emitFxnHistogram = true;
     std::string filterFxnName{};
     std::vector<std::uint32_t> filterEntryIdList{};
+    bool entryListOnly = false;
     bool buildBlenderIntermediateIr = true;
     bool exportBlenderIrJson = false;
     bool extractGrndGobjBlocks = false;
     std::string blenderIrOutputDir{};
+};
+
+struct ParsedEntryListItem {
+    std::size_t tableIndex = 0;
+    std::uint32_t entryId = 0;
+    std::uint32_t tblId = 0;
+    std::string fxnName{};
+    std::size_t objectCount = 0;
+    std::size_t groundCount = 0;
+    std::size_t motionCount = 0;
+    std::size_t textureCount = 0;
+    std::uint32_t texturesPointer = 0;
+    std::vector<std::uint32_t> groundLinks{};
+    std::vector<std::uint32_t> paramList2{};
+    std::vector<std::uint32_t> functionParameters{};
+    std::vector<std::uint32_t> objectAddresses{};
+    std::vector<std::uint32_t> groundAddresses{};
+    std::vector<std::uint32_t> motionAddresses{};
+    std::vector<std::string> textureNames{};
 };
 
 struct ParsedRawEntry {
@@ -99,6 +119,7 @@ struct ExtractedMldSpatialBlock {
 struct ParseResult {
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
+    std::vector<ParsedEntryListItem> entryList{};
     std::vector<ParsedRawEntry> rawEntries{};
     std::vector<ParseDiagnostic> diagnostics{};
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};

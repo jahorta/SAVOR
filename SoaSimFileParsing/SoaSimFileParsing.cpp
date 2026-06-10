@@ -1,5 +1,6 @@
 #include "../SoaSimMLD/SoaSimMLD.h"
 #include "../SoaSimSCT/SoaSimSCT.h"
+#include "../SoaSimContentGraph/SoaSimContentGraph.h"
 #include "../Compression/Aklz.h"
 #include "../Sa3Dport/Testing/Slice2TestApi.h"
 #include "../Sa3Dport/Testing/Slice5TestApi.h"
@@ -66,19 +67,42 @@ struct CliOptions {
     std::filesystem::path outputDir{};
     bool runAbSa3dPortVsSa3dBridge = false;
     bool extractGrndGobjBlocks = false;
+    bool exportMldEntryListOnly = false;
+    bool parseSctOnly = false;
+    bool exportContentGraph = false;
+    soasim::contentgraph::ContentGraphProjection contentGraphProjection =
+        soasim::contentgraph::ContentGraphProjection::Full;
 };
 
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks]\n\n"
+        << "  SoaSimFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SoaSimFileParsing/inputs\n"
         << "  - output_dir defaults to SoaSimFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
+        << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
+        << "  - --sct-only parses .sct files and skips other input extensions.\n"
+        << "  - --content-graph parses .sct/.mld files and writes content_graph.json.\n"
+        << "  - --content-graph-projection selects full, sections, or world graph JSON.\n"
         << "  - Bridge executable path is auto-discovered at <SoaSimFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
         << "  - In A/B mode, all slices (0..9) run automatically per fixture using a per-fixture NJ block manifest.\n";
+}
+
+std::optional<soasim::contentgraph::ContentGraphProjection> parseContentGraphProjection(std::string value) {
+    value = toLowerCopy(std::move(value));
+    if (value == "full") {
+        return soasim::contentgraph::ContentGraphProjection::Full;
+    }
+    if (value == "sections") {
+        return soasim::contentgraph::ContentGraphProjection::Sections;
+    }
+    if (value == "world") {
+        return soasim::contentgraph::ContentGraphProjection::World;
+    }
+    return std::nullopt;
 }
 
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
@@ -101,6 +125,31 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.extractGrndGobjBlocks = true;
             continue;
         }
+        if (arg == "--export-mld-entry-list-only" || arg == "--mld-entry-list-only") {
+            options.exportMldEntryListOnly = true;
+            continue;
+        }
+        if (arg == "--sct-only" || arg == "--parse-sct-only") {
+            options.parseSctOnly = true;
+            continue;
+        }
+        if (arg == "--content-graph" || arg == "--export-content-graph") {
+            options.exportContentGraph = true;
+            continue;
+        }
+        if (arg == "--content-graph-projection") {
+            if (i + 1 >= argc) {
+                std::cerr << "--content-graph-projection requires full, sections, or world.\n";
+                return std::nullopt;
+            }
+            const auto projection = parseContentGraphProjection(argv[++i]);
+            if (!projection.has_value()) {
+                std::cerr << "Unknown content graph projection: " << argv[i] << "\n";
+                return std::nullopt;
+            }
+            options.contentGraphProjection = *projection;
+            continue;
+        }
         if (!arg.empty() && arg.front() == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
             return std::nullopt;
@@ -115,6 +164,16 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             return std::nullopt;
         }
         ++positionalIndex;
+    }
+
+    if (options.parseSctOnly && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
+        std::cerr << "--sct-only cannot be combined with MLD-only or MLD A/B modes.\n";
+        return std::nullopt;
+    }
+    if (options.exportContentGraph
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.parseSctOnly)) {
+        std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, or MLD A/B modes.\n";
+        return std::nullopt;
     }
 
     return options;
@@ -336,6 +395,249 @@ std::string hexU32ForFile(std::uint32_t value) {
         value >>= 4;
     }
     return result;
+}
+
+void writeJsonU32Array(std::ostream& out, const std::vector<std::uint32_t>& values) {
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << values[i];
+    }
+    out << "]";
+}
+
+void writeJsonStringArray(std::ostream& out, const std::vector<std::string>& values) {
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << "\"" << jsonEscape(values[i]) << "\"";
+    }
+    out << "]";
+}
+
+void writeJsonU8Array(std::ostream& out, const std::vector<std::uint8_t>& values) {
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << static_cast<unsigned int>(values[i]);
+    }
+    out << "]";
+}
+
+void writeMldEntryListJson(
+    const std::filesystem::path& outPath,
+    const std::filesystem::path& sourcePath,
+    const soasim::mld::parsing::ParseResult& result) {
+    std::ofstream out(outPath, std::ios::binary);
+    out << "{\n";
+    out << "  \"schema\": \"soasim_mld_entry_list_v1\",\n";
+    out << "  \"source\": \"" << jsonEscape(sourcePath.string()) << "\",\n";
+    out << "  \"entry_count\": " << result.entryList.size() << ",\n";
+    out << "  \"entries\": [\n";
+    for (std::size_t i = 0; i < result.entryList.size(); ++i) {
+        const auto& entry = result.entryList[i];
+        out << "    {\n";
+        out << "      \"table_index\": " << entry.tableIndex << ",\n";
+        out << "      \"entryID\": " << entry.entryId << ",\n";
+        out << "      \"tableID\": " << entry.tblId << ",\n";
+        out << "      \"function\": \"" << jsonEscape(entry.fxnName) << "\",\n";
+        out << "      \"object_count\": " << entry.objectCount << ",\n";
+        out << "      \"ground_count\": " << entry.groundCount << ",\n";
+        out << "      \"motion_count\": " << entry.motionCount << ",\n";
+        out << "      \"texture_count\": " << entry.textureCount << ",\n";
+        out << "      \"textures_pointer\": " << entry.texturesPointer << ",\n";
+        out << "      \"textures_pointer_hex\": \"" << hexU32ForFile(entry.texturesPointer) << "\",\n";
+        out << "      \"ground_links\": ";
+        writeJsonU32Array(out, entry.groundLinks);
+        out << ",\n";
+        out << "      \"param_list2\": ";
+        writeJsonU32Array(out, entry.paramList2);
+        out << ",\n";
+        out << "      \"function_parameters\": ";
+        writeJsonU32Array(out, entry.functionParameters);
+        out << ",\n";
+        out << "      \"object_addresses\": ";
+        writeJsonU32Array(out, entry.objectAddresses);
+        out << ",\n";
+        out << "      \"ground_addresses\": ";
+        writeJsonU32Array(out, entry.groundAddresses);
+        out << ",\n";
+        out << "      \"motion_addresses\": ";
+        writeJsonU32Array(out, entry.motionAddresses);
+        out << ",\n";
+        out << "      \"texture_names\": ";
+        writeJsonStringArray(out, entry.textureNames);
+        out << "\n";
+        out << "    }";
+        if (i + 1 < result.entryList.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+}
+
+void writeSctDetailedJson(const std::filesystem::path& outPath, const soasim::sct::SctParseResult& result) {
+    std::ofstream out(outPath, std::ios::binary);
+    out << "{\n";
+    out << "  \"schema\": \"soasim_sct_parse_v1\",\n";
+    out << "  \"source\": \"" << jsonEscape(result.file.sourcePath) << "\",\n";
+    out << "  \"parseOk\": " << (result.parseOk ? "true" : "false") << ",\n";
+    out << "  \"sectionCount\": " << result.file.sections.size() << ",\n";
+    out << "  \"sections\": [\n";
+    for (std::size_t si = 0; si < result.file.sections.size(); ++si) {
+        const auto& section = result.file.sections[si];
+        out << "    {\n";
+        out << "      \"index\": " << section.id.index << ",\n";
+        out << "      \"name\": \"" << jsonEscape(section.id.name) << "\",\n";
+        out << "      \"startOffset\": " << section.startOffset << ",\n";
+        out << "      \"startOffsetHex\": \"" << hexU32ForFile(section.startOffset) << "\",\n";
+        out << "      \"endOffset\": " << section.endOffset << ",\n";
+        out << "      \"endOffsetHex\": \"" << hexU32ForFile(section.endOffset) << "\",\n";
+        out << "      \"isStringSection\": " << (section.isStringSection ? "true" : "false") << ",\n";
+        out << "      \"heuristics\": {\n";
+        out << "        \"touchesFlags\": " << (section.heuristicEvidence.touchesFlags ? "true" : "false") << ",\n";
+        out << "        \"branchesOnFlags\": " << (section.heuristicEvidence.branchesOnFlags ? "true" : "false") << ",\n";
+        out << "        \"writesFlags\": " << (section.heuristicEvidence.writesFlags ? "true" : "false") << ",\n";
+        out << "        \"hasSwitch\": " << (section.heuristicEvidence.hasSwitch ? "true" : "false") << ",\n";
+        out << "        \"hasLongLinearSequence\": " << (section.heuristicEvidence.hasLongLinearSequence ? "true" : "false") << ",\n";
+        out << "        \"hasPlayerReposition\": " << (section.heuristicEvidence.hasPlayerReposition ? "true" : "false") << ",\n";
+        out << "        \"hasCameraOrTimingLikeOps\": " << (section.heuristicEvidence.hasCameraOrTimingLikeOps ? "true" : "false") << ",\n";
+        out << "        \"likelyTrigger\": " << (section.heuristicEvidence.likelyTrigger ? "true" : "false") << ",\n";
+        out << "        \"likelyCutscene\": " << (section.heuristicEvidence.likelyCutscene ? "true" : "false") << ",\n";
+        out << "        \"notes\": ";
+        writeJsonStringArray(out, section.heuristicEvidence.notes);
+        out << "\n";
+        out << "      },\n";
+        out << "      \"instructions\": [\n";
+        for (std::size_t ii = 0; ii < section.instructions.size(); ++ii) {
+            const auto& inst = section.instructions[ii];
+            out << "        {\n";
+            out << "          \"offset\": " << inst.offset << ",\n";
+            out << "          \"offsetHex\": \"" << hexU32ForFile(inst.offset) << "\",\n";
+            out << "          \"opcode\": " << inst.opcode << ",\n";
+            out << "          \"opcodeHex\": \"" << hexU32ForFile(inst.opcode) << "\",\n";
+            out << "          \"decodeOk\": " << (inst.decodeOk ? "true" : "false") << ",\n";
+            out << "          \"sizeBytes\": " << inst.sizeBytes << ",\n";
+            out << "          \"operands\": ";
+            writeJsonU32Array(out, inst.operands);
+            out << ",\n";
+            out << "          \"operandHex\": [";
+            for (std::size_t oi = 0; oi < inst.operands.size(); ++oi) {
+                if (oi > 0) {
+                    out << ", ";
+                }
+                out << "\"" << hexU32ForFile(inst.operands[oi]) << "\"";
+            }
+            out << "],\n";
+            out << "          \"scptAnalyzeOperandIndexes\": ";
+            writeJsonU8Array(out, inst.scptAnalyzeOperandIndexes);
+            out << ",\n";
+            out << "          \"scptParameterValueRecords\": [\n";
+            for (std::size_t ri = 0; ri < inst.scptParameterValueRecords.size(); ++ri) {
+                const auto& record = inst.scptParameterValueRecords[ri];
+                out << "            {\n";
+                out << "              \"parameterIndex\": " << static_cast<unsigned int>(record.parameterIndex) << ",\n";
+                out << "              \"operandStartWordIndex\": " << record.operandStartWordIndex << ",\n";
+                out << "              \"operandWordCount\": " << record.operandWordCount << ",\n";
+                out << "              \"hitStopCode\": " << (record.hitStopCode ? "true" : "false") << ",\n";
+                out << "              \"resolvedValue\": \"" << jsonEscape(record.resolvedValue) << "\",\n";
+                out << "              \"evaluationTrace\": [\n";
+                for (std::size_t ti = 0; ti < record.evaluationTrace.size(); ++ti) {
+                    const auto& trace = record.evaluationTrace[ti];
+                    out << "                {"
+                        << "\"rawWord\": " << trace.rawWord
+                        << ", \"rawWordHex\": \"" << hexU32ForFile(trace.rawWord) << "\""
+                        << ", \"interpretedValue\": \"" << jsonEscape(trace.interpretedValue) << "\""
+                        << "}";
+                    if (ti + 1 < record.evaluationTrace.size()) {
+                        out << ",";
+                    }
+                    out << "\n";
+                }
+                out << "              ]\n";
+                out << "            }";
+                if (ri + 1 < inst.scptParameterValueRecords.size()) {
+                    out << ",";
+                }
+                out << "\n";
+            }
+            out << "          ]\n";
+            out << "        }";
+            if (ii + 1 < section.instructions.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "      ],\n";
+        out << "      \"blocks\": [\n";
+        for (std::size_t bi = 0; bi < section.blocks.size(); ++bi) {
+            const auto& block = section.blocks[bi];
+            out << "        {\n";
+            out << "          \"startOffset\": " << block.startOffset << ",\n";
+            out << "          \"startOffsetHex\": \"" << hexU32ForFile(block.startOffset) << "\",\n";
+            out << "          \"endOffset\": " << block.endOffset << ",\n";
+            out << "          \"endOffsetHex\": \"" << hexU32ForFile(block.endOffset) << "\",\n";
+            out << "          \"instructionOffsets\": ";
+            writeJsonU32Array(out, block.instructionOffsets);
+            out << ",\n";
+            out << "          \"successorOffsets\": ";
+            writeJsonU32Array(out, block.successorOffsets);
+            out << "\n";
+            out << "        }";
+            if (bi + 1 < section.blocks.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "      ],\n";
+        out << "      \"unknownRegions\": [\n";
+        for (std::size_t ui = 0; ui < section.unknownRegions.size(); ++ui) {
+            const auto& region = section.unknownRegions[ui];
+            out << "        {\n";
+            out << "          \"startOffset\": " << region.startOffset << ",\n";
+            out << "          \"startOffsetHex\": \"" << hexU32ForFile(region.startOffset) << "\",\n";
+            out << "          \"endOffset\": " << region.endOffset << ",\n";
+            out << "          \"endOffsetHex\": \"" << hexU32ForFile(region.endOffset) << "\",\n";
+            out << "          \"sizeBytes\": " << region.rawBytes.size() << ",\n";
+            out << "          \"reason\": \"" << jsonEscape(region.reason) << "\"\n";
+            out << "        }";
+            if (ui + 1 < section.unknownRegions.size()) {
+                out << ",";
+            }
+            out << "\n";
+        }
+        out << "      ]\n";
+        out << "    }";
+        if (si + 1 < result.file.sections.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ],\n";
+    out << "  \"diagnostics\": [\n";
+    for (std::size_t di = 0; di < result.diagnostics.size(); ++di) {
+        const auto& diagnostic = result.diagnostics[di];
+        out << "    {"
+            << "\"section\": \"" << jsonEscape(diagnostic.section) << "\""
+            << ", \"offset\": " << diagnostic.offset
+            << ", \"offsetHex\": \"" << hexU32ForFile(diagnostic.offset) << "\""
+            << ", \"message\": \"" << jsonEscape(diagnostic.message) << "\""
+            << "}";
+        if (di + 1 < result.diagnostics.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
 }
 
 void writeSpatialBlockManifest(
@@ -1643,6 +1945,7 @@ int main(int argc, char** argv) {
     std::size_t filesProcessed = 0;
     constexpr int kAbStartSlice = 1;
     constexpr int kAbEndSlice = 9;
+    soasim::contentgraph::ContentGraphCorpusInput contentGraphInput{};
 
     for (const auto& entry : std::filesystem::directory_iterator(inputDir)) {
         if (!entry.is_regular_file()) {
@@ -1655,7 +1958,10 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if (cliOptions->runAbSa3dPortVsSa3dBridge && extension != ".mld") {
+        if ((cliOptions->runAbSa3dPortVsSa3dBridge || cliOptions->exportMldEntryListOnly) && extension != ".mld") {
+            continue;
+        }
+        if (cliOptions->parseSctOnly && extension != ".sct") {
             continue;
         }
 
@@ -1676,16 +1982,45 @@ int main(int argc, char** argv) {
         if (extension == ".sct") {
             std::cout << "[SoaSimFileParsing]   - Parsing SCT: " << entry.path().filename().string() << "\n";
             auto parsed = sctParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entry.path().string());
+            if (cliOptions->exportContentGraph) {
+                contentGraphInput.sctFiles.push_back({entry.path().string(), std::move(parsed)});
+                ++filesProcessed;
+                continue;
+            }
             const auto outPath = outputDir / (entry.path().stem().string() + ".sct.txt");
             std::string summary = soasim::sct::formatParseSummary(parsed);
             std::ofstream out(outPath, std::ios::binary);
             out << summary.c_str();
+
+            const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sct.json");
+            writeSctDetailedJson(jsonOutPath, parsed);
             ++filesProcessed;
             continue;
         }
 
         if (extension == ".mld") {
             std::cout << "[SoaSimFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
+            if (cliOptions->exportContentGraph) {
+                soasim::mld::parsing::ParseOptions graphOptions{};
+                graphOptions.entryListOnly = true;
+                graphOptions.buildBlenderIntermediateIr = false;
+                auto graphParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), graphOptions);
+                contentGraphInput.mldFiles.push_back({entry.path().string(), std::move(graphParsed)});
+                ++filesProcessed;
+                continue;
+            }
+            if (cliOptions->exportMldEntryListOnly) {
+                soasim::mld::parsing::ParseOptions entryListOptions{};
+                entryListOptions.entryListOnly = true;
+                entryListOptions.buildBlenderIntermediateIr = false;
+                auto entryListParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entryListOptions);
+
+                const auto entryListOutPath = outputDir / (entry.path().stem().string() + ".mld.entries.json");
+                writeMldEntryListJson(entryListOutPath, entry.path(), entryListParsed);
+                ++filesProcessed;
+                continue;
+            }
+
             if (cliOptions->runAbSa3dPortVsSa3dBridge) {
                 soasim::mld::parsing::ParseOptions sa3dPortOptions{};
                 sa3dPortOptions.extractGrndGobjBlocks = cliOptions->extractGrndGobjBlocks;
@@ -1765,6 +2100,18 @@ int main(int argc, char** argv) {
             ++filesProcessed;
             continue;
         }
+    }
+
+    if (cliOptions->exportContentGraph) {
+        soasim::contentgraph::ContentGraphCorpusBuildOptions graphOptions{};
+        graphOptions.sctOptions.detailLevel = soasim::contentgraph::ContentGraphDetailLevel::Instructions;
+        soasim::contentgraph::ContentGraphCorpusBuilder graphBuilder{};
+        const auto graph = graphBuilder.build(contentGraphInput, graphOptions);
+        soasim::contentgraph::ContentGraphJsonExporter graphExporter{};
+        const auto graphOutPath = outputDir / "content_graph.json";
+        std::ofstream graphOut(graphOutPath, std::ios::binary);
+        graphOut << graphExporter.toJson(graph, cliOptions->contentGraphProjection);
+        std::cout << "[SoaSimFileParsing]   - Wrote content graph: " << graphOutPath.string() << "\n";
     }
 
     std::cout << "[SoaSimFileParsing] Step 4/4: Finalizing summary.\n";
