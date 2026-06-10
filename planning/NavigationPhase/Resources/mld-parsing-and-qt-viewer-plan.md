@@ -2,13 +2,13 @@
 
 ## Purpose
 
-This document plans the first implementation pass for parsing **GameCube Skies of Arcadia Legends MLD files** and transforming their contents into a format that can be displayed in a Qt-based 3D viewer for SOASim's Navigation Phase.
+This document plans the first implementation pass for parsing **GameCube Skies of Arcadia Legends MLD files** and transforming their contents into a format that can be displayed in a Qt-based 3D viewer for SAVOR's Navigation Phase.
 
 This document is intentionally scoped to **GameCube / Legends only**. It does not attempt to generalize across Dreamcast or other Sonic Adventure-family Ninja dialects except where comparison helps clarify likely behavior.
 
 It also separates three categories of knowledge:
 
-- **Confirmed from SOASim NavigationPhase planning docs**
+- **Confirmed from SAVOR NavigationPhase planning docs**
 - **Confirmed from the existing C# `SoAMLDs` research code**
 - **Open items that still require validation during implementation**
 
@@ -251,7 +251,7 @@ The important point is that **GRND objects plus ground_links** should become the
 
 The current system plan is to obtain MLD bytes directly from the disc through Dolphin-integrated file access rather than relying on a separate offline extraction process. [#2]
 
-That should remain the source of truth for SOASim runtime integration.
+That should remain the source of truth for SAVOR runtime integration.
 
 The MLD parser itself should therefore accept a raw byte span or vector and not care whether those bytes came from:
 
@@ -422,7 +422,7 @@ This should be determined from the C# parser or by visual comparison with known 
 
 ### Decision record (2026-04-12)
 
-The SOASim implementation decision is now locked to **Qt Quick 3D** for the first viewer implementation pass.
+The SAVOR implementation decision is now locked to **Qt Quick 3D** for the first viewer implementation pass.
 
 - Primary scene technology: **Qt Quick 3D**
 - Preferred camera interaction: **OrbitCameraController** (mouse orbit/pan/zoom workflow)
@@ -574,38 +574,38 @@ That approach matches the project need to iteratively grow handler support while
 
 ## References
 
-- [#1] SOASim NavigationPhase state and world model planning: `planning/NavigationPhase/02-state-and-world-model.md`  
-  https://github.com/jahorta/SOASim/blob/DBMigrate/planning/NavigationPhase/02-state-and-world-model.md
+- [#1] SAVOR NavigationPhase state and world model planning: `planning/NavigationPhase/02-state-and-world-model.md`
+  https://github.com/jahorta/SAVOR/blob/DBMigrate/planning/NavigationPhase/02-state-and-world-model.md
 
-- [#2] SOASim NavigationPhase open implementation questions: `planning/NavigationPhase/05-open-implementation-questions.md`  
-  https://github.com/jahorta/SOASim/blob/DBMigrate/planning/NavigationPhase/05-open-implementation-questions.md
+- [#2] SAVOR NavigationPhase open implementation questions: `planning/NavigationPhase/05-open-implementation-questions.md`
+  https://github.com/jahorta/SAVOR/blob/DBMigrate/planning/NavigationPhase/05-open-implementation-questions.md
 
-- [#3] `NJReader.cs` from `sa_tools/SoAMLDs`, showing Ninja chunk handling, GameCube chunk-size endianness notes, and Skies-specific unknown chunk mentions  
+- [#3] `NJReader.cs` from `sa_tools/SoAMLDs`, showing Ninja chunk handling, GameCube chunk-size endianness notes, and Skies-specific unknown chunk mentions
   https://github.com/jahorta/sa_tools/blob/SoAMLDs/Libraries/SAModel/Ninja%20Binary/NJReader.cs
 
-- [#4] `POF0Helper.cs` from `sa_tools/SoAMLDs`, showing pointer-delta decode and fixup behavior  
+- [#4] `POF0Helper.cs` from `sa_tools/SoAMLDs`, showing pointer-delta decode and fixup behavior
   https://github.com/jahorta/sa_tools/blob/SoAMLDs/Libraries/SAModel/Ninja%20Binary/POF0Helper.cs
 
-- [#5] `NJTLHelper.cs` from `sa_tools/SoAMLDs`, relevant to texture-list chunk handling in the Ninja subsystem  
+- [#5] `NJTLHelper.cs` from `sa_tools/SoAMLDs`, relevant to texture-list chunk handling in the Ninja subsystem
   https://github.com/jahorta/sa_tools/blob/SoAMLDs/Libraries/SAModel/Ninja%20Binary/NJTLHelper.cs
 
-- [#6] AuroraLib.Compression reference listing AKLZ and identifying it as used in Skies of Arcadia Legends  
+- [#6] AuroraLib.Compression reference listing AKLZ and identifying it as used in Skies of Arcadia Legends
   https://github.com/Venomalia/AuroraLib.Compression
 
-- [#7] Skies of Arcadia archive extraction guide noting AKLZ usage in Legends asset work  
+- [#7] Skies of Arcadia archive extraction guide noting AKLZ usage in Legends asset work
   https://github-wiki-see.page/m/ItsEasyActually/IEA_Guides/wiki/Skies-of-Arcadia-Archive-Extraction-Guide
 
-- [#8] Qt Quick 3D `Node` documentation  
+- [#8] Qt Quick 3D `Node` documentation
   https://doc.qt.io/qt-6/qml-qtquick3d-node.html
 
-- [#9] Binary angular measurement overview  
+- [#9] Binary angular measurement overview
   https://en.wikipedia.org/wiki/Binary_angular_measurement
 
-- [#10] Qt `QQuick3DGeometry` documentation  
+- [#10] Qt `QQuick3DGeometry` documentation
   https://doc.qt.io/qt-6/qquick3dgeometry.html
 
-- [#11] Qt 3D `QTransform` documentation  
+- [#11] Qt 3D `QTransform` documentation
   https://doc.qt.io/qt-6/qt3dcore-qtransform.html
 
-- [#12] Qt 3D `GeometryRenderer` QML documentation  
+- [#12] Qt 3D `GeometryRenderer` QML documentation
   https://doc.qt.io/qt-6/qml-qt3d-render-geometryrenderer.html

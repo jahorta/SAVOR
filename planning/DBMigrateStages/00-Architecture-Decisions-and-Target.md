@@ -1,4 +1,4 @@
-# SOASim DB Migration Program - Architecture Decisions and Target State
+# SAVOR DB Migration Program - Architecture Decisions and Target State
 
 ## Purpose
 This document captures the finalized architecture decisions for the database split and event-driven migration effort. It is the source of truth for implementation stages in this folder.
@@ -126,7 +126,7 @@ This document captures the finalized architecture decisions for the database spl
 5. Outbox + event contracts + projector scaffolding.
 6. Projector subscription-cursor migration (shared outbox consumer -> per-projector pub-sub cursors).
 7. Archive/rehydration pipeline for execution data.
-8. UI Read model projections and SoaSimQt2 read cutover.
+8. UI Read model projections and SavorQt read cutover.
 9. Validation suite, backfill, and production hardening.
 
 See stage documents `01`, `02`, `03b`, `03c`, `03`, `03e`, `04`, and `05` for concrete tasks.

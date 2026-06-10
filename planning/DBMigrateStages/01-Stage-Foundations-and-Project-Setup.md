@@ -4,8 +4,8 @@
 Establish the implementation skeleton so schema and event work can proceed in parallel with minimal merge conflicts.
 
 ## Exit Criteria
-- `SimCoreDB` project exists and builds.
-- `SoaSimQt2` project exists (initially copied from `SoaSimQt`) and builds.
+- `SavorDb` project exists and builds.
+- `SavorQt` project exists (initially copied from `SAVORQt`) and builds.
 - Shared migration conventions and folder layout are in place.
 - No behavior changes required yet.
 
@@ -14,23 +14,23 @@ Establish the implementation skeleton so schema and event work can proceed in pa
 ## Deliverables
 
 ### 1. Solution and project wiring
-- Add `SimCoreDB` project to solution.
-- Add `SoaSimQt2` project to solution.
-- Keep `SoaSimQt` untouched for fallback until cutover.
+- Add `SavorDb` project to solution.
+- Add `SavorQt` project to solution.
+- Keep `SAVORQt` untouched for fallback until cutover.
 
-### 2. SimCoreDB package structure
+### 2. SavorDb package structure
 Create initial namespaces/folders:
 
-- `SimCoreDB/Execution`
-- `SimCoreDB/State`
-- `SimCoreDB/Analysis/Spine`
-- `SimCoreDB/Analysis/SeedProbe`
-- `SimCoreDB/Analysis/Battle`
-- `SimCoreDB/Authoring`
-- `SimCoreDB/UIRead`
-- `SimCoreDB/Archive`
-- `SimCoreDB/Common/Events`
-- `SimCoreDB/Common/Migrations`
+- `SavorDb/Execution`
+- `SavorDb/State`
+- `SavorDb/Analysis/Spine`
+- `SavorDb/Analysis/SeedProbe`
+- `SavorDb/Analysis/Battle`
+- `SavorDb/Authoring`
+- `SavorDb/UIRead`
+- `SavorDb/Archive`
+- `SavorDb/Common/Events`
+- `SavorDb/Common/Migrations`
 
 ### 3. Migration infrastructure baseline
 - Decide migration runner mechanism (reuse existing infra or define a new migration host).
@@ -91,5 +91,5 @@ Add shared primitives:
 
 - **Risk:** Excessive coupling introduced while scaffolding.
   - **Mitigation:** Keep only interfaces/contracts in stage 1.
-- **Risk:** Project copy introduces stale references in `SoaSimQt2`.
+- **Risk:** Project copy introduces stale references in `SavorQt`.
   - **Mitigation:** Add compile gate to ensure all namespaces and assets resolve.

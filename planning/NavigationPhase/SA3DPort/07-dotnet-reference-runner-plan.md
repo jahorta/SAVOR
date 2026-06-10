@@ -30,7 +30,7 @@ Non-goals:
 ## Inputs
 - pinned parser source: `X-Hax/SA3D.Modeling` tag `1.2.1`, commit `13813e7`.
 - runner source: `jahorta/SA3D.Modeling` branch `DetailedIO2`.
-- fixture discovery policy (`SoaSimFileParsing/inputs/*.mld`, include all present files).
+- fixture discovery policy (`SPICE/inputs/*.mld`, include all present files).
 - extracted NJ model/motion bytes (provided by MLD parser extraction stage).
 
 ## Outputs
@@ -43,7 +43,7 @@ Non-goals:
 ## 3) Runner architecture
 
 1. **Fixture discovery reader**
-   - loads discovery policy from `FIXTURE_MANIFEST.json` and resolves fixtures from `SoaSimFileParsing/inputs`.
+   - loads discovery policy from `FIXTURE_MANIFEST.json` and resolves fixtures from `SPICE/inputs`.
 2. **Block provider adapter**
    - receives model/motion NJ blocks from MLD extraction pipeline.
    - writes temporary buffers for parser invocation if needed.
@@ -108,7 +108,7 @@ tools/sa3d_ref_runner/
    - `run-all --manifest ... --out ...`
 10. Add per-fixture command:
    - `run-one --fixture-id ...`
-11. Add bridge-friendly command wiring for `SoaSimFileParsing`:
+11. Add bridge-friendly command wiring for `SPICE`:
    - `run-one --input ... --out ... --manifest ...`
 
 ---
@@ -134,8 +134,8 @@ tools/sa3d_ref_runner/
 
 - C++ harness calls:
   1. MLD extraction step for NJ blocks.
-  2. `SoaSimFileParsing --ab-sa3d-port-vs-sa3d-bridge` launches `.NET sa3d` bridge runner for expected summaries.
-  3. same `SoaSimFileParsing` run executes C++ `sa3d_port` extraction for actual summaries.
+  2. `SPICE --ab-sa3d-port-vs-sa3d-bridge` launches `.NET sa3d` bridge runner for expected summaries.
+  3. same `SPICE` run executes C++ `sa3d_port` extraction for actual summaries.
   4. comparator for pass/fail and mismatch report.
 
 - Ensure reference and C++ runs consume identical extracted block payloads.

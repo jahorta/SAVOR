@@ -1,6 +1,6 @@
 # DBMigrateStages
 
-Detailed staged implementation plan for the SOASim bounded-context database split, event-driven integration, archive/rehydrate flow, and UI cutover.
+Detailed staged implementation plan for the SAVOR bounded-context database split, event-driven integration, archive/rehydrate flow, and UI cutover.
 
 ## Files
 
@@ -27,7 +27,7 @@ Detailed staged implementation plan for the SOASim bounded-context database spli
 - `04-Stage-Archive-and-Rehydrate-Runbook.md`
   - Operator command usage and remediation matrix for Stage 4 incidents.
 - `05-Stage-UI-Cutover-and-Validation.md`
-  - SoaSimQt2 cutover, backfill, validation, and fallback.
+  - SavorQt cutover, backfill, validation, and fallback.
 
 ## Suggested Usage
 

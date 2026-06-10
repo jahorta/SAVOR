@@ -4,13 +4,13 @@
 Draft v0.3 (planning)
 
 ## Purpose
-Define the target architecture for moving SimCoreDB from direct synchronous DB service calls to a CQRS-inspired model with per-context async queues/workers.
+Define the target architecture for moving SavorDb from direct synchronous DB service calls to a CQRS-inspired model with per-context async queues/workers.
 
 This document is the top-level map. Detailed documents in this folder define contracts, runtime flow, context layering, and rollout.
 
 ## Scope
 In scope:
-- SimCoreDB bounded contexts (Execution, State, Analysis, Authoring, UIRead, Archive)
+- SavorDb bounded contexts (Execution, State, Analysis, Authoring, UIRead, Archive)
 - Async request handling via per-context queues/workers
 - CQRS split of command vs query paths
 - Reliability model for outbox/event publication

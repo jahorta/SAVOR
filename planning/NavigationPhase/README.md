@@ -8,7 +8,7 @@ This folder tracks planning documents for a new **Navigation Phase** focused on 
 - Plan objective-to-objective movement with a frame-time cost function.
 - Account for interruptions (cutscenes, forced transitions, camera shifts).
 - Refine candidate input tapes in simulator for time-optimal results.
-- Integrate into existing SOASim job/phase infrastructure.
+- Integrate into existing SAVOR job/phase infrastructure.
 
 ## Documents
 

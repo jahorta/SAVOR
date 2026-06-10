@@ -55,7 +55,7 @@ Create focused contracts and a per-program descriptor:
 - optional feature flags/capabilities
 
 ### Ordered Tasks
-1. Add new interfaces under `SimCore/DB/ProgramDB/`.
+1. Add new interfaces under `SavorCore/DB/ProgramDB/`.
 2. Add descriptor registry replacing direct monolithic codec lookup.
 3. Implement adapter shim from old codec implementations to new contracts.
 4. Update worker coordinator call sites to consume focused adapters.

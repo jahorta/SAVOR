@@ -58,13 +58,13 @@ Introduce step input aggregation as a first-class path with strict readiness and
 
 ## Validation execution requirements
 
-1. **SimCoreTests**
+1. **SavorTests**
    - Run phase-1 aggregation behavior and idempotency suites.
-2. **SimCoreDBValidation CLI**
-   - Add/run phase-1 validation entries in `SimCoreDBValidation`.
+2. **SavorDbValidation CLI**
+   - Add/run phase-1 validation entries in `SavorDbValidation`.
    - Phase cannot exit until both test suites and CLI validations pass.
 
-## Suggested SimCoreTests to add for phase exit readiness
+## Suggested SavorTests to add for phase exit readiness
 
 1. **All-inputs-required gating test**
    - Verify step does not materialize until every required fragment is present.

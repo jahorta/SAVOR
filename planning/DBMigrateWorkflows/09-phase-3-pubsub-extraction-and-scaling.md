@@ -2,7 +2,7 @@
 
 - **Status:** Completed
 - **Completion date:** 2026-04-09
-- **Verification mode:** Manual validation (`SimCoreTests` phase-3 suites + `SimCoreDBValidation` phase-3 checks passed)
+- **Verification mode:** Manual validation (`SavorTests` phase-3 suites + `SavorDbValidation` phase-3 checks passed)
 
 ## Phase intent
 
@@ -71,10 +71,10 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
 
 ## Validation execution requirements
 
-1. **SimCoreTests**
+1. **SavorTests**
    - Run phase-3 service-split, batching, and dedupe-isolation suites.
-2. **SimCoreDBValidation CLI**
-   - Add/run phase-3 validation entries in `SimCoreDBValidation` for replay, lag/dead-letter, and stream-separation checks.
+2. **SavorDbValidation CLI**
+   - Add/run phase-3 validation entries in `SavorDbValidation` for replay, lag/dead-letter, and stream-separation checks.
    - Phase cannot exit until both test suites and CLI validations pass.
 
 ## Exit evidence (required)
@@ -90,7 +90,7 @@ Phase 3 exit requires all of the following validation names to pass with the sta
 4. `phase3.lag_dead_letter_readiness`
    - Pass criteria: intentional relay failure produces dead-letter accounting and lag preview reports subscription lag.
 
-## Suggested SimCoreTests to add for phase exit readiness
+## Suggested SavorTests to add for phase exit readiness
 
 1. **Materialization/dispatch split integration test**
    - Verify claimed jobs are not dispatched before payload materialization completion.

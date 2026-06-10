@@ -12,7 +12,7 @@ Create concrete schemas and migrations for all new context DBs, including a sing
 
 ## 2.0 Design Constraints Agreed During Planning
 
-- SimCoreDB is a blank-slate implementation; schema decisions should model workflows and UI needs, not mirror legacy table names.
+- SavorDb is a blank-slate implementation; schema decisions should model workflows and UI needs, not mirror legacy table names.
 - Avoid JSON storage where possible. Prefer typed relational columns and bridge tables.
 - Authoring DB is source-of-truth for worker input specifications (blueprints, options, presets).
 - Analysis DB stores typed outputs needed for downstream derivation and UI, instead of re-parsing INI payloads.

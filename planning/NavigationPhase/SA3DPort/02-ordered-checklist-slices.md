@@ -45,11 +45,11 @@ Test harness direction update (2026-04-21):
   - `Animation/`
   - `Structs/`
 - [x] Build fixture corpus policy:
-  - source fixtures are auto-discovered from `SoaSimFileParsing/inputs/*.mld` and all discovered files are included.
+  - source fixtures are auto-discovered from `SPICE/inputs/*.mld` and all discovered files are included.
   - extraction path is via MLD parser block provider (not direct standalone NJ file loading).
 - [ ] Build parity report format (counts, hashes, diagnostics).
-- [x] Add A/B CLI mode to `SoaSimFileParsing` for `sa3d_port` (C++) vs `sa3d` (.NET bridge) comparison over discovered fixtures.
-- [-] Implement .NET bridge invocation path in A/B mode so `SoaSimFileParsing` executes `sa3d` reference parsing per fixture and emits stable JSON for comparison against `sa3d_port`.
+- [x] Add A/B CLI mode to `SPICE` for `sa3d_port` (C++) vs `sa3d` (.NET bridge) comparison over discovered fixtures.
+- [-] Implement .NET bridge invocation path in A/B mode so `SPICE` executes `sa3d` reference parsing per fixture and emits stable JSON for comparison against `sa3d_port`.
   - Framework scaffold added under `tools/sa3d_ref_runner` with `run-one`/`run-all` commands and `parity_report_v1` JSON shape.
 
 Exit criteria:
@@ -70,7 +70,7 @@ Checklist:
 - [x] Implement pointer LUT behavior for read memoization + write de-dup.
 - [x] Port BAMS float/angle conversion behavior.
 - [x] Add unit tests for endian stack, pointers, and BAMS exactness.
-  - Added `SimCoreTests/test_sa3dport_stage1.cpp` covering file headers, endian read semantics, pointer LUT memoization, and BAMS conversion round-trips.
+  - Added `SavorTests/test_sa3dport_stage1.cpp` covering file headers, endian read semantics, pointer LUT memoization, and BAMS conversion round-trips.
 - [x] Add a Slice 1 test shortcut header (`Sa3Dport/Testing/Slice1TestApi.h`) so captured `SA3D.Modeling` inputs can be passed directly into slice-targeted C++ tests without re-wiring includes per test file.
 - [ ] Extend parity harness (Slice 1 mode):
   - compare primitive/lut/bams input/output pairs captured from `DetailedIO2` processing of real extracted NJ blocks,

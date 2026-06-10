@@ -196,7 +196,7 @@ Define source outbox retention with subscriber awareness:
 ## 3e.9 Migration Notes (Checkpoint Retirement)
 
 ### Added migration
-- `SimCoreDB/migration/UIRead/202604051500_uiread_stage3f_projection_checkpoint_retire.sql`
+- `SavorDb/migration/UIRead/202604051500_uiread_stage3f_projection_checkpoint_retire.sql`
 
 ### What this migration does
 1. Runs under `BEGIN IMMEDIATE` to keep checkpoint-retirement changes atomic.

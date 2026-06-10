@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>qrc;rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Form Files">
+      <UniqueIdentifier>{99349809-55BA-4b9d-BF79-8FDBB0286EB3}</UniqueIdentifier>
+      <Extensions>ui</Extensions>
+    </Filter>
+    <Filter Include="Translation Files">
+      <UniqueIdentifier>{639EADAA-A684-42e4-A9AD-28FC9BCB8F7C}</UniqueIdentifier>
+      <Extensions>ts</Extensions>
+    </Filter>
+    <Filter Include="GUI">
+      <UniqueIdentifier>{7db4c122-4ece-4e90-837b-a6f52462b212}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes">
+      <UniqueIdentifier>{d14de17a-882c-4af9-8194-d01599d4c921}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Coordinator">
+      <UniqueIdentifier>{612b34d4-a752-48e9-8d9c-5ff5543c40a1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Jobs">
+      <UniqueIdentifier>{06f0a36c-8c26-4d8f-afa1-57f916d29e64}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\JobSets">
+      <UniqueIdentifier>{261281c3-0f0b-4795-bab6-754af65fd8cc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Settings">
+      <UniqueIdentifier>{9f1dcdf7-ec5e-4588-b8cf-a298c2975d5f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\SeedProbe">
+      <UniqueIdentifier>{1aa4c3a0-3f5d-465b-9c6c-e14dc9e9af86}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\Artifacts">
+      <UniqueIdentifier>{9a267a3f-42f8-4db8-9540-c08a4d67f9e5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\JobBuilder">
+      <UniqueIdentifier>{17d08e24-b230-4462-aad2-f682ce9200ba}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\BattleRunSettings">
+      <UniqueIdentifier>{4f52d3dc-7345-4dbb-a9de-df4dedde2911}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Panes\ExplorerRuns">
+      <UniqueIdentifier>{f11f33c7-16ec-4a11-9d27-7df8e4b86ef3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Widgets">
+      <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Main">
+      <UniqueIdentifier>{bcdb69ab-3657-441c-81b2-9e6637d77f29}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Common">
+      <UniqueIdentifier>{005bee8e-54dc-4167-8e35-e84d3cfe37c1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Widgets\VisualReplay">
+      <UniqueIdentifier>{354d8c69-ffaf-4ea9-bc49-e4a7c83d8399}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI\Tabs">
+      <UniqueIdentifier>{f954d0f7-e1d7-45c3-a7f1-2c08355de992}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="DB">
+      <UniqueIdentifier>{22712b76-2522-41b1-b291-83e88bdb6a5b}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SavorQt.qrc">
+      <Filter>Resource Files</Filter>
+    </QtRcc>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsController.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ArtifactsPane\ArtifactsPage.cpp">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\MainWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorController.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\CoordinatorPane.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\CoordinatorPane\WorkerTableModel.cpp">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.cpp">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.cpp">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.cpp">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableView.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsController.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsPage.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableModel.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobsPane\JobsTableView.cpp">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\JobSetsPane\WorkflowsPage.cpp">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SettingsPane\SettingsPage.cpp">
+      <Filter>GUI\Panes\Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeController.cpp">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.cpp">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbePage.cpp">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.cpp">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\BattleContextTreeModel.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\BattleContextTreeWidget.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\StatusBarWidget.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\ToastHistoryDialog.cpp">
+      <Filter>GUI\Widgets</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogFilterController.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\LiveLogListModel.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualReplayDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.cpp">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp">
+      <Filter>Main</Filter>
+    </ClCompile>
+    <ClCompile Include="SavorDbRuntime.cpp">
+      <Filter>Main</Filter>
+    </ClCompile>
+    <ClCompile Include="DB\DBCore\DbSnapshotService.cpp">
+      <Filter>DB</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\DtmEditorPane\DtmEditorPage.cpp" />
+    <ClCompile Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.cpp" />
+    <ClCompile Include="GUI\Tabs\AnalysisTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Tabs\RunningTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Tabs\SetupTab.cpp">
+      <Filter>GUI\Tabs</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsController.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsPage.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableView.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\MainWindow.h">
+      <Filter>GUI</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorPane.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\CoordinatorPane\CoordinatorController.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobsPane\JobsController.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\StatusBarWidget.h">
+      <Filter>GUI\Widgets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\SettingsPane\SettingsPage.h">
+      <Filter>GUI\Panes\Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbeController.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobBuilderPane\WorkflowLauncherPage.h">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\BattleRunSettingsPage.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\AuthoringLibraryDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\BattleRunSettingsPane\SpecLibraryDialog.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsPage.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\ExplorerRunsPane\ExplorerRunsController.h">
+      <Filter>GUI\Panes\ExplorerRuns</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\SeedProbePane\SeedProbePage.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\JobSetsPane\WorkflowsPage.h">
+      <Filter>GUI\Panes\JobSets</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Panes\DtmEditorPane\DtmEditorPage.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GUI\Panes\ArtifactsPane\ArtifactsBrowserTableModel.h">
+      <Filter>GUI\Panes\Artifacts</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\StyleSheet.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SavorDbRuntime.h">
+      <Filter>Main</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanEditorWindow.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\AuthoringSpecEditorWindows.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">
+      <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
+      <Filter>GUI\Panes\Coordinator</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableModel.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\ArtifactsTableView.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableModel.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobsPane\JobsTableView.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeGridWidget.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\SeedProbePane\SeedProbeTableModels.h">
+      <Filter>GUI\Panes\SeedProbe</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Common\StatusToast.h">
+      <Filter>GUI\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\ScrollBarStabilizer.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\JobBuilderPane\WorkflowGraphEditorWindow.h">
+      <Filter>GUI\Panes\JobBuilder</Filter>
+    </ClInclude>
+    <QtMoc Include="GUI\Panes\JobsPane\JobsPage.h">
+      <Filter>GUI\Panes\Jobs</Filter>
+    </QtMoc>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\VisualReplay\VisualWorkerDashboardDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </ClInclude>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayCoordinator.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <QtMoc Include="GUI\Widgets\VisualReplay\VisualReplayDialog.h">
+      <Filter>GUI\Widgets\VisualReplay</Filter>
+    </QtMoc>
+    <ClInclude Include="DB\SavorDbAuthoringService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbExplorerRunService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbJobSetService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbJobService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbArtifactService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbServiceResult.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\SavorDbWorkflowService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="DB\DBCore\DbSnapshotService.h">
+      <Filter>DB</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunSettingsPane\BattlePlanActionPresetEditorWindow.h" />
+    <ClInclude Include="GUI\Tabs\AnalysisTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Tabs\RunningTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Tabs\SetupTab.h">
+      <Filter>GUI\Tabs</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

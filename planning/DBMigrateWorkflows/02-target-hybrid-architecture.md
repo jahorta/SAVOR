@@ -19,7 +19,7 @@
 
 Workflow composition is a design-time/control-plane concern, not an Analysis DB writer.
 
-- The Qt2 Workflow Builder and SimCoreDB composition registry describe reusable workflow units, their required input ports, their possible output ports, and their internal step kinds.
+- The Qt2 Workflow Builder and SavorDb composition registry describe reusable workflow units, their required input ports, their possible output ports, and their internal step kinds.
 - Composition validation answers only whether a downstream unit can potentially be satisfied by an upstream unit or by an external input binding.
 - Composition does not create Analysis DB, State DB, or UIRead rows.
 - Authored records such as battle plans, predicates, and workflow templates should exist before workflow submission. Source artifacts may already exist in State/Archive, but selecting them for a workflow is an instance-specific submission binding.

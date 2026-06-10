@@ -6,8 +6,8 @@
 - **Completion date:** 2026-04-08
 - **Verification mode:** Manual verification
 - **Completion gate confirmation:** Phase-2 validation execution completed with both required paths passing:
-  - `SimCoreTests` phase-2 checks (adapter invocation order, completion gate, Seed Probe split contracts) passed.
-  - `SimCoreDBValidation` phase-2 checks (adapter invocation order and completion-gate invariants) passed.
+  - `SavorTests` phase-2 checks (adapter invocation order, completion gate, Seed Probe split contracts) passed.
+  - `SavorDbValidation` phase-2 checks (adapter invocation order and completion-gate invariants) passed.
 
 ## Phase intent
 
@@ -68,13 +68,13 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
 
 ## Validation execution requirements
 
-1. **SimCoreTests**
+1. **SavorTests**
    - Run phase-2 adapter-chain, completion-gate, and split-contract suites.
-2. **SimCoreDBValidation CLI**
-   - Add/run phase-2 validation entries in `SimCoreDBValidation` for adapter order and transition gating.
+2. **SavorDbValidation CLI**
+   - Add/run phase-2 validation entries in `SavorDbValidation` for adapter order and transition gating.
    - Phase cannot exit until both test suites and CLI validations pass.
 
-## Suggested SimCoreTests to add for phase exit readiness
+## Suggested SavorTests to add for phase exit readiness
 
 1. **Adapter invocation order test**
    - Assert canonical call chain executes in order across lifecycle boundaries.

@@ -28,7 +28,7 @@ Implication: we will keep old behavior as-is and add a distinct one-turn program
 
 ## 2) New one-turn module
 Create:
-- `SimCore/Phases/Programs/BattleTurnRunner/`
+- `SavorCore/Phases/Programs/BattleTurnRunner/`
   - `BattleTurnRunnerScript.h`
   - `BattleTurnRunnerPayload.h/.cpp`
   - (optional) DB helper later if needed
@@ -179,8 +179,8 @@ Design note: implement tie-break evaluation as a pluggable ordered comparator li
 ---
 
 ## Expected file touch list (implementation phase)
-- `SimCore/Runner/IPC/Wire.h`
-- `SimCore/Phases/Programs/ProgramRegistry.cpp`
-- `SimCore/Phases/Programs/BattleTurnRunner/*` (new)
-- `SimCore/Phases/BattleExplorer.*` or new `BattleTurnExplorer.*`
-- `SimCoreTests/*`
+- `SavorCore/Runner/IPC/Wire.h`
+- `SavorCore/Phases/Programs/ProgramRegistry.cpp`
+- `SavorCore/Phases/Programs/BattleTurnRunner/*` (new)
+- `SavorCore/Phases/BattleExplorer.*` or new `BattleTurnExplorer.*`
+- `SavorTests/*`

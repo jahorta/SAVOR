@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</ProjectGuid>
+    <RootNamespace>SavorDb</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_LIB;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop';" ^
+  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
+  "$out='$(IntDir)GeneratedMigrations.h';" ^
+  "$stamp='$(IntDir)Migrations.files.txt';" ^
+  "$root='$(ProjectDir)migration';" ^
+  "$files=Get-ChildItem -Path $root -Recurse -Filter *.sql -File | ForEach-Object {" ^
+  "  $context=$_.Directory.Name;" ^
+  "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
+  "} | Sort-Object Key;" ^
+  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
+  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "$header=@('// generated - do not edit','#pragma once','','#include &lt;array&gt;','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array&lt;EmbeddedMigrationEntry, '+$files.Count+'&gt; kEmbeddedMigrations{{');" ^
+  "$tmp=$out + '.tmp';" ^
+  "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
+  "foreach($f in $files){" ^
+  "  $ctx='MigrationContext::'+$f.Context;" ^
+  "  $sql=[IO.File]::ReadAllText($f.FullName);" ^
+  "  Add-Content -Path $tmp -Value ('    {'+$ctx+', \"'+$f.Name+'\", R\"SQL('+$sql+')SQL\"},') -Encoding UTF8;" ^
+  "}" ^
+  "Add-Content -Path $tmp -Value '}};' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
+  "Move-Item -Force -Path $tmp -Destination $out;" ^
+  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_LIB;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop';" ^
+  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
+  "$out='$(IntDir)GeneratedMigrations.h';" ^
+  "$stamp='$(IntDir)Migrations.files.txt';" ^
+  "$root='$(ProjectDir)migration';" ^
+  "$files=Get-ChildItem -Path $root -Recurse -Filter *.sql -File | ForEach-Object {" ^
+  "  $context=$_.Directory.Name;" ^
+  "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
+  "} | Sort-Object Key;" ^
+  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
+  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "$header=@('// generated - do not edit','#pragma once','','#include &lt;array&gt;','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array&lt;EmbeddedMigrationEntry, '+$files.Count+'&gt; kEmbeddedMigrations{{');" ^
+  "$tmp=$out + '.tmp';" ^
+  "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
+  "foreach($f in $files){" ^
+  "  $ctx='MigrationContext::'+$f.Context;" ^
+  "  $sql=[IO.File]::ReadAllText($f.FullName);" ^
+  "  Add-Content -Path $tmp -Value ('    {'+$ctx+', \"'+$f.Name+'\", R\"SQL('+$sql+')SQL\"},') -Encoding UTF8;" ^
+  "}" ^
+  "Add-Content -Path $tmp -Value '}};' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
+  "Move-Item -Force -Path $tmp -Destination $out;" ^
+  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="Archive\ArchivePackageService.h" />
+    <ClInclude Include="Archive\IArchiveDb.h" />
+    <ClInclude Include="Archive\QueuedArchiveDb.h" />
+    <ClInclude Include="Archive\RehydrateExecutor.h" />
+    <ClInclude Include="Archive\SqliteArchiveDb.h" />
+    <ClInclude Include="Analysis\IAnalysisDb.h" />
+    <ClInclude Include="Analysis\QueuedAnalysisDb.h" />
+    <ClInclude Include="Analysis\SqliteAnalysisPayloadResolvers.h" />
+    <ClInclude Include="Analysis\SqliteAnalysisDb.h" />
+    <ClInclude Include="Authoring\IAuthoringDb.h" />
+    <ClInclude Include="Authoring\QueuedAuthoringDb.h" />
+    <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
+    <ClInclude Include="Common\DbConfigPaths.h" />
+    <ClInclude Include="Common\DbService.h" />
+    <ClInclude Include="Common\Events\EventEnvelope.h" />
+    <ClInclude Include="Common\Events\EventCatalog.h" />
+    <ClInclude Include="Common\Events\EventPayloadDispatch.h" />
+    <ClInclude Include="Common\Events\EventPayloadValidation.h" />
+    <ClInclude Include="Common\Events\EventPayloadViews.h" />
+    <ClInclude Include="Common\Events\EventPayloadResolvers.h" />
+    <ClInclude Include="Common\Events\OutboxRelay.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\ProgramKindDescriptor.h" />
+    <ClInclude Include="Execution\ProgramDB\ProgramKindRegistry.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeContracts.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.h" />
+    <ClInclude Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.h" />
+    <ClInclude Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowOrchestration.h" />
+    <ClInclude Include="Common\Migrations\MigrationContext.h" />
+    <ClInclude Include="Common\Migrations\MigrationRunner.h" />
+    <ClInclude Include="Common\QueuedDb.h" />
+    <ClInclude Include="Common\Types\TypedIds.h" />
+    <ClInclude Include="Common\Types\UtcTimestamp.h" />
+    <ClInclude Include="Execution\IExecutionDb.h" />
+    <ClInclude Include="Execution\Jobs\JobEventOrchestration.h" />
+    <ClInclude Include="Execution\QueuedExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\SqliteExecutionDb.h" />
+    <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h" />
+    <ClInclude Include="Execution\Workflow\SqliteWorkflowOrchestration.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowComposition.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowIntegrityChecks.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowProjector.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowCoordinatorService.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowGraphRoutingService.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowTerminalAdvancementService.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.h" />
+    <ClInclude Include="Execution\Workflow\WorkflowRecoveryService.h" />
+    <ClInclude Include="SavorDb.h" />
+    <ClInclude Include="State\IStateDb.h" />
+    <ClInclude Include="State\QueuedStateDb.h" />
+    <ClInclude Include="State\SqliteStateDb.h" />
+    <ClInclude Include="UIRead\IUiReadDb.h" />
+    <ClInclude Include="UIRead\QueuedUiReadDb.h" />
+    <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h" />
+    <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" />
+    <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" />
+    <ClInclude Include="UIRead\Projectors\BattleProjector.h" />
+    <ClInclude Include="UIRead\Projectors\JobProjector.h" />
+    <ClInclude Include="UIRead\Projectors\ProjectorContract.h" />
+    <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" />
+    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" />
+    <ClInclude Include="UIRead\SqliteUiReadDb.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Archive\ArchivePackageService.cpp" />
+    <ClCompile Include="Archive\QueuedArchiveDb.cpp" />
+    <ClCompile Include="Archive\SqliteArchiveDb.cpp" />
+    <ClCompile Include="Archive\RehydrateExecutor.cpp" />
+    <ClCompile Include="Common\Migrations\MigrationContext.cpp" />
+    <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
+    <ClCompile Include="Common\Events\OutboxRelay.cpp" />
+    <ClCompile Include="Common\DbService.cpp" />
+    <ClCompile Include="Common\QueuedDb.cpp" />
+    <ClCompile Include="Analysis\QueuedAnalysisDb.cpp" />
+    <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
+    <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
+    <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
+    <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
+    <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
+    <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\BattleSingleTurn\BattleSingleTurnPhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeGridAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeNeutralAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\ProgramDB\SeedProbe\SeedProbeUniqueAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMovieAdapters.cpp" />
+    <ClCompile Include="Execution\ProgramDB\TasMovie\TasMoviePhaseRegistration.cpp" />
+    <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp" />
+    <ClCompile Include="Execution\Workflow\AdapterChainOrchestrator.cpp" />
+    <ClCompile Include="Execution\Workflow\SqliteWorkflowOrchestration.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowIntegrityChecks.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowProjector.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowCoordinatorService.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowGraphRoutingService.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowTerminalAdvancementService.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowTerminalOutboxSubscriber.cpp" />
+    <ClCompile Include="Execution\Workflow\WorkflowRecoveryService.cpp" />
+    <ClCompile Include="SavorDb.cpp" />
+    <ClCompile Include="State\QueuedStateDb.cpp" />
+    <ClCompile Include="State\SqliteStateDb.cpp" />
+    <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp" />
+    <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\JobProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" />
+    <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" />
+    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
+    <ClCompile Include="UIRead\QueuedUiReadDb.cpp" />
+    <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />
+    <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql" />
+    <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
+    <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
+    <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
+    <None Include="migration\Archive\202604051100_archive_stage3_outbox.sql" />
+    <None Include="migration\Archive\202604051200_archive_stage4_workflow_archive_kinds.sql" />
+    <None Include="migration\Authoring\202604051000_authoring_stage2_schema.sql" />
+    <None Include="migration\Authoring\202604101000_authoring_predicate_breakpoint_id.sql" />
+    <None Include="migration\Authoring\202604101100_authoring_predicate_width.sql" />
+    <None Include="migration\Authoring\202604101200_authoring_workflow_graph.sql" />
+    <None Include="migration\Authoring\202604101250_authoring_workflow_graph_hidden.sql" />
+    <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql" />
+    <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
+    <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
+    <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
+    <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
+    <None Include="migration\Execution\202604071000_execution_phase0b_job_savestate.sql" />
+    <None Include="migration\Execution\202604081030_execution_phase0c_job_details_ini.sql" />
+    <None Include="migration\Execution\202604101300_execution_workflow_graph_instance_bindings.sql" />
+    <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql" />
+    <None Include="migration\Execution\202604111000_execution_graph_routing.sql" />
+    <None Include="migration\State\202604051000_state_stage2_schema.sql" />
+    <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
+    <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
+    <None Include="migration\UIRead\202604051300_uiread_stage3c_projection_checkpoint_compat.sql" />
+    <None Include="migration\UIRead\202604051400_uiread_stage3e_projection_subscription.sql" />
+    <None Include="migration\UIRead\202604051500_uiread_stage3f_projection_checkpoint_retire.sql" />
+    <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql" />
+    <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql" />
+    <None Include="update_generated_migrations_command.txt" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

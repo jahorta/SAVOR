@@ -1,10 +1,10 @@
 # Stage 5 - UI Cutover, Backfill, and Validation
 
 ## Objective
-Move `SoaSimQt2` to the new architecture safely with measurable correctness and performance gates.
+Move `SavorQt` to the new architecture safely with measurable correctness and performance gates.
 
 ## Exit Criteria
-- SoaSimQt2 reads are served from UIRead models.
+- SavorQt reads are served from UIRead models.
 - Command paths write to new context DBs.
 - Critical screens validated against expected data.
 - Rollback and fallback documented.
@@ -78,7 +78,7 @@ This order supersedes any older implication that all Stage 5 UI surfaces must cu
 
 ---
 
-## 5.2 SoaSimQt2 Migration Tasks
+## 5.2 SavorQt Migration Tasks
 
 1. Replace direct data queries with read-model gateway calls.
 2. Replace direct writes with command handlers invoking context services.
@@ -188,7 +188,7 @@ The current target architecture intentionally replaces several early DBMigrate s
 
 ## 5.6 Fallback Plan
 
-- Keep legacy `SoaSimQt` runnable until Stage 5 signoff.
+- Keep legacy `SAVORQt` runnable until Stage 5 signoff.
 - Keep DB snapshots before irreversible migration steps.
 - Support toggling off new paths via feature flags.
 - If needed, reset one or more projector subscriptions and re-run UIRead projection replay from source outbox history without impacting unrelated projector subscriptions.

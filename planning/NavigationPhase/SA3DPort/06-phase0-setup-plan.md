@@ -16,8 +16,8 @@ Scope: detailed implementation plan for Slice 0 decisions.
   - workflow policy: update `DetailedIO2` each slice to emit slice-specific input/output pairs.
 - C++ naming and namespace mapping should match C# source as closely as possible.
 - Implementation lives in a dedicated `Sa3Dport` Visual Studio C++ project.
-- Fixture inputs are all `*.mld` files auto-discovered from `SoaSimFileParsing/inputs`.
-- Fixture extraction path is via SoaSim MLD parser (not ad-hoc standalone NJ readers).
+- Fixture inputs are all `*.mld` files auto-discovered from `SPICE/inputs`.
+- Fixture extraction path is via SAVOR MLD parser (not ad-hoc standalone NJ readers).
 - Backend toggle is implemented inside the MLD parser provider path.
 
 ---
@@ -29,7 +29,7 @@ Scope: detailed implementation plan for Slice 0 decisions.
 2. `phase0/NAMING_AND_NAMESPACE_MAPPING.md`
    - Defines exact C# -> C++ mapping conventions.
 3. `phase0/FIXTURE_MANIFEST.json`
-   - Declares auto-discovery policy for fixtures (`SoaSimFileParsing/inputs/*.mld`, selection=`all`).
+   - Declares auto-discovery policy for fixtures (`SPICE/inputs/*.mld`, selection=`all`).
 4. `phase0/PARITY_REPORT_SCHEMA.json`
    - JSON schema for structural/semantic/diagnostic summary output plus slice IO pairs.
 5. MLD parser backend switch design note
@@ -65,11 +65,11 @@ Acceptance:
 ## C) Fixture manifest through MLD parser
 
 - [ ] Build `FIXTURE_MANIFEST.json` with auto-discovery policy:
-  - fixture root (`SoaSimFileParsing/inputs`),
+  - fixture root (`SPICE/inputs`),
   - glob (`*.mld`),
   - selection (`all`).
 - [ ] Add manifest validator to ensure files exist and are readable.
-- [ ] Add loader path in `SoaSimFileParsing` harness that reads discovery policy and resolves manifest entries.
+- [ ] Add loader path in `SPICE` harness that reads discovery policy and resolves manifest entries.
 
 Acceptance:
 - manifest load passes and each fixture yields block discovery results.
@@ -90,7 +90,7 @@ Acceptance:
 
 ## E) Toggleable backend in MLD parser
 
-- [ ] Add parser mode switch in `SoaSimFileParsing` CLI for A/B:
+- [ ] Add parser mode switch in `SPICE` CLI for A/B:
   - `sa3d_port` (C++ parser path)
   - `sa3d` (.NET bridge reference parser path)
 - [ ] Ensure both backends receive the same decoded NJ block bytes from MLD extraction.

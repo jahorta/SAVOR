@@ -1,6 +1,6 @@
 # DB Migrate Workflows Plan (Hybrid Approach)
 
-This folder contains design docs for migrating SimCoreDB workflow execution toward the **Hybrid orchestration model**:
+This folder contains design docs for migrating SavorDb workflow execution toward the **Hybrid orchestration model**:
 
 - Central workflow control/orchestration path for step progression.
 - Event-driven publish/subscribe outbox subscriptions for async coordination and projections.
@@ -8,7 +8,7 @@ This folder contains design docs for migrating SimCoreDB workflow execution towa
 
 ## Why this folder exists
 
-SimCoreDB already has:
+SavorDb already has:
 
 - Workflow step state + orchestration command/query APIs.
 - Outbox event contracts and relay/subscription infrastructure.
@@ -19,14 +19,14 @@ These docs define how to evolve from current state to a robust hybrid architectu
 ## Validation implementation note
 
 - Workflow-migration phases use two verification paths:
-  1. `SimCoreTests` (unit/integration coverage),
-  2. `SimCoreDBValidation` CLI executable (phase-gate operational validations and replay/backfill checks).
+  1. `SavorTests` (unit/integration coverage),
+  2. `SavorDbValidation` CLI executable (phase-gate operational validations and replay/backfill checks).
 - Phase docs below should include both paths in implementation and exit criteria.
 
 ## Current phase status
 
-- **Phase 2 (Adapter invocation chain + Seed Probe split):** Completed on 2026-04-08 via manual verification (`SimCoreTests` and `SimCoreDBValidation` phase-2 checks passed).
-- **Phase 3 (Pub/sub extraction and scaling):** Completed on 2026-04-09 via manual validation (`SimCoreTests` phase-3 suites and `SimCoreDBValidation` phase-3 checks passed).
+- **Phase 2 (Adapter invocation chain + Seed Probe split):** Completed on 2026-04-08 via manual verification (`SavorTests` and `SavorDbValidation` phase-2 checks passed).
+- **Phase 3 (Pub/sub extraction and scaling):** Completed on 2026-04-09 via manual validation (`SavorTests` phase-3 suites and `SavorDbValidation` phase-3 checks passed).
 
 ## Documents
 

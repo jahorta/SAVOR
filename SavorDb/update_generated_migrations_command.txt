@@ -1,0 +1,27 @@
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop';" ^
+  "$null=[IO.Directory]::CreateDirectory('$(IntDir)');" ^
+  "$out='$(IntDir)GeneratedMigrations.h';" ^
+  "$stamp='$(IntDir)Migrations.files.txt';" ^
+  "$root='$(ProjectDir)migration';" ^
+  "$files=Get-ChildItem -Path $root -Recurse -Filter *.sql -File | ForEach-Object {" ^
+  "  $context=$_.Directory.Name;" ^
+  "  [PSCustomObject]@{ Context=$context; Name=$_.Name; FullName=$_.FullName; Key=($context + '/' + $_.Name) }" ^
+  "} | Sort-Object Key;" ^
+  "$keys=($files | ForEach-Object Key) -join [Environment]::NewLine;" ^
+  "if(Test-Path $stamp){ $prev=Get-Content -Path $stamp -Raw } else { $prev='' }" ^
+  "if($prev -eq $keys){ Write-Host 'No new migration files; skipping embedding.'; exit 0 }" ^
+  "$header=@('// generated - do not edit','#pragma once','','#include <array>','','#include \"MigrationContext.h\"','','namespace savor::db::migrations {','','struct EmbeddedMigrationEntry {','    MigrationContext context;','    const char* filename;','    const char* sql;','};','','inline constexpr std::array<EmbeddedMigrationEntry, '+$files.Count+'> kEmbeddedMigrations{{');" ^
+  "$tmp=$out + '.tmp';" ^
+  "Set-Content -Path $tmp -Value $header -Encoding UTF8;" ^
+  "foreach($f in $files){" ^
+  "  $ctx='MigrationContext::'+$f.Context;" ^
+  "  $sql=[IO.File]::ReadAllText($f.FullName);" ^
+  "  Add-Content -Path $tmp -Value ('    {'+$ctx+', \"'+$f.Name+'\", R\"SQL('+$sql+')SQL\"},') -Encoding UTF8;" ^
+  "}" ^
+  "Add-Content -Path $tmp -Value '}};' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '' -Encoding UTF8;" ^
+  "Add-Content -Path $tmp -Value '} // namespace savor::db::migrations' -Encoding UTF8;" ^
+  "Move-Item -Force -Path $tmp -Destination $out;" ^
+  "Set-Content -Path $stamp -Value $keys -Encoding UTF8;" ^
+  "Write-Host 'Embedded migrations header regenerated due to new migration files.'"

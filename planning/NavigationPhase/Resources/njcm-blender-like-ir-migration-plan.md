@@ -1,8 +1,8 @@
-# SoaSimMLD plan: migrate NJCM output to a Blender-like intermediate representation
+# SPICE MLD plan: migrate NJCM output to a Blender-like intermediate representation
 
 Date: 2026-04-14
 
-## 1) Current SoaSimMLD status (what we have now)
+## 1) Current SPICE MLD status (what we have now)
 
 This is the current effective pipeline:
 
@@ -27,14 +27,14 @@ What is missing versus Blender/SA3D style ingest:
 
 ## 2) Target intermediate representation (IR)
 
-Create a new SoaSim IR that mirrors the concepts used by SAIO/SA3D weighted buffers.
+Create a new SAVOR IR that mirrors the concepts used by SAIO/SA3D weighted buffers.
 
 ### 2.1 New core types (new files)
 
 Add new model header/source pair:
 
-- `SoaSimMLD/Model/NjWeightedMeshIR.h`
-- `SoaSimMLD/Model/NjWeightedMeshIR.cpp` (if helpers are needed)
+- `SPICE MLD/Model/NjWeightedMeshIR.h`
+- `SPICE MLD/Model/NjWeightedMeshIR.cpp` (if helpers are needed)
 
 Proposed types:
 
@@ -81,11 +81,11 @@ Proposed types:
 
 ## 3) Code changes by subsystem
 
-## 3.1 SoaSimMLD parse/normalize layer
+## 3.1 SPICE MLD parse/normalize layer
 
 ### Add
 
-1. `SoaSimMLD/Parsing/NjcmIrBuilder.h/.cpp`
+1. `SPICE MLD/Parsing/NjcmIrBuilder.h/.cpp`
    - Input: `ParseResult` + `decodedNjcmChunks`
    - Output: `model::IrScene`
    - Responsibilities:
@@ -94,32 +94,32 @@ Proposed types:
      - corner expansion
      - index validation and diagnostics
 
-2. `SoaSimMLD/Parsing/NjcmIrDiagnostics.h/.cpp`
+2. `SPICE MLD/Parsing/NjcmIrDiagnostics.h/.cpp`
    - shared checks:
      - out-of-range indices
      - degenerate triangles
      - repeated cache replay contribution
      - winding consistency stats
 
-3. `SoaSimMLD/Export/NjcmIrJsonExporter.h/.cpp`
+3. `SPICE MLD/Export/NjcmIrJsonExporter.h/.cpp`
    - write `IrScene` to JSON for Blender-side validator.
 
 ### Modify
 
-1. `SoaSimMLD/Parsing/MldParser.h/.cpp`
+1. `SPICE MLD/Parsing/MldParser.h/.cpp`
    - Add option toggles:
      - `emitNjcmIr`
      - `emitNjcmIrJson`
      - output path for JSON artifacts.
    - Add `irScene` (or `optional<irScene>`) to `ParseResult`.
 
-2. `SoaSimMLD/Parsing/SaToolsParity*Parser.cpp`
+2. `SPICE MLD/Parsing/SaToolsParity*Parser.cpp`
    - Preserve enough metadata during decode for IR material grouping:
      - chunk type
      - draw/cache flags
      - texture/material-affecting state where available.
 
-3. `SoaSimMLD/Model/NjcmModel.h`
+3. `SPICE MLD/Model/NjcmModel.h`
    - Keep existing decode structs, but add lightweight links/ids needed by IR builder.
 
 ### Remove / deprecate (phase-gated)
@@ -131,29 +131,29 @@ Proposed types:
 
 ### Modify
 
-1. `SoaSimMLD/Parsing/GeometryBuilder.cpp`
+1. `SPICE MLD/Parsing/GeometryBuilder.cpp`
    - For NJCM objects, stop building directly from `semanticPolygons/semanticPrimitives`.
    - Instead consume `IrMesh -> triangleSets` and flatten to `SemanticMesh` only as compatibility output.
 
 2. Add optional new builder:
-   - `SoaSimMLD/Parsing/IrGeometryBuilder.h/.cpp`
+   - `SPICE MLD/Parsing/IrGeometryBuilder.h/.cpp`
    - Converts `IrScene` to existing `GeometryBuildResult` for minimal disruption.
 
 ## 3.3 Qt scene/render path
 
 ### Modify
 
-1. `SoaSimQt3D/Scene/BasicQtSceneBuilder.cpp`
+1. `SavorQt3D/Scene/BasicQtSceneBuilder.cpp`
    - Prefer IR-derived mesh data source when available.
    - Carry per-material-run debug labels into scene nodes.
 
-2. `SoaSimQt3D/GUI/RuntimeSceneConverter.cpp`
+2. `SavorQt3D/GUI/RuntimeSceneConverter.cpp`
    - Add overlay/debug info from IR diagnostics:
      - degenerate triangles
      - index overflow
      - cache replay contribution.
 
-3. `SoaSimQt3D/GUI/StaticMeshGeometry.*`
+3. `SavorQt3D/GUI/StaticMeshGeometry.*`
    - keep as is initially (triangle/index consumer), but add optional color/uv attribute support if we visualize corner data later.
 
 ## 3.4 Tooling for Blender validation
@@ -161,12 +161,12 @@ Proposed types:
 ### Add
 
 1. `tools/njcm_ir_to_blender_json.py` (or within planning scripts area)
-   - loads SoaSim IR JSON
+   - loads SAVOR IR JSON
    - creates Blender mesh from vertices + triangle corner data
    - assigns materials by `triangleSets.materialIndex`
 
 2. `tools/njcm_ir_compare.py`
-   - compares SoaSim IR stats vs expected Blender/SAIO stats:
+   - compares SAVOR IR stats vs expected Blender/SAIO stats:
      - triangle counts per attach
      - material run count
      - max index bounds
@@ -209,7 +209,7 @@ Exit criteria:
 - Validate problematic trigger meshes and compare against SonicAdventureBlenderIO view.
 
 Exit criteria:
-- Deterministic reproducible diff report between SoaSim IR and Blender result.
+- Deterministic reproducible diff report between SAVOR IR and Blender result.
 
 ### Phase 4 — Tighten parity and diagnostics
 
@@ -252,9 +252,9 @@ For each sample object/attach:
 
 Compare these across:
 
-1. current SoaSim semantic path
-2. new SoaSim IR path
-3. Blender import of SoaSim IR JSON
+1. current SAVOR semantic path
+2. new SAVOR IR path
+3. Blender import of SAVOR IR JSON
 4. SonicAdventureBlenderIO/SAIO.NET reference view
 
 ## 7) Risks and mitigations
@@ -273,7 +273,7 @@ Compare these across:
 Done means all of the following are true:
 
 1. `ParseResult` can emit a deterministic Blender-like NJCM IR.
-2. SoaSim Qt renderer can render from IR-derived geometry.
+2. SAVOR Qt renderer can render from IR-derived geometry.
 3. IR JSON can be loaded in Blender via tooling for visual parity checks.
 4. Existing problematic trigger meshes produce actionable diagnostics explaining mismatch category.
 5. Direct non-IR NJCM geometry path is deprecated and no longer default.

@@ -62,7 +62,7 @@ This file is meant to be actively updated each iteration.
 ## Priority A (blockers)
 
 1. **Seed Probe decomposition scope**
-   - Start split from `SimCore/DB/ProgramDB/SeedProbeDBCodec.h/.cpp` to produce `SeedProbe.Neutral`, `SeedProbe.Grid`, `SeedProbe.Unique` descriptors.
+   - Start split from `SavorCore/DB/ProgramDB/SeedProbeDBCodec.h/.cpp` to produce `SeedProbe.Neutral`, `SeedProbe.Grid`, `SeedProbe.Unique` descriptors.
    - The module is currently monolithic/intertwined; likely requires manual-assisted extraction and review checkpoints.
    - Compatibility with older persisted formats is not a phase-1 requirement (fresh structure rollout).
 
@@ -111,7 +111,7 @@ For each question:
 ## Resolved inconsistencies
 
 - Definitions source ambiguity is resolved for the target architecture: use Authoring-owned workflow graph templates + descriptor-provided program contracts + validation service.
-- Seed Probe split entry point module is identified (`SimCore/DB/ProgramDB/SeedProbeDBCodec.h/.cpp`), reducing uncertainty on where decomposition starts.
+- Seed Probe split entry point module is identified (`SavorCore/DB/ProgramDB/SeedProbeDBCodec.h/.cpp`), reducing uncertainty on where decomposition starts.
 - Claimed-job ownership path and matching order are now explicitly defined.
 - Result mapping ownership and dedupe persistence strategy are now explicitly defined.
 - Decider evidence contract is standardized (`evidence_ref`) and milestone retrieval mode is DB-query-only.

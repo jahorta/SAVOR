@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document plans the first implementation pass for parsing **Skies of Arcadia Legends SCT files** for SOASim's Navigation Phase.
+This document plans the first implementation pass for parsing **Skies of Arcadia Legends SCT files** for SAVOR's Navigation Phase.
 
 The immediate goal is to parse SCT files into a form where we can:
 
@@ -12,10 +12,10 @@ The immediate goal is to parse SCT files into a form where we can:
 - preserve flag and control-flow information needed for downstream world and trigger modeling,
 - and support later runtime validation against Dolphin-based execution. [#1] [#2]
 
-This plan is specifically aligned to the **DBMigrate** branch architecture and the current Navigation Phase goals already documented in that branch. It also assumes the existing Python parser in `SALSA` is the best current behavioral reference, but that the C++ implementation for SOASim should intentionally differ in one major way:
+This plan is specifically aligned to the **DBMigrate** branch architecture and the current Navigation Phase goals already documented in that branch. It also assumes the existing Python parser in `SALSA` is the best current behavioral reference, but that the C++ implementation for SAVOR should intentionally differ in one major way:
 
 - the SALSA parser aims for broad reconstruction and attempts to account for essentially all bytes,
-- the SOASim parser should instead be **control-flow guided**, using `jmp` and `switch` instructions to follow reachable script paths and avoid parsing garbage or intentionally skipped regions.
+- the SAVOR parser should instead be **control-flow guided**, using `jmp` and `switch` instructions to follow reachable script paths and avoid parsing garbage or intentionally skipped regions.
 
 ## Scope
 
@@ -55,7 +55,7 @@ The existing DBMigrate planning docs already establish several requirements that
 
 The user also established the following implementation constraints for this work:
 
-1. We are working on the **DBMigrate** branch of `SOASim`.
+1. We are working on the **DBMigrate** branch of `SAVOR`.
 2. The existing Python parser in `SALSA` is a useful reference but should **not** be ported mechanically.
 3. The new C++ parser should be designed for simulator use, not archival reconstruction.
 4. Reachability should be guided by `jmp` and `switch` instructions so we avoid treating all skipped bytes as meaningful script.
@@ -608,11 +608,11 @@ That policy is the right fit for a simulator-oriented parser on DBMigrate.
 
 ## References
 
-- [#1] SOASim NavigationPhase state and world model planning: `planning/NavigationPhase/02-state-and-world-model.md`  
-  https://github.com/jahorta/SOASim/blob/DBMigrate/planning/NavigationPhase/02-state-and-world-model.md
+- [#1] SAVOR NavigationPhase state and world model planning: `planning/NavigationPhase/02-state-and-world-model.md`
+  https://github.com/jahorta/SAVOR/blob/DBMigrate/planning/NavigationPhase/02-state-and-world-model.md
 
-- [#2] SOASim NavigationPhase open implementation questions: `planning/NavigationPhase/05-open-implementation-questions.md`  
-  https://github.com/jahorta/SOASim/blob/DBMigrate/planning/NavigationPhase/05-open-implementation-questions.md
+- [#2] SAVOR NavigationPhase open implementation questions: `planning/NavigationPhase/05-open-implementation-questions.md`
+  https://github.com/jahorta/SAVOR/blob/DBMigrate/planning/NavigationPhase/05-open-implementation-questions.md
 
-- [#3] SALSA repository, existing Python SCT parsing reference  
+- [#3] SALSA repository, existing Python SCT parsing reference
   https://github.com/jahorta/SALSA

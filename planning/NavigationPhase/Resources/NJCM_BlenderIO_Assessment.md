@@ -7,7 +7,7 @@ Date: 2026-04-13
 This note maps:
 1. SonicAdventureBlenderIO import data path (file import -> parse/process -> Blender mesh objects).
 2. Where NJ chunk parsing logic actually lives (plugin vs external libraries).
-3. A concrete "closer parity" plan for SoaSim NJCM rendering.
+3. A concrete "closer parity" plan for SAVOR NJCM rendering.
 
 ## SonicAdventureBlenderIO data path (model import -> Blender)
 
@@ -95,9 +95,9 @@ Short answer: **yes, extensively**.
 
 So parsing is **not** fully built into the Python plugin.
 
-## How this compares to current SoaSim path
+## How this compares to current SAVOR path
 
-Current SoaSim NJCM flow (parity branch) is:
+Current SAVOR NJCM flow (parity branch) is:
 
 - `decodeNjcmChunkSaToolsParity(...)` -> `satools_parity::decodeWithObjectModel(...)`.
 - Object/attach traversal happens in C++ over decoded NJCM bytes.
@@ -107,19 +107,19 @@ Current SoaSim NJCM flow (parity branch) is:
 
 Key difference versus Blender path:
 - Blender pipeline receives a higher-level "weighted mesh corner stream" representation after SA3D processing.
-- SoaSim currently works closer to raw NJCM records and builds triangles directly from your own semantic decode.
+- SAVOR currently works closer to raw NJCM records and builds triangles directly from your own semantic decode.
 
 Relevant local files:
-- `SoaSimMLD/Parsing/NJCMParityPath.cpp`
-- `SoaSimMLD/Parsing/SaToolsParityParser.cpp`
-- `SoaSimMLD/Parsing/SaToolsParityPolyParser.cpp`
-- `SoaSimMLD/Parsing/GeometryBuilder.cpp`
-- `SoaSimQt3D/GUI/RuntimeSceneConverter.cpp`
-- `SoaSimQt3D/GUI/StaticMeshGeometry.cpp`
+- `SPICE MLD/Parsing/NJCMParityPath.cpp`
+- `SPICE MLD/Parsing/SaToolsParityParser.cpp`
+- `SPICE MLD/Parsing/SaToolsParityPolyParser.cpp`
+- `SPICE MLD/Parsing/GeometryBuilder.cpp`
+- `SavorQt3D/GUI/RuntimeSceneConverter.cpp`
+- `SavorQt3D/GUI/StaticMeshGeometry.cpp`
 
-## Recommendations to move SoaSim rendering closer to Blender/SA3D behavior
+## Recommendations to move SAVOR rendering closer to Blender/SA3D behavior
 
-1. **Introduce a "WeightedBuffer-like" intermediate format in SoaSim**
+1. **Introduce a "WeightedBuffer-like" intermediate format in SAVOR**
    - Match SAIO concepts: per-vertex position/normal/weights + per-corner UV/color + per-material triangle sets.
    - Keep this as the sole handoff to renderer and diagnostic tools.
 
@@ -137,7 +137,7 @@ Relevant local files:
    - Keep per-material triangle-run lengths (like `poly_material_lengths`) so both render and debug tools can verify segmentation.
 
 5. **Add a debug export path to compare with Blender-side inputs**
-   - Emit JSON of normalized vertices/corners/material runs from SoaSim.
+   - Emit JSON of normalized vertices/corners/material runs from SAVOR.
    - Optionally write a converter script to feed that into Blender directly for A/B visual checks.
 
 6. **Improve parity diagnostics where your screenshots suggest issues**
@@ -150,7 +150,7 @@ Relevant local files:
 - `rg -n "Njcm|NJCM|sa_tools|Object block|object16|chunk model|chunk mesh" --glob '!third-party/**'`
 - `curl -L https://api.github.com/repos/X-Hax/SonicAdventureBlenderIO/git/trees/main?recursive=1`
 - `curl -L https://raw.githubusercontent.com/X-Hax/SonicAdventureBlenderIO/main/...` (multiple files)
-- `sed -n ...` for local SoaSim parsing/rendering files
+- `sed -n ...` for local SAVOR parsing/rendering files
 
 ## External source URLs inspected
 

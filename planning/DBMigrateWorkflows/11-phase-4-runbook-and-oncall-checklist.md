@@ -7,7 +7,7 @@ This runbook defines incident handling and recovery execution procedures for Pha
 It is the operational companion to:
 
 - `10-phase-4-hardening-and-recovery.md` (scope, requirements, and suggested tests)
-- `SimCoreDBValidation` phase-4 checks (gating and replay/recovery drills)
+- `SavorDbValidation` phase-4 checks (gating and replay/recovery drills)
 
 ## Incident procedures: delayed, duplicate, and out-of-order events
 
@@ -167,9 +167,9 @@ Use rollback only if replay/restart worsens inconsistency or introduces new inva
 
 ## Recovery matrix execution checklist (mapped to `phase4.*` validations)
 
-Run from `SimCoreDBValidation`:
+Run from `SavorDbValidation`:
 
-`SimCoreDBValidation --run <validation-name>`
+`SavorDbValidation --run <validation-name>`
 
 - [ ] `phase4.invariant_violation_remediation_sequence`
   - Scope: pause -> invariant event -> repair job -> reopen/fail ordering is preserved.
@@ -209,8 +209,8 @@ Run from `SimCoreDBValidation`:
 - [ ] Auditability requirement is met: corrective actions emit auditable events and reason codes.
 - [ ] Replay-safe behavior is demonstrated: handlers remain idempotent under repeated replay.
 - [ ] Validation gate satisfied in both required paths:
-  - [ ] `SimCoreTests` recovery matrix suites pass.
-  - [ ] `SimCoreDBValidation` phase-4 hardening/recovery validations pass.
+  - [ ] `SavorTests` recovery matrix suites pass.
+  - [ ] `SavorDbValidation` phase-4 hardening/recovery validations pass.
 
 ## Incident artifact template (optional)
 

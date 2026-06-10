@@ -2,7 +2,7 @@
 
 ## Goal
 
-Define how Navigation Phase fits into existing SOASim phase/job infrastructure and UI workflow.
+Define how Navigation Phase fits into existing SAVOR phase/job infrastructure and UI workflow.
 
 ## Runtime Data Source Decision
 

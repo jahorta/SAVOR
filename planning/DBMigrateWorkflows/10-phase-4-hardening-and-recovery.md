@@ -55,13 +55,13 @@ Finalize operational correctness, recovery behavior, and runbook readiness.
 
 ## Validation execution requirements
 
-1. **SimCoreTests**
+1. **SavorTests**
    - Run full phase-4 recovery matrix suites.
-2. **SimCoreDBValidation CLI**
-   - Add/run phase-4 hardening and recovery validations in `SimCoreDBValidation`.
+2. **SavorDbValidation CLI**
+   - Add/run phase-4 hardening and recovery validations in `SavorDbValidation`.
    - Phase cannot exit until both test suites and CLI validations pass.
 
-## Suggested SimCoreTests to add for phase exit readiness
+## Suggested SavorTests to add for phase exit readiness
 
 1. **Invariant-violation remediation test**
    - Simulate violation and assert pause -> invariant event -> repair job -> reopen-or-fail sequence.

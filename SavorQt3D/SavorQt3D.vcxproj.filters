@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="GUI">
+      <UniqueIdentifier>{AAAE7D69-5C7E-4D01-84A8-95A1B1E88D31}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Scene">
+      <UniqueIdentifier>{2CF0834C-3375-460A-9337-D7CFAE7378C8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Main">
+      <UniqueIdentifier>{A177F4AB-4F53-4253-95BB-00E896CECC80}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resources">
+      <UniqueIdentifier>{8B238353-08D8-4F73-B5E5-9D3B6BFDFB1D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="GUI\MainWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\RuntimeSceneConverter.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\StaticMeshGeometry.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\VisibilityTreeWidget.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\BasicQtSceneBuilder.cpp">
+      <Filter>Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp">
+      <Filter>Main</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GUI\RuntimeSceneConverter.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\StaticMeshGeometry.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\BasicQtSceneBuilder.h">
+      <Filter>Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\IQtSceneBuilder.h">
+      <Filter>Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\QtSceneData.h">
+      <Filter>Scene</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SavorQt3D.qrc">
+      <Filter>Resources</Filter>
+    </QtRcc>
+  </ItemGroup>
+  <ItemGroup>
+    <QtMoc Include="GUI\MainWindow.h" />
+    <QtMoc Include="GUI\VisibilityTreeWidget.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Qml\ViewerScene.qml">
+      <Filter>Resources</Filter>
+    </None>
+  </ItemGroup>
+</Project>
