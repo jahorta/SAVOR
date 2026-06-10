@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "Runner/Parallel/PRTypes.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
 
 class CoordinatorController : public QObject

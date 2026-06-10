@@ -11,8 +11,8 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowCoordinatorFactory.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowCoordinatorFactory.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Tas/DtmFile.h"
 #include "UIRead/IUiReadDb.h"
 

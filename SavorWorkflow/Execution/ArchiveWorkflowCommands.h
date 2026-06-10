@@ -8,9 +8,9 @@
 
 #include <sqlite3.h>
 
-#include "../../../../SavorDb/Archive/ArchivePackageService.h"
-#include "../../../../SavorDb/Archive/RehydrateExecutor.h"
-#include "../../../../SavorDb/Common/Retention/OutboxRetention.h"
+#include "Archive/ArchivePackageService.h"
+#include "Archive/RehydrateExecutor.h"
+#include "Common/Retention/OutboxRetention.h"
 
 namespace savor::runner::parallel::savordb {
 

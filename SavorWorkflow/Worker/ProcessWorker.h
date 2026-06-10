@@ -5,11 +5,11 @@
 #include <condition_variable>
 #include <chrono>
 #include <windows.h>
-#include "../../Core/Input/InputPlan.h"
-#include "../Script/PhaseScriptVM.h"  // for PSResult
+#include "Core/Input/InputPlan.h"
+#include "Runner/Script/PhaseScriptVM.h"  // for PSResult
 #include "TSQueue.h"
-#include "PRTypes.h"
-#include "../Breakpoints/BPRegistry.h"
+#include "Runner/Parallel/PRTypes.h"
+#include "Runner/Breakpoints/BPRegistry.h"
 #include "WorkerTelemetry.h"
 
 

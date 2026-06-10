@@ -19,8 +19,8 @@
 #include "Execution/ProgramDB/ProgramKindRegistry.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbeContracts.h"
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowCoordinatorFactory.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowCoordinatorFactory.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "UIRead/IUiReadDb.h"
 
 #include "Cli.h"

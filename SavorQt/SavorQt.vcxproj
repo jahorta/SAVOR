@@ -91,7 +91,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <PreprocessorDefinitions>_DEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
@@ -111,7 +111,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;NOMINMAX;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ProjectReference>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
@@ -236,6 +236,9 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">
       <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SavorWorkflow\SavorWorkflow.vcxproj">
+      <Project>{9F364C36-2F44-4B54-8A7B-58C18D0F6852}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SavorCore\SavorCore.vcxproj">
       <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>

@@ -278,6 +278,7 @@
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
     <ClCompile Include="UIRead\QueuedUiReadDb.cpp" />
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />

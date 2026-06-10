@@ -81,7 +81,7 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -116,7 +116,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)third-party\googletest-1.17.0\googlemock\include;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googlemock;$(SolutionDir)third-party\googletest-1.17.0\googletest;$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -152,6 +152,9 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">
       <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SavorWorkflow\SavorWorkflow.vcxproj">
+      <Project>{9F364C36-2F44-4B54-8A7B-58C18D0F6852}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

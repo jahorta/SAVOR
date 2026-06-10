@@ -10,11 +10,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../PRTypes.h"
-#include "../TSQueue.h"
+#include "Runner/Parallel/PRTypes.h"
+#include "../Worker/TSQueue.h"
 #include "WorkflowSchedulerAdapter.h"
-#include "../../../../SavorDb/Execution/IExecutionDb.h"
-#include "../../../../SavorDb/Execution/ProgramDB/ProgramKindRegistry.h"
+#include "Execution/IExecutionDb.h"
+#include "Execution/ProgramDB/ProgramKindRegistry.h"
 
 namespace savor::runner::parallel::savordb {
 

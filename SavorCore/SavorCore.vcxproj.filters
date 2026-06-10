@@ -96,9 +96,6 @@
     <ClInclude Include="Core\Shims\StateBufferShim.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\ProcessWorker.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h">
       <Filter>Runner\Parallel</Filter>
     </ClInclude>
@@ -210,9 +207,6 @@
     <ClInclude Include="Runner\IPC\Wire.h">
       <Filter>Runner</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\TSQueue.h">
-      <Filter>Runner</Filter>
-    </ClInclude>
     <ClInclude Include="Runner\Parallel\PRTypes.h">
       <Filter>Runner</Filter>
     </ClInclude>
@@ -300,36 +294,6 @@
     <ClInclude Include="Utils\Hash.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\DBWorkflowCoordinatorFactory.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\DBWorkflowWorkerCoordinator.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowCoordinatorBridge.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowIntegrationMode.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowSchedulerAdapter.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\JobMaterializationService.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\StepInputAggregationService.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowMaterializationService.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowDispatchCoordinator.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\SavorDb\ArchiveWorkflowCommands.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\IniKV.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -341,12 +305,6 @@
     </ClInclude>
     <ClInclude Include="Utils\Base64.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\WorkerStatusRegistry.h">
-      <Filter>Runner\Parallel</Filter>
-    </ClInclude>
-    <ClInclude Include="Runner\Parallel\WorkerTelemetry.h">
-      <Filter>Runner\Parallel</Filter>
     </ClInclude>
     <ClInclude Include="Utils\ModulePath.h">
       <Filter>Utils</Filter>
@@ -385,9 +343,6 @@
     </ClCompile>
     <ClCompile Include="Core\Shims\StateBufferShim.cpp">
       <Filter>Core</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\ProcessWorker.cpp">
-      <Filter>Runner\Parallel</Filter>
     </ClCompile>
     <ClCompile Include="Utils\EnsureSys.cpp">
       <Filter>Utils</Filter>
@@ -472,39 +427,6 @@
     </ClCompile>
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp">
       <Filter>Phases\BattleContext</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\DBWorkflowCoordinatorFactory.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\DBWorkflowWorkerCoordinator.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowCoordinatorBridge.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowSchedulerAdapter.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\JobMaterializationService.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\StepInputAggregationService.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowMaterializationService.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowDispatchCoordinator.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\SavorDb\ArchiveWorkflowCommands.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp">
-      <Filter>Runner\Parallel</Filter>
-    </ClCompile>
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="_Dolphin_src\Core\WiiUtils.cpp">
       <Filter>DolphinSource</Filter>

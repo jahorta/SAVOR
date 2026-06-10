@@ -44,9 +44,6 @@
     <ClCompile Include="MultiLineProgressRenderer.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <Filter>Imports</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Cli.h">

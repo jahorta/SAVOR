@@ -1,10 +1,10 @@
 #include "ProcessWorker.h"
-#include "../IPC/Wire.h"
+#include "Runner/IPC/Wire.h"
 #include <sstream>
 #include <filesystem>
-#include "../../Utils/ThreadName.h"
-#include "../Script/KeyRegistry.h"
-#include "../Script/PSContextCodec.h"
+#include "Utils/ThreadName.h"
+#include "Runner/Script/KeyRegistry.h"
+#include "Runner/Script/PSContextCodec.h"
 
 namespace savor {
     static std::string make_visual_control_pipe_name(size_t worker_id)

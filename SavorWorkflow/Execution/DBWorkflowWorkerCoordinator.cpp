@@ -8,9 +8,9 @@
 #include <system_error>
 #include <utility>
 
-#include "../../../../SavorDb/Execution/Jobs/JobEventOrchestration.h"
-#include "../../../Utils/Hash.h"
-#include "../../../Utils/ModulePath.h"
+#include "Execution/Jobs/JobEventOrchestration.h"
+#include "Utils/Hash.h"
+#include "Utils/ModulePath.h"
 
 namespace savor::runner::parallel::savordb {
 namespace {
