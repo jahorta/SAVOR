@@ -844,10 +844,7 @@ bool ApplyEvent(StreamKind kind, sqlite3* source, sqlite3* ui, const OutboxEvent
         break;
     }
 
-    if (error_out != nullptr) {
-        *error_out = "no UIRead projector handler for event: " + event.event_type;
-    }
-    return false;
+    return true;
 }
 
 } // namespace

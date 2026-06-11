@@ -70,8 +70,12 @@ struct CliOptions {
     std::optional<std::filesystem::path> migration_root;
     std::optional<std::filesystem::path> workspace_root;
     std::optional<std::filesystem::path> worker_dir_root;
+    std::optional<std::filesystem::path> perf_report_dir;
     bool visual_worker = false;
     std::optional<std::filesystem::path> visual_screenshot_dir;
+    std::int64_t perf_snapshot_interval_ms = 1000;
+    int repeat = 1;
+    std::string load_level;
     std::optional<int> tasmovie_headroom_x10;
     std::optional<int> tasmovie_rtc;
     std::optional<int> seedprobe_samples_per_axis;

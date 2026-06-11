@@ -82,6 +82,9 @@
     <ClInclude Include="Common\DbService.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\Performance\DbPerfReport.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\DbConfigPaths.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -292,6 +295,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\DbService.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Performance\DbPerfReport.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\QueuedDb.cpp">

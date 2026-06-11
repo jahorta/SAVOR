@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "Common/DbService.h"
+#include "Common/Performance/DbPerfReport.h"
 #include "Common/QueuedDb.h"
 #include "Execution/IExecutionDb.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
@@ -22,6 +24,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+using savor::db::perf::JsonEscape;
 
 struct Options {
     std::string scenario = "queued-db-micro";
@@ -33,6 +36,23 @@ struct Options {
     int read_ratio = 1;
     int write_ratio = 1;
     int snapshot_interval_ms = 1000;
+    int repeat = 1;
+    int timeout_ms = 0;
+    int poll_ms = 0;
+    std::string load_level = "low";
+    std::vector<std::string> e2e_scenarios;
+    std::filesystem::path e2e_exe;
+    std::filesystem::path savestate_file;
+    std::filesystem::path dtm_file;
+    std::filesystem::path iso_path;
+    std::filesystem::path dolphin_base_dir;
+    std::filesystem::path migration_root;
+    std::filesystem::path workspace_root;
+    std::filesystem::path worker_dir_root;
+    std::string durable_lines;
+    std::string tasmovie_headroom;
+    std::string tasmovie_rtc;
+    std::string seedprobe_combo_attempts_per_target;
     std::filesystem::path report_dir;
 };
 
@@ -42,54 +62,15 @@ struct PerfCounters {
     std::atomic<std::int64_t> failed{ 0 };
 };
 
-struct RunResult {
-    std::string scenario;
-    std::string measured_workload;
-    std::string first_error;
-    std::vector<savor::db::core::NamedQueuedDbTelemetrySnapshot> databases;
-    savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot projection;
-    std::int64_t submitted = 0;
-    std::int64_t completed = 0;
-    std::int64_t failed = 0;
-    std::uint64_t elapsed_ms = 0;
-};
-
-std::string JsonEscape(const std::string& value) {
-    std::ostringstream out;
-    for (const char ch : value) {
-        switch (ch) {
-        case '\\': out << "\\\\"; break;
-        case '"': out << "\\\""; break;
-        case '\n': out << "\\n"; break;
-        case '\r': out << "\\r"; break;
-        case '\t': out << "\\t"; break;
-        default:
-            if (static_cast<unsigned char>(ch) < 0x20) {
-                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
-            } else {
-                out << ch;
-            }
-            break;
-        }
-    }
-    return out.str();
-}
-
-std::string TimestampForPath() {
-    const auto now = std::chrono::system_clock::now();
-    const auto time = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-    localtime_s(&tm, &time);
-    std::ostringstream out;
-    out << std::put_time(&tm, "%Y%m%d-%H%M%S");
-    return out.str();
-}
+using RunResult = savor::db::perf::PerfRunReport;
 
 void PrintUsage() {
     std::cout
         << "SavorDbPerf --scenario queued-db-micro|execution-queue|projection-lag|workflow-materialization|e2e-replay\n"
         << "  --duration-sec N --producers N --workers N --jobs N --batch-size N\n"
-        << "  --read-ratio N --write-ratio N --snapshot-interval-ms N --report-dir PATH\n";
+        << "  --read-ratio N --write-ratio N --snapshot-interval-ms N --report-dir PATH\n"
+        << "  e2e-replay: --e2e-scenario NAME --load-level low|mid|high --repeat N\n"
+        << "              --iso PATH --dolphin-base-dir PATH [--savestate-file PATH] [--dtm-file PATH]\n";
 }
 
 bool ParseOptions(int argc, char** argv, Options* options) {
@@ -112,6 +93,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->scenario = need_value("--scenario");
             } else if (arg == "--duration-sec") {
                 options->duration_sec = std::stoi(need_value("--duration-sec"));
+            } else if (arg == "--timeout-ms") {
+                options->timeout_ms = std::stoi(need_value("--timeout-ms"));
+            } else if (arg == "--poll-ms") {
+                options->poll_ms = std::stoi(need_value("--poll-ms"));
             } else if (arg == "--producers") {
                 options->producers = std::stoi(need_value("--producers"));
             } else if (arg == "--workers") {
@@ -126,6 +111,36 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->write_ratio = std::stoi(need_value("--write-ratio"));
             } else if (arg == "--snapshot-interval-ms") {
                 options->snapshot_interval_ms = std::stoi(need_value("--snapshot-interval-ms"));
+            } else if (arg == "--repeat") {
+                options->repeat = std::stoi(need_value("--repeat"));
+            } else if (arg == "--load-level") {
+                options->load_level = need_value("--load-level");
+            } else if (arg == "--e2e-scenario") {
+                options->e2e_scenarios.push_back(need_value("--e2e-scenario"));
+            } else if (arg == "--e2e-exe") {
+                options->e2e_exe = need_value("--e2e-exe");
+            } else if (arg == "--savestate-file") {
+                options->savestate_file = need_value("--savestate-file");
+            } else if (arg == "--dtm-file") {
+                options->dtm_file = need_value("--dtm-file");
+            } else if (arg == "--iso") {
+                options->iso_path = need_value("--iso");
+            } else if (arg == "--dolphin-base-dir") {
+                options->dolphin_base_dir = need_value("--dolphin-base-dir");
+            } else if (arg == "--migration-root") {
+                options->migration_root = need_value("--migration-root");
+            } else if (arg == "--workspace-root") {
+                options->workspace_root = need_value("--workspace-root");
+            } else if (arg == "--worker-dir-root") {
+                options->worker_dir_root = need_value("--worker-dir-root");
+            } else if (arg == "--durable-lines") {
+                options->durable_lines = need_value("--durable-lines");
+            } else if (arg == "--tasmovie-headroom" || arg == "--tasmovie-headroom-x10" || arg == "--headroom") {
+                options->tasmovie_headroom = need_value(arg.c_str());
+            } else if (arg == "--tasmovie-rtc" || arg == "--rtc") {
+                options->tasmovie_rtc = need_value(arg.c_str());
+            } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
+                options->seedprobe_combo_attempts_per_target = need_value(arg.c_str());
             } else if (arg == "--report-dir") {
                 options->report_dir = need_value("--report-dir");
             } else {
@@ -143,8 +158,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     options->jobs = std::max(1, options->jobs);
     options->batch_size = std::max(1, options->batch_size);
     options->snapshot_interval_ms = std::max(100, options->snapshot_interval_ms);
+    options->repeat = std::max(1, options->repeat);
     if (options->report_dir.empty()) {
-        options->report_dir = std::filesystem::path("perf-runs") / (TimestampForPath() + "-" + options->scenario);
+        options->report_dir = std::filesystem::path("perf-runs") / (savor::db::perf::TimestampForPath() + "-" + options->scenario);
     }
     return true;
 }
@@ -295,7 +311,7 @@ RunResult RunQueuedDbMicro(const Options& options, std::ofstream& snapshots) {
         while (!stop_sampling.load()) {
             const auto elapsed_ms = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started_at).count());
-            WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, MicroSnapshots(write_lane, read_lane));
+            savor::db::perf::WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, MicroSnapshots(write_lane, read_lane));
             std::this_thread::sleep_for(std::chrono::milliseconds{ options.snapshot_interval_ms });
         }
     });
@@ -397,7 +413,7 @@ RunResult RunExecutionQueue(const Options& options, std::ofstream& snapshots) {
         while (!stop_sampling.load()) {
             const auto elapsed_ms = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started_at).count());
-            WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, service.SnapshotPerformance().databases);
+            savor::db::perf::WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, service.SnapshotPerformance());
             std::this_thread::sleep_for(std::chrono::milliseconds{ options.snapshot_interval_ms });
         }
     });
@@ -470,7 +486,7 @@ RunResult RunExecutionQueue(const Options& options, std::ofstream& snapshots) {
         worker.join();
     }
 
-    DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
+    savor::db::perf::DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
     stop_sampling = true;
     sampler.join();
     const auto service_snapshot = service.SnapshotPerformance();
@@ -521,7 +537,7 @@ RunResult RunWorkflowMaterialization(const Options& options, std::ofstream& snap
         while (!stop_sampling.load()) {
             const auto elapsed_ms = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started_at).count());
-            WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, service.SnapshotPerformance().databases);
+            savor::db::perf::WriteSnapshotLine(snapshots, options.scenario, elapsed_ms, service.SnapshotPerformance());
             std::this_thread::sleep_for(std::chrono::milliseconds{ options.snapshot_interval_ms });
         }
     });
@@ -573,7 +589,7 @@ RunResult RunWorkflowMaterialization(const Options& options, std::ofstream& snap
         producer.join();
     }
 
-    DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
+    savor::db::perf::DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
     stop_sampling = true;
     sampler.join();
     service.RunUiReadProjectionOnce(&error);
@@ -662,6 +678,102 @@ std::string Recommendation(const DecisionMetrics& metrics) {
         return "Investigate tuning current architecture";
     }
     return "Keep current queued DB architecture";
+}
+
+std::string QuoteArg(const std::string& value) {
+    std::string out = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            out += "\\\"";
+        } else {
+            out += ch;
+        }
+    }
+    out += "\"";
+    return out;
+}
+
+bool PathLooksReleaseBinary(const std::filesystem::path& path) {
+    std::string value = path.string();
+    std::replace(value.begin(), value.end(), '/', '\\');
+    return value.find("\\Release\\") != std::string::npos
+        || value.find("\\release\\") != std::string::npos;
+}
+
+std::filesystem::path ResolveE2EExe(const Options& options, const char* argv0) {
+    if (!options.e2e_exe.empty()) {
+        return std::filesystem::absolute(options.e2e_exe);
+    }
+    const auto own_exe = std::filesystem::absolute(std::filesystem::path(argv0));
+    return own_exe.parent_path() / "SavorE2E.exe";
+}
+
+void AppendPathArg(std::ostringstream& cmd, const char* flag, const std::filesystem::path& value) {
+    if (!value.empty()) {
+        cmd << ' ' << flag << ' ' << QuoteArg(value.string());
+    }
+}
+
+void AppendStringArg(std::ostringstream& cmd, const char* flag, const std::string& value) {
+    if (!value.empty()) {
+        cmd << ' ' << flag << ' ' << QuoteArg(value);
+    }
+}
+
+int RunE2EReplay(const Options& options, const char* argv0) {
+#ifndef NDEBUG
+    std::cerr << "e2e-replay perf runs must use a Release SavorDbPerf build.\n";
+    return 2;
+#else
+    const auto e2e_exe = ResolveE2EExe(options, argv0);
+    if (!std::filesystem::exists(e2e_exe)) {
+        std::cerr << "SavorE2E.exe not found: " << e2e_exe.string() << "\n";
+        return 2;
+    }
+    if (!PathLooksReleaseBinary(e2e_exe)) {
+        std::cerr << "e2e-replay requires a Release SavorE2E.exe: " << e2e_exe.string() << "\n";
+        return 2;
+    }
+
+    std::filesystem::create_directories(options.report_dir);
+    std::ostringstream cmd;
+    cmd << QuoteArg(e2e_exe.string())
+        << " --perf-report-dir " << QuoteArg(options.report_dir.string())
+        << " --perf-snapshot-interval-ms " << options.snapshot_interval_ms
+        << " --repeat " << options.repeat
+        << " --load-level " << QuoteArg(options.load_level)
+        << " --worker-count 15";
+    const auto scenarios = options.e2e_scenarios.empty()
+        ? std::vector<std::string>{ "all" }
+        : options.e2e_scenarios;
+    for (const auto& scenario : scenarios) {
+        cmd << " --scenario " << QuoteArg(scenario);
+    }
+    if (options.timeout_ms > 0) {
+        cmd << " --timeout-ms " << options.timeout_ms;
+    }
+    if (options.poll_ms > 0) {
+        cmd << " --poll-ms " << options.poll_ms;
+    }
+    AppendPathArg(cmd, "--iso", options.iso_path);
+    AppendPathArg(cmd, "--dolphin-base-dir", options.dolphin_base_dir);
+    AppendPathArg(cmd, "--savestate-file", options.savestate_file);
+    AppendPathArg(cmd, "--dtm-file", options.dtm_file);
+    AppendPathArg(cmd, "--migration-root", options.migration_root);
+    AppendPathArg(cmd, "--workspace-root", options.workspace_root);
+    AppendPathArg(cmd, "--worker-dir-root", options.worker_dir_root);
+    AppendStringArg(cmd, "--durable-lines", options.durable_lines);
+    AppendStringArg(cmd, "--tasmovie-headroom", options.tasmovie_headroom);
+    AppendStringArg(cmd, "--tasmovie-rtc", options.tasmovie_rtc);
+    AppendStringArg(cmd, "--seedprobe-combo-attempts-per-target", options.seedprobe_combo_attempts_per_target);
+
+    std::cout << "Running E2E replay via " << e2e_exe.string() << "\n";
+    const std::string shell_command = "cmd.exe /S /C \"" + cmd.str() + "\"";
+    const int rc = std::system(shell_command.c_str());
+    std::cout << "Report: " << (options.report_dir / "perf-report.md").string() << "\n"
+              << "Summary: " << (options.report_dir / "perf-summary.json").string() << "\n";
+    return rc;
+#endif
 }
 
 void WriteSummaryJson(const Options& options, const RunResult& result, const DecisionMetrics& metrics) {
@@ -806,17 +918,20 @@ int main(int argc, char** argv) {
     }
 
     try {
+        if (options.scenario == "e2e-replay") {
+            return RunE2EReplay(options, argv[0]);
+        }
         std::filesystem::create_directories(options.report_dir);
         std::ofstream snapshots(options.report_dir / "perf-snapshots.jsonl", std::ios::binary);
         auto result = RunScenario(options, snapshots);
         snapshots.flush();
-        const auto metrics = BuildDecisionMetrics(result);
-        WriteSummaryJson(options, result, metrics);
-        WriteMarkdownReport(options, result, metrics);
+        const auto metrics = savor::db::perf::BuildDecisionMetrics(result);
+        savor::db::perf::WriteSummaryJson(options.report_dir, result);
+        savor::db::perf::WriteMarkdownReport(options.report_dir, result);
         std::cout << "SavorDbPerf complete\n"
                   << "Report: " << (options.report_dir / "perf-report.md").string() << "\n"
                   << "Summary: " << (options.report_dir / "perf-summary.json").string() << "\n"
-                  << "Recommendation: " << Recommendation(metrics) << "\n";
+                  << "Recommendation: " << savor::db::perf::Recommendation(metrics) << "\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "SavorDbPerf failed: " << ex.what() << "\n";
