@@ -2,7 +2,7 @@
 #include <cstddef>
 #include "KeyIds.h"
 
-namespace savor::keys::battle {
+namespace savor::context::key::battle {
 
 #define BATTLE_KEYS(X) \
   X(ACTIVE_TURN,              0x0300, "battle.active_turn")   \
@@ -30,13 +30,13 @@ namespace savor::keys::battle {
   X(INPUT_RETRY_COUNT,        0x0341, "battle.input.retry_count") \
   X(INPUT_PLAYBACK_UNACKED,   0x0342, "battle.input.unacked_count")
 
-#define DECL_KEY(NAME, ID, STR) inline constexpr savor::keys::KeyId NAME = static_cast<savor::keys::KeyId>(ID); \
-static_assert(NAME >= savor::keys::BATTLE_MIN && NAME <= savor::keys::BATTLE_MAX, "battle key out of range");
+#define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
+static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");
 	BATTLE_KEYS(DECL_KEY)
 #undef DECL_KEY
 
-		inline constexpr savor::keys::KeyPair kKeys[] = {
-		#define ROW(NAME, ID, STR) savor::keys::KeyPair{ static_cast<savor::keys::KeyId>(ID), STR },
+		inline constexpr savor::context::key::KeyPair kKeys[] = {
+		#define ROW(NAME, ID, STR) savor::context::key::KeyPair{ static_cast<savor::context::key::KeyId>(ID), STR },
 		BATTLE_KEYS(ROW)
 		#undef ROW
 	};
@@ -44,4 +44,4 @@ static_assert(NAME >= savor::keys::BATTLE_MIN && NAME <= savor::keys::BATTLE_MAX
 
 #undef BATTLE_KEYS
 
-} // namespace savor::keys::battle
+} // namespace savor::context::key::battle

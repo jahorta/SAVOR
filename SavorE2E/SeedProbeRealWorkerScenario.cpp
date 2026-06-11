@@ -179,12 +179,12 @@ savor::db::execution::programdb::seedprobe::ResultsIni BuildSeedProbeResultsIni(
     savor::db::execution::programdb::seedprobe::ResultsIni parsed{};
     parsed.w_err = result.ps.w_err;
     if (parsed.w_err == 0) {
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, parsed.dw_err);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, parsed.dw_err);
     }
     if (result.ps.ok) {
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, parsed.rng_seed);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, parsed.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, parsed.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, parsed.rng_seed);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, parsed.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, parsed.vi_end);
     }
     return parsed;
 }

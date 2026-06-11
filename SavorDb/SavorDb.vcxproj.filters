@@ -142,6 +142,9 @@
     <ClInclude Include="Authoring\QueuedAuthoringDb.h">
       <Filter>Authoring</Filter>
     </ClInclude>
+    <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
     <ClInclude Include="State\SqliteStateDb.h">
       <Filter>State</Filter>
     </ClInclude>
@@ -333,6 +336,9 @@
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
+    <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
     <ClCompile Include="State\SqliteStateDb.cpp">
       <Filter>State</Filter>
     </ClCompile>
@@ -475,6 +481,9 @@
       <Filter>Migrations\Authoring</Filter>
     </None>
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">

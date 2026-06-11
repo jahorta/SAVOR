@@ -17,6 +17,7 @@ struct BPAddr
     BPKey key;
     uint32_t pc;
     const char* name;
+    const char* stable_id = nullptr;
 };
 
 struct BreakpointMap
@@ -48,7 +49,7 @@ namespace bp {
         return BPDomain::Unknown;
     }
 
-    class BPRegistry {
+    class BpRegistry {
     public:
         static std::span<const BPAddr> all();
         static const BPAddr* find(BPKey k);

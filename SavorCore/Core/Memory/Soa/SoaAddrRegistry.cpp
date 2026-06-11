@@ -13,36 +13,36 @@ namespace addr {
           #undef ROW
     };
 
-    std::span<const AddrRec> Registry::all() {
+    std::span<const AddrRec> AddrRegistry::all() {
         return std::span<const AddrRec>(kAll, sizeof(kAll) / sizeof(kAll[0]));
     }
 
-    const AddrRec* Registry::find(AddrKey k) {
+    const AddrRec* AddrRegistry::find(AddrKey k) {
         for (const auto& r : kAll) if (r.key == k) return &r;
         return nullptr;
     }
 
-    const DolphinAddr& Registry::spec(AddrKey k) {
+    const DolphinAddr& AddrRegistry::spec(AddrKey k) {
         const auto* r = find(k);
         return r ? r->spec : kAll[0].spec; // table is non-empty
     }
 
-    const uint32_t Registry::base(AddrKey k)
+    const uint32_t AddrRegistry::base(AddrKey k)
     {
         return spec(k).base;
     }
 
-    const Region Registry::region(AddrKey k)
+    const Region AddrRegistry::region(AddrKey k)
     {
         return spec(k).region;
     }
 
-    const char* Registry::name(AddrKey k) {
+    const char* AddrRegistry::name(AddrKey k) {
         const auto* r = find(k);
         return r ? r->name : "";
     }
 
-    const bool Registry::exists(AddrKey k) {
+    const bool AddrRegistry::exists(AddrKey k) {
         return find(k) != nullptr;
     }
 

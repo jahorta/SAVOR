@@ -2,7 +2,7 @@
 #include <cstddef>
 #include "KeyIds.h"
 
-namespace savor::keys::tasframedetector {
+namespace savor::context::key::tasframedetector {
 
 #define TAS_FRAME_DETECTOR_KEYS(X) \
   X(DTM_PATH,     0x0400, "tas_frame_detector.dtm_path")     \
@@ -16,13 +16,13 @@ namespace savor::keys::tasframedetector {
   X(MOVIE_FAILED, 0x0408, "tas_frame_detector.movie_failed")
 
 #define DECL_KEY(NAME, ID, STR) \
-  inline constexpr savor::keys::KeyId NAME = static_cast<savor::keys::KeyId>(ID); \
-  static_assert(NAME >= savor::keys::TAS_FRAME_DETECTOR_MIN && NAME <= savor::keys::TAS_FRAME_DETECTOR_MAX, "tas input detector key out of range");
+  inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
+  static_assert(NAME >= savor::context::key::TAS_FRAME_DETECTOR_MIN && NAME <= savor::context::key::TAS_FRAME_DETECTOR_MAX, "tas input detector key out of range");
 	TAS_FRAME_DETECTOR_KEYS(DECL_KEY)
 #undef DECL_KEY
 
-	inline constexpr savor::keys::KeyPair kKeys[] = {
-	  #define ROW(NAME, ID, STR) savor::keys::KeyPair{ static_cast<savor::keys::KeyId>(ID), STR },
+	inline constexpr savor::context::key::KeyPair kKeys[] = {
+	  #define ROW(NAME, ID, STR) savor::context::key::KeyPair{ static_cast<savor::context::key::KeyId>(ID), STR },
 	  TAS_FRAME_DETECTOR_KEYS(ROW)
 	  #undef ROW
 	};
@@ -30,4 +30,4 @@ namespace savor::keys::tasframedetector {
 
 #undef TAS_FRAME_DETECTOR_KEYS
 
-} // namespace savor::keys::tasframedetector
+} // namespace savor::context::key::tasframedetector

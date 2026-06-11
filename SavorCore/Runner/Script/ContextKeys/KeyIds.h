@@ -1,9 +1,9 @@
-// Runner/Script/KeyId.h
+// Runner/Script/ContextKeys/KeyIds.h
 #pragma once
 #include <cstdint>
 #include <string_view>
 
-namespace savor::keys {
+namespace savor::context::key {
 
     using KeyId = uint16_t;
 
@@ -19,4 +19,4 @@ namespace savor::keys {
         std::string_view name;
     };
 
-} // namespace savor::keys
+} // namespace savor::context::key

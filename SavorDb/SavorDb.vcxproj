@@ -168,6 +168,7 @@
     <ClInclude Include="Analysis\SqliteAnalysisDb.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
     <ClInclude Include="Authoring\QueuedAuthoringDb.h" />
+    <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h" />
     <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
     <ClInclude Include="Common\DbService.h" />
@@ -241,6 +242,7 @@
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
+    <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
@@ -295,6 +297,7 @@
     <None Include="migration\Authoring\202604101250_authoring_workflow_graph_hidden.sql" />
     <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql" />
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
+    <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />

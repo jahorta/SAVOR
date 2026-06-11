@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../../../Runner/Script/PhaseScriptVM.h"
-#include "../../../Runner/Script/KeyRegistry.h"
-#include "../../../Runner/Breakpoints/BPRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
+#include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "../../../Core/Memory/Soa/SoaAddrRegistry.h"
 #include "../BattleRunner/BattleOutcome.h"
 
@@ -14,8 +14,8 @@ namespace phase::battle::turnrunner {
     static constexpr BPKey BP_Victory = bp::battle::EndBattleVictory;
     static constexpr BPKey BP_Defeat = bp::battle::EndBattleDefeat;
 
-    static constexpr savor::keys::KeyId DW_Outcome = savor::keys::core::DW_RUN_OUTCOME_CODE;
-    static constexpr savor::keys::KeyId Battle_Outcome = savor::keys::battle::BATTLE_OUTCOME;
+    static constexpr savor::context::key::KeyId DW_Outcome = savor::context::key::core::DW_RUN_OUTCOME_CODE;
+    static constexpr savor::context::key::KeyId Battle_Outcome = savor::context::key::battle::BATTLE_OUTCOME;
 
     static const std::string LabelStartAttempt = "START_ATTEMPT";
     static const std::string LabelAdvanceToTurnInput = "ADV_TO_TURN_INPUT";
@@ -45,15 +45,15 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpArmBpsFromPredTable());
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
-        ps.ops.push_back(savor::OpSetU32(savor::keys::battle::INPUT_RETRY_COUNT, 0u));
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::battle::INPUT_RETRY_COUNT, 0u));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
         ps.ops.push_back(savor::OpLabel(LabelStartAttempt));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::TURN_OUTPUT_INDEX, savor::PSCmp::GT, 1u, LabelTurnInputs));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::TURN_OUTPUT_INDEX, savor::PSCmp::GT, 1u, LabelTurnInputs));
 
         // Turn 1 path: apply initial input only if caller supplied it.
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::HAS_INITIAL_INPUT, savor::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));
-        ps.ops.push_back(savor::OpApplyInputFrom(savor::keys::battle::INITIAL_INPUT));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::HAS_INITIAL_INPUT, savor::PSCmp::EQ, 0u, LabelAdvanceToTurnInput));
+        ps.ops.push_back(savor::OpApplyInputFrom(savor::context::key::battle::INITIAL_INPUT));
 
         // ============  Label Advance To Turn Input  ===================
         // Tolerate battle-load prelude on fresh runs until we hit TurnInputs.
@@ -63,25 +63,25 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpCapturePredBaselines());
         ps.ops.push_back(savor::OpEvalPredicatesAtHitBP());
 
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::PRED_ABORT_RUN, savor::PSCmp::EQ, 1u, LabelRetPredFail));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelTurnInputs));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelAdvanceToTurnInput));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::PRED_ABORT_RUN, savor::PSCmp::EQ, 1u, LabelRetPredFail));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelTurnInputs));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelAdvanceToTurnInput));
 
         // ============  Label Turn Inputs  ===================
         // current_turn > 1 path: run a single frame to avoid desync before materialization
         ps.ops.push_back(savor::OpLabel(LabelTurnInputs));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::TURN_OUTPUT_INDEX, savor::PSCmp::LE, 1u, LabelApplyTurn));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::TURN_OUTPUT_INDEX, savor::PSCmp::LE, 1u, LabelApplyTurn));
 
         // Build and apply exactly one turn
         ps.ops.push_back(savor::OpGetBattleContext());
         ps.ops.push_back(savor::OpBuildTurnInputFromActions());
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::PLAN_MATERIALIZE_ERR, savor::PSCmp::NE, 0u, LabelRetMaterializeFail));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::PLAN_MATERIALIZE_ERR, savor::PSCmp::NE, 0u, LabelRetMaterializeFail));
 
-        ps.ops.push_back(savor::OpApplyPlanFrameFrom(savor::keys::battle::ACTIVE_TURN));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::INPUT_PLAYBACK_ERR, savor::PSCmp::NE, 0u, LabelRetryInput));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::PLAN_DONE, savor::PSCmp::EQ, 1u, LabelConfirmTurnReady));
+        ps.ops.push_back(savor::OpApplyPlanFrameFrom(savor::context::key::battle::ACTIVE_TURN));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::INPUT_PLAYBACK_ERR, savor::PSCmp::NE, 0u, LabelRetryInput));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::PLAN_DONE, savor::PSCmp::EQ, 1u, LabelConfirmTurnReady));
         ps.ops.push_back(savor::OpGoto(LabelApplyTurn));
 
         // ============  Label Confirm Turn Ready  ===================
@@ -90,7 +90,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpSetTimeoutToMS(gate_timeout));
         ps.ops.push_back(savor::OpRunUntilBp());
         ps.ops.push_back(savor::OpGotoIf(DW_Outcome, savor::PSCmp::NE, 0u, LabelRetryInput));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRetryInput));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRetryInput));
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
         ps.ops.push_back(savor::OpGoto(LabelRunAppliedInputs));
 
@@ -102,11 +102,11 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpCapturePredBaselines());
         ps.ops.push_back(savor::OpEvalPredicatesAtHitBP());
 
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::PRED_ABORT_RUN, savor::PSCmp::EQ, 1u, LabelRetPredFail));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_BattleAcceptInput, LabelRetReachedNext));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRunAppliedInputs));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::PRED_ABORT_RUN, savor::PSCmp::EQ, 1u, LabelRetPredFail));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_BattleAcceptInput, LabelRetReachedNext));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRunAppliedInputs));
         ps.ops.push_back(savor::OpStepOpcode(true));
 
         // Keep running until one of the terminals above.
@@ -115,8 +115,8 @@ namespace phase::battle::turnrunner {
         // ============  Label Retry Input  ===================
         // Retry once from the per-job baseline, using the same materialized plan in safe playback mode.
         ps.ops.push_back(savor::OpLabel(LabelRetryInput));
-        ps.ops.push_back(savor::OpGotoIf(savor::keys::battle::INPUT_RETRY_COUNT, savor::PSCmp::GE, 1u, LabelRetryExhausted));
-        ps.ops.push_back(savor::OpAddU32(savor::keys::battle::INPUT_RETRY_COUNT, 1u));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::INPUT_RETRY_COUNT, savor::PSCmp::GE, 1u, LabelRetryExhausted));
+        ps.ops.push_back(savor::OpAddU32(savor::context::key::battle::INPUT_RETRY_COUNT, 1u));
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
         ps.ops.push_back(savor::OpGoto(LabelStartAttempt));
@@ -129,43 +129,43 @@ namespace phase::battle::turnrunner {
         // ============  Label Return Reached Next  ===================
         // return labels read ending RNG before returning if there are more turns
         ps.ops.push_back(savor::OpLabel(LabelRetReachedNext));
-        ps.ops.push_back(savor::OpAddU32(savor::keys::battle::TURN_OUTPUT_INDEX, 1u));
-        ps.ops.push_back(savor::OpGotoIfKeys(savor::keys::battle::TURN_OUTPUT_INDEX, savor::PSCmp::GT, savor::keys::battle::LAST_TURN, LabelRetOutOfTurns));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
-        ps.ops.push_back(savor::OpSaveSavestateFrom(savor::keys::battle::OUTPUT_SAVESTATE_PATH));
+        ps.ops.push_back(savor::OpAddU32(savor::context::key::battle::TURN_OUTPUT_INDEX, 1u));
+        ps.ops.push_back(savor::OpGotoIfKeys(savor::context::key::battle::TURN_OUTPUT_INDEX, savor::PSCmp::GT, savor::context::key::battle::LAST_TURN, LabelRetOutOfTurns));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpSaveSavestateFrom(savor::context::key::battle::OUTPUT_SAVESTATE_PATH));
 		ps.ops.push_back(savor::OpGetBattleContext());
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::ReachedNextTurn));
 
         // ============  Label Return Out of Turns  ===================
         // return out of turns of there are no more turns
         ps.ops.push_back(savor::OpLabel(LabelRetOutOfTurns));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::HitTurnLimit));
 
         // ============  Label Return Victory  ===================
         ps.ops.push_back(savor::OpLabel(LabelRetVictory));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
-        ps.ops.push_back(savor::OpSaveSavestateFrom(savor::keys::battle::OUTPUT_SAVESTATE_PATH));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpSaveSavestateFrom(savor::context::key::battle::OUTPUT_SAVESTATE_PATH));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Victory));
 
         // ============  Label Return Defeat  ===================
         ps.ops.push_back(savor::OpLabel(LabelRetDefeat));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::Defeat));
 
         // ============  Label Return Predicate Failure  ===================
         ps.ops.push_back(savor::OpLabel(LabelRetPredFail));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PredFailure));
 
         // ============  Label Return Materialize Failure  ===================
         ps.ops.push_back(savor::OpLabel(LabelRetMaterializeFail));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::PlanMaterializeFailure));
 
         // ============  Label Return Dolphin Worker Error  ===================
         ps.ops.push_back(savor::OpLabel(LabelRetDWErr));
-        ps.ops.push_back(savor::OpReadU32(addr::Registry::base(addr::core::RNG_SEED), savor::keys::seed::RNG_SEED));
+        ps.ops.push_back(savor::OpReadU32(addr::AddrRegistry::base(addr::core::RNG_SEED), savor::context::key::seed::RNG_SEED));
         ps.ops.push_back(savor::OpReturnResult(Battle_Outcome, (uint32_t)Outcome::DWRunErr));
 
         return ps;

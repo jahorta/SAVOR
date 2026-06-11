@@ -330,13 +330,13 @@ bool RunTasMovieScenario(
         uint32_t vi_last = 0;
         std::string save_path;
         std::string last_savestate_path;
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, dw_err);
-        result.ps.ctx.get(savor::keys::core::RUN_HIT_PC, hit_pc);
-        result.ps.ctx.get(savor::keys::core::RUN_HIT_BP_KEY, hit_bp_key);
-        result.ps.ctx.get(savor::keys::core::VI_DELTA, vi_delta);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, vi_last);
-        result.ps.ctx.get(savor::keys::tas::SAVE_PATH, save_path);
-        result.ps.ctx.get(savor::keys::core::LAST_SAVESTATE_PATH, last_savestate_path);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_err);
+        result.ps.ctx.get(savor::context::key::core::RUN_HIT_PC, hit_pc);
+        result.ps.ctx.get(savor::context::key::core::RUN_HIT_BP_KEY, hit_bp_key);
+        result.ps.ctx.get(savor::context::key::core::VI_DELTA, vi_delta);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, vi_last);
+        result.ps.ctx.get(savor::context::key::tas::SAVE_PATH, save_path);
+        result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, last_savestate_path);
         std::ostringstream line;
         line << "[tasmovie-worker-result] job=" << result.job_id
              << " worker=" << result.worker_id

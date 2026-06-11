@@ -29,7 +29,7 @@
 #include "../../../../SavorCore/Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Utils/Base64.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
@@ -549,7 +549,7 @@ std::vector<savor::pred::Spec> BuildPredicates(
             return std::nullopt;
         }
         const auto key = static_cast<addr::AddrKey>(static_cast<std::uint16_t>(value));
-        return addr::Registry::exists(key) ? std::optional<addr::AddrKey>(key) : std::nullopt;
+        return addr::AddrRegistry::exists(key) ? std::optional<addr::AddrKey>(key) : std::nullopt;
     };
     std::uint16_t ordinal = 0;
     for (const auto& pred : predicate_set->predicates) {
@@ -1027,32 +1027,32 @@ public:
         ResultsIni out{};
         out.w_err = result.ps.w_err;
         if (out.w_err == 0) {
-            result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+            result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, out.rng_seed);
-        result.ps.ctx.get(savor::keys::battle::BATTLE_OUTCOME, out.battle_outcome);
-        result.ps.ctx.get(savor::keys::battle::PLAN_MATERIALIZE_ERR, out.plan_materialize_err);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(savor::context::key::battle::BATTLE_OUTCOME, out.battle_outcome);
+        result.ps.ctx.get(savor::context::key::battle::PLAN_MATERIALIZE_ERR, out.plan_materialize_err);
         std::uint32_t before = 0;
         std::uint32_t cur = 0;
-        result.ps.ctx.get(savor::keys::battle::FAKE_ATTACK_USED_BEFORE, before);
-        result.ps.ctx.get(savor::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
+        result.ps.ctx.get(savor::context::key::battle::FAKE_ATTACK_USED_BEFORE, before);
+        result.ps.ctx.get(savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
         out.fake_attacks_used = before + cur;
-        result.ps.ctx.get(savor::keys::core::PRED_PASSED, out.pred_passed);
-        result.ps.ctx.get(savor::keys::core::PRED_TOTAL, out.pred_total);
-        result.ps.ctx.get(savor::keys::core::PRED_ABORT_RUN, out.pred_abort_run);
+        result.ps.ctx.get(savor::context::key::core::PRED_PASSED, out.pred_passed);
+        result.ps.ctx.get(savor::context::key::core::PRED_TOTAL, out.pred_total);
+        result.ps.ctx.get(savor::context::key::core::PRED_ABORT_RUN, out.pred_abort_run);
         std::string turn_blob;
-        result.ps.ctx.get(savor::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+        result.ps.ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
             std::vector<savor::inputtape::TurnChunk> chunks;
             if (savor::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
                 out.applied_input_tape_text = turn_blob;
             }
         }
-        result.ps.ctx.get(savor::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
+        result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, out.savestate_path);
         std::string context_blob;
-        if (result.ps.ctx.get(savor::keys::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
+        if (result.ps.ctx.get(savor::context::key::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
             out.context_blob_base64 = savor::utils::Base64Encode(context_blob);
             out.context_version = soa::battle::ctx::codec::ver;
         }

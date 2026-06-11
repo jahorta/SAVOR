@@ -132,7 +132,7 @@
     <ClInclude Include="Utils\Time.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Breakpoints\BPRegistry.h">
+    <ClInclude Include="Runner\Breakpoints\BpRegistry.h">
       <Filter>Runner\Breakpoints</Filter>
     </ClInclude>
     <ClInclude Include="Runner\Breakpoints\BP.def.h">
@@ -201,7 +201,7 @@
     <ClInclude Include="Runner\Script\ContextKeys\VMCoreKeys.reg.h">
       <Filter>Runner\VM\ContextKeys</Filter>
     </ClInclude>
-    <ClInclude Include="Runner\Script\KeyRegistry.h">
+    <ClInclude Include="Runner\Script\CtxRegistry.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
     <ClInclude Include="Runner\IPC\Wire.h">
@@ -312,6 +312,9 @@
     <ClInclude Include="Runner\Script\ScriptProgress.h">
       <Filter>Runner\VM</Filter>
     </ClInclude>
+    <ClInclude Include="Runner\Symbols\RuntimeSymbolRegistry.h">
+      <Filter>Runner\VM</Filter>
+    </ClInclude>
     <ClInclude Include="Utils\String.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -365,7 +368,7 @@
     <ClCompile Include="Runner\Script\PSContextCodec.cpp">
       <Filter>Runner\VM</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp">
+    <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp">
       <Filter>Runner\Breakpoints</Filter>
     </ClCompile>
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp">
@@ -386,7 +389,10 @@
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp">
       <Filter>Runner\Breakpoints</Filter>
     </ClCompile>
-    <ClCompile Include="Runner\Script\KeyRegistry.cpp">
+    <ClCompile Include="Runner\Script\CtxRegistry.cpp">
+      <Filter>Runner\VM</Filter>
+    </ClCompile>
+    <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp">
       <Filter>Runner\VM</Filter>
     </ClCompile>
     <ClCompile Include="Core\Input\InputPlanFmt.cpp">

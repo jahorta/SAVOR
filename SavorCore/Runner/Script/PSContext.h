@@ -1,7 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <variant>
-#include "KeyRegistry.h"
+#include "CtxRegistry.h"
 #include "../../Core/Input/InputPlan.h"
 #include "../../Core/Input/SoaBattle/ActionTypes.h"
 
@@ -12,7 +12,7 @@ namespace savor {
 
 	class PSContext {
 	public:
-		using key_type = savor::keys::KeyId;
+		using key_type = savor::context::key::KeyId;
 		using map_type = std::unordered_map<key_type, PSValue>;
 		using iterator = map_type::iterator;
 		using const_iterator = map_type::const_iterator;

@@ -1,12 +1,12 @@
-// Runner/Script/KeyRegistry.cpp
-#include "KeyRegistry.h"
+// Runner/Script/CtxRegistry.cpp
+#include "CtxRegistry.h"
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
 #include <algorithm>
 
-namespace savor::keys {
+namespace savor::context::key {
 
     // Fixed list of module tables (deterministic order)
     static constexpr const KeyPair* kTablesPtrs[] = {
@@ -91,13 +91,13 @@ namespace savor::keys {
         std::call_once(g_once, build_registry);
     }
 
-    std::string_view name_for_id(KeyId id) {
+    std::string_view CtxRegistry::name_for_id(KeyId id) {
         ensure_init();
         auto it = g_id2name.find(id);
         return (it != g_id2name.end()) ? it->second : std::string_view{};
     }
 
-    bool id_for_name(std::string_view name, KeyId& out) {
+    bool CtxRegistry::id_for_name(std::string_view name, KeyId& out) {
         ensure_init();
         auto it = g_name2id.find(name);
         if (it == g_name2id.end()) return false;
@@ -105,21 +105,21 @@ namespace savor::keys {
         return true;
     }
 
-    const KeyPair* all_keys(size_t& out_count) {
+    const KeyPair* CtxRegistry::all_keys(size_t& out_count) {
         ensure_init();
         out_count = g_all.size();
         return g_all.data();
     }
 
-    uint32_t registry_hash() {
+    uint32_t CtxRegistry::registry_hash() {
         ensure_init();
         return g_hash;
     }
 
-    bool validate_registry(std::string* err_out) {
+    bool CtxRegistry::validate_registry(std::string* err_out) {
         ensure_init();
         if (err_out) *err_out = g_error;
         return g_valid;
     }
 
-} // namespace savor::keys
+} // namespace savor::context::key

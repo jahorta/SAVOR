@@ -6,7 +6,7 @@
 #include "../../../Tas/DtmFile.h"   // savor::tas::DtmFile
 #include "../../../Utils/Log.h"
 #include "../../../Runner/IPC/Wire.h"
-#include "../../../Runner/Script/KeyRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/ScriptProgress.h"
 
 namespace fs = std::filesystem;
@@ -120,7 +120,7 @@ namespace savor::tasmovie {
             id6.assign("");
         }
 
-        float headroom = static_cast<float>(headroom_x10) / 10.0;
+        const double headroom = static_cast<double>(headroom_x10) / 10.0;
 
         // Derive run_ms if the payload asked us to (== 0)
         const uint32_t run_ms = (run_ms_in == 0)
@@ -128,11 +128,11 @@ namespace savor::tasmovie {
             : run_ms_in;
 
         // Fill TAS program context keys
-        out_ctx[keys::tas::DTM_PATH] = dtm_path;
-        out_ctx[keys::tas::SAVE_PATH] = save_path;
-        out_ctx[keys::core::RUN_MS] = run_ms;
-        out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
-        out_ctx[keys::tas::SAVE_ON_FAIL] = (uint32_t)0;
+        out_ctx[savor::context::key::tas::DTM_PATH] = dtm_path;
+        out_ctx[savor::context::key::tas::SAVE_PATH] = save_path;
+        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
+        out_ctx[savor::context::key::tas::SAVE_ON_FAIL] = (uint32_t)0;
 
         savor::progress::ProgressDeets progress{};
         progress.set_flag(CoreProgressFlags::ViDelta);
@@ -140,9 +140,9 @@ namespace savor::tasmovie {
         progress.set_flag(CoreProgressFlags::ScriptSection);
         progress.set_flag(CoreProgressFlags::WarnViStall);
 
-        out_ctx[keys::core::PROGRESS_RATE] = progress.poll_rate;
-        out_ctx[keys::core::PROGRESS_CORE_FLAGS] = progress.flags;
-        out_ctx[keys::tas::DISC_ID6] = id6;
+        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
+        out_ctx[savor::context::key::tas::DISC_ID6] = id6;
 
         return true;
     }

@@ -1,7 +1,7 @@
 #include "TasFrameDetectorPayload.h"
 
 #include "../../../Runner/IPC/Wire.h"
-#include "../../../Runner/Script/KeyRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Tas/DtmFile.h"
 #include "../../../Utils/Hash.h"
 #include <algorithm>
@@ -77,11 +77,11 @@ bool decode_payload(const std::vector<uint8_t>& in, PSContext& out_ctx)
         header_identity = hash::sha256(header.data(), header.size());
     }
 
-    out_ctx[keys::tasframedetector::DTM_PATH] = dtm_path;
-    out_ctx[keys::tasframedetector::DISC_ID6] = id6;
-    out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
-    out_ctx[keys::tasframedetector::HEADER_IDENTITY] = header_identity;
-    out_ctx[keys::tasframedetector::EMU_VERSION] = std::string("unknown");
+    out_ctx[savor::context::key::tasframedetector::DTM_PATH] = dtm_path;
+    out_ctx[savor::context::key::tasframedetector::DISC_ID6] = id6;
+    out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
+    out_ctx[savor::context::key::tasframedetector::HEADER_IDENTITY] = header_identity;
+    out_ctx[savor::context::key::tasframedetector::EMU_VERSION] = std::string("unknown");
     return true;
 }
 

@@ -32,7 +32,7 @@ namespace addr {
         const char* name;        // "dom.NAME"
     };
 
-    class Registry {
+    class AddrRegistry {
     public:
         static std::span<const AddrRec> all();
         static const AddrRec* find(AddrKey k);

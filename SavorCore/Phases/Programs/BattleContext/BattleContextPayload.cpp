@@ -35,9 +35,9 @@ namespace phase::battle::ctx {
 		if (!get_u32(p, e, run_ms)) return false;
 		if (!get_u32(p, e, vi_stall_ms)) return false;
 
-		out_ctx[savor::keys::core::RUN_MS] = run_ms;
-		out_ctx[savor::keys::core::VI_STALL_MS] = vi_stall_ms;
-		out_ctx[savor::keys::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
+		out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+		out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
+		out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
 
 		return true;
 	}

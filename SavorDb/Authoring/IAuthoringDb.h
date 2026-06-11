@@ -10,7 +10,7 @@
 #include "../Common/Types/UtcTimestamp.h"
 #include "../Common/Retention/OutboxRetention.h"
 #include "../../SavorCore/Core/Input/SoaBattle/ActionTypes.h"
-#include "../../SavorCore/Runner/Breakpoints/BPRegistry.h"
+#include "../../SavorCore/Runner/Breakpoints/BpRegistry.h"
 #include "../../SavorCore/Runner/Breakpoints/Predicate.h"
 
 namespace savor::db {

@@ -31,7 +31,7 @@ namespace savor {
         }
 
         bool read(addr::AddrKey k, uint8_t width, uint64_t& out_bits) const {
-            const auto& sp = addr::Registry::spec(k);
+            const auto& sp = addr::AddrRegistry::spec(k);
             switch (sp.region) {
             case addr::Region::MEM1:    return mem1_.read_key(k, width, out_bits);
             case addr::Region::MEM2:    return mem1_.read_key(k, width, out_bits);

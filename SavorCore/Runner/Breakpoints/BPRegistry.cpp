@@ -1,49 +1,49 @@
-#include "BPRegistry.h"
+#include "BpRegistry.h"
 #include <cctype>
 
 namespace bp {
 
     static const BPAddr kAll[] = {
-    #define ROW(ns, NAME, ID, PC, STR) { static_cast<BPKey>(ID), static_cast<uint32_t>(PC), STR },
+    #define ROW(ns, NAME, ID, PC, STR) { static_cast<BPKey>(ID), static_cast<uint32_t>(PC), STR, "builtin.bp." #ns "." STR },
     BP_TABLE_ALL(ROW)
     #undef ROW
     };
 
-    std::span<const BPAddr> BPRegistry::all() {
+    std::span<const BPAddr> BpRegistry::all() {
         return std::span<const BPAddr>(kAll, sizeof(kAll) / sizeof(kAll[0]));
     }
 
-    const BPAddr* BPRegistry::find(BPKey k) {
+    const BPAddr* BpRegistry::find(BPKey k) {
         for (const auto& r : kAll) if (r.key == k) return &r;
         return nullptr;
     }
 
-    const BPAddr* BPRegistry::find(uint32_t pc)
+    const BPAddr* BpRegistry::find(uint32_t pc)
     {
         std::optional<BPKey> m = match(pc);
         if (!m.has_value()) return nullptr;
         return find(m.value());
     }
 
-    std::optional<BPKey> BPRegistry::match(uint32_t pc) {
+    std::optional<BPKey> BpRegistry::match(uint32_t pc) {
         for (const auto& r : kAll) if (r.pc == pc) return r.key;
         return std::nullopt;
     }
 
-    const char* BPRegistry::name(BPKey k) {
+    const char* BpRegistry::name(BPKey k) {
         if (auto* r = find(k)) return r->name;
         return "";
     }
 
-    uint32_t BPRegistry::pc(BPKey k) {
+    uint32_t BpRegistry::pc(BPKey k) {
         if (auto* r = find(k)) return r->pc;
         return 0u;
     }
 
-    BreakpointMap BPRegistry::as_map() {
+    BreakpointMap BpRegistry::as_map() {
         BreakpointMap m;
         m.addrs.reserve(sizeof(kAll) / sizeof(kAll[0]));
-        for (const auto& r : kAll) m.addrs.push_back(BPAddr{ r.key, r.pc, r.name });
+        for (const auto& r : kAll) m.addrs.push_back(BPAddr{ r.key, r.pc, r.name, r.stable_id });
         m.start_key = 0;  // leave to caller if they need it
         m.terminal_key = 0;
         return m;

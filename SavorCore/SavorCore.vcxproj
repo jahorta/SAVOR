@@ -215,7 +215,7 @@
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeScript.h" />
     <ClInclude Include="Phases\RNGSeedDeltaMap.h" />
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
-    <ClInclude Include="Runner\Breakpoints\BPRegistry.h" />
+    <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
@@ -223,7 +223,7 @@
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
-    <ClInclude Include="Runner\Script\KeyRegistry.h" />
+    <ClInclude Include="Runner\Script\CtxRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h" />
@@ -232,6 +232,7 @@
     <ClInclude Include="Runner\Script\PSContext.h" />
     <ClInclude Include="Runner\Script\PSContextCodec.h" />
     <ClInclude Include="Runner\Script\ScriptProgress.h" />
+    <ClInclude Include="Runner\Symbols\RuntimeSymbolRegistry.h" />
     <ClInclude Include="Tas\DtmAnnotationFile.h" />
     <ClInclude Include="Tas\DtmFile.h" />
     <ClInclude Include="Utils\DeltaColorizer.h" />
@@ -275,11 +276,12 @@
     <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
-    <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp" />
+    <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
-    <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
+    <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
+    <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp" />
     <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />

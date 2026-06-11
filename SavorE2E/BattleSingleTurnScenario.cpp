@@ -33,7 +33,7 @@
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "Execution/DBWorkflowCoordinatorFactory.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Breakpoints/Predicate.h"
 #include "Runner/IPC/Wire.h"
 #include "Tas/DtmFile.h"

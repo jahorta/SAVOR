@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <atomic>
 
-#include "../Breakpoints/BPRegistry.h"    // BreakpointMap, BPKey
+#include "../Breakpoints/BpRegistry.h"    // BreakpointMap, BPKey
 #include "../Breakpoints/Predicate.h"
 #include "../../Core/DolphinWrapper.h"
 #include "../../Core/Input/InputPlan.h" // GCInputFrame
@@ -15,7 +15,7 @@
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "Core/Common/Buffer.h"
-#include "KeyRegistry.h"
+#include "CtxRegistry.h"
 #include "PSContext.h"
 
 namespace savor {
@@ -68,29 +68,29 @@ namespace savor {
 
 	enum class PSCmp : uint8_t { EQ, NE, LT, LE, GT, GE };
 
-	struct PSArg_Read { uint32_t addr; savor::keys::KeyId dst; };
+	struct PSArg_Read { uint32_t addr; savor::context::key::KeyId dst; };
 	struct PSArg_Step { uint32_t n; };
 	struct PSArg_Path { std::string path; };
 	struct PSArg_ID6 { char id[6]{}; };
-	struct PSArg_Key { savor::keys::KeyId id; };
+	struct PSArg_Key { savor::context::key::KeyId id; };
 
 	struct PSArg_Label { std::string name; };
 	struct PSArg_Goto { std::string name; };
 	struct PSArg_GotoIf {
-		savor::keys::KeyId key;
+		savor::context::key::KeyId key;
 		PSCmp cmp;
 		uint32_t imm;
 		std::string name;
 	};
 	struct PSArg_GotoIfKeys {
-		savor::keys::KeyId left;
+		savor::context::key::KeyId left;
 		PSCmp cmp;
-		savor::keys::KeyId right;
+		savor::context::key::KeyId right;
 		std::string name;
 	};
 	struct PSArg_Plan { uint32_t id; };
 	struct PSArg_ImmU32 { uint32_t v; };
-	struct PSArg_KeyImm { savor::keys::KeyId key; uint32_t imm; };
+	struct PSArg_KeyImm { savor::context::key::KeyId key; uint32_t imm; };
 
 	// Only one of these will be used depending on `code`
 	struct PSOp {           
@@ -109,39 +109,39 @@ namespace savor {
 
 	inline PSOp OpLabel(const std::string& s) { PSOp o; o.code = PSOpCode::LABEL; o.label.name = s; return o; }
 	inline PSOp OpGoto(const std::string& s) { PSOp o; o.code = PSOpCode::GOTO;  o.jmp.name = s;  return o; }
-	inline PSOp OpGotoIf(savor::keys::KeyId k, PSCmp c, uint32_t v, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF; o.jcc = { k,c,v,s }; return o; }
-	inline PSOp OpGotoIfKeys(savor::keys::KeyId left, PSCmp c, savor::keys::KeyId right, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF_KEYS; o.jcc2 = { left, c, right, s }; return o; }
-	inline PSOp OpReturnResult(savor::keys::KeyId k, uint32_t code) { PSOp o; o.code = PSOpCode::RETURN_RESULT; o.keyimm = {k, code}; return o; }
+	inline PSOp OpGotoIf(savor::context::key::KeyId k, PSCmp c, uint32_t v, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF; o.jcc = { k,c,v,s }; return o; }
+	inline PSOp OpGotoIfKeys(savor::context::key::KeyId left, PSCmp c, savor::context::key::KeyId right, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF_KEYS; o.jcc2 = { left, c, right, s }; return o; }
+	inline PSOp OpReturnResult(savor::context::key::KeyId k, uint32_t code) { PSOp o; o.code = PSOpCode::RETURN_RESULT; o.keyimm = {k, code}; return o; }
 	inline PSOp OpCapturePredBaselines() { PSOp o; o.code = PSOpCode::CAPTURE_PRED_BASELINES; return o; }
 	inline PSOp OpArmBpsFromPredTable() { PSOp o; o.code = PSOpCode::ARM_BPS_FROM_PRED_TABLE; return o; }
 	inline PSOp OpEvalPredicatesAtHitBP() { PSOp o; o.code = PSOpCode::EVAL_PREDICATES_AT_HIT_BP; return o; }
-	inline PSOp OpSetU32(savor::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpAddU32(savor::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpApplyPlanFrameFrom(savor::keys::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
+	inline PSOp OpSetU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
+	inline PSOp OpAddU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
+	inline PSOp OpApplyPlanFrameFrom(savor::context::key::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
 	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 	inline PSOp OpStepOpcode(bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_OPCODE; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 
-	inline PSOp OpGcSlotASet(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
-	inline PSOp OpApplyInputFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
-	inline PSOp OpSetTimeoutFromKey(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::SET_TIMEOUT_FROM;   o.key.id = k; return o; }
+	inline PSOp OpGcSlotASet(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
+	inline PSOp OpApplyInputFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
+	inline PSOp OpSetTimeoutFromKey(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SET_TIMEOUT_FROM;   o.key.id = k; return o; }
 	inline PSOp OpSetTimeoutToMS(uint32_t ms) { PSOp o; o.code = PSOpCode::SET_TIMEOUT;   o.imm.v = ms; return o; }
-	inline PSOp OpMoviePlayFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::MOVIE_PLAY_FROM;    o.key.id = k; return o; }
-	inline PSOp OpSaveSavestateFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::SAVE_SAVESTATE_FROM; o.key.id = k; return o; }
-	inline PSOp OpRequireDiscGameIdFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; o.key.id = k; return o; }
+	inline PSOp OpMoviePlayFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::MOVIE_PLAY_FROM;    o.key.id = k; return o; }
+	inline PSOp OpSaveSavestateFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SAVE_SAVESTATE_FROM; o.key.id = k; return o; }
+	inline PSOp OpRequireDiscGameIdFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; o.key.id = k; return o; }
 
 	// READ_* ops now store into a numeric key:
-	inline PSOp OpReadU8(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU16(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU32(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadF32(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadF64(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU8(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU16(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadF32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadF64(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
 	inline PSOp OpGetBattleContext() { PSOp o; o.code = PSOpCode::GET_BATTLE_CONTEXT; return o; }
 
 	// EMIT_RESULT now exports a numeric key:
-	inline PSOp OpEmitResult(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::EMIT_RESULT; o.key.id = k; return o; }
+	inline PSOp OpEmitResult(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::EMIT_RESULT; o.key.id = k; return o; }
 
 	// OTHERS
 	inline PSOp OpMovieStop() { PSOp o; o.code = PSOpCode::MOVIE_STOP; return o; }

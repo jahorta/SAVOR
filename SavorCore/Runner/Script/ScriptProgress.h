@@ -19,7 +19,7 @@ enum class CoreProgressFlags : uint32_t {
 	BattleProgress = 1 << 4,
 	PredicateProgress = 1 << 5,
 
-	DontRecordHeartbeat = 1 << 31
+	DontRecordHeartbeat = 1u << 31
 };
 
 using soa::battle::ctx::StatusFlags;
@@ -44,7 +44,7 @@ namespace savor::progress {
 
 	static inline std::string get_combatant_name(savor::DolphinWrapper& dw, uint32_t slot) {
 		uint16_t id = 0xffffu;
-		dw.readU16(addr::Registry::base(addr::battle::CombatantIdTable) + (slot * 2), id);
+		dw.readU16(addr::AddrRegistry::base(addr::battle::CombatantIdTable) + (slot * 2), id);
 		if (id == 0xffffu) return "";
 		if (slot < 4) {
 			return std::string(soa::text::PCNames[id]);
@@ -56,8 +56,8 @@ namespace savor::progress {
 
 	static inline std::string describe_instruction(savor::DolphinWrapper& dw, soa::InstructionSet inst) {
 		std::string inst_str = std::format("{}", soa::battle::InstructionNames[inst.current.inst]);
-		if (0 < inst.current.inst < 3 || inst.current.inst == 5 || inst.current.inst == 12) inst_str = std::format("{}:{}", inst_str, inst.current.instParam);
-		if (0 < inst.current.inst < 4 || inst.current.inst == 5 || inst.current.inst == 12) inst_str = std::format("{}->{}", inst_str, get_combatant_name(dw, inst.current.target));
+		if ((0 < inst.current.inst && inst.current.inst < 3) || inst.current.inst == 5 || inst.current.inst == 12) inst_str = std::format("{}:{}", inst_str, inst.current.instParam);
+		if ((0 < inst.current.inst && inst.current.inst < 4) || inst.current.inst == 5 || inst.current.inst == 12) inst_str = std::format("{}->{}", inst_str, get_combatant_name(dw, inst.current.target));
 		return inst_str;
 	}
 
@@ -116,7 +116,7 @@ namespace savor::progress {
 				// get ItemDropSlot for battle state slot
 
 				uint32_t main_ptr = 0;
-				dw.readU32(addr::Registry::base(addr::battle::MainInstancePtr), main_ptr);
+				dw.readU32(addr::AddrRegistry::base(addr::battle::MainInstancePtr), main_ptr);
 				if (!main_ptr) return {};
 
 				uint16_t count = 0;
@@ -141,7 +141,7 @@ namespace savor::progress {
 
 				for (int i = 0; i < 12; i++) {
 					uint32_t p = 0;
-					if (!dw.readU32(addr::Registry::spec(addr::battle::CombatantInstancesTable).base + i * 4, p)) return "";
+					if (!dw.readU32(addr::AddrRegistry::spec(addr::battle::CombatantInstancesTable).base + i * 4, p)) return "";
 					soa::CombatantInstance instance{};
 					std::string instance_raw{};
 					if (!dw.getMem1RangeRaw(instance_raw, p, sizeof(instance))) return "";
@@ -151,7 +151,7 @@ namespace savor::progress {
 					soa::InstructionSet instructionset{};
 					std::string instructionset_raw{};
 
-					if (!dw.getMem1RangeRaw(instructionset_raw, addr::Registry::base(addr::battle::Instructions) + (i * sizeof(instructionset)), sizeof(instructionset))) return "";
+					if (!dw.getMem1RangeRaw(instructionset_raw, addr::AddrRegistry::base(addr::battle::Instructions) + (i * sizeof(instructionset)), sizeof(instructionset))) return "";
 					(void)soa::readers::read(instructionset_raw, instructionset);
 
 					std::string name = get_combatant_name(dw, i);

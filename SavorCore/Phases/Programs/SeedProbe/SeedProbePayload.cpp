@@ -3,7 +3,7 @@
 #include <cstring>
 
 #include "../../../Runner/IPC/Wire.h"      // PK_SeedProbe
-#include "../../../Runner/Script/KeyRegistry.h"    
+#include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/PhaseScriptVM.h" // savor::vmcore::<common keys>
 #include "SeedProbeScript.h"
 
@@ -61,13 +61,13 @@ namespace savor::seedprobe {
         off += sizeof(GCInputFrame);
 
         // Set the input frame for the script's APPLY_INPUT_FROM(...)
-        out_ctx[keys::seed::INPUT] = frame;
+        out_ctx[savor::context::key::seed::INPUT] = frame;
 
         // Populate standardized core knobs if provided
-        out_ctx[keys::core::RUN_MS] = run_ms;
-        out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
+        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
 
-        out_ctx[keys::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
+        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
 
         return true;
     }

@@ -52,7 +52,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
 #include "Execution/JobMaterializationService.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 
 #include "common/RecordingExecutionDb.h"
 #include "common/AlwaysAdvanceTransitionHandler.h"

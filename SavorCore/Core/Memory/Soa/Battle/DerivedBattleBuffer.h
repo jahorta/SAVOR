@@ -6,7 +6,7 @@
 #include <initializer_list>
 #include "../../DerivedBase.h"
 #include "../SoaAddrRegistry.h"
-#include "../../../../Runner/Breakpoints/BPRegistry.h"
+#include "../../../../Runner/Breakpoints/BpRegistry.h"
 #include "../SoaStructs.h"
 
 using namespace addr::derived::battle;
@@ -26,11 +26,11 @@ namespace savor {
         DerivedBattleBuffer() { bytes_.resize(DBUF_SIZE); }
 
         bool can_serve(addr::AddrKey k) const override {
-            return addr::Registry::region(k) == addr::Region::DERIVED;
+            return addr::AddrRegistry::region(k) == addr::Region::DERIVED;
         }
 
         bool read_key(addr::AddrKey k, uint8_t width, uint64_t& out_bits) const override {
-            const auto off = addr::Registry::base(k);
+            const auto off = addr::AddrRegistry::base(k);
             if (off + width > bytes_.size()) return false;
             switch (width) {
             case 1: out_bits = *(const uint8_t*)(bytes_.data() + off);  return true;
@@ -61,14 +61,14 @@ namespace savor {
         }
 
         void update_turn_order_indices(savor::DolphinWrapper& host) {
-            size_t idx_base = addr::Registry::base(TurnOrderIdx_base);
+            size_t idx_base = addr::AddrRegistry::base(TurnOrderIdx_base);
             for (int i = 0; i < 12; i++) write_u8(idx_base + i, 0xffu);
 
             uint8_t min_pc = 12, max_pc = 0, min_ec = 12, max_ec = 0;
 
             int cur_idx; uint8_t slot;
             for (cur_idx = 0; cur_idx < 12; cur_idx++) {
-                host.readU8(addr::Registry::base(addr::battle::TurnOrderTable) + cur_idx, slot);
+                host.readU8(addr::AddrRegistry::base(addr::battle::TurnOrderTable) + cur_idx, slot);
                 if (slot == 0xff) break;
                 write_u8(idx_base + slot, cur_idx);
                 if (slot < 4) { if (cur_idx < min_pc) min_pc = cur_idx; else if (cur_idx > max_pc) max_pc = cur_idx; }
@@ -83,16 +83,16 @@ namespace savor {
         }
 
         void clear_item_tables() {
-            std::memset(bytes_.data() + addr::Registry::base(DropsByItem_base), 0, DBUF_MAX_ITEMID);
-            std::memset(bytes_.data() + addr::Registry::base(InventoryByItem_base), 0, DBUF_MAX_ITEMID);
+            std::memset(bytes_.data() + addr::AddrRegistry::base(DropsByItem_base), 0, DBUF_MAX_ITEMID);
+            std::memset(bytes_.data() + addr::AddrRegistry::base(InventoryByItem_base), 0, DBUF_MAX_ITEMID);
         }
 
         void rebuild_inventory_table(savor::DolphinWrapper& host) {
             // Zero out the whole table
-            std::memset(bytes_.data() + addr::Registry::base(InventoryByItem_base), 0, DBUF_MAX_ITEMID);
+            std::memset(bytes_.data() + addr::AddrRegistry::base(InventoryByItem_base), 0, DBUF_MAX_ITEMID);
 
             uint32_t main_ptr = 0;
-            host.readU32(addr::Registry::base(addr::battle::MainInstancePtr), main_ptr);
+            host.readU32(addr::AddrRegistry::base(addr::battle::MainInstancePtr), main_ptr);
             if (!main_ptr) return;
 
             // Each entry is 4 bytes (ItemSlot), 80 entries
@@ -104,7 +104,7 @@ namespace savor {
 
                 if (item_id < DBUF_MAX_ITEMID) {
                     uint8_t clamped = (count > 99) ? 99 : count;
-                    size_t off = addr::Registry::base(InventoryByItem_base) + item_id;
+                    size_t off = addr::AddrRegistry::base(InventoryByItem_base) + item_id;
                     bytes_[off] = clamped;
                 }
             }
@@ -112,10 +112,10 @@ namespace savor {
 
         void fold_enemy_drops_into_table(savor::DolphinWrapper& host) {
             // Zero out the whole table
-            std::memset(bytes_.data() + addr::Registry::base(DropsByItem_base), 0, DBUF_MAX_ITEMID);
+            std::memset(bytes_.data() + addr::AddrRegistry::base(DropsByItem_base), 0, DBUF_MAX_ITEMID);
 
             uint32_t main_ptr = 0;
-            host.readU32(addr::Registry::base(addr::battle::MainInstancePtr), main_ptr);
+            host.readU32(addr::AddrRegistry::base(addr::battle::MainInstancePtr), main_ptr);
             if (!main_ptr) return;
 
             for (int i = 0; i < 8; i++) {
@@ -125,7 +125,7 @@ namespace savor {
                 host.readU16(main_ptr + offsetof(soa::BattleState, item_drops) + i * sizeof(soa::BattleItemDropSlot) + offsetof(soa::BattleItemDropSlot, item_id), item_id);
 
                 if (static_cast<int16_t>(item_id) >= 0 && static_cast<int16_t>(item_id) < DBUF_MAX_ITEMID && static_cast<int16_t>(count) > 0) {
-                    size_t off = addr::Registry::base(DropsByItem_base) + (size_t)item_id;
+                    size_t off = addr::AddrRegistry::base(DropsByItem_base) + (size_t)item_id;
                     uint8_t cur = bytes_[off];
                     uint16_t sum = static_cast<uint16_t>(cur) + count;
                     if (sum > 99) sum = 99;
@@ -136,7 +136,7 @@ namespace savor {
 
         void update_on_bp(uint32_t hit_bp, const PSContext& ctx, savor::DolphinWrapper& host) override {
             write_u16(HeaderLastUpdateBp, (uint16_t)hit_bp);
-            uint8_t cur; host.readU8(addr::Registry::base(addr::battle::CurrentTurn), cur);
+            uint8_t cur; host.readU8(addr::AddrRegistry::base(addr::battle::CurrentTurn), cur);
             write_u16(CurrentTurn, cur);
 
             uint64_t flags = 0; read_key(HeaderFlags, 4, flags);
@@ -166,7 +166,7 @@ namespace savor {
         }
 
         void write_u8(addr::AddrKey k, uint8_t v) {
-            const auto off = addr::Registry::base(k);
+            const auto off = addr::AddrRegistry::base(k);
             if (off + 1 > bytes_.size()) bytes_.resize(off + 1);
             bytes_[off] = v;
         }
@@ -177,7 +177,7 @@ namespace savor {
         }
 
         void write_u16(addr::AddrKey k, uint16_t v) {
-            const auto off = addr::Registry::base(k);
+            const auto off = addr::AddrRegistry::base(k);
             if (off + 2 > bytes_.size()) bytes_.resize(off + 2);
             std::memcpy(bytes_.data() + off, &v, 2);
         }
@@ -188,7 +188,7 @@ namespace savor {
         }
 
         void write_u32(addr::AddrKey k, uint32_t v) {
-            const auto off = addr::Registry::base(k);
+            const auto off = addr::AddrRegistry::base(k);
             if (off + 4 > bytes_.size()) bytes_.resize(off + 4);
             std::memcpy(bytes_.data() + off, &v, 4);
         }

@@ -3,7 +3,7 @@
 #include "../../DolphinWrapper.h"
 #include "Battle/DerivedBattleBuffer.h"
 
-using addr::Registry;
+using addr::AddrRegistry;
 using addr::Region;
 
 namespace addrprog {
@@ -39,8 +39,8 @@ namespace addrprog {
             case BASE_KEY: {
                 uint16_t k = 0; if (!read_u16(p, e, k)) return {};
                 auto key = static_cast<addr::AddrKey>(k);
-                va = addr::Registry::base(key);
-                region = addr::Registry::region(key);
+                va = addr::AddrRegistry::base(key);
+                region = addr::AddrRegistry::region(key);
                 have_region = true;
                 break;
             }

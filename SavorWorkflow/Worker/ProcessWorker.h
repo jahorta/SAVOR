@@ -9,7 +9,7 @@
 #include "Runner/Script/PhaseScriptVM.h"  // for PSResult
 #include "TSQueue.h"
 #include "Runner/Parallel/PRTypes.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 #include "WorkerTelemetry.h"
 
 

@@ -414,7 +414,7 @@ namespace savor {
 
         std::string name{"..."};
         uint32_t section_offset = 0;
-        for (int i = 0; i < section_count - 1; i++) {
+        for (uint32_t i = 0; i + 1 < section_count; i++) {
             uint32_t next_offset = 0;
             if (!readU32(p_index + ((i + 1) * 0x14), next_offset)) return {};
             if (next_offset >= offset) 
@@ -712,7 +712,7 @@ namespace savor {
             }
             else 
             {
-                fs:copy_file(raw_path, memcard_path, fs::copy_options::overwrite_existing);
+                fs::copy_file(raw_path, memcard_path, fs::copy_options::overwrite_existing);
                 SCLOGI("[MemCard] Copied RAW to %s", gc_dir.string());
             }
 
@@ -1310,7 +1310,7 @@ namespace savor {
 
     bool DolphinWrapper::resolveKey(addr::AddrKey k, uint32_t& out_va) const
     {
-        out_va = addr::Registry::base(k);
+        out_va = addr::AddrRegistry::base(k);
         return true;
     }
 
@@ -1318,12 +1318,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU8(va, out);
@@ -1333,12 +1333,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU16(va, out);
@@ -1348,12 +1348,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU32(va, out);
@@ -1363,12 +1363,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
 
@@ -1382,7 +1382,7 @@ namespace savor {
     bool DolphinWrapper::readByKeyAny(addr::AddrKey k, uint8_t width, uint64_t& out, uint8_t& out_width) const
     {
         out = 0; out_width = width;
-        const auto& spec = addr::Registry::spec(k);
+        const auto& spec = addr::AddrRegistry::spec(k);
         switch (width) {
         case 1: { uint8_t  v = 0; if (!readByKey(k, v)) return false; out = v; return true; }
         case 2: { uint16_t v = 0; if (!readByKey(k, v)) return false; out = v; return true; }

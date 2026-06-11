@@ -3,7 +3,7 @@
 #include <cstring>
 
 #include "../../../Runner/IPC/Wire.h"
-#include "../../../Runner/Script/KeyRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/ScriptProgress.h"
 
 using savor::GCInputFrame;
@@ -155,41 +155,41 @@ namespace phase::battle::turnrunner {
         soa::battle::actions::BattlePath path;
         path.push_back(std::move(turn));
 
-        out_ctx[savor::keys::core::RUN_MS] = run_ms;
-        out_ctx[savor::keys::core::VI_STALL_MS] = vi_stall_ms;
+        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
 
         // Single-turn runner payload carries exactly one local turn plan.
         // Materialization indexes TURN_PLANS with ACTIVE_TURN as a 1-based index,
         // so keep ACTIVE_TURN local (=1) while preserving the caller-provided
         // global turn number in TURN_OUTPUT_INDEX for bookkeeping/output.
-        out_ctx[savor::keys::battle::ACTIVE_TURN] = (uint32_t)1;
-        out_ctx[savor::keys::battle::TURN_INPUT_INDEX] = (uint32_t)1;
-        out_ctx[savor::keys::battle::TURN_OUTPUT_INDEX] = current_turn;
-        out_ctx[savor::keys::battle::HAS_INITIAL_INPUT] = has_initial_input ? 1u : 0u;
-        out_ctx[savor::keys::battle::INITIAL_INPUT] = initial;
+        out_ctx[savor::context::key::battle::ACTIVE_TURN] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::TURN_INPUT_INDEX] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::TURN_OUTPUT_INDEX] = current_turn;
+        out_ctx[savor::context::key::battle::HAS_INITIAL_INPUT] = has_initial_input ? 1u : 0u;
+        out_ctx[savor::context::key::battle::INITIAL_INPUT] = initial;
 
-        out_ctx[savor::keys::battle::TURN_PLANS] = path;
-        out_ctx[savor::keys::battle::LAST_TURN] = max_turn;
+        out_ctx[savor::context::key::battle::TURN_PLANS] = path;
+        out_ctx[savor::context::key::battle::LAST_TURN] = max_turn;
 
-        out_ctx[savor::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
-        out_ctx[savor::keys::battle::FAKE_ATTACK_BUDGET_MAX] = budget_max;
-        out_ctx[savor::keys::battle::FAKE_ATTACK_USED_BEFORE] = used_before;
-        out_ctx[savor::keys::battle::OUTPUT_SAVESTATE_PATH] = output_savestate_path;
+        out_ctx[savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
+        out_ctx[savor::context::key::battle::FAKE_ATTACK_BUDGET_MAX] = budget_max;
+        out_ctx[savor::context::key::battle::FAKE_ATTACK_USED_BEFORE] = used_before;
+        out_ctx[savor::context::key::battle::OUTPUT_SAVESTATE_PATH] = output_savestate_path;
 
-        out_ctx[savor::keys::core::PRED_COUNT] = pred_count;
-        out_ctx[savor::keys::core::PRED_TABLE] = pred_table;
-        out_ctx[savor::keys::core::PRED_BASELINES] = pred_bases;
-        out_ctx[savor::keys::core::PRED_PASSED] = (uint32_t)0;
-        out_ctx[savor::keys::core::PRED_TOTAL] = (uint32_t)0;
-        out_ctx[savor::keys::core::PRED_ABORT_RUN] = (uint32_t)0;
+        out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;
+        out_ctx[savor::context::key::core::PRED_TABLE] = pred_table;
+        out_ctx[savor::context::key::core::PRED_BASELINES] = pred_bases;
+        out_ctx[savor::context::key::core::PRED_PASSED] = (uint32_t)0;
+        out_ctx[savor::context::key::core::PRED_TOTAL] = (uint32_t)0;
+        out_ctx[savor::context::key::core::PRED_ABORT_RUN] = (uint32_t)0;
 
         savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
         progress.set_flag(CoreProgressFlags::BattleProgress);
         progress.set_flag(CoreProgressFlags::PredicateProgress);
         progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
 
-        out_ctx[savor::keys::core::PROGRESS_RATE] = progress.poll_rate;
-        out_ctx[savor::keys::core::PROGRESS_CORE_FLAGS] = progress.flags;
+        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
         return true;
     }
 

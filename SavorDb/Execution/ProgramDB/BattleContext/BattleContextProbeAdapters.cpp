@@ -21,7 +21,7 @@
 #include "../../../../SavorCore/Phases/Programs/BattleContext/BattleContextPayload.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 #include "../../../../SavorCore/Utils/Hex.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
@@ -454,10 +454,10 @@ public:
         ResultsIni out{};
         out.w_err = result.ps.w_err;
         if (out.w_err == 0) {
-            result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+            result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
         std::string context_blob;
-        if (result.ps.ctx.get(savor::keys::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
+        if (result.ps.ctx.get(savor::context::key::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
             out.context_blob = context_blob;
             out.context_blob_len = static_cast<std::int64_t>(context_blob.size());
             out.context_version = soa::battle::ctx::codec::ver;

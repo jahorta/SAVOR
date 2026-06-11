@@ -15,7 +15,7 @@
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
 #include "../../Core/Memory/KeyHostRouter.h"
-#include "../Breakpoints/BPRegistry.h"
+#include "../Breakpoints/BpRegistry.h"
 #include "ScriptProgress.h"
 #include "../../Utils/IniDoc.h"
 #include <thread>
@@ -68,6 +68,26 @@ namespace {
         }
     }
 
+    static const BPAddr* find_hit_bp(
+        const BreakpointMap& bpmap,
+        const std::vector<BPKey>& canonical_bp_keys,
+        const std::vector<BPKey>& predicate_bp_keys,
+        uint32_t pc)
+    {
+        for (auto k : canonical_bp_keys) {
+            if (const auto* e = bpmap.find(k); e && e->pc == pc) return e;
+        }
+        for (auto k : predicate_bp_keys) {
+            if (const auto* e = bpmap.find(k); e && e->pc == pc) return e;
+        }
+        return nullptr;
+    }
+
+    static const char* stable_bp_id_or_empty(const BPAddr* bp)
+    {
+        return bp != nullptr && bp->stable_id != nullptr ? bp->stable_id : "";
+    }
+
     inline bool read_via_addrprog(savor::DolphinWrapper& host,
         const savor::IDerivedBuffer* derived,
         const std::string& table_and_blob,
@@ -86,7 +106,7 @@ namespace {
         if (op != 0x01) return false; // OP_BASE_KEY
         uint16_t key = uint16_t(p[0]) | (uint16_t(p[1]) << 8);
 
-        const auto region = addr::Registry::region(static_cast<addr::AddrKey>(key)); // MEM1/MEM2/DERIVED
+        const auto region = addr::AddrRegistry::region(static_cast<addr::AddrKey>(key)); // MEM1/MEM2/DERIVED
         const auto res = addrprog::exec(base, sz, prog_off, host, derived);        
         if (!res.ok) return false;
 
@@ -123,8 +143,8 @@ namespace savor {
             }
         }
 
-        std::string key_desc(savor::keys::KeyId key) {
-            const std::string_view name = savor::keys::name_for_id(key);
+        std::string key_desc(savor::context::key::KeyId key) {
+            const std::string_view name = savor::context::key::name_for_id(key);
             if (!name.empty()) return std::string(name);
             return std::to_string(static_cast<uint32_t>(key));
         }
@@ -265,12 +285,12 @@ namespace savor {
     }
 
     bool PhaseScriptVM::op_arm_phase_bps_once() { arm_bps_once(); return true; }
-    bool PhaseScriptVM::op_load_snapshot(PSContext& ctx) { if (!load_snapshot()) return false; ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); return true; }
+    bool PhaseScriptVM::op_load_snapshot(PSContext& ctx) { if (!load_snapshot()) return false; ctx[savor::context::key::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); return true; }
     bool PhaseScriptVM::op_capture_snapshot() { return save_snapshot(); }
     bool PhaseScriptVM::op_reboot_core(PSResult& result, PSContext& ctx) {
         std::string iso_path{};
-        if (!ctx.get(keys::core::GAME_ISO_PATH, iso_path)) {
-            ctx[keys::core::WORKER_ERROR] = (uint32_t)32;
+        if (!ctx.get(savor::context::key::core::GAME_ISO_PATH, iso_path)) {
+            ctx[savor::context::key::core::WORKER_ERROR] = (uint32_t)32;
             result.ctx = ctx;
             return false;
         }
@@ -300,14 +320,14 @@ namespace savor {
     void PhaseScriptVM::op_end_deterministic_run() const { host_.endMovieRecording(); }
     bool PhaseScriptVM::op_read_u8(const PSOp& op, PSResult&, PSContext& ctx) { uint8_t v{}; if (!read_u8(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_u16(const PSOp& op, PSResult&, PSContext& ctx) { uint16_t v{}; if (!read_u16(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
-    bool PhaseScriptVM::op_read_u32(const PSOp& op, PSResult&, PSContext& ctx) { uint32_t v{}; if (!read_u32(op.rd.addr, v)) { SCLOGD("[VM] READ_U32 FAIL @%08X key=%s", op.rd.addr, keys::name_for_id(op.rd.dst).data()); return false; } SCLOGD("[VM] READ_U32 @%08X -> %08X key=%s", op.rd.addr, v, keys::name_for_id(op.rd.dst).data()); ctx[op.rd.dst] = v; return true; }
+    bool PhaseScriptVM::op_read_u32(const PSOp& op, PSResult&, PSContext& ctx) { uint32_t v{}; if (!read_u32(op.rd.addr, v)) { SCLOGD("[VM] READ_U32 FAIL @%08X key=%s", op.rd.addr, savor::context::key::name_for_id(op.rd.dst).data()); return false; } SCLOGD("[VM] READ_U32 @%08X -> %08X key=%s", op.rd.addr, v, savor::context::key::name_for_id(op.rd.dst).data()); ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_f32(const PSOp& op, PSResult&, PSContext& ctx) { float v{}; if (!read_f32(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
     bool PhaseScriptVM::op_read_f64(const PSOp& op, PSResult&, PSContext& ctx) { double v{}; if (!read_f64(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
-    void PhaseScriptVM::op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const { SCLOGD("[VM] EMIT_RESULT %s=%08X", keys::name_for_id(op.key.id).data(), ctx[op.key.id]); result.ctx[op.key.id] = ctx[op.key.id]; }
-    bool PhaseScriptVM::op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const { ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); result.ctx = ctx; result.ctx[op.keyimm.key] = op.keyimm.imm; uint32_t dw_outcome = 0; ctx.get(keys::core::DW_RUN_OUTCOME_CODE, dw_outcome); result.ok = dw_outcome == 0; return true; }
+    void PhaseScriptVM::op_emit_result(const PSOp& op, PSResult& result, PSContext& ctx) const { SCLOGD("[VM] EMIT_RESULT %s=%08X", savor::context::key::name_for_id(op.key.id).data(), ctx[op.key.id]); result.ctx[op.key.id] = ctx[op.key.id]; }
+    bool PhaseScriptVM::op_return_result(const PSOp& op, PSResult& result, PSContext& ctx) const { ctx[savor::context::key::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull); result.ctx = ctx; result.ctx[op.keyimm.key] = op.keyimm.imm; uint32_t dw_outcome = 0; ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_outcome); result.ok = dw_outcome == 0; return true; }
     bool PhaseScriptVM::op_apply_input_from(const PSOp& op, PSResult&, PSContext& ctx) { auto it = ctx.find(op.key.id); if (it == ctx.end()) return false; if (auto p = std::get_if<GCInputFrame>(&it->second)) { host_.setInput(*p); return true; } return false; }
-    void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[keys::core::RUN_MS] = op.imm.v; }
-    void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[keys::core::RUN_MS] = timeout_ms; }
+    void PhaseScriptVM::op_set_timeout(const PSOp& op, PSContext& ctx) const { ctx[savor::context::key::core::RUN_MS] = op.imm.v; }
+    void PhaseScriptVM::op_set_timeout_from(const PSOp& op, PSContext& ctx) const { uint32_t timeout_ms; ctx.get<uint32_t>(op.key.id, timeout_ms); ctx[savor::context::key::core::RUN_MS] = timeout_ms; }
     bool PhaseScriptVM::op_movie_play_from(const PSOp& op, PSResult&, PSContext& ctx) {
         std::string path;
         ctx.get<std::string>(op.key.id, path);
@@ -335,7 +355,7 @@ namespace savor {
         std::string path;
         ctx.get<std::string>(op.key.id, path);
         if (path.empty()) {
-            SCLOGW("[VM] SAVE_SAVESTATE skipped empty path key=%s", keys::name_for_id(op.key.id).data());
+            SCLOGW("[VM] SAVE_SAVESTATE skipped empty path key=%s", savor::context::key::name_for_id(op.key.id).data());
             result.ctx = ctx;
             return true;
         }
@@ -345,80 +365,80 @@ namespace savor {
             result.ctx = ctx;
             return false;
         }
-        ctx[keys::core::LAST_SAVESTATE_PATH] = path;
+        ctx[savor::context::key::core::LAST_SAVESTATE_PATH] = path;
         SCLOGI("[VM] SAVE_SAVESTATE end path=%s", path.c_str());
         return true;
     }
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
     void PhaseScriptVM::op_build_turn_inputplan_from_battle_path(PSContext& ctx) const {
         uint32_t turn = 0;
-        ctx.get<uint32_t>(keys::battle::ACTIVE_TURN, turn);
+        ctx.get<uint32_t>(savor::context::key::battle::ACTIVE_TURN, turn);
         if (turn == 0) {
-            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::InvalidTurnIdxZero;
-            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::InvalidTurnIdxZero;
+            ctx[savor::context::key::core::PLAN_DONE] = (uint32_t)1;
         }
         soa::battle::actions::BattlePath bp;
-        if (!ctx.get<soa::battle::actions::BattlePath>(keys::battle::TURN_PLANS, bp)) {
-            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::BadBlob;
-            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+        if (!ctx.get<soa::battle::actions::BattlePath>(savor::context::key::battle::TURN_PLANS, bp)) {
+            ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::BadBlob;
+            ctx[savor::context::key::core::PLAN_DONE] = (uint32_t)1;
             return;
         }
         if (turn > bp.size()) {
-            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::OutOfTurns;
-            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)soa::battle::actions::MaterializeErr::OutOfTurns;
+            ctx[savor::context::key::core::PLAN_DONE] = (uint32_t)1;
             return;
         }
         soa::battle::ctx::BattleContext bc{};
         std::string blob;
-        if (ctx.get<std::string>(keys::battle::CTX_BLOB, blob)) soa::battle::ctx::codec::decode(blob, bc);
+        if (ctx.get<std::string>(savor::context::key::battle::CTX_BLOB, blob)) soa::battle::ctx::codec::decode(blob, bc);
         const auto& turn_plan = bp[turn - 1];
         savor::InputPlan plan;
         auto err = soa::battle::actions::MaterializeErr::OK;
         if (!soa::battle::actions::ActionLibrary::generateTurnPlan(bc, turn_plan, plan, err)) {
-            ctx[keys::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)err;
-            ctx[keys::core::PLAN_DONE] = (uint32_t)1;
+            ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)err;
+            ctx[savor::context::key::core::PLAN_DONE] = (uint32_t)1;
             return;
         }
         const uint32_t n = static_cast<uint32_t>(plan.size());
         std::string counts; counts.resize(sizeof(uint32_t)); std::memcpy(counts.data(), &n, sizeof(uint32_t));
         std::string frames; frames.resize(n * sizeof(savor::GCInputFrame)); if (n) std::memcpy(frames.data(), plan.data(), frames.size());
-        ctx[savor::keys::battle::NUM_TURN_PLANS] = uint32_t(1);
-        ctx[savor::keys::battle::INPUTPLAN_FRAME_COUNT] = counts;
-        ctx[savor::keys::battle::INPUTPLAN] = frames;
-        ctx[keys::battle::PLAN_MATERIALIZE_ERR] = uint32_t((uint32_t)soa::battle::actions::MaterializeErr::OK);
-        ctx[keys::core::PLAN_DONE] = uint32_t(0);
+        ctx[savor::context::key::battle::NUM_TURN_PLANS] = uint32_t(1);
+        ctx[savor::context::key::battle::INPUTPLAN_FRAME_COUNT] = counts;
+        ctx[savor::context::key::battle::INPUTPLAN] = frames;
+        ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = uint32_t((uint32_t)soa::battle::actions::MaterializeErr::OK);
+        ctx[savor::context::key::core::PLAN_DONE] = uint32_t(0);
     }
 
     void PhaseScriptVM::op_apply_battle_inputplan_frames(PSContext& ctx) {
-        auto itC = ctx.find(keys::battle::INPUTPLAN_FRAME_COUNT);
-        auto itT = ctx.find(keys::battle::INPUTPLAN);
-        ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(0);
-        ctx[keys::battle::INPUT_PLAYBACK_UNACKED] = uint32_t(0);
+        auto itC = ctx.find(savor::context::key::battle::INPUTPLAN_FRAME_COUNT);
+        auto itT = ctx.find(savor::context::key::battle::INPUTPLAN);
+        ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(0);
+        ctx[savor::context::key::battle::INPUT_PLAYBACK_UNACKED] = uint32_t(0);
         if (itC == ctx.end() || itT == ctx.end()) {
-            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(1);
+            ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(1);
             return;
         }
         const auto* counts_s = std::get_if<std::string>(&itC->second);
         const auto* table_s = std::get_if<std::string>(&itT->second);
         if (!counts_s || !table_s || counts_s->size() < sizeof(uint32_t)) {
-            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
+            ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
             return;
         }
         const uint8_t* counts = (const uint8_t*)counts_s->data();
         const uint8_t* frames = (const uint8_t*)table_s->data();
-        if (counts == 0) { ctx[keys::core::PLAN_DONE] = uint32_t(1); return; }
+        if (counts == 0) { ctx[savor::context::key::core::PLAN_DONE] = uint32_t(1); return; }
         const uint32_t apply_vi_start = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         host_.setEnableAllBreakpoints(false);
         uint32_t count = 0;
         std::memcpy(&count, counts, sizeof(uint32_t));
         if (table_s->size() < static_cast<size_t>(count) * sizeof(GCInputFrame)) {
             host_.setEnableAllBreakpoints(true);
-            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
+            ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
             return;
         }
         savor::InputPlan plan{}; plan.reserve(count);
         uint32_t rand{ 0 };
-        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        host_.readU32(addr::AddrRegistry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG before inputs %X", rand);
         for (uint32_t idx = 0; idx < count; idx++) {
             GCInputFrame f{};
@@ -426,7 +446,7 @@ namespace savor {
             plan.push_back(f);
         }
         uint32_t retry_count = 0;
-        ctx.get(keys::battle::INPUT_RETRY_COUNT, retry_count);
+        ctx.get(savor::context::key::battle::INPUT_RETRY_COUNT, retry_count);
         std::string playback_label = std::format("battle_turn_attempt_{}", retry_count);
         const auto playback = host_.playInputTapeBlocking(
             plan,
@@ -435,13 +455,13 @@ namespace savor {
                 .safe_mode = retry_count > 0,
                 .label = playback_label.c_str(),
             });
-        host_.readU32(addr::Registry::base(addr::core::RNG_SEED), rand);
+        host_.readU32(addr::AddrRegistry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG after inputs %X", rand);
         host_.setEnableAllBreakpoints(true);
-        ctx[keys::battle::INPUT_PLAYBACK_UNACKED] = playback.unacked_count;
+        ctx[savor::context::key::battle::INPUT_PLAYBACK_UNACKED] = playback.unacked_count;
         if (!playback.ok) {
-            ctx[keys::battle::INPUT_PLAYBACK_ERR] = uint32_t(3);
-            ctx[keys::core::PLAN_DONE] = uint32_t(0);
+            ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(3);
+            ctx[savor::context::key::core::PLAN_DONE] = uint32_t(0);
             SCLOGDX(SC_TAGS("vm", "input"),
                 "[VM] input playback failed attempt=%u failed_index=%u unacked=%u",
                 retry_count,
@@ -451,25 +471,25 @@ namespace savor {
         }
         const uint32_t apply_vi_end = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         uint32_t turn_number = 0;
-        if (!ctx.get(keys::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(keys::battle::ACTIVE_TURN, turn_number);
-        std::string turn_blob; (void)ctx.get(keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+        if (!ctx.get(savor::context::key::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(savor::context::key::battle::ACTIVE_TURN, turn_number);
+        std::string turn_blob; (void)ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         savor::inputtape::TurnChunk chunk{}; chunk.turn_number = turn_number; chunk.vi_start = apply_vi_start; chunk.vi_end = apply_vi_end; chunk.frames = playback.attempted_frames; chunk.vi_durations = playback.vi_durations;
         (void)savor::inputtape::append_turn_chunk(turn_blob, chunk);
-        ctx[keys::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
-        ctx[keys::battle::APPLIED_INPUTPLAN_COUNT] = static_cast<uint32_t>(playback.attempted_frames.size());
-        ctx[keys::core::PLAN_DONE] = uint32_t(1);
+        ctx[savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
+        ctx[savor::context::key::battle::APPLIED_INPUTPLAN_COUNT] = static_cast<uint32_t>(playback.attempted_frames.size());
+        ctx[savor::context::key::core::PLAN_DONE] = uint32_t(1);
         uint32_t cur_turn_plans = 0;
-        ctx.get(keys::battle::NUM_TURN_PLANS, cur_turn_plans);
-        ctx[keys::battle::NUM_TURN_PLANS] = cur_turn_plans > 0 ? cur_turn_plans - 1 : 0;
+        ctx.get(savor::context::key::battle::NUM_TURN_PLANS, cur_turn_plans);
+        ctx[savor::context::key::battle::NUM_TURN_PLANS] = cur_turn_plans > 0 ? cur_turn_plans - 1 : 0;
     }
     void PhaseScriptVM::op_run_until_bp(PSContext& ctx) {
         using savor::RunToBpOutcome;
         run_until_bp_active_.store(true, std::memory_order_release);
-        uint32_t timeout_ms = init_.default_timeout_ms; ctx.get<uint32_t>(keys::core::RUN_MS, timeout_ms);
-        uint32_t vi_stall_ms = 0; ctx.get<uint32_t>(keys::core::VI_STALL_MS, vi_stall_ms);
+        uint32_t timeout_ms = init_.default_timeout_ms; ctx.get<uint32_t>(savor::context::key::core::RUN_MS, timeout_ms);
+        uint32_t vi_stall_ms = 0; ctx.get<uint32_t>(savor::context::key::core::VI_STALL_MS, vi_stall_ms);
         const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
         const bool watch_movie = true;
-        uint32_t progress_flags = 0; ctx.get<uint32_t>(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
+        uint32_t progress_flags = 0; ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
         auto t0 = std::chrono::steady_clock::now();
         host_.disableThrottle();
         auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, watch_movie, poll_ms, progress_flags);
@@ -484,56 +504,57 @@ namespace savor {
             else if (std::strcmp(rr.reason, "vi_stalled") == 0) outcome = RunToBpOutcome::ViStalled;
             else if (std::strcmp(rr.reason, "movie_ended") == 0) outcome = RunToBpOutcome::MovieEnded;
         }
-        ctx[keys::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
-        ctx[keys::core::ELAPSED_MS] = elapsed_ms;
-        ctx[keys::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
-        ctx[keys::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
-        ctx[keys::core::POLL_MS] = poll_ms;
-        ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(outcome);
+        ctx[savor::context::key::core::ELAPSED_MS] = elapsed_ms;
+        ctx[savor::context::key::core::RUN_HIT_PC] = rr.hit ? (uint32_t)rr.pc : (uint32_t)0u;
+        ctx[savor::context::key::core::VI_DELTA] = (uint32_t)(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
+        ctx[savor::context::key::core::POLL_MS] = poll_ms;
+        ctx[savor::context::key::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        const BPAddr* hit_bp = nullptr;
         uint32_t hit_bp_key = 0;
         if (rr.hit) {
-            for (auto k : canonical_bp_keys_) if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
-            for (auto k : predicate_bp_keys_) if (const auto* e = bpmap_.find(k); e && e->pc == rr.pc) { hit_bp_key = (uint32_t)e->key; break; }
+            hit_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc));
+            if (hit_bp != nullptr) hit_bp_key = static_cast<uint32_t>(hit_bp->key);
         }
-        ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
+        SCLOGDX(
+            SC_TAGS("vm", "breakpoint"),
+            "[VM] run_until_bp outcome=%u pc=%08X bp_key=%u bp_symbol=%s",
+            static_cast<uint32_t>(outcome),
+            rr.hit ? static_cast<uint32_t>(rr.pc) : 0u,
+            hit_bp_key,
+            stable_bp_id_or_empty(hit_bp));
+        ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
         if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
     }
     void PhaseScriptVM::op_record_current_bp(PSContext& ctx) {
         const uint32_t pc = host_.getPC();
-        uint32_t hit_bp_key = 0;
-        for (auto k : canonical_bp_keys_) {
-            if (const auto* e = bpmap_.find(k); e && e->pc == pc) {
-                hit_bp_key = static_cast<uint32_t>(e->key);
-                break;
-            }
-        }
-        if (hit_bp_key == 0) {
-            for (auto k : predicate_bp_keys_) {
-                if (const auto* e = bpmap_.find(k); e && e->pc == pc) {
-                    hit_bp_key = static_cast<uint32_t>(e->key);
-                    break;
-                }
-            }
-        }
-        ctx[keys::core::DW_RUN_OUTCOME_CODE] = hit_bp_key != 0
+        const BPAddr* hit_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, pc);
+        uint32_t hit_bp_key = hit_bp != nullptr ? static_cast<uint32_t>(hit_bp->key) : 0u;
+        SCLOGDX(
+            SC_TAGS("vm", "breakpoint"),
+            "[VM] record_current_bp pc=%08X bp_key=%u bp_symbol=%s",
+            pc,
+            hit_bp_key,
+            stable_bp_id_or_empty(hit_bp));
+        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = hit_bp_key != 0
             ? static_cast<uint32_t>(RunToBpOutcome::Hit)
             : static_cast<uint32_t>(RunToBpOutcome::Unknown);
-        ctx[keys::core::RUN_HIT_PC] = pc;
-        ctx[keys::core::RUN_HIT_BP_KEY] = hit_bp_key;
-        ctx[keys::core::VI_DELTA] = 0u;
-        ctx[keys::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        ctx[savor::context::key::core::RUN_HIT_PC] = pc;
+        ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
+        ctx[savor::context::key::core::VI_DELTA] = 0u;
+        ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         if (derived_ && hit_bp_key != 0) derived_->update_on_bp(hit_bp_key, ctx, host_);
     }
     void PhaseScriptVM::op_record_tas_input_sample(PSContext& ctx) {
         uint32_t sample_count = 0;
-        ctx.get<uint32_t>(keys::tasframedetector::SAMPLE_COUNT, sample_count);
+        ctx.get<uint32_t>(savor::context::key::tasframedetector::SAMPLE_COUNT, sample_count);
 
         const uint32_t vi = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         const uint64_t input_count = host_.getCurrentMovieInputCount();
         const uint32_t movie_ended = host_.isMoviePlaybackEnded() ? 1u : 0u;
 
         std::string stream_ini;
-        (void)ctx.get<std::string>(keys::tasframedetector::STREAM_INI, stream_ini);
+        (void)ctx.get<std::string>(savor::context::key::tasframedetector::STREAM_INI, stream_ini);
         IniDoc doc = stream_ini.empty() ? IniDoc{} : IniDoc::parse(stream_ini);
         doc.ensure_section("FrameSamples");
         const std::string idx = std::to_string(sample_count);
@@ -543,10 +564,10 @@ namespace savor {
         doc.set("FrameSamples", "movie_ended." + idx, std::to_string(movie_ended));
         doc.set("FrameSamples", "count", std::to_string(sample_count + 1));
 
-        ctx[keys::tasframedetector::STREAM_INI] = doc.to_string_sorted();
-        ctx[keys::tasframedetector::SAMPLE_COUNT] = sample_count + 1;
-        ctx[keys::tasframedetector::MOVIE_ENDED] = movie_ended;
-        ctx[keys::tasframedetector::INPUT_COUNT] = static_cast<uint32_t>(input_count & 0xFFFFFFFFu);
+        ctx[savor::context::key::tasframedetector::STREAM_INI] = doc.to_string_sorted();
+        ctx[savor::context::key::tasframedetector::SAMPLE_COUNT] = sample_count + 1;
+        ctx[savor::context::key::tasframedetector::MOVIE_ENDED] = movie_ended;
+        ctx[savor::context::key::tasframedetector::INPUT_COUNT] = static_cast<uint32_t>(input_count & 0xFFFFFFFFu);
 
         SCLOGT("[TasInputStreamDetector] sample=%u vi=%u input_count=%llu movie_ended=%u",
             sample_count,
@@ -561,11 +582,11 @@ namespace savor {
         soa::battle::ctx::BattleContext bc{};
         if (!soa::battle::ctx::codec::extract_from_mem1(view, bc)) { result.ok = false; return; }
         std::string blob; soa::battle::ctx::codec::encode(bc, blob);
-        ctx[savor::keys::battle::CTX_BLOB] = blob;
+        ctx[savor::context::key::battle::CTX_BLOB] = blob;
     }
     void PhaseScriptVM::op_arm_bps_from_pred_table(PSContext& ctx) {
-        auto itN = ctx.find(keys::core::PRED_COUNT);
-        auto itT = ctx.find(keys::core::PRED_TABLE);
+        auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
+        auto itT = ctx.find(savor::context::key::core::PRED_TABLE);
         if (itN == ctx.end() || itT == ctx.end()) return;
         const uint32_t n = std::get<uint32_t>(itN->second);
         const auto* tbl = std::get_if<std::string>(&itT->second);
@@ -590,10 +611,10 @@ namespace savor {
         if (!pcs.empty()) host_.armPcBreakpoints(pcs);
     }
     void PhaseScriptVM::op_capture_pred_baselines(PSContext& ctx, KeyHostRouter& router) {
-        auto itN = ctx.find(keys::core::PRED_COUNT);
-        auto itT = ctx.find(keys::core::PRED_TABLE);
-        auto itB = ctx.find(keys::core::PRED_BASELINES);
-        auto itHit = ctx.find(keys::core::RUN_HIT_BP_KEY);
+        auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
+        auto itT = ctx.find(savor::context::key::core::PRED_TABLE);
+        auto itB = ctx.find(savor::context::key::core::PRED_BASELINES);
+        auto itHit = ctx.find(savor::context::key::core::RUN_HIT_BP_KEY);
         if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end() || itHit == ctx.end()) return;
         const uint32_t n = std::get<uint32_t>(itN->second);
         const auto* tbl = std::get_if<std::string>(&itT->second);
@@ -621,12 +642,12 @@ namespace savor {
         }
     }
     void PhaseScriptVM::op_eval_predicates_at_hit_bp(PSContext& ctx, KeyHostRouter& router) {
-        uint32_t total = 0; ctx.get(keys::core::PRED_TOTAL, total);
-        uint32_t pass = 0; ctx.get(keys::core::PRED_PASSED, pass);
-        auto itN = ctx.find(keys::core::PRED_COUNT);
-        auto itT = ctx.find(keys::core::PRED_TABLE);
-        auto itB = ctx.find(keys::core::PRED_BASELINES);
-        auto itHit = ctx.find(keys::core::RUN_HIT_BP_KEY);
+        uint32_t total = 0; ctx.get(savor::context::key::core::PRED_TOTAL, total);
+        uint32_t pass = 0; ctx.get(savor::context::key::core::PRED_PASSED, pass);
+        auto itN = ctx.find(savor::context::key::core::PRED_COUNT);
+        auto itT = ctx.find(savor::context::key::core::PRED_TABLE);
+        auto itB = ctx.find(savor::context::key::core::PRED_BASELINES);
+        auto itHit = ctx.find(savor::context::key::core::RUN_HIT_BP_KEY);
         if (itN == ctx.end() || itT == ctx.end() || itB == ctx.end() || itHit == ctx.end()) return;
         const uint32_t n = std::get<uint32_t>(itN->second);
         const auto* tbl = std::get_if<std::string>(&itT->second);
@@ -651,16 +672,16 @@ namespace savor {
             switch (r.cmp) { case 0: ok = (lhs == rhs); break; case 1: ok = (lhs != rhs); break; case 2: ok = (lhs < rhs); break; case 3: ok = (lhs <= rhs); break; case 4: ok = (lhs > rhs); break; case 5: ok = (lhs >= rhs); break; default: ok = false; break; }
             std::string cmp_string = std::to_string(lhs) + " " + pred::get_cmp_string((pred::CmpOp)r.cmp) + " " + std::to_string(rhs);
             uint32_t progress;
-            if (ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink()) {
+            if (ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress) && (progress & (uint32_t)CoreProgressFlags::PredicateProgress) != 0 && host_.getProgressSink()) {
                 std::string msg = std::format("{} - {}", r.name, cmp_string);
                 msg = std::string("Pred") + (ok ? "(Passed): " : "(Failed): ") + msg;
                 host_.getProgressSink()(msg.c_str(), true);
             }
             ++total; if (ok) ++pass;
-            if (!ok && r.has_flag(pred::PredFlag::AbortOnFail)) { ctx[keys::core::PRED_ABORT_RUN] = (uint32_t)1; break; }
+            if (!ok && r.has_flag(pred::PredFlag::AbortOnFail)) { ctx[savor::context::key::core::PRED_ABORT_RUN] = (uint32_t)1; break; }
         }
-        ctx[keys::core::PRED_PASSED] = pass;
-        ctx[keys::core::PRED_TOTAL] = total;
+        ctx[savor::context::key::core::PRED_PASSED] = pass;
+        ctx[savor::context::key::core::PRED_TOTAL] = total;
     }
 
     PSResult PhaseScriptVM::run(const PSJob& job)
@@ -673,7 +694,7 @@ namespace savor {
         // Always start by restoring the pre-captured snapshot for each job
         if (!load_snapshot()) return R;
 
-        ctx[keys::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        ctx[savor::context::key::core::VI_FIRST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
 
         if (derived_) derived_->on_init(ctx);
         DolphinKeyReader     mem1_reader(&host_);
@@ -732,7 +753,7 @@ namespace savor {
             default: break;
             }
         }
-        ctx[keys::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+        ctx[savor::context::key::core::VI_LAST] = (uint32_t)(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
         R.ctx = ctx;
         R.ok = true;
         return R;

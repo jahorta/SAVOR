@@ -3,7 +3,7 @@
 #include <sstream>
 #include <filesystem>
 #include "Utils/ThreadName.h"
-#include "Runner/Script/KeyRegistry.h"
+#include "Runner/Script/CtxRegistry.h"
 #include "Runner/Script/PSContextCodec.h"
 
 namespace savor {

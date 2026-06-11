@@ -4,7 +4,7 @@
 #include "Core/Memory/Soa/SoaAddrCatalog.h"
 #include "Core/Memory/Soa/SoaAddrProgramBuilder.h"
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Breakpoints/Predicate.h"
 
 #include <QtCore/QSignalBlocker>
@@ -523,7 +523,7 @@ void PredicateSpecEditorWindow::populateAddrKeys()
 {
     addrKeys_.clear();
     addrNames_.clear();
-    for (const auto& rec : addr::Registry::all()) {
+    for (const auto& rec : addr::AddrRegistry::all()) {
         addrKeys_.push_back(static_cast<int>(rec.key));
         addrNames_.push_back(QString::fromUtf8(rec.name));
     }
@@ -536,7 +536,7 @@ void PredicateSpecEditorWindow::populateBreakpointCombo(QComboBox* combo) const
     }
     combo->clear();
     combo->addItem(QStringLiteral("(none)"), 0);
-    for (const BPAddr& bp : bp::BPRegistry::all()) {
+    for (const BPAddr& bp : bp::BpRegistry::all()) {
         combo->addItem(QStringLiteral("%1 @ 0x%2")
                            .arg(QString::fromUtf8(bp.name))
                            .arg(bp.pc, 8, 16, QLatin1Char('0')),
@@ -846,7 +846,7 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
         }
     } else if (lhsMode == ValueSourceMode::AddrKey) {
         const int keyValue = lhsKeyCombo_ != nullptr ? lhsKeyCombo_->currentData().toInt() : 0;
-        if (lhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::Registry::exists(static_cast<addr::AddrKey>(keyValue))) {
+        if (lhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::AddrRegistry::exists(static_cast<addr::AddrKey>(keyValue))) {
             errors.push_back(QStringLiteral("LHS AddrKey is not set or invalid."));
         }
     } else if (lhsMode == ValueSourceMode::AddrProgram && lhsProgramDraft_.blob.isEmpty()) {
@@ -869,7 +869,7 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
         }
     } else if (rhsMode == ValueSourceMode::AddrKey) {
         const int keyValue = rhsKeyCombo_ != nullptr ? rhsKeyCombo_->currentData().toInt() : 0;
-        if (rhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::Registry::exists(static_cast<addr::AddrKey>(keyValue))) {
+        if (rhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::AddrRegistry::exists(static_cast<addr::AddrKey>(keyValue))) {
             errors.push_back(QStringLiteral("RHS AddrKey is not set or invalid."));
         }
     } else if (rhsMode == ValueSourceMode::AddrProgram && rhsProgramDraft_.blob.isEmpty()) {

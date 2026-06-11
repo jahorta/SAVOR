@@ -6,12 +6,12 @@
 #include <sstream>
 #include <string>
 
-#include "../../Execution/Jobs/JobEventOrchestration.h"
+#include "../../Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SavorCore/Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Tas/DtmFile.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
@@ -517,12 +517,12 @@ public:
         TasMovieResultsIni out{};
         out.w_err = result.ps.w_err;
         if (out.w_err == 0) {
-            result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+            result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
-        result.ps.ctx.get(savor::keys::core::RUN_MS, out.run_ms_used);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
-        result.ps.ctx.get(savor::keys::tas::SAVE_PATH, out.savestate_path);
+        result.ps.ctx.get(savor::context::key::core::RUN_MS, out.run_ms_used);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::tas::SAVE_PATH, out.savestate_path);
         return out.ToIniText();
     }
 

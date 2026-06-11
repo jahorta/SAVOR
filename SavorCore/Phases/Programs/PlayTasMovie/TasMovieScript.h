@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 #include "../../../Runner/Script/PhaseScriptVM.h"
-#include "../../../Runner/Script/KeyRegistry.h"
-#include "../../../Runner/Breakpoints/BPRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
+#include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "TasMoviePayload.h"
 
 namespace savor::tasmovie {
@@ -18,28 +18,28 @@ namespace savor::tasmovie {
         };
 
         // 1) Make sure the disc matches the movie and reset game state.
-        p.ops.push_back(OpRequireDiscGameIdFrom(keys::tas::DISC_ID6));
+        p.ops.push_back(OpRequireDiscGameIdFrom(savor::context::key::tas::DISC_ID6));
 
         // 2) Start movie playback from the DTM path provided by the job.
-        p.ops.push_back(OpMoviePlayFrom(keys::tas::DTM_PATH));
+        p.ops.push_back(OpMoviePlayFrom(savor::context::key::tas::DTM_PATH));
 
         // 3) Set a per-job timeout derived from the DTM header.
-        p.ops.push_back(OpSetTimeoutFromKey(keys::core::RUN_MS));
+        p.ops.push_back(OpSetTimeoutFromKey(savor::context::key::core::RUN_MS));
 
         // 4) Run until any armed canonical BP triggers (or failure/timeouts/watchdogs).
         p.ops.push_back(OpRunUntilBp());
 
         // 5) Always stop playback cleanly.
         p.ops.push_back(OpMovieStop());
-        p.ops.push_back(OpGotoIf(keys::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0, "DW_ERR"));
+        p.ops.push_back(OpGotoIf(savor::context::key::core::DW_RUN_OUTCOME_CODE, PSCmp::NE, 0, "DW_ERR"));
 
         // 6) Save a state named after the DTM path (worker decides whether to save-on-fail by consulting context).
-        p.ops.push_back(OpSaveSavestateFrom(keys::tas::SAVE_PATH));
+        p.ops.push_back(OpSaveSavestateFrom(savor::context::key::tas::SAVE_PATH));
         p.ops.push_back(OpStepFrames(1, true));  // Prevents worker from not detecting a save-state load if the worker uses the above saved save state.
-        p.ops.push_back(OpReturnResult(keys::tas::MOVIE_FAILED, 0));
+        p.ops.push_back(OpReturnResult(savor::context::key::tas::MOVIE_FAILED, 0));
 
         p.ops.push_back(OpLabel("DW_ERR"));
-        p.ops.push_back(OpReturnResult(keys::tas::MOVIE_FAILED, 1));
+        p.ops.push_back(OpReturnResult(savor::context::key::tas::MOVIE_FAILED, 1));
 
         return p;
     }

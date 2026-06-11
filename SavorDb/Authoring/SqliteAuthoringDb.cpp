@@ -101,7 +101,7 @@ void BindOptionalText(sqlite3_stmt* st, int index, const std::optional<std::stri
 bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::string* error_out) {
     if (command.name.empty()
         || command.breakpoint_id == 0
-        || bp::BPRegistry::find(command.breakpoint_id) == nullptr
+        || bp::BpRegistry::find(command.breakpoint_id) == nullptr
         || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
         || command.event_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
@@ -114,7 +114,7 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
             return false;
         }
         for (const auto bp_key : command.baseline_breakpoint_ids) {
-            if (bp_key == 0 || bp::BPRegistry::find(bp_key) == nullptr) {
+            if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
                 if (error_out) *error_out = "baseline breakpoint is invalid";
                 return false;
             }
@@ -127,7 +127,7 @@ std::string FormatBpKeyList(const std::vector<BPKey>& values) {
     std::vector<BPKey> unique_values;
     unique_values.reserve(values.size());
     for (const auto value : values) {
-        if (value != 0 && bp::BPRegistry::find(value) != nullptr) {
+        if (value != 0 && bp::BpRegistry::find(value) != nullptr) {
             unique_values.push_back(value);
         }
     }
@@ -155,7 +155,7 @@ std::vector<BPKey> ParseBpKeyList(std::string_view text) {
         const auto [ptr, ec] = std::from_chars(first, last, value);
         if (ec == std::errc{} && ptr == last && value > 0 && value <= std::numeric_limits<BPKey>::max()) {
             const auto bp_key = static_cast<BPKey>(value);
-            if (bp::BPRegistry::find(bp_key) != nullptr) {
+            if (bp::BpRegistry::find(bp_key) != nullptr) {
                 out.push_back(bp_key);
             }
         }
@@ -1818,7 +1818,7 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_spec.st, 2, bp::BpRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(command.breakpoint_id));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
@@ -1920,7 +1920,7 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     }
 
     sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update_spec.st, 2, bp::BPRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update_spec.st, 2, bp::BpRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(update_spec.st, 3, static_cast<int>(command.breakpoint_id));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);

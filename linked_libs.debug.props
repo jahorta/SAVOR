@@ -6,6 +6,7 @@
   <ItemDefinitionGroup>
     <Link>
       <AdditionalDependencies>libcurl-d.lib;zlibstaticd.lib;fmtd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/IGNORE:4099 %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup />

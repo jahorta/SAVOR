@@ -1,6 +1,6 @@
 #pragma once
 #include "../../../Runner/Script/PhaseScriptVM.h"
-#include "../../../Runner/Breakpoints/BPRegistry.h" // for battle::FirstTurnInputs
+#include "../../../Runner/Breakpoints/BpRegistry.h" // for battle::FirstTurnInputs
 
 using namespace savor;
 
@@ -17,14 +17,14 @@ namespace phase::battle::ctx {
         ps.ops.push_back(OpLoadSnapshot()); // caller must have placed savestate into VM
         ps.ops.push_back(OpRecordCurrentBp());
         ps.ops.push_back(OpGotoIf(
-            savor::keys::core::RUN_HIT_BP_KEY,
+            savor::context::key::core::RUN_HIT_BP_KEY,
             PSCmp::EQ,
             static_cast<uint32_t>(bp::battle::TurnInputs),
             LabelCaptureContext));
         ps.ops.push_back(OpRunUntilBp());   // run neutral/turn transition -> accept input
         ps.ops.push_back(OpLabel(LabelCaptureContext));
         ps.ops.push_back(OpGetBattleContext());
-        ps.ops.push_back(OpEmitResult(savor::keys::battle::CTX_BLOB));
+        ps.ops.push_back(OpEmitResult(savor::context::key::battle::CTX_BLOB));
         return ps;
     }
 
