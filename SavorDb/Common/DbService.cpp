@@ -127,18 +127,16 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed starting Archive queue workers: " + (error_out ? *error_out : std::string{}));
     }
 
-    ui_read_projection_service_ = std::make_unique<savor::db::uiread::projectors::AttachedUiReadProjectionService>(
-        savor::db::uiread::projectors::AttachedUiReadProjectionConfig{
+    ui_read_projection_service_ = std::make_unique<savor::db::uiread::projectors::UiReadProjectionService>(
+        savor::db::uiread::projectors::UiReadProjectionConfig{
             .ui_read_db_path = config_paths_.ui_read_db_path,
             .execution_db_path = config_paths_.execution_db_path,
             .state_db_path = config_paths_.state_db_path,
             .analysis_db_path = config_paths_.analysis_db_path,
-            .authoring_db_path = config_paths_.authoring_db_path,
             .archive_db_path = config_paths_.archive_db_path,
             .max_batch_size = 100,
             .max_attempts = 5,
             .poll_interval = std::chrono::milliseconds{ 250 },
-            .include_archive = true,
         });
     if (!ui_read_projection_service_->Start(error_out)) {
         return fail_start("Failed starting UIRead projection service: " + (error_out ? *error_out : std::string{}));

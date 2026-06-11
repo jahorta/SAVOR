@@ -238,6 +238,9 @@
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
+    <ClInclude Include="UIRead\Projectors\UiReadProjectionService.h">
+      <Filter>UiRead</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -417,6 +420,9 @@
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
+    <ClCompile Include="UIRead\Projectors\UiReadProjectionService.cpp">
+      <Filter>UiRead</Filter>
+    </ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
@@ -535,6 +541,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606111200_uiread_projection_stream_telemetry.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

@@ -85,6 +85,22 @@ workflow::WorkflowCreateUnitActivationSpec TestUnitActivation(
     return activation;
 }
 
+const savor::db::uiread::projectors::UiReadProjectionStreamTelemetrySnapshot* FindProjectionStream(
+    const savor::db::core::DBServicePerformanceSnapshot& snapshot,
+    const std::string& stream_id) {
+    const auto& streams = snapshot.ui_read_projection.streams;
+    const auto it = std::find_if(
+        streams.begin(),
+        streams.end(),
+        [&stream_id](const auto& stream) {
+            return stream.stream_id == stream_id;
+        });
+    if (it == streams.end()) {
+        return nullptr;
+    }
+    return &(*it);
+}
+
 std::int64_t ReadInt64(sqlite3* db, const char* sql) {
     sqlite3_stmt* st = nullptr;
     EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &st, nullptr));
@@ -5823,7 +5839,7 @@ TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
     EXPECT_EQ(page.items.front().filename, "second.sav");
 }
 
-TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateStateDatabaseForArtifactSummary) {
+TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateStateDatabaseForArtifactSummary) {
     namespace migrations = savor::db::migrations;
 
     const auto separate_root = temp_root_ / "separate";
@@ -5882,10 +5898,21 @@ TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateStateDatabaseForArtifact
     EXPECT_EQ(page.items.front().artifact_id, artifact_id);
     EXPECT_EQ(page.items.front().filename, "attached-source.sav");
 
+    const auto perf = service.SnapshotPerformance();
+    ASSERT_TRUE(perf.ui_read_projection.running);
+    const auto* state_stream = FindProjectionStream(perf, "state");
+    ASSERT_NE(state_stream, nullptr);
+    EXPECT_EQ(state_stream->source_context, "State");
+    EXPECT_GE(state_stream->source_high_water_outbox_id, 1);
+    EXPECT_EQ(state_stream->last_outbox_id, state_stream->source_high_water_outbox_id);
+    EXPECT_EQ(state_stream->lag_count, 0);
+    EXPECT_EQ(state_stream->failed_run_once_count, 0u);
+    EXPECT_TRUE(state_stream->last_error.empty());
+
     service.Stop();
 }
 
-TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateExecutionDatabaseForWorkflowSummary) {
+TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateExecutionDatabaseForWorkflowSummary) {
     namespace migrations = savor::db::migrations;
     namespace workflow = savor::db::execution::workflow;
 
@@ -5947,6 +5974,17 @@ TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateExecutionDatabaseForWork
     ASSERT_EQ(detail->steps.size(), 1u);
     EXPECT_EQ(detail->steps.front().step_key, "Manual");
     EXPECT_EQ(detail->steps.front().state, "READY");
+
+    const auto perf = service.SnapshotPerformance();
+    ASSERT_TRUE(perf.ui_read_projection.running);
+    const auto* execution_stream = FindProjectionStream(perf, "execution");
+    ASSERT_NE(execution_stream, nullptr);
+    EXPECT_EQ(execution_stream->source_context, "Execution");
+    EXPECT_GE(execution_stream->source_high_water_outbox_id, 1);
+    EXPECT_EQ(execution_stream->last_outbox_id, execution_stream->source_high_water_outbox_id);
+    EXPECT_EQ(execution_stream->lag_count, 0);
+    EXPECT_EQ(execution_stream->failed_run_once_count, 0u);
+    EXPECT_TRUE(execution_stream->last_error.empty());
 
     service.Stop();
 }

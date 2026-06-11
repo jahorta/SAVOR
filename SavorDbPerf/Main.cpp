@@ -47,7 +47,7 @@ struct RunResult {
     std::string measured_workload;
     std::string first_error;
     std::vector<savor::db::core::NamedQueuedDbTelemetrySnapshot> databases;
-    savor::db::uiread::projectors::AttachedUiReadProjectionTelemetrySnapshot projection;
+    savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot projection;
     std::int64_t submitted = 0;
     std::int64_t completed = 0;
     std::int64_t failed = 0;
@@ -238,6 +238,34 @@ void WriteSnapshotLine(
     out << "{\"scenario\":\"" << JsonEscape(scenario) << "\",\"elapsed_ms\":" << elapsed_ms << ",\"databases\":";
     WriteDatabasesJson(out, databases);
     out << "}\n";
+}
+
+std::int64_t TotalProjectionLag(
+    const savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot& projection) {
+    std::int64_t lag = 0;
+    for (const auto& stream : projection.streams) {
+        lag += stream.lag_count;
+    }
+    return lag;
+}
+
+void DrainUiReadProjection(
+    savor::db::core::DBService& service,
+    std::chrono::milliseconds timeout,
+    std::string* last_error_out) {
+    const auto deadline = Clock::now() + timeout;
+    while (Clock::now() < deadline) {
+        std::string projection_error;
+        service.RunUiReadProjectionOnce(&projection_error);
+        if (!projection_error.empty() && last_error_out != nullptr) {
+            *last_error_out = projection_error;
+        }
+        const auto snapshot = service.SnapshotPerformance();
+        if (TotalProjectionLag(snapshot.ui_read_projection) == 0) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{ 50 });
+    }
 }
 
 std::vector<savor::db::core::NamedQueuedDbTelemetrySnapshot> MicroSnapshots(
@@ -442,6 +470,7 @@ RunResult RunExecutionQueue(const Options& options, std::ofstream& snapshots) {
         worker.join();
     }
 
+    DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
     stop_sampling = true;
     sampler.join();
     const auto service_snapshot = service.SnapshotPerformance();
@@ -544,6 +573,7 @@ RunResult RunWorkflowMaterialization(const Options& options, std::ofstream& snap
         producer.join();
     }
 
+    DrainUiReadProjection(service, std::chrono::seconds{ 5 }, &error);
     stop_sampling = true;
     sampler.join();
     service.RunUiReadProjectionOnce(&error);
@@ -576,6 +606,8 @@ struct DecisionMetrics {
     std::uint64_t max_queue_wait_p99_ms = 0;
     double max_high_water_ratio = 0.0;
     std::uint64_t projection_failed_runs = 0;
+    std::int64_t projection_lag_count = 0;
+    std::int64_t projection_max_lag_age_ms = 0;
     std::uint64_t workload_failed = 0;
 };
 
@@ -607,6 +639,10 @@ DecisionMetrics BuildDecisionMetrics(const RunResult& result) {
         AccumulateLane(&metrics, db.queue.read_lane);
     }
     metrics.projection_failed_runs = result.projection.failed_run_once_count;
+    for (const auto& stream : result.projection.streams) {
+        metrics.projection_lag_count += stream.lag_count;
+        metrics.projection_max_lag_age_ms = std::max(metrics.projection_max_lag_age_ms, stream.lag_age_ms);
+    }
     metrics.workload_failed = static_cast<std::uint64_t>(std::max<std::int64_t>(0, result.failed));
     return metrics;
 }
@@ -621,6 +657,7 @@ std::string Recommendation(const DecisionMetrics& metrics) {
         || metrics.max_queue_wait_p99_ms > 50
         || metrics.max_high_water_ratio > 0.50
         || metrics.projection_failed_runs > 0
+        || metrics.projection_lag_count > 0
         || metrics.workload_failed > 0) {
         return "Investigate tuning current architecture";
     }
@@ -649,6 +686,8 @@ void WriteSummaryJson(const Options& options, const RunResult& result, const Dec
         << "    \"max_queue_wait_p99_ms\": " << metrics.max_queue_wait_p99_ms << ",\n"
         << "    \"max_high_water_ratio\": " << metrics.max_high_water_ratio << ",\n"
         << "    \"projection_failed_runs\": " << metrics.projection_failed_runs << ",\n"
+        << "    \"projection_lag_count\": " << metrics.projection_lag_count << ",\n"
+        << "    \"projection_max_lag_age_ms\": " << metrics.projection_max_lag_age_ms << ",\n"
         << "    \"workload_failed\": " << metrics.workload_failed << "\n"
         << "  },\n"
         << "  \"databases\": ";
@@ -720,6 +759,9 @@ void WriteMarkdownReport(const Options& options, const RunResult& result, const 
         << (metrics.sqlite_busy + metrics.sqlite_locked) << " |\n"
         << "| Projection failed run count == 0 | " << PassFail(metrics.projection_failed_runs == 0) << " | "
         << metrics.projection_failed_runs << " |\n"
+        << "| Projection lag count == 0 | " << PassFail(metrics.projection_lag_count == 0) << " | "
+        << metrics.projection_lag_count << " |\n"
+        << "| Projection max lag age ms | PASS | " << metrics.projection_max_lag_age_ms << " |\n"
         << "| Workload failed operation count == 0 | " << PassFail(metrics.workload_failed == 0) << " | "
         << metrics.workload_failed << " |\n\n";
 
