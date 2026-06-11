@@ -7,7 +7,7 @@ This runbook defines incident handling and recovery execution procedures for Pha
 It is the operational companion to:
 
 - `10-phase-4-hardening-and-recovery.md` (scope, requirements, and suggested tests)
-- `SavorDbValidation` phase-4 checks (gating and replay/recovery drills)
+- `SavorTests` and relevant SavorE2E phase-4 checks (gating and replay/recovery drills)
 
 ## Incident procedures: delayed, duplicate, and out-of-order events
 
@@ -167,9 +167,11 @@ Use rollback only if replay/restart worsens inconsistency or introduces new inva
 
 ## Recovery matrix execution checklist (mapped to `phase4.*` validations)
 
-Run from `SavorDbValidation`:
+Run from the current validation surfaces:
 
-`SavorDbValidation --run <validation-name>`
+- `SavorTests.exe --gtest_filter=<focused-filter>`
+- `SavorE2E.exe <scenario args>`
+- future `SavorDbSchemaExport` schema report refresh when schema output is needed
 
 - [ ] `phase4.invariant_violation_remediation_sequence`
   - Scope: pause -> invariant event -> repair job -> reopen/fail ordering is preserved.
@@ -210,7 +212,7 @@ Run from `SavorDbValidation`:
 - [ ] Replay-safe behavior is demonstrated: handlers remain idempotent under repeated replay.
 - [ ] Validation gate satisfied in both required paths:
   - [ ] `SavorTests` recovery matrix suites pass.
-  - [ ] `SavorDbValidation` phase-4 hardening/recovery validations pass.
+  - [ ] `SavorTests` and relevant SavorE2E phase-4 hardening/recovery validations pass.
 
 ## Incident artifact template (optional)
 

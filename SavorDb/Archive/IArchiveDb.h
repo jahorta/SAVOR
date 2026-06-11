@@ -19,7 +19,7 @@ struct CreateArchivePackageCommand {
     std::string source_context;
     std::int64_t source_root_job_set_id = 0;
     types::UtcTimePoint created_at_utc{};
-    int schema_version = 1;
+    std::int64_t schema_version = 1;
     int event_catalog_version = 1;
     types::UtcTimePoint time_range_start_utc{};
     types::UtcTimePoint time_range_end_utc{};

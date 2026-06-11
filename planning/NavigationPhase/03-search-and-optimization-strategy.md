@@ -1,5 +1,10 @@
 # 03 - Search and Optimization Strategy
 
+## Status
+
+Future plan. This document assumes SAVOR receives area geometry, walking planes, and target candidates
+from SPICE, then owns route search, spline generation, worker-backed control solving, and telemetry.
+
 ## High-Level Strategy
 
 Use a two-layer pipeline:

@@ -1,5 +1,10 @@
 # 05 - Open Implementation Questions
 
+## Status
+
+Future plan. File parsing questions are SPICE-owned; this document tracks SAVOR-side integration,
+navigation model, route planning, control solving, and UI decisions.
+
 This document now captures both resolved decisions and remaining open items.
 
 ## Resolved Decisions (2026-04-09)
@@ -7,22 +12,18 @@ This document now captures both resolved decisions and remaining open items.
 ## A. Data & Extraction
 
 1. **Source of truth**
-   - Use ISO path from UI settings and read data directly through Dolphin APIs with this chain:
-     1. `UICommon::GameFile(path_to.iso)` to open game metadata.
-     2. `DiscIO::CreateVolume(game.GetFilePath())` to create `DiscIO::Volume` (`m_volume`).
-     3. `m_volume->GetPartitions()` to enumerate partitions.
-     4. For each partition, `m_volume->GetFileSystem(partition)` to get a filesystem handle (`m_file_system`).
-     5. `m_file_system->GetRoot()` to get root `DiscIO::FileInfo&`.
-     6. Walk directories recursively from root and locate required files (MLD/SCT and related assets).
-   - No fallback source required in MVP.
+   - Use SPICE as the parsing/content source for MLD/SCT and other SoA filetypes.
+   - SAVOR should request or consume SPICE area-content artifacts rather than walking the ISO filesystem
+     directly for navigation parsing.
+   - No SAVOR-side fallback parser is required in MVP.
 
 2. **Versioning**
    - Use Game ID as extraction/version key.
    - Only US game version is in MVP support scope for memory/breakpoint integration.
 
 3. **Coverage direction**
-   - Decode `.SCT` scripts as part of world/trigger modeling.
-   - Include MLD controller behavior in model roadmap.
+   - SPICE decodes `.SCT` scripts as part of world/trigger modeling inputs.
+   - SPICE exposes MLD controller behavior and target discovery data for SAVOR route planning.
    - Moving platforms are acknowledged as later-pass behavior modeling.
 
 ## B. Geometry Semantics
@@ -31,7 +32,7 @@ This document now captures both resolved decisions and remaining open items.
    - Use true 3D search state (do not flatten to 2D).
 
 2. **Portal/transition inference**
-   - Use GRND_Link system for connectivity and transition generation.
+   - Use SPICE-provided link/connectivity metadata for transition generation.
 
 3. **Collision fidelity**
    - Start coarse.
@@ -77,15 +78,15 @@ This document now captures both resolved decisions and remaining open items.
 
 ## Remaining Open Questions
 
-1. Exact GRND_Link decode details and edge semantics (all link types/flags).
-2. Initial minimum schema for `nav_world_blob` and `nav_script_index`.
+1. Minimum SPICE area-content contract for walking planes, links, collision hints, and target discovery.
+2. Initial minimum schema for SAVOR `nav_world_blob` and `nav_script_index`.
 3. Worker fanout strategy for control solving (by segment vs by candidate).
 4. Minimal viable 3D viewer interaction model for selecting start/target descriptors.
 5. Heuristic to prioritize which collision regions get probe/refinement jobs first.
 
 ## Immediate Next Experiments
 
-1. Build ISO filesystem walker for target files (MLD/SCT) on US disc.
-2. Implement first-pass GRND + GRND_Link decode and inspect graph connectivity in viewer.
+1. Add SPICE submodule integration and define the SAVOR request/response artifact contract.
+2. Consume a SPICE-generated 3D area view with walking planes and target candidates in a SAVOR viewer.
 3. Prototype spline-follow VM instructions and a single-worker control solve loop.
 4. Instrument one dungeon objective pair with a known cutscene and verify post-cutscene re-anchor.

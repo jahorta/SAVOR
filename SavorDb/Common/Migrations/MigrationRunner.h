@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -44,7 +45,7 @@ bool HasMigrationBeenApplied(
     bool* applied_out,
     std::string* error_out = nullptr);
 
-std::optional<int> GetCurrentContextSchemaVersion(
+std::optional<std::int64_t> GetCurrentContextSchemaVersion(
     sqlite3* db,
     MigrationContext context,
     std::string* error_out = nullptr);

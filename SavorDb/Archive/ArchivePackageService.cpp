@@ -486,7 +486,7 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         return result;
     }
 
-    int manifest_schema_version = request.schema_version;
+    std::int64_t manifest_schema_version = request.schema_version;
     if (manifest_schema_version <= 0) {
         std::string schema_error;
         const auto execution_schema = migrations::GetCurrentContextSchemaVersion(

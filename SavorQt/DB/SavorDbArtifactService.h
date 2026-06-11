@@ -39,7 +39,7 @@ public:
         const savor::db::UiReadArtifactListQuery& query) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::UiReadPage<savor::db::UiArtifactSummary>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::UiReadPage<savor::db::UiArtifactSummary>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<savor::db::UiReadPage<savor::db::UiArtifactSummary>>::Ok(db->ListArtifacts(query));
     }
@@ -47,7 +47,7 @@ public:
     static ServiceResult<savor::db::UiArtifactSummary> ImportArtifact(const ArtifactImportRequest& request) {
         auto* state_db = StateDb();
         if (state_db == nullptr) {
-            return Unavailable<savor::db::UiArtifactSummary>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::UiArtifactSummary>(kSavorDbRuntimeUnavailableMessage);
         }
         if (request.source_path.empty()) {
             return Invalid<savor::db::UiArtifactSummary>("source path is required");
@@ -119,7 +119,7 @@ public:
         const std::filesystem::path& output_path) {
         auto* db = StateDb();
         if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         if (artifact_id <= 0 || output_path.empty()) {
             return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "artifact_id and output path are required" });
@@ -136,7 +136,7 @@ public:
     static ServiceResult<std::string> ReadArtifactText(std::int64_t artifact_id) {
         auto* db = StateDb();
         if (db == nullptr) {
-            return Unavailable<std::string>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::string>(kSavorDbRuntimeUnavailableMessage);
         }
         if (artifact_id <= 0) {
             return Invalid<std::string>("artifact_id is required");

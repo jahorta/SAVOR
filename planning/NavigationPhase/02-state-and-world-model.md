@@ -1,5 +1,10 @@
 # 02 - State and World Model
 
+## Status
+
+Future plan. Low-level SoA file parsing is delegated to the SPICE submodule. This document describes the
+SAVOR planning model built from SPICE-provided area content.
+
 ## Objectives
 
 Define a planning state representation that supports:
@@ -12,22 +17,22 @@ Define a planning state representation that supports:
 
 ## 1) Walkable Surface Model
 
-- Source: GRND polygon collections (directly from ISO via Dolphin volume/filesystem APIs).
+- Source: SPICE area content output derived from the current area's MLD/SCT and related package data.
 - Representation options:
   - Polygon adjacency graph (coarse).
   - 3D navmesh with portal transitions (preferred).
 - Requirements:
   - Preserve vertical layering where projections overlap in X/Z.
   - Explicitly represent legal transitions between layers.
-  - Use GRND_Link data to define inter-polygon connectivity.
+  - Preserve SPICE-provided link/connectivity metadata for inter-polygon movement.
 
 ### Current direction
 - Use a true 3D graph/navmesh search (A* in 3D state space) rather than flattening to 2D.
-- Decode GRND_Link semantics and generate explicit edge metadata.
+- Consume SPICE walking-plane/link metadata and generate SAVOR navigation edge metadata from it.
 
 ## 2) Collision Model
 
-- Source: MLD collision objects (prisms + additional models).
+- Source: SPICE collision/walk-plane output for the active area.
 - MVP usage:
   - Coarse collision boundaries for global feasibility.
   - Follow-up worker jobs probe important collision regions and refine effective bounds using observed player coordinates.
@@ -37,7 +42,8 @@ Define a planning state representation that supports:
 
 ## 3) Interaction/Trigger Model
 
-- Source: interaction volumes + trigger objects + script coupling.
+- Source: SPICE target-discovery output from script triggers, object content, treasure chests, doors,
+  load zones, and related area metadata.
 - Types:
   - interaction prompts (chest/door/etc.)
   - load/zone transitions
@@ -49,8 +55,7 @@ Define a planning state representation that supports:
 
 ## 4) Script/Controller Model
 
-- Decode `.SCT` scripts to model trigger and cutscene behavior.
-- Map MLD object controllers to runtime behavior (including moving platforms as future expansion).
+- Consume SPICE `.SCT` and object-controller analysis to model trigger and cutscene behavior.
 - For cutscenes, identify script section boundaries and jump targets to build transition catalog entries.
 
 ## Planner State (Route Layer)
@@ -89,6 +94,8 @@ Each transition stores:
 
 ## Data Artifacts (Draft)
 
+- `spice_area_view`:
+  - walking planes, collision hints, renderable area geometry, potential targets, and parse diagnostics
 - `nav_world_blob`:
   - surfaces, links, obstacles, triggers, controller metadata
 - `nav_script_index`:

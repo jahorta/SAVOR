@@ -149,7 +149,7 @@ public:
     static ServiceResult<std::int64_t> EnsureAddressProgram(const AddressProgramDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
 
         savor::db::EnsureAddressProgramCommand command{};
@@ -171,7 +171,7 @@ public:
     static ServiceResult<savor::db::AddressProgramSnapshot> GetAddressProgram(std::int64_t address_program_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::AddressProgramSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::AddressProgramSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetAddressProgram(address_program_id);
         if (!snapshot.has_value()) {
@@ -183,7 +183,7 @@ public:
     static ServiceResult<std::int64_t> SaveSeedProbeSpec(const SeedProbeSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("seed probe spec name is required");
@@ -220,7 +220,7 @@ public:
     static ServiceResult<savor::db::SeedProbeSpecSnapshot> GetSeedProbeSpec(std::int64_t seed_probe_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::SeedProbeSpecSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::SeedProbeSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetSeedProbeSpec(seed_probe_spec_id);
         if (!snapshot.has_value()) {
@@ -232,7 +232,7 @@ public:
     static ServiceResult<std::vector<savor::db::SeedProbeSpecSnapshot>> ListSeedProbeSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::SeedProbeSpecSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::SeedProbeSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::SeedProbeSpecSnapshot>>::Ok(db->ListSeedProbeSpecs(max_count));
     }
@@ -240,7 +240,7 @@ public:
     static ServiceResult<std::int64_t> SaveTasSpec(const TasSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.base_name.empty()) {
             return Invalid<std::int64_t>("TAS spec name is required");
@@ -273,7 +273,7 @@ public:
     static ServiceResult<savor::db::TasSpecSnapshot> GetTasSpec(std::int64_t tas_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::TasSpecSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::TasSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetTasSpec(tas_spec_id);
         if (!snapshot.has_value()) {
@@ -285,7 +285,7 @@ public:
     static ServiceResult<std::vector<savor::db::TasSpecSnapshot>> ListTasSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::TasSpecSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::TasSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::TasSpecSnapshot>>::Ok(db->ListTasSpecs(max_count));
     }
@@ -293,7 +293,7 @@ public:
     static ServiceResult<std::int64_t> SavePredicateSpec(const PredicateSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("predicate name is required");
@@ -312,7 +312,7 @@ public:
     static ServiceResult<std::int64_t> UpdatePredicateSpec(std::int64_t predicate_spec_id, const PredicateSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (predicate_spec_id <= 0) {
             return Invalid<std::int64_t>("predicate spec id is required");
@@ -332,7 +332,7 @@ public:
     static ServiceResult<void> DeletePredicateSpec(std::int64_t predicate_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         if (predicate_spec_id <= 0) {
             return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "predicate spec id is required" });
@@ -354,7 +354,7 @@ public:
     static ServiceResult<savor::db::PredicateSpecSnapshot> GetPredicateSpec(std::int64_t predicate_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSpecSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::PredicateSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetPredicateSpec(predicate_spec_id);
         if (!snapshot.has_value()) {
@@ -366,7 +366,7 @@ public:
     static ServiceResult<savor::db::PredicateSpecUsageSnapshot> GetPredicateSpecUsage(std::int64_t predicate_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSpecUsageSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::PredicateSpecUsageSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         if (predicate_spec_id <= 0) {
             return Invalid<savor::db::PredicateSpecUsageSnapshot>("predicate spec id is required");
@@ -377,7 +377,7 @@ public:
     static ServiceResult<std::vector<savor::db::PredicateSpecSnapshot>> ListPredicateSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::PredicateSpecSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::PredicateSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::PredicateSpecSnapshot>>::Ok(db->ListPredicateSpecs(max_count));
     }
@@ -385,7 +385,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattleRunSpec(const BattleRunSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("battle run spec name is required");
@@ -417,7 +417,7 @@ public:
     static ServiceResult<savor::db::BattleRunSpecSnapshot> GetBattleRunSpec(std::int64_t battle_run_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::BattleRunSpecSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::BattleRunSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetBattleRunSpec(battle_run_spec_id);
         if (!snapshot.has_value()) {
@@ -429,7 +429,7 @@ public:
     static ServiceResult<std::vector<savor::db::BattleRunSpecSnapshot>> ListBattleRunSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattleRunSpecSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::BattleRunSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::BattleRunSpecSnapshot>>::Ok(db->ListBattleRunSpecs(max_count));
     }
@@ -437,7 +437,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattlePlan(const BattlePlanDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty() || draft.fingerprint.empty()) {
             return Invalid<std::int64_t>("battle plan name and fingerprint are required");
@@ -514,7 +514,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattlePlanActionPreset(const BattlePlanActionPresetDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("battle plan action preset name is required");
@@ -546,7 +546,7 @@ public:
     static ServiceResult<void> RenameBattlePlanActionPreset(std::int64_t action_preset_id, const std::string& name) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         if (action_preset_id <= 0) {
             return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "battle plan action preset id is required" });
@@ -572,7 +572,7 @@ public:
     static ServiceResult<savor::db::BattlePlanActionPresetSnapshot> GetBattlePlanActionPreset(std::int64_t action_preset_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::BattlePlanActionPresetSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::BattlePlanActionPresetSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetBattlePlanActionPreset(action_preset_id);
         if (!snapshot.has_value()) {
@@ -584,7 +584,7 @@ public:
     static ServiceResult<std::vector<savor::db::BattlePlanActionPresetSnapshot>> ListBattlePlanActionPresets(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattlePlanActionPresetSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::BattlePlanActionPresetSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::BattlePlanActionPresetSnapshot>>::Ok(db->ListBattlePlanActionPresets(max_count));
     }
@@ -592,7 +592,7 @@ public:
     static ServiceResult<savor::db::BattlePlanSnapshot> GetBattlePlan(std::int64_t plan_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::BattlePlanSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::BattlePlanSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetBattlePlan(plan_id);
         if (!snapshot.has_value()) {
@@ -604,7 +604,7 @@ public:
     static ServiceResult<std::vector<savor::db::BattlePlanSnapshot>> ListBattlePlans(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattlePlanSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::BattlePlanSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::BattlePlanSnapshot>>::Ok(db->ListBattlePlans(max_count));
     }
@@ -612,7 +612,7 @@ public:
     static ServiceResult<std::int64_t> SavePredicateSet(const PredicateSetDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.predicate_spec_ids.empty()) {
             return Invalid<std::int64_t>("predicate set requires at least one predicate");
@@ -633,7 +633,7 @@ public:
     static ServiceResult<savor::db::PredicateSetSnapshot> GetPredicateSet(std::int64_t predicate_set_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::PredicateSetSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::PredicateSetSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetPredicateSet(predicate_set_id);
         if (!snapshot.has_value()) {
@@ -645,7 +645,7 @@ public:
     static ServiceResult<std::vector<savor::db::PredicateSetSnapshot>> ListPredicateSets(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::PredicateSetSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::PredicateSetSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::PredicateSetSnapshot>>::Ok(db->ListPredicateSets(max_count));
     }
@@ -653,7 +653,7 @@ public:
     static ServiceResult<std::int64_t> SaveExplorerSettings(const ExplorerSettingsDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("battle explorer settings name is required");
@@ -680,7 +680,7 @@ public:
     static ServiceResult<savor::db::ExplorerSettingsSnapshot> GetExplorerSettings(std::int64_t explorer_settings_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::ExplorerSettingsSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::ExplorerSettingsSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetExplorerSettings(explorer_settings_id);
         if (!snapshot.has_value()) {
@@ -692,7 +692,7 @@ public:
     static ServiceResult<std::vector<savor::db::ExplorerSettingsSnapshot>> ListExplorerSettings(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::ExplorerSettingsSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::ExplorerSettingsSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::ExplorerSettingsSnapshot>>::Ok(db->ListExplorerSettings(max_count));
     }
@@ -700,7 +700,7 @@ public:
     static ServiceResult<std::int64_t> SaveBattleChainSpec(const BattleChainSpecDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("battle chain spec name is required");
@@ -730,7 +730,7 @@ public:
     static ServiceResult<savor::db::BattleChainSpecSnapshot> GetBattleChainSpec(std::int64_t battle_chain_spec_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::BattleChainSpecSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::BattleChainSpecSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetBattleChainSpec(battle_chain_spec_id);
         if (!snapshot.has_value()) {
@@ -742,7 +742,7 @@ public:
     static ServiceResult<std::vector<savor::db::BattleChainSpecSnapshot>> ListBattleChainSpecs(int max_count = 100) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::BattleChainSpecSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::BattleChainSpecSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::BattleChainSpecSnapshot>>::Ok(db->ListBattleChainSpecs(max_count));
     }
@@ -750,7 +750,7 @@ public:
     static ServiceResult<savor::db::SaveWorkflowGraphResult> SaveWorkflowGraph(const WorkflowGraphDraft& draft) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::SaveWorkflowGraphResult>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::SaveWorkflowGraphResult>(kSavorDbRuntimeUnavailableMessage);
         }
         if (draft.name.empty() || draft.graph_hash.empty()) {
             return Invalid<savor::db::SaveWorkflowGraphResult>("workflow graph name and hash are required");
@@ -785,7 +785,7 @@ public:
     static ServiceResult<savor::db::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_graph_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::WorkflowGraphSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::WorkflowGraphSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetWorkflowGraph(workflow_graph_id);
         if (!snapshot.has_value()) {
@@ -797,7 +797,7 @@ public:
     static ServiceResult<savor::db::WorkflowGraphSnapshot> GetWorkflowGraphRevision(std::int64_t workflow_graph_revision_id) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::WorkflowGraphSnapshot>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::WorkflowGraphSnapshot>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto snapshot = db->GetWorkflowGraphRevision(workflow_graph_revision_id);
         if (!snapshot.has_value()) {
@@ -809,7 +809,7 @@ public:
     static ServiceResult<void> SetWorkflowGraphHidden(std::int64_t workflow_graph_id, bool hidden) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         if (workflow_graph_id <= 0) {
             return ServiceResult<void>::Err({ ServiceErrorKind::InvalidInput, "workflow graph id is required" });
@@ -825,7 +825,7 @@ public:
     static ServiceResult<std::vector<savor::db::WorkflowGraphSnapshot>> ListWorkflowGraphs(int max_count = 100, bool include_hidden = false) {
         auto* db = AuthoringDb();
         if (db == nullptr) {
-            return Unavailable<std::vector<savor::db::WorkflowGraphSnapshot>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::vector<savor::db::WorkflowGraphSnapshot>>(kSavorDbRuntimeUnavailableMessage);
         }
         return ServiceResult<std::vector<savor::db::WorkflowGraphSnapshot>>::Ok(db->ListWorkflowGraphs(max_count, include_hidden));
     }

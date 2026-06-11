@@ -1,7 +1,7 @@
 # DBMigrateQueues 04 — Phased Rollout Plan
 
 ## Status
-Draft v0.4 (facade-first decision recorded)
+Current plan (facade-first decision recorded)
 
 ## Purpose
 Plan an incremental migration from direct DB adapter usage to queued per-context database access while minimizing risk.
@@ -22,7 +22,8 @@ Near-term priorities are:
 1. Make facade backpressure and failure results harder to misinterpret.
 2. Add idempotency/dedupe where mutating operations can be replayed or retried.
 3. Add retry policy and structured telemetry around queue wait, processing time, rejection, and failure.
-4. Promote operation-specific command/query handlers only for paths whose correctness, replay, or scaling needs exceed the facade model.
+4. Add stress-load performance analysis for the current six database contexts before promoting broader bus abstractions.
+5. Promote operation-specific command/query handlers only for paths whose correctness, replay, or scaling needs exceed the facade model.
 
 ## Phase 0 — Planning and Contracts
 - Finalize architecture and contracts docs.
@@ -61,11 +62,12 @@ Exit criteria:
 
 ## Phase 4 — Hardening and Optimization
 - Tune queue capacities and retry defaults.
+- Stress the current Execution, State, Analysis, Authoring, UIRead, and Archive queued facades under representative burst/load profiles.
 - Add advanced partitioning if needed.
 - Plan separate batching optimization document/workstream.
 
 Exit criteria:
-- Stable operational performance.
+- Stable operational performance with before/after evidence.
 - Backlog of follow-on optimizations prioritized.
 
 ## Pre-Production Handling Decision (No Rollback Path)
@@ -117,7 +119,8 @@ A context is phase-complete only when all are true:
 6. UIRead updates use source-context outbox projection. With SQLite3, the active implementation is an attached-source projector service owned by `DBService`: it attaches Execution, State, Analysis, Authoring, and Archive databases to a UIRead connection and advances UIRead subscription cursors without requiring Qt2 to write UIRead directly.
 
 ## Open Questions
-- None currently.
+- Exact stress-load profile and thresholds for each current DB context.
+- Whether the first stress harness belongs in `SavorTests`, SavorE2E, or both.
 
 ## Detailed Phase Implementation Documents
 - Phase 0: `05-Phase-0-Implementation-Plan.md`

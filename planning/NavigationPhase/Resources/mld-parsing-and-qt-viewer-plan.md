@@ -1,5 +1,10 @@
 # GameCube MLD Parsing and Qt Viewer Plan
 
+## Status
+
+Historical/reference resource. New MLD/SCT and SoA filetype parsing belongs in SPICE. SAVOR should consume
+SPICE-generated area views and navigation-content artifacts rather than implementing this parser plan directly.
+
 ## Purpose
 
 This document plans the first implementation pass for parsing **GameCube Skies of Arcadia Legends MLD files** and transforming their contents into a format that can be displayed in a Qt-based 3D viewer for SAVOR's Navigation Phase.
@@ -16,7 +21,7 @@ It also separates three categories of knowledge:
 
 The initial implementation should support the following:
 
-- Parse GameCube Legends MLD data after extraction from the disc through Dolphin-integrated file access. [#1] [#2]
+- Consume GameCube Legends MLD-derived area content from SPICE. [#1] [#2]
 - Build a viewer-ready representation of walkable space from **GRND** objects.
 - Build connectivity between GRND objects using **ground_links**.
 - Parse entry records that dispatch by **`fxn`** and convert the subset we understand into collision, trigger, and debug-view objects.
@@ -43,7 +48,7 @@ The following constraints are treated as project requirements:
 3. **ground_links** link GRND objects into a complete walking mesh.
 4. Collision and trigger entries are interpreted by handlers selected from an entry's **`fxn`** field.
 5. Placement files are not required because placement is already embedded in the MLD entry data.
-6. MLD files can be extracted directly from the disc by patching into Dolphin, as outlined in the NavigationPhase planning docs.
+6. This older resource assumed Dolphin-based extraction; current direction is SPICE-owned file parsing and area-content generation.
 7. This planning resource should live in `planning/NavigationPhase/Resources`.
 
 ### Confirmed from NavigationPhase docs
@@ -51,10 +56,10 @@ The following constraints are treated as project requirements:
 The existing NavigationPhase planning documents establish several requirements and assumptions for the world model:
 
 - The Navigation Phase needs a true 3D world representation rather than a simplified 2D tile abstraction, especially to preserve overlapping vertical layers and transitions. [#1]
-- GRND and GRND_Link data are expected to be central to constructing the walkable world model. [#1] [#2]
+- SPICE-provided walking-plane and link metadata are expected to be central to constructing the walkable world model. [#1] [#2]
 - The phase needs collision and trigger modeling, but an early pass may use coarse approximations while reverse engineering continues. [#1] [#2]
 - A viewer is part of the intended workflow so that reconstructed geometry, transitions, and route overlays can be visually inspected. [#1]
-- The current extraction direction is to obtain files through Dolphin/DiscIO rather than maintaining a separate external extractor pipeline. [#2]
+- Current direction is to consume SPICE area-content output rather than implementing SAVOR-side Dolphin/DiscIO parsing. [#2]
 
 ### Confirmed from the C# `SoAMLDs` codebase
 

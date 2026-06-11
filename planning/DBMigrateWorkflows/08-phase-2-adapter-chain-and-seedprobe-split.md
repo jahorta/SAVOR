@@ -7,7 +7,7 @@
 - **Verification mode:** Manual verification
 - **Completion gate confirmation:** Phase-2 validation execution completed with both required paths passing:
   - `SavorTests` phase-2 checks (adapter invocation order, completion gate, Seed Probe split contracts) passed.
-  - `SavorDbValidation` phase-2 checks (adapter invocation order and completion-gate invariants) passed.
+  - Historical phase-2 validation covered adapter invocation order and completion-gate invariants.
 
 ## Phase intent
 
@@ -70,8 +70,8 @@ Wire the full adapter chain and split Seed Probe into granular descriptor-based 
 
 1. **SavorTests**
    - Run phase-2 adapter-chain, completion-gate, and split-contract suites.
-2. **SavorDbValidation CLI**
-   - Add/run phase-2 validation entries in `SavorDbValidation` for adapter order and transition gating.
+2. **Validation coverage**
+   - Add/run phase-2 coverage in `SavorTests` and relevant SavorE2E scenarios for adapter order and transition gating.
    - Phase cannot exit until both test suites and CLI validations pass.
 
 ## Suggested SavorTests to add for phase exit readiness

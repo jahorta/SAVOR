@@ -16,6 +16,7 @@ inline constexpr std::array<EmbeddedMigrationEntry, 0> kEmbeddedMigrations{};
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 
@@ -45,8 +46,8 @@ bool ScriptHasTransaction(const std::string& sql) {
     return has_token("BEGIN") || has_token("COMMIT");
 }
 
-int ParseVersionPrefix(const std::string& migration_name) {
-    int version = 0;
+std::int64_t ParseVersionPrefix(const std::string& migration_name) {
+    std::int64_t version = 0;
     for (char c : migration_name) {
         if (!std::isdigit(static_cast<unsigned char>(c))) {
             break;
@@ -184,7 +185,7 @@ bool HasMigrationBeenApplied(
     return true;
 }
 
-std::optional<int> GetCurrentContextSchemaVersion(sqlite3* db, MigrationContext context, std::string* error_out) {
+std::optional<std::int64_t> GetCurrentContextSchemaVersion(sqlite3* db, MigrationContext context, std::string* error_out) {
     sqlite3_stmt* st = nullptr;
     constexpr const char* kSql = "SELECT version FROM migration_schema_version WHERE context=?1 LIMIT 1;";
 
@@ -206,7 +207,7 @@ std::optional<int> GetCurrentContextSchemaVersion(sqlite3* db, MigrationContext 
         return std::nullopt;
     }
 
-    const int v = sqlite3_column_int(st, 0);
+    const auto v = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return v;
 }
@@ -271,7 +272,7 @@ bool ApplyContextMigrations(
             return false;
         }
         sqlite3_bind_text(upsert_st, 1, ToString(context), -1, SQLITE_STATIC);
-        sqlite3_bind_int(upsert_st, 2, ParseVersionPrefix(entry.name));
+        sqlite3_bind_int64(upsert_st, 2, ParseVersionPrefix(entry.name));
         if (sqlite3_step(upsert_st) != SQLITE_DONE) {
             sqlite3_finalize(upsert_st);
             Exec(db, "ROLLBACK;", nullptr);

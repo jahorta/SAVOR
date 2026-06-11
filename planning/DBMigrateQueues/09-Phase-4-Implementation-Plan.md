@@ -1,7 +1,8 @@
 # DBMigrateQueues 09 — Phase 4 Implementation Plan (Hardening and Optimization)
 
 ## Status
-Draft v0.1 (implementation playbook)
+Future/current hardening plan. The stress-analysis items should start against the current facade-first
+queued databases before any full command/query bus work is reconsidered.
 
 ## Purpose
 Define the stabilization and tuning phase after all contexts are migrated, including capacity tuning, retry optimization, partitioning decisions, and optimization backlog capture.
@@ -22,6 +23,27 @@ By the end of Phase 4:
 3. A separate batching optimization workstream is scoped and prioritized.
 
 ## Workstream A — Performance Baseline and Tuning Loop
+
+### A0. Define stress-load scenarios for current databases
+Create a repeatable stress harness for the current queued facade layer:
+- Execution: ready-job claim/materialize/dispatch-shaped writes plus workflow query scans.
+- State: artifact/savestate record creation and lookup bursts.
+- Analysis: seed-probe and battle-analysis read/write mixes.
+- Authoring: workflow graph/spec reads with bursty save/update operations.
+- UIRead: projection-query bursts and subscription-status reads while projectors advance.
+- Archive: archive catalog, package preview, and rehydrate-status operations.
+
+For each context, record:
+- queue depth p50/p95/max,
+- enqueue accepted/rejected counts,
+- completed/failed counts,
+- total throughput,
+- elapsed wall time,
+- per-operation latency p50/p95/max when available,
+- outbox/projection lag where relevant.
+
+The first goal is evidence, not tuning. Use the results to decide whether facade-level capacity tuning is
+enough or whether a specific operation needs command/query handler promotion.
 
 ### A1. Capture baseline metrics by context/lane
 Collect multi-run baseline data:
@@ -107,16 +129,18 @@ Specify non-negotiables for future batching work:
 
 ## Decision Gates
 Phase 4 closes only when:
-1. Queue and retry tuning is complete with before/after evidence.
-2. Partitioning decisions (implement or defer) are explicitly documented per context.
-3. Reliability drills confirm stable recovery behavior.
-4. Batching optimization workstream is documented and prioritized.
+1. Current database stress-load profiles are captured for all six contexts.
+2. Queue and retry tuning is complete with before/after evidence.
+3. Partitioning decisions (implement or defer) are explicitly documented per context.
+4. Reliability drills confirm stable recovery behavior.
+5. Batching optimization workstream is documented and prioritized.
 
 ## Suggested Execution Order
-1. Collect baseline and tune capacities/retries (A).
-2. Evaluate and implement/defer partitioning by criteria (B).
-3. Harden reliability thresholds with drills (C).
-4. Produce and prioritize batching follow-on plan (D).
+1. Define and run current database stress profiles (A0).
+2. Collect baseline and tune capacities/retries (A).
+3. Evaluate and implement/defer partitioning by criteria (B).
+4. Harden reliability thresholds with drills (C).
+5. Produce and prioritize batching follow-on plan (D).
 
 ## Risks and Mitigations
 - **Risk:** overtuning for one workload harms others.
@@ -127,8 +151,9 @@ Phase 4 closes only when:
   - **Mitigation:** record explicit safety guardrails before any batching implementation starts.
 
 ## Exit Artifacts
-1. Capacity/retry tuning report with before/after data.
-2. Partitioning decision record per context.
-3. Reliability drill report and updated thresholds.
-4. Batching optimization planning document drafted.
-5. Prioritized optimization backlog published.
+1. Current database stress-load report for all six contexts.
+2. Capacity/retry tuning report with before/after data.
+3. Partitioning decision record per context.
+4. Reliability drill report and updated thresholds.
+5. Batching optimization planning document drafted.
+6. Prioritized optimization backlog published.

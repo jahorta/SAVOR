@@ -48,7 +48,7 @@ public:
         if (db == nullptr) {
             return ServiceResult<std::vector<WorkflowJobSetRow>>::Err({
                 ServiceErrorKind::Unavailable,
-                "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice",
+                kSavorDbRuntimeUnavailableMessage,
             });
         }
 

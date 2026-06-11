@@ -247,7 +247,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
     sqlite3_bind_text(insert_package.st, 1, command.source_context.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_package.st, 2, command.source_root_job_set_id);
     sqlite3_bind_int64(insert_package.st, 3, command.created_at_utc.time_since_epoch().count());
-    sqlite3_bind_int(insert_package.st, 4, command.schema_version);
+    sqlite3_bind_int64(insert_package.st, 4, command.schema_version);
     sqlite3_bind_int(insert_package.st, 5, command.event_catalog_version);
     sqlite3_bind_int64(insert_package.st, 6, command.time_range_start_utc.time_since_epoch().count());
     sqlite3_bind_int64(insert_package.st, 7, command.time_range_end_utc.time_since_epoch().count());

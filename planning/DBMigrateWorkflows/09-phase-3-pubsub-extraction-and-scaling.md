@@ -2,7 +2,7 @@
 
 - **Status:** Completed
 - **Completion date:** 2026-04-09
-- **Verification mode:** Manual validation (`SavorTests` phase-3 suites + `SavorDbValidation` phase-3 checks passed)
+- **Verification mode:** Historical manual validation; current validation path is `SavorTests` plus relevant SavorE2E scenarios.
 
 ## Phase intent
 
@@ -73,8 +73,8 @@ Split coordinator responsibilities and harden event-driven throughput/operabilit
 
 1. **SavorTests**
    - Run phase-3 service-split, batching, and dedupe-isolation suites.
-2. **SavorDbValidation CLI**
-   - Add/run phase-3 validation entries in `SavorDbValidation` for replay, lag/dead-letter, and stream-separation checks.
+2. **Validation coverage**
+   - Add/run phase-3 coverage in `SavorTests` and relevant SavorE2E scenarios for replay, lag/dead-letter, and stream-separation checks.
    - Phase cannot exit until both test suites and CLI validations pass.
 
 ## Exit evidence (required)
