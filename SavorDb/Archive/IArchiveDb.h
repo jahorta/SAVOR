@@ -25,7 +25,6 @@ struct CreateArchivePackageCommand {
     types::UtcTimePoint time_range_end_utc{};
     std::string manifest_path;
     std::string checksum_status;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -37,7 +36,6 @@ struct AddArchiveItemCommand {
     std::optional<std::string> blob_path;
     std::optional<std::string> checksum;
     types::UtcTimePoint indexed_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -47,7 +45,6 @@ struct RequestRehydrateCommand {
     std::string status;
     types::UtcTimePoint requested_at_utc{};
     std::string target_namespace;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -63,7 +60,6 @@ struct CompleteRehydrateCommand {
     std::string status;
     types::UtcTimePoint completed_at_utc{};
     std::vector<RehydrateMapEntry> entity_mappings;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -73,7 +69,6 @@ struct FailRehydrateCommand {
     std::string status;
     types::UtcTimePoint completed_at_utc{};
     std::string error_text;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };

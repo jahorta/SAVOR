@@ -92,6 +92,28 @@ std::int64_t ComputeTasMovieRunMs(
     return run_ms > 0 ? static_cast<std::int64_t>(run_ms) : fallback_ms;
 }
 
+std::string BattleSeedSuffix(
+    std::string scenario,
+    int min_fake_attacks,
+    int max_fake_attacks,
+    bool require_electribox_drop) {
+    if (scenario.empty()) {
+        scenario = "scenario";
+    }
+    for (char& ch : scenario) {
+        const bool is_digit = ch >= '0' && ch <= '9';
+        const bool is_upper = ch >= 'A' && ch <= 'Z';
+        const bool is_lower = ch >= 'a' && ch <= 'z';
+        if (!is_digit && !is_upper && !is_lower) {
+            ch = '-';
+        }
+    }
+    return scenario
+        + "-fake-" + std::to_string(min_fake_attacks)
+        + "-" + std::to_string(max_fake_attacks)
+        + (require_electribox_drop ? "-drop" : "-nodrop");
+}
+
 std::vector<std::uint8_t> BuildCurrentTurnAddressProgram() {
     addrprog::Builder builder;
     builder.op_base_key(addr::derived::battle::CurrentTurn);
@@ -356,6 +378,7 @@ bool RunSeedProbePrelude(
 
 bool SeedBattleAuthoringRows(
     savor::db::IAuthoringDb* authoring_db,
+    const std::string& suffix,
     int min_fake_attacks,
     int max_fake_attacks,
     bool require_electribox_drop,
@@ -370,7 +393,7 @@ bool SeedBattleAuthoringRows(
 
     if (!authoring_db->SaveBattleRunSpec(
             {
-                .name = "SavorE2E first battle single-turn",
+                .name = "SavorE2E first battle single-turn " + suffix,
                 .priority = 1,
                 .run_ms = 10000,
                 .vi_stall_ms = 2000,
@@ -380,7 +403,6 @@ bool SeedBattleAuthoringRows(
                 .min_fake_attacks = min_fake_attacks,
                 .max_fake_attacks = max_fake_attacks,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.run_spec",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -392,11 +414,10 @@ bool SeedBattleAuthoringRows(
     std::int64_t plan_id = 0;
     if (!authoring_db->SavePlan(
             {
-                .name = "SavorE2E battle plan",
-                .fingerprint = "savor-e2e-battle-plan-v1",
+                .name = "SavorE2E battle plan " + suffix,
+                .fingerprint = "savor-e2e-battle-plan-v1-" + suffix,
                 .num_turns = 2,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.plan",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -408,11 +429,10 @@ bool SeedBattleAuthoringRows(
     std::int64_t attack_any_enemy_preset_id = 0;
     if (!authoring_db->SaveBattlePlanActionPreset(
             {
-                .name = "SavorE2E attack any enemy",
+                .name = "SavorE2E attack any enemy " + suffix,
                 .macro = soa::battle::actions::BattleAction::Attack,
                 .target_kind = savor::db::BattlePlanTargetKind::AnyEnemy,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.action_preset.attack_any_enemy",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "plan-" + std::to_string(plan_id),
             },
@@ -424,12 +444,11 @@ bool SeedBattleAuthoringRows(
     std::int64_t attack_same_target_preset_id = 0;
     if (!authoring_db->SaveBattlePlanActionPreset(
             {
-                .name = "SavorE2E attack same target as PC0",
+                .name = "SavorE2E attack same target as PC0 " + suffix,
                 .macro = soa::battle::actions::BattleAction::Attack,
                 .target_kind = savor::db::BattlePlanTargetKind::SameAsOtherPC,
                 .target_same_as_actor_slot = 0,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.action_preset.attack_same_target",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "plan-" + std::to_string(plan_id),
             },
@@ -456,7 +475,6 @@ bool SeedBattleAuthoringRows(
                     }
                 },
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.plan_turn_1",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "plan-" + std::to_string(plan_id),
             },
@@ -482,7 +500,6 @@ bool SeedBattleAuthoringRows(
                     },
                 },
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.authoring.plan_turn_2",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "plan-" + std::to_string(plan_id),
             },
@@ -512,7 +529,7 @@ bool SeedBattleAuthoringRows(
         std::int64_t electribox_predicate_spec_id = 0;
         if (!authoring_db->SavePredicateSpec(
                 {
-                    .name = "SavorE2E one electribox per turn",
+                    .name = "SavorE2E one electribox per turn " + suffix,
                     .breakpoint_id = bp::battle::EndTurn,
                     .lhs_value = 0,
                     .rhs_value = static_cast<std::int64_t>(addr::battle::CurrentTurn),
@@ -525,7 +542,6 @@ bool SeedBattleAuthoringRows(
                     .lhs_address_program_id = address_program_id,
                     .abort_on_fail = true,
                     .created_at_utc = now,
-                    .event_id = "savor-e2e.battle.authoring.predicate.1",
                     .correlation_id = "savor-e2e.battle",
                     .causation_id = "address-program-" + std::to_string(address_program_id),
                 },
@@ -539,7 +555,7 @@ bool SeedBattleAuthoringRows(
     std::int64_t turn_order_predicate_spec_id = 0;
     if (!authoring_db->SavePredicateSpec(
         {
-            .name = "SavorE2E players before enemies",
+            .name = "SavorE2E players before enemies " + suffix,
             .breakpoint_id = bp::battle::TurnIsReady,
             .lhs_value = static_cast<std::int64_t>(addr::derived::battle::TurnOrderPcMax),
             .rhs_value = static_cast<std::int64_t>(addr::derived::battle::TurnOrderEcMin),
@@ -551,7 +567,6 @@ bool SeedBattleAuthoringRows(
                 | static_cast<std::uint32_t>(savor::pred::PredFlag::RhsIsKey)),
             .abort_on_fail = false,
             .created_at_utc = now,
-            .event_id = "savor-e2e.battle.authoring.predicate.2",
             .correlation_id = "savor-e2e.battle",
             .causation_id = "savor-e2e.pred2",
         },
@@ -574,12 +589,11 @@ bool SeedBattleAuthoringRows(
 
     return authoring_db->SaveExplorerSettings(
         {
-            .name = "SavorE2E first battle settings",
+            .name = "SavorE2E first battle settings " + suffix,
             .description = "First battle single-turn e2e setup",
             .default_plan_id = plan_id,
             .default_predicate_set_id = predicate_set_id,
             .created_at_utc = now,
-            .event_id = "savor-e2e.battle.authoring.settings",
             .correlation_id = "savor-e2e.battle",
             .causation_id = "plan-" + std::to_string(plan_id),
         },
@@ -591,6 +605,7 @@ bool SeedBattleAnalysisAndWorkflowRows(
     savor::db::IAuthoringDb* authoring_db,
     savor::db::IAnalysisDb* analysis_db,
     savor::db::IExecutionDb* execution_db,
+    const std::string& suffix,
     std::int64_t entry_savestate_id,
     std::int64_t battle_run_spec_id,
     std::int64_t explorer_settings_id,
@@ -608,13 +623,12 @@ bool SeedBattleAnalysisAndWorkflowRows(
     std::int64_t battle_set_id = 0;
     if (!analysis_db->CreateBattleSet(
             {
-                .name = "SavorE2E first battle set",
+                .name = "SavorE2E first battle set " + suffix,
                 .entry_savestate_id = entry_savestate_id,
                 .battle_run_spec_id = battle_run_spec_id,
                 .explorer_settings_id = explorer_settings_id,
                 .status = savor::db::BattleSetStatus::Active,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.analysis.battle_set",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -632,7 +646,6 @@ bool SeedBattleAnalysisAndWorkflowRows(
                 .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
                 .candidate_status = savor::db::BattleSeedCandidateStatus::Ready,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.analysis.seed_candidate",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "unique-seed-" + std::to_string(source_unique_seed_id),
             },
@@ -649,7 +662,6 @@ bool SeedBattleAnalysisAndWorkflowRows(
                 .seed_candidate_id = seed_candidate_id,
                 .status = savor::db::BattleTurnWaveStatus::Ready,
                 .created_at_utc = now,
-                .event_id = "savor-e2e.battle.analysis.turn_wave_1",
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "seed-candidate-" + std::to_string(seed_candidate_id),
             },
@@ -661,10 +673,10 @@ bool SeedBattleAnalysisAndWorkflowRows(
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E battle single-turn graph",
+                .name = "SavorE2E battle single-turn graph " + suffix,
                 .description = "Graph-wrapped battle context probe scenario",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.battle_single_turn.v1",
+                .graph_hash = "savor-e2e.workflow_graph.battle_single_turn.v1." + suffix,
                 .nodes = {
                     {
                         .node_key = "battle_context_1",
@@ -679,7 +691,6 @@ bool SeedBattleAnalysisAndWorkflowRows(
                     },
                 },
                 .created_at_utc = now,
-                .event_id = "savor-e2e.authoring.workflow_graph.battle_single_turn",
                 .correlation_id = "savor-e2e.workflow_graph.battle_single_turn",
                 .causation_id = "savor-e2e.seed",
             },
@@ -778,13 +789,18 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
         return false;
     }
 
+    const auto graph_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(0),
+        override_input_set_id.has_value());
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E TAS SeedProbe Battle graph",
+                .name = "SavorE2E TAS SeedProbe Battle graph " + graph_suffix,
                 .description = "TasMovie -> SeedProbe -> Battle graph-style e2e scenario",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.tasmovie_seedprobe_battle.v1",
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie_seedprobe_battle.v1." + graph_suffix,
                 .nodes = {
                     {
                         .node_key = "tas_1",
@@ -831,7 +847,6 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
                     { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
                 },
                 .created_at_utc = savor::db::types::UtcNow(),
-                .event_id = "savor-e2e.authoring.workflow_graph.tasmovie_seedprobe_battle",
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie_seedprobe_battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -936,13 +951,18 @@ bool SeedTasMovieBattleGraphExecution(
         return false;
     }
 
+    const auto graph_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(0),
+        false);
     savor::db::SaveWorkflowGraphResult saved{};
     if (!authoring_db->SaveWorkflowGraph(
             {
-                .name = "SavorE2E TAS Battle graph",
+                .name = "SavorE2E TAS Battle graph " + graph_suffix,
                 .description = "TasMovie -> Battle graph-style e2e scenario with external input frames",
                 .graph_version = 1,
-                .graph_hash = "savor-e2e.workflow_graph.tasmovie_battle.v1",
+                .graph_hash = "savor-e2e.workflow_graph.tasmovie_battle.v1." + graph_suffix,
                 .nodes = {
                     {
                         .node_key = "tas_1",
@@ -974,7 +994,6 @@ bool SeedTasMovieBattleGraphExecution(
                     { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "battle_1", .input_key = "entry_savestate" },
                 },
                 .created_at_utc = savor::db::types::UtcNow(),
-                .event_id = "savor-e2e.authoring.workflow_graph.tasmovie_battle",
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie_battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -1128,8 +1147,14 @@ bool RunBattleSingleTurnRealWorkerScenario(
 
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    const auto battle_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(2),
+        true);
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
+            battle_suffix,
             options.battle_fake_attack_low.value_or(0),
             options.battle_fake_attack_high.value_or(2),
             true,
@@ -1147,6 +1172,7 @@ bool RunBattleSingleTurnRealWorkerScenario(
             db_service->AuthoringDb(),
             db_service->AnalysisDb(),
             db_service->ExecutionDb(),
+            battle_suffix,
             entry_savestate_id,
             battle_run_spec_id,
             explorer_settings_id,
@@ -1445,8 +1471,14 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
 
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    const auto battle_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(0),
+        false);
     if (!SeedBattleAuthoringRows(
             db_service->AuthoringDb(),
+            battle_suffix,
             options.battle_fake_attack_low.value_or(0),
             options.battle_fake_attack_high.value_or(0),
             false,
@@ -1460,12 +1492,11 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
     std::int64_t battle_chain_spec_id = 0;
     if (!db_service->AuthoringDb()->SaveBattleChainSpec(
             {
-                .name = "SavorE2E TAS SeedProbe Battle chain spec",
+                .name = "SavorE2E TAS SeedProbe Battle chain spec " + battle_suffix,
                 .description = "First battle graph-style chain spec",
                 .battle_run_spec_id = battle_run_spec_id,
                 .explorer_settings_id = explorer_settings_id,
                 .created_at_utc = savor::db::types::UtcNow(),
-                .event_id = "savor-e2e.authoring.battle_chain_spec.tasmovie_seedprobe_battle",
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie_seedprobe_battle",
                 .causation_id = "savor-e2e.seed",
             },
@@ -1491,7 +1522,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         external_input_set_id = seeded_input_set_id;
     }
 
-    if (tasmovie_battle_only) {
+    if (override_input_frames || tasmovie_battle_only) {
         if (!SeedTasMovieBattleGraphExecution(
                 db_service->AuthoringDb(),
                 db_service->ExecutionDb(),
@@ -1829,7 +1860,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             : "workflow did not reach COMPLETED state before timeout - timed out";
         return false;
     }
-    if (!tasmovie_battle_only && (probe_run_id <= 0 || unique_rows.empty())) {
+    if (!override_input_frames && !tasmovie_battle_only && (probe_run_id <= 0 || unique_rows.empty())) {
         if (error_out) *error_out = "graph workflow completed without a SeedProbe run with uniques";
         return false;
     }

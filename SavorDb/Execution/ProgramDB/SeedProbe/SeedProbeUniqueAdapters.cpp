@@ -509,9 +509,6 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     cmd.seed_value = parsed.rng_seed;
     cmd.seed_delta = observed_delta;
     cmd.recorded_at_utc = savor::db::types::UtcNow();
-    cmd.event_id = "seedprobe-result-" + std::to_string(*probe_result_id)
-        + "-job-" + std::to_string(job_id)
-        + "-unique";
     cmd.correlation_id = "seedprobe-run-" + std::to_string(job->program_ref_id);
     cmd.causation_id = "job-" + std::to_string(job_id);
 

@@ -33,7 +33,6 @@ struct CreateArchivePackageRequest {
     std::string source_context = "Execution";
     std::int64_t schema_version = 0;
     int event_catalog_version = 1;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };

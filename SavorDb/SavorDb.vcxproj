@@ -178,6 +178,7 @@
     <ClInclude Include="Common\Events\EventPayloadValidation.h" />
     <ClInclude Include="Common\Events\EventPayloadViews.h" />
     <ClInclude Include="Common\Events\EventPayloadResolvers.h" />
+    <ClInclude Include="Common\Events\OutboxEventIds.h" />
     <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />

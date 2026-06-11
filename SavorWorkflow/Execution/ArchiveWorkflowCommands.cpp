@@ -224,9 +224,8 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
                 .status = "REQUESTED",
                 .requested_at_utc = request.now_utc,
                 .target_namespace = request.target_namespace,
-                .event_id = request.event_id_prefix + "-requested",
-                .correlation_id = request.event_id_prefix,
-                .causation_id = request.event_id_prefix,
+                .correlation_id = request.trace_id,
+                .causation_id = request.trace_id,
             },
             &request_id,
             &error)) {
@@ -237,9 +236,8 @@ ArchiveCommandSummary ArchiveWorkflowCommands::RehydrateExecute(const RehydrateE
     auto result = rehydrate_executor_->Execute({
         .rehydrate_request_id = request_id,
         .now_utc = request.now_utc,
-        .event_id_prefix = request.event_id_prefix,
-        .correlation_id = request.event_id_prefix,
-        .causation_id = request.event_id_prefix,
+        .correlation_id = request.trace_id,
+        .causation_id = request.trace_id,
     });
 
     summary.success = result.success;

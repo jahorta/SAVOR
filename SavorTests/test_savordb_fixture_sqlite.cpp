@@ -85,6 +85,33 @@ workflow::WorkflowCreateUnitActivationSpec TestUnitActivation(
     return activation;
 }
 
+std::int64_t ReadInt64(sqlite3* db, const char* sql) {
+    sqlite3_stmt* st = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &st, nullptr));
+    if (st == nullptr) {
+        return 0;
+    }
+    const auto rc = sqlite3_step(st);
+    EXPECT_EQ(SQLITE_ROW, rc);
+    const auto value = rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : 0;
+    sqlite3_finalize(st);
+    return value;
+}
+
+std::string ReadText(sqlite3* db, const char* sql) {
+    sqlite3_stmt* st = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &st, nullptr));
+    if (st == nullptr) {
+        return {};
+    }
+    std::string value;
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_text(st, 0) != nullptr) {
+        value = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+    }
+    sqlite3_finalize(st);
+    return value;
+}
+
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
     using namespace savor::db::migrations;
 
@@ -110,6 +137,415 @@ TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
         // Second apply should be a no-op and still succeed.
         EXPECT_TRUE(ApplyContextMigrations(db_, context, embedded_options, &err)) << err;
     }
+}
+
+TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedStateWritesAndTasVariantEnsure) {
+    auto* state_db = db_service_->StateDb();
+    ASSERT_NE(state_db, nullptr);
+
+    using savor::db::types::UtcTimePoint;
+    const auto t1 = UtcTimePoint(std::chrono::milliseconds(1000));
+    const auto t2 = UtcTimePoint(std::chrono::milliseconds(2000));
+
+    std::int64_t base_artifact_id = 0;
+    std::string error;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-event-id-base",
+            .size_bytes = 12,
+            .compression_kind = 0,
+            .filename = "base.dtm",
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = t1,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        &base_artifact_id,
+        &error)) << error;
+
+    std::int64_t repeated_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-event-id-base",
+            .size_bytes = 13,
+            .compression_kind = 0,
+            .filename = "base-updated.dtm",
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = t2,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        &repeated_artifact_id,
+        &error)) << error;
+    EXPECT_EQ(base_artifact_id, repeated_artifact_id);
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM state_outbox_message WHERE event_type='State.ArtifactStored.v1';"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM state_outbox_message WHERE event_type='State.ArtifactStored.v1';"));
+
+    std::int64_t variant_id = 0;
+    ASSERT_TRUE(state_db->CreateTasVariant(
+        {
+            .name = "repeatable-tas-variant",
+            .base_dtm_artifact_id = base_artifact_id,
+            .mutation_mode = "RTC_OVERRIDE",
+            .rtc_value = 7,
+            .created_at_utc = t1,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        &variant_id,
+        &error)) << error;
+
+    std::int64_t duplicate_variant_id = 0;
+    ASSERT_TRUE(state_db->CreateTasVariant(
+        {
+            .name = "repeatable-tas-variant",
+            .base_dtm_artifact_id = base_artifact_id,
+            .mutation_mode = "RTC_OVERRIDE",
+            .rtc_value = 7,
+            .created_at_utc = t2,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        &duplicate_variant_id,
+        &error)) << error;
+    EXPECT_EQ(variant_id, duplicate_variant_id);
+    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_tas_movie_variant WHERE name='repeatable-tas-variant';"));
+    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_outbox_message WHERE event_type='State.TasVariantCreated.v1';"));
+
+    std::int64_t other_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "state-event-id-other",
+            .size_bytes = 14,
+            .compression_kind = 0,
+            .filename = "other.dtm",
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = t2,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        &other_artifact_id,
+        &error)) << error;
+
+    EXPECT_FALSE(state_db->CreateTasVariant(
+        {
+            .name = "repeatable-tas-variant",
+            .base_dtm_artifact_id = other_artifact_id,
+            .mutation_mode = "RTC_OVERRIDE",
+            .rtc_value = 7,
+            .created_at_utc = t2,
+            .correlation_id = "repeat-state",
+            .causation_id = "test",
+        },
+        nullptr,
+        &error));
+    EXPECT_NE(std::string::npos, error.find("different defining fields"));
+}
+
+TEST_F(SqliteDbFixture, TasMovieRepeatedSchedulesUseDbJobSetScopedFingerprints) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::tasmovie;
+
+    auto* state_db = db_service_->StateDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    std::string error;
+    std::int64_t base_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "tasmovie-repeated-job-fingerprint-base",
+            .size_bytes = 12,
+            .compression_kind = 0,
+            .filename = "base.dtm",
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = types::UtcNow(),
+            .correlation_id = "test.tasmovie.repeat",
+            .causation_id = "test",
+        },
+        &base_artifact_id,
+        &error))
+        << error;
+
+    ProgramKindRegistry registry;
+    TasMoviePhaseRegistrationConfig config{};
+    config.blueprint.base_dtm_artifact_id = base_artifact_id;
+    config.blueprint.rtc_low = 0;
+    config.blueprint.rtc_high = 0;
+    config.working_dir_root = temp_root_ / "tasmovie-repeat";
+    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, std::move(config));
+
+    const auto* descriptor = registry.FindForStepKind("tas_movie");
+    ASSERT_NE(descriptor, nullptr);
+    ASSERT_NE(descriptor->job_persistence, nullptr);
+
+    const auto first = descriptor->job_persistence->EncodeForQueueing(base_artifact_id);
+    const auto second = descriptor->job_persistence->EncodeForQueueing(base_artifact_id);
+    ASSERT_GT(first.root_job_set_id, 0);
+    ASSERT_GT(second.root_job_set_id, 0);
+    ASSERT_NE(first.root_job_set_id, second.root_job_set_id);
+
+    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_tas_movie_variant WHERE name='tasmovie-base-1-rtc-0';"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE program_kind=2;"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT fingerprint) FROM exec_job WHERE program_kind=2;"));
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE fingerprint LIKE ?1 OR fingerprint LIKE ?2;",
+        -1,
+        &st,
+        nullptr));
+    const auto first_like = "%;job_set_id=" + std::to_string(first.root_job_set_id) + ";%";
+    const auto second_like = "%;job_set_id=" + std::to_string(second.root_job_set_id) + ";%";
+    sqlite3_bind_text(st, 1, first_like.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, second_like.c_str(), -1, SQLITE_TRANSIENT);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(2, sqlite3_column_int64(st, 0));
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, DBOwnedEventIdsAllowRepeatedAuthoringAndAnalysisWrites) {
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+
+    using savor::db::types::UtcTimePoint;
+    const auto t1 = UtcTimePoint(std::chrono::milliseconds(3000));
+    const auto t2 = UtcTimePoint(std::chrono::milliseconds(4000));
+
+    std::string error;
+    std::int64_t spec_a = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "repeat-authoring-a",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 16,
+            .samples_per_axis = 1,
+            .min_value = 0,
+            .max_value = 255,
+            .created_at_utc = t1,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &spec_a,
+        &error)) << error;
+
+    std::int64_t spec_b = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "repeat-authoring-b",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 16,
+            .samples_per_axis = 1,
+            .min_value = 0,
+            .max_value = 255,
+            .created_at_utc = t2,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &spec_b,
+        &error)) << error;
+    EXPECT_NE(spec_a, spec_b);
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM au_outbox_message WHERE event_type='Authoring.SeedProbeSpecSaved.v1';"));
+
+    std::int64_t spec_a_repeat = 0;
+    ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "repeat-authoring-a",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 16,
+            .samples_per_axis = 1,
+            .min_value = 0,
+            .max_value = 255,
+            .created_at_utc = t2,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &spec_a_repeat,
+        &error)) << error;
+    EXPECT_EQ(spec_a, spec_a_repeat);
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(*) FROM au_outbox_message WHERE event_type='Authoring.SeedProbeSpecSaved.v1';"));
+
+    EXPECT_FALSE(authoring_db->SaveSeedProbeSpec(
+        {
+            .name = "repeat-authoring-a",
+            .priority = 1,
+            .run_ms = 1000,
+            .vi_stall_ms = 16,
+            .samples_per_axis = 2,
+            .min_value = 0,
+            .max_value = 255,
+            .created_at_utc = t2,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        nullptr,
+        &error));
+    EXPECT_NE(std::string::npos, error.find("different defining fields"));
+
+    savor::db::SaveWorkflowGraphResult graph_a{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "repeat-authoring-graph",
+            .description = "repeat graph",
+            .graph_version = 1,
+            .graph_hash = "repeat-authoring-graph-hash",
+            .nodes = {
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "battle_seed_probe",
+                    .display_name = "Battle Seed Probe",
+                    .authored_ref_kind = std::string("seed_probe_spec"),
+                    .authored_ref_id = spec_a,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                },
+            },
+            .created_at_utc = t1,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &graph_a,
+        &error)) << error;
+
+    savor::db::SaveWorkflowGraphResult graph_a_repeat{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "repeat-authoring-graph",
+            .description = "repeat graph",
+            .graph_version = 1,
+            .graph_hash = "repeat-authoring-graph-hash",
+            .nodes = {
+                {
+                    .node_key = "probe_1",
+                    .unit_kind = "battle_seed_probe",
+                    .display_name = "Battle Seed Probe",
+                    .authored_ref_kind = std::string("seed_probe_spec"),
+                    .authored_ref_id = spec_a,
+                    .inputs = {
+                        { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                    },
+                },
+            },
+            .created_at_utc = t2,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &graph_a_repeat,
+        &error)) << error;
+    EXPECT_EQ(graph_a.workflow_graph_id, graph_a_repeat.workflow_graph_id);
+    EXPECT_EQ(graph_a.workflow_graph_revision_id, graph_a_repeat.workflow_graph_revision_id);
+    EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(*) FROM au_outbox_message WHERE event_type='Authoring.WorkflowGraphSaved.v1';"));
+
+    std::int64_t set_a = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "repeat-analysis-a",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "default",
+            .segment_source_kind = "test",
+            .created_at_utc = t1,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &set_a,
+        &error)) << error;
+
+    std::int64_t set_b = 0;
+    ASSERT_TRUE(analysis_db->CreateSeedProbeSet(
+        {
+            .name = "repeat-analysis-b",
+            .probe_flavor = "BATTLE_PRE",
+            .breakpoint_policy_name = "default",
+            .segment_source_kind = "test",
+            .created_at_utc = t2,
+            .correlation_id = "repeat-authoring-analysis",
+            .causation_id = "test",
+        },
+        &set_b,
+        &error)) << error;
+    EXPECT_NE(set_a, set_b);
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM sp_outbox_message WHERE event_type='AnalysisSeedProbe.SetCreated.v1';"));
+}
+
+TEST_F(SqliteDbFixture, AllScenarioStyleRepeatedSeedWritesUseDbOwnedOutboxEventIds) {
+    auto* state_db = db_service_->StateDb();
+    auto* authoring_db = db_service_->AuthoringDb();
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(authoring_db, nullptr);
+
+    using savor::db::types::UtcTimePoint;
+    const auto t1 = UtcTimePoint(std::chrono::milliseconds(5000));
+    const auto t2 = UtcTimePoint(std::chrono::milliseconds(6000));
+
+    std::string error;
+    for (int i = 0; i < 2; ++i) {
+        const auto now = i == 0 ? t1 : t2;
+        std::int64_t artifact_id = 0;
+        ASSERT_TRUE(state_db->StoreArtifact(
+            {
+                .sha256 = "all-scenario-style-sav",
+                .size_bytes = 99 + i,
+                .compression_kind = 0,
+                .filename = "beginning_in_first_battle.sav",
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = now,
+                .correlation_id = "all-scenario-style",
+                .causation_id = "test",
+            },
+            &artifact_id,
+            &error)) << error;
+
+        std::int64_t savestate_id = 0;
+        ASSERT_TRUE(state_db->CreateSavestate(
+            {
+                .artifact_id = artifact_id,
+                .savestate_type = "dolphin",
+                .note = "repeat seed",
+                .is_complete = true,
+                .created_at_utc = now,
+                .correlation_id = "all-scenario-style",
+                .causation_id = "test",
+            },
+            &savestate_id,
+            &error)) << error;
+
+        std::int64_t spec_id = 0;
+        ASSERT_TRUE(authoring_db->SaveSeedProbeSpec(
+            {
+                .name = std::string("all-scenario-style-seedprobe-") + std::to_string(i),
+                .priority = 1,
+                .run_ms = 1000,
+                .vi_stall_ms = 16,
+                .samples_per_axis = 1,
+                .min_value = 0,
+                .max_value = 255,
+                .created_at_utc = now,
+                .correlation_id = "all-scenario-style",
+                .causation_id = "test",
+            },
+            &spec_id,
+            &error)) << error;
+    }
+
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM state_outbox_message WHERE event_type='State.ArtifactStored.v1';"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM state_outbox_message WHERE event_type='State.SavestateCreated.v1';"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT event_id) FROM au_outbox_message WHERE event_type='Authoring.SeedProbeSpecSaved.v1';"));
 }
 
 TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables) {
@@ -302,7 +738,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .min_fake_attacks = 0,
             .max_fake_attacks = 0,
             .created_at_utc = now,
-            .event_id = "direct-context-run-spec",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -316,7 +751,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .fingerprint = "two-turn-plan-fp",
             .num_turns = 2,
             .created_at_utc = now,
-            .event_id = "direct-context-plan",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -331,7 +765,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .target_kind = BattlePlanTargetKind::SingleEnemy,
             .target_single_slot = 0,
             .created_at_utc = now,
-            .event_id = "direct-context-preset",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -353,7 +786,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
                 },
                 .replace_existing_actions = true,
                 .created_at_utc = now,
-                .event_id = "direct-context-turn-" + std::to_string(turn_index),
                 .correlation_id = "direct-context",
                 .causation_id = "test",
             },
@@ -368,7 +800,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .description = "Use returned battle context for follow-up turns",
             .default_plan_id = plan_id,
             .created_at_utc = now,
-            .event_id = "direct-context-settings",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -384,7 +815,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .explorer_settings_id = explorer_settings_id,
             .status = BattleSetStatus::Active,
             .created_at_utc = now,
-            .event_id = "direct-context-battle-set",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -399,7 +829,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .source_kind = BattleSeedCandidateSourceKind::Synthetic,
             .candidate_status = BattleSeedCandidateStatus::Ready,
             .created_at_utc = now,
-            .event_id = "direct-context-seed",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -414,7 +843,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .seed_candidate_id = seed_candidate_id,
             .status = BattleTurnWaveStatus::Ready,
             .created_at_utc = now,
-            .event_id = "direct-context-wave-1",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -442,7 +870,6 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .result_context_blob_base64 = std::string("AQID"),
             .result_context_version = 1,
             .recorded_at_utc = now,
-            .event_id = "direct-context-turn-job",
             .correlation_id = "direct-context",
             .causation_id = "test",
         },
@@ -2389,7 +2816,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .explorer_settings_id = 303,
             .status = savor::db::BattleSetStatus::Active,
             .created_at_utc = now,
-            .event_id = "ab-event-30",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-1",
         },
@@ -2407,7 +2833,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
             .candidate_status = savor::db::BattleSeedCandidateStatus::Pending,
             .created_at_utc = now,
-            .event_id = "ab-event-31",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-2",
         },
@@ -2423,7 +2848,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .seed_candidate_id = seed_candidate_id,
             .status = savor::db::BattleTurnWaveStatus::Running,
             .created_at_utc = now,
-            .event_id = "ab-event-32",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-3",
         },
@@ -2443,7 +2867,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .has_results = true,
             .battle_outcome = savor::battle::Outcome::Defeat,
             .recorded_at_utc = now,
-            .event_id = "ab-event-33",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-4",
         },
@@ -2459,7 +2882,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .pool_name = "pool-a",
             .criterion_kind = savor::db::BattleSelectionCriterionKind::MaxVi,
             .created_at_utc = now,
-            .event_id = "ab-event-34",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-5",
         },
@@ -2475,7 +2897,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .decision_kind = savor::db::BattleSelectionDecisionKind::Winner,
             .decision_reason = std::string("best vi"),
             .created_at_utc = now,
-            .event_id = "ab-event-35",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-6",
         },
@@ -2492,7 +2913,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .recorded_dtm_artifact_id = 777,
             .note = std::string("stage3d"),
             .updated_at_utc = now,
-            .event_id = "ab-event-36",
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-7",
         },
@@ -2570,7 +2990,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .min_fake_attacks = 1,
             .max_fake_attacks = 3,
             .created_at_utc = now,
-            .event_id = "au-battle-run-spec",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-1",
         },
@@ -2584,7 +3003,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .fingerprint = "plan-fp-1",
             .num_turns = 2,
             .created_at_utc = now,
-            .event_id = "au-plan",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-2",
         },
@@ -2599,7 +3017,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .target_kind = savor::db::BattlePlanTargetKind::MultipleEnemies,
             .target_mask_bits = 1 << 4,
             .created_at_utc = now,
-            .event_id = "au-action-preset-attack",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-3a",
         },
@@ -2616,7 +3033,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .target_same_as_actor_slot = 0,
             .item_id = 99,
             .created_at_utc = now,
-            .event_id = "au-action-preset-item",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-3b",
         },
@@ -2629,7 +3045,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .action_preset_id = item_preset_id,
             .name = "renamed-use-item-same-as-preset",
             .updated_at_utc = now,
-            .event_id = "au-action-preset-rename",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-3c",
         },
@@ -2643,7 +3058,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .target_kind = savor::db::BattlePlanTargetKind::SingleEnemy,
             .target_single_slot = 4,
             .created_at_utc = now,
-            .event_id = "au-action-preset-attack-edited",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-3d",
         },
@@ -2670,7 +3084,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
                 },
             },
             .created_at_utc = now,
-            .event_id = "au-plan-turn",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-3",
         },
@@ -2729,7 +3142,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .lhs_address_program_id = lhs_address_program_id,
             .abort_on_fail = true,
             .created_at_utc = now,
-            .event_id = "au-predicate",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-4",
         },
@@ -2753,7 +3165,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .default_plan_id = plan_id,
             .default_predicate_set_id = predicate_set_id,
             .created_at_utc = now,
-            .event_id = "au-settings",
             .correlation_id = "au-corr",
             .causation_id = "au-cause-5",
         },
@@ -2805,7 +3216,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .explorer_settings_id = explorer_settings_id,
             .status = savor::db::BattleSetStatus::Active,
             .created_at_utc = now,
-            .event_id = "ab-roundtrip-1",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-1",
         },
@@ -2821,7 +3231,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .source_kind = savor::db::BattleSeedCandidateSourceKind::SeedProbeUnique,
             .candidate_status = savor::db::BattleSeedCandidateStatus::Pending,
             .created_at_utc = now,
-            .event_id = "ab-roundtrip-2",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-2",
         },
@@ -2836,7 +3245,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .seed_candidate_id = seed_candidate_id,
             .status = savor::db::BattleTurnWaveStatus::Ready,
             .created_at_utc = now,
-            .event_id = "ab-roundtrip-3",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-3",
         },
@@ -2865,7 +3273,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .pred_abort_run = 0,
             .output_savestate_id = 9501,
             .recorded_at_utc = now,
-            .event_id = "ab-roundtrip-4",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-4",
         },
@@ -2880,7 +3287,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .pool_name = "turn-1-results",
             .criterion_kind = savor::db::BattleSelectionCriterionKind::ViDelta,
             .created_at_utc = now,
-            .event_id = "ab-roundtrip-5",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-5",
         },
@@ -2895,7 +3301,6 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
             .decision_kind = savor::db::BattleSelectionDecisionKind::Winner,
             .decision_reason = std::string("best delta vi"),
             .created_at_utc = now,
-            .event_id = "ab-roundtrip-6",
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-6",
         },
@@ -3010,7 +3415,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
             .max_value = 0,
             .combo_attempts_per_target = 1,
             .created_at_utc = now,
-            .event_id = "au-seedprobe-input-set-owner",
             .correlation_id = "au-seedprobe-input-set-owner",
         },
         &seed_probe_spec_id,
@@ -3024,7 +3428,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
             .breakpoint_policy_name = "test",
             .segment_source_kind = "fixture",
             .created_at_utc = now,
-            .event_id = "an-probe-set-input-set-owner",
             .correlation_id = "an-probe-set-input-set-owner",
         },
         &probe_set_id,
@@ -3039,7 +3442,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
             .codec_version = 1,
             .status = "requested",
             .requested_at_utc = now,
-            .event_id = "an-probe-run-input-set-owner",
             .correlation_id = "an-probe-run-input-set-owner",
         },
         &probe_run_id,
@@ -3063,7 +3465,6 @@ TEST_F(SqliteDbFixture, Stage5SeedProbeRunCreatesOwnedAnalysisInputSetAndRecords
         .seed_value = 0,
         .seed_delta = 0,
         .recorded_at_utc = now,
-        .event_id = "an-probe-unique-input-set-owner",
         .correlation_id = "an-probe-unique-input-set-owner",
     };
     bool inserted = false;
@@ -3108,7 +3509,6 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
             .min_fake_attacks = 0,
             .max_fake_attacks = 0,
             .created_at_utc = now,
-            .event_id = "au-battle-run-input-set",
             .correlation_id = "au-battle-input-set",
         },
         &battle_run_spec_id,
@@ -3119,7 +3519,6 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
         {
             .name = "input-set-battle-settings",
             .created_at_utc = now,
-            .event_id = "au-explorer-input-set",
             .correlation_id = "au-battle-input-set",
         },
         &explorer_settings_id,
@@ -3132,7 +3531,6 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
             .battle_run_spec_id = battle_run_spec_id,
             .explorer_settings_id = explorer_settings_id,
             .created_at_utc = now,
-            .event_id = "au-battle-chain-input-set",
             .correlation_id = "au-battle-input-set",
         },
         &battle_chain_spec_id,
@@ -3171,7 +3569,6 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
                 },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-battle-input-set-contract",
             .correlation_id = "au-battle-input-set",
         },
         &saved,
@@ -3306,7 +3703,6 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                 { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-graph",
             .correlation_id = "au-workflow-graph",
         },
         &saved,
@@ -3414,7 +3810,6 @@ TEST_F(SqliteDbFixture, Stage5AuthoringWorkflowGraphStoresBattleChainSpecWithout
                 { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-graph-v2",
             .correlation_id = "au-workflow-graph",
             .causation_id = "au-workflow-graph",
         },
@@ -3497,7 +3892,6 @@ TEST_F(SqliteDbFixture, Stage5ExecutionWorkflowInstanceStoresAuthoredGraphRevisi
                 { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-graph-launch",
             .correlation_id = "au-workflow-graph-launch",
         },
         &saved,
@@ -3663,7 +4057,6 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
                 { .from_node_key = "probe_1", .output_key = "unique_input_frames", .to_node_key = "battle_1", .input_key = "initial_input_frames" },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-graph-routing",
             .correlation_id = "au-workflow-graph-routing",
         },
         &saved,
@@ -3918,7 +4311,6 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRespectsExternalOverrideInputBinding) 
                 { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
             },
             .created_at_utc = now,
-            .event_id = "au-workflow-graph-routing-override",
             .correlation_id = "au-workflow-graph-routing-override",
         },
         &saved,
@@ -4044,7 +4436,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
             .combo_sampler_tries = 1,
             .auto_schedule_battle_run = false,
             .created_at_utc = types::UtcNow(),
-            .event_id = "test.authoring.seedprobe.graph-materialize",
             .correlation_id = "test.graph-materialize",
             .causation_id = "test",
         },
@@ -4075,7 +4466,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesSeedProbeGraphNodeFromInsta
                 },
             },
             .created_at_utc = types::UtcNow(),
-            .event_id = "test.authoring.workflow.graph-materialize",
             .correlation_id = "test.graph-materialize",
         },
         &saved,
@@ -4203,7 +4593,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
             .file_ext = ".dtm",
             .artifact_kind = "DTM",
             .created_at_utc = types::UtcNow(),
-            .event_id = "test.state.artifact.tasmovie.graph-dedupe-base",
             .correlation_id = "test.tasmovie.graph-dedupe",
             .causation_id = "test",
         },
@@ -4226,7 +4615,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
                 .rtc_low = 0,
                 .rtc_high = 0,
                 .created_at_utc = types::UtcNow(),
-                .event_id = std::string("test.authoring.tas-spec.graph-dedupe.") + std::string(suffix),
                 .correlation_id = "test.tasmovie.graph-dedupe",
                 .causation_id = "test",
             },
@@ -4284,7 +4672,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
                     },
                 },
                 .created_at_utc = types::UtcNow(),
-                .event_id = std::string("test.authoring.workflow.tasmovie.graph-dedupe.") + std::string(suffix),
                 .correlation_id = "test.tasmovie.graph-dedupe",
             },
             &saved,
@@ -4448,7 +4835,6 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisSeedProbeSetCreateEmitsEventTwentyThree) 
             .breakpoint_policy_name = "bp-default",
             .segment_source_kind = "FILE",
             .created_at_utc = now,
-            .event_id = "sp-event-23",
             .correlation_id = "sp-corr-1",
             .causation_id = "sp-cause-1",
         },
@@ -4491,7 +4877,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .time_range_end_utc = now,
             .manifest_path = "manifest.json",
             .checksum_status = "PENDING",
-            .event_id = "ar-event-44",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-1",
         },
@@ -4509,7 +4894,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .blob_path = std::string("jobs.jsonl"),
             .checksum = std::string("abc123"),
             .indexed_at_utc = now,
-            .event_id = "ar-event-45",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-2",
         },
@@ -4525,7 +4909,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .status = "REQUESTED",
             .requested_at_utc = now,
             .target_namespace = "test",
-            .event_id = "ar-event-46",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-3",
         },
@@ -4541,7 +4924,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .entity_mappings = {
                 { .entity_kind = "job", .old_id = "12", .new_id = "1012" },
             },
-            .event_id = "ar-event-47",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-4",
         },
@@ -4555,7 +4937,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .status = "REQUESTED",
             .requested_at_utc = now,
             .target_namespace = "test",
-            .event_id = "ar-event-46b",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-5",
         },
@@ -4568,7 +4949,6 @@ TEST_F(SqliteDbFixture, Stage3dArchiveCommandsEmitEventsFortyFourThroughFortyEig
             .status = "FAILED",
             .completed_at_utc = now,
             .error_text = "simulated failure",
-            .event_id = "ar-event-48",
             .correlation_id = "ar-corr-1",
             .causation_id = "ar-cause-6",
         },
@@ -4625,7 +5005,6 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     const auto package = package_service.CreatePackage({
         .source_root_job_set_id = 100,
         .created_at_utc = now,
-        .event_id = "stage4-package-1",
         .correlation_id = "stage4-corr",
         .causation_id = "stage4-cause",
     });
@@ -4693,7 +5072,6 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
     const auto package = package_service.CreatePackage({
         .source_root_job_set_id = 100,
         .created_at_utc = now,
-        .event_id = "stage4-roundtrip-1",
         .correlation_id = "stage4-roundtrip",
         .causation_id = "stage4-roundtrip",
     });
@@ -4712,7 +5090,7 @@ INSERT INTO exec_job_event(job_event_id, job_id, event_kind, event_ts_utc, messa
         .archive_package_id = package.archive_package_id,
         .now_utc = now,
         .target_namespace = "stage4",
-        .event_id_prefix = "stage4-rh",
+        .trace_id = "stage4-rh",
     });
     const auto join_messages = [](const std::vector<std::string>& values) {
         std::ostringstream out;
@@ -4901,7 +5279,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .combo_sampler_tries = 1,
             .auto_schedule_battle_run = false,
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.authoring.seedprobe.timing",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -4917,7 +5294,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .breakpoint_policy_name = "default",
             .segment_source_kind = "manual",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.set.timing",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -4934,7 +5310,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .codec_version = 1,
             .status = "queued",
             .requested_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.run.timing",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -4995,7 +5370,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1001,
             .seed_delta = 1,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.main",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -5010,7 +5384,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1002,
             .seed_delta = 2,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.cstick",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -5025,7 +5398,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
             .seed_value = 1004,
             .seed_delta = 4,
             .recorded_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.grid.unique_spec_override.trigger",
             .correlation_id = "test.seedprobe.timing",
             .causation_id = "test",
         },
@@ -5084,7 +5456,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobF
             .breakpoint_policy_name = "default",
             .segment_source_kind = "manual",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.set.grid_mapper_fallback",
             .correlation_id = "test.seedprobe.grid_mapper_fallback",
             .causation_id = "test",
         },
@@ -5101,7 +5472,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeGridResultMapperPersistsGridSeedFromJobF
             .codec_version = 1,
             .status = "queued",
             .requested_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.run.grid_mapper_fallback",
             .correlation_id = "test.seedprobe.grid_mapper_fallback",
             .causation_id = "test",
         },
@@ -5189,7 +5559,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSu
             .breakpoint_policy_name = "default",
             .segment_source_kind = "manual",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.set.unique_mapper_supersede",
             .correlation_id = "test.seedprobe.unique_mapper_supersede",
             .causation_id = "test",
         },
@@ -5206,7 +5575,6 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeUniqueResultMapperRecordsInputFrameAndSu
             .codec_version = 1,
             .status = "queued",
             .requested_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.analysis.seedprobe.run.unique_mapper_supersede",
             .correlation_id = "test.seedprobe.unique_mapper_supersede",
             .causation_id = "test",
         },
@@ -5353,7 +5721,6 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.state.artifact.materialize_savestate",
             .correlation_id = "test.state.materialize_savestate",
             .causation_id = "test",
         },
@@ -5369,7 +5736,6 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
             .note = "materialize test",
             .is_complete = true,
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.state.savestate.materialize_savestate",
             .correlation_id = "test.state.materialize_savestate",
             .causation_id = "test",
         },
@@ -5417,7 +5783,6 @@ TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.state.artifact.dedupe.first",
             .correlation_id = "test.state.artifact.dedupe",
             .causation_id = "test",
         },
@@ -5435,7 +5800,6 @@ TEST_F(SqliteDbFixture, StateDbDedupesArtifactAndUiReadListsSummary) {
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.state.artifact.dedupe.second",
             .correlation_id = "test.state.artifact.dedupe",
             .causation_id = "test",
         },
@@ -5501,7 +5865,6 @@ TEST_F(SqliteDbFixture, UiReadProjectionAttachesSeparateStateDatabaseForArtifact
             .file_ext = ".sav",
             .artifact_kind = "SAV",
             .created_at_utc = savor::db::types::UtcNow(),
-            .event_id = "test.state.artifact.attached_projection",
             .correlation_id = "test.state.artifact.attached_projection",
             .causation_id = "test",
         },

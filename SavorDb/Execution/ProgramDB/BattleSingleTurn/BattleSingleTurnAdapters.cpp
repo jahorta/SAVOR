@@ -153,10 +153,6 @@ struct ResultsIni {
     }
 };
 
-std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
-    return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
-}
-
 std::filesystem::path WorkingRoot(const std::filesystem::path& configured) {
     if (!configured.empty()) {
         return configured;
@@ -829,7 +825,6 @@ public:
                             .job_state = savor::db::BattleTurnJobState::Queued,
                             .started_at_utc = now,
                             .recorded_at_utc = now,
-                            .event_id = EventId("battle.turn_job", wave->wave_id, std::to_string(variant_index) + "." + std::to_string(fake)),
                             .correlation_id = "battle-set-" + std::to_string(battle_set->battle_set_id),
                             .causation_id = "wave-" + std::to_string(wave->wave_id),
                         },
@@ -1182,7 +1177,6 @@ private:
                     .file_ext = path.extension().string(),
                     .artifact_kind = "SAV",
                     .created_at_utc = now,
-                    .event_id = EventId("battle.sav.artifact", job_id, "stored"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -1200,7 +1194,6 @@ private:
                     .note = "BattleSingleTurnRunner produced savestate",
                     .is_complete = true,
                     .created_at_utc = now,
-                    .event_id = EventId("battle.savestate", job_id, "created"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "artifact-" + std::to_string(artifact_id),
                 },
@@ -1242,7 +1235,6 @@ private:
                     .file_ext = ".aitb",
                     .artifact_kind = "OTHER",
                     .created_at_utc = now,
-                    .event_id = EventId("battle.applied_input", job_id, "stored"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -1321,7 +1313,6 @@ public:
                     .pool_name = "turn-rng-seed-survivors",
                     .criterion_kind = savor::db::BattleSelectionCriterionKind::BestFakeAttacksByRngSeed,
                     .created_at_utc = now,
-                    .event_id = EventId("battle.selection_pool", current_wave->battle_set_id, std::to_string(current_wave->turn_index)),
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                     .causation_id = "wave-" + std::to_string(current_wave->wave_id),
                 },
@@ -1447,7 +1438,6 @@ public:
                     .decision_kind = winner ? savor::db::BattleSelectionDecisionKind::Winner : savor::db::BattleSelectionDecisionKind::Duplicate,
                     .decision_reason = winner ? std::optional<std::string>("best_for_rng_seed") : std::optional<std::string>("rng_seed_duplicate"),
                     .created_at_utc = now,
-                    .event_id = EventId("battle.selection_decision", pool_id, std::to_string(survivor.job.turn_job_id)),
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                     .causation_id = "selection-pool-" + std::to_string(pool_id),
                 },
@@ -1494,7 +1484,6 @@ public:
                         .selection_pool_id = pool_id,
                         .status = savor::db::BattleTurnWaveStatus::Ready,
                         .created_at_utc = now,
-                        .event_id = EventId("battle.turn_wave", winner.job.turn_job_id, "next"),
                         .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                         .causation_id = "turn-job-" + std::to_string(winner.job.turn_job_id),
                     },

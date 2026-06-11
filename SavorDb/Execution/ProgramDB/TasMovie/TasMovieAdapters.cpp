@@ -29,10 +29,6 @@ std::string ToString(std::int64_t value) {
     return std::to_string(value);
 }
 
-std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
-    return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
-}
-
 TasMovieBlueprintConfig ParseBlueprint(const std::string& input_ini) {
     const auto ini = IniDoc::parse(input_ini);
     TasMovieBlueprintConfig cfg{};
@@ -82,9 +78,14 @@ std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) 
     return ini.to_string_sorted();
 }
 
-std::string VariantFingerprint(const TasMovieBlueprintConfig& cfg, std::int64_t tas_variant_id, std::int64_t rtc) {
+std::string VariantFingerprint(
+    const TasMovieBlueprintConfig& cfg,
+    std::int64_t job_set_id,
+    std::int64_t tas_variant_id,
+    std::int64_t rtc) {
     return "PK=2;PV=" + std::to_string(kProgramVersion)
         + ";phase=tasmovie;variant_id=" + std::to_string(tas_variant_id)
+        + ";job_set_id=" + std::to_string(job_set_id)
         + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
         + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
         + ";rtc=" + std::to_string(rtc)
@@ -238,7 +239,6 @@ public:
                         .mutation_mode = "RTC_OVERRIDE",
                         .rtc_value = rtc,
                         .created_at_utc = savor::db::types::UtcNow(),
-                        .event_id = "tasmovie.variant." + identity_suffix + ".created",
                         .correlation_id = "tasmovie-" + identity_suffix,
                         .causation_id = "workflow-input-" + std::to_string(domain_ref_id),
                     },
@@ -255,7 +255,7 @@ public:
             enqueue.program_version = kProgramVersion;
             enqueue.program_ref_kind = kVariantRefKind;
             enqueue.program_ref_id = tas_variant_id;
-            enqueue.fingerprint = VariantFingerprint(cfg, tas_variant_id, rtc);
+            enqueue.fingerprint = VariantFingerprint(cfg, job_set_id, tas_variant_id, rtc);
             enqueue.priority = cfg.priority;
             enqueue.max_attempts = 1;
             enqueue.input_ini = BuildInputIni(cfg, rtc);
@@ -270,7 +270,8 @@ public:
         persisted.program_ref_kind = "state_artifact";
         persisted.program_ref_id = cfg.base_dtm_artifact_id;
         persisted.program_version = kProgramVersion;
-        persisted.fingerprint = "PK=2;PV=2;phase=tasmovie"
+        persisted.fingerprint = std::string("PK=2;PV=2;phase=tasmovie")
+            + ";job_set_id=" + std::to_string(job_set_id)
             + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
             + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id);
         scheduled.persistence = std::move(persisted);
@@ -576,7 +577,6 @@ public:
                     .file_ext = sav_path.extension().string(),
                     .artifact_kind = "SAV",
                     .created_at_utc = now,
-                    .event_id = EventId("tasmovie.sav.artifact", job_id, "stored"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -597,7 +597,6 @@ public:
                     .note = "TasMovie produced savestate",
                     .is_complete = true,
                     .created_at_utc = now,
-                    .event_id = EventId("tasmovie.savestate", job_id, "created"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "artifact-" + std::to_string(artifact_id),
                 },
@@ -615,7 +614,6 @@ public:
                     .tas_variant_id = job->program_ref_id,
                     .produced_savestate_id = savestate_id,
                     .updated_at_utc = now,
-                    .event_id = EventId("tasmovie.variant", job->program_ref_id, "produced_savestate"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "savestate-" + std::to_string(savestate_id),
                 },
@@ -630,7 +628,6 @@ public:
                         .probe_run_id = *cfg.bind_seed_probe_run_id,
                         .entry_savestate_id = savestate_id,
                         .updated_at_utc = now,
-                        .event_id = EventId("tasmovie.seedprobe", *cfg.bind_seed_probe_run_id, "entry_savestate"),
                         .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                         .causation_id = "savestate-" + std::to_string(savestate_id),
                     },

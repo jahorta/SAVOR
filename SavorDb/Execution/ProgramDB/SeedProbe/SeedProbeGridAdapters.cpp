@@ -402,7 +402,6 @@ ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id
         cmd.seed_value = observed_seed;
         cmd.seed_delta = seed_delta;
         cmd.recorded_at_utc = savor::db::types::UtcNow();
-        cmd.event_id = EventId(context->probe_result_id, job_id, "grid");
         cmd.correlation_id = context->correlation_id;
         cmd.causation_id = context->causation_id;
 
@@ -471,15 +470,6 @@ std::optional<GridResultContext> SeedProbeGridResultMapper::ResolveContextFromJo
         }
     }
     return context;
-}
-
-std::string SeedProbeGridResultMapper::EventId(
-    std::int64_t probe_result_id,
-    std::int64_t job_id,
-    const char* phase_label) {
-    return "seedprobe-result-" + std::to_string(probe_result_id)
-        + "-job-" + std::to_string(job_id)
-        + "-" + phase_label;
 }
 
 std::optional<savor::GCInputFrame> SeedProbeGridResultMapper::ParseFrame(const std::string& frame_hex) {

@@ -10,6 +10,7 @@
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
+#include "../Common/Events/OutboxEventIds.h"
 #include "../../SavorCore/Utils/Hash.h"
 
 namespace savor::db {
@@ -102,8 +103,7 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
     if (command.name.empty()
         || command.breakpoint_id == 0
         || bp::BpRegistry::find(command.breakpoint_id) == nullptr
-        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)
-        || command.event_id.empty()) {
+        || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -214,7 +214,6 @@ std::string_view AuthoringAggregateKindForEvent(std::string_view event_type) {
 
 bool InsertAuthoringOutboxEvent(
     sqlite3* db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_id,
     std::string_view correlation_id,
@@ -222,38 +221,60 @@ bool InsertAuthoringOutboxEvent(
     std::int64_t occurred_at_utc,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO au_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'Authoring',?3,?4,?5,?6,?7,'authoring_event',?8);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
-        }
-        return false;
-    }
-
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
     const auto aggregate_kind = AuthoringAggregateKindForEvent(event_type);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_int64(st.st, 8, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "Authoring",
+                event_type,
+                "authoring_event",
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
+
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO au_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,?2,1,'Authoring',?3,?4,?5,?6,?7,'authoring_event',?8);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_int64(st.st, 8, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
     }
-    return true;
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique authoring outbox event id";
+    }
+    return false;
 }
 
 bool TryReadBattleChainSpecPayload(sqlite3* db, std::int64_t battle_chain_spec_id, AuthoringPayloadRecord* out) {
@@ -303,6 +324,95 @@ bool TryReadSeedProbeSpecPayload(sqlite3* db, std::int64_t seed_probe_spec_id, A
     }
 
     return false;
+}
+
+std::optional<SeedProbeSpecSnapshot> LoadSeedProbeSpecByName(sqlite3* db, std::string_view name) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT s.seed_probe_spec_id,s.name,s.priority,s.run_ms,s.vi_stall_ms,"
+            "g.samples_per_axis,g.min_value,g.max_value,g.cap_trigger_top,g.ignore_trigger_min_max,"
+            "u.combo_attempts_per_target,u.combo_sampler_tries,s.auto_schedule_battle_run "
+            "FROM au_seed_probe_spec s "
+            "JOIN au_seed_probe_grid_spec g ON g.seed_probe_grid_spec_id=s.grid_spec_id "
+            "JOIN au_seed_probe_unique_spec u ON u.seed_probe_unique_spec_id=s.unique_spec_id "
+            "WHERE s.name=?1 LIMIT 1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_text(st.st, 1, name.data(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    SeedProbeSpecSnapshot snapshot{};
+    snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 0);
+    const auto* name_text = sqlite3_column_text(st.st, 1);
+    snapshot.name = name_text == nullptr ? "" : reinterpret_cast<const char*>(name_text);
+    snapshot.priority = sqlite3_column_int(st.st, 2);
+    snapshot.run_ms = sqlite3_column_int64(st.st, 3);
+    snapshot.vi_stall_ms = sqlite3_column_int64(st.st, 4);
+    snapshot.samples_per_axis = sqlite3_column_int(st.st, 5);
+    snapshot.min_value = sqlite3_column_int64(st.st, 6);
+    snapshot.max_value = sqlite3_column_int64(st.st, 7);
+    snapshot.cap_trigger_top = sqlite3_column_int(st.st, 8) != 0;
+    snapshot.ignore_trigger_minmax = sqlite3_column_int(st.st, 9) != 0;
+    snapshot.combo_attempts_per_target = sqlite3_column_int(st.st, 10);
+    snapshot.combo_sampler_tries = sqlite3_column_int(st.st, 11);
+    snapshot.auto_schedule_battle_run = sqlite3_column_int(st.st, 12) != 0;
+    return snapshot;
+}
+
+bool SeedProbeSpecIdentityMatches(const SeedProbeSpecSnapshot& row, const SaveSeedProbeSpecCommand& command) {
+    return row.name == command.name
+        && row.priority == command.priority
+        && row.run_ms == command.run_ms
+        && row.vi_stall_ms == command.vi_stall_ms
+        && row.samples_per_axis == command.samples_per_axis
+        && row.min_value == command.min_value
+        && row.max_value == command.max_value
+        && row.cap_trigger_top == command.cap_trigger_top
+        && row.ignore_trigger_minmax == command.ignore_trigger_minmax
+        && row.combo_attempts_per_target == command.combo_attempts_per_target
+        && row.combo_sampler_tries == command.combo_sampler_tries
+        && row.auto_schedule_battle_run == command.auto_schedule_battle_run;
+}
+
+std::optional<SaveWorkflowGraphResult> LoadWorkflowGraphByHash(
+    sqlite3* db,
+    std::string_view graph_hash,
+    std::string* graph_name_out) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT g.workflow_graph_id,r.workflow_graph_revision_id,g.name "
+            "FROM au_workflow_graph_revision r "
+            "JOIN au_workflow_graph g ON g.workflow_graph_id=r.workflow_graph_id "
+            "WHERE r.graph_hash=?1 LIMIT 1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_text(st.st, 1, graph_hash.data(), static_cast<int>(graph_hash.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    SaveWorkflowGraphResult result{};
+    result.workflow_graph_id = sqlite3_column_int64(st.st, 0);
+    result.workflow_graph_revision_id = sqlite3_column_int64(st.st, 1);
+    if (graph_name_out != nullptr) {
+        const auto* name_text = sqlite3_column_text(st.st, 2);
+        *graph_name_out = name_text == nullptr ? "" : reinterpret_cast<const char*>(name_text);
+    }
+    return result;
 }
 
 bool TryReadBattleRunSpecPayload(sqlite3* db, std::int64_t battle_run_spec_id, AuthoringPayloadRecord* out) {
@@ -381,37 +491,59 @@ bool InsertWorkflowGraphOutboxEvent(
     std::int64_t workflow_graph_id,
     std::int64_t workflow_graph_revision_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO au_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,'Authoring.WorkflowGraphSaved.v1',1,'Authoring','workflow_graph',?2,?3,?4,?5,'authoring_event',?6);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
-        }
-        return false;
-    }
-
     const auto aggregate_id = std::to_string(workflow_graph_id);
-    sqlite3_bind_text(st.st, 1, command.event_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, command.correlation_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, command.causation_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 5, ToEpochMillis(command.created_at_utc));
-    sqlite3_bind_int64(st.st, 6, workflow_graph_revision_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr std::string_view kEventType = "Authoring.WorkflowGraphSaved.v1";
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "Authoring",
+                kEventType,
+                "authoring_event",
+                workflow_graph_revision_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
-    }
 
-    return true;
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO au_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,'Authoring.WorkflowGraphSaved.v1',1,'Authoring','workflow_graph',?2,?3,?4,?5,'authoring_event',?6);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, aggregate_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, command.correlation_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, command.causation_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 5, ToEpochMillis(command.created_at_utc));
+        sqlite3_bind_int64(st.st, 6, workflow_graph_revision_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
+    }
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique workflow graph outbox event id";
+    }
+    return false;
 }
 
 } // namespace
@@ -428,7 +560,7 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.event_id.empty()) {
+    if (command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -438,6 +570,25 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
             *error_out = sqlite3_errmsg(db_);
         }
         return false;
+    }
+
+    if (const auto existing = LoadSeedProbeSpecByName(db_, command.name); existing.has_value()) {
+        if (!SeedProbeSpecIdentityMatches(*existing, command)) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "seed probe spec name already exists with different defining fields";
+            return false;
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db_);
+            }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        if (seed_probe_spec_id_out) {
+            *seed_probe_spec_id_out = existing->seed_probe_spec_id;
+        }
+        return true;
     }
 
     Statement insert_spec;
@@ -534,7 +685,6 @@ bool SqliteAuthoringDb::SaveSeedProbeSpec(
     const auto seed_probe_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.SeedProbeSpecSaved.v1",
             std::to_string(seed_probe_spec_id),
             command.correlation_id,
@@ -802,7 +952,7 @@ bool SqliteAuthoringDb::SaveTasSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.base_name.empty() || command.event_id.empty()) {
+    if (command.base_name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -879,7 +1029,6 @@ bool SqliteAuthoringDb::SaveTasSpec(
     const auto tas_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.TasSpecSaved.v1",
             std::to_string(tas_spec_id),
             command.correlation_id,
@@ -982,7 +1131,7 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.event_id.empty()) {
+    if (command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1031,7 +1180,6 @@ bool SqliteAuthoringDb::SaveBattleRunSpec(
     const auto battle_run_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.BattleRunSpecSaved.v1",
             std::to_string(battle_run_spec_id),
             command.correlation_id,
@@ -1125,7 +1273,7 @@ bool SqliteAuthoringDb::SavePlan(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.fingerprint.empty() || command.num_turns < 0 || command.event_id.empty()) {
+    if (command.name.empty() || command.fingerprint.empty() || command.num_turns < 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1166,7 +1314,6 @@ bool SqliteAuthoringDb::SavePlan(
     const auto plan_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.PlanSaved.v1",
             std::to_string(plan_id),
             command.correlation_id,
@@ -1201,7 +1348,7 @@ bool SqliteAuthoringDb::SaveBattlePlanActionPreset(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.event_id.empty()) {
+    if (command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1244,7 +1391,6 @@ bool SqliteAuthoringDb::SaveBattlePlanActionPreset(
 
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.BattlePlanActionPresetSaved.v1",
             std::to_string(action_preset_id),
             command.correlation_id,
@@ -1275,7 +1421,7 @@ bool SqliteAuthoringDb::RenameBattlePlanActionPreset(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.action_preset_id <= 0 || command.name.empty() || command.event_id.empty()) {
+    if (command.action_preset_id <= 0 || command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1315,7 +1461,6 @@ bool SqliteAuthoringDb::RenameBattlePlanActionPreset(
 
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.BattlePlanActionPresetRenamed.v1",
             std::to_string(command.action_preset_id),
             command.correlation_id,
@@ -1409,7 +1554,7 @@ bool SqliteAuthoringDb::SaveBattlePlanTurn(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.plan_id <= 0 || command.turn_index < 0 || command.event_id.empty()) {
+    if (command.plan_id <= 0 || command.turn_index < 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1515,7 +1660,6 @@ bool SqliteAuthoringDb::SaveBattlePlanTurn(
 
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.PlanSaved.v1",
             std::to_string(command.plan_id),
             command.correlation_id,
@@ -1845,7 +1989,6 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     const auto predicate_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.PredicateSpecSaved.v1",
             std::to_string(predicate_spec_id),
             command.correlation_id,
@@ -1944,7 +2087,6 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
 
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.PredicateSpecUpdated.v1",
             std::to_string(predicate_spec_id),
             command.correlation_id,
@@ -1972,7 +2114,7 @@ bool SqliteAuthoringDb::DeletePredicateSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.predicate_spec_id <= 0 || command.event_id.empty()) {
+    if (command.predicate_spec_id <= 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2016,7 +2158,6 @@ bool SqliteAuthoringDb::DeletePredicateSpec(
 
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.PredicateSpecDeleted.v1",
             std::to_string(command.predicate_spec_id),
             command.correlation_id,
@@ -2281,7 +2422,7 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.event_id.empty()) {
+    if (command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2330,7 +2471,6 @@ bool SqliteAuthoringDb::SaveExplorerSettings(
     const auto explorer_settings_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.SettingsSaved.v1",
             std::to_string(explorer_settings_id),
             command.correlation_id,
@@ -2422,7 +2562,7 @@ bool SqliteAuthoringDb::SaveBattleChainSpec(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.event_id.empty()) {
+    if (command.name.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2467,7 +2607,6 @@ bool SqliteAuthoringDb::SaveBattleChainSpec(
     const auto battle_chain_spec_id = sqlite3_last_insert_rowid(db_);
     if (!InsertAuthoringOutboxEvent(
             db_,
-            command.event_id,
             "Authoring.BattleChainSpecSaved.v1",
             std::to_string(battle_chain_spec_id),
             command.correlation_id,
@@ -2557,8 +2696,8 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.name.empty() || command.graph_hash.empty() || command.event_id.empty()) {
-        if (error_out) *error_out = "workflow graph name, graph_hash, and event_id are required";
+    if (command.name.empty() || command.graph_hash.empty()) {
+        if (error_out) *error_out = "workflow graph name and graph_hash are required";
         return false;
     }
     if (command.nodes.empty()) {
@@ -2571,6 +2710,24 @@ bool SqliteAuthoringDb::SaveWorkflowGraph(
         return false;
     }
     const auto rollback = [&]() { (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr); };
+
+    std::string existing_graph_name;
+    if (const auto existing = LoadWorkflowGraphByHash(db_, command.graph_hash, &existing_graph_name); existing.has_value()) {
+        if (existing_graph_name != command.name) {
+            rollback();
+            if (error_out) *error_out = "workflow graph hash already exists with a different graph name";
+            return false;
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            rollback();
+            return false;
+        }
+        if (result_out) {
+            *result_out = *existing;
+        }
+        return true;
+    }
 
     std::int64_t workflow_graph_id = command.workflow_graph_id.value_or(0);
     std::optional<std::int64_t> parent_revision_id = command.parent_revision_id;

@@ -17,7 +17,6 @@ namespace savor::db::archive {
 struct RehydrateExecutionRequest {
     std::int64_t rehydrate_request_id = 0;
     types::UtcTimePoint now_utc = types::UtcNow();
-    std::string event_id_prefix;
     std::string correlation_id;
     std::string causation_id;
 };

@@ -123,17 +123,6 @@ bool IsTablePresent(sqlite3* db, std::string_view table_name, std::string* error
     return false;
 }
 
-std::string MakeEventId(const CreateArchivePackageRequest& request, std::string_view suffix) {
-    std::ostringstream out;
-    if (!request.event_id.empty()) {
-        out << request.event_id << '.' << suffix;
-    } else {
-        out << "archive-" << request.source_root_job_set_id << '-'
-            << request.created_at_utc.time_since_epoch().count() << '-' << suffix;
-    }
-    return out.str();
-}
-
 bool WriteFileText(const std::filesystem::path& path, const std::string& content, std::string* error_out) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
@@ -626,7 +615,6 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         return result;
     }
 
-    const std::string package_event_id = MakeEventId(request, "package");
     CreateArchivePackageCommand create_command{};
     create_command.source_context = request.source_context;
     create_command.source_root_job_set_id = request.source_root_job_set_id;
@@ -637,7 +625,6 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
     create_command.time_range_end_utc = max_time;
     create_command.manifest_path = manifest_path.generic_string();
     create_command.checksum_status = "PASS";
-    create_command.event_id = package_event_id;
     create_command.correlation_id = request.correlation_id;
     create_command.causation_id = request.causation_id;
 
@@ -648,7 +635,6 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         return result;
     }
 
-    std::int64_t item_index = 0;
     for (const auto& file : context.files) {
         AddArchiveItemCommand item_command{};
         item_command.archive_package_id = archive_package_id;
@@ -657,15 +643,13 @@ CreateArchivePackageResult SqliteArchivePackageService::CreatePackage(const Crea
         item_command.blob_path = file.relative_path.generic_string();
         item_command.checksum = file.checksum;
         item_command.indexed_at_utc = request.created_at_utc;
-        item_command.event_id = MakeEventId(request, "item-" + std::to_string(item_index));
         item_command.correlation_id = request.correlation_id;
-        item_command.causation_id = package_event_id;
+        item_command.causation_id = request.causation_id;
 
         if (!archive_db_->AddArchiveItem(item_command, nullptr, &archive_error)) {
             result.error = archive_error;
             return result;
         }
-        ++item_index;
     }
 
     result.success = true;

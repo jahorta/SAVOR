@@ -277,6 +277,9 @@
     <ClInclude Include="Common\Events\EventPayloadViews.h">
       <Filter>Events</Filter>
     </ClInclude>
+    <ClInclude Include="Common\Events\OutboxEventIds.h">
+      <Filter>Events</Filter>
+    </ClInclude>
     <ClInclude Include="SavorDb.h">
       <Filter>Entrypoint</Filter>
     </ClInclude>

@@ -98,7 +98,6 @@ struct SaveSeedProbeSpecCommand {
     int combo_sampler_tries = 0;
     bool auto_schedule_battle_run = false;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -156,7 +155,6 @@ struct SaveTasSpecCommand {
     std::int64_t rtc_low = 0;
     std::int64_t rtc_high = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -187,7 +185,6 @@ struct SaveBattleRunSpecCommand {
     int min_fake_attacks = 0;
     int max_fake_attacks = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -197,7 +194,6 @@ struct SavePlanCommand {
     std::string fingerprint;
     int num_turns = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -213,7 +209,6 @@ struct SaveBattlePlanActionPresetCommand {
     std::optional<int> item_id;
     int flags = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -222,7 +217,6 @@ struct RenameBattlePlanActionPresetCommand {
     std::int64_t action_preset_id = 0;
     std::string name;
     types::UtcTimePoint updated_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -239,7 +233,6 @@ struct SaveBattlePlanTurnCommand {
     std::vector<SaveBattlePlanActionCommand> actions;
     bool replace_existing_actions = true;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -267,7 +260,6 @@ struct SavePredicateSpecCommand {
     std::optional<std::int64_t> rhs_address_program_id;
     bool abort_on_fail = false;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -278,7 +270,6 @@ struct SaveExplorerSettingsCommand {
     std::optional<std::int64_t> default_plan_id;
     std::optional<std::int64_t> default_predicate_set_id;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -294,7 +285,6 @@ struct SaveBattleChainSpecCommand {
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -302,7 +292,6 @@ struct SaveBattleChainSpecCommand {
 struct DeletePredicateSpecCommand {
     std::int64_t predicate_spec_id = 0;
     types::UtcTimePoint deleted_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -359,7 +348,6 @@ struct SaveWorkflowGraphCommand {
     std::vector<SaveWorkflowGraphNodeCommand> nodes;
     std::vector<SaveWorkflowGraphEdgeCommand> edges;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };

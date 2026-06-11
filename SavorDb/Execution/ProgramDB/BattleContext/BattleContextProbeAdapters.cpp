@@ -136,10 +136,6 @@ std::vector<InputSetCandidate> ResolveInputSetCandidates(
     std::int64_t ref_id,
     std::string* error_out);
 
-std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
-    return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
-}
-
 std::uint32_t ClampU32(std::int64_t value) {
     if (value <= 0) {
         return 0;
@@ -290,7 +286,6 @@ public:
                     .source_savestate_id = *source_savestate_id,
                     .probe_status = savor::db::BattleContextProbeStatus::Queued,
                     .created_at_utc = now,
-                    .event_id = EventId("battle.context_probe", wave->wave_id, "created"),
                     .correlation_id = "battle-set-" + std::to_string(battle_set->battle_set_id),
                     .causation_id = "wave-" + std::to_string(wave->wave_id),
                 },
@@ -537,7 +532,6 @@ public:
                         .source_savestate_id = job_ini.source_savestate_id,
                         .probe_status = savor::db::BattleContextProbeStatus::Queued,
                         .created_at_utc = now,
-                        .event_id = "workflow-battle-context-probe-" + aggregate,
                         .correlation_id = "workflow-battle-" + aggregate,
                         .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                     },
@@ -561,7 +555,6 @@ public:
                         .explorer_settings_id = job_ini.explorer_settings_id,
                         .status = savor::db::BattleSetStatus::Active,
                         .created_at_utc = now,
-                        .event_id = "workflow-battle-set-" + aggregate,
                         .correlation_id = "workflow-battle-" + aggregate,
                         .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                     },
@@ -587,7 +580,6 @@ public:
                             .source_kind = candidate.source_kind,
                             .candidate_status = savor::db::BattleSeedCandidateStatus::Ready,
                             .created_at_utc = now,
-                            .event_id = "workflow-battle-candidate-" + aggregate + "-" + candidate_suffix,
                             .correlation_id = "workflow-battle-" + aggregate,
                             .causation_id = job_ini.input_set_ref_kind + "-" + std::to_string(job_ini.input_set_ref_id),
                         },
@@ -609,7 +601,6 @@ public:
                             .seed_candidate_id = seed_candidate_id,
                             .status = savor::db::BattleTurnWaveStatus::Ready,
                             .created_at_utc = now,
-                            .event_id = "workflow-battle-wave-" + aggregate + "-" + candidate_suffix,
                             .correlation_id = "workflow-battle-" + aggregate,
                             .causation_id = "battle-context-probe-" + std::to_string(context_probe_id),
                         },
@@ -890,7 +881,6 @@ std::int64_t ResolveEffectiveBattleRunSpecId(
                 .min_fake_attacks = min_fake,
                 .max_fake_attacks = max_fake,
                 .created_at_utc = now,
-                .event_id = "workflow-graph.battle.effective-run-spec." + suffix,
                 .correlation_id = "workflow-instance-" + std::to_string(context.workflow_instance_id),
                 .causation_id = "battle-run-spec-" + std::to_string(base_run_spec.battle_run_spec_id),
             },

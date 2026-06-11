@@ -67,7 +67,7 @@ struct RehydrateExecuteRequest {
     std::int64_t archive_package_id = 0;
     savor::db::types::UtcTimePoint now_utc{};
     std::string target_namespace;
-    std::string event_id_prefix;
+    std::string trace_id;
 };
 
 struct RehydrateCleanupRequest {
