@@ -44,6 +44,26 @@ namespace {
 
 constexpr const char* kWaveRefKind = "analysis_battle.turn_wave";
 
+void AppendTasMovieRtcArgumentIfSingle(
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
+    const CliOptions& options,
+    int default_value) {
+    if (command == nullptr) {
+        return;
+    }
+    const auto range = ResolveTasMovieRtcRange(options, default_value);
+    if (range.low != range.high) {
+        return;
+    }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = range.low,
+        .source_kind = "scenario",
+    });
+}
+
 const char* ToString(savor::db::execution::workflow::WorkflowInstanceState state) {
     using savor::db::execution::workflow::WorkflowInstanceState;
     switch (state) {
@@ -927,7 +947,7 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
             .source_kind = "external_override",
         });
     }
-    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = options.tasmovie_rtc.value_or(4), .source_kind = "scenario" });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 4);
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
@@ -1057,7 +1077,7 @@ bool SeedTasMovieBattleGraphExecution(
         .ref_id = input_set_id,
         .source_kind = "external",
     });
-    command.arguments.push_back({ .node_key = "tas_1", .argument_key = "rtc", .value_type = "integer", .integer_value = options.tasmovie_rtc.value_or(4), .source_kind = "scenario" });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 4);
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
@@ -1553,10 +1573,11 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
 
     savor::db::execution::programdb::ProgramKindRegistry registry;
     savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    const auto rtc_range = ResolveTasMovieRtcRange(options, 4);
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
-    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
+    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
+    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;
@@ -1629,7 +1650,7 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
               << " battle_chain_spec_id=" << battle_chain_spec_id
               << " workflow_instance_id=" << workflow_instance_id
               << " external_input_set_id=" << external_input_set_id.value_or(0)
-              << " rtc=" << options.tasmovie_rtc.value_or(4)
+              << " rtc=" << rtc_range.low << ".." << rtc_range.high
               << " fake_attacks=" << options.battle_fake_attack_low.value_or(0)
               << ".." << options.battle_fake_attack_high.value_or(0) << "\n";
 

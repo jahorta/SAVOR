@@ -32,12 +32,15 @@ std::string JoinScenarios(const std::vector<std::string>& scenarios) {
 }
 
 std::string E2EPerfConfiguration(const savor::e2e::CliOptions& options) {
+    const auto rtc_range = savor::e2e::ResolveTasMovieRtcRange(options, 0);
     std::ostringstream out;
     out << "workers=" << options.worker_count
         << " repeat=" << options.repeat
         << " samples_per_axis=" << options.seedprobe_samples_per_axis.value_or(0)
         << " fake_attack_min=" << options.battle_fake_attack_low.value_or(0)
-        << " fake_attack_max=" << options.battle_fake_attack_high.value_or(0);
+        << " fake_attack_max=" << options.battle_fake_attack_high.value_or(0)
+        << " rtc_min=" << rtc_range.low
+        << " rtc_max=" << rtc_range.high;
     return out.str();
 }
 

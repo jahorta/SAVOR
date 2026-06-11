@@ -13,6 +13,26 @@ namespace savor::e2e {
 
 using savor::db::types::UtcNow;
 
+void AppendTasMovieRtcArgumentIfSingle(
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
+    const CliOptions& options,
+    int default_value) {
+    if (command == nullptr) {
+        return;
+    }
+    const auto range = ResolveTasMovieRtcRange(options, default_value);
+    if (range.low != range.high) {
+        return;
+    }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = range.low,
+        .source_kind = "scenario",
+    });
+}
+
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
 
@@ -375,13 +395,7 @@ bool SeedTasMovieWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
-    command.arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "rtc",
-        .value_type = "integer",
-        .integer_value = options.tasmovie_rtc.value_or(0),
-        .source_kind = "scenario",
-    });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
@@ -494,13 +508,7 @@ bool SeedTasMovieSeedProbeWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
-    command.arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "rtc",
-        .value_type = "integer",
-        .integer_value = options.tasmovie_rtc.value_or(0),
-        .source_kind = "scenario",
-    });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 

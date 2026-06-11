@@ -250,10 +250,11 @@ bool RunTasMovieScenario(
 
     savor::db::execution::programdb::ProgramKindRegistry registry;
     savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    const auto rtc_range = ResolveTasMovieRtcRange(options, 0);
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
-    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
+    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
+    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;
