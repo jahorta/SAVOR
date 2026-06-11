@@ -201,6 +201,52 @@ bool DBService::RunUiReadProjectionOnce(std::string* error_out) {
     return ui_read_projection_service_->RunOnce(error_out);
 }
 
+DBServicePerformanceSnapshot DBService::SnapshotPerformance() const {
+    DBServicePerformanceSnapshot snapshot{};
+    snapshot.running = running_;
+    if (execution_db_ != nullptr) {
+        const auto execution = execution_db_->GetTelemetrySnapshot();
+        snapshot.databases.push_back({
+            .db_context = "Execution",
+            .queue = execution.queued,
+        });
+    }
+    if (state_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "State",
+            .queue = state_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (analysis_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Analysis",
+            .queue = analysis_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (authoring_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Authoring",
+            .queue = authoring_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (ui_read_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "UiRead",
+            .queue = ui_read_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (archive_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Archive",
+            .queue = archive_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (ui_read_projection_service_ != nullptr) {
+        snapshot.ui_read_projection = ui_read_projection_service_->SnapshotTelemetry();
+    }
+    return snapshot;
+}
+
 bool DBService::OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out) {
     if (db == nullptr) {
         if (error_out != nullptr) {

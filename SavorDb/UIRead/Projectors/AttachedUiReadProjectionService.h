@@ -26,6 +26,17 @@ struct AttachedUiReadProjectionConfig {
     bool include_archive = true;
 };
 
+struct AttachedUiReadProjectionTelemetrySnapshot {
+    bool running = false;
+    std::uint64_t run_once_count = 0;
+    std::uint64_t succeeded_run_once_count = 0;
+    std::uint64_t failed_run_once_count = 0;
+    std::uint64_t last_run_duration_ms = 0;
+    std::uint64_t max_run_duration_ms = 0;
+    std::int64_t configured_max_batch_size = 0;
+    std::int64_t configured_max_attempts = 0;
+};
+
 class AttachedUiReadProjectionService final {
 public:
     explicit AttachedUiReadProjectionService(AttachedUiReadProjectionConfig config);
@@ -40,6 +51,7 @@ public:
 
     bool RunOnce(std::string* error_out = nullptr);
     void Wake();
+    [[nodiscard]] AttachedUiReadProjectionTelemetrySnapshot SnapshotTelemetry() const;
 
 private:
     bool OpenAndAttach(std::string* error_out);
@@ -56,6 +68,11 @@ private:
     std::thread worker_;
     bool running_ = false;
     bool stopping_ = false;
+    std::uint64_t run_once_count_ = 0;
+    std::uint64_t succeeded_run_once_count_ = 0;
+    std::uint64_t failed_run_once_count_ = 0;
+    std::uint64_t last_run_duration_ms_ = 0;
+    std::uint64_t max_run_duration_ms_ = 0;
 };
 
 } // namespace savor::db::uiread::projectors

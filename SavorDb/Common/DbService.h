@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -30,6 +31,17 @@
 
 namespace savor::db::core {
 
+struct NamedQueuedDbTelemetrySnapshot {
+    std::string db_context;
+    QueuedDbTelemetrySnapshot queue;
+};
+
+struct DBServicePerformanceSnapshot {
+    bool running = false;
+    std::vector<NamedQueuedDbTelemetrySnapshot> databases;
+    uiread::projectors::AttachedUiReadProjectionTelemetrySnapshot ui_read_projection;
+};
+
 class DBService {
 public:
     explicit DBService(
@@ -54,6 +66,7 @@ public:
     savor::db::IUiReadDb* UiReadDb();
     savor::db::IArchiveDb* ArchiveDb();
     bool RunUiReadProjectionOnce(std::string* error_out = nullptr);
+    [[nodiscard]] DBServicePerformanceSnapshot SnapshotPerformance() const;
 
 private:
     bool OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out);

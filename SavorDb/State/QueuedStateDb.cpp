@@ -14,24 +14,7 @@ void SetError(std::string* error_out, std::string message) {
 savor::db::core::QueuedDbTelemetrySnapshot BuildTelemetrySnapshot(
     const savor::db::core::QueuedDbLane* write_lane,
     const savor::db::core::QueuedDbLane* read_lane) {
-    savor::db::core::QueuedDbTelemetrySnapshot snapshot{};
-    if (write_lane != nullptr) {
-        const auto lane = write_lane->GetTelemetrySnapshot();
-        snapshot.write_depth = lane.depth;
-        snapshot.write_enqueued = lane.enqueued;
-        snapshot.write_rejected = lane.rejected;
-        snapshot.write_completed = lane.completed;
-        snapshot.write_failed = lane.failed;
-    }
-    if (read_lane != nullptr) {
-        const auto lane = read_lane->GetTelemetrySnapshot();
-        snapshot.read_depth = lane.depth;
-        snapshot.read_enqueued = lane.enqueued;
-        snapshot.read_rejected = lane.rejected;
-        snapshot.read_completed = lane.completed;
-        snapshot.read_failed = lane.failed;
-    }
-    return snapshot;
+    return savor::db::core::BuildQueuedDbTelemetrySnapshot(write_lane, read_lane);
 }
 
 } // namespace
@@ -279,20 +262,30 @@ std::optional<ArtifactPayloadRecord> QueuedStateDb::ResolveArtifactPayload(
 }
 
 template <typename Result, typename Fn>
-Result QueuedStateDb::ExecuteRead(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedStateDb::ExecuteRead(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return savor::db::core::QueuedDbExecutor::ExecuteQueued<Result>(
         *read_lane_,
         sqlite_call_mtx_,
+        savor::db::core::MakeQueuedDbOperationName("State", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);
 }
 
 template <typename Result, typename Fn>
-Result QueuedStateDb::ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedStateDb::ExecuteWrite(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return savor::db::core::QueuedDbExecutor::ExecuteQueued<Result>(
         *write_lane_,
         sqlite_call_mtx_,
+        savor::db::core::MakeQueuedDbOperationName("State", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);

@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,8 +22,15 @@ struct ExecutionQueueConfig {
 };
 
 struct ExecutionQueueTelemetrySnapshot {
+    core::QueuedDbTelemetrySnapshot queued;
     std::size_t write_depth = 0;
     std::size_t read_depth = 0;
+    std::size_t write_capacity = 0;
+    std::size_t read_capacity = 0;
+    std::size_t write_high_water_depth = 0;
+    std::size_t read_high_water_depth = 0;
+    std::uint64_t write_oldest_queued_age_ms = 0;
+    std::uint64_t read_oldest_queued_age_ms = 0;
     std::uint64_t write_enqueued = 0;
     std::uint64_t read_enqueued = 0;
     std::uint64_t write_rejected = 0;
@@ -31,6 +39,8 @@ struct ExecutionQueueTelemetrySnapshot {
     std::uint64_t read_completed = 0;
     std::uint64_t write_failed = 0;
     std::uint64_t read_failed = 0;
+    std::uint64_t sqlite_busy = 0;
+    std::uint64_t sqlite_locked = 0;
 };
 
 class QueuedExecutionDb final : public savor::db::IExecutionDb, private savor::db::core::QueuedDbExecutor {
@@ -126,10 +136,18 @@ private:
     class QueuedJobCommandService;
 
     template <typename Result, typename Fn>
-    Result ExecuteRead(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteRead(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     template <typename Result, typename Fn>
-    Result ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteWrite(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     savor::db::IExecutionDb* inner_ = nullptr;
     ExecutionQueueConfig config_{};

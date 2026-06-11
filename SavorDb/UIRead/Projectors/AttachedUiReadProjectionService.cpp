@@ -104,20 +104,50 @@ bool AttachedUiReadProjectionService::RunOnce(std::string* error_out) {
     std::lock_guard<std::mutex> lock(mtx_);
     if (db_ == nullptr) {
         SetError(error_out, "UIRead projection database is not open");
+        ++run_once_count_;
+        ++failed_run_once_count_;
         return false;
     }
 
+    const auto started_at = std::chrono::steady_clock::now();
     UiOutboxRelayCoordinator coordinator(db_);
-    return coordinator.RelayAll(
+    const bool ok = coordinator.RelayAll(
         "UiReadProjector",
         config_.max_batch_size,
         error_out,
         config_.max_attempts,
         config_.include_archive);
+    const auto duration_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at)
+            .count());
+    ++run_once_count_;
+    if (ok) {
+        ++succeeded_run_once_count_;
+    } else {
+        ++failed_run_once_count_;
+    }
+    last_run_duration_ms_ = duration_ms;
+    max_run_duration_ms_ = std::max(max_run_duration_ms_, duration_ms);
+    return ok;
 }
 
 void AttachedUiReadProjectionService::Wake() {
     cv_.notify_all();
+}
+
+AttachedUiReadProjectionTelemetrySnapshot AttachedUiReadProjectionService::SnapshotTelemetry() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return AttachedUiReadProjectionTelemetrySnapshot{
+        .running = running_ && !stopping_,
+        .run_once_count = run_once_count_,
+        .succeeded_run_once_count = succeeded_run_once_count_,
+        .failed_run_once_count = failed_run_once_count_,
+        .last_run_duration_ms = last_run_duration_ms_,
+        .max_run_duration_ms = max_run_duration_ms_,
+        .configured_max_batch_size = config_.max_batch_size,
+        .configured_max_attempts = config_.max_attempts,
+    };
 }
 
 bool AttachedUiReadProjectionService::OpenAndAttach(std::string* error_out) {
