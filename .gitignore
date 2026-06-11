@@ -42,3 +42,4 @@
 /SavorE2E/.savor-e2e*
 *.mld
 /SavorQt3D/x64/Debug
+/graphify-out
