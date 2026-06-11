@@ -103,18 +103,16 @@ CREATE INDEX ix_exec_outbox_unpublished
 CREATE TABLE exec_workflow_instance (
     workflow_instance_id INTEGER PRIMARY KEY,
     workflow_kind TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED')),
-    root_scope_kind TEXT NOT NULL CHECK(root_scope_kind IN ('job_set','run','manual')),
-    root_scope_id INTEGER NULL,
-    input_ref_kind TEXT NULL,
-    input_ref_id INTEGER NULL,
-    created_by TEXT NULL,
+    state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','COMPLETED','FAILED','CANCELED')),
+    root_scope_kind TEXT NOT NULL CHECK(root_scope_kind IN ('job_set','run','manual')),
+    root_scope_id INTEGER NULL,
+    created_by TEXT NULL,
     created_at_utc INTEGER NOT NULL,
     started_at_utc INTEGER NULL,
     completed_at_utc INTEGER NULL,
     failure_code TEXT NULL,
     failure_text TEXT NULL
-);
+, workflow_graph_revision_id INTEGER NULL);
 CREATE TABLE exec_workflow_step (
     workflow_step_id INTEGER PRIMARY KEY,
     workflow_instance_id INTEGER NOT NULL,
@@ -136,7 +134,7 @@ CREATE TABLE exec_workflow_step (
     started_at_utc INTEGER NULL,
     completed_at_utc INTEGER NULL,
     failed_at_utc INTEGER NULL,
-    created_at_utc INTEGER NOT NULL,
+    created_at_utc INTEGER NOT NULL, graph_node_key TEXT NULL, workflow_unit_activation_id INTEGER NULL REFERENCES exec_workflow_unit_activation(workflow_unit_activation_id),
     FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
     FOREIGN KEY(job_set_id) REFERENCES exec_job_set(job_set_id),
     CONSTRAINT uq_exec_workflow_step_instance_step_key UNIQUE (workflow_instance_id, step_key),
@@ -175,25 +173,7 @@ CREATE INDEX ix_exec_workflow_step_job_set
     ON exec_workflow_step(job_set_id);
 CREATE INDEX ix_exec_workflow_edge_instance_to
     ON exec_workflow_edge(workflow_instance_id, to_step_id);
-CREATE TABLE exec_workflow_input_event (
-    workflow_input_event_id INTEGER PRIMARY KEY,
-    workflow_instance_id INTEGER NOT NULL,
-    workflow_step_id INTEGER NOT NULL,
-    event_kind TEXT NOT NULL,
-    source_key TEXT NULL,
-    request_id TEXT NULL,
-    event_ts_utc INTEGER NOT NULL,
-    detail_ref_kind TEXT NULL,
-    detail_ref_id INTEGER NULL,
-    message TEXT NULL,
-    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
-    FOREIGN KEY(workflow_step_id) REFERENCES exec_workflow_step(workflow_step_id)
-);
-CREATE INDEX ix_exec_workflow_input_event_step_ts
-    ON exec_workflow_input_event(workflow_step_id, event_ts_utc, workflow_input_event_id);
-CREATE INDEX ix_exec_workflow_input_event_instance_step
-    ON exec_workflow_input_event(workflow_instance_id, workflow_step_id, workflow_input_event_id);
-CREATE INDEX ix_exec_outbox_payload_ref
+CREATE INDEX ix_exec_outbox_payload_ref
     ON exec_outbox_message(payload_ref_kind, payload_ref_id, outbox_id);
 CREATE INDEX ix_exec_outbox_replay_cursor
     ON exec_outbox_message(outbox_id, event_type);
@@ -217,3 +197,113 @@ CREATE UNIQUE INDEX uq_exec_handler_dedupe_handler_semantic
     WHERE semantic_key IS NOT NULL;
 CREATE INDEX ix_exec_handler_dedupe_last_seen
     ON exec_handler_dedupe(last_seen_at_utc, dedupe_id);
+CREATE TABLE exec_workflow_instance_input_binding (
+    workflow_instance_input_binding_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    workflow_graph_revision_id INTEGER NOT NULL,
+    node_key TEXT NOT NULL,
+    input_key TEXT NOT NULL,
+    data_kind TEXT NOT NULL,
+    ref_kind TEXT NOT NULL,
+    ref_id INTEGER NOT NULL,
+    source_kind TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
+    CONSTRAINT uq_exec_workflow_instance_input_binding UNIQUE (workflow_instance_id, node_key, input_key)
+);
+CREATE INDEX ix_exec_workflow_instance_graph_revision
+    ON exec_workflow_instance(workflow_graph_revision_id);
+CREATE INDEX ix_exec_workflow_instance_input_binding_instance
+    ON exec_workflow_instance_input_binding(workflow_instance_id, node_key, input_key);
+CREATE TABLE exec_workflow_instance_argument (
+    workflow_instance_argument_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    node_key TEXT NOT NULL DEFAULT '',
+    argument_key TEXT NOT NULL,
+    value_type TEXT NOT NULL CHECK(value_type IN ('integer','text','json','boolean')),
+    integer_value INTEGER NULL,
+    text_value TEXT NULL,
+    source_kind TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
+    CONSTRAINT uq_exec_workflow_instance_argument UNIQUE (workflow_instance_id, node_key, argument_key)
+);
+CREATE INDEX ix_exec_workflow_instance_argument_instance
+    ON exec_workflow_instance_argument(workflow_instance_id, node_key, argument_key);
+CREATE TABLE exec_workflow_step_output (
+    workflow_step_output_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    workflow_step_id INTEGER NOT NULL,
+    graph_node_key TEXT NOT NULL,
+    output_key TEXT NOT NULL,
+    data_kind TEXT NOT NULL,
+    ref_kind TEXT NOT NULL,
+    ref_id INTEGER NOT NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
+    FOREIGN KEY(workflow_step_id) REFERENCES exec_workflow_step(workflow_step_id),
+    CONSTRAINT uq_exec_workflow_step_output UNIQUE (workflow_instance_id, graph_node_key, output_key)
+);
+CREATE INDEX ix_exec_workflow_step_graph_node
+    ON exec_workflow_step(workflow_instance_id, graph_node_key);
+CREATE INDEX ix_exec_workflow_step_output_instance
+    ON exec_workflow_step_output(workflow_instance_id, graph_node_key, output_key);
+CREATE TABLE exec_job_output (
+    job_output_id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL,
+    output_key TEXT NOT NULL,
+    data_kind TEXT NOT NULL,
+    ref_kind TEXT NOT NULL,
+    ref_id INTEGER NOT NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES exec_job(job_id),
+    CONSTRAINT uq_exec_job_output UNIQUE (job_id, output_key)
+);
+CREATE INDEX ix_exec_job_output_job
+    ON exec_job_output(job_id, output_key);
+CREATE TABLE exec_workflow_unit_activation (
+    workflow_unit_activation_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    parent_workflow_unit_activation_id INTEGER NULL,
+    activation_key TEXT NOT NULL,
+    graph_node_key TEXT NOT NULL,
+    unit_kind TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('WAITING','READY','RUNNING','COMPLETED','FAILED','SKIPPED','CANCELED')),
+    activation_params_json TEXT NOT NULL DEFAULT '',
+    authored_ref_kind TEXT NULL,
+    authored_ref_id INTEGER NULL,
+    failure_code TEXT NULL,
+    failure_text TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    ready_at_utc INTEGER NULL,
+    started_at_utc INTEGER NULL,
+    completed_at_utc INTEGER NULL,
+    failed_at_utc INTEGER NULL,
+    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
+    FOREIGN KEY(parent_workflow_unit_activation_id) REFERENCES exec_workflow_unit_activation(workflow_unit_activation_id),
+    CONSTRAINT uq_exec_workflow_unit_activation_key UNIQUE (workflow_instance_id, activation_key)
+);
+CREATE TABLE exec_workflow_unit_activation_edge (
+    workflow_unit_activation_edge_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    from_workflow_unit_activation_id INTEGER NOT NULL,
+    to_workflow_unit_activation_id INTEGER NOT NULL,
+    output_key TEXT NULL,
+    input_key TEXT NULL,
+    condition_kind TEXT NULL,
+    condition_value TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(workflow_instance_id) REFERENCES exec_workflow_instance(workflow_instance_id),
+    FOREIGN KEY(from_workflow_unit_activation_id) REFERENCES exec_workflow_unit_activation(workflow_unit_activation_id),
+    FOREIGN KEY(to_workflow_unit_activation_id) REFERENCES exec_workflow_unit_activation(workflow_unit_activation_id),
+    CONSTRAINT uq_exec_workflow_unit_activation_edge UNIQUE (workflow_instance_id, from_workflow_unit_activation_id, to_workflow_unit_activation_id, output_key, input_key)
+);
+CREATE INDEX ix_exec_workflow_unit_activation_instance_state
+    ON exec_workflow_unit_activation(workflow_instance_id, state, created_at_utc ASC);
+CREATE INDEX ix_exec_workflow_unit_activation_graph_node
+    ON exec_workflow_unit_activation(workflow_instance_id, graph_node_key);
+CREATE INDEX ix_exec_workflow_unit_activation_edge_instance_to
+    ON exec_workflow_unit_activation_edge(workflow_instance_id, to_workflow_unit_activation_id);
+CREATE INDEX ix_exec_workflow_step_activation
+    ON exec_workflow_step(workflow_instance_id, workflow_unit_activation_id);

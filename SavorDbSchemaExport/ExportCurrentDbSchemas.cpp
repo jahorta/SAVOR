@@ -1,39 +1,103 @@
 #include "ExportCurrentDbSchemas.h"
 
-#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include <sqlite3.h>
 
 #include "Common/DbService.h"
 
 namespace {
 
-std::string ShellQuote(const std::filesystem::path& value) {
-    const std::string text = value.string();
-#ifdef _WIN32
-    std::string quoted = "\"";
-    for (const char ch : text) {
-        if (ch == '"') {
-            quoted += "\"\"";
-        } else {
-            quoted += ch;
+bool EndsWithSemicolon(const std::string& statement) {
+    for (auto it = statement.rbegin(); it != statement.rend(); ++it) {
+        if (*it == ' ' || *it == '\t' || *it == '\r' || *it == '\n') {
+            continue;
         }
+        return *it == ';';
     }
-    quoted += "\"";
-#else
-    std::string quoted = "'";
-    for (const char ch : text) {
-        if (ch == '\'') {
-            quoted += "'\"'\"'";
-        } else {
-            quoted += ch;
+    return false;
+}
+
+bool ExportSqliteSchema(
+    const std::filesystem::path& db_path,
+    const std::filesystem::path& sql_path,
+    std::string* error_out) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(db_path.string().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = "failed opening database " + db_path.string() + ": "
+                + (db != nullptr ? sqlite3_errmsg(db) : "sqlite3_open_v2 failed");
         }
+        sqlite3_close(db);
+        return false;
     }
-    quoted += "'";
-#endif
-    return quoted;
+
+    sqlite3_stmt* stmt = nullptr;
+    constexpr const char* kSchemaSql = R"SQL(
+SELECT sql
+FROM sqlite_schema
+WHERE sql IS NOT NULL
+  AND name NOT LIKE 'sqlite_%'
+ORDER BY rowid;
+)SQL";
+
+    if (sqlite3_prepare_v2(db, kSchemaSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = "failed preparing schema query for " + db_path.string() + ": " + sqlite3_errmsg(db);
+        }
+        sqlite3_close(db);
+        return false;
+    }
+
+    std::ofstream out(sql_path, std::ios::trunc);
+    if (!out) {
+        if (error_out != nullptr) {
+            *error_out = "failed opening schema output: " + sql_path.string();
+        }
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
+        return false;
+    }
+
+    while (true) {
+        const int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) {
+            break;
+        }
+        if (rc != SQLITE_ROW) {
+            if (error_out != nullptr) {
+                *error_out = "failed reading schema for " + db_path.string() + ": " + sqlite3_errmsg(db);
+            }
+            sqlite3_finalize(stmt);
+            sqlite3_close(db);
+            return false;
+        }
+
+        const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const std::string statement = text != nullptr ? text : "";
+        out << statement;
+        if (!EndsWithSemicolon(statement)) {
+            out << ';';
+        }
+        out << '\n';
+    }
+
+    if (!out) {
+        if (error_out != nullptr) {
+            *error_out = "failed writing schema output: " + sql_path.string();
+        }
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return true;
 }
 
 } // namespace
@@ -125,12 +189,10 @@ bool ExportCurrentDbSchemas(
         }
 
         const auto sql_path = schema_root / (db_path.stem().string() + ".sql");
-        const std::string command =
-            "sqlite3 " + ShellQuote(db_path) + " \".schema\" > " + ShellQuote(sql_path);
-        auto exit_code = std::system(command.c_str());
-        if (exit_code != 0) {
+        std::string schema_error;
+        if (!ExportSqliteSchema(db_path, sql_path, &schema_error)) {
             if (error_out != nullptr) {
-                *error_out = std::format("schema export command failed for {}: {}: exit code {}", db_path.string(), command, exit_code).c_str();
+                *error_out = schema_error;
             }
             return false;
         }
