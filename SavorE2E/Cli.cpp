@@ -224,8 +224,6 @@ struct LoadProfile {
     int samples_per_axis = 3;
     int fake_attack_low = 0;
     int fake_attack_high = 2;
-    std::optional<int> rtc_min;
-    std::optional<int> rtc_max;
 };
 
 bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, std::string* error_out) {
@@ -243,16 +241,6 @@ bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, 
     }
     if (value == "high") {
         *profile_out = LoadProfile{ .samples_per_axis = 20, .fake_attack_low = 0, .fake_attack_high = 20 };
-        return true;
-    }
-    if (value == "very_high") {
-        *profile_out = LoadProfile{
-            .samples_per_axis = 20,
-            .fake_attack_low = 0,
-            .fake_attack_high = 20,
-            .rtc_min = 0,
-            .rtc_max = 5,
-        };
         return true;
     }
     if (error_out != nullptr) {
@@ -307,7 +295,7 @@ void PrintUsage() {
               << " [--perf-report-dir <path>]"
               << " [--perf-snapshot-interval-ms <100..5000 - default 1000>]"
               << " [--repeat <count>]"
-              << " [--load-level low|mid|high|very_high]"
+              << " [--load-level low|mid|high]"
               << " [--visual-worker *]"
               << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines <mode>]"
@@ -320,7 +308,7 @@ void PrintUsage() {
               << " [--battle-fake-attack-low <count>]"
               << " [--battle-fake-attack-high <count>]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
-    std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high|very_high.\n";
+    std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
     std::cout << "TAS rtc sets both rtc_low and rtc_high; rtc-min/max keeps the range. TAS headroom is the existing x10 value.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
@@ -337,8 +325,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     bool samples_per_axis_explicit = false;
     bool fake_attack_low_explicit = false;
     bool fake_attack_high_explicit = false;
-    bool tasmovie_rtc_min_explicit = false;
-    bool tasmovie_rtc_max_explicit = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -447,18 +433,14 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             options.tasmovie_rtc = v;
             options.tasmovie_rtc_min = v;
             options.tasmovie_rtc_max = v;
-            tasmovie_rtc_min_explicit = true;
-            tasmovie_rtc_max_explicit = true;
         } else if (arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.tasmovie_rtc_min = v;
-            tasmovie_rtc_min_explicit = true;
         } else if (arg == "--tasmovie-rtc-max" || arg == "--rtc-max") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.tasmovie_rtc_max = v;
-            tasmovie_rtc_max_explicit = true;
         } else if (arg == "--seedprobe-samples-per-axis" || arg == "--samples-per-axis") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -533,15 +515,6 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         }
         if (perf_mode || !fake_attack_high_explicit) {
             options.battle_fake_attack_high = profile.fake_attack_high;
-        }
-        if (profile.rtc_min.has_value() && (perf_mode || !tasmovie_rtc_min_explicit)) {
-            options.tasmovie_rtc_min = *profile.rtc_min;
-        }
-        if (profile.rtc_max.has_value() && (perf_mode || !tasmovie_rtc_max_explicit)) {
-            options.tasmovie_rtc_max = *profile.rtc_max;
-        }
-        if (profile.rtc_min.has_value() || profile.rtc_max.has_value()) {
-            options.tasmovie_rtc.reset();
         }
     }
 

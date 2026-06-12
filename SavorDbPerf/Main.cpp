@@ -51,9 +51,7 @@ struct Options {
     std::filesystem::path worker_dir_root;
     std::string durable_lines;
     std::string tasmovie_headroom;
-    std::string tasmovie_rtc;
-    std::string tasmovie_rtc_min;
-    std::string tasmovie_rtc_max;
+    int rtc_max = 0;
     std::string seedprobe_combo_attempts_per_target;
     std::filesystem::path report_dir;
 };
@@ -71,7 +69,7 @@ void PrintUsage() {
         << "SavorDbPerf --scenario queued-db-micro|execution-queue|projection-lag|workflow-materialization|e2e-replay\n"
         << "  --duration-sec N --producers N --workers N --jobs N --batch-size N\n"
         << "  --read-ratio N --write-ratio N --snapshot-interval-ms N --report-dir PATH\n"
-        << "  e2e-replay: --e2e-scenario NAME --load-level low|mid|high|very_high --repeat N\n"
+        << "  e2e-replay: --e2e-scenario NAME --load-level low|mid|high --repeat N [--rtc-max N]\n"
         << "              --iso PATH --dolphin-base-dir PATH [--savestate-file PATH] [--dtm-file PATH]\n";
 }
 
@@ -139,12 +137,11 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                 options->durable_lines = need_value("--durable-lines");
             } else if (arg == "--tasmovie-headroom" || arg == "--tasmovie-headroom-x10" || arg == "--headroom") {
                 options->tasmovie_headroom = need_value(arg.c_str());
-            } else if (arg == "--tasmovie-rtc" || arg == "--rtc") {
-                options->tasmovie_rtc = need_value(arg.c_str());
-            } else if (arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
-                options->tasmovie_rtc_min = need_value(arg.c_str());
             } else if (arg == "--tasmovie-rtc-max" || arg == "--rtc-max") {
-                options->tasmovie_rtc_max = need_value(arg.c_str());
+                options->rtc_max = std::stoi(need_value(arg.c_str()));
+            } else if (arg == "--tasmovie-rtc" || arg == "--rtc" || arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
+                std::cerr << arg << " is not supported by SavorDbPerf; use --rtc-max N for a 0..N RTC fanout.\n";
+                return false;
             } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
                 options->seedprobe_combo_attempts_per_target = need_value(arg.c_str());
             } else if (arg == "--report-dir") {
@@ -165,6 +162,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     options->batch_size = std::max(1, options->batch_size);
     options->snapshot_interval_ms = std::max(100, options->snapshot_interval_ms);
     options->repeat = std::max(1, options->repeat);
+    if (options->rtc_max < 0 || options->rtc_max > 255) {
+        std::cerr << "--rtc-max must be between 0 and 255\n";
+        return false;
+    }
     if (options->report_dir.empty()) {
         options->report_dir = std::filesystem::path("perf-runs") / (savor::db::perf::TimestampForPath() + "-" + options->scenario);
     }
@@ -770,9 +771,8 @@ int RunE2EReplay(const Options& options, const char* argv0) {
     AppendPathArg(cmd, "--worker-dir-root", options.worker_dir_root);
     AppendStringArg(cmd, "--durable-lines", options.durable_lines);
     AppendStringArg(cmd, "--tasmovie-headroom", options.tasmovie_headroom);
-    AppendStringArg(cmd, "--tasmovie-rtc", options.tasmovie_rtc);
-    AppendStringArg(cmd, "--tasmovie-rtc-min", options.tasmovie_rtc_min);
-    AppendStringArg(cmd, "--tasmovie-rtc-max", options.tasmovie_rtc_max);
+    cmd << " --tasmovie-rtc-min 0"
+        << " --tasmovie-rtc-max " << options.rtc_max;
     AppendStringArg(cmd, "--seedprobe-combo-attempts-per-target", options.seedprobe_combo_attempts_per_target);
 
     std::cout << "Running E2E replay via " << e2e_exe.string() << "\n";
