@@ -51,11 +51,12 @@ public:
         record.program_ref_id = command.program_ref_id;
         record.savestate_id = command.savestate_id;
         record.fingerprint = command.fingerprint;
-        record.state = "QUEUED";
+        record.state = command.pending_until_workflow_materialized ? "PENDING_MATERIALIZATION" : "QUEUED";
         record.priority = command.priority;
         record.attempts = 0;
         record.max_attempts = command.max_attempts;
         record.queued_at_utc = 0;
+        record.input_ini = command.input_ini;
 
         jobs_[record.job_id] = record;
 

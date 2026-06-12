@@ -849,6 +849,7 @@ public:
                             .priority = run_spec->priority,
                             .max_attempts = 1,
                             .input_ini = BuildInputIni(job_ini),
+                            .pending_until_workflow_materialized = true,
                         },
                         &exec_job_id,
                         &error)

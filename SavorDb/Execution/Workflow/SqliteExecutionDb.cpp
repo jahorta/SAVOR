@@ -983,7 +983,7 @@ bool SqliteExecutionDb::EnqueueJob(
     Statement insert_job;
     if (sqlite3_prepare_v2(db_,
         "INSERT INTO exec_job(job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,savestate_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text,input_ini) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'QUEUED',?10,?11,NULL,NULL,?12,NULL,NULL,NULL,NULL,?);",
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,NULL,?13,NULL,NULL,NULL,NULL,?14);",
         -1,
         &insert_job.st,
         nullptr)
@@ -1000,10 +1000,12 @@ bool SqliteExecutionDb::EnqueueJob(
     if (command.savestate_id.has_value()) sqlite3_bind_int64(insert_job.st, 7, *command.savestate_id); else sqlite3_bind_null(insert_job.st, 7);
     sqlite3_bind_text(insert_job.st, 8, command.fingerprint.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(insert_job.st, 9, command.priority);
-    sqlite3_bind_int(insert_job.st, 10, 0);
-    sqlite3_bind_int(insert_job.st, 11, command.max_attempts);
-    sqlite3_bind_int64(insert_job.st, 12, queued_at_utc);
-    sqlite3_bind_text(insert_job.st, 13, command.input_ini.c_str(), -1, SQLITE_TRANSIENT);
+    const char* initial_state = command.pending_until_workflow_materialized ? "PENDING_MATERIALIZATION" : "QUEUED";
+    sqlite3_bind_text(insert_job.st, 10, initial_state, -1, SQLITE_STATIC);
+    sqlite3_bind_int(insert_job.st, 11, 0);
+    sqlite3_bind_int(insert_job.st, 12, command.max_attempts);
+    sqlite3_bind_int64(insert_job.st, 13, queued_at_utc);
+    sqlite3_bind_text(insert_job.st, 14, command.input_ini.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(insert_job.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;

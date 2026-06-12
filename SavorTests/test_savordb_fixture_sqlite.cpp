@@ -2499,6 +2499,180 @@ VALUES(1702, 1701, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim', 5, 'QUEUED', 0, 3
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, Stage3dDefaultEnqueueJobIsImmediatelyQueued) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1829, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1831, 7, 'stage3d-default-queued', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1830, 1829, 'Neutral', 'seedprobe.neutral', 'MATERIALIZED', 1831, 8, 0, 2, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db.EnqueueJob(
+        {
+            .job_set_id = 1831,
+            .program_kind = 7,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 33,
+            .fingerprint = "fp-stage3d-default-queued",
+            .priority = 5,
+            .max_attempts = 3,
+        },
+        &job_id,
+        &err))
+        << err;
+    EXPECT_GT(job_id, 0);
+
+    const auto record = execution_db.GetJob(job_id);
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->state, "QUEUED");
+
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-default-queued", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, job_id);
+    EXPECT_EQ(claimed->workflow_step_id, 1830);
+}
+
+TEST_F(SqliteDbFixture, Stage3dPendingMaterializationJobIsReleasedWhenStepMaterialized) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1849, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1851, 7, 'stage3d-pending-root', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(1850, 1849, 'Neutral', 'seedprobe.neutral', 'READY', 8, 0, 2, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::int64_t job_id = 0;
+    ASSERT_TRUE(execution_db.EnqueueJob(
+        {
+            .job_set_id = 1851,
+            .program_kind = 7,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 33,
+            .fingerprint = "fp-stage3d-pending-root",
+            .priority = 5,
+            .max_attempts = 3,
+            .pending_until_workflow_materialized = true,
+        },
+        &job_id,
+        &err))
+        << err;
+
+    auto record = execution_db.GetJob(job_id);
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->state, "PENDING_MATERIALIZATION");
+
+    std::string claim_error;
+    auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-pending-before", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    EXPECT_FALSE(claimed.has_value());
+
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepMaterialized(
+        {
+            .workflow_step_id = 1850,
+            .job_set_id = 1851,
+            .requested_by = "SavorTests",
+        },
+        &err))
+        << err;
+
+    record = execution_db.GetJob(job_id);
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->state, "QUEUED");
+
+    claim_error.clear();
+    claimed = execution_db.ClaimNextReadyExecutionJob("worker-pending-after", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, job_id);
+    EXPECT_EQ(claimed->workflow_instance_id, 1849);
+    EXPECT_EQ(claimed->workflow_step_id, 1850);
+}
+
+TEST_F(SqliteDbFixture, Stage3dMarkStepMaterializedReleasesDescendantPendingJobs) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1869, 'SEED_PROBE_CHAIN', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1871, NULL, 7, 'stage3d-pending-root', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, parent_job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1872, 1871, 7, 'stage3d-pending-child', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(1870, 1869, 'Unique', 'seedprobe.unique', 'READY', 9, 0, 2, unixepoch()*1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::int64_t child_job_id = 0;
+    ASSERT_TRUE(execution_db.EnqueueJob(
+        {
+            .job_set_id = 1872,
+            .program_kind = 7,
+            .program_ref_kind = "seed_probe",
+            .program_ref_id = 33,
+            .fingerprint = "fp-stage3d-pending-child",
+            .priority = 5,
+            .max_attempts = 3,
+            .pending_until_workflow_materialized = true,
+        },
+        &child_job_id,
+        &err))
+        << err;
+
+    std::string claim_error;
+    auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-descendant-before", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    EXPECT_FALSE(claimed.has_value());
+
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepMaterialized(
+        {
+            .workflow_step_id = 1870,
+            .job_set_id = 1871,
+            .requested_by = "SavorTests",
+        },
+        &err))
+        << err;
+
+    const auto record = execution_db.GetJob(child_job_id);
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ(record->state, "QUEUED");
+
+    claim_error.clear();
+    claimed = execution_db.ClaimNextReadyExecutionJob("worker-descendant-after", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, child_job_id);
+    EXPECT_EQ(claimed->job_set_id, 1872);
+    EXPECT_EQ(claimed->workflow_step_id, 1870);
+}
+
 TEST_F(SqliteDbFixture, Stage3dRunningExecutionJobLeasesRenewAndExpireBackToQueued) {
     using namespace savor::db::execution::jobs;
     using namespace savor::db::execution::workflow;
@@ -5369,6 +5543,31 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         sqlite3_finalize(st);
         return fingerprint;
     };
+    auto expect_pending_jobs = [&](std::int64_t job_set_id) {
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            db_,
+            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT child.job_set_id FROM exec_job_set child "
+            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
+            ") "
+            "SELECT COUNT(1), "
+            "SUM(CASE WHEN state='PENDING_MATERIALIZATION' THEN 1 ELSE 0 END) "
+            "FROM exec_job "
+            "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
+            -1,
+            &st,
+            nullptr));
+        sqlite3_bind_int64(st, 1, job_set_id);
+        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+        const int total = sqlite3_column_int(st, 0);
+        const int pending = sqlite3_column_int(st, 1);
+        sqlite3_finalize(st);
+        EXPECT_GT(total, 0);
+        EXPECT_EQ(pending, total);
+    };
     auto expect_timing = [](const std::string& fingerprint) {
         EXPECT_NE(fingerprint.find(";run_ms=12345"), std::string::npos) << fingerprint;
         EXPECT_NE(fingerprint.find(";vi=678"), std::string::npos) << fingerprint;
@@ -5379,6 +5578,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     ASSERT_GT(neutral_scheduled.root_job_set_id, 0);
     expect_timing(neutral_scheduled.persistence.fingerprint);
     expect_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
+    expect_pending_jobs(neutral_scheduled.root_job_set_id);
 
     SeedProbeGridSpec grid_spec{};
     grid_spec.samples_per_axis = 1;
@@ -5392,6 +5592,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     ASSERT_GT(grid_scheduled.root_job_set_id, 0);
     expect_timing(grid_scheduled.persistence.fingerprint);
     expect_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
+    expect_pending_jobs(grid_scheduled.root_job_set_id);
 
     ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
     const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
@@ -5450,6 +5651,7 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
     expect_timing(unique_scheduled.persistence.fingerprint);
     ASSERT_GT(unique_scheduled.root_job_set_id, 0);
     ASSERT_FALSE(unique_scheduled.event_lines.empty());
+    expect_pending_jobs(unique_scheduled.root_job_set_id);
     EXPECT_NE(unique_scheduled.event_lines.back().find("combo_attempts_per_target=1"), std::string::npos)
         << unique_scheduled.event_lines.back();
     EXPECT_NE(unique_scheduled.event_lines.back().find("combo_sampler_tries=1"), std::string::npos)

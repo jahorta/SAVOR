@@ -104,6 +104,7 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
                     .fingerprint = persisted.fingerprint,
                     .priority = 0,
                     .max_attempts = 1,
+                    .pending_until_workflow_materialized = true,
                 },
                 nullptr,
                 &error);

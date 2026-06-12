@@ -259,6 +259,7 @@ public:
             enqueue.priority = cfg.priority;
             enqueue.max_attempts = 1;
             enqueue.input_ini = BuildInputIni(cfg, rtc);
+            enqueue.pending_until_workflow_materialized = true;
             if (execution_db_->EnqueueJob(enqueue, nullptr, &error)) {
                 ++jobs_enqueued;
             } else {

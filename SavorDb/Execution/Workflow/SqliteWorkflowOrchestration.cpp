@@ -110,6 +110,14 @@ bool Prepare(sqlite3* db, const char* sql, Statement* stmt, std::string* error_o
     return true;
 }
 
+bool StepDone(sqlite3* db, sqlite3_stmt* st, std::string* error_out) {
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    return true;
+}
+
 std::optional<std::int64_t> ColumnInt64Optional(sqlite3_stmt* st, int index) {
     if (sqlite3_column_type(st, index) == SQLITE_NULL) {
         return std::nullopt;
@@ -151,6 +159,31 @@ bool EffectiveUnitActivations(
         *activations_out = command.unit_activations;
     }
     return true;
+}
+
+bool ReleasePendingJobsForMaterializedJobSet(
+    sqlite3* db,
+    std::int64_t job_set_id,
+    std::string* error_out) {
+    Statement release;
+    if (!Prepare(db,
+            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT child.job_set_id "
+            "  FROM exec_job_set child "
+            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
+            ") "
+            "UPDATE exec_job "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL "
+            "WHERE state='PENDING_MATERIALIZATION' "
+            "AND job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
+            &release,
+            error_out)) {
+        return false;
+    }
+    sqlite3_bind_int64(release.st, 1, job_set_id);
+    return StepDone(db, release.st, error_out);
 }
 
 bool RecomputeUnitActivationState(
@@ -1638,6 +1671,11 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepMaterialized(
             Exec(db_, "ROLLBACK;", nullptr);
             return false;
         }
+    }
+
+    if (!ReleasePendingJobsForMaterializedJobSet(db_, command.job_set_id, error_out)) {
+        Exec(db_, "ROLLBACK;", nullptr);
+        return false;
     }
 
     if (should_emit

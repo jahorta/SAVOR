@@ -135,7 +135,6 @@
     <ClInclude Include="Execution\WorkflowCoordinatorBridge.h" />
     <ClInclude Include="Execution\WorkflowDispatchCoordinator.h" />
     <ClInclude Include="Execution\WorkflowIntegrationMode.h" />
-    <ClInclude Include="Execution\WorkflowMaterializationService.h" />
     <ClInclude Include="Execution\WorkflowSchedulerAdapter.h" />
     <ClInclude Include="Worker\ProcessWorker.h" />
     <ClInclude Include="Worker\TSQueue.h" />
@@ -150,7 +149,6 @@
     <ClCompile Include="Execution\StepInputAggregationService.cpp" />
     <ClCompile Include="Execution\WorkflowCoordinatorBridge.cpp" />
     <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp" />
-    <ClCompile Include="Execution\WorkflowMaterializationService.cpp" />
     <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp" />
     <ClCompile Include="Worker\ProcessWorker.cpp" />
     <ClCompile Include="Worker\WorkerStatusRegistry.cpp" />

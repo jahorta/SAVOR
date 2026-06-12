@@ -158,6 +158,7 @@ WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
                 enqueue.input_ini = "";
+                enqueue.pending_until_workflow_materialized = true;
                 (void)execution_db_->EnqueueJob(enqueue, nullptr, &error);
             }
         }

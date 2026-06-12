@@ -33,9 +33,6 @@
     <ClInclude Include="Execution\WorkflowIntegrationMode.h">
       <Filter>Execution</Filter>
     </ClInclude>
-    <ClInclude Include="Execution\WorkflowMaterializationService.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
     <ClInclude Include="Execution\WorkflowSchedulerAdapter.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -72,9 +69,6 @@
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp">
-      <Filter>Execution</Filter>
-    </ClCompile>
-    <ClCompile Include="Execution\WorkflowMaterializationService.cpp">
       <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp">

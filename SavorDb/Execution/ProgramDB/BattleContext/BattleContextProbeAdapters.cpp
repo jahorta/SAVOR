@@ -315,6 +315,7 @@ public:
                     .priority = wave->turn_index,
                     .max_attempts = 1,
                     .input_ini = BuildInputIni(job_ini),
+                    .pending_until_workflow_materialized = true,
                 },
                 &exec_job_id,
                 &error)
@@ -1032,6 +1033,7 @@ public:
                     .priority = 1,
                     .max_attempts = 1,
                     .input_ini = BuildInputIni(job_ini),
+                    .pending_until_workflow_materialized = true,
                 },
                 &exec_job_id,
                 &error)

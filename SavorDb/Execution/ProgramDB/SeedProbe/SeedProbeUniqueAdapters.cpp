@@ -261,6 +261,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
             singleton.target_delta);
         enqueue.priority = 1;
         enqueue.max_attempts = 2;
+        enqueue.pending_until_workflow_materialized = true;
         std::int64_t job_id = 0;
         if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
             ++jobs_enqueued;
@@ -310,6 +311,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
                 sample.target_delta);
             enqueue.priority = 0;
             enqueue.max_attempts = 2;
+            enqueue.pending_until_workflow_materialized = true;
             std::int64_t job_id = 0;
             if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
                 ++jobs_enqueued;

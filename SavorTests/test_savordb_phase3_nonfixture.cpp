@@ -27,7 +27,6 @@
 #include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Execution/JobMaterializationService.h"
 #include "Execution/WorkflowDispatchCoordinator.h"
-#include "Execution/WorkflowMaterializationService.h"
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "State/QueuedStateDb.h"
 #include "UIRead/QueuedUiReadDb.h"
