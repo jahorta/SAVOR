@@ -27,6 +27,7 @@
 #include "Archive/SqliteArchiveDb.h"
 #include "Archive/ArchivePackageService.h"
 #include "Archive/RehydrateExecutor.h"
+#include "State/SqliteStateDb.h"
 #include "UIRead/SqliteUiReadDb.h"
 #include "Execution/ArchiveWorkflowCommands.h"
 #include "Execution/Workflow/SqliteExecutionDb.h"
@@ -126,6 +127,23 @@ std::string ReadText(sqlite3* db, const char* sql) {
     }
     sqlite3_finalize(st);
     return value;
+}
+
+void RunUiReadProjectionUntilCaughtUp(
+    savor::db::core::DBService& service,
+    const std::string& stream_id) {
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        std::string err;
+        ASSERT_TRUE(service.RunUiReadProjectionOnce(&err)) << err;
+        const auto snapshot = service.SnapshotPerformance();
+        const auto* stream = FindProjectionStream(snapshot, stream_id);
+        ASSERT_NE(stream, nullptr);
+        if (stream->lag_count == 0 && stream->last_outbox_id == stream->source_high_water_outbox_id) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
+    }
+    ADD_FAILURE() << "projection stream did not catch up: " << stream_id;
 }
 
 TEST_F(SqliteDbFixture, EmbeddedMigrationsApplyOncePerContextAndTrackVersion) {
@@ -5987,6 +6005,307 @@ TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateExecutionDatabaseForWorkf
     EXPECT_TRUE(execution_stream->last_error.empty());
 
     service.Stop();
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSelectionDecisionAdvancesWithoutRefreshingBattleSet) {
+    using namespace savor::db;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+    std::string err;
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "projection-battle-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 555,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 7001,
+            .plan_id = 9001,
+            .fake_attacks_this_turn = 2,
+            .fake_attacks_used_before = 1,
+            .job_state = BattleTurnJobState::Completed,
+            .has_results = true,
+            .battle_outcome = savor::battle::Outcome::Defeat,
+            .recorded_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &turn_job_id,
+        &err)) << err;
+
+    std::int64_t selection_pool_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSelectionPool(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .pool_name = "pool-a",
+            .criterion_kind = BattleSelectionCriterionKind::MaxVi,
+            .created_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &selection_pool_id,
+        &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
+
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_job SET job_state='FAILED' WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()));
+
+    std::int64_t selection_decision_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleSelectionDecision(
+        {
+            .selection_pool_id = selection_pool_id,
+            .turn_job_id = turn_job_id,
+            .decision_kind = BattleSelectionDecisionKind::Winner,
+            .decision_reason = std::string("best vi"),
+            .created_at_utc = now,
+            .correlation_id = "projection-battle",
+            .causation_id = "test",
+        },
+        &selection_decision_id,
+        &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='analysis-battle';"),
+        ReadInt64(db_, "SELECT COALESCE(MAX(outbox_id),0) FROM ab_outbox_message;"));
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleProjectsOnlyAffectedTurnJobAndFollowupRows) {
+    using namespace savor::db;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712305000000));
+    std::string err;
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "projection-incremental-battle",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 777,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t first_turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 8001,
+            .plan_id = 9001,
+            .job_state = BattleTurnJobState::Completed,
+            .has_results = true,
+            .recorded_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &first_turn_job_id,
+        &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_wave SET status='COMPLETED' WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()));
+
+    std::int64_t second_turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 8002,
+            .plan_id = 9001,
+            .job_state = BattleTurnJobState::Succeeded,
+            .has_results = true,
+            .recorded_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &second_turn_job_id,
+        &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(second_turn_job_id) + ";").c_str()), "SUCCEEDED");
+
+    ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_wave SET status='RUNNING' WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()));
+
+    std::int64_t terminal_followup_id = 0;
+    ASSERT_TRUE(analysis_db->UpsertBattleTerminalFollowup(
+        {
+            .turn_job_id = first_turn_job_id,
+            .is_victory = true,
+            .manual_followup_status = BattleManualFollowupStatus::Recorded,
+            .recorded_dtm_artifact_id = 777,
+            .note = std::string("incremental-followup"),
+            .updated_at_utc = now,
+            .correlation_id = "projection-incremental",
+            .causation_id = "test",
+        },
+        &terminal_followup_id,
+        &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+    EXPECT_EQ(ReadText(db_, ("SELECT note FROM ui_battle_followup WHERE turn_job_id=" + std::to_string(first_turn_job_id) + ";").c_str()), "incremental-followup");
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionFailureDiagnosticsRecordPayloadRefsBeforeDeadLetter) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-failure-diagnostic";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* state_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.state_db_path.string().c_str(), &state_handle));
+    ASSERT_NE(state_handle, nullptr);
+    ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
+    savor::db::state::SqliteStateDb state_db(state_handle);
+
+    sqlite3* ui_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &ui_handle));
+    ASSERT_NE(ui_handle, nullptr);
+    ASSERT_TRUE(ExecSql(ui_handle, "DROP TABLE ui_artifact_browser;"));
+    sqlite3_close(ui_handle);
+    ui_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 100,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.Start(&err)) << err;
+
+    std::int64_t artifact_id = 0;
+    ASSERT_TRUE(state_db.StoreArtifact(
+        {
+            .sha256 = "projection-diagnostic-artifact",
+            .size_bytes = 12,
+            .compression_kind = 0,
+            .filename = "diagnostic.sav",
+            .file_ext = ".sav",
+            .artifact_kind = "SAV",
+            .created_at_utc = savor::db::types::UtcNow(),
+            .correlation_id = "projection-diagnostic",
+            .causation_id = "test",
+        },
+        &artifact_id,
+        &err)) << err;
+
+    EXPECT_FALSE(projection.RunOnce(&err));
+    EXPECT_FALSE(err.empty());
+    projection.Stop();
+    sqlite3_close(state_handle);
+    state_handle = nullptr;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dead_letter WHERE stream_id='state';"), 1);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT event_type FROM ui_projection_dead_letter WHERE stream_id='state';"), "State.ArtifactStored.v1");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT payload_ref_kind FROM ui_projection_dead_letter WHERE stream_id='state';"), "artifact");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT payload_ref_id FROM ui_projection_dead_letter WHERE stream_id='state';"), artifact_id);
+    EXPECT_GE(ReadInt64(verify_handle, "SELECT failure_count FROM ui_projection_dead_letter WHERE stream_id='state';"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT is_dead_letter FROM ui_projection_dead_letter WHERE stream_id='state';"), 0);
+    EXPECT_NE(ReadText(verify_handle, "SELECT error_text FROM ui_projection_dead_letter WHERE stream_id='state';").find("ui_artifact_browser"), std::string::npos);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT dead_letter_count FROM ui_projection_subscription WHERE stream_id='state';"), 0);
+    sqlite3_close(verify_handle);
 }
 
 }

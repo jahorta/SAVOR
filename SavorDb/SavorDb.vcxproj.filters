@@ -552,5 +552,8 @@
     <None Include="migration\UIRead\202606111200_uiread_projection_stream_telemetry.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
+    <None Include="migration\UIRead\202606121000_uiread_projection_failure_payload_refs.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
   </ItemGroup>
 </Project>

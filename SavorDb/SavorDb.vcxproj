@@ -320,6 +320,7 @@
     <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql" />
     <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql" />
     <None Include="migration\UIRead\202606111200_uiread_projection_stream_telemetry.sql" />
+    <None Include="migration\UIRead\202606121000_uiread_projection_failure_payload_refs.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

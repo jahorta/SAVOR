@@ -130,6 +130,32 @@ std::int64_t TotalProjectionLag(
     return lag;
 }
 
+std::string ProjectionDrainSummary(
+    const savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot& projection,
+    std::chrono::milliseconds timeout) {
+    std::ostringstream out;
+    out << "UIRead projection drain timed out after " << timeout.count() << " ms";
+    out << "; total_lag=" << TotalProjectionLag(projection);
+    out << "; streams=[";
+    for (std::size_t i = 0; i < projection.streams.size(); ++i) {
+        const auto& stream = projection.streams[i];
+        if (i != 0) {
+            out << "; ";
+        }
+        out << stream.stream_id
+            << " cursor=" << stream.last_outbox_id
+            << " high_water=" << stream.source_high_water_outbox_id
+            << " lag=" << stream.lag_count
+            << " lag_age_ms=" << stream.lag_age_ms
+            << " dead_letters=" << stream.dead_letter_count;
+        if (!stream.last_error.empty()) {
+            out << " last_error=" << stream.last_error;
+        }
+    }
+    out << "]";
+    return out.str();
+}
+
 void DrainUiReadProjection(
     savor::db::core::DBService& service,
     std::chrono::milliseconds timeout,
@@ -146,6 +172,9 @@ void DrainUiReadProjection(
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{ 50 });
+    }
+    if (last_error_out != nullptr) {
+        *last_error_out = ProjectionDrainSummary(service.SnapshotPerformance().ui_read_projection, timeout);
     }
 }
 
