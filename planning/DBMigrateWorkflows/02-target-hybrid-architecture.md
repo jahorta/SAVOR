@@ -42,6 +42,7 @@ The target model is authored graph templates plus per-instance runtime bindings,
 - Instance scalar arguments are values that shape one launch without changing the reusable authored graph. Current examples are TAS RTC value and battle fake-attack min/max overrides.
 - Qt2 Workflow Builder is authoring-only. It must not launch workflow instances.
 - Qt2 Workflow Launcher is the only UI surface that selects external inputs and instance arguments. Launching a TAS RTC range should create one workflow instance per RTC value.
+- Future graph fanout should treat produced savestates as workflow-instance boundaries: if a step produces multiple savestates and downstream graph edges consume them, create one child workflow instance per savestate and persist provenance back to the source workflow/step/job output/savestate. This broader fanout rule is not part of the TAS RTC cleanup pass.
 - Program descriptors and the coordinator materialize concrete execution steps from the authored graph revision plus the workflow instance's bindings and arguments.
 - Program descriptors/adapters create Analysis rows lazily when a step actually runs or maps results. The graph validator can prove potential compatibility, but it must not allocate speculative analysis state.
 - UIRead is read-only from Qt2. UIRead rows are refreshed only from source-context outboxes and projectors.

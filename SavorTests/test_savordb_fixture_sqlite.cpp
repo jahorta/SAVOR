@@ -4820,8 +4820,6 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
                 .headroom_x10 = 50,
                 .progress_enable = true,
                 .base_dtm_artifact_id = base_artifact_id,
-                .rtc_low = 0,
-                .rtc_high = 0,
                 .created_at_utc = types::UtcNow(),
                 .correlation_id = "test.tasmovie.graph-dedupe",
                 .causation_id = "test",
@@ -5020,6 +5018,139 @@ TEST_F(SqliteDbFixture, Stage5CoordinatorMaterializesTasMovieGraphNodesWithTasSp
     sqlite3_bind_text(st, 2, second_like.c_str(), -1, SQLITE_TRANSIENT);
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int64(st, 0), 2);
+    sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage5CoordinatorBlocksTasMovieGraphNodeWithoutRtcArgument) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::tasmovie;
+    using namespace savor::db::execution::workflow;
+    using namespace savor::runner::parallel::savordb;
+
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* state_db = db_service_->StateDb();
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(state_db, nullptr);
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    const auto source_path = temp_root_ / "graph-missing-rtc-base.dtm";
+    {
+        std::ofstream out(source_path, std::ios::binary);
+        out << "dtm-bytes";
+    }
+
+    std::string err;
+    std::int64_t base_artifact_id = 0;
+    ASSERT_TRUE(state_db->StoreArtifact(
+        {
+            .sha256 = "stage5-tasmovie-graph-missing-rtc-base-dtm",
+            .size_bytes = static_cast<std::int64_t>(std::filesystem::file_size(source_path)),
+            .compression_kind = 0,
+            .filename = source_path.string(),
+            .file_ext = ".dtm",
+            .artifact_kind = "DTM",
+            .created_at_utc = types::UtcNow(),
+            .correlation_id = "test.tasmovie.missing-rtc",
+            .causation_id = "test",
+        },
+        &base_artifact_id,
+        &err))
+        << err;
+
+    SaveWorkflowGraphResult saved{};
+    ASSERT_TRUE(authoring_db->SaveWorkflowGraph(
+        {
+            .name = "graph-materialize-tasmovie-missing-rtc",
+            .description = "TasMovie launch graph missing required rtc argument",
+            .graph_version = 1,
+            .graph_hash = "graph-materialize-tasmovie-missing-rtc-hash",
+            .nodes = {
+                {
+                    .node_key = "tas_movie_standalone",
+                    .unit_kind = "tas_movie",
+                    .display_name = "Tas Movie",
+                    .inputs = {
+                        { .input_key = "dtm_artifact", .data_kind = "state_artifact.dtm_artifact_id", .display_name = "DTM artifact" },
+                    },
+                },
+            },
+            .created_at_utc = types::UtcNow(),
+            .correlation_id = "test.tasmovie.missing-rtc",
+        },
+        &saved,
+        &err))
+        << err;
+
+    std::int64_t workflow_instance_id = 0;
+    WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "sqlite-fixture";
+    command.created_at_utc = types::UtcNow().time_since_epoch().count();
+    command.unit_activations.push_back(TestUnitActivation("tas_movie_standalone", "tas_movie", "TAS Movie", {}, 10, 1));
+    command.input_bindings.push_back({
+        .node_key = "tas_movie_standalone",
+        .input_key = "dtm_artifact",
+        .data_kind = "state_artifact.dtm_artifact_id",
+        .ref_kind = "state_artifact",
+        .ref_id = base_artifact_id,
+        .source_kind = "external",
+    });
+    ASSERT_TRUE(execution_db->WorkflowCommandService()->CreateWorkflowInstance(command, &workflow_instance_id, &err))
+        << err;
+
+    const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    ASSERT_TRUE(graph.has_value());
+    ASSERT_EQ(graph->steps.size(), 1u);
+
+    ProgramKindRegistry registry;
+    TasMoviePhaseRegistrationConfig config{};
+    config.authoring_db = authoring_db;
+    config.working_dir_root = temp_root_ / "tasmovie-missing-rtc";
+    RegisterTasMoviePhaseDescriptor(&registry, execution_db, state_db, analysis_db, config);
+
+    DBWorkflowWorkerCoordinator coordinator(
+        execution_db,
+        DBWorkflowWorkerCoordinatorConfig{},
+        CoordinatorIntegrationConfig{ .workflow_enabled = true },
+        &registry);
+
+    const auto scheduled = coordinator.MaterializeWorkflowStep(
+        WorkflowReadyStep{
+            .workflow_instance_id = workflow_instance_id,
+            .workflow_step_id = graph->steps.front().workflow_step_id,
+            .step_key = "tas_movie_standalone",
+            .step_kind = "tas_movie",
+            .priority = 10,
+        });
+    EXPECT_FALSE(scheduled.has_value());
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_job WHERE program_kind=?1;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int(st, 1, static_cast<int>(savor::PK_TasMovie));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 0);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM state_tas_movie_variant WHERE base_dtm_artifact_id=?1;",
+        -1,
+        &st,
+        nullptr));
+    sqlite3_bind_int64(st, 1, base_artifact_id);
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int64(st, 0), 0);
     sqlite3_finalize(st);
 }
 

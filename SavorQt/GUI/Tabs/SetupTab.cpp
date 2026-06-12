@@ -205,11 +205,9 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         if (!spec.ok) {
             return QStringLiteral("TAS spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
         }
-        return QStringLiteral("TAS spec: %1 (#%2)\n  rtc: %3-%4\n  headroom x10: %5\n  base DTM artifact: %6")
+        return QStringLiteral("TAS spec: %1 (#%2)\n  headroom x10: %3\n  base DTM artifact: %4")
             .arg(qs(spec.value.base_name))
             .arg(id)
-            .arg(spec.value.rtc_low)
-            .arg(spec.value.rtc_high)
             .arg(spec.value.headroom_x10)
             .arg(spec.value.base_dtm_artifact_id);
     }
@@ -910,6 +908,10 @@ void SetupTab::build()
                     }
                     value.hasSingle = true;
                     value.single = parsedSingle;
+                }
+                if (!value.hasSingle) {
+                    blockLaunch(QStringLiteral("RTC for %1 is required. Enter a single value or enable Range.").arg(rtcEditor.nodeKey));
+                    return;
                 }
             }
             rtcLaunchValues.push_back(value);

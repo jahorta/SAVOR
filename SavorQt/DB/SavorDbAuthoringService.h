@@ -45,8 +45,6 @@ struct TasSpecDraft {
     int headroom_x10 = 10;
     bool progress_enable = false;
     std::int64_t base_dtm_artifact_id = 0;
-    std::int64_t rtc_low = 0;
-    std::int64_t rtc_high = 0;
 };
 
 struct PredicateSpecDraft {
@@ -206,8 +204,7 @@ public:
         command.combo_attempts_per_target = draft.combo_attempts_per_target;
         command.combo_sampler_tries = draft.combo_sampler_tries;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.SeedProbeSpecSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.SeedProbeSpecSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -255,11 +252,8 @@ public:
         command.headroom_x10 = draft.headroom_x10;
         command.progress_enable = draft.progress_enable;
         command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
-        command.rtc_low = draft.rtc_low;
-        command.rtc_high = draft.rtc_high;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.TasSpecSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.TasSpecSaved");
 
         std::int64_t id = 0;
         std::int64_t base_id = 0;
@@ -341,8 +335,7 @@ public:
         savor::db::DeletePredicateSpecCommand command{};
         command.predicate_spec_id = predicate_spec_id;
         command.deleted_at_utc = savor::db::types::UtcNow();
-        command.event_id = NextEventId("Authoring.PredicateSpecDeleted");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.PredicateSpecDeleted");
 
         std::string error;
         if (!db->DeletePredicateSpec(command, &error)) {
@@ -403,8 +396,7 @@ public:
         command.min_fake_attacks = draft.min_fake_attacks;
         command.max_fake_attacks = draft.max_fake_attacks;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.BattleRunSpecSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.BattleRunSpecSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -449,8 +441,7 @@ public:
         plan.fingerprint = draft.fingerprint;
         plan.num_turns = draft.num_turns;
         plan.created_at_utc = now;
-        plan.event_id = NextEventId("Authoring.BattlePlanSaved");
-        plan.correlation_id = plan.event_id;
+        plan.correlation_id = NextEventId("Authoring.BattlePlanSaved");
 
         std::int64_t plan_id = 0;
         std::string error;
@@ -463,8 +454,7 @@ public:
             turn_command.plan_id = plan_id;
             turn_command.turn_index = turn.turn_index;
             turn_command.created_at_utc = now;
-            turn_command.event_id = NextEventId("Authoring.BattlePlanTurnSaved");
-            turn_command.correlation_id = plan.event_id;
+            turn_command.correlation_id = plan.correlation_id;
             for (const auto& action : turn.actions) {
                 if (action.action_preset_id.has_value() && action.action_preset_id.value() > 0) {
                     turn_command.actions.push_back(savor::db::SaveBattlePlanActionCommand{
@@ -485,8 +475,7 @@ public:
                     preset_command.target_expr_ini = action.target_expr_ini;
                     preset_command.item_id = action.item_id;
                     preset_command.created_at_utc = now;
-                    preset_command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
-                    preset_command.correlation_id = plan.event_id;
+                    preset_command.correlation_id = plan.correlation_id;
 
                     std::int64_t action_preset_id = 0;
                     if (!db->SaveBattlePlanActionPreset(preset_command, &action_preset_id, &error)) {
@@ -532,8 +521,7 @@ public:
         command.item_id = draft.item_id;
         command.flags = draft.flags;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.BattlePlanActionPresetSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -559,8 +547,7 @@ public:
         command.action_preset_id = action_preset_id;
         command.name = name;
         command.updated_at_utc = savor::db::types::UtcNow();
-        command.event_id = NextEventId("Authoring.BattlePlanActionPresetRenamed");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.BattlePlanActionPresetRenamed");
 
         std::string error;
         if (!db->RenameBattlePlanActionPreset(command, &error)) {
@@ -666,8 +653,7 @@ public:
         command.default_plan_id = draft.default_plan_id;
         command.default_predicate_set_id = draft.default_predicate_set_id;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.ExplorerSettingsSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.ExplorerSettingsSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -716,8 +702,7 @@ public:
         command.battle_run_spec_id = draft.battle_run_spec_id;
         command.explorer_settings_id = draft.explorer_settings_id;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.BattleChainSpecSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.BattleChainSpecSaved");
 
         std::int64_t id = 0;
         std::string error;
@@ -771,8 +756,7 @@ public:
         command.nodes = draft.nodes;
         command.edges = draft.edges;
         command.created_at_utc = now;
-        command.event_id = NextEventId("Authoring.WorkflowGraphSaved");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("Authoring.WorkflowGraphSaved");
 
         savor::db::SaveWorkflowGraphResult result{};
         std::string error;
@@ -846,8 +830,7 @@ private:
         command.rhs_address_program_id = draft.rhs_address_program_id;
         command.abort_on_fail = draft.abort_on_fail;
         command.created_at_utc = savor::db::types::UtcNow();
-        command.event_id = NextEventId(event_prefix);
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId(event_prefix);
         return command;
     }
 

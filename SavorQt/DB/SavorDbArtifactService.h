@@ -94,8 +94,7 @@ public:
         command.file_ext = NormalizeFileExt(request.source_path.extension().string());
         command.artifact_kind = NormalizeArtifactKind(request.artifact_kind, command.file_ext);
         command.created_at_utc = now;
-        command.event_id = NextEventId("State.ArtifactStored.Qt2");
-        command.correlation_id = command.event_id;
+        command.correlation_id = NextEventId("State.ArtifactStored.Qt2");
         command.causation_id = "SavorQt";
 
         std::int64_t artifact_id = 0;

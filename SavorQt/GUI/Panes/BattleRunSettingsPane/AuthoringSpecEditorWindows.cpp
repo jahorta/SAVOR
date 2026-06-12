@@ -396,8 +396,6 @@ void TasSpecEditorWindow::saveSpec()
     draft.headroom_x10 = headroomSpin_->value();
     draft.progress_enable = progressCheck_->isChecked();
     draft.base_dtm_artifact_id = 0;
-    draft.rtc_low = 0;
-    draft.rtc_high = 0;
     const auto result = savorqt::db::SavorDbAuthoringService::SaveTasSpec(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);

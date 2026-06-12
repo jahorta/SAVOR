@@ -94,6 +94,11 @@ This file is meant to be actively updated each iteration.
 7. **Observability baseline**
     - Which metrics are required for phase-1 go/no-go?
 
+8. **Future savestate-output workflow fanout**
+   - Future work: when a workflow step produces one or more savestates and an authored edge consumes that savestate in another workflow step, create one child workflow instance per produced savestate instead of routing all outputs inside the same workflow instance.
+   - Persist provenance from source workflow instance, source workflow step, source job output, and savestate id to each child workflow instance.
+   - This is intentionally out of scope for the current TAS RTC cleanup, which only fans out launch-time TAS RTC ranges.
+
 ## Suggested answer format
 
 For each question:

@@ -1001,8 +1001,8 @@ bool SqliteAuthoringDb::SaveTasSpec(
     Statement insert_spec;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO au_tas_spec(tas_spec_base_id,base_dtm_artifact_id,rtc_low,rtc_high,created_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5);",
+            "INSERT INTO au_tas_spec(tas_spec_base_id,base_dtm_artifact_id,created_at_utc) "
+            "VALUES(?1,?2,?3);",
             -1,
             &insert_spec.st,
             nullptr)
@@ -1014,9 +1014,7 @@ bool SqliteAuthoringDb::SaveTasSpec(
 
     sqlite3_bind_int64(insert_spec.st, 1, tas_spec_base_id);
     sqlite3_bind_int64(insert_spec.st, 2, command.base_dtm_artifact_id);
-    sqlite3_bind_int64(insert_spec.st, 3, command.rtc_low);
-    sqlite3_bind_int64(insert_spec.st, 4, command.rtc_high);
-    sqlite3_bind_int64(insert_spec.st, 5, ToEpochMillis(command.created_at_utc));
+    sqlite3_bind_int64(insert_spec.st, 3, ToEpochMillis(command.created_at_utc));
 
     if (sqlite3_step(insert_spec.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
@@ -1068,7 +1066,7 @@ std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
     constexpr const char* kSql =
         "SELECT s.tas_spec_id, b.tas_spec_base_id, b.name, b.priority, b.run_ms, b.vi_stall_ms, "
         "b.headroom_x10, b.progress_enable, b.auto_queue_seeds, "
-        "s.base_dtm_artifact_id, s.rtc_low, s.rtc_high "
+        "s.base_dtm_artifact_id "
         "FROM au_tas_spec s "
         "JOIN au_tas_spec_base b ON b.tas_spec_base_id=s.tas_spec_base_id "
         "WHERE s.tas_spec_id=?1;";
@@ -1092,8 +1090,6 @@ std::optional<TasSpecSnapshot> SqliteAuthoringDb::GetTasSpec(
     snapshot.progress_enable = sqlite3_column_int(st.st, 7) != 0;
     snapshot.auto_queue_seeds = sqlite3_column_int(st.st, 8) != 0;
     snapshot.base_dtm_artifact_id = sqlite3_column_int64(st.st, 9);
-    snapshot.rtc_low = sqlite3_column_int64(st.st, 10);
-    snapshot.rtc_high = sqlite3_column_int64(st.st, 11);
     return snapshot;
 }
 

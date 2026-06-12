@@ -383,8 +383,6 @@ public:
             cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
             cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp(spec->headroom_x10, 0, 255));
             cfg.progress_enable = spec->progress_enable;
-            cfg.rtc_low = spec->rtc_low;
-            cfg.rtc_high = spec->rtc_high;
         }
 
         const auto* dtm = FindBinding(context, "dtm_artifact", "state_artifact.dtm_artifact_id");
@@ -393,13 +391,17 @@ public:
         }
         cfg.base_dtm_artifact_id = dtm->ref_id;
         const auto rtc_argument = FindIntegerArgument(context, "rtc");
-        if (rtc_argument.has_value()) {
-            cfg.rtc_low = *rtc_argument;
-            cfg.rtc_high = *rtc_argument;
+        if (!rtc_argument.has_value()) {
+            WorkflowStepScheduleResult scheduled{};
+            scheduled.event_lines.push_back(
+                "[workflow-graph-tasmovie-bootstrap] ok=false error=missing_required_rtc_argument"
+                " workflow_instance_id=" + std::to_string(context.workflow_instance_id)
+                + " workflow_step_id=" + std::to_string(context.workflow_step_id)
+                + " step=" + context.step_key);
+            return scheduled;
         }
-        if (cfg.rtc_high < cfg.rtc_low) {
-            cfg.rtc_high = cfg.rtc_low;
-        }
+        cfg.rtc_low = *rtc_argument;
+        cfg.rtc_high = *rtc_argument;
 
         auto adapter = TasMovieJobPersistenceAdapter(
             execution_db_,

@@ -152,8 +152,6 @@ struct SaveTasSpecCommand {
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
-    std::int64_t rtc_low = 0;
-    std::int64_t rtc_high = 0;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -170,8 +168,6 @@ struct TasSpecSnapshot {
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
-    std::int64_t rtc_low = 0;
-    std::int64_t rtc_high = 0;
 };
 
 struct SaveBattleRunSpecCommand {

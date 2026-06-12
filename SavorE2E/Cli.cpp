@@ -309,7 +309,7 @@ void PrintUsage() {
               << " [--battle-fake-attack-high <count>]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
-    std::cout << "TAS rtc sets both rtc_low and rtc_high; rtc-min/max keeps the range. TAS headroom is the existing x10 value.\n";
+    std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
     std::cout << "Visual worker locks worker count to 1.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
