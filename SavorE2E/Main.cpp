@@ -15,6 +15,7 @@
 #include "DbSetup.h"
 #include "SeedProbeRealWorkerScenario.h"
 #include "TasMovieRealWorkerScenario.h"
+#include "WorkerCoordinatorPerf.h"
 
 namespace {
 
@@ -85,6 +86,10 @@ int main(int argc, char** argv) {
     }
 
     const bool perf_mode = options.perf_report_dir.has_value();
+    WorkerCoordinatorPerfAccumulator worker_coordinator_perf;
+    if (perf_mode) {
+        options.worker_coordinator_perf = &worker_coordinator_perf;
+    }
     std::ofstream snapshots;
     std::atomic<bool> stop_sampling{ false };
     const auto started_at = Clock::now();
@@ -165,6 +170,7 @@ int main(int argc, char** argv) {
         report.elapsed_ms = elapsed_ms;
         report.worker_count = static_cast<int>(options.worker_count);
         report.repeat_count = options.repeat;
+        report.worker_coordinator = worker_coordinator_perf.BuildSummary();
         savor::db::perf::WriteSummaryJson(*options.perf_report_dir, report);
         savor::db::perf::WriteMarkdownReport(*options.perf_report_dir, report);
         std::cout << "Perf report: " << (*options.perf_report_dir / "perf-report.md").string() << "\n"

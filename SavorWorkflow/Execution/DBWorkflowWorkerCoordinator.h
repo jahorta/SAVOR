@@ -72,6 +72,18 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t workflow_created_signal_count = 0;
     std::int64_t materialization_failure_count = 0;
     std::int64_t payload_materialization_failure_count = 0;
+    std::int64_t claim_attempt_count = 0;
+    std::int64_t claimed_job_count = 0;
+    std::int64_t clean_zero_claim_count = 0;
+    std::int64_t claim_error_count = 0;
+    std::int64_t partial_claim_count = 0;
+    bool no_jobs_available = false;
+    struct WorkerEfficiency {
+        std::int64_t worker_id = 0;
+        std::int64_t dispatch_success_count = 0;
+        std::int64_t program_kind_switch_count = 0;
+    };
+    std::vector<WorkerEfficiency> workers;
 };
 
 enum class VisualReplayRuntimeState {
@@ -186,6 +198,8 @@ private:
         std::optional<std::int32_t> loaded_program_kind;
         std::optional<std::string> loaded_program_runtime_affinity_key;
         std::optional<std::string> loaded_savestate_affinity_key;
+        std::int64_t dispatch_success_count = 0;
+        std::int64_t program_kind_switch_count = 0;
         uint64_t visual_render_widget_handle = 0;
         std::string visual_host_events_pipe_name;
     };
@@ -347,6 +361,12 @@ private:
     std::atomic<std::int64_t> workflow_created_signal_count_{ 0 };
     std::atomic<std::int64_t> materialization_failure_count_{ 0 };
     std::atomic<std::int64_t> payload_materialization_failure_count_{ 0 };
+    std::atomic<std::int64_t> claim_attempt_count_{ 0 };
+    std::atomic<std::int64_t> claimed_job_count_{ 0 };
+    std::atomic<std::int64_t> clean_zero_claim_count_{ 0 };
+    std::atomic<std::int64_t> claim_error_count_{ 0 };
+    std::atomic<std::int64_t> partial_claim_count_{ 0 };
+    std::atomic<bool> no_jobs_available_{ false };
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };

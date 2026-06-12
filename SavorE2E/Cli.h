@@ -7,6 +7,10 @@
 #include <vector>
 
 namespace savor::e2e {
+class WorkerCoordinatorPerfAccumulator;
+}
+
+namespace savor::e2e {
 
 enum class DurableLineCategory : std::uint32_t {
     Result = 1u << 0,
@@ -84,6 +88,7 @@ struct CliOptions {
     std::optional<int> seedprobe_combo_attempts_per_target;
     std::optional<int> battle_fake_attack_low;
     std::optional<int> battle_fake_attack_high;
+    WorkerCoordinatorPerfAccumulator* worker_coordinator_perf = nullptr;
 };
 
 struct TasMovieRtcRange {

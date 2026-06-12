@@ -28,6 +28,7 @@
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
+#include "WorkerCoordinatorPerf.h"
 
 #ifdef _WIN32
 #include <io.h>
@@ -831,9 +832,11 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         ++ticks_since_snapshot;
 
         const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
         const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
         probe_run_id = ResolveSeedProbeRunIdFromGraph(graph, probe_run_id);
-        latest_lines = BuildProgressLines(execution_db, telemetry, coordinator.SnapshotWorkers(), graph);
+        latest_lines = BuildProgressLines(execution_db, telemetry, worker_snapshot, graph);
         std::vector<DurableLine> event_lines = drain_event_lines();
         if (graph.has_value()) {
             auto materialized_step_lines = BuildNewMaterializedStepEventLines(
@@ -933,6 +936,8 @@ bool RunSeedProbeRealWorkerSmokeImpl(
     const auto final_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     probe_run_id = ResolveSeedProbeRunIdFromGraph(final_graph, probe_run_id);
     const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
     if (probe_run_id > 0 && RefreshSeedProbeUiReadProjection(db_service->AnalysisDb(), ui_read_db, probe_run_id, &err)) {
         if (auto ui_line = BuildSeedProbeUiReadLine(ui_read_db, probe_run_id, std::string{}); ui_line.has_value()) {
             durable_log.AppendLine(*ui_line);
@@ -940,7 +945,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
         }
     }
     if (final_graph.has_value()) {
-        latest_lines = BuildProgressLines(execution_db, final_telemetry, coordinator.SnapshotWorkers(), final_graph);
+        latest_lines = BuildProgressLines(execution_db, final_telemetry, final_worker_snapshot, final_graph);
     }
     if (latest_lines.empty()) {
         latest_lines.push_back("workflow=unavailable");

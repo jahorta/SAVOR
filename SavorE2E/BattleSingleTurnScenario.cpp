@@ -38,6 +38,7 @@
 #include "Runner/IPC/Wire.h"
 #include "Tas/DtmFile.h"
 #include "MultiLineProgressRenderer.h"
+#include "WorkerCoordinatorPerf.h"
 
 namespace savor::e2e {
 namespace {
@@ -281,10 +282,13 @@ bool RunSeedProbePrelude(
         ++ticks_since_snapshot;
         const auto event_lines = drain_lines();
         const auto graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(seedprobe_workflow_instance_id);
+        const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
         latest_lines = BuildCoordinatorProgressLines(
             db_service->ExecutionDb(),
-            coordinator.SnapshotTelemetry(),
-            coordinator.SnapshotWorkers(),
+            telemetry,
+            worker_snapshot,
             graph);
         if (interactive_stdout) {
             progress_renderer.SetLines(latest_lines);
@@ -345,10 +349,13 @@ bool RunSeedProbePrelude(
         }
     }
     const auto final_graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(seedprobe_workflow_instance_id);
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
     latest_lines = BuildCoordinatorProgressLines(
         db_service->ExecutionDb(),
-        coordinator.SnapshotTelemetry(),
-        coordinator.SnapshotWorkers(),
+        final_telemetry,
+        final_worker_snapshot,
         final_graph);
     if (final_graph.has_value()) {
         latest_state = FormatWorkflowStateLine(*final_graph);
@@ -1336,10 +1343,13 @@ bool RunBattleSingleTurnRealWorkerScenario(
             std::lock_guard<std::mutex> lock(progress_mtx);
             progress_snapshot = last_progress_by_worker;
         }
+        const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
         latest_lines = BuildCoordinatorProgressLines(
             db_service->ExecutionDb(),
-            coordinator.SnapshotTelemetry(),
-            coordinator.SnapshotWorkers(),
+            telemetry,
+            worker_snapshot,
             graph,
             &progress_snapshot);
         if (interactive_stdout) {
@@ -1406,10 +1416,13 @@ bool RunBattleSingleTurnRealWorkerScenario(
         std::lock_guard<std::mutex> lock(progress_mtx);
         final_progress_snapshot = last_progress_by_worker;
     }
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
     latest_lines = BuildCoordinatorProgressLines(
         db_service->ExecutionDb(),
-        coordinator.SnapshotTelemetry(),
-        coordinator.SnapshotWorkers(),
+        final_telemetry,
+        final_worker_snapshot,
         final_graph,
         &final_progress_snapshot);
     if (final_graph.has_value()) {
@@ -1742,10 +1755,13 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
             std::lock_guard<std::mutex> lock(progress_mtx);
             progress_snapshot = last_progress_by_worker;
         }
+        const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
         latest_lines = BuildCoordinatorProgressLines(
             db_service->ExecutionDb(),
-            coordinator.SnapshotTelemetry(),
-            coordinator.SnapshotWorkers(),
+            telemetry,
+            worker_snapshot,
             graph,
             &progress_snapshot);
         if (interactive_stdout) {
@@ -1814,10 +1830,13 @@ bool RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario(
         std::lock_guard<std::mutex> lock(progress_mtx);
         final_progress_snapshot = last_progress_by_worker;
     }
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
     latest_lines = BuildCoordinatorProgressLines(
         db_service->ExecutionDb(),
-        coordinator.SnapshotTelemetry(),
-        coordinator.SnapshotWorkers(),
+        final_telemetry,
+        final_worker_snapshot,
         final_graph,
         &final_progress_snapshot);
     if (final_graph.has_value()) {

@@ -11,6 +11,46 @@
 
 namespace savor::db::perf {
 
+struct WorkerCoordinatorWorkerMetric {
+    std::int64_t worker_id = 0;
+    std::int64_t dispatch_success_count = 0;
+    std::int64_t program_kind_switch_count = 0;
+};
+
+struct WorkerCoordinatorPerfSummary {
+    bool available = false;
+    std::int64_t dispatch_attempts = 0;
+    std::int64_t dispatch_successes = 0;
+    std::int64_t dispatch_misses = 0;
+    std::int64_t dispatch_miss_rate_basis_points = 0;
+    std::int64_t worker_dispatch_min = 0;
+    std::int64_t worker_dispatch_max = 0;
+    double worker_dispatch_avg = 0.0;
+    std::int64_t active_samples = 0;
+    double avg_running_workers = 0.0;
+    double avg_idle_workers = 0.0;
+    std::int64_t enough_work_samples = 0;
+    std::int64_t enough_work_full_utilization_samples = 0;
+    double enough_work_full_utilization_pct = 0.0;
+    std::int64_t claim_target = 0;
+    std::int64_t claim_attempts = 0;
+    std::int64_t claimed_jobs = 0;
+    std::int64_t clean_zero_claims = 0;
+    std::int64_t claim_errors = 0;
+    std::int64_t partial_claims = 0;
+    bool no_jobs_available = false;
+    std::int64_t max_program_kind_switches = 0;
+    std::int64_t workers_over_program_kind_switch_limit = 0;
+    std::vector<std::int64_t> workers_over_program_kind_switch_limit_ids;
+    std::int64_t progress_batches = 0;
+    std::int64_t max_progress_batch_size = 0;
+    std::int64_t results_received = 0;
+    std::int64_t stale_claims = 0;
+    std::int64_t materialization_failures = 0;
+    std::int64_t payload_materialization_failures = 0;
+    std::vector<WorkerCoordinatorWorkerMetric> workers;
+};
+
 struct PerfRunReport {
     std::string scenario;
     std::string measured_workload;
@@ -25,6 +65,7 @@ struct PerfRunReport {
     std::uint64_t elapsed_ms = 0;
     int worker_count = 0;
     int repeat_count = 1;
+    WorkerCoordinatorPerfSummary worker_coordinator;
 };
 
 struct DecisionMetrics {
@@ -41,6 +82,12 @@ struct DecisionMetrics {
     std::int64_t projection_lag_count = 0;
     std::int64_t projection_max_lag_age_ms = 0;
     std::uint64_t workload_failed = 0;
+    std::uint64_t worker_claim_errors = 0;
+    std::uint64_t worker_materialization_failures = 0;
+    std::uint64_t worker_payload_materialization_failures = 0;
+    std::uint64_t worker_stale_claims = 0;
+    std::uint64_t workers_over_program_kind_switch_limit = 0;
+    double worker_enough_work_full_utilization_pct = 0.0;
 };
 
 std::string JsonEscape(const std::string& value);

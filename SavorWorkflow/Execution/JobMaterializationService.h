@@ -60,6 +60,14 @@ struct MaterializedJobSelectionAffinity {
     std::optional<std::string> program_runtime_affinity_key;
 };
 
+struct ClaimJobsResult {
+    bool attempted = false;
+    std::size_t requested = 0;
+    std::size_t claimed = 0;
+    bool error = false;
+    std::string error_message;
+};
+
 class JobMaterializationService {
 public:
     using BuildJobPayloadFn = std::function<std::optional<savor::PSJob>(std::int64_t job_id, const WorkflowReadyStep&)>;
@@ -75,6 +83,7 @@ public:
     void ResetForStart();
     void StopMaterializationLoop();
     void SetEventCallback(EventCallback callback);
+    ClaimJobsResult ClaimJobsDetailed(std::size_t max_claims, std::chrono::steady_clock::time_point now);
     std::size_t ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now);
     bool MaterializeClaimedJobPayload(std::chrono::steady_clock::time_point now);
     void MaterializeClaimedJobPayloadLoop(const std::atomic<bool>& stop_requested);
@@ -93,6 +102,7 @@ public:
     bool AbandonClaim(std::int64_t job_id);
     std::size_t ExpireClaimsOlderThan(std::chrono::milliseconds max_age, std::chrono::steady_clock::time_point now);
     std::size_t CountBufferedJobs() const;
+    std::size_t CountMaterializedJobs() const;
 
 private:
     static bool BetterMaterializedDispatchCandidate(

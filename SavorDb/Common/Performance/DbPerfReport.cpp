@@ -233,6 +233,62 @@ void WriteProjectionJson(
     out << "]}";
 }
 
+void WriteWorkerCoordinatorJson(std::ostream& out, const WorkerCoordinatorPerfSummary& metrics) {
+    out << "{\"available\":" << (metrics.available ? "true" : "false")
+        << ",\"dispatch\":{\"attempts\":" << metrics.dispatch_attempts
+        << ",\"successes\":" << metrics.dispatch_successes
+        << ",\"misses\":" << metrics.dispatch_misses
+        << ",\"miss_rate_basis_points\":" << metrics.dispatch_miss_rate_basis_points
+        << ",\"worker_dispatch_min\":" << metrics.worker_dispatch_min
+        << ",\"worker_dispatch_max\":" << metrics.worker_dispatch_max
+        << ",\"worker_dispatch_avg\":" << metrics.worker_dispatch_avg
+        << "}"
+        << ",\"utilization\":{\"active_samples\":" << metrics.active_samples
+        << ",\"avg_running_workers\":" << metrics.avg_running_workers
+        << ",\"avg_idle_workers\":" << metrics.avg_idle_workers
+        << ",\"enough_work_samples\":" << metrics.enough_work_samples
+        << ",\"enough_work_full_utilization_samples\":" << metrics.enough_work_full_utilization_samples
+        << ",\"enough_work_full_utilization_pct\":" << metrics.enough_work_full_utilization_pct
+        << "}"
+        << ",\"claim_pool\":{\"target\":" << metrics.claim_target
+        << ",\"claim_attempts\":" << metrics.claim_attempts
+        << ",\"claimed_jobs\":" << metrics.claimed_jobs
+        << ",\"clean_zero_claims\":" << metrics.clean_zero_claims
+        << ",\"claim_errors\":" << metrics.claim_errors
+        << ",\"partial_claims\":" << metrics.partial_claims
+        << ",\"no_jobs_available\":" << (metrics.no_jobs_available ? "true" : "false")
+        << "}"
+        << ",\"program_kind_switches\":{\"max_per_worker\":" << metrics.max_program_kind_switches
+        << ",\"workers_over_3\":" << metrics.workers_over_program_kind_switch_limit
+        << ",\"worker_ids_over_3\":[";
+    for (std::size_t i = 0; i < metrics.workers_over_program_kind_switch_limit_ids.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << metrics.workers_over_program_kind_switch_limit_ids[i];
+    }
+    out << "]}"
+        << ",\"coordinator\":{\"progress_batches\":" << metrics.progress_batches
+        << ",\"max_progress_batch_size\":" << metrics.max_progress_batch_size
+        << ",\"results_received\":" << metrics.results_received
+        << ",\"stale_claims\":" << metrics.stale_claims
+        << ",\"materialization_failures\":" << metrics.materialization_failures
+        << ",\"payload_materialization_failures\":" << metrics.payload_materialization_failures
+        << "}"
+        << ",\"workers\":[";
+    for (std::size_t i = 0; i < metrics.workers.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        const auto& worker = metrics.workers[i];
+        out << "{\"worker_id\":" << worker.worker_id
+            << ",\"dispatch_success_count\":" << worker.dispatch_success_count
+            << ",\"program_kind_switch_count\":" << worker.program_kind_switch_count
+            << "}";
+    }
+    out << "]}";
+}
+
 void WriteSnapshotLine(
     std::ostream& out,
     const std::string& scenario,
@@ -268,6 +324,17 @@ DecisionMetrics BuildDecisionMetrics(const PerfRunReport& result) {
         metrics.projection_max_lag_age_ms = std::max(metrics.projection_max_lag_age_ms, stream.lag_age_ms);
     }
     metrics.workload_failed = static_cast<std::uint64_t>(std::max<std::int64_t>(0, result.failed));
+    if (result.worker_coordinator.available) {
+        metrics.worker_claim_errors = static_cast<std::uint64_t>(std::max<std::int64_t>(0, result.worker_coordinator.claim_errors));
+        metrics.worker_materialization_failures = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, result.worker_coordinator.materialization_failures));
+        metrics.worker_payload_materialization_failures = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, result.worker_coordinator.payload_materialization_failures));
+        metrics.worker_stale_claims = static_cast<std::uint64_t>(std::max<std::int64_t>(0, result.worker_coordinator.stale_claims));
+        metrics.workers_over_program_kind_switch_limit = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, result.worker_coordinator.workers_over_program_kind_switch_limit));
+        metrics.worker_enough_work_full_utilization_pct = result.worker_coordinator.enough_work_full_utilization_pct;
+    }
     return metrics;
 }
 
@@ -282,7 +349,11 @@ std::string Recommendation(const DecisionMetrics& metrics) {
         || metrics.max_high_water_ratio > 0.50
         || metrics.projection_failed_runs > 0
         || metrics.projection_lag_count > 0
-        || metrics.workload_failed > 0) {
+        || metrics.workload_failed > 0
+        || metrics.worker_claim_errors > 0
+        || metrics.worker_materialization_failures > 0
+        || metrics.worker_payload_materialization_failures > 0
+        || metrics.workers_over_program_kind_switch_limit > 0) {
         return "Investigate tuning current architecture";
     }
     return "Keep current queued DB architecture";
@@ -317,8 +388,17 @@ void WriteSummaryJson(const std::filesystem::path& report_dir, const PerfRunRepo
         << "    \"projection_failed_runs\": " << metrics.projection_failed_runs << ",\n"
         << "    \"projection_lag_count\": " << metrics.projection_lag_count << ",\n"
         << "    \"projection_max_lag_age_ms\": " << metrics.projection_max_lag_age_ms << ",\n"
-        << "    \"workload_failed\": " << metrics.workload_failed << "\n"
+        << "    \"workload_failed\": " << metrics.workload_failed << ",\n"
+        << "    \"worker_claim_errors\": " << metrics.worker_claim_errors << ",\n"
+        << "    \"worker_materialization_failures\": " << metrics.worker_materialization_failures << ",\n"
+        << "    \"worker_payload_materialization_failures\": " << metrics.worker_payload_materialization_failures << ",\n"
+        << "    \"worker_stale_claims\": " << metrics.worker_stale_claims << ",\n"
+        << "    \"workers_over_program_kind_switch_limit\": " << metrics.workers_over_program_kind_switch_limit << ",\n"
+        << "    \"worker_enough_work_full_utilization_pct\": " << metrics.worker_enough_work_full_utilization_pct << "\n"
         << "  },\n"
+        << "  \"worker_coordinator\": ";
+    WriteWorkerCoordinatorJson(out, result.worker_coordinator);
+    out << ",\n"
         << "  \"projection\": ";
     WriteProjectionJson(out, result.projection);
     out << ",\n  \"databases\": ";
@@ -399,7 +479,49 @@ void WriteMarkdownReport(const std::filesystem::path& report_dir, const PerfRunR
         << metrics.projection_lag_count << " |\n"
         << "| Projection max lag age ms | PASS | " << metrics.projection_max_lag_age_ms << " |\n"
         << "| Workload failed operation count == 0 | " << PassFail(metrics.workload_failed == 0) << " | "
-        << metrics.workload_failed << " |\n\n";
+        << metrics.workload_failed << " |\n"
+        << "| Worker claim error count == 0 | " << PassFail(metrics.worker_claim_errors == 0) << " | "
+        << metrics.worker_claim_errors << " |\n"
+        << "| Worker materialization failure count == 0 | "
+        << PassFail(metrics.worker_materialization_failures == 0 && metrics.worker_payload_materialization_failures == 0)
+        << " | " << (metrics.worker_materialization_failures + metrics.worker_payload_materialization_failures) << " |\n"
+        << "| Workers over 3 program-kind switches == 0 | "
+        << PassFail(metrics.workers_over_program_kind_switch_limit == 0) << " | "
+        << metrics.workers_over_program_kind_switch_limit << " |\n\n";
+
+    out << "## Worker Coordinator Telemetry\n\n";
+    if (!result.worker_coordinator.available) {
+        out << "Worker/coordinator metrics unavailable for this scenario.\n\n";
+    } else {
+        const auto& worker = result.worker_coordinator;
+        out << "| Area | Metric | Value |\n"
+            << "|---|---|---:|\n"
+            << "| Dispatch | Attempts | " << worker.dispatch_attempts << " |\n"
+            << "| Dispatch | Successes | " << worker.dispatch_successes << " |\n"
+            << "| Dispatch | Misses | " << worker.dispatch_misses << " |\n"
+            << "| Dispatch | Miss rate bp | " << worker.dispatch_miss_rate_basis_points << " |\n"
+            << "| Dispatch | Per-worker min/max/avg | " << worker.worker_dispatch_min
+            << "/" << worker.worker_dispatch_max << "/" << worker.worker_dispatch_avg << " |\n"
+            << "| Utilization | Active samples | " << worker.active_samples << " |\n"
+            << "| Utilization | Avg running workers | " << worker.avg_running_workers << " |\n"
+            << "| Utilization | Avg idle workers | " << worker.avg_idle_workers << " |\n"
+            << "| Utilization | Enough-work full utilization % | " << worker.enough_work_full_utilization_pct << " |\n"
+            << "| Claim pool | Target | " << worker.claim_target << " |\n"
+            << "| Claim pool | Claim attempts | " << worker.claim_attempts << " |\n"
+            << "| Claim pool | Claimed jobs | " << worker.claimed_jobs << " |\n"
+            << "| Claim pool | Clean zero-claims | " << worker.clean_zero_claims << " |\n"
+            << "| Claim pool | Claim errors | " << worker.claim_errors << " |\n"
+            << "| Claim pool | Partial claims | " << worker.partial_claims << " |\n"
+            << "| Claim pool | No jobs available | " << (worker.no_jobs_available ? "true" : "false") << " |\n"
+            << "| Program kind | Max switches per worker | " << worker.max_program_kind_switches << " |\n"
+            << "| Program kind | Workers over 3 switches | " << worker.workers_over_program_kind_switch_limit << " |\n"
+            << "| Coordinator | Progress batches | " << worker.progress_batches << " |\n"
+            << "| Coordinator | Max progress batch size | " << worker.max_progress_batch_size << " |\n"
+            << "| Coordinator | Results received | " << worker.results_received << " |\n"
+            << "| Coordinator | Stale claims | " << worker.stale_claims << " |\n"
+            << "| Coordinator | Materialization failures | " << worker.materialization_failures << " |\n"
+            << "| Coordinator | Payload materialization failures | " << worker.payload_materialization_failures << " |\n\n";
+    }
 
     out << "## Projection Telemetry\n\n"
         << "RunOnce count: " << result.projection.run_once_count << "  \n"

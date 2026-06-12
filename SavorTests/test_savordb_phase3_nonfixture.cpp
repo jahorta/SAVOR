@@ -4,7 +4,10 @@
 #include <functional>
 #include <future>
 #include <fstream>
+#include <filesystem>
+#include <iterator>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -12,6 +15,7 @@
 #include <sqlite3.h>
 
 #include "Common/Events/OutboxRelay.h"
+#include "Common/Performance/DbPerfReport.h"
 #include "Common/Migrations/MigrationRunner.h"
 #include "Analysis/QueuedAnalysisDb.h"
 #include "Archive/QueuedArchiveDb.h"
@@ -21,6 +25,7 @@
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
 #include "Execution/Workflow/WorkflowRecoveryService.h"
 #include "Execution/DBWorkflowWorkerCoordinator.h"
+#include "Execution/JobMaterializationService.h"
 #include "Execution/WorkflowDispatchCoordinator.h"
 #include "Execution/WorkflowMaterializationService.h"
 #include "Execution/WorkflowSchedulerAdapter.h"
@@ -531,6 +536,143 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_GE(telemetry.dispatch_success_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_rate_basis_points, 0);
+    }
+
+    TEST(Stage3Phase3ClaimAccounting, DistinguishesCleanZeroClaimFromClaimErrorAndPartialClaim) {
+        using namespace savor::runner::parallel::savordb;
+
+        class ClaimAccountingExecutionDb final : public RecordingExecutionDb {
+        public:
+            std::vector<savor::db::ClaimedExecutionJob> claims;
+            std::string error;
+
+            std::vector<savor::db::ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
+                std::string_view,
+                int,
+                std::int64_t,
+                std::string* error_out = nullptr) override {
+                if (error_out != nullptr) {
+                    *error_out = error;
+                }
+                return claims;
+            }
+        };
+
+        savor::db::execution::programdb::ProgramKindRegistry registry;
+        const auto now = std::chrono::steady_clock::now();
+
+        ClaimAccountingExecutionDb clean_zero_db;
+        JobMaterializationService clean_zero_materializer(&clean_zero_db, &registry);
+        const auto clean_zero = clean_zero_materializer.ClaimJobsDetailed(3, now);
+        EXPECT_TRUE(clean_zero.attempted);
+        EXPECT_EQ(clean_zero.requested, 3u);
+        EXPECT_EQ(clean_zero.claimed, 0u);
+        EXPECT_FALSE(clean_zero.error);
+        EXPECT_TRUE(clean_zero.error_message.empty());
+        EXPECT_EQ(clean_zero_materializer.CountMaterializedJobs(), 0u);
+
+        ClaimAccountingExecutionDb error_db;
+        error_db.error = "synthetic claim failure";
+        JobMaterializationService error_materializer(&error_db, &registry);
+        const auto failed_claim = error_materializer.ClaimJobsDetailed(3, now);
+        EXPECT_TRUE(failed_claim.attempted);
+        EXPECT_EQ(failed_claim.claimed, 0u);
+        EXPECT_TRUE(failed_claim.error);
+        EXPECT_EQ(failed_claim.error_message, "synthetic claim failure");
+
+        ClaimAccountingExecutionDb partial_db;
+        partial_db.claims = {
+            savor::db::ClaimedExecutionJob{
+                .job_id = 11,
+                .job_set_id = 10,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 101,
+                .workflow_step_key = "step-a",
+                .workflow_step_kind = "test.step",
+                .workflow_step_priority = 1,
+            },
+            savor::db::ClaimedExecutionJob{
+                .job_id = 12,
+                .job_set_id = 10,
+                .workflow_instance_id = 1,
+                .workflow_step_id = 101,
+                .workflow_step_key = "step-a",
+                .workflow_step_kind = "test.step",
+                .workflow_step_priority = 1,
+            },
+        };
+        JobMaterializationService partial_materializer(&partial_db, &registry);
+        const auto partial_claim = partial_materializer.ClaimJobsDetailed(3, now);
+        EXPECT_TRUE(partial_claim.attempted);
+        EXPECT_EQ(partial_claim.requested, 3u);
+        EXPECT_EQ(partial_claim.claimed, 2u);
+        EXPECT_FALSE(partial_claim.error);
+    }
+
+    TEST(Stage3Phase3PerfReport, WritesWorkerCoordinatorMetricsToSummaryAndMarkdown) {
+        namespace perf = savor::db::perf;
+
+        const auto report_dir = std::filesystem::temp_directory_path()
+            / ("savor-worker-coordinator-report-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(report_dir);
+
+        perf::PerfRunReport report{};
+        report.scenario = "e2e-replay";
+        report.measured_workload = "synthetic";
+        report.worker_coordinator.available = true;
+        report.worker_coordinator.dispatch_attempts = 10;
+        report.worker_coordinator.dispatch_successes = 9;
+        report.worker_coordinator.dispatch_misses = 1;
+        report.worker_coordinator.dispatch_miss_rate_basis_points = 1000;
+        report.worker_coordinator.worker_dispatch_min = 4;
+        report.worker_coordinator.worker_dispatch_max = 5;
+        report.worker_coordinator.worker_dispatch_avg = 4.5;
+        report.worker_coordinator.active_samples = 3;
+        report.worker_coordinator.avg_running_workers = 1.5;
+        report.worker_coordinator.avg_idle_workers = 0.5;
+        report.worker_coordinator.enough_work_samples = 2;
+        report.worker_coordinator.enough_work_full_utilization_samples = 1;
+        report.worker_coordinator.enough_work_full_utilization_pct = 50.0;
+        report.worker_coordinator.claim_target = 2;
+        report.worker_coordinator.claim_attempts = 4;
+        report.worker_coordinator.claimed_jobs = 9;
+        report.worker_coordinator.clean_zero_claims = 1;
+        report.worker_coordinator.partial_claims = 1;
+        report.worker_coordinator.max_program_kind_switches = 4;
+        report.worker_coordinator.workers_over_program_kind_switch_limit = 1;
+        report.worker_coordinator.workers_over_program_kind_switch_limit_ids = { 7 };
+        report.worker_coordinator.progress_batches = 8;
+        report.worker_coordinator.max_progress_batch_size = 3;
+        report.worker_coordinator.results_received = 9;
+        report.worker_coordinator.workers = {
+            perf::WorkerCoordinatorWorkerMetric{
+                .worker_id = 7,
+                .dispatch_success_count = 5,
+                .program_kind_switch_count = 4,
+            },
+        };
+
+        perf::WriteSummaryJson(report_dir, report);
+        perf::WriteMarkdownReport(report_dir, report);
+
+        const auto summary = [&] {
+            std::ifstream in(report_dir / "perf-summary.json", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }();
+        const auto markdown = [&] {
+            std::ifstream in(report_dir / "perf-report.md", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }();
+
+        EXPECT_NE(summary.find("\"worker_coordinator\""), std::string::npos);
+        EXPECT_NE(summary.find("\"workers_over_3\":1"), std::string::npos);
+        EXPECT_NE(summary.find("\"worker_enough_work_full_utilization_pct\": 50"), std::string::npos);
+        EXPECT_NE(markdown.find("## Worker Coordinator Telemetry"), std::string::npos);
+        EXPECT_NE(markdown.find("| Claim pool | Claim attempts | 4 |"), std::string::npos);
+        EXPECT_NE(markdown.find("| Program kind | Workers over 3 switches | 1 |"), std::string::npos);
+
+        std::error_code ec;
+        std::filesystem::remove_all(report_dir, ec);
     }
 
     TEST(Stage3Phase3Batching, ProgressCallbacksDrainInBatchesAndTerminalResultsAreNotBlocked) {

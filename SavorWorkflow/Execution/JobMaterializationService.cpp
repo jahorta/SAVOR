@@ -30,10 +30,15 @@ void JobMaterializationService::SetEventCallback(EventCallback callback) {
     event_callback_ = std::move(callback);
 }
 
-std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now) {
+ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
+    std::size_t max_claims,
+    std::chrono::steady_clock::time_point now) {
+    ClaimJobsResult result{};
+    result.requested = max_claims;
     if (execution_db == nullptr || max_claims == 0) {
-        return 0;
+        return result;
     }
+    result.attempted = true;
     std::vector<ClaimedJobSeed> claims;
 
     std::string error;
@@ -42,6 +47,10 @@ std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::ch
         static_cast<int>(max_claims),
         30000,
         &error);
+    if (!error.empty()) {
+        result.error = true;
+        result.error_message = error;
+    }
     claims.reserve(claimed_jobs.size());
     for (const auto& claimed : claimed_jobs) {
         claims.push_back(ClaimedJobSeed{
@@ -113,12 +122,17 @@ std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::ch
             event_lines.push_back(line.str());
         }
     }
+    result.claimed = claimed;
     if (callback) {
         for (const auto& line : event_lines) {
             callback(line);
         }
     }
-    return claimed;
+    return result;
+}
+
+std::size_t JobMaterializationService::ClaimJobs(std::size_t max_claims, std::chrono::steady_clock::time_point now) {
+    return ClaimJobsDetailed(max_claims, now).claimed;
 }
 
 bool JobMaterializationService::MaterializeClaimedJobPayload(std::chrono::steady_clock::time_point now) {
@@ -433,6 +447,17 @@ std::size_t JobMaterializationService::CountBufferedJobs() const {
             || record.state == ClaimedJobLifecycleState::Materializing
             || record.state == ClaimedJobLifecycleState::Materialized
             || record.state == ClaimedJobLifecycleState::MaterializationFailed) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::size_t JobMaterializationService::CountMaterializedJobs() const {
+    std::size_t count = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [_, record] : materialized_jobs_) {
+        if (record.state == ClaimedJobLifecycleState::Materialized) {
             ++count;
         }
     }

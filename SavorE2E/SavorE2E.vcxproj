@@ -124,6 +124,7 @@
     <ClCompile Include="MultiLineProgressRenderer.cpp" />
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
+    <ClCompile Include="WorkerCoordinatorPerf.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BattleSingleTurnScenario.h" />
@@ -134,6 +135,7 @@
     <ClInclude Include="MultiLineProgressRenderer.h" />
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
+    <ClInclude Include="WorkerCoordinatorPerf.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorWorker\SavorWorker.vcxproj">

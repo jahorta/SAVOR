@@ -487,6 +487,15 @@ void DBWorkflowWorkerCoordinator::Start() {
 
     stop_.store(false);
     job_materialization_service_.ResetForStart();
+    no_jobs_available_.store(false);
+    claim_attempt_count_.store(0);
+    claimed_job_count_.store(0);
+    clean_zero_claim_count_.store(0);
+    claim_error_count_.store(0);
+    partial_claim_count_.store(0);
+    dispatch_attempt_count_.store(0);
+    dispatch_success_count_.store(0);
+    dispatch_miss_count_.store(0);
 
     {
         const auto desired_workers = desired_worker_count_.load(std::memory_order_relaxed);
@@ -793,6 +802,7 @@ bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, 
     }
     std::lock_guard<std::mutex> worker_lock(workers_mtx_);
     if (worker_idx < workers_.size()) {
+        ++workers_[worker_idx]->dispatch_success_count;
         workers_[worker_idx]->loaded_program_kind = claimed_job.program_kind;
         workers_[worker_idx]->loaded_program_runtime_affinity_key = claimed_job.affinity.program_runtime_affinity_key;
         workers_[worker_idx]->loaded_savestate_affinity_key = claimed_job.affinity.savestate_affinity_key;
@@ -888,6 +898,8 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
     const auto savestate_key = claimed_job.affinity.savestate_affinity_key;
     const bool needs_program = !slot.loaded_program_kind.has_value()
         || slot.loaded_program_kind.value() != claimed_job.program_kind;
+    const bool switches_program_kind = slot.loaded_program_kind.has_value()
+        && slot.loaded_program_kind.value() != claimed_job.program_kind;
     const bool needs_runtime = slot.loaded_program_runtime_affinity_key != runtime_key;
     const bool needs_savestate = slot.loaded_savestate_affinity_key != savestate_key;
     if (!needs_program && !needs_runtime && !needs_savestate) {
@@ -936,6 +948,9 @@ bool DBWorkflowWorkerCoordinator::EnsureWorkerProgramForJob(size_t worker_idx, c
         }
     }
 
+    if (switches_program_kind) {
+        ++slot.program_kind_switch_count;
+    }
     slot.loaded_program_kind = claimed_job.program_kind;
     slot.loaded_program_runtime_affinity_key = runtime_key;
     slot.loaded_savestate_affinity_key = savestate_key;
@@ -1062,6 +1077,26 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     telemetry.workflow_created_signal_count = workflow_created_signal_count_.load();
     telemetry.materialization_failure_count = materialization_failure_count_.load();
     telemetry.payload_materialization_failure_count = payload_materialization_failure_count_.load();
+    telemetry.claim_attempt_count = claim_attempt_count_.load();
+    telemetry.claimed_job_count = claimed_job_count_.load();
+    telemetry.clean_zero_claim_count = clean_zero_claim_count_.load();
+    telemetry.claim_error_count = claim_error_count_.load();
+    telemetry.partial_claim_count = partial_claim_count_.load();
+    telemetry.no_jobs_available = no_jobs_available_.load();
+    {
+        std::lock_guard<std::mutex> worker_lock(workers_mtx_);
+        telemetry.workers.reserve(workers_.size());
+        for (const auto& worker : workers_) {
+            if (!worker) {
+                continue;
+            }
+            telemetry.workers.push_back(WorkflowCoordinatorTelemetry::WorkerEfficiency{
+                .worker_id = static_cast<std::int64_t>(worker->id),
+                .dispatch_success_count = worker->dispatch_success_count,
+                .program_kind_switch_count = worker->program_kind_switch_count,
+            });
+        }
+    }
     return telemetry;
 }
 
@@ -1224,10 +1259,43 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
         const auto now = std::chrono::steady_clock::now();
         const auto worker_target = ActiveWorkerCount();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
+        const auto materialized_before_claim = job_materialization_service_.CountMaterializedJobs();
+        if (buffered >= worker_target || materialized_before_claim > 0) {
+            no_jobs_available_.store(false);
+        }
         std::size_t claimed_count = 0;
         if (buffered < worker_target) {
             const auto claim_budget = worker_target - buffered;
-            claimed_count = job_materialization_service_.ClaimJobs(claim_budget, now);
+            const auto claim_result = job_materialization_service_.ClaimJobsDetailed(claim_budget, now);
+            if (claim_result.attempted) {
+                ++claim_attempt_count_;
+                claimed_job_count_.fetch_add(static_cast<std::int64_t>(claim_result.claimed));
+                if (claim_result.error) {
+                    ++claim_error_count_;
+                    no_jobs_available_.store(false);
+                    std::ostringstream line;
+                    line << "[seedprobe-claim-error] claimed=" << claim_result.claimed
+                         << " requested=" << claim_result.requested
+                         << " budget=" << claim_budget
+                         << " buffered_before=" << buffered
+                         << " materialized_before=" << materialized_before_claim
+                         << " worker_target=" << worker_target
+                         << " buffered_after=" << job_materialization_service_.CountBufferedJobs()
+                         << " materialized_after=" << job_materialization_service_.CountMaterializedJobs()
+                         << " error=" << (claim_result.error_message.empty() ? "unknown" : claim_result.error_message);
+                    EmitDurableEventLine(line.str());
+                } else if (claim_result.claimed == 0
+                    && job_materialization_service_.CountMaterializedJobs() == 0) {
+                    ++clean_zero_claim_count_;
+                    no_jobs_available_.store(true);
+                } else {
+                    no_jobs_available_.store(false);
+                }
+                if (claim_result.claimed > 0 && claim_result.claimed < claim_result.requested) {
+                    ++partial_claim_count_;
+                }
+            }
+            claimed_count = claim_result.claimed;
             if (claimed_count > 0) {
                 std::ostringstream line;
                 line << "[seedprobe-claim-batch] claimed=" << claimed_count
@@ -1257,7 +1325,9 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
                 ++dispatch_success_count_;
                 dispatched_any = true;
             } else {
-                ++dispatch_miss_count_;
+                if (no_jobs_available_.load()) {
+                    ++dispatch_miss_count_;
+                }
             }
         }
 
