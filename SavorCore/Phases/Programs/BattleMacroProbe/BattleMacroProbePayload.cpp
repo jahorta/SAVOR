@@ -129,6 +129,39 @@ bool ParseTargetSlot(std::string_view value, std::uint32_t* out) {
     return true;
 }
 
+std::string ItemName(std::uint16_t item_id) {
+    if (item_id < soa::text::ItemNames.size()) {
+        return std::string(soa::text::get_item_name(item_id));
+    }
+    return "item:" + std::to_string(item_id);
+}
+
+void AddAttackSteps(std::vector<MacroStep>& steps, std::uint32_t target_move_count) {
+    steps.push_back(MacroStep{
+        .label = "attack_accept_main_menu",
+        .input = PressA(),
+        .expected_bps = {bp::battle::BattleMacroMainMenuAcceptDispatch},
+    });
+    AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready");
+    AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready_confirm");
+    for (std::uint32_t i = 0; i < target_move_count; ++i) {
+        steps.push_back(MacroStep{
+            .label = "attack_target_cursor_down",
+            .input = PressDown(),
+            .expected_bps = {bp::battle::BattleMacroEnemyTargetMoveDownAccepted},
+        });
+        if (i + 1 < target_move_count) {
+            AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready_between_moves");
+        }
+    }
+    steps.push_back(MacroStep{
+        .label = "attack_target_accept",
+        .input = PressA(),
+        .hold_input_through_hit_opcode = true,
+        .expected_bps = {bp::battle::BattleMacroEnemyTargetFinalized},
+    });
+}
+
 } // namespace
 
 const char* MacroModeName(MacroMode mode) {
@@ -148,6 +181,7 @@ const char* FailureCodeName(FailureCode code) {
     case FailureCode::NoSteps: return "no_steps";
     case FailureCode::Timeout: return "timeout";
     case FailureCode::UnexpectedBreakpoint: return "unexpected_breakpoint";
+    case FailureCode::BattleContextUnavailable: return "battle_context_unavailable";
     default: return "unknown";
     }
 }
@@ -166,6 +200,68 @@ bool TryParseMacroMode(std::string_view value, MacroMode* out) {
         return true;
     }
     return false;
+}
+
+bool BattleMacroPlanningContext::IsAliveEnemySlot(std::uint32_t slot) const {
+    return EnemySelectableIndex(slot) >= 0;
+}
+
+int BattleMacroPlanningContext::EnemySelectableIndex(std::uint32_t slot) const {
+    if (slot >= enemy_slot_to_selectable_index.size()) return -1;
+    return enemy_slot_to_selectable_index[slot];
+}
+
+BattleMacroPlanningContext BuildPlanningContext(const soa::battle::ctx::BattleContext& battle_context) {
+    BattleMacroPlanningContext context{};
+    context.enemy_slot_to_selectable_index.fill(-1);
+
+    for (std::uint32_t slot = 0; slot < soa::battle::ctx::SLOT_COUNT; ++slot) {
+        const auto& battle_slot = battle_context.slots_[slot];
+        if (!battle_slot.present || !battle_slot.is_alive) continue;
+        if (slot < 4 && battle_slot.is_player) {
+            context.alive_ally_slots.push_back(slot);
+        } else if (slot >= 4 && !battle_slot.is_player) {
+            context.enemy_slot_to_selectable_index[slot] = static_cast<int>(context.alive_enemy_slots.size());
+            context.alive_enemy_slots.push_back(slot);
+        }
+    }
+
+    for (std::uint32_t row = 0; row < 80; ++row) {
+        const auto& item = battle_context.state.useable_items[row];
+        if (item.count == 0) continue;
+        context.usable_items.push_back(BattleMacroItemRow{
+            .row_index = row,
+            .item_id = item.item_id,
+            .count = item.count,
+            .name = ItemName(item.item_id),
+        });
+    }
+
+    return context;
+}
+
+std::string FormatPlanningContext(const BattleMacroPlanningContext& context) {
+    std::ostringstream out;
+    out << "alive_allies=";
+    for (size_t i = 0; i < context.alive_ally_slots.size(); ++i) {
+        if (i > 0) out << ',';
+        out << context.alive_ally_slots[i];
+    }
+    out << " alive_enemies=";
+    for (size_t i = 0; i < context.alive_enemy_slots.size(); ++i) {
+        if (i > 0) out << ',';
+        out << context.alive_enemy_slots[i];
+    }
+    out << " usable_items=";
+    for (size_t i = 0; i < context.usable_items.size(); ++i) {
+        const auto& item = context.usable_items[i];
+        if (i > 0) out << '|';
+        out << "row:" << item.row_index
+            << ",id:" << item.item_id
+            << ",count:" << static_cast<std::uint32_t>(item.count)
+            << ",name:" << item.name;
+    }
+    return out.str();
 }
 
 std::string FormatCommandPlanSpec(const std::vector<MacroCommand>& commands) {
@@ -245,6 +341,14 @@ bool DeserializeCommandPlan(std::string_view blob, std::vector<MacroCommand>* ou
 }
 
 std::vector<MacroStep> BuildMacroSteps(MacroMode mode, std::uint32_t target_slot, FailureCode* failure_out) {
+    return BuildMacroSteps(mode, target_slot, nullptr, failure_out);
+}
+
+std::vector<MacroStep> BuildMacroSteps(
+    MacroMode mode,
+    std::uint32_t target_slot,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out) {
     if (failure_out) *failure_out = FailureCode::Ok;
     std::vector<MacroStep> steps;
     switch (mode) {
@@ -253,29 +357,16 @@ std::vector<MacroStep> BuildMacroSteps(MacroMode mode, std::uint32_t target_slot
             if (failure_out) *failure_out = FailureCode::InvalidTarget;
             return {};
         }
-        steps.push_back(MacroStep{
-            .label = "attack_accept_main_menu",
-            .input = PressA(),
-            .expected_bps = {bp::battle::BattleMacroMainMenuAcceptDispatch},
-        });
-        AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready");
-        AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready_confirm");
-        for (std::uint32_t i = 4; i < target_slot; ++i) {
-            steps.push_back(MacroStep{
-                .label = "attack_target_cursor_down",
-                .input = PressDown(),
-                .expected_bps = {bp::battle::BattleMacroEnemyTargetMoveDownAccepted},
-            });
-            if (i + 1 < target_slot) {
-                AddEnemyTargetReadyStep(steps, "attack_enemy_target_ready_between_moves");
+        std::uint32_t target_move_count = target_slot - 4;
+        if (planning_context != nullptr) {
+            const int selectable_index = planning_context->EnemySelectableIndex(target_slot);
+            if (selectable_index < 0) {
+                if (failure_out) *failure_out = FailureCode::InvalidTarget;
+                return {};
             }
+            target_move_count = static_cast<std::uint32_t>(selectable_index);
         }
-        steps.push_back(MacroStep{
-            .label = "attack_target_accept",
-            .input = PressA(),
-            .hold_input_through_hit_opcode = true,
-            .expected_bps = {bp::battle::BattleMacroEnemyTargetFinalized},
-        });
+        AddAttackSteps(steps, target_move_count);
         return steps;
     }
     case MacroMode::Focus:
@@ -298,6 +389,14 @@ std::vector<MacroStep> BuildMacroPlanSteps(
     const std::vector<MacroCommand>& commands,
     std::uint32_t transition_neutral_frames,
     FailureCode* failure_out) {
+    return BuildMacroPlanSteps(commands, transition_neutral_frames, nullptr, failure_out);
+}
+
+std::vector<MacroStep> BuildMacroPlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out) {
     if (failure_out) *failure_out = FailureCode::Ok;
     if (commands.empty()) {
         if (failure_out) *failure_out = FailureCode::NoSteps;
@@ -307,7 +406,7 @@ std::vector<MacroStep> BuildMacroPlanSteps(
     std::vector<MacroStep> plan_steps;
     for (size_t i = 0; i < commands.size(); ++i) {
         FailureCode command_failure = FailureCode::Ok;
-        auto command_steps = BuildMacroSteps(commands[i].mode, commands[i].target_slot, &command_failure);
+        auto command_steps = BuildMacroSteps(commands[i].mode, commands[i].target_slot, planning_context, &command_failure);
         if (command_failure != FailureCode::Ok || command_steps.empty()) {
             if (failure_out) *failure_out = command_failure;
             return {};

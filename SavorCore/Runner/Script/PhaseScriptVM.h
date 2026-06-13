@@ -158,7 +158,8 @@ namespace savor {
 
 
 	struct PhaseScript {
-		std::vector<BPKey> canonical_bp_keys;   // armed once
+		std::vector<BPKey> canonical_bp_keys;   // normal phase breakpoints
+		std::vector<BPKey> reserved_bp_keys;    // armed but enabled only by specialized ops
 		std::vector<PSOp>  ops;                 // executed in order per job
 	};
 
@@ -230,6 +231,7 @@ namespace savor {
 		savor::DolphinWrapper& host_;
 		const BreakpointMap& bpmap_;
 		std::vector<BPKey> canonical_bp_keys_;
+		std::vector<BPKey> reserved_bp_keys_;
 		std::vector<BPKey> predicate_bp_keys_;
 		PhaseScript prog_;
 		PSInit init_;
@@ -244,6 +246,7 @@ namespace savor {
 
 		// helpers
 		void arm_bps_once();
+		void restore_canonical_breakpoint_scope();
 		bool save_snapshot();
 		bool load_snapshot();
 

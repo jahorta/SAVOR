@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@ namespace {
 
 using phase::battle::macroprobe::BuildMacroPlanSteps;
 using phase::battle::macroprobe::BuildMacroSteps;
+using phase::battle::macroprobe::BuildPlanningContext;
 using phase::battle::macroprobe::FailureCode;
 using phase::battle::macroprobe::MacroCommand;
 using phase::battle::macroprobe::MacroMode;
@@ -31,6 +33,73 @@ bool ParseTestArgs(std::initializer_list<const char*> args, savor::e2e::CliOptio
         argv.push_back(value.data());
     }
     return savor::e2e::ParseArgs(static_cast<int>(argv.size()), argv.data(), options, error);
+}
+
+void SetBattleSlot(
+    soa::battle::ctx::BattleContext& context,
+    std::uint32_t slot,
+    bool is_player,
+    bool present,
+    bool is_alive)
+{
+    ASSERT_LT(slot, static_cast<std::uint32_t>(soa::battle::ctx::SLOT_COUNT));
+    context.slots_[slot].is_player = is_player ? 1 : 0;
+    context.slots_[slot].present = present ? 1 : 0;
+    context.slots_[slot].is_alive = is_alive ? 1 : 0;
+}
+
+soa::battle::ctx::BattleContext MakePlanningContextSource()
+{
+    soa::battle::ctx::BattleContext context{};
+    for (std::uint32_t slot = 0; slot < 4; ++slot) {
+        SetBattleSlot(context, slot, true, true, true);
+    }
+    for (std::uint32_t slot = 4; slot < 12; ++slot) {
+        SetBattleSlot(context, slot, false, false, false);
+    }
+    return context;
+}
+
+std::uint32_t CountInput(const std::vector<MacroStep>& steps, std::uint16_t buttons)
+{
+    return static_cast<std::uint32_t>(std::count_if(
+        steps.begin(),
+        steps.end(),
+        [&](const MacroStep& step) { return step.input.buttons == buttons; }));
+}
+
+TEST(BattleMacroProbePlanningContext, ExtractsAliveTargetsAndInventoryRows)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, false);
+    SetBattleSlot(source, 5, false, true, true);
+    SetBattleSlot(source, 6, false, false, false);
+    SetBattleSlot(source, 7, false, true, true);
+    source.state.useable_items[2] = soa::ItemSlot{.item_id = 240, .count = 3};
+    source.state.useable_items[5] = soa::ItemSlot{.item_id = 999, .count = 1};
+    source.state.useable_items[6] = soa::ItemSlot{.item_id = 241, .count = 0};
+
+    const auto context = BuildPlanningContext(source);
+
+    ASSERT_EQ(context.alive_ally_slots.size(), 4u);
+    ASSERT_EQ(context.alive_enemy_slots.size(), 2u);
+    EXPECT_EQ(context.alive_enemy_slots[0], 5u);
+    EXPECT_EQ(context.alive_enemy_slots[1], 7u);
+    EXPECT_FALSE(context.IsAliveEnemySlot(4));
+    EXPECT_TRUE(context.IsAliveEnemySlot(5));
+    EXPECT_EQ(context.EnemySelectableIndex(5), 0);
+    EXPECT_EQ(context.EnemySelectableIndex(7), 1);
+    EXPECT_EQ(context.EnemySelectableIndex(8), -1);
+
+    ASSERT_EQ(context.usable_items.size(), 2u);
+    EXPECT_EQ(context.usable_items[0].row_index, 2u);
+    EXPECT_EQ(context.usable_items[0].item_id, 240u);
+    EXPECT_EQ(context.usable_items[0].count, 3u);
+    EXPECT_EQ(context.usable_items[0].name, "Sacri Crystal");
+    EXPECT_EQ(context.usable_items[1].row_index, 5u);
+    EXPECT_EQ(context.usable_items[1].item_id, 999u);
+    EXPECT_EQ(context.usable_items[1].count, 1u);
+    EXPECT_EQ(context.usable_items[1].name, "item:999");
 }
 
 TEST(BattleMacroProbeCompiler, FocusCompilesThreeDownsThenAccept)
@@ -109,6 +178,56 @@ TEST(BattleMacroProbeCompiler, AttackRejectsInvalidTargetSlot)
     const auto steps = BuildMacroSteps(MacroMode::Attack, 12, &failure);
     EXPECT_TRUE(steps.empty());
     EXPECT_EQ(failure, FailureCode::InvalidTarget);
+}
+
+TEST(BattleMacroProbeCompiler, AttackUsesLiveEnemySelectorOrder)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    SetBattleSlot(source, 5, false, true, true);
+    SetBattleSlot(source, 6, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroSteps(MacroMode::Attack, 6, &context, &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 7u);
+    EXPECT_EQ(CountInput(steps, savor::GC_DD), 2u);
+    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(steps[5].expected_bps.front(), bp::battle::BattleMacroEnemyTargetMoveDownAccepted);
+}
+
+TEST(BattleMacroProbeCompiler, AttackFailsWhenExplicitTargetIsDead)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, false);
+    SetBattleSlot(source, 5, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroSteps(MacroMode::Attack, 4, &context, &failure);
+
+    EXPECT_TRUE(steps.empty());
+    EXPECT_EQ(failure, FailureCode::InvalidTarget);
+}
+
+TEST(BattleMacroProbeCompiler, AttackTargetsFirstLiveEnemyWithoutCursorMoves)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, false);
+    SetBattleSlot(source, 5, false, true, true);
+    SetBattleSlot(source, 6, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroSteps(MacroMode::Attack, 5, &context, &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 4u);
+    EXPECT_EQ(CountInput(steps, savor::GC_DD), 0u);
+    EXPECT_EQ(steps[3].expected_bps.front(), bp::battle::BattleMacroEnemyTargetFinalized);
 }
 
 TEST(BattleMacroProbeCompiler, BlockBlockPlanAddsNeutralCharacterTransition)
@@ -215,102 +334,57 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
 TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
 {
     const auto program = phase::battle::macroprobe::MakeBattleMacroProbeProgram();
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroInputReadyGate),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroMainMenuAcceptDispatch),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroMagicReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroSMoveReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroConditionalRunReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroItemCategoryReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroItemRowListReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroItemDetailReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroAllyTargetReady),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetMoveDownAccepted),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetMoveUpAccepted),
-        program.canonical_bp_keys.end());
-    EXPECT_EQ(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetCursorMoved),
-        program.canonical_bp_keys.end());
-    EXPECT_EQ(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetWritten),
-        program.canonical_bp_keys.end());
-    EXPECT_NE(
-        std::find(
-            program.canonical_bp_keys.begin(),
-            program.canonical_bp_keys.end(),
-            bp::battle::BattleMacroEnemyTargetFinalized),
-        program.canonical_bp_keys.end());
-    ASSERT_GT(program.ops.size(), 6u);
+    const auto has_canonical = [&](BPKey key) {
+        return std::find(program.canonical_bp_keys.begin(), program.canonical_bp_keys.end(), key)
+            != program.canonical_bp_keys.end();
+    };
+    const auto has_reserved = [&](BPKey key) {
+        return std::find(program.reserved_bp_keys.begin(), program.reserved_bp_keys.end(), key)
+            != program.reserved_bp_keys.end();
+    };
+
+    EXPECT_TRUE(has_canonical(bp::battle::TurnInputs));
+    EXPECT_TRUE(has_canonical(bp::battle::TurnIsReady));
+    EXPECT_FALSE(has_canonical(bp::battle::BattleMacroInputReadyGate));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroInputReadyGate));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroMainMenuAcceptDispatch));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroMagicReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroSMoveReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroConditionalRunReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemCategoryReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemRowListReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroItemDetailReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroAllyTargetReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetMoveDownAccepted));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetMoveUpAccepted));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetFinalized));
+    EXPECT_FALSE(has_canonical(bp::battle::BattleMacroMainMenuAcceptDispatch));
+    EXPECT_FALSE(has_canonical(bp::battle::BattleMacroDirectCommandQueued));
+    EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetCursorMoved));
+    EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetWritten));
+    ASSERT_GT(program.ops.size(), 15u);
     EXPECT_EQ(program.ops[4].code, savor::PSOpCode::STEP_OPCODE);
     EXPECT_EQ(program.ops[4].imm.v, 1u);
     EXPECT_EQ(program.ops[5].code, savor::PSOpCode::SET_TIMEOUT);
     EXPECT_EQ(program.ops[5].imm.v, 1000u);
     EXPECT_EQ(program.ops[6].code, savor::PSOpCode::RUN_UNTIL_BP);
+    EXPECT_EQ(program.ops[7].code, savor::PSOpCode::GOTO_IF);
+    EXPECT_EQ(program.ops[7].jcc.key, savor::context::key::core::RUN_HIT_BP_KEY);
+    EXPECT_EQ(program.ops[7].jcc.cmp, savor::PSCmp::EQ);
+    EXPECT_EQ(program.ops[7].jcc.imm, static_cast<std::uint32_t>(bp::battle::TurnIsReady));
+    EXPECT_EQ(program.ops[8].code, savor::PSOpCode::GOTO);
+    EXPECT_EQ(program.ops[9].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[10].code, savor::PSOpCode::STEP_OPCODE);
+    EXPECT_EQ(program.ops[10].imm.v, 1u);
+    EXPECT_EQ(program.ops[11].code, savor::PSOpCode::SET_TIMEOUT);
+    EXPECT_EQ(program.ops[11].imm.v, 10000u);
+    EXPECT_EQ(program.ops[12].code, savor::PSOpCode::RUN_UNTIL_BP);
+    EXPECT_EQ(program.ops[13].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[14].code, savor::PSOpCode::SET_U32);
+    EXPECT_EQ(program.ops[14].keyimm.key, savor::context::key::core::DW_RUN_OUTCOME_CODE);
+    EXPECT_EQ(program.ops[14].keyimm.imm, 0u);
+    EXPECT_EQ(program.ops[15].code, savor::PSOpCode::LABEL);
 }
 
 TEST(BattleMacroProbeCli, BattlePlanDisablesInteractivePrompt)

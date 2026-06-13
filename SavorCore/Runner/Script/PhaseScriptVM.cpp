@@ -84,6 +84,29 @@ namespace {
         return nullptr;
     }
 
+    static const BPAddr* find_hit_bp_in_keys(
+        const BreakpointMap& bpmap,
+        const std::vector<BPKey>& keys,
+        uint32_t pc)
+    {
+        for (auto k : keys) {
+            if (const auto* e = bpmap.find(k); e && e->pc == pc) return e;
+        }
+        return nullptr;
+    }
+
+    static const BPAddr* find_hit_bp(
+        const BreakpointMap& bpmap,
+        const std::vector<BPKey>& canonical_bp_keys,
+        const std::vector<BPKey>& reserved_bp_keys,
+        const std::vector<BPKey>& predicate_bp_keys,
+        uint32_t pc)
+    {
+        if (const auto* e = find_hit_bp_in_keys(bpmap, canonical_bp_keys, pc)) return e;
+        if (const auto* e = find_hit_bp_in_keys(bpmap, reserved_bp_keys, pc)) return e;
+        return find_hit_bp_in_keys(bpmap, predicate_bp_keys, pc);
+    }
+
     static const char* stable_bp_id_or_empty(const BPAddr* bp)
     {
         return bp != nullptr && bp->stable_id != nullptr ? bp->stable_id : "";
@@ -225,15 +248,36 @@ namespace savor {
     void PhaseScriptVM::arm_bps_once() {
         if (armed_) return;
         std::vector<uint32_t> pcs;
-        pcs.reserve(canonical_bp_keys_.size());
-        for (const auto& k : canonical_bp_keys_) {
-            if (const auto* e = bpmap_.find(k)) pcs.push_back(e->pc);
-        }
+        pcs.reserve(canonical_bp_keys_.size() + reserved_bp_keys_.size());
+        const auto append_unique_pc = [&](BPKey k) {
+            if (const auto* e = bpmap_.find(k)) {
+                if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
+                    pcs.push_back(e->pc);
+                }
+            }
+        };
+        for (const auto& k : canonical_bp_keys_) append_unique_pc(k);
+        for (const auto& k : reserved_bp_keys_) append_unique_pc(k);
         if (!pcs.empty()) {
             host_.armPcBreakpoints(pcs);
             armed_pcs_ = pcs;
+            restore_canonical_breakpoint_scope();
         }
         armed_ = true;
+    }
+
+    void PhaseScriptVM::restore_canonical_breakpoint_scope() {
+        host_.setEnableAllBreakpoints(false);
+        for (const auto& k : canonical_bp_keys_) {
+            if (const auto* e = bpmap_.find(k)) {
+                host_.setEnableBreakpoint(e->pc, true);
+            }
+        }
+        for (const auto& k : predicate_bp_keys_) {
+            if (const auto* e = bpmap_.find(k)) {
+                host_.setEnableBreakpoint(e->pc, true);
+            }
+        }
     }
 
     bool PhaseScriptVM::init(const PSInit& init, const PhaseScript& program)
@@ -262,10 +306,15 @@ namespace savor {
                 return false;
         }
 
-        // Update canonical BP keys and arm once
+        // Update BP keys and arm once. Reserved keys stay disabled unless a specialized op enables them.
         canonical_bp_keys_ = prog_.canonical_bp_keys;
+        reserved_bp_keys_ = prog_.reserved_bp_keys;
 
-        SCLOGDX(SC_TAGS("vm", "breakpoint"), "[VM] attach bp count=%zu", program.canonical_bp_keys.size());
+        SCLOGDX(
+            SC_TAGS("vm", "breakpoint"),
+            "[VM] attach bp count=%zu reserved=%zu",
+            program.canonical_bp_keys.size(),
+            program.reserved_bp_keys.size());
         arm_bps_once();
 
         // Capture a snapshot to use as the per-job baseline
@@ -324,8 +373,8 @@ namespace savor {
     }
     void PhaseScriptVM::op_set_u32(const PSOp& op, PSContext& ctx) const { ctx[op.keyimm.key] = op.keyimm.imm; }
     void PhaseScriptVM::op_add_u32(const PSOp& op, PSContext& ctx) const { uint32_t v = 0; ctx.get<uint32_t>(op.keyimm.key, v); ctx[op.keyimm.key] = v + op.keyimm.imm; }
-    void PhaseScriptVM::op_step_frames(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking(); if (op.imm.v == 1) host_.setEnableAllBreakpoints(true); SCLOGD("[VM] phase=run_inputs end"); }
-    void PhaseScriptVM::op_step_opcode(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin opcode"); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); host_.stepOneOpcodeBlocking(); if (op.imm.v == 1) host_.setEnableAllBreakpoints(true); SCLOGD("[VM] phase=run_inputs end opcode"); }
+    void PhaseScriptVM::op_step_frames(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin frames=%zu", op.step.n); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); for (uint32_t i = 0; i < op.step.n; ++i) host_.stepOneFrameBlocking(); if (op.imm.v == 1) restore_canonical_breakpoint_scope(); SCLOGD("[VM] phase=run_inputs end"); }
+    void PhaseScriptVM::op_step_opcode(const PSOp& op) { SCLOGD("[VM] phase=run_inputs begin opcode"); if (op.imm.v == 1) host_.setEnableAllBreakpoints(false); host_.stepOneOpcodeBlocking(); if (op.imm.v == 1) restore_canonical_breakpoint_scope(); SCLOGD("[VM] phase=run_inputs end opcode"); }
     void PhaseScriptVM::op_start_deterministic_run() const { if (!host_.startMovieRecording()) SCLOGE("[VM] Unable to start recording for deterministic run"); }
     void PhaseScriptVM::op_end_deterministic_run() const { host_.endMovieRecording(); }
     bool PhaseScriptVM::op_read_u8(const PSOp& op, PSResult&, PSContext& ctx) { uint8_t v{}; if (!read_u8(op.rd.addr, v)) return false; ctx[op.rd.dst] = v; return true; }
@@ -382,8 +431,10 @@ namespace savor {
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
     void PhaseScriptVM::op_execute_battle_macro_probe(PSContext& ctx) {
         using phase::battle::macroprobe::BuildMacroPlanSteps;
+        using phase::battle::macroprobe::BuildPlanningContext;
         using phase::battle::macroprobe::DeserializeCommandPlan;
         using phase::battle::macroprobe::FailureCode;
+        using phase::battle::macroprobe::FormatPlanningContext;
         using phase::battle::macroprobe::MacroCommand;
         using phase::battle::macroprobe::MacroMode;
         using phase::battle::macroprobe::MacroStep;
@@ -412,18 +463,15 @@ namespace savor {
         } else {
             commands.push_back(MacroCommand{.mode = static_cast<MacroMode>(raw_mode), .target_slot = target_slot});
         }
-        const auto steps = build_failure == FailureCode::Ok
-            ? BuildMacroPlanSteps(commands, transition_neutral_frames, &build_failure)
-            : std::vector<MacroStep>{};
         ctx[savor::context::key::battle::MACRO_RESULT] = 1u;
         ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(build_failure);
-        ctx[savor::context::key::battle::MACRO_STEP_COUNT] = static_cast<uint32_t>(steps.size());
+        ctx[savor::context::key::battle::MACRO_STEP_COUNT] = 0u;
         ctx[savor::context::key::battle::MACRO_LAST_STEP_INDEX] = 0u;
         ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = 0u;
         ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = 0u;
         ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = 0u;
 
-        if (steps.empty() || build_failure != FailureCode::Ok) {
+        if (build_failure != FailureCode::Ok) {
             ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
             SCLOGW("[battle-macro-probe] invalid macro mode=%u target_slot=%u plan='%s' failure=%s",
                 raw_mode,
@@ -440,14 +488,14 @@ namespace savor {
         const auto run_to_expected_bp = [&](const GCInputFrame& input, const std::vector<BPKey>& expected_bps, bool hold_input_through_hit_opcode = false) {
             host_.setInput(input);
             const uint32_t entry_pc = host_.getPC();
-            if (const BPAddr* entry_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, entry_pc)) {
+            if (const BPAddr* entry_bp = find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, entry_pc)) {
                 SCLOGI("[battle-macro-probe-stepoff] pc=%08X bp=%u input_btn=%04X",
                     entry_pc,
                     static_cast<uint32_t>(entry_bp->key),
                     input.buttons);
                 host_.setEnableAllBreakpoints(false);
                 (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-                host_.setEnableAllBreakpoints(true);
+                restore_canonical_breakpoint_scope();
             }
             host_.setEnableAllBreakpoints(false);
             for (const auto expected_bp : expected_bps) {
@@ -466,17 +514,17 @@ namespace savor {
                     input.buttons);
                 host_.setEnableAllBreakpoints(false);
                 (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-                host_.setEnableAllBreakpoints(true);
+                restore_canonical_breakpoint_scope();
             }
             GCInputFrame released_input = input;
             released_input.buttons = static_cast<uint16_t>(released_input.buttons & ~input.buttons);
             host_.setInput(released_input);
-            host_.setEnableAllBreakpoints(true);
+            restore_canonical_breakpoint_scope();
 
             const BPAddr* hit_bp = nullptr;
             uint32_t hit_bp_key = 0;
             if (rr.hit) {
-                hit_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc));
+                hit_bp = find_hit_bp_in_keys(bpmap_, expected_bps, static_cast<uint32_t>(rr.pc));
                 if (hit_bp != nullptr) {
                     hit_bp_key = static_cast<uint32_t>(hit_bp->key);
                 }
@@ -496,7 +544,7 @@ namespace savor {
         };
 
         const uint32_t current_pc = host_.getPC();
-        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, current_pc);
+        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, reserved_bp_keys_, predicate_bp_keys_, current_pc);
         const uint32_t current_bp_key = current_bp != nullptr ? static_cast<uint32_t>(current_bp->key) : 0u;
         if (current_bp_key != static_cast<uint32_t>(bp::battle::TurnInputs)) {
             ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = static_cast<uint32_t>(bp::battle::TurnInputs);
@@ -542,6 +590,39 @@ namespace savor {
             return;
         }
 
+        std::string mem1;
+        soa::battle::ctx::BattleContext battle_context{};
+        if (!host_.getMem1(mem1)) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::BattleContextUnavailable);
+            SCLOGW("[battle-macro-probe] failed to capture MEM1 for planning context");
+            return;
+        }
+        savor::MemView view(reinterpret_cast<const uint8_t*>(mem1.data()), mem1.size());
+        if (!soa::battle::ctx::codec::extract_from_mem1(view, battle_context)) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::BattleContextUnavailable);
+            SCLOGW("[battle-macro-probe] failed to extract battle planning context from MEM1");
+            return;
+        }
+
+        const auto planning_context = BuildPlanningContext(battle_context);
+        SCLOGI("[battle-macro-probe-planning-context] %s", FormatPlanningContext(planning_context).c_str());
+
+        const auto steps = BuildMacroPlanSteps(commands, transition_neutral_frames, &planning_context, &build_failure);
+        ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(build_failure);
+        ctx[savor::context::key::battle::MACRO_STEP_COUNT] = static_cast<uint32_t>(steps.size());
+        if (steps.empty() || build_failure != FailureCode::Ok) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            SCLOGW("[battle-macro-probe] invalid live macro plan mode=%u target_slot=%u plan='%s' failure=%s context='%s'",
+                raw_mode,
+                target_slot,
+                plan_blob.c_str(),
+                phase::battle::macroprobe::FailureCodeName(build_failure),
+                FormatPlanningContext(planning_context).c_str());
+            return;
+        }
+
         for (uint32_t i = 0; i < static_cast<uint32_t>(steps.size()); ++i) {
             const auto& step = steps[i];
             const uint32_t expected_first = step.expected_bps.empty() ? 0u : static_cast<uint32_t>(step.expected_bps.front());
@@ -556,7 +637,7 @@ namespace savor {
                 for (uint32_t frame = 0; frame < step.frame_count; ++frame) {
                     host_.stepOneFrameBlocking();
                 }
-                host_.setEnableAllBreakpoints(true);
+                restore_canonical_breakpoint_scope();
                 SCLOGI("[battle-macro-probe-step] index=%u label=%s neutral_frames=%u ok=1",
                     i,
                     step.label ? step.label : "",
@@ -660,7 +741,7 @@ namespace savor {
         uint32_t count = 0;
         std::memcpy(&count, counts, sizeof(uint32_t));
         if (table_s->size() < static_cast<size_t>(count) * sizeof(GCInputFrame)) {
-            host_.setEnableAllBreakpoints(true);
+            restore_canonical_breakpoint_scope();
             ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
             return;
         }
@@ -685,7 +766,7 @@ namespace savor {
             });
         host_.readU32(addr::AddrRegistry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG after inputs %X", rand);
-        host_.setEnableAllBreakpoints(true);
+        restore_canonical_breakpoint_scope();
         ctx[savor::context::key::battle::INPUT_PLAYBACK_UNACKED] = playback.unacked_count;
         if (!playback.ok) {
             ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(3);
@@ -1004,6 +1085,7 @@ namespace savor {
         case PSOpCode::READ_U32: return { "Read u32" };
         case PSOpCode::READ_F32: return { "Read float" };
         case PSOpCode::READ_F64: return { "Read double" };
+        case PSOpCode::SET_TIMEOUT: return { "Set Timeout" };
         case PSOpCode::SET_TIMEOUT_FROM: return { "Set Timeout" };
         case PSOpCode::EMIT_RESULT: return { "Emit result" };
         case PSOpCode::MOVIE_PLAY_FROM: return { "Play TAS Movie" };

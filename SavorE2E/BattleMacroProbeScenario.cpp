@@ -1,6 +1,7 @@
 #include "BattleMacroProbeScenario.h"
 
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
@@ -192,6 +193,55 @@ bool PromptBattleMacroPlan(std::vector<phase::battle::macroprobe::MacroCommand>*
     return true;
 }
 
+std::string TrimPromptValue(std::string value) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+        value.pop_back();
+    }
+    if (value.size() >= 2
+        && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+        value = value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+bool PromptBattleMacroSavestatePath(
+    const std::filesystem::path& default_path,
+    std::filesystem::path* savestate_path,
+    std::string* error_out) {
+    if (!IsInteractiveStdin()) {
+        if (error_out) *error_out = "battle_macro_probe requires --savestate-file when stdin is not interactive";
+        return false;
+    }
+
+    for (;;) {
+        std::string line;
+        if (!ReadPromptLine("Savestate path [Enter current, q cancel]\n  current: "
+            + default_path.string() + "\n> ", &line, error_out)) {
+            return false;
+        }
+        line = TrimPromptValue(std::move(line));
+        if (line == "q" || line == "Q" || line == "cancel") {
+            if (error_out) *error_out = "battle macro probe cancelled";
+            return false;
+        }
+
+        const auto candidate = line.empty() ? default_path : std::filesystem::path(line);
+        if (candidate.empty()) {
+            std::cout << "Enter a savestate path, or q.\n";
+            continue;
+        }
+        if (!std::filesystem::exists(candidate)) {
+            std::cout << "Savestate file does not exist: " << candidate.string() << "\n";
+            continue;
+        }
+        *savestate_path = candidate;
+        return true;
+    }
+}
+
 bool ResolveBattleMacroPlan(
     const CliOptions& options,
     std::vector<phase::battle::macroprobe::MacroCommand>* commands,
@@ -212,6 +262,18 @@ bool ResolveBattleMacroPlan(
     }
 
     return PromptBattleMacroPlan(commands, error_out);
+}
+
+bool ResolveBattleMacroSavestatePath(
+    bool interactive_loop,
+    const std::filesystem::path& default_path,
+    std::filesystem::path* savestate_path,
+    std::string* error_out) {
+    if (!interactive_loop) {
+        *savestate_path = default_path;
+        return true;
+    }
+    return PromptBattleMacroSavestatePath(default_path, savestate_path, error_out);
 }
 
 bool IsBattleMacroPromptCancel(const std::string& error) {
@@ -282,24 +344,24 @@ bool RunBattleMacroProbeScenario(
         return false;
     }
 
-    savor::PSInit init{};
-    init.savestate_path = options.savestate_file.string();
-    init.default_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms);
-    init.derived_buffer_type = savor::DBuf::DK_None;
-    if (!worker.ctl_set_program(savor::PK_None, savor::PK_BattleMacroProbe, init)) {
-        stop_worker();
-        if (error_out) *error_out = "battle macro worker failed SET_PROGRAM";
-        return false;
-    }
-    if (!worker.ctl_activate_main()) {
-        stop_worker();
-        if (error_out) *error_out = "battle macro worker failed ACTIVATE_MAIN";
-        return false;
-    }
-
     std::uint64_t next_job_id = 1;
     std::uint64_t successful_runs = 0;
+    std::filesystem::path current_savestate = options.savestate_file;
     for (;;) {
+        std::filesystem::path run_savestate;
+        std::string savestate_error;
+        if (!ResolveBattleMacroSavestatePath(interactive_loop, current_savestate, &run_savestate, &savestate_error)) {
+            stop_worker();
+            if (interactive_loop && successful_runs > 0 && IsBattleMacroPromptCancel(savestate_error)) {
+                durable_log.AppendLine("[battle-macro-probe-loop-end] reason=cancel successful_runs="
+                    + std::to_string(successful_runs));
+                return true;
+            }
+            if (error_out) *error_out = savestate_error;
+            return false;
+        }
+        current_savestate = run_savestate;
+
         std::vector<phase::battle::macroprobe::MacroCommand> commands;
         std::string prompt_error;
         if (!ResolveBattleMacroPlan(options, &commands, &prompt_error)) {
@@ -327,11 +389,27 @@ bool RunBattleMacroProbeScenario(
         const std::string plan_spec = phase::battle::macroprobe::FormatCommandPlanSpec(commands);
         durable_log.AppendLine("[battle-macro-probe-start] job=" + std::to_string(next_job_id)
             + " plan=" + plan_spec
+            + " savestate=\"" + EscapeLogValue(run_savestate.string()) + "\""
             + " commands=" + std::to_string(commands.size())
             + " transition_neutral_frames=" + std::to_string(kTransitionNeutralFrames)
             + " steps=" + std::to_string(steps.size())
             + " visual=" + (params.visual ? "true" : "false")
             + " visual_debug=" + (params.visual_debug ? "true" : "false"));
+
+        savor::PSInit init{};
+        init.savestate_path = run_savestate.string();
+        init.default_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms);
+        init.derived_buffer_type = savor::DBuf::DK_None;
+        if (!worker.ctl_set_program(savor::PK_None, savor::PK_BattleMacroProbe, init)) {
+            stop_worker();
+            if (error_out) *error_out = "battle macro worker failed SET_PROGRAM";
+            return false;
+        }
+        if (!worker.ctl_activate_main()) {
+            stop_worker();
+            if (error_out) *error_out = "battle macro worker failed ACTIVATE_MAIN";
+            return false;
+        }
 
         std::vector<std::uint8_t> payload;
         phase::battle::macroprobe::encode_payload(
