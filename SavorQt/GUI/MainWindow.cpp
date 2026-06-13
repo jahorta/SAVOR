@@ -275,6 +275,8 @@ void MainWindow::createWidgets()
             openWorkflowGraphEditor(snapshot, duplicate);
         },
         [this]() { openSettingsTool(); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
         [this]() { openFocusedTool(FocusedTool::DtmEditor); },
         [this]() { openFocusedTool(FocusedTool::BattleRunSettings); }

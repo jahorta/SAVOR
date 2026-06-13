@@ -7,6 +7,8 @@
 #include "SavorDbRuntime.h"
 
 #include <QtCore/QSize>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QIcon>
 #include <QtWidgets/QAbstractItemView>
@@ -152,6 +154,32 @@ bool isBattleChainUnit(const QString& unitKind)
     return unitKind == QStringLiteral("battle_chain");
 }
 
+bool coordinatorIsoReady(const CoordinatorController* controller)
+{
+    if (controller == nullptr) {
+        return true;
+    }
+
+    const QString isoPath = controller->isoPath().trimmed();
+    return !isoPath.isEmpty() && QFileInfo(isoPath).isFile();
+}
+
+bool coordinatorDolphinBaseReady(const CoordinatorController* controller)
+{
+    if (controller == nullptr) {
+        return true;
+    }
+
+    const QString dolphinBase = controller->dolphinBaseDir().trimmed();
+    if (dolphinBase.isEmpty() || !QFileInfo(dolphinBase).isDir()) {
+        return false;
+    }
+
+    const QDir dolphinDir(dolphinBase);
+    return QFileInfo(dolphinDir.filePath(QStringLiteral("portable.txt"))).isFile()
+        && QFileInfo(dolphinDir.filePath(QStringLiteral("Sys/GC/dsp_coef.bin"))).isFile();
+}
+
 QFrame* createStatusPill(const QString& label, const QString& value, QWidget* parent)
 {
     auto* pill = new QFrame(parent);
@@ -168,6 +196,13 @@ QFrame* createStatusPill(const QString& label, const QString& value, QWidget* pa
     layout->addWidget(labelText);
     layout->addWidget(valueText);
     return pill;
+}
+
+QPushButton* createSetupWarningButton(const QString& text, QWidget* parent)
+{
+    auto* button = new QPushButton(text, parent);
+    button->setObjectName("setupWarningButton");
+    return button;
 }
 
 QFrame* createSectionPanel(const QString& title, QWidget* parent)
@@ -370,6 +405,43 @@ void SetupTab::build()
     statusLayout->addWidget(createStatusPill(QStringLiteral("Graphs"), graphs.ok ? QString::number(static_cast<int>(graphs.value.size())) : QStringLiteral("--"), statusStrip));
     statusLayout->addWidget(createStatusPill(QStringLiteral("Units"), units.ok ? QString::number(static_cast<int>(units.value.size())) : QStringLiteral("--"), statusStrip));
     statusLayout->addStretch();
+
+    auto* isoSetupButton = createSetupWarningButton(QStringLiteral("Set ISO"), statusStrip);
+    QObject::connect(isoSetupButton, &QPushButton::clicked, statusStrip, [this]() {
+        if (actions_.openIsoSettings) {
+            actions_.openIsoSettings();
+        } else if (actions_.openSettings) {
+            actions_.openSettings();
+        }
+    });
+    statusLayout->addWidget(isoSetupButton);
+
+    auto* dolphinSetupButton = createSetupWarningButton(QStringLiteral("Set Dolphin base"), statusStrip);
+    QObject::connect(dolphinSetupButton, &QPushButton::clicked, statusStrip, [this]() {
+        if (actions_.openDolphinSettings) {
+            actions_.openDolphinSettings();
+        } else if (actions_.openSettings) {
+            actions_.openSettings();
+        }
+    });
+    statusLayout->addWidget(dolphinSetupButton);
+
+    const auto refreshCoordinatorSetupWarnings = [this, isoSetupButton, dolphinSetupButton]() {
+        const bool isoReady = coordinatorIsoReady(coordinatorController_);
+        const bool dolphinReady = coordinatorDolphinBaseReady(coordinatorController_);
+        const bool isoMissing = coordinatorController_ != nullptr && coordinatorController_->isoPath().trimmed().isEmpty();
+        const bool dolphinMissing = coordinatorController_ != nullptr && coordinatorController_->dolphinBaseDir().trimmed().isEmpty();
+
+        isoSetupButton->setText(isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
+        dolphinSetupButton->setText(dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));
+        isoSetupButton->setVisible(!isoReady);
+        dolphinSetupButton->setVisible(!dolphinReady);
+    };
+    refreshCoordinatorSetupWarnings();
+    if (coordinatorController_ != nullptr) {
+        QObject::connect(coordinatorController_, &CoordinatorController::stateChanged, statusStrip, refreshCoordinatorSetupWarnings);
+    }
+
     if (!artifactStorageReady) {
         auto* fixButton = new QPushButton(QStringLiteral("Fix storage"), statusStrip);
         fixButton->setObjectName("jobsPrimaryButton");

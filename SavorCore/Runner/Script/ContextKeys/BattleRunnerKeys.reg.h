@@ -39,7 +39,8 @@ namespace savor::context::key::battle {
   X(MACRO_LAST_HIT_BP,        0x034A, "battle.macro.last_hit_bp") \
   X(MACRO_LAST_HIT_PC,        0x034B, "battle.macro.last_hit_pc") \
   X(MACRO_PLAN_BLOB,          0x034C, "battle.macro.plan_blob") \
-  X(MACRO_TRANSITION_NEUTRAL_FRAMES,0x034D, "battle.macro.transition_neutral_frames")
+  X(MACRO_TRANSITION_NEUTRAL_FRAMES,0x034D, "battle.macro.transition_neutral_frames") \
+  X(MACRO_OBSERVATION_TAIL_MS,0x034E, "battle.macro.observation_tail_ms")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
 static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");

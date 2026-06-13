@@ -12,7 +12,7 @@
 
 namespace phase::battle::macroprobe {
 
-static constexpr int PayloadVersion = 2;
+static constexpr int PayloadVersion = 3;
 
 enum class MacroMode : std::uint32_t {
     Attack = 1,
@@ -73,6 +73,7 @@ struct EncodeSpec {
     std::uint32_t transition_neutral_frames{3};
     std::uint32_t step_timeout_ms{5000};
     std::uint32_t vi_stall_ms{5000};
+    std::uint32_t observation_tail_ms{10000};
 };
 
 const char* MacroModeName(MacroMode mode);

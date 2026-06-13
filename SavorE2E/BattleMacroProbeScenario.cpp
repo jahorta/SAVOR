@@ -1,5 +1,6 @@
 #include "BattleMacroProbeScenario.h"
 
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdio>
@@ -26,6 +27,8 @@ namespace savor::e2e {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr std::uint32_t kDefaultObservationTailSeconds = 10;
+constexpr std::uint32_t kMaxObservationTailSeconds = 300;
 
 std::filesystem::path ResolveWorkspaceRoot(const CliOptions& options) {
     return options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
@@ -120,79 +123,6 @@ bool ReadPromptLine(const std::string& prompt, std::string* out, std::string* er
     return true;
 }
 
-bool PromptCommand(int character_index, phase::battle::macroprobe::MacroCommand* command, std::string* error_out) {
-    for (;;) {
-        std::string line;
-        if (!ReadPromptLine("Character " + std::to_string(character_index) + " command [block/focus/attack, q cancel]: ", &line, error_out)) {
-            return false;
-        }
-        if (line == "q" || line == "Q" || line == "cancel") {
-            if (error_out) *error_out = "battle macro probe cancelled";
-            return false;
-        }
-        std::vector<phase::battle::macroprobe::MacroCommand> parsed_command;
-        if (!phase::battle::macroprobe::ParseCommandPlanSpec(line, &parsed_command, nullptr) || parsed_command.size() != 1) {
-            std::cout << "Enter block, focus, attack, or q.\n";
-            continue;
-        }
-        *command = parsed_command.front();
-        if (command->mode != phase::battle::macroprobe::MacroMode::Attack) {
-            return true;
-        }
-
-        for (;;) {
-            std::string target_line;
-            if (!ReadPromptLine("Attack target slot [4..11, q cancel]: ", &target_line, error_out)) {
-                return false;
-            }
-            if (target_line == "q" || target_line == "Q" || target_line == "cancel") {
-                if (error_out) *error_out = "battle macro probe cancelled";
-                return false;
-            }
-            std::vector<phase::battle::macroprobe::MacroCommand> parsed;
-            std::string parse_error;
-            if (phase::battle::macroprobe::ParseCommandPlanSpec("attack:" + target_line, &parsed, &parse_error)) {
-                *command = parsed.front();
-                return true;
-            }
-            std::cout << "Enter a target slot from 4 through 11.\n";
-        }
-    }
-}
-
-bool PromptBattleMacroPlan(std::vector<phase::battle::macroprobe::MacroCommand>* commands, std::string* error_out) {
-    if (!IsInteractiveStdin()) {
-        if (error_out) *error_out = "battle_macro_probe requires --battle-plan or --battle-macro when stdin is not interactive";
-        return false;
-    }
-
-    std::cout << "Battle Macro Probe Plan\n";
-    std::vector<phase::battle::macroprobe::MacroCommand> plan;
-    plan.resize(2);
-    if (!PromptCommand(1, &plan[0], error_out)) return false;
-    if (!PromptCommand(2, &plan[1], error_out)) return false;
-
-    const std::string spec = phase::battle::macroprobe::FormatCommandPlanSpec(plan);
-    std::cout << "Plan: " << spec << "\n";
-    for (;;) {
-        std::string confirm;
-        if (!ReadPromptLine("Press Enter to dispatch, or type q to cancel: ", &confirm, error_out)) {
-            return false;
-        }
-        if (confirm.empty()) {
-            break;
-        }
-        if (confirm == "q" || confirm == "Q" || confirm == "cancel") {
-            if (error_out) *error_out = "battle macro probe cancelled";
-            return false;
-        }
-        std::cout << "Press Enter to dispatch, or type q to cancel.\n";
-    }
-
-    *commands = std::move(plan);
-    return true;
-}
-
 std::string TrimPromptValue(std::string value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
         value.erase(value.begin());
@@ -207,25 +137,116 @@ std::string TrimPromptValue(std::string value) {
     return value;
 }
 
-bool PromptBattleMacroSavestatePath(
+bool IsCancelInput(const std::string& value) {
+    const auto trimmed = TrimPromptValue(value);
+    return trimmed == "q" || trimmed == "Q" || trimmed == "cancel";
+}
+
+bool IsBackInput(const std::string& value) {
+    const auto trimmed = TrimPromptValue(value);
+    return trimmed == "b" || trimmed == "B" || trimmed == "back";
+}
+
+enum class PromptResult {
+    Done,
+    Back,
+    Cancel,
+};
+
+PromptResult PromptCommand(int character_index, phase::battle::macroprobe::MacroCommand* command, std::string* error_out) {
+    for (;;) {
+        std::string line;
+        if (!ReadPromptLine("Character " + std::to_string(character_index) + " command [block/focus/attack, b back, q cancel]: ", &line, error_out)) {
+            return PromptResult::Cancel;
+        }
+        if (IsCancelInput(line)) {
+            if (error_out) *error_out = "battle macro probe cancelled";
+            return PromptResult::Cancel;
+        }
+        if (IsBackInput(line)) {
+            return PromptResult::Back;
+        }
+        std::vector<phase::battle::macroprobe::MacroCommand> parsed_command;
+        if (!phase::battle::macroprobe::ParseCommandPlanSpec(line, &parsed_command, nullptr) || parsed_command.size() != 1) {
+            std::cout << "Enter block, focus, attack, b, or q.\n";
+            continue;
+        }
+        *command = parsed_command.front();
+        if (command->mode != phase::battle::macroprobe::MacroMode::Attack) {
+            return PromptResult::Done;
+        }
+
+        for (;;) {
+            std::string target_line;
+            if (!ReadPromptLine("Attack target slot [4..11, b back, q cancel]: ", &target_line, error_out)) {
+                return PromptResult::Cancel;
+            }
+            if (IsCancelInput(target_line)) {
+                if (error_out) *error_out = "battle macro probe cancelled";
+                return PromptResult::Cancel;
+            }
+            if (IsBackInput(target_line)) {
+                break;
+            }
+            std::vector<phase::battle::macroprobe::MacroCommand> parsed;
+            std::string parse_error;
+            if (phase::battle::macroprobe::ParseCommandPlanSpec("attack:" + target_line, &parsed, &parse_error)) {
+                *command = parsed.front();
+                return PromptResult::Done;
+            }
+            std::cout << "Enter a target slot from 4 through 11, b, or q.\n";
+        }
+    }
+}
+
+PromptResult PromptBattleMacroPlan(std::vector<phase::battle::macroprobe::MacroCommand>* commands, std::string* error_out) {
+    if (!IsInteractiveStdin()) {
+        if (error_out) *error_out = "battle_macro_probe requires --battle-plan or --battle-macro when stdin is not interactive";
+        return PromptResult::Cancel;
+    }
+
+    std::cout << "Battle Macro Probe Plan\n";
+    std::vector<phase::battle::macroprobe::MacroCommand> plan;
+    plan.resize(2);
+    int step = 0;
+    while (step < 2) {
+        const auto result = PromptCommand(step + 1, &plan[step], error_out);
+        if (result == PromptResult::Cancel) return PromptResult::Cancel;
+        if (result == PromptResult::Back) {
+            if (step == 0) return PromptResult::Back;
+            --step;
+            continue;
+        }
+        ++step;
+    }
+
+    *commands = std::move(plan);
+    return PromptResult::Done;
+}
+
+PromptResult PromptBattleMacroSavestatePath(
     const std::filesystem::path& default_path,
     std::filesystem::path* savestate_path,
     std::string* error_out) {
     if (!IsInteractiveStdin()) {
         if (error_out) *error_out = "battle_macro_probe requires --savestate-file when stdin is not interactive";
-        return false;
+        return PromptResult::Cancel;
     }
 
     for (;;) {
         std::string line;
-        if (!ReadPromptLine("Savestate path [Enter current, q cancel]\n  current: "
+        if (!ReadPromptLine("Savestate path [Enter current, b back, q cancel]\n  current: "
             + default_path.string() + "\n> ", &line, error_out)) {
-            return false;
+            return PromptResult::Cancel;
         }
         line = TrimPromptValue(std::move(line));
-        if (line == "q" || line == "Q" || line == "cancel") {
+        if (IsCancelInput(line)) {
             if (error_out) *error_out = "battle macro probe cancelled";
-            return false;
+            return PromptResult::Cancel;
+        }
+        if (IsBackInput(line)) {
+            std::cout << "Already at the first prompt.\n";
+            continue;
         }
 
         const auto candidate = line.empty() ? default_path : std::filesystem::path(line);
@@ -238,8 +259,124 @@ bool PromptBattleMacroSavestatePath(
             continue;
         }
         *savestate_path = candidate;
-        return true;
+        return PromptResult::Done;
     }
+}
+
+bool ParseObservationTailSeconds(const std::string& value, std::uint32_t* seconds_out) {
+    const auto trimmed = TrimPromptValue(value);
+    if (trimmed.empty()) return false;
+    std::uint32_t seconds = 0;
+    const char* first = trimmed.data();
+    const char* last = trimmed.data() + trimmed.size();
+    const auto result = std::from_chars(first, last, seconds);
+    if (result.ec != std::errc{} || result.ptr != last) return false;
+    if (seconds == 0 || seconds > kMaxObservationTailSeconds) return false;
+    if (seconds_out) *seconds_out = seconds;
+    return true;
+}
+
+PromptResult PromptBattleMacroObservationTailSeconds(
+    std::uint32_t default_seconds,
+    std::uint32_t* seconds_out,
+    std::string* error_out) {
+    if (!IsInteractiveStdin()) {
+        if (error_out) *error_out = "battle_macro_probe requires explicit battle plan arguments when stdin is not interactive";
+        return PromptResult::Cancel;
+    }
+
+    for (;;) {
+        std::string line;
+        if (!ReadPromptLine("Observation tail seconds [1..300, Enter current, b back, q cancel]\n  current: "
+            + std::to_string(default_seconds) + "\n> ", &line, error_out)) {
+            return PromptResult::Cancel;
+        }
+        line = TrimPromptValue(std::move(line));
+        if (IsCancelInput(line)) {
+            if (error_out) *error_out = "battle macro probe cancelled";
+            return PromptResult::Cancel;
+        }
+        if (IsBackInput(line)) {
+            return PromptResult::Back;
+        }
+        if (line.empty()) {
+            *seconds_out = default_seconds;
+            return PromptResult::Done;
+        }
+        std::uint32_t parsed = 0;
+        if (ParseObservationTailSeconds(line, &parsed)) {
+            *seconds_out = parsed;
+            return PromptResult::Done;
+        }
+        std::cout << "Enter an observation tail duration from 1 through "
+                  << kMaxObservationTailSeconds << " seconds.\n";
+    }
+}
+
+struct BattleMacroInteractiveDraft {
+    std::filesystem::path savestate_path;
+    std::vector<phase::battle::macroprobe::MacroCommand> commands;
+    std::uint32_t observation_tail_seconds{kDefaultObservationTailSeconds};
+};
+
+PromptResult PromptBattleMacroInteractiveDraft(
+    const std::filesystem::path& default_savestate_path,
+    std::uint32_t default_observation_tail_seconds,
+    BattleMacroInteractiveDraft* draft,
+    std::string* error_out) {
+    enum class Step {
+        Savestate,
+        Plan,
+        TailSeconds,
+        Done,
+    };
+
+    Step step = Step::Savestate;
+    std::filesystem::path savestate_path = default_savestate_path;
+    std::vector<phase::battle::macroprobe::MacroCommand> commands;
+    std::uint32_t observation_tail_seconds = default_observation_tail_seconds;
+
+    while (step != Step::Done) {
+        switch (step) {
+        case Step::Savestate: {
+            const auto result = PromptBattleMacroSavestatePath(savestate_path, &savestate_path, error_out);
+            if (result == PromptResult::Cancel) return PromptResult::Cancel;
+            step = Step::Plan;
+            break;
+        }
+        case Step::Plan: {
+            const auto result = PromptBattleMacroPlan(&commands, error_out);
+            if (result == PromptResult::Cancel) return PromptResult::Cancel;
+            if (result == PromptResult::Back) {
+                step = Step::Savestate;
+                break;
+            }
+            step = Step::TailSeconds;
+            break;
+        }
+        case Step::TailSeconds: {
+            std::cout << "Plan: " << phase::battle::macroprobe::FormatCommandPlanSpec(commands) << "\n";
+            const auto result = PromptBattleMacroObservationTailSeconds(
+                observation_tail_seconds,
+                &observation_tail_seconds,
+                error_out);
+            if (result == PromptResult::Cancel) return PromptResult::Cancel;
+            if (result == PromptResult::Back) {
+                step = Step::Plan;
+                break;
+            }
+            step = Step::Done;
+            break;
+        }
+        case Step::Done:
+            break;
+        }
+    }
+
+    draft->savestate_path = std::move(savestate_path);
+    draft->commands = std::move(commands);
+    draft->observation_tail_seconds = observation_tail_seconds;
+    return PromptResult::Done;
 }
 
 bool ResolveBattleMacroPlan(
@@ -261,19 +398,8 @@ bool ResolveBattleMacroPlan(
         return true;
     }
 
-    return PromptBattleMacroPlan(commands, error_out);
-}
-
-bool ResolveBattleMacroSavestatePath(
-    bool interactive_loop,
-    const std::filesystem::path& default_path,
-    std::filesystem::path* savestate_path,
-    std::string* error_out) {
-    if (!interactive_loop) {
-        *savestate_path = default_path;
-        return true;
-    }
-    return PromptBattleMacroSavestatePath(default_path, savestate_path, error_out);
+    const auto result = PromptBattleMacroPlan(commands, error_out);
+    return result == PromptResult::Done;
 }
 
 bool IsBattleMacroPromptCancel(const std::string& error) {
@@ -347,33 +473,45 @@ bool RunBattleMacroProbeScenario(
     std::uint64_t next_job_id = 1;
     std::uint64_t successful_runs = 0;
     std::filesystem::path current_savestate = options.savestate_file;
+    std::uint32_t current_observation_tail_seconds = kDefaultObservationTailSeconds;
     for (;;) {
         std::filesystem::path run_savestate;
-        std::string savestate_error;
-        if (!ResolveBattleMacroSavestatePath(interactive_loop, current_savestate, &run_savestate, &savestate_error)) {
-            stop_worker();
-            if (interactive_loop && successful_runs > 0 && IsBattleMacroPromptCancel(savestate_error)) {
-                durable_log.AppendLine("[battle-macro-probe-loop-end] reason=cancel successful_runs="
-                    + std::to_string(successful_runs));
-                return true;
+        std::vector<phase::battle::macroprobe::MacroCommand> commands;
+        std::uint32_t observation_tail_seconds = current_observation_tail_seconds;
+        if (interactive_loop) {
+            BattleMacroInteractiveDraft draft{};
+            std::string prompt_error;
+            const auto prompt_result = PromptBattleMacroInteractiveDraft(
+                current_savestate,
+                current_observation_tail_seconds,
+                &draft,
+                &prompt_error);
+            if (prompt_result != PromptResult::Done) {
+                stop_worker();
+                if (successful_runs > 0 && IsBattleMacroPromptCancel(prompt_error)) {
+                    durable_log.AppendLine("[battle-macro-probe-loop-end] reason=cancel successful_runs="
+                        + std::to_string(successful_runs));
+                    return true;
+                }
+                if (error_out) *error_out = prompt_error;
+                return false;
             }
-            if (error_out) *error_out = savestate_error;
-            return false;
+            run_savestate = std::move(draft.savestate_path);
+            commands = std::move(draft.commands);
+            observation_tail_seconds = draft.observation_tail_seconds;
+        } else {
+            run_savestate = current_savestate;
+            std::string prompt_error;
+            if (!ResolveBattleMacroPlan(options, &commands, &prompt_error)) {
+                stop_worker();
+                if (error_out) *error_out = prompt_error;
+                return false;
+            }
+            observation_tail_seconds = kDefaultObservationTailSeconds;
         }
         current_savestate = run_savestate;
-
-        std::vector<phase::battle::macroprobe::MacroCommand> commands;
-        std::string prompt_error;
-        if (!ResolveBattleMacroPlan(options, &commands, &prompt_error)) {
-            stop_worker();
-            if (interactive_loop && successful_runs > 0 && IsBattleMacroPromptCancel(prompt_error)) {
-                durable_log.AppendLine("[battle-macro-probe-loop-end] reason=cancel successful_runs="
-                    + std::to_string(successful_runs));
-                return true;
-            }
-            if (error_out) *error_out = prompt_error;
-            return false;
-        }
+        current_observation_tail_seconds = observation_tail_seconds;
+        const std::uint32_t observation_tail_ms = observation_tail_seconds * 1000u;
 
         phase::battle::macroprobe::FailureCode build_failure = phase::battle::macroprobe::FailureCode::Ok;
         const auto steps = phase::battle::macroprobe::BuildMacroPlanSteps(commands, kTransitionNeutralFrames, &build_failure);
@@ -391,6 +529,7 @@ bool RunBattleMacroProbeScenario(
             + " plan=" + plan_spec
             + " savestate=\"" + EscapeLogValue(run_savestate.string()) + "\""
             + " commands=" + std::to_string(commands.size())
+            + " observation_tail_seconds=" + std::to_string(observation_tail_seconds)
             + " transition_neutral_frames=" + std::to_string(kTransitionNeutralFrames)
             + " steps=" + std::to_string(steps.size())
             + " visual=" + (params.visual ? "true" : "false")
@@ -418,6 +557,7 @@ bool RunBattleMacroProbeScenario(
                 .transition_neutral_frames = kTransitionNeutralFrames,
                 .step_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms),
                 .vi_stall_ms = 5000,
+                .observation_tail_ms = observation_tail_ms,
             },
             payload);
         savor::PSJob job{};
@@ -442,7 +582,8 @@ bool RunBattleMacroProbeScenario(
             }
         };
 
-        const auto result_timeout_ms = options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3);
+        const auto result_timeout_ms = options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3)
+            + static_cast<std::int64_t>(observation_tail_ms);
         const auto deadline = Clock::now() + std::chrono::milliseconds(result_timeout_ms);
         savor::PRResult result{};
         bool have_result = false;

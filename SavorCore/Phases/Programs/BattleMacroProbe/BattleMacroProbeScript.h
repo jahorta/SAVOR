@@ -58,7 +58,7 @@ inline savor::PhaseScript MakeBattleMacroProbeProgram()
     ps.ops.push_back(savor::OpGoto(LabelClearTailResult));
     ps.ops.push_back(savor::OpLabel(LabelPostTurnReadyTail));
     ps.ops.push_back(savor::OpStepOpcode(true));
-    ps.ops.push_back(savor::OpSetTimeoutToMS(10000));
+    ps.ops.push_back(savor::OpSetTimeoutFromKey(savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS));
     ps.ops.push_back(savor::OpRunUntilBp());
     ps.ops.push_back(savor::OpLabel(LabelClearTailResult));
     ps.ops.push_back(savor::OpSetU32(savor::context::key::core::DW_RUN_OUTCOME_CODE, 0u));

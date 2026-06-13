@@ -447,11 +447,12 @@ bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out) {
     put_u32(out, spec.transition_neutral_frames);
     put_u32(out, spec.step_timeout_ms);
     put_u32(out, spec.vi_stall_ms);
+    put_u32(out, spec.observation_tail_ms);
     return true;
 }
 
 bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_ctx) {
-    if (in.size() < 1 + 4 * 5) return false;
+    if (in.size() < 1 + 4 * 6) return false;
 
     const std::uint8_t* p = in.data();
     const std::uint8_t* e = p + in.size();
@@ -463,6 +464,7 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     std::uint32_t transition_neutral_frames = 0;
     std::uint32_t step_timeout_ms = 0;
     std::uint32_t vi_stall_ms = 0;
+    std::uint32_t observation_tail_ms = 0;
     if (!get_u32(p, e, version) || version != PayloadVersion) return false;
     if (!get_u32(p, e, command_count)) return false;
     if (command_count == 0 || command_count > 16) return false;
@@ -483,12 +485,14 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     if (!get_u32(p, e, transition_neutral_frames)) return false;
     if (!get_u32(p, e, step_timeout_ms)) return false;
     if (!get_u32(p, e, vi_stall_ms)) return false;
+    if (!get_u32(p, e, observation_tail_ms)) return false;
     if (p != e) return false;
 
     out_ctx[savor::context::key::battle::MACRO_MODE] = static_cast<std::uint32_t>(commands.front().mode);
     out_ctx[savor::context::key::battle::MACRO_TARGET_SLOT] = commands.front().target_slot;
     out_ctx[savor::context::key::battle::MACRO_PLAN_BLOB] = SerializeCommandPlan(commands);
     out_ctx[savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES] = transition_neutral_frames;
+    out_ctx[savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS] = observation_tail_ms;
     out_ctx[savor::context::key::core::RUN_MS] = step_timeout_ms;
     out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
     savor::progress::ProgressDeets progress{ .poll_rate = 5000 };

@@ -202,6 +202,19 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         color: #ffffff;
         border: 1px solid #4e75dd;
     }
+    QPushButton#setupWarningButton {
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 0 12px;
+        font-weight: 700;
+        background-color: #8a4f12;
+        color: #fff5db;
+        border: 1px solid #d48a2d;
+    }
+    QPushButton#setupWarningButton:hover:!disabled {
+        background-color: #9b5d18;
+        border-color: #eba143;
+    }
     QToolButton#newEntityButton {
         min-width: 42px;
         min-height: 34px;

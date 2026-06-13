@@ -319,6 +319,7 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
             .transition_neutral_frames = 3,
             .step_timeout_ms = 10000,
             .vi_stall_ms = 5000,
+            .observation_tail_ms = 17000,
         },
         payload));
 
@@ -329,6 +330,9 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
     ASSERT_TRUE(ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags));
     EXPECT_NE(progress_flags & static_cast<std::uint32_t>(CoreProgressFlags::BattleProgress), 0u);
     EXPECT_NE(progress_flags & static_cast<std::uint32_t>(CoreProgressFlags::DontRecordHeartbeat), 0u);
+    std::uint32_t observation_tail_ms = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS, observation_tail_ms));
+    EXPECT_EQ(observation_tail_ms, 17000u);
 }
 
 TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
@@ -377,8 +381,8 @@ TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
     EXPECT_EQ(program.ops[9].code, savor::PSOpCode::LABEL);
     EXPECT_EQ(program.ops[10].code, savor::PSOpCode::STEP_OPCODE);
     EXPECT_EQ(program.ops[10].imm.v, 1u);
-    EXPECT_EQ(program.ops[11].code, savor::PSOpCode::SET_TIMEOUT);
-    EXPECT_EQ(program.ops[11].imm.v, 10000u);
+    EXPECT_EQ(program.ops[11].code, savor::PSOpCode::SET_TIMEOUT_FROM);
+    EXPECT_EQ(program.ops[11].key.id, savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS);
     EXPECT_EQ(program.ops[12].code, savor::PSOpCode::RUN_UNTIL_BP);
     EXPECT_EQ(program.ops[13].code, savor::PSOpCode::LABEL);
     EXPECT_EQ(program.ops[14].code, savor::PSOpCode::SET_U32);
