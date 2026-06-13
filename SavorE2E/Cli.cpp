@@ -9,6 +9,8 @@
 #include <sstream>
 #include <vector>
 
+#include "Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
+
 namespace savor::e2e {
 namespace {
 
@@ -16,6 +18,7 @@ constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
     "tasmovie",
     "seedprobe",
     "battle",
+    "battle_macro_probe",
     "tasmovie_seedprobe",
     "tasmovie_seedprobe_battle",
     "tasmovie_seedprobe_battle_override",
@@ -36,6 +39,9 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
         return {.requires_dtm_file = true};
     }
     if (scenario == "battle") {
+        return {.requires_savestate_file = true};
+    }
+    if (scenario == "battle_macro_probe") {
         return {.requires_savestate_file = true};
     }
     if (scenario == "tasmovie_seedprobe") {
@@ -306,13 +312,18 @@ void PrintUsage() {
               << " [--seedprobe-samples-per-axis <count>]"
               << " [--seedprobe-combo-attempts-per-target <count>]"
               << " [--battle-fake-attack-low <count>]"
-              << " [--battle-fake-attack-high <count>]\n\n";
+              << " [--battle-fake-attack-high <count>]"
+              << " [--battle-plan <block,focus|attack:4,block>]"
+              << " [--battle-macro attack|focus|block]"
+              << " [--battle-macro-target-slot <4..11>]"
+              << " [--battle-macro-debug]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
     std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
-    std::cout << "Visual worker locks worker count to 1.\n";
+    std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
     std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
+              << "battle_macro_probe, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
@@ -460,6 +471,29 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_int(arg.c_str(), &v)) return false;
             options.battle_fake_attack_high = v;
             fake_attack_high_explicit = true;
+        } else if (arg == "--battle-plan") {
+            std::string v;
+            if (!require_value("--battle-plan", &v)) return false;
+            std::vector<phase::battle::macroprobe::MacroCommand> commands;
+            std::string parse_error;
+            if (!phase::battle::macroprobe::ParseCommandPlanSpec(v, &commands, &parse_error)) {
+                if (error_out) *error_out = parse_error;
+                return false;
+            }
+            options.battle_macro_plan_spec = phase::battle::macroprobe::FormatCommandPlanSpec(commands);
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-macro") {
+            std::string v;
+            if (!require_value("--battle-macro", &v)) return false;
+            options.battle_macro_mode = LowerAscii(v);
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-macro-target-slot" || arg == "--target-slot") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_macro_target_slot = v;
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-macro-debug") {
+            options.battle_macro_debug = true;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -652,8 +686,20 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--battle-fake-attack-low must be <= --battle-fake-attack-high";
         return false;
     }
+    if (options.battle_macro_mode != "attack"
+        && options.battle_macro_mode != "focus"
+        && options.battle_macro_mode != "block"
+        && options.battle_macro_mode != "defend") {
+        if (error_out) *error_out = "--battle-macro must be attack, focus, or block";
+        return false;
+    }
+    if (options.battle_macro_target_slot.has_value()
+        && (*options.battle_macro_target_slot < 4 || *options.battle_macro_target_slot > 11)) {
+        if (error_out) *error_out = "--battle-macro-target-slot must be between 4 and 11";
+        return false;
+    }
 
-    if (options.visual_worker) {
+    if (options.visual_worker || options.battle_macro_debug) {
         options.worker_count = 1;
     }
 

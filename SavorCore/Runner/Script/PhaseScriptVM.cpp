@@ -1,6 +1,7 @@
 #include "PhaseScriptVM.h"
 #include <algorithm>
 
+#include "../../Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
 #include "../../Phases/Programs/BattleRunner/BattleRunnerPayload.h"
 #include "../../Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "../../Core/Memory/MemView.h"
@@ -147,6 +148,15 @@ namespace savor {
             const std::string_view name = savor::context::key::name_for_id(key);
             if (!name.empty()) return std::string(name);
             return std::to_string(static_cast<uint32_t>(key));
+        }
+
+        std::string bp_key_list_desc(const std::vector<BPKey>& keys) {
+            std::ostringstream out;
+            for (size_t i = 0; i < keys.size(); ++i) {
+                if (i != 0) out << ",";
+                out << static_cast<uint32_t>(keys[i]);
+            }
+            return out.str();
         }
     }
 
@@ -370,6 +380,224 @@ namespace savor {
         return true;
     }
     bool PhaseScriptVM::op_require_disc_gameid_from(const PSOp& op, PSResult&, PSContext& ctx) { std::string tmp; ctx.get<std::string>(op.key.id, tmp); if (tmp.size() < 6) return false; auto di = host_.getDiscInfo(); return di.has_value() && di->game_id.size() >= 6 && std::memcmp(di->game_id.data(), tmp.c_str(), 6) == 0; }
+    void PhaseScriptVM::op_execute_battle_macro_probe(PSContext& ctx) {
+        using phase::battle::macroprobe::BuildMacroPlanSteps;
+        using phase::battle::macroprobe::DeserializeCommandPlan;
+        using phase::battle::macroprobe::FailureCode;
+        using phase::battle::macroprobe::MacroCommand;
+        using phase::battle::macroprobe::MacroMode;
+        using phase::battle::macroprobe::MacroStep;
+
+        uint32_t raw_mode = 0;
+        uint32_t target_slot = 4;
+        uint32_t transition_neutral_frames = 3;
+        uint32_t timeout_ms = init_.default_timeout_ms;
+        uint32_t vi_stall_ms = 0;
+        std::string plan_blob;
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_MODE, raw_mode);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_TARGET_SLOT, target_slot);
+        ctx.get<std::string>(savor::context::key::battle::MACRO_PLAN_BLOB, plan_blob);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES, transition_neutral_frames);
+        ctx.get<uint32_t>(savor::context::key::core::RUN_MS, timeout_ms);
+        ctx.get<uint32_t>(savor::context::key::core::VI_STALL_MS, vi_stall_ms);
+
+        std::vector<MacroCommand> commands;
+        FailureCode build_failure = FailureCode::Ok;
+        if (!plan_blob.empty()) {
+            std::string parse_error;
+            if (!DeserializeCommandPlan(plan_blob, &commands, &parse_error)) {
+                build_failure = FailureCode::InvalidMode;
+                SCLOGW("[battle-macro-probe] invalid plan_blob='%s' error=%s", plan_blob.c_str(), parse_error.c_str());
+            }
+        } else {
+            commands.push_back(MacroCommand{.mode = static_cast<MacroMode>(raw_mode), .target_slot = target_slot});
+        }
+        const auto steps = build_failure == FailureCode::Ok
+            ? BuildMacroPlanSteps(commands, transition_neutral_frames, &build_failure)
+            : std::vector<MacroStep>{};
+        ctx[savor::context::key::battle::MACRO_RESULT] = 1u;
+        ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(build_failure);
+        ctx[savor::context::key::battle::MACRO_STEP_COUNT] = static_cast<uint32_t>(steps.size());
+        ctx[savor::context::key::battle::MACRO_LAST_STEP_INDEX] = 0u;
+        ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = 0u;
+        ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = 0u;
+        ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = 0u;
+
+        if (steps.empty() || build_failure != FailureCode::Ok) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            SCLOGW("[battle-macro-probe] invalid macro mode=%u target_slot=%u plan='%s' failure=%s",
+                raw_mode,
+                target_slot,
+                plan_blob.c_str(),
+                phase::battle::macroprobe::FailureCodeName(build_failure));
+            return;
+        }
+
+        const uint32_t poll_ms = host_.pickPollIntervalMs(timeout_ms);
+        uint32_t progress_flags = 0;
+        ctx.get<uint32_t>(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
+
+        const auto run_to_expected_bp = [&](const GCInputFrame& input, const std::vector<BPKey>& expected_bps, bool hold_input_through_hit_opcode = false) {
+            host_.setInput(input);
+            const uint32_t entry_pc = host_.getPC();
+            if (const BPAddr* entry_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, entry_pc)) {
+                SCLOGI("[battle-macro-probe-stepoff] pc=%08X bp=%u input_btn=%04X",
+                    entry_pc,
+                    static_cast<uint32_t>(entry_bp->key),
+                    input.buttons);
+                host_.setEnableAllBreakpoints(false);
+                (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
+                host_.setEnableAllBreakpoints(true);
+            }
+            host_.setEnableAllBreakpoints(false);
+            for (const auto expected_bp : expected_bps) {
+                if (const auto* e = bpmap_.find(expected_bp)) {
+                    host_.setEnableBreakpoint(e->pc, true);
+                }
+            }
+            run_until_bp_active_.store(true, std::memory_order_release);
+            host_.disableThrottle();
+            const auto rr = host_.runUntilBreakpointFlexible(timeout_ms, vi_stall_ms, false, poll_ms, progress_flags);
+            host_.enableThrottle();
+            run_until_bp_active_.store(false, std::memory_order_release);
+            if (rr.hit && hold_input_through_hit_opcode) {
+                SCLOGI("[battle-macro-probe-hold-through-hit] pc=%08X input_btn=%04X",
+                    static_cast<uint32_t>(rr.pc),
+                    input.buttons);
+                host_.setEnableAllBreakpoints(false);
+                (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
+                host_.setEnableAllBreakpoints(true);
+            }
+            GCInputFrame released_input = input;
+            released_input.buttons = static_cast<uint16_t>(released_input.buttons & ~input.buttons);
+            host_.setInput(released_input);
+            host_.setEnableAllBreakpoints(true);
+
+            const BPAddr* hit_bp = nullptr;
+            uint32_t hit_bp_key = 0;
+            if (rr.hit) {
+                hit_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, static_cast<uint32_t>(rr.pc));
+                if (hit_bp != nullptr) {
+                    hit_bp_key = static_cast<uint32_t>(hit_bp->key);
+                }
+            }
+
+            ctx[savor::context::key::core::RUN_HIT_PC] = rr.hit ? static_cast<uint32_t>(rr.pc) : 0u;
+            ctx[savor::context::key::core::RUN_HIT_BP_KEY] = hit_bp_key;
+            ctx[savor::context::key::core::VI_DELTA] = static_cast<uint32_t>(host_.getViFieldCountApproxFromBaseline() & 0xFFFFFFFFull);
+            ctx[savor::context::key::core::POLL_MS] = poll_ms;
+            ctx[savor::context::key::core::VI_LAST] = static_cast<uint32_t>(host_.getViFieldCountApprox() & 0xFFFFFFFFull);
+            ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = hit_bp_key;
+            ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = rr.hit ? static_cast<uint32_t>(rr.pc) : 0u;
+
+            const bool expected = hit_bp_key != 0
+                && std::find(expected_bps.begin(), expected_bps.end(), static_cast<BPKey>(hit_bp_key)) != expected_bps.end();
+            return std::pair<DolphinWrapper::RunUntilHitResult, bool>{rr, expected};
+        };
+
+        const uint32_t current_pc = host_.getPC();
+        const BPAddr* current_bp = find_hit_bp(bpmap_, canonical_bp_keys_, predicate_bp_keys_, current_pc);
+        const uint32_t current_bp_key = current_bp != nullptr ? static_cast<uint32_t>(current_bp->key) : 0u;
+        if (current_bp_key != static_cast<uint32_t>(bp::battle::TurnInputs)) {
+            ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = static_cast<uint32_t>(bp::battle::TurnInputs);
+            const auto [rr, expected] = run_to_expected_bp(GCInputFrame{}, {bp::battle::TurnInputs});
+            uint32_t preflight_hit_bp = 0;
+            ctx.get<uint32_t>(savor::context::key::battle::MACRO_LAST_HIT_BP, preflight_hit_bp);
+            SCLOGI("[battle-macro-probe-preflight] current_pc=%08X current_bp=%u expected=%u hit=%u hit_pc=%08X ok=%d",
+                current_pc,
+                current_bp_key,
+                static_cast<uint32_t>(bp::battle::TurnInputs),
+                preflight_hit_bp,
+                rr.hit ? static_cast<uint32_t>(rr.pc) : 0u,
+                expected ? 1 : 0);
+            if (!rr.hit) {
+                ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
+                ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
+                return;
+            }
+            if (!expected) {
+                ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+                ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
+                return;
+            }
+        }
+
+        ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = static_cast<uint32_t>(bp::battle::BattleMacroInputReadyGate);
+        const auto [ready_rr, ready_expected] = run_to_expected_bp(GCInputFrame{}, {bp::battle::BattleMacroInputReadyGate});
+        uint32_t ready_hit_bp = 0;
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_LAST_HIT_BP, ready_hit_bp);
+        SCLOGI("[battle-macro-probe-start-gate] expected=%u hit=%u hit_pc=%08X ok=%d",
+            static_cast<uint32_t>(bp::battle::BattleMacroInputReadyGate),
+            ready_hit_bp,
+            ready_rr.hit ? static_cast<uint32_t>(ready_rr.pc) : 0u,
+            ready_expected ? 1 : 0);
+        if (!ready_rr.hit) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
+            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
+            return;
+        }
+        if (!ready_expected) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
+            return;
+        }
+
+        for (uint32_t i = 0; i < static_cast<uint32_t>(steps.size()); ++i) {
+            const auto& step = steps[i];
+            const uint32_t expected_first = step.expected_bps.empty() ? 0u : static_cast<uint32_t>(step.expected_bps.front());
+            ctx[savor::context::key::battle::MACRO_LAST_STEP_INDEX] = i;
+            ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = expected_first;
+            ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = 0u;
+            ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = 0u;
+
+            if (step.kind == MacroStep::Kind::NeutralFrames) {
+                host_.setInput(GCInputFrame{});
+                host_.setEnableAllBreakpoints(false);
+                for (uint32_t frame = 0; frame < step.frame_count; ++frame) {
+                    host_.stepOneFrameBlocking();
+                }
+                host_.setEnableAllBreakpoints(true);
+                SCLOGI("[battle-macro-probe-step] index=%u label=%s neutral_frames=%u ok=1",
+                    i,
+                    step.label ? step.label : "",
+                    step.frame_count);
+                if (derived_) derived_->update_on_bp(0u, ctx, host_);
+                continue;
+            }
+
+            const auto [rr, expected] = run_to_expected_bp(
+                step.input,
+                step.expected_bps,
+                step.hold_input_through_hit_opcode);
+            uint32_t hit_bp_key = 0;
+            ctx.get<uint32_t>(savor::context::key::battle::MACRO_LAST_HIT_BP, hit_bp_key);
+
+            SCLOGI("[battle-macro-probe-step] index=%u label=%s expected=%s hit=%u hit_pc=%08X ok=%d",
+                i,
+                step.label ? step.label : "",
+                bp_key_list_desc(step.expected_bps).c_str(),
+                hit_bp_key,
+                rr.hit ? static_cast<uint32_t>(rr.pc) : 0u,
+                expected ? 1 : 0);
+
+            if (!rr.hit) {
+                ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
+                ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
+                return;
+            }
+            if (!expected) {
+                ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+                ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
+                return;
+            }
+            if (derived_) derived_->update_on_bp(hit_bp_key, ctx, host_);
+        }
+
+        ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Hit);
+        ctx[savor::context::key::battle::MACRO_RESULT] = 0u;
+        ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Ok);
+    }
+
     void PhaseScriptVM::op_build_turn_inputplan_from_battle_path(PSContext& ctx) const {
         uint32_t turn = 0;
         ctx.get<uint32_t>(savor::context::key::battle::ACTIVE_TURN, turn);
@@ -724,6 +952,7 @@ namespace savor {
             case PSOpCode::SET_U32: op_set_u32(op, ctx); break;
             case PSOpCode::ADD_U32: op_add_u32(op, ctx); break;
             case PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH: op_build_turn_inputplan_from_battle_path(ctx); break;
+            case PSOpCode::EXECUTE_BATTLE_MACRO_PROBE: op_execute_battle_macro_probe(ctx); break;
             case PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES: op_apply_battle_inputplan_frames(ctx); break;
             case PSOpCode::STEP_FRAMES: op_step_frames(op); break;
             case PSOpCode::STEP_OPCODE: op_step_opcode(op); break;
@@ -782,6 +1011,7 @@ namespace savor {
         case PSOpCode::SAVE_SAVESTATE_FROM: return { "Save Savestate" };
         case PSOpCode::REQUIRE_DISC_GAMEID_FROM: return { "Require Disc ID" };
         case PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH: return { "Build Turn Input From Actions" };
+        case PSOpCode::EXECUTE_BATTLE_MACRO_PROBE: return { "Execute Battle Macro Probe" };
         case PSOpCode::GET_BATTLE_CONTEXT: return { "Get Battle Context" };
         case PSOpCode::GC_SLOT_A_SET_FROM: return { "Set GC Memcard Slot A" };
         case PSOpCode::LABEL: return { "Set Label" };

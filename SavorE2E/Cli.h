@@ -88,6 +88,11 @@ struct CliOptions {
     std::optional<int> seedprobe_combo_attempts_per_target;
     std::optional<int> battle_fake_attack_low;
     std::optional<int> battle_fake_attack_high;
+    std::string battle_macro_mode = "attack";
+    std::optional<int> battle_macro_target_slot;
+    bool battle_macro_args_supplied = false;
+    std::optional<std::string> battle_macro_plan_spec;
+    bool battle_macro_debug = false;
     WorkerCoordinatorPerfAccumulator* worker_coordinator_perf = nullptr;
 };
 

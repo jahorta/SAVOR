@@ -28,7 +28,18 @@ namespace savor::context::key::battle {
   X(APPLIED_INPUTPLAN_TURN_BLOB,0x033F, "battle.inputplan.applied_turn_blob") \
   X(INPUT_PLAYBACK_ERR,       0x0340, "battle.input.playback_err") \
   X(INPUT_RETRY_COUNT,        0x0341, "battle.input.retry_count") \
-  X(INPUT_PLAYBACK_UNACKED,   0x0342, "battle.input.unacked_count")
+  X(INPUT_PLAYBACK_UNACKED,   0x0342, "battle.input.unacked_count") \
+  X(MACRO_MODE,               0x0343, "battle.macro.mode") \
+  X(MACRO_TARGET_SLOT,        0x0344, "battle.macro.target_slot") \
+  X(MACRO_RESULT,             0x0345, "battle.macro.result") \
+  X(MACRO_FAILURE_CODE,       0x0346, "battle.macro.failure_code") \
+  X(MACRO_STEP_COUNT,         0x0347, "battle.macro.step_count") \
+  X(MACRO_LAST_STEP_INDEX,    0x0348, "battle.macro.last_step_index") \
+  X(MACRO_LAST_EXPECTED_BP,   0x0349, "battle.macro.last_expected_bp") \
+  X(MACRO_LAST_HIT_BP,        0x034A, "battle.macro.last_hit_bp") \
+  X(MACRO_LAST_HIT_PC,        0x034B, "battle.macro.last_hit_pc") \
+  X(MACRO_PLAN_BLOB,          0x034C, "battle.macro.plan_blob") \
+  X(MACRO_TRANSITION_NEUTRAL_FRAMES,0x034D, "battle.macro.transition_neutral_frames")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
 static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");

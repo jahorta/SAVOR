@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "Cli.h"
+#include "BattleMacroProbeScenario.h"
 #include "BattleSingleTurnScenario.h"
 #include "Common/DbService.h"
 #include "Common/Performance/DbPerfReport.h"
@@ -65,6 +66,7 @@ int main(int argc, char** argv) {
         { "tasmovie", &RunTasMovieRealWorkerSmoke },
         { "tasmovie_seedprobe", &RunTasMovieSeedProbeRealWorkerSmoke },
         { "battle", &RunBattleSingleTurnRealWorkerScenario },
+        { "battle_macro_probe", &RunBattleMacroProbeScenario },
         { "tasmovie_seedprobe_battle", &RunTasMovieSeedProbeBattleWorkflowGraphRealWorkerScenario },
         { "tasmovie_seedprobe_battle_override", &RunTasMovieSeedProbeBattleOverrideWorkflowGraphRealWorkerScenario },
         { "tasmovie_battle", &RunTasMovieBattleWorkflowGraphRealWorkerScenario },

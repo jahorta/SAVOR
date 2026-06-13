@@ -58,6 +58,7 @@ namespace savor {
 		ADD_U32,                    // ctx[key] += imm
 		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
 		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
+		EXECUTE_BATTLE_MACRO_PROBE,
 		RECORD_TAS_INPUT_SAMPLE,
 		STEP_OPCODE
 	};
@@ -119,6 +120,7 @@ namespace savor {
 	inline PSOp OpAddU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpApplyPlanFrameFrom(savor::context::key::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
+	inline PSOp OpExecuteBattleMacroProbe() { PSOp o; o.code = PSOpCode::EXECUTE_BATTLE_MACRO_PROBE; return o; }
 	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
@@ -261,6 +263,7 @@ namespace savor {
 		void op_set_u32(const PSOp& op, PSContext& ctx) const;
 		void op_add_u32(const PSOp& op, PSContext& ctx) const;
 		void op_build_turn_inputplan_from_battle_path(PSContext& ctx) const;
+		void op_execute_battle_macro_probe(PSContext& ctx);
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);

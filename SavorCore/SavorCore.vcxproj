@@ -201,6 +201,8 @@
     <ClInclude Include="Phases\BattleExplorer.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
+    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
+    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbeScript.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h" />
@@ -269,6 +271,7 @@
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
     <ClCompile Include="Phases\BattleExplorer.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
+    <ClCompile Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
