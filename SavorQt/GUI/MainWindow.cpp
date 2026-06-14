@@ -284,7 +284,10 @@ void MainWindow::createWidgets()
     workspaceStack_->addWidget(new RunningTab(coordinatorController_, RunningTab::Actions{
         [this]() { openFocusedTool(FocusedTool::Workflows); },
         [this]() { openFocusedTool(FocusedTool::Jobs); },
-        [this]() { openFocusedTool(FocusedTool::Workers); }
+        [this]() { openFocusedTool(FocusedTool::Workers); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); }
     }, root));
     workspaceStack_->addWidget(new AnalysisTab(AnalysisTab::Actions{
         [this]() { openFocusedTool(FocusedTool::SeedProbe); },
