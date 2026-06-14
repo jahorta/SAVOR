@@ -1,5 +1,6 @@
 .vs/
 .codex/
+**/.codex-runs/
 /build*/
 /out*/
 /x64/
