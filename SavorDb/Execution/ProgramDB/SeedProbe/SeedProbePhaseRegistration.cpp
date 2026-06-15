@@ -1,5 +1,7 @@
 #include "SeedProbePhaseRegistration.h"
 
+#include <algorithm>
+
 namespace savor::db::execution::programdb::seedprobe {
 
 namespace {
@@ -14,6 +16,19 @@ const WorkflowGraphInputBinding* FindBinding(
         }
     }
     return nullptr;
+}
+
+std::optional<std::int64_t> FindIntegerArgument(
+    const WorkflowGraphStepScheduleContext& context,
+    std::string_view argument_key) {
+    for (const auto& argument : context.arguments) {
+        if (argument.argument_key == argument_key
+            && argument.value_type == "integer"
+            && argument.integer_value.has_value()) {
+            return *argument.integer_value;
+        }
+    }
+    return std::nullopt;
 }
 
 std::string ProbeFlavorForContext(const WorkflowGraphStepScheduleContext& context) {
@@ -109,11 +124,15 @@ public:
         }
 
         std::int64_t probe_run_id = 0;
+        const auto samples_per_axis = FindIntegerArgument(context, "samples_per_axis");
         if (!analysis_db_->RequestSeedProbeRun(
                 {
                     .probe_set_id = probe_set_id,
                     .entry_savestate_id = savestate->ref_id,
                     .seed_probe_spec_id = *node->authored_ref_id,
+                    .launch_samples_per_axis = samples_per_axis.has_value()
+                        ? static_cast<int>(std::clamp<std::int64_t>(*samples_per_axis, 1, 255))
+                        : 0,
                     .codec_version = 1,
                     .status = "queued",
                     .requested_at_utc = now,

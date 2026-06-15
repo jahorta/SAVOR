@@ -435,6 +435,45 @@ bool QueuedExecutionDb::RequeueExpiredExecutionLeases(
         error_out);
 }
 
+bool QueuedExecutionDb::RequeueExpiredClaimedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, rows_requeued_out, error_out]() {
+            return inner_ != nullptr ? inner_->RequeueExpiredClaimedExecutionJobs(rows_requeued_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueClaimedExecutionJob(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::string_view message,
+    std::string* error_out) {
+    const auto token = std::string(claimed_by_token);
+    const auto message_value = std::string(message);
+    return ExecuteWrite<bool>(
+        [this, job_id, token, message_value, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RequeueClaimedExecutionJob(job_id, token, message_value, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueInterruptedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, rows_requeued_out, error_out]() {
+            return inner_ != nullptr ? inner_->RequeueInterruptedExecutionJobs(rows_requeued_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
 std::optional<ExecutionJobRecord> QueuedExecutionDb::GetJob(std::int64_t job_id) const {
     return ExecuteRead<std::optional<ExecutionJobRecord>>(
         [this, job_id]() {

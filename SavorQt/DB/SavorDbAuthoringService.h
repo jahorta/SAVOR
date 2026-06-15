@@ -28,7 +28,6 @@ struct SeedProbeSpecDraft {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int samples_per_axis = 5;
     std::int64_t min_value = -128;
     std::int64_t max_value = 127;
     bool cap_trigger_top = false;
@@ -42,7 +41,6 @@ struct TasSpecDraft {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int headroom_x10 = 10;
     bool progress_enable = false;
     std::int64_t base_dtm_artifact_id = 0;
 };
@@ -108,11 +106,10 @@ struct BattleRunSpecDraft {
     bool progress_enable = false;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
-    int min_fake_attacks = 0;
-    int max_fake_attacks = 0;
 };
 
 struct PredicateSetDraft {
+    std::string name;
     std::vector<std::int64_t> predicate_spec_ids;
 };
 
@@ -186,17 +183,12 @@ public:
         if (draft.name.empty()) {
             return Invalid<std::int64_t>("seed probe spec name is required");
         }
-        if (draft.samples_per_axis <= 0) {
-            return Invalid<std::int64_t>("samples per axis must be positive");
-        }
-
         const auto now = savor::db::types::UtcNow();
         savor::db::SaveSeedProbeSpecCommand command{};
         command.name = draft.name;
         command.priority = draft.priority;
         command.run_ms = draft.run_ms;
         command.vi_stall_ms = draft.vi_stall_ms;
-        command.samples_per_axis = draft.samples_per_axis;
         command.min_value = draft.min_value;
         command.max_value = draft.max_value;
         command.cap_trigger_top = draft.cap_trigger_top;
@@ -249,7 +241,6 @@ public:
         command.priority = draft.priority;
         command.run_ms = draft.run_ms;
         command.vi_stall_ms = draft.vi_stall_ms;
-        command.headroom_x10 = draft.headroom_x10;
         command.progress_enable = draft.progress_enable;
         command.base_dtm_artifact_id = draft.base_dtm_artifact_id;
         command.created_at_utc = now;
@@ -393,8 +384,6 @@ public:
         command.progress_enable = draft.progress_enable;
         command.use_single_turn_runner = draft.use_single_turn_runner;
         command.auto_wave_trigger_enable = draft.auto_wave_trigger_enable;
-        command.min_fake_attacks = draft.min_fake_attacks;
-        command.max_fake_attacks = draft.max_fake_attacks;
         command.created_at_utc = now;
         command.correlation_id = NextEventId("Authoring.BattleRunSpecSaved");
 
@@ -601,11 +590,15 @@ public:
         if (db == nullptr) {
             return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
+        if (draft.name.empty()) {
+            return Invalid<std::int64_t>("predicate set name is required");
+        }
         if (draft.predicate_spec_ids.empty()) {
             return Invalid<std::int64_t>("predicate set requires at least one predicate");
         }
 
         savor::db::SavePredicateSetCommand command{};
+        command.name = draft.name;
         command.predicate_spec_ids = draft.predicate_spec_ids;
         command.created_at_utc = savor::db::types::UtcNow();
 

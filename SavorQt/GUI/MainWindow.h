@@ -3,6 +3,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QHash>
 #include <QtCore/QPointer>
+#include <QtCore/QPair>
 #include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
 
@@ -12,6 +13,7 @@
 #include "GUI/Panes/SettingsPane/SettingsPage.h"
 #include "GUI/Panes/DtmEditorPane/DtmEditorPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/AuthoringLibraryDialog.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Workspace/WorkspaceWidgets.h"
 
 class CoordinatorController;
@@ -86,6 +88,7 @@ private:
     CoordinatorPane* visualReplayHost_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;
     QTimer statusBarRefreshTimer_;
+    savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>* workspaceBadgeRefreshPipeline_ = nullptr;
     QDateTime lastCoordinatorRefresh_;
     QPointer<AuthoringLibraryDialog> authoringLibraryDialog_;
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;

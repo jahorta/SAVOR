@@ -68,6 +68,12 @@ struct ClaimJobsResult {
     std::string error_message;
 };
 
+struct ClaimLeaseMaintenanceResult {
+    std::size_t attempted = 0;
+    std::size_t renewed = 0;
+    std::size_t failed = 0;
+};
+
 class JobMaterializationService {
 public:
     using BuildJobPayloadFn = std::function<std::optional<savor::PSJob>(std::int64_t job_id, const WorkflowReadyStep&)>;
@@ -95,6 +101,7 @@ public:
         ClaimedJobRecord* job_out,
         std::string* error_out = nullptr) const;
     bool RequeueMaterializedJob(std::int64_t job_id);
+    ClaimLeaseMaintenanceResult RenewActiveClaimLeases(std::chrono::milliseconds lease_duration);
 
     std::vector<ClaimedJobRecord> ListByState(ClaimedJobLifecycleState state) const;
     bool MarkDispatched(std::int64_t job_id, std::chrono::steady_clock::time_point now);

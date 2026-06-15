@@ -84,6 +84,7 @@ bool UiOutboxRelayCoordinator::RelayExecutionOutbox(
         { { "Execution.JobSetCreated.v1", 1 }, project_jobs },
         { { "Execution.JobQueued.v1", 1 }, project_jobs },
         { { "Execution.JobClaimed.v1", 1 }, project_jobs_and_battles },
+        { { "Execution.JobStarted.v1", 1 }, project_jobs_and_battles },
         { { "Execution.JobLeaseRenewed.v1", 1 }, project_jobs_and_battles },
         { { "Execution.JobProgressed.v1", 1 }, project_jobs_and_battles },
         { { "Execution.JobCompleted.v1", 1 }, project_jobs_and_battles },

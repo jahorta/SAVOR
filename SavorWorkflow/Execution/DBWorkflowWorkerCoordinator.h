@@ -257,6 +257,7 @@ private:
     std::vector<DispatchableWorkerInfo> CollectDispatchableWorkers();
     void ReleaseWorkerByResult(const savor::PRResult& result);
     void PollReadyStepsFromDb();
+    void MaintainMaterializerClaims(std::chrono::steady_clock::time_point now);
     bool TryDequeueReadyStep(WorkflowReadyStep* step_out);
     std::string ReadyDedupKey(std::int64_t workflow_step_id) const;
     bool CompleteNoWorkWorkflowStep(const WorkflowReadyStep& step) const;
@@ -321,6 +322,7 @@ private:
     std::thread job_materializer_thread_;
     std::thread progress_drainer_thread_;
     std::thread results_drainer_thread_;
+    std::chrono::steady_clock::time_point last_claim_lease_maintenance_{};
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;

@@ -89,7 +89,6 @@ struct SaveSeedProbeSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int samples_per_axis = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -108,7 +107,6 @@ struct SeedProbeSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int samples_per_axis = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -148,7 +146,6 @@ struct SaveTasSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int headroom_x10 = 0;
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
@@ -164,7 +161,6 @@ struct TasSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int headroom_x10 = 0;
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
@@ -178,8 +174,6 @@ struct SaveBattleRunSpecCommand {
     bool progress_enable = false;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
-    int min_fake_attacks = 0;
-    int max_fake_attacks = 0;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
@@ -271,6 +265,7 @@ struct SaveExplorerSettingsCommand {
 };
 
 struct SavePredicateSetCommand {
+    std::string name;
     std::vector<std::int64_t> predicate_spec_ids;
     types::UtcTimePoint created_at_utc{};
 };
@@ -362,8 +357,6 @@ struct BattleRunSpecSnapshot {
     bool progress_enable = false;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
-    int min_fake_attacks = 0;
-    int max_fake_attacks = 0;
 };
 
 struct BattlePlanActionPresetSnapshot {
@@ -442,6 +435,7 @@ struct PredicateSpecUsageSnapshot {
 
 struct PredicateSetSnapshot {
     std::int64_t predicate_set_id = 0;
+    std::string name;
     std::vector<PredicateSpecSnapshot> predicates;
 };
 

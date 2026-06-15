@@ -2,9 +2,20 @@
 
 #include <charconv>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace savor::runner::parallel::savordb {
+namespace {
+constexpr std::string_view kWorkflowJobMaterializerToken = "workflow_job_materializer";
+
+bool IsMaterializerActiveClaimState(ClaimedJobLifecycleState state) {
+    return state == ClaimedJobLifecycleState::Claimed
+        || state == ClaimedJobLifecycleState::Materializing
+        || state == ClaimedJobLifecycleState::Materialized
+        || state == ClaimedJobLifecycleState::Dispatching;
+}
+}
 
 JobMaterializationService::JobMaterializationService(
     savor::db::IExecutionDb* execution_db,
@@ -43,7 +54,7 @@ ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
 
     std::string error;
     const auto claimed_jobs = execution_db->ClaimBatchReadyExecutionJobs(
-        "workflow_job_materializer",
+        kWorkflowJobMaterializerToken,
         static_cast<int>(max_claims),
         30000,
         &error);
@@ -252,7 +263,11 @@ bool JobMaterializationService::TrySelectMaterializedJobForWorker(
         }
         if (execution_db != nullptr) {
             const auto job_row = execution_db->GetJob(claimed_it->second.job_id);
-            if (job_row.has_value() && job_row->state != "QUEUED") {
+            const bool is_valid_materializer_claim = job_row.has_value()
+                && job_row->state == "CLAIMED"
+                && job_row->claimed_by_token.has_value()
+                && *job_row->claimed_by_token == kWorkflowJobMaterializerToken;
+            if (!is_valid_materializer_claim) {
                 claimed_jobs_.erase(claimed_it);
                 it = materialized_jobs_.erase(it);
                 continue;
@@ -367,6 +382,43 @@ bool JobMaterializationService::RequeueMaterializedJob(std::int64_t job_id) {
     it->second.state = ClaimedJobLifecycleState::Materialized;
     materialized_jobs_[std::to_string(job_id)] = it->second;
     return true;
+}
+
+ClaimLeaseMaintenanceResult JobMaterializationService::RenewActiveClaimLeases(std::chrono::milliseconds lease_duration) {
+    ClaimLeaseMaintenanceResult result{};
+    if (execution_db == nullptr || lease_duration.count() <= 0) {
+        return result;
+    }
+
+    std::vector<std::int64_t> job_ids;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        job_ids.reserve(claimed_jobs_.size());
+        for (const auto& [_, record] : claimed_jobs_) {
+            if (IsMaterializerActiveClaimState(record.state)) {
+                job_ids.push_back(record.job_id);
+            }
+        }
+    }
+
+    result.attempted = job_ids.size();
+    for (const auto job_id : job_ids) {
+        bool renewed = false;
+        std::string error;
+        if (!execution_db->RenewExecutionJobLease(
+                job_id,
+                kWorkflowJobMaterializerToken,
+                lease_duration.count(),
+                &renewed,
+                &error)) {
+            ++result.failed;
+            continue;
+        }
+        if (renewed) {
+            ++result.renewed;
+        }
+    }
+    return result;
 }
 
 std::vector<ClaimedJobRecord> JobMaterializationService::ListByState(ClaimedJobLifecycleState state) const {

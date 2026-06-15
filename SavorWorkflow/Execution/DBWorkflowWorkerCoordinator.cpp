@@ -487,6 +487,7 @@ void DBWorkflowWorkerCoordinator::Start() {
 
     stop_.store(false);
     job_materialization_service_.ResetForStart();
+    last_claim_lease_maintenance_ = {};
     no_jobs_available_.store(false);
     claim_attempt_count_.store(0);
     claimed_job_count_.store(0);
@@ -787,17 +788,18 @@ bool DBWorkflowWorkerCoordinator::DispatchClaimedJobToWorker(size_t worker_idx, 
         std::string error;
         if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
                 {
-                    .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobClaimed,
+                    .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobStarted,
                     .job_id = job_id,
                     .requested_by = "workflow_dispatch_coordinator",
                 },
                 &error)) {
             std::ostringstream line;
-            line << "[workflow-job-claim-persist-failed] job=" << job_id;
+            line << "[workflow-job-start-persist-failed] job=" << job_id;
             if (!error.empty()) {
                 line << " error=" << error;
             }
             EmitDurableEventLine(line.str());
+            return false;
         }
     }
     std::lock_guard<std::mutex> worker_lock(workers_mtx_);
@@ -875,7 +877,64 @@ void DBWorkflowWorkerCoordinator::HandlePayloadMaterializationFailures() {
                 << ";reason=build_payload returned empty";
         EmitWorkflowFailureEvents(failed_payload.step, "BuildClaimedPayload", message.str());
         MaybeTerminalFailStepInStrictSmokeMode(failed_payload.step, "workflow_payload_materialize_strict_smoke");
+        if (execution_db_ != nullptr) {
+            std::string error;
+            if (!execution_db_->RequeueClaimedExecutionJob(
+                    failed_payload.job_id,
+                    "workflow_job_materializer",
+                    "PAYLOAD_MATERIALIZATION_FAILED",
+                    &error)) {
+                std::ostringstream line;
+                line << "[seedprobe-payload-requeue-failed] job=" << failed_payload.job_id;
+                if (!error.empty()) {
+                    line << " error=" << error;
+                }
+                EmitDurableEventLine(line.str());
+            }
+        }
         (void)job_materialization_service_.AbandonClaim(failed_payload.job_id);
+    }
+}
+
+void DBWorkflowWorkerCoordinator::MaintainMaterializerClaims(std::chrono::steady_clock::time_point now) {
+    constexpr auto kLeaseMaintenanceCadence = std::chrono::seconds(10);
+    constexpr auto kLeaseDuration = std::chrono::seconds(30);
+
+    if (last_claim_lease_maintenance_ != std::chrono::steady_clock::time_point{}
+        && now - last_claim_lease_maintenance_ < kLeaseMaintenanceCadence) {
+        return;
+    }
+    last_claim_lease_maintenance_ = now;
+
+    const auto renewed = job_materialization_service_.RenewActiveClaimLeases(
+        std::chrono::duration_cast<std::chrono::milliseconds>(kLeaseDuration));
+    if (renewed.attempted > 0 || renewed.failed > 0) {
+        std::ostringstream line;
+        line << "[workflow-claim-lease-renew] attempted=" << renewed.attempted
+             << " renewed=" << renewed.renewed
+             << " failed=" << renewed.failed;
+        EmitDurableEventLine(line.str());
+    }
+
+    if (execution_db_ == nullptr) {
+        return;
+    }
+
+    int rows_requeued = 0;
+    std::string error;
+    if (!execution_db_->RequeueExpiredClaimedExecutionJobs(&rows_requeued, &error)) {
+        std::ostringstream line;
+        line << "[workflow-claim-recovery-failed]";
+        if (!error.empty()) {
+            line << " error=" << error;
+        }
+        EmitDurableEventLine(line.str());
+        return;
+    }
+    if (rows_requeued > 0) {
+        std::ostringstream line;
+        line << "[workflow-claim-recovery] requeued=" << rows_requeued;
+        EmitDurableEventLine(line.str());
     }
 }
 
@@ -1257,6 +1316,7 @@ void DBWorkflowWorkerCoordinator::WorkerJobCoordinatorLoop() {
         }
 
         const auto now = std::chrono::steady_clock::now();
+        MaintainMaterializerClaims(now);
         const auto worker_target = ActiveWorkerCount();
         const auto buffered = job_materialization_service_.CountBufferedJobs();
         const auto materialized_before_claim = job_materialization_service_.CountMaterializedJobs();

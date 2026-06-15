@@ -47,6 +47,8 @@ struct JobIni {
     std::int64_t battle_chain_spec_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    int fake_attack_min = 0;
+    int fake_attack_max = 0;
 
     void set_section(IniDoc& ini) const {
         ini.set(kJobSection, "context_probe_id", std::to_string(context_probe_id));
@@ -59,6 +61,8 @@ struct JobIni {
         ini.set(kJobSection, "battle_chain_spec_id", std::to_string(battle_chain_spec_id));
         ini.set(kJobSection, "battle_run_spec_id", std::to_string(battle_run_spec_id));
         ini.set(kJobSection, "explorer_settings_id", std::to_string(explorer_settings_id));
+        ini.set(kJobSection, "fake_attack_min", std::to_string(fake_attack_min));
+        ini.set(kJobSection, "fake_attack_max", std::to_string(fake_attack_max));
     }
 
     static JobIni parse(const std::string& text) {
@@ -74,6 +78,8 @@ struct JobIni {
         out.battle_chain_spec_id = ini.get_i64(kJobSection, "battle_chain_spec_id", 0);
         out.battle_run_spec_id = ini.get_i64(kJobSection, "battle_run_spec_id", 0);
         out.explorer_settings_id = ini.get_i64(kJobSection, "explorer_settings_id", 0);
+        out.fake_attack_min = static_cast<int>(ini.get_i64(kJobSection, "fake_attack_min", 0));
+        out.fake_attack_max = static_cast<int>(ini.get_i64(kJobSection, "fake_attack_max", 0));
         return out;
     }
 };
@@ -554,6 +560,8 @@ public:
                         .entry_savestate_id = job_ini.source_savestate_id,
                         .battle_run_spec_id = job_ini.battle_run_spec_id,
                         .explorer_settings_id = job_ini.explorer_settings_id,
+                        .launch_fake_attack_min = job_ini.fake_attack_min,
+                        .launch_fake_attack_max = job_ini.fake_attack_max,
                         .status = savor::db::BattleSetStatus::Active,
                         .created_at_utc = now,
                         .correlation_id = "workflow-battle-" + aggregate,
@@ -841,68 +849,22 @@ std::vector<InputSetCandidate> ResolveInputSetCandidates(
     return out;
 }
 
-std::int64_t ResolveEffectiveBattleRunSpecId(
-    savor::db::IAuthoringDb* authoring_db,
-    const savor::db::BattleRunSpecSnapshot& base_run_spec,
+std::pair<int, int> ResolveFakeAttackRange(
     const WorkflowGraphStepScheduleContext& context,
     std::vector<std::string>* event_lines) {
     const auto min_override = FindIntegerArgument(context, "fake_attack_min");
     const auto max_override = FindIntegerArgument(context, "fake_attack_max");
-    if (!min_override.has_value() && !max_override.has_value()) {
-        return base_run_spec.battle_run_spec_id;
-    }
-
-    const auto min_fake = static_cast<int>(min_override.value_or(base_run_spec.min_fake_attacks));
-    const auto max_fake = static_cast<int>(max_override.value_or(base_run_spec.max_fake_attacks));
-    if (min_fake == base_run_spec.min_fake_attacks && max_fake == base_run_spec.max_fake_attacks) {
-        return base_run_spec.battle_run_spec_id;
-    }
-    if (authoring_db == nullptr) {
-        if (event_lines != nullptr) {
-            event_lines->push_back("[workflow-graph-battle-effective-run-spec] ok=false error=authoring_db_unavailable");
-        }
-        return 0;
-    }
-
-    const auto now = savor::db::types::UtcNow();
-    const auto suffix = std::to_string(context.workflow_instance_id)
-        + "-" + std::to_string(context.workflow_step_id)
-        + "-" + std::to_string(now.time_since_epoch().count());
-    std::int64_t effective_id = 0;
-    std::string error;
-    if (!authoring_db->SaveBattleRunSpec(
-            {
-                .name = base_run_spec.name + " effective " + suffix,
-                .priority = base_run_spec.priority,
-                .run_ms = base_run_spec.run_ms,
-                .vi_stall_ms = base_run_spec.vi_stall_ms,
-                .progress_enable = base_run_spec.progress_enable,
-                .use_single_turn_runner = base_run_spec.use_single_turn_runner,
-                .auto_wave_trigger_enable = base_run_spec.auto_wave_trigger_enable,
-                .min_fake_attacks = min_fake,
-                .max_fake_attacks = max_fake,
-                .created_at_utc = now,
-                .correlation_id = "workflow-instance-" + std::to_string(context.workflow_instance_id),
-                .causation_id = "battle-run-spec-" + std::to_string(base_run_spec.battle_run_spec_id),
-            },
-            &effective_id,
-            &error)
-        || effective_id <= 0) {
-        if (event_lines != nullptr) {
-            event_lines->push_back("[workflow-graph-battle-effective-run-spec] ok=false error=" + error);
-        }
-        return 0;
-    }
+    const auto min_fake = static_cast<int>(min_override.value_or(0));
+    const auto max_fake = static_cast<int>(max_override.value_or(min_fake));
+    const auto low = std::min(min_fake, max_fake);
+    const auto high = std::max(min_fake, max_fake);
 
     if (event_lines != nullptr) {
         event_lines->push_back(
-            "[workflow-graph-battle-effective-run-spec] base_battle_run_spec_id="
-            + std::to_string(base_run_spec.battle_run_spec_id)
-            + " effective_battle_run_spec_id=" + std::to_string(effective_id)
-            + " fake_attack_min=" + std::to_string(min_fake)
-            + " fake_attack_max=" + std::to_string(max_fake));
+            "[workflow-graph-battle-fake-range] fake_attack_min=" + std::to_string(low)
+            + " fake_attack_max=" + std::to_string(high));
     }
-    return effective_id;
+    return { low, high };
 }
 
 class BattleChainGraphJobPersistenceAdapter final : public IWorkflowGraphJobPersistenceAdapter {
@@ -982,14 +944,7 @@ public:
         scheduled.persistence.fingerprint = "battle.chain.input_set." + input_frames->ref_kind + "." + std::to_string(input_frames->ref_id)
             + ".battle_chain_spec." + std::to_string(*node->authored_ref_id);
 
-        const auto effective_battle_run_spec_id = ResolveEffectiveBattleRunSpecId(
-            authoring_db_,
-            *battle_chain_run_spec,
-            context,
-            &scheduled.event_lines);
-        if (effective_battle_run_spec_id <= 0) {
-            return scheduled;
-        }
+        const auto [fake_attack_min, fake_attack_max] = ResolveFakeAttackRange(context, &scheduled.event_lines);
 
         std::int64_t job_set_id = 0;
         if (!execution_db_->CreateJobSet(
@@ -1017,8 +972,10 @@ public:
         job_ini.input_set_ref_kind = input_frames->ref_kind;
         job_ini.input_set_ref_id = input_frames->ref_id;
         job_ini.battle_chain_spec_id = *node->authored_ref_id;
-        job_ini.battle_run_spec_id = effective_battle_run_spec_id;
+        job_ini.battle_run_spec_id = battle_chain_run_spec->battle_run_spec_id;
         job_ini.explorer_settings_id = battle_chain_spec->explorer_settings_id;
+        job_ini.fake_attack_min = fake_attack_min;
+        job_ini.fake_attack_max = fake_attack_max;
 
         std::int64_t exec_job_id = 0;
         if (!execution_db_->EnqueueJob(
@@ -1050,7 +1007,9 @@ public:
             + " input_set_ref_id=" + std::to_string(input_frames->ref_id)
             + " input_count=" + std::to_string(input_set_candidates.size())
             + " battle_chain_spec_id=" + std::to_string(*node->authored_ref_id)
-            + " battle_run_spec_id=" + std::to_string(effective_battle_run_spec_id)
+            + " battle_run_spec_id=" + std::to_string(job_ini.battle_run_spec_id)
+            + " fake_attack_min=" + std::to_string(job_ini.fake_attack_min)
+            + " fake_attack_max=" + std::to_string(job_ini.fake_attack_max)
             + " job=" + std::to_string(exec_job_id));
         return scheduled;
     }

@@ -164,49 +164,82 @@ SeedProbeController::SeedProbeController(QObject* parent)
     loadSettings();
     syncFetchStateFromView();
 
-    connect(&pageWatcher_, &QFutureWatcher<ListBundleResult>::finished, this, [this]() {
-        const bool shouldRefetch = pendingPageFetch_;
-        pendingPageFetch_ = false;
-        try {
-            const auto result = pageWatcher_.result();
-            pageInFlight_ = false;
-            state_.loadingList = false;
-            if (result.ok) {
-                state_.page = result.value.page;
-                state_.probeRows = result.value.rows;
-                state_.lastRefresh = QDateTime::currentDateTime();
-                state_.errorMessage.clear();
-                state_.infoMessage.clear();
+    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<ListFetchRequest, ListBundleResult>(this);
+    pageRefreshPipeline_->setAutoRefreshEnabled(false);
+    pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<ListFetchRequest> {
+        pageInFlight_ = true;
+        state_.loadingList = true;
+        state_.errorMessage.clear();
+        UiReadSeedProbeRunListQuery query;
+        query.before = before_;
+        query.after = after_;
+        query.limit = fetchPageLimit_;
+        query.search = fetchSearch_.toStdString();
+        query.only_completed = fetchOnlyDone_;
+        emitStateChanged();
+        return ListFetchRequest{ query };
+    });
+    pageRefreshPipeline_->setLoadAndPrepare([](ListFetchRequest request) {
+        auto* uiReadDb = savorqt::SavorDbRuntime::instance().uiReadDb();
+        if (uiReadDb == nullptr) {
+            ListBundleResult result;
+            result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
+            return savorqt::gui::AsyncRefreshResult<ListBundleResult>::Ok(result);
+        }
 
-                bool found = false;
-                for (const ProbeSummary& row : state_.probeRows) {
-                    if (row.probeId == state_.selectedProbeId) {
-                        found = true;
-                        break;
-                    }
+        ListBundle bundle{};
+        bundle.page = uiReadDb->ListSeedProbeRuns(request.query);
+        bundle.rows.reserve(static_cast<int>(bundle.page.items.size()));
+        for (const UiSeedProbeRunSummary& item : bundle.page.items) {
+            ProbeSummary row{};
+            row.probeId = item.probe_run_id;
+            row.status = QString::fromStdString(item.status);
+            row.savestateId = item.entry_savestate_id;
+            row.filename = resolveSavestateLabel(row.probeId, row.savestateId);
+            bundle.rows.push_back(row);
+        }
+        ListBundleResult result;
+        result.ok = true;
+        result.value = std::move(bundle);
+        return savorqt::gui::AsyncRefreshResult<ListBundleResult>::Ok(result);
+    });
+    pageRefreshPipeline_->setApply([this](const ListBundleResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        pageInFlight_ = false;
+        state_.loadingList = false;
+        if (result.ok) {
+            state_.page = result.value.page;
+            state_.probeRows = result.value.rows;
+            state_.lastRefresh = QDateTime::currentDateTime();
+            state_.errorMessage.clear();
+            state_.infoMessage.clear();
+
+            bool found = false;
+            for (const ProbeSummary& row : state_.probeRows) {
+                if (row.probeId == state_.selectedProbeId) {
+                    found = true;
+                    break;
                 }
-                if (!found) {
-                    state_.selectedProbeId = state_.probeRows.isEmpty() ? 0 : state_.probeRows.front().probeId;
-                }
-                if (state_.selectedProbeId > 0) {
-                    kickDetailFetch(state_.selectedProbeId);
-                }
-            } else {
-                state_.page = {};
-                state_.probeRows.clear();
-                state_.errorMessage = QStringLiteral("Seed probes failed: %1").arg(result.errorMessage);
             }
-        } catch (...) {
-            pageInFlight_ = false;
-            state_.loadingList = false;
+            if (!found) {
+                state_.selectedProbeId = state_.probeRows.isEmpty() ? 0 : state_.probeRows.front().probeId;
+            }
+            if (state_.selectedProbeId > 0) {
+                kickDetailFetch(state_.selectedProbeId);
+            }
+        } else {
             state_.page = {};
             state_.probeRows.clear();
-            state_.errorMessage = describeException("Seed probes failed");
+            state_.errorMessage = QStringLiteral("Seed probes failed: %1").arg(result.errorMessage);
         }
         emitStateChanged();
-        if (shouldRefetch) {
-            kickPageFetch();
-        }
+    });
+    pageRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        pageInFlight_ = false;
+        state_.loadingList = false;
+        state_.page = {};
+        state_.probeRows.clear();
+        state_.errorMessage = error;
+        emitStateChanged();
     });
 
     connect(&runningRefreshWatcher_, &QFutureWatcher<RunningProbeUpdateResult>::finished, this, [this]() {
@@ -458,48 +491,9 @@ void SeedProbeController::selectProbe(qint64 probeId)
 
 void SeedProbeController::kickPageFetch()
 {
-    if (pageInFlight_) {
-        pendingPageFetch_ = true;
-        return;
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-
-    pendingPageFetch_ = false;
-    pageInFlight_ = true;
-    state_.loadingList = true;
-    state_.errorMessage.clear();
-
-    UiReadSeedProbeRunListQuery query;
-    query.before = before_;
-    query.after = after_;
-    query.limit = fetchPageLimit_;
-    query.search = fetchSearch_.toStdString();
-    query.only_completed = fetchOnlyDone_;
-
-    pageWatcher_.setFuture(runAsyncFetch([query]() -> ListBundleResult {
-        auto* uiReadDb = savorqt::SavorDbRuntime::instance().uiReadDb();
-        if (uiReadDb == nullptr) {
-            ListBundleResult result;
-            result.errorMessage = QString::fromUtf8(kDataSourceUnavailableMessage);
-            return result;
-        }
-
-        ListBundle bundle{};
-        bundle.page = uiReadDb->ListSeedProbeRuns(query);
-        bundle.rows.reserve(static_cast<int>(bundle.page.items.size()));
-        for (const UiSeedProbeRunSummary& item : bundle.page.items) {
-            ProbeSummary row{};
-            row.probeId = item.probe_run_id;
-            row.status = QString::fromStdString(item.status);
-            row.savestateId = item.entry_savestate_id;
-            row.filename = resolveSavestateLabel(row.probeId, row.savestateId);
-            bundle.rows.push_back(row);
-        }
-        ListBundleResult result;
-        result.ok = true;
-        result.value = std::move(bundle);
-        return result;
-    }));
-    emitStateChanged();
 }
 
 void SeedProbeController::kickDetailFetch(qint64 probeId, bool force)

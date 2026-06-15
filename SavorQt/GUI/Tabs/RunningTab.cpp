@@ -4,13 +4,14 @@
 #include "DB/SavorDbJobService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/RowUpdate.h"
 #include "Worker/WorkerTelemetry.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
-#include <QtCore/QTimer>
 #include <QtCore/QTimeZone>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QFrame>
@@ -21,6 +22,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSizePolicy>
+#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QVBoxLayout>
@@ -44,6 +46,102 @@ struct JobBuckets {
     std::vector<savor::db::UiJobSummary> running;
     std::vector<savor::db::UiJobSummary> failed;
     std::vector<savor::db::UiJobSummary> terminal;
+};
+
+struct RunningRefreshRequest {
+    bool controllerAvailable = false;
+    QString validation;
+    bool isoReady = true;
+    bool dolphinReady = true;
+    bool isoMissing = false;
+    bool dolphinMissing = false;
+    bool coordinatorRunning = false;
+    bool coordinatorPaused = false;
+    int activeWorkers = 0;
+    int targetWorkers = 1;
+    std::vector<WorkerSnapshot> workers;
+};
+
+struct RunningWorkflowRow {
+    qint64 workflowInstanceId = 0;
+    QString workflow;
+    QString kind;
+    QString state;
+    QString problems;
+    QString created;
+    QString completed;
+};
+
+struct RunningWorkerRow {
+    qint64 workerId = 0;
+    QString state;
+    QString job;
+    QString kind;
+    QString status;
+};
+
+struct QueueRowData {
+    qint64 jobId = 0;
+    QString title;
+    QString state;
+    QString timing;
+    QString problem;
+    bool showProblem = false;
+};
+
+struct QueueBucketData {
+    QString title;
+    std::vector<QueueRowData> rows;
+    int totalCount = 0;
+};
+
+enum class AttentionRoute {
+    None,
+    CoordinatorSettings,
+    Workflows,
+    Jobs,
+    Workers,
+    StartCoordinator,
+};
+
+struct AttentionItemData {
+    QString title;
+    QString detail;
+    QString buttonText;
+    AttentionRoute route = AttentionRoute::None;
+};
+
+struct RunningRefreshData {
+    bool workflowsOk = false;
+    bool jobsOk = false;
+    QString workflowError;
+    QString jobError;
+    QString coordinatorText;
+    QString workersText;
+    QString queueText;
+    QString runningText;
+    QString failuresText;
+    QString lastRefreshText;
+    QString workflowSummary;
+    QString queueSummary;
+    QString workerSummary;
+    QString attentionSummary;
+    bool controllerAvailable = false;
+    bool hasValidation = false;
+    QString validation;
+    bool coordinatorRunning = false;
+    bool coordinatorPaused = false;
+    bool isoReady = true;
+    bool dolphinReady = true;
+    bool isoMissing = false;
+    bool dolphinMissing = false;
+    int targetWorkers = 1;
+    int failedWorkflows = 0;
+    int failedJobs = 0;
+    std::vector<RunningWorkflowRow> workflowRows;
+    std::vector<RunningWorkerRow> workerRows;
+    std::vector<QueueBucketData> queueBuckets;
+    std::vector<AttentionItemData> attentionItems;
 };
 
 QString qs(const std::string& value)
@@ -311,6 +409,34 @@ QFrame* createQueueRow(const savor::db::UiJobSummary& job, QWidget* parent)
     return row;
 }
 
+QFrame* createQueueRow(const QueueRowData& rowData, QWidget* parent)
+{
+    auto* row = new QFrame(parent);
+    row->setObjectName("workspaceInfoPanel");
+    auto* layout = new QGridLayout(row);
+    layout->setContentsMargins(10, 8, 10, 8);
+    layout->setHorizontalSpacing(8);
+    layout->setVerticalSpacing(2);
+
+    auto* title = new QLabel(rowData.title, row);
+    title->setObjectName("panelTitle");
+    auto* state = new QLabel(rowData.state, row);
+    state->setObjectName("sectionDescription");
+    auto* timing = new QLabel(rowData.timing, row);
+    timing->setObjectName("sectionDescription");
+    auto* problem = new QLabel(rowData.problem, row);
+    problem->setObjectName("sectionDescription");
+    problem->setWordWrap(true);
+
+    layout->addWidget(title, 0, 0, 1, 2);
+    layout->addWidget(state, 1, 0);
+    layout->addWidget(timing, 1, 1);
+    if (rowData.showProblem) {
+        layout->addWidget(problem, 2, 0, 1, 2);
+    }
+    return row;
+}
+
 void addQueueBucket(
     QVBoxLayout* layout,
     const QString& title,
@@ -332,6 +458,29 @@ void addQueueBucket(
     const int rowCount = (std::min)(maxRows, static_cast<int>(jobs.size()));
     for (int i = 0; i < rowCount; ++i) {
         layout->addWidget(createQueueRow(jobs[static_cast<std::size_t>(i)], parent));
+    }
+}
+
+void addQueueBucket(
+    QVBoxLayout* layout,
+    const QueueBucketData& bucket,
+    int maxRows,
+    QWidget* parent)
+{
+    auto* bucketTitle = new QLabel(QStringLiteral("%1  %2").arg(bucket.title).arg(bucket.totalCount), parent);
+    bucketTitle->setObjectName("panelTitle");
+    layout->addWidget(bucketTitle);
+
+    if (bucket.rows.empty()) {
+        auto* empty = new QLabel(QStringLiteral("None sampled."), parent);
+        empty->setObjectName("sectionDescription");
+        layout->addWidget(empty);
+        return;
+    }
+
+    const int rowCount = (std::min)(maxRows, static_cast<int>(bucket.rows.size()));
+    for (int i = 0; i < rowCount; ++i) {
+        layout->addWidget(createQueueRow(bucket.rows[static_cast<std::size_t>(i)], parent));
     }
 }
 
@@ -397,6 +546,262 @@ bool coordinatorDolphinBaseReady(const CoordinatorController* controller)
         && QFileInfo(dolphinDir.filePath(QStringLiteral("Sys/GC/dsp_coef.bin"))).isFile();
 }
 
+bool runningWorkflowRowsEqual(const RunningWorkflowRow& lhs, const RunningWorkflowRow& rhs)
+{
+    return lhs.workflowInstanceId == rhs.workflowInstanceId
+        && lhs.workflow == rhs.workflow
+        && lhs.kind == rhs.kind
+        && lhs.state == rhs.state
+        && lhs.problems == rhs.problems
+        && lhs.created == rhs.created
+        && lhs.completed == rhs.completed;
+}
+
+bool runningWorkerRowsEqual(const RunningWorkerRow& lhs, const RunningWorkerRow& rhs)
+{
+    return lhs.workerId == rhs.workerId
+        && lhs.state == rhs.state
+        && lhs.job == rhs.job
+        && lhs.kind == rhs.kind
+        && lhs.status == rhs.status;
+}
+
+void populateRunningWorkflowRow(QTableWidget* table, int row, const RunningWorkflowRow& workflow)
+{
+    table->setItem(row, 0, createTableItem(workflow.workflow));
+    table->setItem(row, 1, createTableItem(workflow.kind));
+    table->setItem(row, 2, createTableItem(workflow.state));
+    table->setItem(row, 3, createTableItem(workflow.problems));
+    table->setItem(row, 4, createTableItem(workflow.created));
+    table->setItem(row, 5, createTableItem(workflow.completed));
+}
+
+void populateRunningWorkerRow(QTableWidget* table, int row, const RunningWorkerRow& worker)
+{
+    table->setItem(row, 0, createTableItem(QStringLiteral("#%1").arg(worker.workerId)));
+    table->setItem(row, 1, createTableItem(worker.state));
+    table->setItem(row, 2, createTableItem(worker.job));
+    table->setItem(row, 3, createTableItem(worker.kind));
+    table->setItem(row, 4, createTableItem(worker.status));
+}
+
+QueueRowData prepareQueueRow(const savor::db::UiJobSummary& job)
+{
+    return QueueRowData{
+        job.job_id,
+        QStringLiteral("#%1  %2").arg(job.job_id).arg(programKindName(job.program_kind)),
+        QStringLiteral("%1  attempt %2/%3").arg(qs(job.state)).arg(job.attempts).arg(job.max_attempts),
+        QStringLiteral("Queued %1").arg(formatTime(job.queued_at_utc)),
+        jobProblemText(job),
+        job.state == "FAILED" || !job.error_text.empty() || !job.error_code.empty(),
+    };
+}
+
+QueueBucketData prepareQueueBucket(const QString& title, const std::vector<savor::db::UiJobSummary>& jobs)
+{
+    QueueBucketData bucket;
+    bucket.title = title;
+    bucket.totalCount = static_cast<int>(jobs.size());
+    bucket.rows.reserve(jobs.size());
+    for (const auto& job : jobs) {
+        bucket.rows.push_back(prepareQueueRow(job));
+    }
+    return bucket;
+}
+
+RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& request)
+{
+    savorqt::db::WorkflowListRequest workflowRequest{};
+    workflowRequest.limit = 50;
+    const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
+
+    savor::db::UiReadJobListQuery jobQuery{};
+    const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
+
+    const std::vector<savor::db::UiWorkflowInstanceSummary> workflowItems =
+        workflows.ok ? workflows.value.items : std::vector<savor::db::UiWorkflowInstanceSummary>{};
+    const std::vector<savor::db::UiJobSummary> jobItems =
+        jobs.ok ? jobs.value.items : std::vector<savor::db::UiJobSummary>{};
+
+    const WorkflowBuckets workflowBuckets = bucketWorkflows(workflowItems);
+    const JobBuckets jobBuckets = bucketJobs(jobItems);
+    const bool hasValidation = !request.validation.trimmed().isEmpty();
+
+    RunningRefreshData data;
+    data.workflowsOk = workflows.ok;
+    data.jobsOk = jobs.ok;
+    data.workflowError = workflows.ok ? QString() : qs(workflows.error.message);
+    data.jobError = jobs.ok ? QString() : qs(jobs.error.message);
+    data.controllerAvailable = request.controllerAvailable;
+    data.hasValidation = hasValidation;
+    data.validation = request.validation;
+    data.coordinatorRunning = request.coordinatorRunning;
+    data.coordinatorPaused = request.coordinatorPaused;
+    data.isoReady = request.isoReady;
+    data.dolphinReady = request.dolphinReady;
+    data.isoMissing = request.isoMissing;
+    data.dolphinMissing = request.dolphinMissing;
+    data.targetWorkers = request.targetWorkers;
+    data.failedWorkflows = workflowBuckets.failed;
+    data.failedJobs = static_cast<int>(jobBuckets.failed.size());
+
+    data.coordinatorText = QStringLiteral("Stopped");
+    if (hasValidation) {
+        data.coordinatorText = QStringLiteral("Blocked");
+    } else if (request.coordinatorRunning && request.coordinatorPaused) {
+        data.coordinatorText = QStringLiteral("Paused");
+    } else if (request.coordinatorRunning) {
+        data.coordinatorText = QStringLiteral("Running");
+    }
+    data.workersText = request.controllerAvailable
+        ? QStringLiteral("%1/%2").arg(request.activeWorkers).arg(request.targetWorkers)
+        : QStringLiteral("--");
+    data.queueText = jobs.ok ? QString::number(static_cast<int>(jobBuckets.queued.size())) : QStringLiteral("--");
+    data.runningText = jobs.ok ? QString::number(static_cast<int>(jobBuckets.running.size())) : QStringLiteral("--");
+    data.failuresText = workflows.ok && jobs.ok
+        ? QStringLiteral("%1/%2").arg(workflowBuckets.failed).arg(static_cast<int>(jobBuckets.failed.size()))
+        : QStringLiteral("--");
+    data.lastRefreshText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+
+    data.workflowSummary = workflows.ok
+        ? QStringLiteral("%1 sampled, %2 active, %3 blocked, %4 failed, %5 terminal.")
+            .arg(static_cast<int>(workflowItems.size()))
+            .arg(workflowBuckets.active)
+            .arg(workflowBuckets.blocked)
+            .arg(workflowBuckets.failed)
+            .arg(workflowBuckets.terminal)
+        : QStringLiteral("Workflow list unavailable: %1").arg(data.workflowError);
+    data.queueSummary = jobs.ok
+        ? QStringLiteral("%1 sampled: %2 queued, %3 claimed/running, %4 failed, %5 recently terminal.")
+            .arg(static_cast<int>(jobItems.size()))
+            .arg(static_cast<int>(jobBuckets.queued.size()))
+            .arg(static_cast<int>(jobBuckets.running.size()))
+            .arg(static_cast<int>(jobBuckets.failed.size()))
+            .arg(static_cast<int>(jobBuckets.terminal.size()))
+        : QStringLiteral("Job queue unavailable: %1").arg(data.jobError);
+
+    data.workflowRows.reserve(workflowItems.size());
+    for (const auto& workflow : workflowItems) {
+        QString problems;
+        if (!workflow.failure_text.empty()) {
+            problems = compactText(qs(workflow.failure_text));
+        } else if (!workflow.failure_code.empty()) {
+            problems = qs(workflow.failure_code);
+        } else if (workflow.blocked_step_count > 0 || workflow.failed_step_count > 0) {
+            problems = QStringLiteral("blocked %1 / failed %2")
+                .arg(workflow.blocked_step_count)
+                .arg(workflow.failed_step_count);
+        } else {
+            problems = QStringLiteral("--");
+        }
+        data.workflowRows.push_back(RunningWorkflowRow{
+            workflow.workflow_instance_id,
+            QStringLiteral("#%1").arg(workflow.workflow_instance_id),
+            qs(workflow.workflow_kind),
+            qs(workflow.state),
+            problems,
+            formatTime(workflow.created_at_utc),
+            formatOptionalTime(workflow.completed_at_utc),
+        });
+    }
+
+    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Queued"), jobBuckets.queued));
+    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Claimed / running"), jobBuckets.running));
+    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Failed"), jobBuckets.failed));
+    data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Recently terminal"), jobBuckets.terminal));
+
+    const int workerAttentionCount = static_cast<int>(std::count_if(request.workers.begin(), request.workers.end(), workerNeedsAttention));
+    data.workerSummary = request.controllerAvailable
+        ? QStringLiteral("%1 active, %2 target, %3 rows, %4 attention.")
+            .arg(request.activeWorkers)
+            .arg(request.targetWorkers)
+            .arg(static_cast<int>(request.workers.size()))
+            .arg(workerAttentionCount)
+        : QStringLiteral("Coordinator controller unavailable.");
+    data.workerRows.reserve(request.workers.size());
+    for (const auto& worker : request.workers) {
+        data.workerRows.push_back(RunningWorkerRow{
+            worker.worker_id,
+            workerStateLabel(worker.state),
+            worker.job_id.has_value() ? QStringLiteral("#%1").arg(*worker.job_id) : QStringLiteral("--"),
+            qs(savorqt::db::ResolveProgramKindName(worker.program_kind)),
+            workerStatusText(worker),
+        });
+    }
+
+    if (hasValidation) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Runtime setup is blocking work"),
+            request.validation,
+            QStringLiteral("Fix runtime setup"),
+            AttentionRoute::CoordinatorSettings,
+        });
+    }
+    if (!request.coordinatorRunning && !hasValidation && !jobBuckets.queued.empty()) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Coordinator stopped with queued jobs"),
+            QStringLiteral("%1 jobs are waiting for workers.").arg(static_cast<int>(jobBuckets.queued.size())),
+            QStringLiteral("Start coordinator"),
+            AttentionRoute::StartCoordinator,
+        });
+    }
+    if (workflowBuckets.failed > 0) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Failed workflows"),
+            QStringLiteral("%1 recent workflow instances need triage.").arg(workflowBuckets.failed),
+            QStringLiteral("Open Workflows"),
+            AttentionRoute::Workflows,
+        });
+    }
+    if (!jobBuckets.failed.empty()) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Failed jobs"),
+            QStringLiteral("%1 recent jobs failed.").arg(static_cast<int>(jobBuckets.failed.size())),
+            QStringLiteral("Open Jobs"),
+            AttentionRoute::Jobs,
+        });
+    }
+    if (workerAttentionCount > 0) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Worker errors"),
+            QStringLiteral("%1 worker rows report an error, dead state, or repeated failures.").arg(workerAttentionCount),
+            QStringLiteral("Open Workers"),
+            AttentionRoute::Workers,
+        });
+    }
+    if (!workflows.ok) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Workflow read unavailable"),
+            data.workflowError,
+            QStringLiteral("Open Workflows"),
+            AttentionRoute::Workflows,
+        });
+    }
+    if (!jobs.ok) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("Job read unavailable"),
+            data.jobError,
+            QStringLiteral("Open Jobs"),
+            AttentionRoute::Jobs,
+        });
+    }
+    if (data.attentionItems.empty()) {
+        data.attentionItems.push_back(AttentionItemData{
+            QStringLiteral("No current attention items"),
+            QStringLiteral("Coordinator setup, queue pressure, failures, and workers are quiet in the recent sample."),
+            QString(),
+            AttentionRoute::None,
+        });
+        data.attentionSummary = QStringLiteral("Clear.");
+    } else {
+        data.attentionSummary = QStringLiteral("%1 prioritized item%2.")
+            .arg(static_cast<int>(data.attentionItems.size()))
+            .arg(data.attentionItems.size() == 1 ? QString() : QStringLiteral("s"));
+    }
+
+    return data;
+}
+
 } // namespace
 
 RunningTab::RunningTab(CoordinatorController* coordinatorController, Actions actions, QWidget* parent)
@@ -438,6 +843,34 @@ void RunningTab::build()
         }
     });
     statusLayout->addWidget(startCoordinatorButton_);
+
+    pauseCoordinatorButton_ = createActionButton(QStringLiteral("Pause"), statusStrip);
+    QObject::connect(pauseCoordinatorButton_, &QPushButton::clicked, statusStrip, [this]() {
+        if (coordinatorController_ != nullptr) {
+            coordinatorController_->togglePaused();
+        }
+    });
+    statusLayout->addWidget(pauseCoordinatorButton_);
+
+    stopCoordinatorButton_ = createActionButton(QStringLiteral("Stop"), statusStrip);
+    QObject::connect(stopCoordinatorButton_, &QPushButton::clicked, statusStrip, [this]() {
+        if (coordinatorController_ != nullptr) {
+            coordinatorController_->stopCoordinator();
+        }
+    });
+    statusLayout->addWidget(stopCoordinatorButton_);
+
+    targetWorkersSpin_ = new QSpinBox(statusStrip);
+    targetWorkersSpin_->setObjectName("jobsRefreshSpin");
+    targetWorkersSpin_->setMinimum(1);
+    targetWorkersSpin_->setMaximum(9999);
+    targetWorkersSpin_->setPrefix(QStringLiteral("Target: "));
+    QObject::connect(targetWorkersSpin_, qOverload<int>(&QSpinBox::valueChanged), statusStrip, [this](int value) {
+        if (coordinatorController_ != nullptr) {
+            coordinatorController_->setTargetWorkers(value);
+        }
+    });
+    statusLayout->addWidget(targetWorkersSpin_);
 
     isoSetupButton_ = new QPushButton(QStringLiteral("Set ISO"), statusStrip);
     isoSetupButton_->setObjectName("setupWarningButton");
@@ -621,12 +1054,132 @@ void RunningTab::build()
 
     canvasLayout()->addWidget(cockpit, 1);
 
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(1000);
-    QObject::connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        refreshCockpit();
+    auto* refreshPipeline = new savorqt::gui::AsyncRefreshPipeline<RunningRefreshRequest, RunningRefreshData>(this);
+    auto workflowRows = std::make_shared<std::vector<RunningWorkflowRow>>();
+    auto workerRows = std::make_shared<std::vector<RunningWorkerRow>>();
+    refreshPipeline->setRefreshIntervalMs(1000);
+    refreshPipeline->setRequestBuilder([this](savorqt::gui::RefreshReason) {
+        RunningRefreshRequest request;
+        request.controllerAvailable = coordinatorController_ != nullptr;
+        if (coordinatorController_ == nullptr) {
+            request.validation = QStringLiteral("Coordinator controller is unavailable.");
+            return std::optional<RunningRefreshRequest>{ request };
+        }
+
+        request.validation = coordinatorController_->validationMessage();
+        request.isoReady = coordinatorIsoReady(coordinatorController_);
+        request.dolphinReady = coordinatorDolphinBaseReady(coordinatorController_);
+        request.isoMissing = coordinatorController_->isoPath().trimmed().isEmpty();
+        request.dolphinMissing = coordinatorController_->dolphinBaseDir().trimmed().isEmpty();
+        request.coordinatorRunning = coordinatorController_->isRunning();
+        request.coordinatorPaused = coordinatorController_->isPaused();
+        request.activeWorkers = coordinatorController_->activeWorkers();
+        request.targetWorkers = coordinatorController_->targetWorkers();
+        request.workers = coordinatorController_->freshSnapshot();
+        return std::optional<RunningRefreshRequest>{ request };
     });
-    refreshTimer_->start();
+    refreshPipeline->setLoadAndPrepare([](RunningRefreshRequest request) {
+        return savorqt::gui::AsyncRefreshResult<RunningRefreshData>::Ok(prepareRunningRefreshData(request));
+    });
+    refreshPipeline->setApply([=](const RunningRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        coordinatorValueLabel_->setText(data.coordinatorText);
+        workersValueLabel_->setText(data.workersText);
+        queueValueLabel_->setText(data.queueText);
+        runningValueLabel_->setText(data.runningText);
+        failuresValueLabel_->setText(data.failuresText);
+        lastRefreshLabel_->setText(data.lastRefreshText);
+
+        lastFailedWorkflows_ = data.failedWorkflows;
+        lastFailedJobs_ = data.failedJobs;
+
+        startCoordinatorButton_->setVisible(data.controllerAvailable && !data.coordinatorRunning && !data.hasValidation);
+        pauseCoordinatorButton_->setText(data.coordinatorPaused ? QStringLiteral("Resume") : QStringLiteral("Pause"));
+        pauseCoordinatorButton_->setVisible(data.controllerAvailable && data.coordinatorRunning);
+        stopCoordinatorButton_->setVisible(data.controllerAvailable && data.coordinatorRunning);
+        {
+            const QSignalBlocker blocker(targetWorkersSpin_);
+            targetWorkersSpin_->setValue(data.targetWorkers);
+        }
+        targetWorkersSpin_->setVisible(data.controllerAvailable && data.coordinatorRunning);
+        isoSetupButton_->setText(data.isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
+        isoSetupButton_->setVisible(!data.isoReady);
+        dolphinSetupButton_->setText(data.dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));
+        dolphinSetupButton_->setVisible(!data.dolphinReady);
+        fixRuntimeSetupButton_->setVisible(data.hasValidation);
+        fixRuntimeSetupButton_->setToolTip(data.validation);
+        openFailuresButton_->setVisible(data.failedWorkflows > 0 || data.failedJobs > 0);
+
+        workflowSummaryLabel_->setText(data.workflowSummary);
+        savorqt::gui::ApplyTableRowsByKey(
+            workflowTable_,
+            *workflowRows,
+            data.workflowRows,
+            [](const RunningWorkflowRow& row) { return row.workflowInstanceId; },
+            runningWorkflowRowsEqual,
+            populateRunningWorkflowRow);
+
+        queueSummaryLabel_->setText(data.queueSummary);
+        clearLayout(queueBucketsLayout_);
+        if (!data.jobsOk) {
+            auto* error = new QLabel(data.jobError, queueBucketsLayout_->parentWidget());
+            error->setObjectName("sectionDescription");
+            error->setWordWrap(true);
+            queueBucketsLayout_->addWidget(error);
+        } else {
+            auto* parent = queueBucketsLayout_->parentWidget();
+            for (const auto& bucket : data.queueBuckets) {
+                addQueueBucket(queueBucketsLayout_, bucket, 5, parent);
+            }
+        }
+        queueBucketsLayout_->addStretch();
+
+        workerSummaryLabel_->setText(data.workerSummary);
+        savorqt::gui::ApplyTableRowsByKey(
+            workerTable_,
+            *workerRows,
+            data.workerRows,
+            [](const RunningWorkerRow& row) { return row.workerId; },
+            runningWorkerRowsEqual,
+            populateRunningWorkerRow);
+
+        auto actionForRoute = [this](AttentionRoute route) -> std::function<void()> {
+            switch (route) {
+            case AttentionRoute::CoordinatorSettings:
+                return actions_.openCoordinatorSettings ? actions_.openCoordinatorSettings : actions_.openWorkers;
+            case AttentionRoute::Workflows:
+                return actions_.openWorkflows;
+            case AttentionRoute::Jobs:
+                return actions_.openJobs;
+            case AttentionRoute::Workers:
+                return actions_.openWorkers;
+            case AttentionRoute::StartCoordinator:
+                return [this]() {
+                    if (coordinatorController_ != nullptr) {
+                        coordinatorController_->startCoordinator();
+                    }
+                };
+            case AttentionRoute::None:
+            default:
+                return {};
+            }
+        };
+
+        clearLayout(attentionLayout_);
+        auto* attentionParent = attentionLayout_->parentWidget();
+        for (const auto& item : data.attentionItems) {
+            attentionLayout_->addWidget(createAttentionItem(
+                item.title,
+                item.detail,
+                item.buttonText,
+                actionForRoute(item.route),
+                attentionParent));
+        }
+        attentionLayout_->addStretch();
+        attentionSummaryLabel_->setText(data.attentionSummary);
+    });
+    requestCockpitRefresh_ = [refreshPipeline]() {
+        refreshPipeline->requestRefresh(savorqt::gui::RefreshReason::Manual);
+    };
 
     if (coordinatorController_ != nullptr) {
         QObject::connect(coordinatorController_, &CoordinatorController::stateChanged, this, [this]() {
@@ -637,237 +1190,13 @@ void RunningTab::build()
         });
     }
 
-    refreshCockpit();
+    refreshPipeline->setActive(true);
+    refreshPipeline->requestRefresh(savorqt::gui::RefreshReason::Initial);
 }
 
 void RunningTab::refreshCockpit()
 {
-    savorqt::db::WorkflowListRequest workflowRequest{};
-    workflowRequest.limit = 50;
-    const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
-
-    savor::db::UiReadJobListQuery jobQuery{};
-    const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
-
-    const std::vector<savor::db::UiWorkflowInstanceSummary> workflowItems =
-        workflows.ok ? workflows.value.items : std::vector<savor::db::UiWorkflowInstanceSummary>{};
-    const std::vector<savor::db::UiJobSummary> jobItems =
-        jobs.ok ? jobs.value.items : std::vector<savor::db::UiJobSummary>{};
-
-    const WorkflowBuckets workflowBuckets = bucketWorkflows(workflowItems);
-    const JobBuckets jobBuckets = bucketJobs(jobItems);
-    lastFailedWorkflows_ = workflowBuckets.failed;
-    lastFailedJobs_ = static_cast<int>(jobBuckets.failed.size());
-
-    const bool controllerAvailable = coordinatorController_ != nullptr;
-    const QString validation = controllerAvailable ? coordinatorController_->validationMessage() : QStringLiteral("Coordinator controller is unavailable.");
-    const bool hasValidation = !validation.trimmed().isEmpty();
-    const bool isoReady = coordinatorIsoReady(coordinatorController_);
-    const bool dolphinReady = coordinatorDolphinBaseReady(coordinatorController_);
-    const bool isoMissing = controllerAvailable && coordinatorController_->isoPath().trimmed().isEmpty();
-    const bool dolphinMissing = controllerAvailable && coordinatorController_->dolphinBaseDir().trimmed().isEmpty();
-    const bool coordinatorRunning = controllerAvailable && coordinatorController_->isRunning();
-    const bool coordinatorPaused = controllerAvailable && coordinatorController_->isPaused();
-
-    QString coordinatorText = QStringLiteral("Stopped");
-    if (hasValidation) {
-        coordinatorText = QStringLiteral("Blocked");
-    } else if (coordinatorRunning && coordinatorPaused) {
-        coordinatorText = QStringLiteral("Paused");
-    } else if (coordinatorRunning) {
-        coordinatorText = QStringLiteral("Running");
+    if (requestCockpitRefresh_) {
+        requestCockpitRefresh_();
     }
-
-    coordinatorValueLabel_->setText(coordinatorText);
-    workersValueLabel_->setText(controllerAvailable
-        ? QStringLiteral("%1/%2").arg(coordinatorController_->activeWorkers()).arg(coordinatorController_->targetWorkers())
-        : QStringLiteral("--"));
-    queueValueLabel_->setText(jobs.ok ? QString::number(static_cast<int>(jobBuckets.queued.size())) : QStringLiteral("--"));
-    runningValueLabel_->setText(jobs.ok ? QString::number(static_cast<int>(jobBuckets.running.size())) : QStringLiteral("--"));
-    failuresValueLabel_->setText(
-        workflows.ok && jobs.ok
-            ? QStringLiteral("%1/%2").arg(workflowBuckets.failed).arg(static_cast<int>(jobBuckets.failed.size()))
-            : QStringLiteral("--"));
-    lastRefreshLabel_->setText(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")));
-
-    startCoordinatorButton_->setVisible(controllerAvailable && !coordinatorRunning && !hasValidation);
-    isoSetupButton_->setText(isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
-    isoSetupButton_->setVisible(!isoReady);
-    dolphinSetupButton_->setText(dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));
-    dolphinSetupButton_->setVisible(!dolphinReady);
-    fixRuntimeSetupButton_->setVisible(hasValidation);
-    fixRuntimeSetupButton_->setToolTip(validation);
-    openFailuresButton_->setVisible(workflowBuckets.failed > 0 || !jobBuckets.failed.empty());
-
-    workflowSummaryLabel_->setText(workflows.ok
-        ? QStringLiteral("%1 sampled, %2 active, %3 blocked, %4 failed, %5 terminal.")
-            .arg(static_cast<int>(workflowItems.size()))
-            .arg(workflowBuckets.active)
-            .arg(workflowBuckets.blocked)
-            .arg(workflowBuckets.failed)
-            .arg(workflowBuckets.terminal)
-        : QStringLiteral("Workflow list unavailable: %1").arg(qs(workflows.error.message)));
-
-    {
-        QSignalBlocker blocker(workflowTable_);
-        workflowTable_->setRowCount(static_cast<int>(workflowItems.size()));
-        for (int row = 0; row < static_cast<int>(workflowItems.size()); ++row) {
-            const auto& workflow = workflowItems[static_cast<std::size_t>(row)];
-            QString problems;
-            if (!workflow.failure_text.empty()) {
-                problems = compactText(qs(workflow.failure_text));
-            } else if (!workflow.failure_code.empty()) {
-                problems = qs(workflow.failure_code);
-            } else if (workflow.blocked_step_count > 0 || workflow.failed_step_count > 0) {
-                problems = QStringLiteral("blocked %1 / failed %2")
-                    .arg(workflow.blocked_step_count)
-                    .arg(workflow.failed_step_count);
-            } else {
-                problems = QStringLiteral("--");
-            }
-
-            workflowTable_->setItem(row, 0, createTableItem(QStringLiteral("#%1").arg(workflow.workflow_instance_id)));
-            workflowTable_->setItem(row, 1, createTableItem(qs(workflow.workflow_kind)));
-            workflowTable_->setItem(row, 2, createTableItem(qs(workflow.state)));
-            workflowTable_->setItem(row, 3, createTableItem(problems));
-            workflowTable_->setItem(row, 4, createTableItem(formatTime(workflow.created_at_utc)));
-            workflowTable_->setItem(row, 5, createTableItem(formatOptionalTime(workflow.completed_at_utc)));
-        }
-    }
-
-    queueSummaryLabel_->setText(jobs.ok
-        ? QStringLiteral("%1 sampled: %2 queued, %3 claimed/running, %4 failed, %5 recently terminal.")
-            .arg(static_cast<int>(jobItems.size()))
-            .arg(static_cast<int>(jobBuckets.queued.size()))
-            .arg(static_cast<int>(jobBuckets.running.size()))
-            .arg(static_cast<int>(jobBuckets.failed.size()))
-            .arg(static_cast<int>(jobBuckets.terminal.size()))
-        : QStringLiteral("Job queue unavailable: %1").arg(qs(jobs.error.message)));
-
-    clearLayout(queueBucketsLayout_);
-    if (!jobs.ok) {
-        auto* error = new QLabel(qs(jobs.error.message), queueBucketsLayout_->parentWidget());
-        error->setObjectName("sectionDescription");
-        error->setWordWrap(true);
-        queueBucketsLayout_->addWidget(error);
-    } else {
-        auto* parent = queueBucketsLayout_->parentWidget();
-        addQueueBucket(queueBucketsLayout_, QStringLiteral("Queued"), jobBuckets.queued, 5, parent);
-        addQueueBucket(queueBucketsLayout_, QStringLiteral("Claimed / running"), jobBuckets.running, 5, parent);
-        addQueueBucket(queueBucketsLayout_, QStringLiteral("Failed"), jobBuckets.failed, 5, parent);
-        addQueueBucket(queueBucketsLayout_, QStringLiteral("Recently terminal"), jobBuckets.terminal, 5, parent);
-    }
-    queueBucketsLayout_->addStretch();
-
-    const auto workers = controllerAvailable
-        ? coordinatorController_->snapshot()
-        : std::vector<WorkerSnapshot>{};
-    const int workerAttentionCount = static_cast<int>(std::count_if(workers.begin(), workers.end(), workerNeedsAttention));
-    workerSummaryLabel_->setText(controllerAvailable
-        ? QStringLiteral("%1 active, %2 target, %3 rows, %4 attention.")
-            .arg(coordinatorController_->activeWorkers())
-            .arg(coordinatorController_->targetWorkers())
-            .arg(static_cast<int>(workers.size()))
-            .arg(workerAttentionCount)
-        : QStringLiteral("Coordinator controller unavailable."));
-
-    {
-        QSignalBlocker blocker(workerTable_);
-        workerTable_->setRowCount(static_cast<int>(workers.size()));
-        for (int row = 0; row < static_cast<int>(workers.size()); ++row) {
-            const auto& worker = workers[static_cast<std::size_t>(row)];
-            workerTable_->setItem(row, 0, createTableItem(QStringLiteral("#%1").arg(worker.worker_id)));
-            workerTable_->setItem(row, 1, createTableItem(workerStateLabel(worker.state)));
-            workerTable_->setItem(row, 2, createTableItem(worker.job_id.has_value() ? QStringLiteral("#%1").arg(*worker.job_id) : QStringLiteral("--")));
-            workerTable_->setItem(row, 3, createTableItem(qs(savorqt::db::ResolveProgramKindName(worker.program_kind))));
-            workerTable_->setItem(row, 4, createTableItem(workerStatusText(worker)));
-        }
-    }
-
-    clearLayout(attentionLayout_);
-    int attentionCount = 0;
-    auto* attentionParent = attentionLayout_->parentWidget();
-
-    if (hasValidation) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Runtime setup is blocking work"),
-            validation,
-            QStringLiteral("Fix runtime setup"),
-            actions_.openCoordinatorSettings ? actions_.openCoordinatorSettings : actions_.openWorkers,
-            attentionParent));
-    }
-    if (!coordinatorRunning && !hasValidation && !jobBuckets.queued.empty()) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Coordinator stopped with queued jobs"),
-            QStringLiteral("%1 jobs are waiting for workers.").arg(static_cast<int>(jobBuckets.queued.size())),
-            QStringLiteral("Start coordinator"),
-            [this]() {
-                if (coordinatorController_ != nullptr) {
-                    coordinatorController_->startCoordinator();
-                }
-            },
-            attentionParent));
-    }
-    if (workflowBuckets.failed > 0) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Failed workflows"),
-            QStringLiteral("%1 recent workflow instances need triage.").arg(workflowBuckets.failed),
-            QStringLiteral("Open Workflows"),
-            actions_.openWorkflows,
-            attentionParent));
-    }
-    if (!jobBuckets.failed.empty()) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Failed jobs"),
-            QStringLiteral("%1 recent jobs failed.").arg(static_cast<int>(jobBuckets.failed.size())),
-            QStringLiteral("Open Jobs"),
-            actions_.openJobs,
-            attentionParent));
-    }
-    if (workerAttentionCount > 0) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Worker errors"),
-            QStringLiteral("%1 worker rows report an error, dead state, or repeated failures.").arg(workerAttentionCount),
-            QStringLiteral("Open Workers"),
-            actions_.openWorkers,
-            attentionParent));
-    }
-    if (!workflows.ok) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Workflow read unavailable"),
-            qs(workflows.error.message),
-            QStringLiteral("Open Workflows"),
-            actions_.openWorkflows,
-            attentionParent));
-    }
-    if (!jobs.ok) {
-        ++attentionCount;
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("Job read unavailable"),
-            qs(jobs.error.message),
-            QStringLiteral("Open Jobs"),
-            actions_.openJobs,
-            attentionParent));
-    }
-
-    if (attentionCount == 0) {
-        attentionLayout_->addWidget(createAttentionItem(
-            QStringLiteral("No current attention items"),
-            QStringLiteral("Coordinator setup, queue pressure, failures, and workers are quiet in the recent sample."),
-            QString(),
-            {},
-            attentionParent));
-    }
-    attentionLayout_->addStretch();
-    attentionSummaryLabel_->setText(attentionCount == 0
-        ? QStringLiteral("Clear.")
-        : QStringLiteral("%1 prioritized item%2.")
-            .arg(attentionCount)
-            .arg(attentionCount == 1 ? QString() : QStringLiteral("s")));
 }

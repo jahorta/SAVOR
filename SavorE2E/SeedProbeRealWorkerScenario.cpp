@@ -696,6 +696,7 @@ bool RunSeedProbeRealWorkerSmokeImpl(
             execution_db,
             savestate_id,
             seed_probe_spec_id,
+            options,
             &workflow_instance_id,
             &err)) {
         if (error_out) *error_out = "failed seeding workflow graph execution rows: " + err;

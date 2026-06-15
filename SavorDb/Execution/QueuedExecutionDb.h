@@ -86,6 +86,17 @@ public:
     bool RequeueExpiredExecutionLeases(
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) override;
+    bool RequeueExpiredClaimedExecutionJobs(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) override;
+    bool RequeueClaimedExecutionJob(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::string_view message,
+        std::string* error_out = nullptr) override;
+    bool RequeueInterruptedExecutionJobs(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) override;
     std::optional<ExecutionJobRecord> GetJob(std::int64_t job_id) const override;
     std::vector<ExecutionJobEventRecord> ListJobEvents(std::int64_t job_id, int limit = 128) const override;
     bool RecordJobOutput(const RecordExecutionJobOutputCommand& command, std::string* error_out = nullptr) override;

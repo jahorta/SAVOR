@@ -12,6 +12,7 @@ enum class JobLifecycleEventKind {
     JobSetCreated = 0,
     JobQueued,
     JobClaimed,
+    JobStarted,
     JobLeaseRenewed,
     JobProgressed,
     JobCompleted,

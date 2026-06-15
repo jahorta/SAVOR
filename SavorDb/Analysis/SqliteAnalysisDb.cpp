@@ -1343,8 +1343,8 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1357,10 +1357,15 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     sqlite3_bind_int64(insert_run.st, 1, command.probe_set_id);
     sqlite3_bind_int64(insert_run.st, 2, command.entry_savestate_id);
     sqlite3_bind_int64(insert_run.st, 3, command.seed_probe_spec_id);
-    sqlite3_bind_int(insert_run.st, 4, command.codec_version);
-    sqlite3_bind_text(insert_run.st, 5, command.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_run.st, 6, *unique_input_set_id);
-    sqlite3_bind_int64(insert_run.st, 7, command.requested_at_utc.time_since_epoch().count());
+    if (command.launch_samples_per_axis > 0) {
+        sqlite3_bind_int(insert_run.st, 4, command.launch_samples_per_axis);
+    } else {
+        sqlite3_bind_null(insert_run.st, 4);
+    }
+    sqlite3_bind_int(insert_run.st, 5, command.codec_version);
+    sqlite3_bind_text(insert_run.st, 6, command.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_run.st, 7, *unique_input_set_id);
+    sqlite3_bind_int64(insert_run.st, 8, command.requested_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -1457,8 +1462,8 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,NULL,?4,?5,?6,?7,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1530,7 +1535,7 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT probe_run_id, probe_set_id, seed_probe_spec_id, entry_savestate_id, codec_version, status, "
+            "SELECT probe_run_id, probe_set_id, seed_probe_spec_id, entry_savestate_id, launch_samples_per_axis, codec_version, status, "
             "unique_input_set_id, requested_at_utc, completed_at_utc "
             "FROM sp_probe_run WHERE probe_run_id=?1 LIMIT 1;",
             -1,
@@ -1549,12 +1554,13 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     snapshot.probe_set_id = sqlite3_column_int64(st.st, 1);
     snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 2);
     snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 3);
-    snapshot.codec_version = sqlite3_column_int(st.st, 4);
-    snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
-    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 6);
-    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
-    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
-        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 8)));
+    snapshot.launch_samples_per_axis = sqlite3_column_type(st.st, 4) == SQLITE_NULL ? 0 : sqlite3_column_int(st.st, 4);
+    snapshot.codec_version = sqlite3_column_int(st.st, 5);
+    snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 7);
+    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 8)));
+    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
+        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 9)));
     }
     return snapshot;
 }
@@ -2177,8 +2183,8 @@ bool SqliteAnalysisDb::CreateBattleSet(
     Statement insert_set;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
+            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
             -1,
             &insert_set.st,
             nullptr)
@@ -2192,9 +2198,11 @@ bool SqliteAnalysisDb::CreateBattleSet(
     sqlite3_bind_int64(insert_set.st, 2, command.entry_savestate_id);
     sqlite3_bind_int64(insert_set.st, 3, command.battle_run_spec_id);
     sqlite3_bind_int64(insert_set.st, 4, command.explorer_settings_id);
+    sqlite3_bind_int(insert_set.st, 5, command.launch_fake_attack_min);
+    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_max);
     const auto status = ToDbString(command.status);
-    sqlite3_bind_text(insert_set.st, 5, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_set.st, 6, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_text(insert_set.st, 7, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_set.st, 8, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -3177,7 +3185,7 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc "
+        "SELECT battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc "
         "FROM ab_battle_set WHERE battle_set_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -3192,9 +3200,11 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     out.entry_savestate_id = sqlite3_column_int64(st.st, 2);
     out.battle_run_spec_id = sqlite3_column_int64(st.st, 3);
     out.explorer_settings_id = sqlite3_column_int64(st.st, 4);
-    out.status = ParseBattleSetStatus(ColumnText(st.st, 5));
-    out.created_at_utc = ColumnTime(st.st, 6);
-    out.completed_at_utc = ColumnTimeOptional(st.st, 7);
+    out.launch_fake_attack_min = sqlite3_column_int(st.st, 5);
+    out.launch_fake_attack_max = sqlite3_column_int(st.st, 6);
+    out.status = ParseBattleSetStatus(ColumnText(st.st, 7));
+    out.created_at_utc = ColumnTime(st.st, 8);
+    out.completed_at_utc = ColumnTimeOptional(st.st, 9);
     return out;
 }
 

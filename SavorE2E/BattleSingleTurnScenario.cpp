@@ -60,6 +60,21 @@ void AppendTasMovieRtcArgument(
     });
 }
 
+void AppendTasMovieHeadroomArgument(
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
+    const CliOptions& options) {
+    if (command == nullptr) {
+        return;
+    }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "headroom",
+        .value_type = "integer",
+        .integer_value = options.tasmovie_headroom_x10.value_or(50),
+        .source_kind = "scenario",
+    });
+}
+
 const char* ToString(savor::db::execution::workflow::WorkflowInstanceState state) {
     using savor::db::execution::workflow::WorkflowInstanceState;
     switch (state) {
@@ -86,7 +101,9 @@ std::string FormatWorkflowStateLine(const savor::db::execution::workflow::Workfl
 }
 
 std::int64_t ComputeBattleScenarioTimeoutMs(const savor::db::BattleRunSpecSnapshot& run_spec, const CliOptions& options) {
-    const int fake_jobs_per_wave = std::max(1, std::abs(run_spec.max_fake_attacks - run_spec.min_fake_attacks) + 1);
+    const int fake_low = options.battle_fake_attack_low.value_or(0);
+    const int fake_high = options.battle_fake_attack_high.value_or(fake_low);
+    const int fake_jobs_per_wave = std::max(1, std::abs(fake_high - fake_low) + 1);
     const std::int64_t per_wave_budget = static_cast<std::int64_t>(std::max(1, fake_jobs_per_wave))
         * std::max<std::int64_t>(1000, static_cast<std::int64_t>(run_spec.run_ms));
     return std::max<std::int64_t>(options.timeout_ms, (per_wave_budget * 4) + options.timeout_ms);
@@ -138,9 +155,10 @@ std::vector<std::uint8_t> BuildCurrentTurnAddressProgram() {
 }
 
 std::int64_t ComputeSeedProbePreludeTimeoutMs(const CliOptions& options) {
+    const auto samples_per_axis = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis);
     const std::int64_t grid_probe_count =
-        static_cast<std::int64_t>(kSeedProbeSamplesPerAxis)
-        * static_cast<std::int64_t>(kSeedProbeSamplesPerAxis)
+        static_cast<std::int64_t>(samples_per_axis)
+        * static_cast<std::int64_t>(samples_per_axis)
         * 3;
     constexpr std::int64_t kAverageUniqueCountEstimate = 25;
     return std::max<std::int64_t>(
@@ -181,6 +199,7 @@ bool RunSeedProbePrelude(
             db_service->ExecutionDb(),
             entry_savestate_id,
             seed_probe_spec_id,
+            options,
             &seedprobe_workflow_instance_id,
             &err)) {
         if (error_out) *error_out = "failed seeding SeedProbe workflow: " + err;
@@ -422,8 +441,6 @@ bool SeedBattleAuthoringRows(
                 .progress_enable = true,
                 .use_single_turn_runner = true,
                 .auto_wave_trigger_enable = true,
-                .min_fake_attacks = min_fake_attacks,
-                .max_fake_attacks = max_fake_attacks,
                 .created_at_utc = now,
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "savor-e2e.seed",
@@ -631,6 +648,8 @@ bool SeedBattleAnalysisAndWorkflowRows(
     std::int64_t entry_savestate_id,
     std::int64_t battle_run_spec_id,
     std::int64_t explorer_settings_id,
+    int min_fake_attacks,
+    int max_fake_attacks,
     std::int64_t source_unique_seed_id,
     std::int64_t* battle_set_id_out,
     std::int64_t* wave_id_out,
@@ -649,6 +668,8 @@ bool SeedBattleAnalysisAndWorkflowRows(
                 .entry_savestate_id = entry_savestate_id,
                 .battle_run_spec_id = battle_run_spec_id,
                 .explorer_settings_id = explorer_settings_id,
+                .launch_fake_attack_min = min_fake_attacks,
+                .launch_fake_attack_max = max_fake_attacks,
                 .status = savor::db::BattleSetStatus::Active,
                 .created_at_utc = now,
                 .correlation_id = "savor-e2e.battle",
@@ -950,7 +971,15 @@ bool SeedTasMovieSeedProbeBattleGraphExecution(
             .source_kind = "external_override",
         });
     }
+    AppendTasMovieHeadroomArgument(&command, options);
     AppendTasMovieRtcArgument(&command, rtc_value);
+    command.arguments.push_back({
+        .node_key = "probe_1",
+        .argument_key = "samples_per_axis",
+        .value_type = "integer",
+        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
+        .source_kind = "scenario",
+    });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
@@ -1081,6 +1110,7 @@ bool SeedTasMovieBattleGraphExecution(
         .ref_id = input_set_id,
         .source_kind = "external",
     });
+    AppendTasMovieHeadroomArgument(&command, options);
     AppendTasMovieRtcArgument(&command, rtc_value);
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
     command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
@@ -1200,6 +1230,8 @@ bool RunBattleSingleTurnRealWorkerScenario(
             entry_savestate_id,
             battle_run_spec_id,
             explorer_settings_id,
+            options.battle_fake_attack_low.value_or(0),
+            options.battle_fake_attack_high.value_or(2),
             unique_seed_id,
             &battle_set_id,
             &wave_id,

@@ -278,14 +278,15 @@ SeedProbeGridSpec SeedProbeGridJobPersistenceAdapter::ResolveGridSpecForRun(std:
         return resolved;
     }
 
+    if (probe_run->launch_samples_per_axis > 0) {
+        resolved.samples_per_axis = probe_run->launch_samples_per_axis;
+    }
+
     const auto spec = authoring_db_->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
     if (!spec.has_value()) {
         return resolved;
     }
 
-    if (spec->samples_per_axis > 0) {
-        resolved.samples_per_axis = spec->samples_per_axis;
-    }
     resolved.min_value = ClampToU8(spec->min_value, resolved.min_value);
     resolved.max_value = ClampToU8(spec->max_value, resolved.max_value);
     resolved.cap_trigger_top = spec->cap_trigger_top;

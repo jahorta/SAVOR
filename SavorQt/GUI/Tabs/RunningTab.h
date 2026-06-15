@@ -7,8 +7,8 @@
 class CoordinatorController;
 class QLabel;
 class QPushButton;
+class QSpinBox;
 class QTableWidget;
-class QTimer;
 class QVBoxLayout;
 
 class RunningTab final : public savorqt::gui::WorkspacePageShell
@@ -31,8 +31,7 @@ private:
 
     CoordinatorController* coordinatorController_ = nullptr;
     Actions actions_;
-
-    QTimer* refreshTimer_ = nullptr;
+    std::function<void()> requestCockpitRefresh_;
 
     QLabel* coordinatorValueLabel_ = nullptr;
     QLabel* workersValueLabel_ = nullptr;
@@ -42,6 +41,9 @@ private:
     QLabel* lastRefreshLabel_ = nullptr;
 
     QPushButton* startCoordinatorButton_ = nullptr;
+    QPushButton* pauseCoordinatorButton_ = nullptr;
+    QPushButton* stopCoordinatorButton_ = nullptr;
+    QSpinBox* targetWorkersSpin_ = nullptr;
     QPushButton* isoSetupButton_ = nullptr;
     QPushButton* dolphinSetupButton_ = nullptr;
     QPushButton* fixRuntimeSetupButton_ = nullptr;

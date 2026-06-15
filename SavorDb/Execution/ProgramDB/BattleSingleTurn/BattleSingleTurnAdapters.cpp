@@ -764,8 +764,8 @@ public:
             return scheduled;
         }
 
-        const int max_fake = std::max(run_spec->min_fake_attacks, run_spec->max_fake_attacks);
-        const int min_fake = std::min(run_spec->min_fake_attacks, run_spec->max_fake_attacks);
+        const int max_fake = std::max(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max);
+        const int min_fake = std::min(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max);
         if (fake_used_before > max_fake) {
             scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=fake_budget_exhausted");
             return scheduled;
@@ -970,7 +970,7 @@ public:
             spec.turn_plan = BuildTurnPlan(*turn, job_ini.fake_attacks_this_turn);
         }
         spec.predicates = BuildPredicates(predicate_set.has_value() ? &*predicate_set : nullptr, authoring_db_);
-        spec.fake_attack_budget_max = static_cast<std::uint32_t>(std::max(run_spec->min_fake_attacks, run_spec->max_fake_attacks));
+        spec.fake_attack_budget_max = static_cast<std::uint32_t>(std::max(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max));
         spec.fake_attacks_used_before_turn = static_cast<std::uint32_t>(std::max(0, job_ini.fake_attacks_used_before));
 
         if (job_ini.turn_index == 1) {

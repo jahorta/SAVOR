@@ -66,6 +66,8 @@ struct ExecutionJobRecord {
     int max_attempts = 1;
     std::int64_t queued_at_utc = 0;
     std::string input_ini;
+    std::optional<std::string> claimed_by_token;
+    std::optional<std::int64_t> lease_expires_at_utc;
 };
 
 struct ExecutionJobEventRecord {
@@ -180,6 +182,41 @@ struct IExecutionDb {
         return true;
     }
     virtual bool RequeueExpiredExecutionLeases(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) {
+        if (rows_requeued_out) {
+            *rows_requeued_out = 0;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+    virtual bool RequeueExpiredClaimedExecutionJobs(
+        int* rows_requeued_out = nullptr,
+        std::string* error_out = nullptr) {
+        if (rows_requeued_out) {
+            *rows_requeued_out = 0;
+        }
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+    virtual bool RequeueClaimedExecutionJob(
+        std::int64_t job_id,
+        std::string_view claimed_by_token,
+        std::string_view message,
+        std::string* error_out = nullptr) {
+        (void)job_id;
+        (void)claimed_by_token;
+        (void)message;
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+    virtual bool RequeueInterruptedExecutionJobs(
         int* rows_requeued_out = nullptr,
         std::string* error_out = nullptr) {
         if (rows_requeued_out) {

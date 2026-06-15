@@ -64,6 +64,10 @@ QString CoordinatorController::isoPath() const { return isoPath_; }
 QString CoordinatorController::dolphinBaseDir() const { return dolphinBaseDir_; }
 QString CoordinatorController::validationMessage() const { return validationMessage_; }
 const std::vector<WorkerSnapshot>& CoordinatorController::snapshot() const { return snapshotCache_; }
+std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
+{
+    return coordinator_ ? coordinator_->SnapshotWorkers() : std::vector<WorkerSnapshot>{};
+}
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
 QStringList CoordinatorController::takeVisualLiveLogLineUpdates()
 {

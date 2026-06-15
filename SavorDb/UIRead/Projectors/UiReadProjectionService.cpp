@@ -220,6 +220,7 @@ bool IsExecutionJobEvent(const std::string& event_type) {
     return event_type == "Execution.JobSetCreated.v1"
         || event_type == "Execution.JobQueued.v1"
         || event_type == "Execution.JobClaimed.v1"
+        || event_type == "Execution.JobStarted.v1"
         || event_type == "Execution.JobLeaseRenewed.v1"
         || event_type == "Execution.JobProgressed.v1"
         || event_type == "Execution.JobCompleted.v1"

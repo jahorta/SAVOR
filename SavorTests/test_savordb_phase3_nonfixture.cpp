@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -736,9 +737,9 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         class QueueClaimExecutionDb final : public RecordingExecutionDb {
         public:
             std::vector<savor::db::ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
-                std::string_view,
+                std::string_view claimed_by_token,
                 int requested_jobs,
-                std::int64_t,
+                std::int64_t lease_duration_ms,
                 std::string* error_out = nullptr) override {
                 if (error_out) {
                     error_out->clear();
@@ -746,12 +747,52 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 std::vector<savor::db::ClaimedExecutionJob> out;
                 while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
                     out.push_back(claims.front());
+                    savor::db::ExecutionJobRecord record{};
+                    record.job_id = claims.front().job_id;
+                    record.job_set_id = claims.front().job_set_id;
+                    record.state = "CLAIMED";
+                    record.claimed_by_token = std::string(claimed_by_token);
+                    record.lease_expires_at_utc = lease_duration_ms;
+                    records[record.job_id] = record;
                     claims.erase(claims.begin());
                 }
                 return out;
             }
 
+            bool RenewExecutionJobLease(
+                std::int64_t job_id,
+                std::string_view claimed_by_token,
+                std::int64_t lease_duration_ms,
+                bool* renewed_out = nullptr,
+                std::string* error_out = nullptr) override {
+                if (error_out) {
+                    error_out->clear();
+                }
+                auto it = records.find(job_id);
+                const bool renewed = it != records.end()
+                    && it->second.claimed_by_token.has_value()
+                    && *it->second.claimed_by_token == claimed_by_token;
+                if (renewed) {
+                    it->second.lease_expires_at_utc = lease_duration_ms;
+                    ++lease_renewals;
+                }
+                if (renewed_out) {
+                    *renewed_out = renewed;
+                }
+                return true;
+            }
+
+            std::optional<savor::db::ExecutionJobRecord> GetJob(std::int64_t job_id) const override {
+                const auto it = records.find(job_id);
+                if (it == records.end()) {
+                    return std::nullopt;
+                }
+                return it->second;
+            }
+
             std::vector<savor::db::ClaimedExecutionJob> claims;
+            std::unordered_map<std::int64_t, savor::db::ExecutionJobRecord> records;
+            int lease_renewals = 0;
         };
 
         class QueueRuntime final : public IRuntimeInitAdapter {
@@ -821,6 +862,11 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         });
 
         EXPECT_EQ(materialization.ClaimJobs(1, now), 1u);
+        const auto lease_maintenance = materialization.RenewActiveClaimLeases(std::chrono::milliseconds(30000));
+        EXPECT_EQ(lease_maintenance.attempted, 1u);
+        EXPECT_EQ(lease_maintenance.renewed, 1u);
+        EXPECT_EQ(lease_maintenance.failed, 0u);
+        EXPECT_EQ(execution_db.lease_renewals, 1);
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
         while (dispatch_calls == 0 && std::chrono::steady_clock::now() < deadline) {
@@ -844,9 +890,9 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         class QueueClaimExecutionDb final : public RecordingExecutionDb {
         public:
             std::vector<savor::db::ClaimedExecutionJob> ClaimBatchReadyExecutionJobs(
-                std::string_view,
+                std::string_view claimed_by_token,
                 int requested_jobs,
-                std::int64_t,
+                std::int64_t lease_duration_ms,
                 std::string* error_out = nullptr) override {
                 if (error_out) {
                     error_out->clear();
@@ -854,12 +900,52 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
                 std::vector<savor::db::ClaimedExecutionJob> out;
                 while (!claims.empty() && static_cast<int>(out.size()) < requested_jobs) {
                     out.push_back(claims.front());
+                    savor::db::ExecutionJobRecord record{};
+                    record.job_id = claims.front().job_id;
+                    record.job_set_id = claims.front().job_set_id;
+                    record.state = "CLAIMED";
+                    record.claimed_by_token = std::string(claimed_by_token);
+                    record.lease_expires_at_utc = lease_duration_ms;
+                    records[record.job_id] = record;
                     claims.erase(claims.begin());
                 }
                 return out;
             }
 
+            bool RenewExecutionJobLease(
+                std::int64_t job_id,
+                std::string_view claimed_by_token,
+                std::int64_t lease_duration_ms,
+                bool* renewed_out = nullptr,
+                std::string* error_out = nullptr) override {
+                if (error_out) {
+                    error_out->clear();
+                }
+                auto it = records.find(job_id);
+                const bool renewed = it != records.end()
+                    && it->second.claimed_by_token.has_value()
+                    && *it->second.claimed_by_token == claimed_by_token;
+                if (renewed) {
+                    it->second.lease_expires_at_utc = lease_duration_ms;
+                    ++lease_renewals;
+                }
+                if (renewed_out) {
+                    *renewed_out = renewed;
+                }
+                return true;
+            }
+
+            std::optional<savor::db::ExecutionJobRecord> GetJob(std::int64_t job_id) const override {
+                const auto it = records.find(job_id);
+                if (it == records.end()) {
+                    return std::nullopt;
+                }
+                return it->second;
+            }
+
             std::vector<savor::db::ClaimedExecutionJob> claims;
+            std::unordered_map<std::int64_t, savor::db::ExecutionJobRecord> records;
+            int lease_renewals = 0;
         };
 
         class AffinityRuntime final : public IRuntimeInitAdapter {

@@ -711,10 +711,9 @@ void WorkflowGraphEditorWindow::loadAuthoredRefOptionsForSelectedNode()
         }
         for (const auto& spec : result.value) {
             authoredRefOptions_.push_back(AuthoredRefOption{
-                .label = QStringLiteral("#%1 %2 (%3/axis)")
+                .label = QStringLiteral("#%1 %2")
                     .arg(static_cast<qint64>(spec.seed_probe_spec_id))
-                    .arg(QString::fromStdString(spec.name))
-                    .arg(spec.samples_per_axis),
+                    .arg(QString::fromStdString(spec.name)),
                 .ref_kind = "seed_probe_spec",
                 .ref_id = spec.seed_probe_spec_id,
             });

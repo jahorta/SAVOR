@@ -10,6 +10,7 @@
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 
 class QLabel;
 class QListWidget;
@@ -22,6 +23,7 @@ enum class AuthoringLibraryKey {
     SeedProbe,
     BattleRun,
     ExplorerSettings,
+    BattleChain,
     BattlePlan,
     Predicate,
     PredicateSet,
@@ -75,6 +77,16 @@ signals:
     void statusToastRequested(StatusToast toast);
 
 private:
+    struct LibraryRefreshRequest {
+        int adapterIndex = -1;
+        ISpecLibraryAdapter* adapter = nullptr;
+    };
+    struct LibraryRefreshData {
+        int adapterIndex = -1;
+        std::vector<SpecLibraryRow> rows;
+        QString errorText;
+    };
+
     void createAdapters();
     void createWidgets();
     void selectLibraryIndex(int index, bool forceRefresh);
@@ -104,6 +116,7 @@ private:
     QLabel* placeholderLabel_ = nullptr;
     QWidget* activeEditor_ = nullptr;
     QSplitter* contentSplitter_ = nullptr;
+    savorqt::gui::AsyncRefreshPipeline<LibraryRefreshRequest, LibraryRefreshData>* refreshPipeline_ = nullptr;
 };
 
 class AuthoringLibraryDialog : public QDialog

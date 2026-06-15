@@ -267,6 +267,7 @@ struct RequestSeedProbeRunCommand {
     std::int64_t probe_set_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::int64_t seed_probe_spec_id = 0;
+    int launch_samples_per_axis = 0;
     int codec_version = 1;
     std::string status;
     types::UtcTimePoint requested_at_utc{};
@@ -288,6 +289,7 @@ struct SeedProbeRunSnapshot {
     std::int64_t probe_set_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t entry_savestate_id = 0;
+    int launch_samples_per_axis = 0;
     int codec_version = 0;
     std::string status;
     std::int64_t unique_input_set_id = 0;
@@ -389,6 +391,8 @@ struct CreateBattleSetCommand {
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    int launch_fake_attack_min = 0;
+    int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
@@ -489,6 +493,8 @@ struct BattleSetSnapshot {
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    int launch_fake_attack_min = 0;
+    int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;

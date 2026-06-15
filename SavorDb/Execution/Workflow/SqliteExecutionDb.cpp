@@ -6,6 +6,8 @@
 #include "WorkflowRecoveryService.h"
 
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace savor::db::execution::workflow {
 namespace {
@@ -392,7 +394,8 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     Statement st;
     if (sqlite3_prepare_v2(db_,
         "SELECT job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, "
-        "savestate_id, fingerprint, state, priority, attempts, max_attempts, queued_at_utc, input_ini "
+        "savestate_id, fingerprint, state, priority, attempts, max_attempts, queued_at_utc, input_ini, "
+        "claimed_by_token, lease_expires_at_utc "
         "FROM exec_job WHERE job_id=?1;",
         -1,
         &st.st,
@@ -424,6 +427,15 @@ std::optional<ExecutionJobRecord> SqliteExecutionDb::GetJob(std::int64_t job_id)
     row.queued_at_utc = sqlite3_column_int64(st.st, 12);
     const auto* input_ini = sqlite3_column_text(st.st, 13);
     row.input_ini = input_ini == nullptr ? "" : reinterpret_cast<const char*>(input_ini);
+    if (sqlite3_column_type(st.st, 14) != SQLITE_NULL) {
+        const auto* token = sqlite3_column_text(st.st, 14);
+        if (token != nullptr && token[0] != '\0') {
+            row.claimed_by_token = reinterpret_cast<const char*>(token);
+        }
+    }
+    if (sqlite3_column_type(st.st, 15) != SQLITE_NULL) {
+        row.lease_expires_at_utc = sqlite3_column_int64(st.st, 15);
+    }
     return row;
 }
 
@@ -1050,7 +1062,7 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
                 "SELECT job_id, claimed_by_token, lease_expires_at_utc "
                 "FROM exec_job "
                 "WHERE state='QUEUED' "
-                "  AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?1) "
+                "  AND (claimed_by_token IS NULL OR claimed_by_token='') "
                 "ORDER BY priority DESC, queued_at_utc ASC, job_id ASC "
                 "LIMIT 1;",
                 -1,
@@ -1061,7 +1073,6 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
                 if (error_out) *error_out = sqlite3_errmsg(db_);
                 return std::nullopt;
             }
-            sqlite3_bind_int64(candidate_st.st, 1, now_utc);
             const auto rc = sqlite3_step(candidate_st.st);
             if (rc == SQLITE_ROW) {
                 candidate_job_id = sqlite3_column_int64(candidate_st.st, 0);
@@ -1098,10 +1109,10 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
         Statement claim_st;
         if (sqlite3_prepare_v2(db_,
             "UPDATE exec_job "
-                "SET claimed_by_token=?1, lease_expires_at_utc=?2 "
+                "SET state='CLAIMED', claimed_by_token=?1, lease_expires_at_utc=?2 "
                 "WHERE job_id=?3 "
                 "AND state='QUEUED' "
-                "AND (claimed_by_token IS NULL OR claimed_by_token='' OR COALESCE(lease_expires_at_utc, 0) <= ?4) "
+                "AND (claimed_by_token IS NULL OR claimed_by_token='') "
                 "RETURNING job_id, job_set_id, savestate_id, program_kind, program_ref_kind, program_ref_id;",
             -1,
             &claim_st.st,
@@ -1116,7 +1127,6 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
         sqlite3_bind_text(claim_st.st, 1, token.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(claim_st.st, 2, lease_expires_at_utc);
         sqlite3_bind_int64(claim_st.st, 3, candidate_job_id);
-        sqlite3_bind_int64(claim_st.st, 4, now_utc);
 
         const auto rc = sqlite3_step(claim_st.st);
         if (rc == SQLITE_ROW) {
@@ -1143,6 +1153,18 @@ std::optional<ClaimedExecutionJob> SqliteExecutionDb::ClaimNextReadyExecutionJob
             if (error_out) *error_out = sqlite3_errmsg(db_);
             return std::nullopt;
         }
+    }
+
+    if (claimed.job_id > 0
+        && !InsertJobActionEventAndOutbox(
+            db_,
+            claimed.job_id,
+            claimed.job_set_id,
+            "Execution.JobClaimed.v1",
+            "CLAIM",
+            error_out)) {
+        rollback();
+        return std::nullopt;
     }
 
     char* commit_error = nullptr;
@@ -1217,7 +1239,7 @@ bool SqliteExecutionDb::RenewExecutionJobLease(
         "UPDATE exec_job "
             "SET lease_expires_at_utc=?1 "
             "WHERE job_id=?2 "
-            "AND state IN ('QUEUED','RUNNING') "
+            "AND state IN ('CLAIMED','RUNNING') "
             "AND claimed_by_token=?3 "
             "AND COALESCE(lease_expires_at_utc, 0) > ?4;",
         -1,
@@ -1257,7 +1279,7 @@ bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
     if (sqlite3_prepare_v2(db_,
         "UPDATE exec_job "
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, started_at_utc=NULL "
-            "WHERE state IN ('QUEUED','RUNNING') "
+            "WHERE state IN ('QUEUED','CLAIMED','RUNNING') "
             "AND claimed_by_token IS NOT NULL "
             "AND claimed_by_token<>'' "
             "AND COALESCE(lease_expires_at_utc, 0) <= ?1;",
@@ -1274,6 +1296,291 @@ bool SqliteExecutionDb::RequeueExpiredExecutionLeases(
         return false;
     }
     if (rows_requeued_out) *rows_requeued_out = sqlite3_changes(db_);
+    return true;
+}
+
+bool SqliteExecutionDb::RequeueExpiredClaimedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    if (rows_requeued_out) *rows_requeued_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> jobs;
+    const auto now = CurrentUtcMs(db_);
+    {
+        Statement select;
+        if (sqlite3_prepare_v2(db_,
+            "SELECT job_id, job_set_id "
+            "FROM exec_job "
+            "WHERE state='CLAIMED' "
+            "  AND claimed_by_token IS NOT NULL "
+            "  AND claimed_by_token<>'' "
+            "  AND COALESCE(lease_expires_at_utc, 0) <= ?1 "
+            "ORDER BY job_id ASC;",
+            -1,
+            &select.st,
+            nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        sqlite3_bind_int64(select.st, 1, now);
+        while (true) {
+            const auto rc = sqlite3_step(select.st);
+            if (rc == SQLITE_ROW) {
+                jobs.emplace_back(sqlite3_column_int64(select.st, 0), sqlite3_column_int64(select.st, 1));
+                continue;
+            }
+            if (rc == SQLITE_DONE) {
+                break;
+            }
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
+            "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
+            "WHERE state='CLAIMED' "
+            "  AND claimed_by_token IS NOT NULL "
+            "  AND claimed_by_token<>'' "
+            "  AND COALESCE(lease_expires_at_utc, 0) <= ?1;",
+        -1,
+        &update.st,
+        nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    sqlite3_bind_int64(update.st, 1, now);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const int changed = sqlite3_changes(db_);
+
+    for (const auto& [job_id, job_set_id] : jobs) {
+        if (!InsertJobActionEventAndOutbox(
+                db_,
+                job_id,
+                job_set_id,
+                "Execution.JobQueued.v1",
+                "EXPIRED_CLAIM_RECOVERY",
+                error_out)) {
+            Rollback(db_);
+            return false;
+        }
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (rows_requeued_out) *rows_requeued_out = changed;
+    return true;
+}
+
+bool SqliteExecutionDb::RequeueClaimedExecutionJob(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::string_view message,
+    std::string* error_out) {
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+    if (job_id <= 0) {
+        if (error_out) *error_out = "job_id must be > 0";
+        return false;
+    }
+    if (claimed_by_token.empty()) {
+        if (error_out) *error_out = "claimed_by_token is required";
+        return false;
+    }
+
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    std::int64_t job_set_id = 0;
+    {
+        Statement select;
+        if (sqlite3_prepare_v2(db_,
+            "SELECT job_set_id FROM exec_job "
+            "WHERE job_id=?1 AND state='CLAIMED' AND claimed_by_token=?2;",
+            -1,
+            &select.st,
+            nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+        const auto token = std::string(claimed_by_token);
+        sqlite3_bind_int64(select.st, 1, job_id);
+        sqlite3_bind_text(select.st, 2, token.c_str(), -1, SQLITE_TRANSIENT);
+        const auto rc = sqlite3_step(select.st);
+        if (rc == SQLITE_ROW) {
+            job_set_id = sqlite3_column_int64(select.st, 0);
+        } else if (rc == SQLITE_DONE) {
+            Rollback(db_);
+            if (error_out) *error_out = "claimed job not found";
+            return false;
+        } else {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
+            "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
+            "WHERE job_id=?1 AND state='CLAIMED' AND claimed_by_token=?2;",
+        -1,
+        &update.st,
+        nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const auto token = std::string(claimed_by_token);
+    sqlite3_bind_int64(update.st, 1, job_id);
+    sqlite3_bind_text(update.st, 2, token.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        Rollback(db_);
+        if (error_out) *error_out = "claimed job not found";
+        return false;
+    }
+
+    const auto message_value = std::string(message.empty() ? std::string_view("CLAIM_REQUEUED") : message);
+    if (!InsertJobActionEventAndOutbox(
+            db_,
+            job_id,
+            job_set_id,
+            "Execution.JobQueued.v1",
+            message_value.c_str(),
+            error_out)) {
+        Rollback(db_);
+        return false;
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (error_out) error_out->clear();
+    return true;
+}
+
+bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    if (rows_requeued_out) *rows_requeued_out = 0;
+    if (db_ == nullptr) {
+        if (error_out) *error_out = "database handle is null";
+        return false;
+    }
+
+    if (!ExecuteSql(db_, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> jobs;
+    {
+        Statement select;
+        if (sqlite3_prepare_v2(db_,
+            "SELECT job_id, job_set_id "
+            "FROM exec_job "
+            "WHERE state IN ('CLAIMED','RUNNING') "
+            "   OR (claimed_by_token IS NOT NULL AND claimed_by_token<>'') "
+            "ORDER BY job_id ASC;",
+            -1,
+            &select.st,
+            nullptr)
+            != SQLITE_OK) {
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+
+        while (true) {
+            const auto rc = sqlite3_step(select.st);
+            if (rc == SQLITE_ROW) {
+                jobs.emplace_back(sqlite3_column_int64(select.st, 0), sqlite3_column_int64(select.st, 1));
+                continue;
+            }
+            if (rc == SQLITE_DONE) {
+                break;
+            }
+            Rollback(db_);
+            if (error_out) *error_out = sqlite3_errmsg(db_);
+            return false;
+        }
+    }
+
+    Statement update;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
+            "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
+            "WHERE state IN ('CLAIMED','RUNNING') "
+            "   OR (claimed_by_token IS NOT NULL AND claimed_by_token<>'');",
+        -1,
+        &update.st,
+        nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_step(update.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    const int changed = sqlite3_changes(db_);
+
+    for (const auto& [job_id, job_set_id] : jobs) {
+        if (!InsertJobActionEventAndOutbox(
+                db_,
+                job_id,
+                job_set_id,
+                "Execution.JobQueued.v1",
+                "STARTUP_RECOVERY",
+                error_out)) {
+            Rollback(db_);
+            return false;
+        }
+    }
+
+    if (!Commit(db_, error_out)) {
+        Rollback(db_);
+        return false;
+    }
+    if (rows_requeued_out) *rows_requeued_out = changed;
     return true;
 }
 

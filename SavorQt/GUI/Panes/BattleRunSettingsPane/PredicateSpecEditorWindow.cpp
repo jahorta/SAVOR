@@ -21,6 +21,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
@@ -399,13 +400,14 @@ void PredicateSpecEditorWindow::createFlagsSection()
 void PredicateSpecEditorWindow::createMatchSection()
 {
     auto* matchContainer = new QWidget(this);
+    matchContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* matchLayout = new QHBoxLayout(matchContainer);
     matchLayout->setContentsMargins(0, 0, 0, 0);
     matchLayout->setSpacing(10);
-    matchLayout->setAlignment(Qt::AlignTop);
 
     auto buildValueBox = [this](const QString& title, const bool lhs) -> QGroupBox* {
         auto* box = new QGroupBox(title, this);
+        box->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         auto* layout = new QFormLayout(box);
         layout->setContentsMargins(12, 12, 12, 12);
         layout->setSpacing(8);
@@ -516,7 +518,7 @@ void PredicateSpecEditorWindow::createMatchSection()
     matchLayout->addWidget(buildValueBox(QStringLiteral("LHS"), true), 1);
     matchLayout->addWidget(compareBox);
     matchLayout->addWidget(buildValueBox(QStringLiteral("RHS"), false), 1);
-    contentLayout_->addWidget(matchContainer);
+    contentLayout_->addWidget(matchContainer, 1);
 }
 
 void PredicateSpecEditorWindow::populateAddrKeys()

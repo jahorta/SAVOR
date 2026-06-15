@@ -381,8 +381,11 @@ public:
             cfg.priority = spec->priority;
             cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
             cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
-            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp(spec->headroom_x10, 0, 255));
             cfg.progress_enable = spec->progress_enable;
+        }
+        const auto headroom_argument = FindIntegerArgument(context, "headroom");
+        if (headroom_argument.has_value()) {
+            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp<std::int64_t>(*headroom_argument, 0, 255));
         }
 
         const auto* dtm = FindBinding(context, "dtm_artifact", "state_artifact.dtm_artifact_id");

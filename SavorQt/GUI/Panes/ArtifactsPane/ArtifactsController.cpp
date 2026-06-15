@@ -42,52 +42,72 @@ ArtifactsController::ArtifactsController(QObject* parent)
     loadSettings();
     syncFetchStateFromView();
 
-    connect(&pageWatcher_, &QFutureWatcher<ObjectPageResult>::finished, this, [this]() {
-        const bool shouldRefetch = pendingPageFetch_;
-        pendingPageFetch_ = false;
-        state_.loading = false;
-        try {
-            refreshRootsState();
-            if (!state_.rootsReady) {
-                state_.page = {};
-                state_.selectedArtifactId = 0;
-                emitStateChanged();
-                return;
-            }
-
-            const auto result = pageWatcher_.result();
-            if (result.ok) {
-                state_.page = result.value;
-                state_.lastRefresh = QDateTime::currentDateTime();
-                state_.errorMessage.clear();
-                if (!state_.page.items.empty()) {
-                    bool foundSelection = false;
-                    for (const auto& item : state_.page.items) {
-                        if (item.artifact_id == state_.selectedArtifactId) {
-                            foundSelection = true;
-                            break;
-                        }
-                    }
-                    if (!foundSelection) {
-                        state_.selectedArtifactId = state_.page.items.front().artifact_id;
-                    }
-                } else {
-                    state_.selectedArtifactId = 0;
-                }
-            } else {
-                state_.page = {};
-                state_.selectedArtifactId = 0;
-                state_.errorMessage = QStringLiteral("Artifacts failed: %1").arg(QString::fromStdString(result.error.message));
-            }
-        } catch (...) {
+    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<ObjectPageFetchRequest, ObjectPageResult>(this);
+    pageRefreshPipeline_->setAutoRefreshEnabled(false);
+    pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<ObjectPageFetchRequest> {
+        refreshRootsState();
+        if (!state_.rootsReady) {
             state_.page = {};
             state_.selectedArtifactId = 0;
-            state_.errorMessage = describeException("Artifacts failed");
+            emitStateChanged();
+            return std::nullopt;
+        }
+
+        state_.loading = true;
+        state_.errorMessage.clear();
+        savor::db::UiReadArtifactListQuery query{};
+        query.before = before_;
+        query.after = after_;
+        query.limit = fetchPageLimit_;
+        query.search = fetchSearch_.toStdString();
+        query.extension = fetchExtension_.toStdString();
+        emitStateChanged();
+        return ObjectPageFetchRequest{ query };
+    });
+    pageRefreshPipeline_->setLoadAndPrepare([](ObjectPageFetchRequest request) {
+        return savorqt::gui::AsyncRefreshResult<ObjectPageResult>::Ok(
+            SavorDbArtifactService::ListArtifacts(request.query));
+    });
+    pageRefreshPipeline_->setApply([this](const ObjectPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        state_.loading = false;
+        refreshRootsState();
+        if (!state_.rootsReady) {
+            state_.page = {};
+            state_.selectedArtifactId = 0;
+            emitStateChanged();
+            return;
+        }
+        if (result.ok) {
+            state_.page = result.value;
+            state_.lastRefresh = QDateTime::currentDateTime();
+            state_.errorMessage.clear();
+            if (!state_.page.items.empty()) {
+                bool foundSelection = false;
+                for (const auto& item : state_.page.items) {
+                    if (item.artifact_id == state_.selectedArtifactId) {
+                        foundSelection = true;
+                        break;
+                    }
+                }
+                if (!foundSelection) {
+                    state_.selectedArtifactId = state_.page.items.front().artifact_id;
+                }
+            } else {
+                state_.selectedArtifactId = 0;
+            }
+        } else {
+            state_.page = {};
+            state_.selectedArtifactId = 0;
+            state_.errorMessage = QStringLiteral("Artifacts failed: %1").arg(QString::fromStdString(result.error.message));
         }
         emitStateChanged();
-        if (shouldRefetch) {
-            kickPageFetch();
-        }
+    });
+    pageRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        state_.loading = false;
+        state_.page = {};
+        state_.selectedArtifactId = 0;
+        state_.errorMessage = error;
+        emitStateChanged();
     });
 
     connect(&importWatcher_, &QFutureWatcher<ObjectRowResult>::finished, this, [this]() {
@@ -273,33 +293,9 @@ void ArtifactsController::refreshRootsState()
 
 void ArtifactsController::kickPageFetch()
 {
-    refreshRootsState();
-    if (!state_.rootsReady || state_.loading) {
-        if (state_.loading) {
-            pendingPageFetch_ = true;
-        }
-        if (!state_.rootsReady) {
-            state_.page = {};
-            state_.selectedArtifactId = 0;
-        }
-        return;
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-
-    pendingPageFetch_ = false;
-    state_.loading = true;
-    state_.errorMessage.clear();
-
-    savor::db::UiReadArtifactListQuery query{};
-    query.before = before_;
-    query.after = after_;
-    query.limit = fetchPageLimit_;
-    query.search = fetchSearch_.toStdString();
-    query.extension = fetchExtension_.toStdString();
-
-    pageWatcher_.setFuture(runAsync([query]() {
-        return SavorDbArtifactService::ListArtifacts(query);
-    }));
-    emitStateChanged();
 }
 
 void ArtifactsController::emitStateChanged()

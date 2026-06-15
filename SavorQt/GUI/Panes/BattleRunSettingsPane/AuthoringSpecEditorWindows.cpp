@@ -12,6 +12,7 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
 
@@ -123,10 +124,9 @@ void addNoneOption(QComboBox* combo)
 
 QString seedProbeLabel(const savor::db::SeedProbeSpecSnapshot& row)
 {
-    return QStringLiteral("#%1 %2 (%3/axis)")
+    return QStringLiteral("#%1 %2")
         .arg(static_cast<qint64>(row.seed_probe_spec_id))
-        .arg(QString::fromStdString(row.name))
-        .arg(row.samples_per_axis);
+        .arg(QString::fromStdString(row.name));
 }
 
 QString tasLabel(const savor::db::TasSpecSnapshot& row)
@@ -138,11 +138,9 @@ QString tasLabel(const savor::db::TasSpecSnapshot& row)
 
 QString battleRunLabel(const savor::db::BattleRunSpecSnapshot& row)
 {
-    return QStringLiteral("#%1 %2 fake %3-%4")
+    return QStringLiteral("#%1 %2")
         .arg(static_cast<qint64>(row.battle_run_spec_id))
-        .arg(QString::fromStdString(row.name))
-        .arg(row.min_fake_attacks)
-        .arg(row.max_fake_attacks);
+        .arg(QString::fromStdString(row.name));
 }
 
 QString battlePlanLabel(const savor::db::BattlePlanSnapshot& row)
@@ -154,9 +152,44 @@ QString battlePlanLabel(const savor::db::BattlePlanSnapshot& row)
 
 QString predicateSetLabel(const savor::db::PredicateSetSnapshot& row)
 {
-    return QStringLiteral("#%1 %2 predicates")
+    return QStringLiteral("#%1 %2 (%3 predicates)")
         .arg(static_cast<qint64>(row.predicate_set_id))
+        .arg(QString::fromStdString(row.name))
         .arg(static_cast<int>(row.predicates.size()));
+}
+
+bool predicateSetNameIsUnique(const QString& name)
+{
+    const auto result = savorqt::db::SavorDbAuthoringService::ListPredicateSets();
+    if (!result.ok) {
+        return true;
+    }
+
+    const auto target = name.trimmed().toStdString();
+    for (const auto& set : result.value) {
+        if (set.name == target) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString resolvePredicateSetCopyName(const QString& sourceName, bool duplicate)
+{
+    const QString trimmed = sourceName.trimmed();
+    if (trimmed.isEmpty()) {
+        return trimmed;
+    }
+    if (!duplicate && predicateSetNameIsUnique(trimmed)) {
+        return trimmed;
+    }
+
+    QString candidate = trimmed + QStringLiteral(" copy");
+    int suffix = 2;
+    while (!predicateSetNameIsUnique(candidate)) {
+        candidate = QStringLiteral("%1 copy %2").arg(trimmed).arg(suffix++);
+    }
+    return candidate;
 }
 
 QString explorerSettingsLabel(const savor::db::ExplorerSettingsSnapshot& row)
@@ -206,7 +239,6 @@ void SeedProbeSpecEditorWindow::loadSnapshot(const savor::db::SeedProbeSpecSnaps
     prioritySpin_->setValue(snapshot.priority);
     runMsEdit_->setText(QString::number(snapshot.run_ms));
     viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
-    samplesPerAxisSpin_->setValue(snapshot.samples_per_axis);
     minValueEdit_->setText(QString::number(snapshot.min_value));
     maxValueEdit_->setText(QString::number(snapshot.max_value));
     capTriggerTopCheck_->setChecked(snapshot.cap_trigger_top);
@@ -220,16 +252,15 @@ void SeedProbeSpecEditorWindow::createWidgets()
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
     auto* panel = createPanel(this);
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(14, 14, 14, 14);
+    auto* panelLayout = new QVBoxLayout(panel);
+    panelLayout->setContentsMargins(14, 14, 14, 14);
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
     runMsEdit_ = numericEdit(panel, QStringLiteral("30000"));
     viStallMsEdit_ = numericEdit(panel, QStringLiteral("4000"));
-    samplesPerAxisSpin_ = new QSpinBox(panel);
-    samplesPerAxisSpin_->setRange(1, 255);
-    samplesPerAxisSpin_->setValue(20);
     minValueEdit_ = numericEdit(panel, QStringLiteral("48"));
     maxValueEdit_ = numericEdit(panel, QStringLiteral("207"));
     capTriggerTopCheck_ = new QCheckBox(panel);
@@ -246,13 +277,14 @@ void SeedProbeSpecEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
     form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
-    form->addRow(QStringLiteral("Samples per axis"), samplesPerAxisSpin_);
     form->addRow(QStringLiteral("Min value"), minValueEdit_);
     form->addRow(QStringLiteral("Max value"), maxValueEdit_);
     form->addRow(QStringLiteral("Cap trigger top"), capTriggerTopCheck_);
     form->addRow(QStringLiteral("Ignore trigger min/max"), ignoreTriggerMinMaxCheck_);
     form->addRow(QStringLiteral("Combo attempts/target"), comboAttemptsSpin_);
     form->addRow(QStringLiteral("Combo sampler tries"), comboSamplerTriesSpin_);
+    panelLayout->addLayout(form);
+    panelLayout->addStretch(1);
     root->addWidget(panel, 1);
 
     auto* buttons = new QHBoxLayout();
@@ -288,7 +320,6 @@ void SeedProbeSpecEditorWindow::saveSpec()
     draft.priority = prioritySpin_->value();
     draft.run_ms = runMs;
     draft.vi_stall_ms = viStallMs;
-    draft.samples_per_axis = samplesPerAxisSpin_->value();
     draft.min_value = minValue;
     draft.max_value = maxValue;
     draft.cap_trigger_top = capTriggerTopCheck_->isChecked();
@@ -340,7 +371,6 @@ void TasSpecEditorWindow::loadSnapshot(const savor::db::TasSpecSnapshot& snapsho
     prioritySpin_->setValue(snapshot.priority);
     runMsEdit_->setText(QString::number(snapshot.run_ms));
     viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
-    headroomSpin_->setValue(snapshot.headroom_x10);
     progressCheck_->setChecked(snapshot.progress_enable);
 }
 
@@ -349,23 +379,23 @@ void TasSpecEditorWindow::createWidgets()
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
     auto* panel = createPanel(this);
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(14, 14, 14, 14);
+    auto* panelLayout = new QVBoxLayout(panel);
+    panelLayout->setContentsMargins(14, 14, 14, 14);
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
     runMsEdit_ = numericEdit(panel, QStringLiteral("0"));
     viStallMsEdit_ = numericEdit(panel, QStringLiteral("2500"));
-    headroomSpin_ = new QSpinBox(panel);
-    headroomSpin_->setRange(0, 255);
-    headroomSpin_->setValue(25);
     progressCheck_ = new QCheckBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
     form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
-    form->addRow(QStringLiteral("Headroom x10"), headroomSpin_);
     form->addRow(QStringLiteral("Progress"), progressCheck_);
+    panelLayout->addLayout(form);
+    panelLayout->addStretch(1);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     buttons->addStretch();
@@ -395,7 +425,6 @@ void TasSpecEditorWindow::saveSpec()
     draft.priority = prioritySpin_->value();
     draft.run_ms = runMs;
     draft.vi_stall_ms = viStallMs;
-    draft.headroom_x10 = headroomSpin_->value();
     draft.progress_enable = progressCheck_->isChecked();
     draft.base_dtm_artifact_id = 0;
     const auto result = savorqt::db::SavorDbAuthoringService::SaveTasSpec(draft);
@@ -446,8 +475,6 @@ void BattleRunSpecEditorWindow::loadSnapshot(const savor::db::BattleRunSpecSnaps
     progressCheck_->setChecked(snapshot.progress_enable);
     singleTurnRunnerCheck_->setChecked(snapshot.use_single_turn_runner);
     autoWaveTriggerCheck_->setChecked(snapshot.auto_wave_trigger_enable);
-    minFakeAttacksSpin_->setValue(snapshot.min_fake_attacks);
-    maxFakeAttacksSpin_->setValue(snapshot.max_fake_attacks);
 }
 
 void BattleRunSpecEditorWindow::createWidgets()
@@ -455,8 +482,10 @@ void BattleRunSpecEditorWindow::createWidgets()
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
     auto* panel = createPanel(this);
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(14, 14, 14, 14);
+    auto* panelLayout = new QVBoxLayout(panel);
+    panelLayout->setContentsMargins(14, 14, 14, 14);
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
     nameEdit_ = new QLineEdit(panel);
     prioritySpin_ = new QSpinBox(panel);
     prioritySpin_->setRange(0, 100000);
@@ -467,10 +496,6 @@ void BattleRunSpecEditorWindow::createWidgets()
     singleTurnRunnerCheck_->setChecked(true);
     autoWaveTriggerCheck_ = new QCheckBox(panel);
 	autoWaveTriggerCheck_->setChecked(true);
-    minFakeAttacksSpin_ = new QSpinBox(panel);
-    minFakeAttacksSpin_->setRange(0, 100);
-    maxFakeAttacksSpin_ = new QSpinBox(panel);
-    maxFakeAttacksSpin_->setRange(0, 100);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
@@ -478,8 +503,8 @@ void BattleRunSpecEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Progress"), progressCheck_);
     form->addRow(QStringLiteral("Single turn runner"), singleTurnRunnerCheck_);
     form->addRow(QStringLiteral("Auto wave trigger"), autoWaveTriggerCheck_);
-    form->addRow(QStringLiteral("Min fake attacks"), minFakeAttacksSpin_);
-    form->addRow(QStringLiteral("Max fake attacks"), maxFakeAttacksSpin_);
+    panelLayout->addLayout(form);
+    panelLayout->addStretch(1);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     buttons->addStretch();
@@ -494,10 +519,6 @@ void BattleRunSpecEditorWindow::saveSpec()
 {
     if (nameEdit_->text().trimmed().isEmpty()) {
         postStatusMessage(QStringLiteral("Battle run spec name is required."), StatusToast::Severity::Warn);
-        return;
-    }
-    if (maxFakeAttacksSpin_->value() < minFakeAttacksSpin_->value()) {
-        postStatusMessage(QStringLiteral("Max fake attacks must be >= min fake attacks."), StatusToast::Severity::Warn);
         return;
     }
     QString error;
@@ -516,8 +537,6 @@ void BattleRunSpecEditorWindow::saveSpec()
     draft.progress_enable = progressCheck_->isChecked();
     draft.use_single_turn_runner = singleTurnRunnerCheck_->isChecked();
     draft.auto_wave_trigger_enable = autoWaveTriggerCheck_->isChecked();
-    draft.min_fake_attacks = minFakeAttacksSpin_->value();
-    draft.max_fake_attacks = maxFakeAttacksSpin_->value();
     const auto result = savorqt::db::SavorDbAuthoringService::SaveBattleRunSpec(draft);
     if (!result.ok) {
         postStatusMessage(QString::fromStdString(result.error.message), StatusToast::Severity::Error);
@@ -560,8 +579,13 @@ void PredicateSetEditorWindow::createWidgets()
     auto* label = new QLabel(QStringLiteral("Select predicates to include in the set."), this);
     label->setObjectName("sectionDescription");
     root->addWidget(label);
+    auto* form = new QFormLayout();
+    nameEdit_ = new QLineEdit(this);
+    nameEdit_->setPlaceholderText(QStringLiteral("Predicate set name"));
+    form->addRow(QStringLiteral("Name"), nameEdit_);
+    root->addLayout(form);
     predicateList_ = new QListWidget(this);
-    predicateList_->setSelectionMode(QListWidget::ExtendedSelection);
+    predicateList_->setSelectionMode(QListWidget::MultiSelection);
     root->addWidget(predicateList_, 1);
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);
@@ -597,6 +621,7 @@ void PredicateSetEditorWindow::refreshPredicates()
 void PredicateSetEditorWindow::loadSnapshot(const savor::db::PredicateSetSnapshot& snapshot, bool duplicate)
 {
     setWindowTitle(duplicate ? QStringLiteral("Predicate Set Editor - Edit Copy") : QStringLiteral("Predicate Set Editor"));
+    nameEdit_->setText(resolvePredicateSetCopyName(QString::fromStdString(snapshot.name), duplicate));
     refreshPredicates();
     for (const auto& predicate : snapshot.predicates) {
         for (int i = 0; i < predicateList_->count(); ++i) {
@@ -611,6 +636,7 @@ void PredicateSetEditorWindow::loadSnapshot(const savor::db::PredicateSetSnapsho
 void PredicateSetEditorWindow::saveSpec()
 {
     savorqt::db::PredicateSetDraft draft{};
+    draft.name = nameEdit_->text().trimmed().toStdString();
     for (const auto& item : predicateList_->selectedItems()) {
         const auto id = item->data(Qt::UserRole).toLongLong();
         if (id > 0) {
@@ -623,7 +649,7 @@ void PredicateSetEditorWindow::saveSpec()
         return;
     }
     notifySaved(savedCallback_);
-    postStatusMessage(QStringLiteral("Saved predicate set %1.").arg(static_cast<qint64>(result.value)), StatusToast::Severity::Info);
+    postStatusMessage(QStringLiteral("Saved predicate set %1.").arg(QString::fromStdString(draft.name)), StatusToast::Severity::Info);
 }
 
 void PredicateSetEditorWindow::postStatusMessage(const QString& text, StatusToast::Severity severity)
@@ -657,17 +683,26 @@ void ExplorerSettingsEditorWindow::createWidgets()
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
     auto* panel = createPanel(this);
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(14, 14, 14, 14);
+    auto* panelLayout = new QVBoxLayout(panel);
+    panelLayout->setContentsMargins(14, 14, 14, 14);
+    panelLayout->setSpacing(8);
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
+    auto* linkForm = new QFormLayout();
+    linkForm->setContentsMargins(0, 0, 0, 0);
     nameEdit_ = new QLineEdit(panel);
     descriptionEdit_ = new QPlainTextEdit(panel);
-    descriptionEdit_->setMaximumHeight(80);
+    descriptionEdit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     battlePlanCombo_ = new QComboBox(panel);
     predicateSetCombo_ = new QComboBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
-    form->addRow(QStringLiteral("Description"), descriptionEdit_);
-    form->addRow(QStringLiteral("Default battle plan"), battlePlanCombo_);
-    form->addRow(QStringLiteral("Default predicate set"), predicateSetCombo_);
+    linkForm->addRow(QStringLiteral("Default battle plan"), battlePlanCombo_);
+    linkForm->addRow(QStringLiteral("Default predicate set"), predicateSetCombo_);
+    panelLayout->addLayout(form);
+    auto* descriptionLabel = new QLabel(QStringLiteral("Description"), panel);
+    panelLayout->addWidget(descriptionLabel);
+    panelLayout->addWidget(descriptionEdit_, 1);
+    panelLayout->addLayout(linkForm);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);
@@ -741,11 +776,11 @@ void ExplorerSettingsEditorWindow::postStatusMessage(const QString& text, Status
     if (statusCallback_ && !text.isEmpty()) statusCallback_(text, severity);
 }
 
-BattleChainSpecEditorWindow::BattleChainSpecEditorWindow(QWidget* parent)
+BattleChainSpecEditorWindow::BattleChainSpecEditorWindow(QWidget* parent, bool embeddedInContainer)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowFlag(Qt::Window, true);
+    setWindowFlag(Qt::Window, !embeddedInContainer);
     setWindowTitle(QStringLiteral("Battle Chain Spec Editor"));
     resize(660, 460);
     createWidgets();
@@ -762,22 +797,43 @@ void BattleChainSpecEditorWindow::setSavedCallback(std::function<void()> callbac
     savedCallback_ = std::move(callback);
 }
 
+void BattleChainSpecEditorWindow::loadSnapshot(const savor::db::BattleChainSpecSnapshot& snapshot, bool duplicate)
+{
+    setWindowTitle(duplicate
+        ? QStringLiteral("Battle Chain Spec Editor - Duplicate")
+        : QStringLiteral("Battle Chain Spec Editor - Edit Copy"));
+    nameEdit_->setText(QString::fromStdString(snapshot.name) + (duplicate ? QStringLiteral(" copy") : QString()));
+    descriptionEdit_->setPlainText(QString::fromStdString(snapshot.description));
+    refreshChoices();
+    setComboSelection(battleRunCombo_, std::optional<std::int64_t>{ snapshot.battle_run_spec_id });
+    setComboSelection(explorerSettingsCombo_, std::optional<std::int64_t>{ snapshot.explorer_settings_id });
+}
+
 void BattleChainSpecEditorWindow::createWidgets()
 {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
     auto* panel = createPanel(this);
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(14, 14, 14, 14);
+    auto* panelLayout = new QVBoxLayout(panel);
+    panelLayout->setContentsMargins(14, 14, 14, 14);
+    panelLayout->setSpacing(8);
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
+    auto* linkForm = new QFormLayout();
+    linkForm->setContentsMargins(0, 0, 0, 0);
     nameEdit_ = new QLineEdit(panel);
     descriptionEdit_ = new QPlainTextEdit(panel);
-    descriptionEdit_->setMaximumHeight(80);
+    descriptionEdit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     battleRunCombo_ = new QComboBox(panel);
     explorerSettingsCombo_ = new QComboBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
-    form->addRow(QStringLiteral("Description"), descriptionEdit_);
-    form->addRow(QStringLiteral("Battle run spec"), battleRunCombo_);
-    form->addRow(QStringLiteral("Battle explorer settings"), explorerSettingsCombo_);
+    linkForm->addRow(QStringLiteral("Battle run spec"), battleRunCombo_);
+    linkForm->addRow(QStringLiteral("Battle explorer settings"), explorerSettingsCombo_);
+    panelLayout->addLayout(form);
+    auto* descriptionLabel = new QLabel(QStringLiteral("Description"), panel);
+    panelLayout->addWidget(descriptionLabel);
+    panelLayout->addWidget(descriptionEdit_, 1);
+    panelLayout->addLayout(linkForm);
     root->addWidget(panel, 1);
     auto* buttons = new QHBoxLayout();
     refreshButton_ = new QPushButton(QStringLiteral("Refresh"), this);

@@ -4,7 +4,6 @@
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
-#include <QtCore/QTimer>
 #include <QtCore/QTimeZone>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -310,15 +309,12 @@ void WorkflowsPage::setPageActive(bool active)
     }
 
     pageActive_ = active;
-    if (!pageActive_) {
-        if (refreshTimer_ != nullptr) {
-            refreshTimer_->stop();
-        }
-        return;
+    if (workflowRefreshPipeline_ != nullptr) {
+        workflowRefreshPipeline_->setActive(pageActive_);
+        workflowRefreshPipeline_->setAutoRefreshEnabled(autoRefreshCheck_->isChecked());
     }
-
-    if (refreshTimer_ != nullptr && autoRefreshCheck_->isChecked()) {
-        refreshTimer_->start(refreshSecondsSpin_->value() * 1000);
+    if (!pageActive_) {
+        return;
     }
     refreshWorkflows();
 }
@@ -498,7 +494,7 @@ void WorkflowsPage::createWidgets()
     splitter->setStretchFactor(1, 3);
     rootLayout->addWidget(splitter, 1);
 
-    refreshTimer_ = new QTimer(this);
+    workflowRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>(this);
 }
 
 void WorkflowsPage::wireSignals()
@@ -520,56 +516,61 @@ void WorkflowsPage::wireSignals()
     connect(prevButton_, &QPushButton::clicked, this, &WorkflowsPage::requestPreviousPage);
     connect(nextButton_, &QPushButton::clicked, this, &WorkflowsPage::requestNextPage);
     connect(autoRefreshCheck_, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled && pageActive_) {
-            refreshTimer_->start(refreshSecondsSpin_->value() * 1000);
-        } else {
-            refreshTimer_->stop();
+        if (workflowRefreshPipeline_ != nullptr) {
+            workflowRefreshPipeline_->setAutoRefreshEnabled(enabled);
         }
     });
     connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int seconds) {
-        if (pageActive_ && autoRefreshCheck_->isChecked()) {
-            refreshTimer_->start(seconds * 1000);
-        }
-    });
-    connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (pageActive_ && autoRefreshCheck_->isChecked()
-            && !workflowFetchInFlight_ && !detailFetchInFlight_ && !jobSetsFetchInFlight_
-            && !before_.has_value() && !after_.has_value()) {
-            refreshWorkflows();
+        if (workflowRefreshPipeline_ != nullptr) {
+            workflowRefreshPipeline_->setRefreshIntervalMs(seconds * 1000);
         }
     });
     connect(workflowTable_, &QTableWidget::itemSelectionChanged, this, &WorkflowsPage::handleWorkflowSelectionChanged);
 
-    connect(&workflowWatcher_, &QFutureWatcher<WorkflowPageResult>::finished, this, [this]() {
-        const bool refetch = pendingWorkflowRefresh_;
-        pendingWorkflowRefresh_ = false;
-        workflowFetchInFlight_ = false;
-        try {
-            const auto result = workflowWatcher_.result();
-            if (result.ok) {
-                workflowPage_ = result.value;
-                lastRefresh_ = QDateTime::currentDateTime();
-                errorMessage_.clear();
-                infoMessage_.clear();
-                updateWorkflowTable();
-            } else {
-                workflowPage_ = {};
-                errorMessage_ = QStringLiteral("Workflows failed: %1").arg(qstr(result.error.message));
-                updateWorkflowTable();
-            }
-        } catch (const std::exception& ex) {
-            workflowPage_ = {};
-            errorMessage_ = QStringLiteral("Workflows failed: %1").arg(QString::fromUtf8(ex.what()));
-            updateWorkflowTable();
-        } catch (...) {
-            workflowPage_ = {};
-            errorMessage_ = QStringLiteral("Workflows failed: unknown exception");
-            updateWorkflowTable();
+    workflowRefreshPipeline_->setRefreshIntervalMs(refreshSecondsSpin_->value() * 1000);
+    workflowRefreshPipeline_->setAutoRefreshEnabled(autoRefreshCheck_->isChecked());
+    workflowRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason reason) -> std::optional<savorqt::db::WorkflowListRequest> {
+        if (reason == savorqt::gui::RefreshReason::Auto
+            && (detailFetchInFlight_ || jobSetsFetchInFlight_ || before_.has_value() || after_.has_value())) {
+            return std::nullopt;
         }
+
+        workflowFetchInFlight_ = true;
+        errorMessage_.clear();
+
+        savorqt::db::WorkflowListRequest request{};
+        request.state = stateFilter_->currentData().toString().trimmed().toStdString();
+        request.workflow_kind = kindFilter_->text().trimmed().toStdString();
+        request.before = before_;
+        request.after = after_;
+        request.limit = pageSizeSpin_->value();
         updateStatusWidgets();
-        if (refetch) {
-            refreshWorkflows();
+        return request;
+    });
+    workflowRefreshPipeline_->setLoadAndPrepare([](savorqt::db::WorkflowListRequest request) {
+        return savorqt::gui::AsyncRefreshResult<WorkflowPageResult>::Ok(
+            savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(request));
+    });
+    workflowRefreshPipeline_->setApply([this](const WorkflowPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        workflowFetchInFlight_ = false;
+        if (result.ok) {
+            workflowPage_ = result.value;
+            lastRefresh_ = QDateTime::currentDateTime();
+            errorMessage_.clear();
+            infoMessage_.clear();
+        } else {
+            workflowPage_ = {};
+            errorMessage_ = QStringLiteral("Workflows failed: %1").arg(qstr(result.error.message));
         }
+        updateWorkflowTable();
+        updateStatusWidgets();
+    });
+    workflowRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        workflowFetchInFlight_ = false;
+        workflowPage_ = {};
+        errorMessage_ = error;
+        updateWorkflowTable();
+        updateStatusWidgets();
     });
 
     connect(&detailWatcher_, &QFutureWatcher<WorkflowDetailResult>::finished, this, [this]() {
@@ -612,25 +613,9 @@ void WorkflowsPage::wireSignals()
 
 void WorkflowsPage::refreshWorkflows()
 {
-    if (workflowFetchInFlight_) {
-        pendingWorkflowRefresh_ = true;
-        return;
+    if (workflowRefreshPipeline_ != nullptr) {
+        workflowRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-
-    workflowFetchInFlight_ = true;
-    errorMessage_.clear();
-
-    savorqt::db::WorkflowListRequest request{};
-    request.state = stateFilter_->currentData().toString().trimmed().toStdString();
-    request.workflow_kind = kindFilter_->text().trimmed().toStdString();
-    request.before = before_;
-    request.after = after_;
-    request.limit = pageSizeSpin_->value();
-
-    workflowWatcher_.setFuture(QtConcurrent::run([request]() {
-        return savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(request);
-    }));
-    updateStatusWidgets();
 }
 
 void WorkflowsPage::fetchWorkflowDetail(std::int64_t workflowInstanceId)

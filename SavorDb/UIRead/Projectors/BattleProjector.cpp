@@ -91,6 +91,7 @@ bool BattleProjector::ProjectFromOutbox(const std::string& projector_name, int m
 
     const std::vector<events::OutboxRelayDispatchBinding> execution_bindings{
         { { "Execution.JobClaimed.v1", 1 }, project_all },
+        { { "Execution.JobStarted.v1", 1 }, project_all },
         { { "Execution.JobLeaseRenewed.v1", 1 }, project_all },
         { { "Execution.JobProgressed.v1", 1 }, project_all },
         { { "Execution.JobCompleted.v1", 1 }, project_all },

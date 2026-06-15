@@ -68,6 +68,7 @@ bool SeedWorkflowGraphExecution(
     savor::db::IExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out);
 

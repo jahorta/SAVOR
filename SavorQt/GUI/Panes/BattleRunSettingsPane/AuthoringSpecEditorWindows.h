@@ -36,7 +36,6 @@ private:
     QSpinBox* prioritySpin_ = nullptr;
     QLineEdit* runMsEdit_ = nullptr;
     QLineEdit* viStallMsEdit_ = nullptr;
-    QSpinBox* samplesPerAxisSpin_ = nullptr;
     QLineEdit* minValueEdit_ = nullptr;
     QLineEdit* maxValueEdit_ = nullptr;
     QCheckBox* capTriggerTopCheck_ = nullptr;
@@ -65,7 +64,6 @@ private:
     QSpinBox* prioritySpin_ = nullptr;
     QLineEdit* runMsEdit_ = nullptr;
     QLineEdit* viStallMsEdit_ = nullptr;
-    QSpinBox* headroomSpin_ = nullptr;
     QCheckBox* progressCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
@@ -92,8 +90,6 @@ private:
     QCheckBox* progressCheck_ = nullptr;
     QCheckBox* singleTurnRunnerCheck_ = nullptr;
     QCheckBox* autoWaveTriggerCheck_ = nullptr;
-    QSpinBox* minFakeAttacksSpin_ = nullptr;
-    QSpinBox* maxFakeAttacksSpin_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 
@@ -113,6 +109,7 @@ private:
 
     std::function<void(const QString&, StatusToast::Severity)> statusCallback_;
     std::function<void()> savedCallback_;
+    QLineEdit* nameEdit_ = nullptr;
     QListWidget* predicateList_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QPushButton* saveButton_ = nullptr;
@@ -147,9 +144,10 @@ private:
 class BattleChainSpecEditorWindow final : public QWidget
 {
 public:
-    explicit BattleChainSpecEditorWindow(QWidget* parent = nullptr);
+    explicit BattleChainSpecEditorWindow(QWidget* parent = nullptr, bool embeddedInContainer = false);
     void setStatusCallback(std::function<void(const QString&, StatusToast::Severity)> callback);
     void setSavedCallback(std::function<void()> callback);
+    void loadSnapshot(const savor::db::BattleChainSpecSnapshot& snapshot, bool duplicate);
 
 private:
     void createWidgets();

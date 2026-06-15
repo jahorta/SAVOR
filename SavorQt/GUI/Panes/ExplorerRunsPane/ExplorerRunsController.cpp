@@ -1,7 +1,6 @@
 #include "ExplorerRunsController.h"
 
 #include <QtCore/QSettings>
-#include <QtCore/QTimer>
 
 #include <algorithm>
 #include <exception>
@@ -33,55 +32,70 @@ ExplorerRunsController::ExplorerRunsController(QObject* parent)
 {
     loadSettings();
 
-    connect(&groupsWatcher_, &QFutureWatcher<GroupPageResult>::finished, this, [this]() {
-        const bool shouldRefetch = pendingGroupsFetch_;
-        pendingGroupsFetch_ = false;
-        try {
-            const auto result = groupsWatcher_.result();
-            groupsInFlight_ = false;
-            state_.loadingGroups = false;
-            if (result.ok) {
-                state_.groupPage = result.value;
-                state_.lastRefresh = QDateTime::currentDateTime();
-                state_.errorMessage.clear();
-                state_.infoMessage.clear();
+    groupRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<GroupPageFetchRequest, GroupPageResult>(this);
+    groupRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
+    groupRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
+    groupRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason reason) -> std::optional<GroupPageFetchRequest> {
+        if (reason == savorqt::gui::RefreshReason::Auto && !canAutoRefresh()) {
+            return std::nullopt;
+        }
+        groupsInFlight_ = true;
+        state_.loadingGroups = true;
+        state_.errorMessage.clear();
+        emitStateChanged();
+        ExplorerRunGroupQuery query{};
+        query.before = before_;
+        query.after = after_;
+        query.limit = state_.pageLimit;
+        return GroupPageFetchRequest{ query };
+    });
+    groupRefreshPipeline_->setLoadAndPrepare([](GroupPageFetchRequest request) {
+        return savorqt::gui::AsyncRefreshResult<GroupPageResult>::Ok(
+            SavorDbExplorerRunService::ListGroups(request.query));
+    });
+    groupRefreshPipeline_->setApply([this](const GroupPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        groupsInFlight_ = false;
+        state_.loadingGroups = false;
+        if (result.ok) {
+            state_.groupPage = result.value;
+            state_.lastRefresh = QDateTime::currentDateTime();
+            state_.errorMessage.clear();
+            state_.infoMessage.clear();
 
-                bool selectionStillVisible = false;
-                for (const auto& group : state_.groupPage.groups) {
-                    if (group.job_set_id == state_.selectedJobSetId) {
-                        selectionStillVisible = true;
-                        break;
-                    }
+            bool selectionStillVisible = false;
+            for (const auto& group : state_.groupPage.groups) {
+                if (group.job_set_id == state_.selectedJobSetId) {
+                    selectionStillVisible = true;
+                    break;
                 }
-                if (!selectionStillVisible) {
-                    state_.selectedJobSetId = state_.groupPage.groups.empty() ? 0 : state_.groupPage.groups.front().job_set_id;
-                    state_.selectedGroup.reset();
-                    state_.selectedJob.reset();
-                    state_.selectedJobId = 0;
-                }
-                if (state_.selectedJobSetId > 0) {
-                    kickGroupDetailFetch(state_.selectedJobSetId);
-                }
-            } else {
-                state_.groupPage = {};
+            }
+            if (!selectionStillVisible) {
+                state_.selectedJobSetId = state_.groupPage.groups.empty() ? 0 : state_.groupPage.groups.front().job_set_id;
                 state_.selectedGroup.reset();
                 state_.selectedJob.reset();
                 state_.selectedJobId = 0;
-                state_.errorMessage = describeError(result.error, QStringLiteral("Explorer runs failed"));
             }
-        } catch (...) {
-            groupsInFlight_ = false;
-            state_.loadingGroups = false;
+            if (state_.selectedJobSetId > 0) {
+                kickGroupDetailFetch(state_.selectedJobSetId);
+            }
+        } else {
             state_.groupPage = {};
             state_.selectedGroup.reset();
             state_.selectedJob.reset();
             state_.selectedJobId = 0;
-            state_.errorMessage = describeException("Explorer runs failed");
+            state_.errorMessage = describeError(result.error, QStringLiteral("Explorer runs failed"));
         }
         emitStateChanged();
-        if (shouldRefetch) {
-            kickGroupsFetch();
-        }
+    });
+    groupRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        groupsInFlight_ = false;
+        state_.loadingGroups = false;
+        state_.groupPage = {};
+        state_.selectedGroup.reset();
+        state_.selectedJob.reset();
+        state_.selectedJobId = 0;
+        state_.errorMessage = error;
+        emitStateChanged();
     });
 
     connect(&groupDetailWatcher_, &QFutureWatcher<GroupDetailResult>::finished, this, [this]() {
@@ -145,12 +159,7 @@ ExplorerRunsController::ExplorerRunsController(QObject* parent)
         emitStateChanged();
     });
 
-    refreshTimer_ = new QTimer(this);
-    connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (canAutoRefresh()) {
-            requestRefresh();
-        }
-    });
+    groupRefreshPipeline_->setActive(pageActive_);
 }
 
 const ExplorerRunsController::ViewState& ExplorerRunsController::viewState() const
@@ -164,11 +173,13 @@ void ExplorerRunsController::setPageActive(bool active)
         return;
     }
     pageActive_ = active;
+    if (groupRefreshPipeline_ != nullptr) {
+        groupRefreshPipeline_->setActive(pageActive_);
+        groupRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
+    }
     if (!pageActive_) {
-        refreshTimer_->stop();
         return;
     }
-    refreshTimer_->start(state_.refreshSeconds * 1000);
     loadInitial();
 }
 
@@ -203,6 +214,9 @@ void ExplorerRunsController::setAutoRefreshEnabled(bool enabled)
 {
     state_.autoRefresh = enabled;
     persistSettings();
+    if (groupRefreshPipeline_ != nullptr) {
+        groupRefreshPipeline_->setAutoRefreshEnabled(enabled);
+    }
     emitStateChanged();
 }
 
@@ -210,8 +224,8 @@ void ExplorerRunsController::setRefreshSeconds(int seconds)
 {
     state_.refreshSeconds = (std::max)(1, seconds);
     persistSettings();
-    if (pageActive_) {
-        refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (groupRefreshPipeline_ != nullptr) {
+        groupRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
     }
     emitStateChanged();
 }
@@ -267,23 +281,9 @@ void ExplorerRunsController::loadInitial()
 
 void ExplorerRunsController::kickGroupsFetch()
 {
-    if (groupsInFlight_) {
-        pendingGroupsFetch_ = true;
-        return;
+    if (groupRefreshPipeline_ != nullptr) {
+        groupRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-    groupsInFlight_ = true;
-    pendingGroupsFetch_ = false;
-    state_.loadingGroups = true;
-    state_.errorMessage.clear();
-
-    ExplorerRunGroupQuery query{};
-    query.before = before_;
-    query.after = after_;
-    query.limit = state_.pageLimit;
-    groupsWatcher_.setFuture(QtConcurrent::run([query]() {
-        return SavorDbExplorerRunService::ListGroups(query);
-    }));
-    emitStateChanged();
 }
 
 void ExplorerRunsController::kickGroupDetailFetch(qint64 jobSetId)

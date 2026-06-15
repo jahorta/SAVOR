@@ -20,6 +20,13 @@ void AppendTasMovieRtcArgumentIfSingle(
     if (command == nullptr) {
         return;
     }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "headroom",
+        .value_type = "integer",
+        .integer_value = options.tasmovie_headroom_x10.value_or(15),
+        .source_kind = "scenario",
+    });
     const auto range = ResolveTasMovieRtcRange(options, default_value);
     if (range.low != range.high) {
         return;
@@ -225,7 +232,6 @@ bool SeedAuthoringSpec(
             .priority = 1,
             .run_ms = 10000,
             .vi_stall_ms = 2000,
-            .samples_per_axis = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,
@@ -246,6 +252,7 @@ bool SeedWorkflowGraphExecution(
     savor::db::IExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr) {
@@ -318,6 +325,13 @@ bool SeedWorkflowGraphExecution(
         .ref_kind = "state.savestate",
         .ref_id = savestate_id,
         .source_kind = "external",
+    });
+    command.arguments.push_back({
+        .node_key = "probe_1",
+        .argument_key = "samples_per_axis",
+        .value_type = "integer",
+        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
+        .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
@@ -509,6 +523,13 @@ bool SeedTasMovieSeedProbeWorkflow(
         .source_kind = "external",
     });
     AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
+    command.arguments.push_back({
+        .node_key = "probe_1",
+        .argument_key = "samples_per_axis",
+        .value_type = "integer",
+        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
+        .source_kind = "scenario",
+    });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 

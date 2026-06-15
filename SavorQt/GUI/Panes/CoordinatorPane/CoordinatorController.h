@@ -32,6 +32,7 @@ public:
     QString dolphinBaseDir() const;
     QString validationMessage() const;
     const std::vector<WorkerSnapshot>& snapshot() const;
+    std::vector<WorkerSnapshot> freshSnapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
     QStringList takeVisualLiveLogLineUpdates();
     QString visualReplayRuntimeStateText() const;

@@ -92,6 +92,9 @@ bool DBService::Start(std::string* error_out) {
     }
 
     sqlite_execution_db_ = std::make_unique<savor::db::execution::workflow::SqliteExecutionDb>(execution_sqlite_);
+    if (!sqlite_execution_db_->RequeueInterruptedExecutionJobs(nullptr, error_out)) {
+        return fail_start("Failed requeueing interrupted execution jobs: " + (error_out ? *error_out : std::string{}));
+    }
     execution_db_ = std::make_unique<savor::db::execution::QueuedExecutionDb>(sqlite_execution_db_.get());
     if (!execution_db_->Start(error_out)) {
         return fail_start("Failed starting Execution queue workers: " + (error_out ? *error_out : std::string{}));
