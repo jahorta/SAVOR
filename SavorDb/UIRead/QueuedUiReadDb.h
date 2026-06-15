@@ -31,6 +31,8 @@ public:
     std::vector<UiProgramKind> ListProgramKinds() const override;
     UiReadPage<UiJobSummary> ListJobs(
         const UiReadJobListQuery& query) const override;
+    UiJobStateCounts CountJobsByState(
+        const UiReadJobListQuery& query) const override;
     std::optional<UiJobSummary> GetJobSummary(
         std::int64_t job_id) const override;
     std::optional<UiJobDetail> GetJobDetail(

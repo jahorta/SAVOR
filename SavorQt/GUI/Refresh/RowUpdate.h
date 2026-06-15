@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <optional>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace savorqt::gui {
@@ -57,7 +58,7 @@ bool ApplyTableRowsByKey(
         return false;
     }
 
-    using Key = std::decay_t<decltype(keyFn(newRows.empty() ? currentRows.front() : newRows.front()))>;
+    using Key = std::decay_t<decltype(keyFn(std::declval<const Row&>()))>;
 
     std::optional<Key> selectedKey;
     const int selectedRow = table->currentRow();

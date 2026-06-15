@@ -6,6 +6,7 @@
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Refresh/RowUpdate.h"
+#include "GUI/Widgets/SegmentedProgressDelegate.h"
 #include "Worker/WorkerTelemetry.h"
 
 #include <QtCore/QDateTime>
@@ -23,13 +24,16 @@
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTableWidgetItem>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -67,9 +71,12 @@ struct RunningWorkflowRow {
     QString workflow;
     QString kind;
     QString state;
-    QString problems;
-    QString created;
-    QString completed;
+    QString progress;
+    QString current;
+    qint64 done = 0;
+    qint64 remaining = 0;
+    qint64 failed = 0;
+    qint64 canceled = 0;
 };
 
 struct RunningWorkerRow {
@@ -138,6 +145,7 @@ struct RunningRefreshData {
     int targetWorkers = 1;
     int failedWorkflows = 0;
     int failedJobs = 0;
+    int workerAttentionCount = 0;
     std::vector<RunningWorkflowRow> workflowRows;
     std::vector<RunningWorkerRow> workerRows;
     std::vector<QueueBucketData> queueBuckets;
@@ -552,9 +560,12 @@ bool runningWorkflowRowsEqual(const RunningWorkflowRow& lhs, const RunningWorkfl
         && lhs.workflow == rhs.workflow
         && lhs.kind == rhs.kind
         && lhs.state == rhs.state
-        && lhs.problems == rhs.problems
-        && lhs.created == rhs.created
-        && lhs.completed == rhs.completed;
+        && lhs.progress == rhs.progress
+        && lhs.current == rhs.current
+        && lhs.done == rhs.done
+        && lhs.remaining == rhs.remaining
+        && lhs.failed == rhs.failed
+        && lhs.canceled == rhs.canceled;
 }
 
 bool runningWorkerRowsEqual(const RunningWorkerRow& lhs, const RunningWorkerRow& rhs)
@@ -571,9 +582,14 @@ void populateRunningWorkflowRow(QTableWidget* table, int row, const RunningWorkf
     table->setItem(row, 0, createTableItem(workflow.workflow));
     table->setItem(row, 1, createTableItem(workflow.kind));
     table->setItem(row, 2, createTableItem(workflow.state));
-    table->setItem(row, 3, createTableItem(workflow.problems));
-    table->setItem(row, 4, createTableItem(workflow.created));
-    table->setItem(row, 5, createTableItem(workflow.completed));
+    auto* progressItem = createTableItem(workflow.progress);
+    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Text, workflow.progress);
+    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Done, workflow.done);
+    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Remaining, workflow.remaining);
+    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Failed, workflow.failed);
+    progressItem->setData(savorqt::gui::SegmentedProgressRoles::Canceled, workflow.canceled);
+    table->setItem(row, 3, progressItem);
+    table->setItem(row, 4, createTableItem(workflow.current));
 }
 
 void populateRunningWorkerRow(QTableWidget* table, int row, const RunningWorkerRow& worker)
@@ -609,29 +625,173 @@ QueueBucketData prepareQueueBucket(const QString& title, const std::vector<savor
     return bucket;
 }
 
+std::int64_t terminalJobCount(const savor::db::UiJobStateCounts& counts)
+{
+    return counts.succeeded + counts.canceled + counts.superseded;
+}
+
+QString formatCount(std::int64_t value)
+{
+    return QString::number(static_cast<qlonglong>(value));
+}
+
+bool workflowIsActiveFirst(const savor::db::UiWorkflowInstanceSummary& workflow)
+{
+    return !isWorkflowFailed(workflow) && !isWorkflowTerminal(workflow);
+}
+
+int workflowSortBucket(const savor::db::UiWorkflowInstanceSummary& workflow)
+{
+    if (workflowIsActiveFirst(workflow)) {
+        return 0;
+    }
+    if (isWorkflowFailed(workflow)) {
+        return 1;
+    }
+    return 2;
+}
+
+QString workflowCurrentText(
+    const savor::db::UiWorkflowInstanceSummary& workflow,
+    const std::optional<savor::db::UiWorkflowDetail>& detail)
+{
+    if (!workflow.failure_text.empty()) {
+        return compactText(qs(workflow.failure_text), 96);
+    }
+    if (!workflow.failure_code.empty()) {
+        return qs(workflow.failure_code);
+    }
+    if (detail.has_value()) {
+        for (const auto& alert : detail->alerts) {
+            if (alert.is_active) {
+                return compactText(qs(alert.message.empty() ? alert.alert_code : alert.message), 96);
+            }
+        }
+        for (const auto& step : detail->steps) {
+            if (step.state == "RUNNING" || step.state == "CLAIMED" || step.state == "READY") {
+                return compactText(QStringLiteral("%1  %2").arg(qs(step.step_key), qs(step.state)), 96);
+            }
+        }
+        for (const auto& activation : detail->unit_activations) {
+            if (activation.state == "RUNNING" || activation.state == "READY" || activation.state == "BLOCKED") {
+                const QString name = activation.display_name.empty()
+                    ? qs(activation.unit_kind)
+                    : qs(activation.display_name);
+                return compactText(QStringLiteral("%1  %2").arg(name, qs(activation.state)), 96);
+            }
+        }
+    }
+    if (workflow.blocked_step_count > 0 || workflow.failed_step_count > 0) {
+        return QStringLiteral("blocked %1 / failed %2")
+            .arg(workflow.blocked_step_count)
+            .arg(workflow.failed_step_count);
+    }
+    return QStringLiteral("--");
+}
+
+RunningWorkflowRow prepareWorkflowRow(
+    const savor::db::UiWorkflowInstanceSummary& workflow,
+    const std::unordered_map<std::int64_t, qint64>& failedJobsByJobSet)
+{
+    const auto detailResult = savorqt::db::SavorDbWorkflowService::GetWorkflowDetail(workflow.workflow_instance_id);
+    const std::optional<savor::db::UiWorkflowDetail> detail =
+        detailResult.ok
+            ? std::optional<savor::db::UiWorkflowDetail>{ detailResult.value }
+            : std::nullopt;
+
+    qint64 total = 0;
+    qint64 done = 0;
+    qint64 failed = 0;
+    if (detail.has_value()) {
+        for (const auto& step : detail->steps) {
+            total += static_cast<qint64>(step.job_count);
+            qint64 stepFailed = static_cast<qint64>(step.job_failed_count);
+            if (step.job_set_id.has_value()) {
+                const auto failedIt = failedJobsByJobSet.find(*step.job_set_id);
+                if (failedIt != failedJobsByJobSet.end()) {
+                    stepFailed = (std::max)(stepFailed, failedIt->second);
+                }
+            }
+            qint64 stepCompleted = static_cast<qint64>(step.job_completed_count);
+            if (stepCompleted == 0
+                && stepFailed == 0
+                && step.job_count > 0
+                && step.state == "COMPLETED") {
+                stepCompleted = static_cast<qint64>(step.job_count);
+            }
+            failed += stepFailed;
+            done += (std::max<qint64>)(0, stepCompleted - stepFailed);
+        }
+    }
+    const qint64 canceled = 0;
+    const qint64 remaining = (std::max<qint64>)(0, total - done - failed - canceled);
+    QString progress = QStringLiteral("ok:%1 rem:%2 fail:%3 can:%4 done:%5/%6")
+        .arg(done)
+        .arg(remaining)
+        .arg(failed)
+        .arg(canceled)
+        .arg(done + failed + canceled)
+        .arg(total);
+    if (total <= 0) {
+        progress = QStringLiteral("No jobs yet");
+    }
+
+    return RunningWorkflowRow{
+        workflow.workflow_instance_id,
+        QStringLiteral("#%1").arg(workflow.workflow_instance_id),
+        qs(workflow.workflow_kind),
+        qs(workflow.state),
+        progress,
+        workflowCurrentText(workflow, detail),
+        done,
+        remaining,
+        failed,
+        canceled,
+    };
+}
+
 RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& request)
 {
     savorqt::db::WorkflowListRequest workflowRequest{};
-    workflowRequest.limit = 50;
+    workflowRequest.limit = 100;
     const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
 
     savor::db::UiReadJobListQuery jobQuery{};
     const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
+    const auto jobCounts = savorqt::db::SavorDbJobService::CountJobsByState(jobQuery);
+    savor::db::UiReadJobListQuery failedJobQuery{};
+    failedJobQuery.states = { "FAILED" };
+    const auto failedJobs = savorqt::db::SavorDbJobService::FetchJobsPage(failedJobQuery, std::nullopt, std::nullopt, 100);
 
-    const std::vector<savor::db::UiWorkflowInstanceSummary> workflowItems =
+    std::vector<savor::db::UiWorkflowInstanceSummary> workflowItems =
         workflows.ok ? workflows.value.items : std::vector<savor::db::UiWorkflowInstanceSummary>{};
     const std::vector<savor::db::UiJobSummary> jobItems =
         jobs.ok ? jobs.value.items : std::vector<savor::db::UiJobSummary>{};
+    std::unordered_map<std::int64_t, qint64> failedJobsByJobSet;
+    if (failedJobs.ok) {
+        for (const auto& failedJob : failedJobs.value.items) {
+            ++failedJobsByJobSet[failedJob.job_set_id];
+        }
+    }
+    const savor::db::UiJobStateCounts counts = jobCounts.ok ? jobCounts.value : savor::db::UiJobStateCounts{};
 
+    std::stable_sort(workflowItems.begin(), workflowItems.end(), [](const auto& lhs, const auto& rhs) {
+        const int lhsBucket = workflowSortBucket(lhs);
+        const int rhsBucket = workflowSortBucket(rhs);
+        if (lhsBucket != rhsBucket) {
+            return lhsBucket < rhsBucket;
+        }
+        return lhs.created_at_utc > rhs.created_at_utc;
+    });
     const WorkflowBuckets workflowBuckets = bucketWorkflows(workflowItems);
     const JobBuckets jobBuckets = bucketJobs(jobItems);
     const bool hasValidation = !request.validation.trimmed().isEmpty();
 
     RunningRefreshData data;
     data.workflowsOk = workflows.ok;
-    data.jobsOk = jobs.ok;
+    data.jobsOk = jobs.ok && jobCounts.ok;
     data.workflowError = workflows.ok ? QString() : qs(workflows.error.message);
-    data.jobError = jobs.ok ? QString() : qs(jobs.error.message);
+    data.jobError = !jobs.ok ? qs(jobs.error.message) : (jobCounts.ok ? QString() : qs(jobCounts.error.message));
     data.controllerAvailable = request.controllerAvailable;
     data.hasValidation = hasValidation;
     data.validation = request.validation;
@@ -643,7 +803,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.dolphinMissing = request.dolphinMissing;
     data.targetWorkers = request.targetWorkers;
     data.failedWorkflows = workflowBuckets.failed;
-    data.failedJobs = static_cast<int>(jobBuckets.failed.size());
+    data.failedJobs = static_cast<int>(counts.failed);
 
     data.coordinatorText = QStringLiteral("Stopped");
     if (hasValidation) {
@@ -656,68 +816,57 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.workersText = request.controllerAvailable
         ? QStringLiteral("%1/%2").arg(request.activeWorkers).arg(request.targetWorkers)
         : QStringLiteral("--");
-    data.queueText = jobs.ok ? QString::number(static_cast<int>(jobBuckets.queued.size())) : QStringLiteral("--");
-    data.runningText = jobs.ok ? QString::number(static_cast<int>(jobBuckets.running.size())) : QStringLiteral("--");
-    data.failuresText = workflows.ok && jobs.ok
-        ? QStringLiteral("%1/%2").arg(workflowBuckets.failed).arg(static_cast<int>(jobBuckets.failed.size()))
+    data.queueText = data.jobsOk ? formatCount(counts.queued) : QStringLiteral("--");
+    data.runningText = data.jobsOk ? formatCount(counts.claimed + counts.running) : QStringLiteral("--");
+    data.failuresText = workflows.ok && data.jobsOk
+        ? QStringLiteral("%1/%2").arg(workflowBuckets.failed).arg(formatCount(counts.failed))
         : QStringLiteral("--");
     data.lastRefreshText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
 
     data.workflowSummary = workflows.ok
-        ? QStringLiteral("%1 sampled, %2 active, %3 blocked, %4 failed, %5 terminal.")
+        ? QStringLiteral("%1 visible, %2 active, %3 blocked, %4 failed, %5 terminal.")
             .arg(static_cast<int>(workflowItems.size()))
             .arg(workflowBuckets.active)
             .arg(workflowBuckets.blocked)
             .arg(workflowBuckets.failed)
             .arg(workflowBuckets.terminal)
         : QStringLiteral("Workflow list unavailable: %1").arg(data.workflowError);
-    data.queueSummary = jobs.ok
-        ? QStringLiteral("%1 sampled: %2 queued, %3 claimed/running, %4 failed, %5 recently terminal.")
-            .arg(static_cast<int>(jobItems.size()))
-            .arg(static_cast<int>(jobBuckets.queued.size()))
-            .arg(static_cast<int>(jobBuckets.running.size()))
-            .arg(static_cast<int>(jobBuckets.failed.size()))
-            .arg(static_cast<int>(jobBuckets.terminal.size()))
+    data.queueSummary = data.jobsOk
+        ? QStringLiteral("%1 total: %2 queued, %3 claimed/running, %4 failed, %5 terminal. Showing recent samples.")
+            .arg(formatCount(counts.total))
+            .arg(formatCount(counts.queued))
+            .arg(formatCount(counts.claimed + counts.running))
+            .arg(formatCount(counts.failed))
+            .arg(formatCount(terminalJobCount(counts)))
         : QStringLiteral("Job queue unavailable: %1").arg(data.jobError);
 
     data.workflowRows.reserve(workflowItems.size());
     for (const auto& workflow : workflowItems) {
-        QString problems;
-        if (!workflow.failure_text.empty()) {
-            problems = compactText(qs(workflow.failure_text));
-        } else if (!workflow.failure_code.empty()) {
-            problems = qs(workflow.failure_code);
-        } else if (workflow.blocked_step_count > 0 || workflow.failed_step_count > 0) {
-            problems = QStringLiteral("blocked %1 / failed %2")
-                .arg(workflow.blocked_step_count)
-                .arg(workflow.failed_step_count);
-        } else {
-            problems = QStringLiteral("--");
-        }
-        data.workflowRows.push_back(RunningWorkflowRow{
-            workflow.workflow_instance_id,
-            QStringLiteral("#%1").arg(workflow.workflow_instance_id),
-            qs(workflow.workflow_kind),
-            qs(workflow.state),
-            problems,
-            formatTime(workflow.created_at_utc),
-            formatOptionalTime(workflow.completed_at_utc),
-        });
+        data.workflowRows.push_back(prepareWorkflowRow(workflow, failedJobsByJobSet));
     }
 
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Queued"), jobBuckets.queued));
+    data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(counts.queued, std::numeric_limits<int>::max()));
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Claimed / running"), jobBuckets.running));
+    data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(counts.claimed + counts.running, std::numeric_limits<int>::max()));
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Failed"), jobBuckets.failed));
+    data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(counts.failed, std::numeric_limits<int>::max()));
     data.queueBuckets.push_back(prepareQueueBucket(QStringLiteral("Recently terminal"), jobBuckets.terminal));
+    data.queueBuckets.back().totalCount = static_cast<int>((std::min<std::int64_t>)(terminalJobCount(counts), std::numeric_limits<int>::max()));
 
     const int workerAttentionCount = static_cast<int>(std::count_if(request.workers.begin(), request.workers.end(), workerNeedsAttention));
+    data.workerAttentionCount = workerAttentionCount;
     data.workerSummary = request.controllerAvailable
-        ? QStringLiteral("%1 active, %2 target, %3 rows, %4 attention.")
-            .arg(request.activeWorkers)
-            .arg(request.targetWorkers)
-            .arg(static_cast<int>(request.workers.size()))
-            .arg(workerAttentionCount)
+        ? (workerAttentionCount > 0
+            ? QStringLiteral("%1/%2 workers, %3 need attention.")
+                .arg(request.activeWorkers)
+                .arg(request.targetWorkers)
+                .arg(workerAttentionCount)
+            : QStringLiteral("%1/%2 workers, no worker attention.")
+                .arg(request.activeWorkers)
+                .arg(request.targetWorkers))
         : QStringLiteral("Coordinator controller unavailable.");
+
     data.workerRows.reserve(request.workers.size());
     for (const auto& worker : request.workers) {
         data.workerRows.push_back(RunningWorkerRow{
@@ -737,10 +886,10 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::CoordinatorSettings,
         });
     }
-    if (!request.coordinatorRunning && !hasValidation && !jobBuckets.queued.empty()) {
+    if (!request.coordinatorRunning && !hasValidation && counts.queued > 0) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Coordinator stopped with queued jobs"),
-            QStringLiteral("%1 jobs are waiting for workers.").arg(static_cast<int>(jobBuckets.queued.size())),
+            QStringLiteral("%1 jobs are waiting for workers.").arg(formatCount(counts.queued)),
             QStringLiteral("Start coordinator"),
             AttentionRoute::StartCoordinator,
         });
@@ -748,15 +897,15 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     if (workflowBuckets.failed > 0) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Failed workflows"),
-            QStringLiteral("%1 recent workflow instances need triage.").arg(workflowBuckets.failed),
+            QStringLiteral("%1 visible workflow instances need triage.").arg(workflowBuckets.failed),
             QStringLiteral("Open Workflows"),
             AttentionRoute::Workflows,
         });
     }
-    if (!jobBuckets.failed.empty()) {
+    if (counts.failed > 0) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Failed jobs"),
-            QStringLiteral("%1 recent jobs failed.").arg(static_cast<int>(jobBuckets.failed.size())),
+            QStringLiteral("%1 jobs failed.").arg(formatCount(counts.failed)),
             QStringLiteral("Open Jobs"),
             AttentionRoute::Jobs,
         });
@@ -777,7 +926,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::Workflows,
         });
     }
-    if (!jobs.ok) {
+    if (!data.jobsOk) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Job read unavailable"),
             data.jobError,
@@ -785,19 +934,11 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::Jobs,
         });
     }
-    if (data.attentionItems.empty()) {
-        data.attentionItems.push_back(AttentionItemData{
-            QStringLiteral("No current attention items"),
-            QStringLiteral("Coordinator setup, queue pressure, failures, and workers are quiet in the recent sample."),
-            QString(),
-            AttentionRoute::None,
-        });
-        data.attentionSummary = QStringLiteral("Clear.");
-    } else {
-        data.attentionSummary = QStringLiteral("%1 prioritized item%2.")
+    data.attentionSummary = data.attentionItems.empty()
+        ? QStringLiteral("No attention items.")
+        : QStringLiteral("%1 prioritized item%2.")
             .arg(static_cast<int>(data.attentionItems.size()))
             .arg(data.attentionItems.size() == 1 ? QString() : QStringLiteral("s"));
-    }
 
     return data;
 }
@@ -918,18 +1059,17 @@ void RunningTab::build()
         }
     });
     statusLayout->addWidget(openFailuresButton_);
+
+    detailsDrawerButton_ = createActionButton(QStringLiteral("Details"), statusStrip);
+    statusLayout->addWidget(detailsDrawerButton_);
     canvasLayout()->addWidget(statusStrip);
 
     auto* cockpit = new QFrame(this);
     cockpit->setObjectName("workspaceCardGrid");
     cockpit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* grid = new QGridLayout(cockpit);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(10);
-    grid->setColumnStretch(0, 3);
-    grid->setColumnStretch(1, 2);
-    grid->setRowStretch(0, 1);
-    grid->setRowStretch(1, 1);
+    auto* cockpitLayout = new QHBoxLayout(cockpit);
+    cockpitLayout->setContentsMargins(0, 0, 0, 0);
+    cockpitLayout->setSpacing(10);
 
     auto* workflowPanel = createSectionPanel(QStringLiteral("Workflow Lanes"), cockpit);
     workflowPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -952,32 +1092,43 @@ void RunningTab::build()
 
     workflowTable_ = new QTableWidget(workflowPanel);
     configureTable(workflowTable_);
-    workflowTable_->setColumnCount(6);
+    workflowTable_->verticalHeader()->setDefaultSectionSize(34);
+    workflowTable_->setColumnCount(5);
     workflowTable_->setHorizontalHeaderLabels(QStringList{
         QStringLiteral("Workflow"),
         QStringLiteral("Kind"),
         QStringLiteral("State"),
-        QStringLiteral("Problems"),
-        QStringLiteral("Created"),
-        QStringLiteral("Completed"),
+        QStringLiteral("Progress"),
+        QStringLiteral("Current / Problems"),
     });
     workflowTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     workflowTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    workflowTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    workflowTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    workflowTable_->setItemDelegateForColumn(3, new savorqt::gui::SegmentedProgressDelegate(workflowTable_));
     QObject::connect(workflowTable_, &QTableWidget::cellDoubleClicked, workflowTable_, [this](int, int) {
         if (actions_.openWorkflows) {
             actions_.openWorkflows();
         }
     });
     workflowLayout->addWidget(workflowTable_, 1);
-    grid->addWidget(workflowPanel, 0, 0);
+    cockpitLayout->addWidget(workflowPanel, 1);
 
-    auto* queuePanel = createSectionPanel(QStringLiteral("Queue Pressure"), cockpit);
-    queuePanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* queueLayout = qobject_cast<QVBoxLayout*>(queuePanel->layout());
+    detailDrawer_ = new QFrame(cockpit);
+    detailDrawer_->setObjectName("workspaceHeroPanel");
+    detailDrawer_->setMinimumWidth(380);
+    detailDrawer_->setMaximumWidth(520);
+    auto* drawerLayout = new QVBoxLayout(detailDrawer_);
+    drawerLayout->setContentsMargins(12, 12, 12, 12);
+    drawerLayout->setSpacing(8);
+    detailTabs_ = new QTabWidget(detailDrawer_);
+    drawerLayout->addWidget(detailTabs_, 1);
+
+    auto* queuePanel = new QFrame(detailTabs_);
+    auto* queueLayout = new QVBoxLayout(queuePanel);
+    queueLayout->setContentsMargins(6, 8, 6, 6);
+    queueLayout->setSpacing(8);
     auto* queueHeader = new QHBoxLayout();
     queueHeader->setContentsMargins(0, 0, 0, 0);
     queueHeader->setSpacing(8);
@@ -994,11 +1145,12 @@ void RunningTab::build()
     queueHeader->addWidget(openJobsButton);
     queueLayout->addLayout(queueHeader);
     queueLayout->addWidget(createPanelScrollArea(queuePanel, &queueBucketsLayout_), 1);
-    grid->addWidget(queuePanel, 0, 1);
+    detailTabs_->addTab(queuePanel, QStringLiteral("Queue"));
 
-    auto* workerPanel = createSectionPanel(QStringLiteral("Worker Rack"), cockpit);
-    workerPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* workerLayout = qobject_cast<QVBoxLayout*>(workerPanel->layout());
+    auto* workerPanel = new QFrame(detailTabs_);
+    auto* workerLayout = new QVBoxLayout(workerPanel);
+    workerLayout->setContentsMargins(6, 8, 6, 6);
+    workerLayout->setSpacing(8);
     auto* workerHeader = new QHBoxLayout();
     workerHeader->setContentsMargins(0, 0, 0, 0);
     workerHeader->setSpacing(8);
@@ -1036,11 +1188,12 @@ void RunningTab::build()
         }
     });
     workerLayout->addWidget(workerTable_, 1);
-    grid->addWidget(workerPanel, 1, 0);
+    detailTabs_->addTab(workerPanel, QStringLiteral("Workers"));
 
-    auto* attentionPanel = createSectionPanel(QStringLiteral("Attention Stack"), cockpit);
-    attentionPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* attentionPanelLayout = qobject_cast<QVBoxLayout*>(attentionPanel->layout());
+    auto* attentionPanel = new QFrame(detailTabs_);
+    auto* attentionPanelLayout = new QVBoxLayout(attentionPanel);
+    attentionPanelLayout->setContentsMargins(6, 8, 6, 6);
+    attentionPanelLayout->setSpacing(8);
     auto* attentionHeader = new QHBoxLayout();
     attentionHeader->setContentsMargins(0, 0, 0, 0);
     attentionHeader->setSpacing(8);
@@ -1050,7 +1203,19 @@ void RunningTab::build()
     attentionHeader->addWidget(attentionSummaryLabel_, 1);
     attentionPanelLayout->addLayout(attentionHeader);
     attentionPanelLayout->addWidget(createPanelScrollArea(attentionPanel, &attentionLayout_), 1);
-    grid->addWidget(attentionPanel, 1, 1);
+    detailTabs_->addTab(attentionPanel, QStringLiteral("Attention"));
+
+    detailDrawer_->setVisible(false);
+    QObject::connect(detailsDrawerButton_, &QPushButton::clicked, detailDrawer_, [this]() {
+        const bool nextVisible = detailDrawer_ != nullptr && !detailDrawer_->isVisible();
+        if (detailDrawer_ != nullptr) {
+            detailDrawer_->setVisible(nextVisible);
+        }
+        if (detailsDrawerButton_ != nullptr) {
+            detailsDrawerButton_->setText(nextVisible ? QStringLiteral("Hide details") : QStringLiteral("Details"));
+        }
+    });
+    cockpitLayout->addWidget(detailDrawer_);
 
     canvasLayout()->addWidget(cockpit, 1);
 
@@ -1108,6 +1273,15 @@ void RunningTab::build()
         fixRuntimeSetupButton_->setVisible(data.hasValidation);
         fixRuntimeSetupButton_->setToolTip(data.validation);
         openFailuresButton_->setVisible(data.failedWorkflows > 0 || data.failedJobs > 0);
+        if (detailsDrawerButton_ != nullptr) {
+            const bool drawerVisible = detailDrawer_ != nullptr && detailDrawer_->isVisible();
+            if (!drawerVisible) {
+                detailsDrawerButton_->setText(data.attentionItems.empty()
+                    ? QStringLiteral("Details")
+                    : QStringLiteral("Details (%1)").arg(static_cast<int>(data.attentionItems.size())));
+            }
+            detailsDrawerButton_->setToolTip(data.attentionSummary);
+        }
 
         workflowSummaryLabel_->setText(data.workflowSummary);
         savorqt::gui::ApplyTableRowsByKey(

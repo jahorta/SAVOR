@@ -87,6 +87,15 @@ UiReadPage<UiJobSummary> QueuedUiReadDb::ListJobs(
         {});
 }
 
+UiJobStateCounts QueuedUiReadDb::CountJobsByState(
+    const UiReadJobListQuery& query) const {
+    return ExecuteRead<UiJobStateCounts>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->CountJobsByState(query) : UiJobStateCounts{};
+        },
+        {});
+}
+
 std::optional<UiJobSummary> QueuedUiReadDb::GetJobSummary(
     std::int64_t job_id) const {
     return ExecuteRead<std::optional<UiJobSummary>>(

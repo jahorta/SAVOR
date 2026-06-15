@@ -97,9 +97,20 @@ QString progressText(std::int64_t completed, std::int64_t total, std::int64_t fa
     return QStringLiteral("%1/%2 (%3%)").arg(completed).arg(total).arg(pct);
 }
 
+std::int64_t effectiveCompletedJobCount(const savor::db::UiWorkflowStepSummary& step)
+{
+    if (step.job_completed_count == 0
+        && step.job_failed_count == 0
+        && step.job_count > 0
+        && step.state == "COMPLETED") {
+        return step.job_count;
+    }
+    return step.job_completed_count;
+}
+
 QString stepProgressText(const savor::db::UiWorkflowStepSummary& step)
 {
-    return progressText(step.job_completed_count, step.job_count, step.job_failed_count);
+    return progressText(effectiveCompletedJobCount(step), step.job_count, step.job_failed_count);
 }
 
 QString activeStepText(const savor::db::UiWorkflowDetail& detail)
@@ -254,7 +265,7 @@ void addActivationRow(
             continue;
         }
         total += step.job_count;
-        completed += step.job_completed_count;
+        completed += effectiveCompletedJobCount(step);
         failed += step.job_failed_count;
     }
 
@@ -839,7 +850,7 @@ void WorkflowsPage::updateWorkflowDetail()
     std::int64_t failedJobs = 0;
     for (const auto& step : detail.steps) {
         totalJobs += step.job_count;
-        completedJobs += step.job_completed_count;
+        completedJobs += effectiveCompletedJobCount(step);
         failedJobs += step.job_failed_count;
     }
 

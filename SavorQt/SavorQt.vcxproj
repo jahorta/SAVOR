@@ -214,6 +214,7 @@
     <ClInclude Include="GUI\Tabs\SetupTab.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeModel.h" />
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h" />
+    <ClInclude Include="GUI\Widgets\SegmentedProgressDelegate.h" />
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogFilterController.h" />
     <ClInclude Include="GUI\Widgets\VisualReplay\LiveLogListModel.h" />

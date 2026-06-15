@@ -306,6 +306,9 @@
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Widgets\SegmentedProgressDelegate.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>

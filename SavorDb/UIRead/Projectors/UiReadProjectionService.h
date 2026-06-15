@@ -80,6 +80,8 @@ private:
     void CloseStream(StreamRuntime& stream);
     bool RunStreamOnce(StreamRuntime& stream, std::string* error_out);
     void WorkerLoop(StreamRuntime* stream);
+    [[nodiscard]] bool IsStoppingRequested() const;
+    void InterruptStreams() const;
 
     UiReadProjectionConfig config_{};
     mutable std::mutex mtx_;

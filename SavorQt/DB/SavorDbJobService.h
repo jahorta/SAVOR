@@ -49,6 +49,16 @@ public:
         return ServiceResult<savor::db::UiReadPage<savor::db::UiJobSummary>>::Ok(db->ListJobs(query));
     }
 
+    static ServiceResult<savor::db::UiJobStateCounts> CountJobsByState(
+        const savor::db::UiReadJobListQuery& scope = {}) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<savor::db::UiJobStateCounts>("SavorDb UIRead is unavailable");
+        }
+
+        return ServiceResult<savor::db::UiJobStateCounts>::Ok(db->CountJobsByState(scope));
+    }
+
     static ServiceResult<std::vector<savor::db::ExecutionJobEventRecord>> FetchJobEvents(std::int64_t job_id, int limit) {
         auto* db = ExecutionDb();
         if (db == nullptr) {

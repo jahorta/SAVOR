@@ -237,6 +237,8 @@ bool IsExecutionWorkflowEvent(const std::string& event_type) {
         || event_type == "Execution.WorkflowInstanceCompleted.v1";
 }
 
+bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow_instance_id, std::string* error_out);
+
 bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* error_out) {
     if (job_id <= 0) {
         return true;
@@ -342,6 +344,50 @@ bool ProjectJobSet(sqlite3* source, sqlite3* ui, std::int64_t job_set_id, std::s
     return true;
 }
 
+std::int64_t ResolveWorkflowInstanceForJobSet(sqlite3* source, std::int64_t job_set_id, std::string* error_out) {
+    if (job_set_id <= 0) {
+        return 0;
+    }
+    Statement st;
+    if (!Prepare(source, "SELECT workflow_instance_id FROM exec_workflow_step WHERE job_set_id=?1 LIMIT 1;", &st, error_out)) {
+        return 0;
+    }
+    sqlite3_bind_int64(st.st, 1, job_set_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
+std::int64_t ResolveWorkflowInstanceForJob(sqlite3* source, std::int64_t job_id, std::string* error_out) {
+    if (job_id <= 0) {
+        return 0;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT s.workflow_instance_id "
+        "FROM exec_job j JOIN exec_workflow_step s ON s.job_set_id=j.job_set_id "
+        "WHERE j.job_id=?1 LIMIT 1;";
+    if (!Prepare(source, kSql, &st, error_out)) {
+        return 0;
+    }
+    sqlite3_bind_int64(st.st, 1, job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
+bool ProjectWorkflowForJobSet(sqlite3* source, sqlite3* ui, std::int64_t job_set_id, std::string* error_out) {
+    const auto workflow_instance_id = ResolveWorkflowInstanceForJobSet(source, job_set_id, error_out);
+    return workflow_instance_id <= 0 || ProjectWorkflowInstance(source, ui, workflow_instance_id, error_out);
+}
+
+bool ProjectWorkflowForJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* error_out) {
+    const auto workflow_instance_id = ResolveWorkflowInstanceForJob(source, job_id, error_out);
+    return workflow_instance_id <= 0 || ProjectWorkflowInstance(source, ui, workflow_instance_id, error_out);
+}
+
 bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow_instance_id, std::string* error_out) {
     if (workflow_instance_id <= 0) {
         return true;
@@ -430,7 +476,7 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
     constexpr const char* kSteps =
         "SELECT s.workflow_step_id,s.workflow_instance_id,s.workflow_unit_activation_id,s.step_key,s.step_kind,s.state,s.blocked_reason,s.job_set_id,"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id),"
-        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='COMPLETED'),"
+        "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state IN ('COMPLETED','SUCCEEDED','SUCCEEDED_WINNER','SUPERSEDED','SUCCEEDED_DUPLICATE')),"
         "(SELECT COUNT(1) FROM exec_job j WHERE j.job_set_id=s.job_set_id AND j.state='FAILED'),"
         "s.priority,s.attempts,s.max_attempts,s.ready_at_utc,s.started_at_utc,s.completed_at_utc,s.failed_at_utc,s.created_at_utc "
         "FROM exec_workflow_step s WHERE s.workflow_instance_id=?1;";
@@ -855,9 +901,20 @@ bool ApplyEvent(StreamKind kind, sqlite3* source, sqlite3* ui, const OutboxEvent
         }
         if (IsExecutionJobEvent(event.event_type)) {
             if (event.event_type == "Execution.JobSetCreated.v1" || event.aggregate_kind == "job_set") {
-                return ProjectJobSet(source, ui, ParseInt64(event.aggregate_id), error_out);
+                const auto job_set_id = ParseInt64(event.aggregate_id);
+                return ProjectJobSet(source, ui, job_set_id, error_out)
+                    && ProjectWorkflowForJobSet(source, ui, job_set_id, error_out);
             }
-            return ProjectJob(source, ui, ParseInt64(event.aggregate_id), error_out);
+            const auto job_id = ParseInt64(event.aggregate_id);
+            if (!ProjectJob(source, ui, job_id, error_out)) {
+                return false;
+            }
+            if (event.event_type == "Execution.JobQueued.v1"
+                || event.event_type == "Execution.JobCompleted.v1"
+                || event.event_type == "Execution.JobRestored.v1") {
+                return ProjectWorkflowForJob(source, ui, job_id, error_out);
+            }
+            return true;
         }
         break;
     case StreamKind::State:
@@ -1176,6 +1233,7 @@ void UiReadProjectionService::Stop() {
         std::lock_guard<std::mutex> lock(mtx_);
         stopping_ = true;
     }
+    InterruptStreams();
     cv_.notify_all();
     for (auto& stream : streams_) {
         if (stream->worker.joinable()) {
@@ -1191,6 +1249,25 @@ void UiReadProjectionService::Stop() {
 bool UiReadProjectionService::IsRunning() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return running_ && !stopping_;
+}
+
+bool UiReadProjectionService::IsStoppingRequested() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return stopping_;
+}
+
+void UiReadProjectionService::InterruptStreams() const {
+    for (const auto& stream : streams_) {
+        if (stream == nullptr) {
+            continue;
+        }
+        if (stream->source_db != nullptr) {
+            sqlite3_interrupt(stream->source_db);
+        }
+        if (stream->ui_db != nullptr) {
+            sqlite3_interrupt(stream->ui_db);
+        }
+    }
 }
 
 bool UiReadProjectionService::OpenStream(StreamRuntime& stream, std::string* error_out) {
@@ -1246,27 +1323,59 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
         if (error_out) *error_out = "projection stream database is not open";
         return false;
     }
+    if (IsStoppingRequested()) {
+        return true;
+    }
 
     const auto started_at = std::chrono::steady_clock::now();
     int consecutive_failures = 0;
     auto cursor = ReadSubscriptionCursor(stream, &consecutive_failures, error_out);
     if (!cursor.has_value()) {
+        if (IsStoppingRequested()) {
+            return true;
+        }
         stream.failed_run_once_count += 1;
         return false;
     }
+    if (IsStoppingRequested()) {
+        return true;
+    }
 
     const auto high_water = SourceHighWater(stream.source_db, stream.source_outbox_table, error_out);
+    if (IsStoppingRequested()) {
+        return true;
+    }
     const auto batch = ReadOutboxBatch(stream.source_db, stream.source_outbox_table, *cursor, config_.max_batch_size, error_out);
+    if (IsStoppingRequested()) {
+        return true;
+    }
     bool ok = true;
+    bool stopped = false;
     std::string failure;
 
     for (const auto& event : batch) {
+        if (IsStoppingRequested()) {
+            stopped = true;
+            break;
+        }
         const auto event_lag_count = LagCount(stream.source_db, stream.source_outbox_table, event.outbox_id, error_out);
+        if (IsStoppingRequested()) {
+            stopped = true;
+            break;
+        }
         const auto event_lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, event.outbox_id, error_out);
+        if (IsStoppingRequested()) {
+            stopped = true;
+            break;
+        }
         const auto duration_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
 
         if (!Exec(stream.ui_db, "BEGIN IMMEDIATE;", error_out)) {
+            if (IsStoppingRequested()) {
+                stopped = true;
+                break;
+            }
             ok = false;
             failure = error_out != nullptr ? *error_out : "failed to begin UI projection transaction";
             break;
@@ -1276,6 +1385,10 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
         if (!ApplyEvent(stream.kind, stream.source_db, stream.ui_db, event, &handler_error)
             || !AdvanceCursor(stream, event, high_water, event_lag_count, event_lag_age, static_cast<int>(batch.size()), duration_ms, &handler_error)) {
             Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            if (IsStoppingRequested()) {
+                stopped = true;
+                break;
+            }
             Exec(stream.ui_db, "BEGIN IMMEDIATE;", nullptr);
             RecordFailure(stream, event, handler_error.empty() ? "projection handler failed" : handler_error, config_.max_attempts, nullptr);
             Exec(stream.ui_db, "COMMIT;", nullptr);
@@ -1286,6 +1399,10 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
 
         if (!Exec(stream.ui_db, "COMMIT;", error_out)) {
             Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            if (IsStoppingRequested()) {
+                stopped = true;
+                break;
+            }
             ok = false;
             failure = error_out != nullptr ? *error_out : "failed to commit UI projection transaction";
             break;
@@ -1297,9 +1414,19 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
 
     const auto duration_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
-    const auto lag_count = LagCount(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
-    const auto lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
-    UpdateIdleSubscription(stream, high_water, lag_count, lag_age, duration_ms, nullptr);
+    std::int64_t lag_count = stream.lag_count;
+    std::int64_t lag_age = stream.lag_age_ms;
+    if (!stopped && !IsStoppingRequested()) {
+        lag_count = LagCount(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
+        if (!IsStoppingRequested()) {
+            lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
+            if (!IsStoppingRequested()) {
+                UpdateIdleSubscription(stream, high_water, lag_count, lag_age, duration_ms, nullptr);
+            }
+        }
+    } else {
+        stopped = true;
+    }
 
     stream.run_once_count += 1;
     stream.last_run_duration_ms = duration_ms;
@@ -1307,7 +1434,13 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
     stream.source_high_water_outbox_id = high_water;
     stream.lag_count = lag_count;
     stream.lag_age_ms = lag_age;
-    if (ok) {
+    if (stopped) {
+        stream.succeeded_run_once_count += 1;
+        stream.last_error.clear();
+        if (error_out != nullptr) {
+            error_out->clear();
+        }
+    } else if (ok) {
         stream.succeeded_run_once_count += 1;
         stream.last_error.clear();
     } else {
@@ -1317,7 +1450,7 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
             *error_out = failure;
         }
     }
-    return ok;
+    return stopped || ok;
 }
 
 void UiReadProjectionService::WorkerLoop(StreamRuntime* stream) {

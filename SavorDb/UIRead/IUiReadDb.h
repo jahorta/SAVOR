@@ -128,6 +128,18 @@ struct UiJobSummary {
     std::string error_text;
 };
 
+struct UiJobStateCounts {
+    std::int64_t total = 0;
+    std::int64_t queued = 0;
+    std::int64_t claimed = 0;
+    std::int64_t running = 0;
+    std::int64_t failed = 0;
+    std::int64_t succeeded = 0;
+    std::int64_t canceled = 0;
+    std::int64_t superseded = 0;
+    std::int64_t other = 0;
+};
+
 struct UiJobDetail {
     UiJobSummary summary;
     std::string fingerprint;
@@ -302,6 +314,9 @@ struct IUiReadDb {
     virtual std::vector<UiProgramKind> ListProgramKinds() const = 0;
 
     virtual UiReadPage<UiJobSummary> ListJobs(
+        const UiReadJobListQuery& query) const = 0;
+
+    virtual UiJobStateCounts CountJobsByState(
         const UiReadJobListQuery& query) const = 0;
 
     virtual std::optional<UiJobSummary> GetJobSummary(

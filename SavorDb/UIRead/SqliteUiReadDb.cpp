@@ -160,6 +160,29 @@ UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
     return row;
 }
 
+void AddJobStateCount(UiJobStateCounts& counts, const std::string& state, std::int64_t count) {
+    counts.total += count;
+    if (state == "QUEUED") {
+        counts.queued += count;
+    } else if (state == "CLAIMED") {
+        counts.claimed += count;
+    } else if (state == "RUNNING") {
+        counts.running += count;
+    } else if (state == "FAILED") {
+        counts.failed += count;
+    } else if (state == "CANCELED") {
+        counts.canceled += count;
+    } else if (state == "SUPERSEDED") {
+        counts.superseded += count;
+    } else if (state == "SUCCEEDED"
+        || state == "SUCCEEDED_WINNER"
+        || state == "SUCCEEDED_DUPLICATE") {
+        counts.succeeded += count;
+    } else {
+        counts.other += count;
+    }
+}
+
 UiJobSetSummary ReadJobSetSummaryRow(sqlite3_stmt* st) {
     UiJobSetSummary row{};
     row.job_set_id = sqlite3_column_int64(st, 0);
@@ -360,6 +383,42 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
         page.next = UiReadListCursor{ last.queued_at_utc, last.job_id };
     }
     return page;
+}
+
+UiJobStateCounts SqliteUiReadDb::CountJobsByState(
+    const UiReadJobListQuery& query) const {
+    UiJobStateCounts counts{};
+    if (db_ == nullptr) {
+        return counts;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT s.state, COUNT(*) "
+        "FROM ui_job_summary s "
+        "WHERE (?1=0 OR s.program_kind=?2) "
+        "AND (?3=0 OR s.job_set_id=?4) "
+        "AND (?5=1 OR s.state IN (?6,?7,?8,?9,?10)) "
+        "GROUP BY s.state;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return counts;
+    }
+
+    sqlite3_bind_int(st, 1, query.program_kind.has_value() ? 1 : 0);
+    sqlite3_bind_int(st, 2, query.program_kind.value_or(0));
+    sqlite3_bind_int(st, 3, query.job_set_id.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 4, query.job_set_id.value_or(0));
+    sqlite3_bind_int(st, 5, query.states.empty() ? 1 : 0);
+    for (int i = 0; i < 5; ++i) {
+        const std::string value = i < static_cast<int>(query.states.size()) ? query.states[static_cast<std::size_t>(i)] : std::string{};
+        sqlite3_bind_text(st, 6 + i, value.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        AddJobStateCount(counts, ColumnText(st, 0), sqlite3_column_int64(st, 1));
+    }
+    sqlite3_finalize(st);
+    return counts;
 }
 
 std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) const {
