@@ -157,7 +157,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanAttackBlockFocusCompilesInActorOrder)
     EXPECT_EQ(CountLabel(steps, "direct_command_queued"), 2u);
 }
 
-TEST(BattleMacroProbeCompiler, TurnPlanFakeAttackCountPrependsMeasuredFakeAttackMacro)
+TEST(BattleMacroProbeCompiler, TurnPlanFirstFakeAttackUsesFixedFastPattern)
 {
     auto source = MakePlanningContextSource();
     SetBattleSlot(source, 4, false, true, true);
@@ -186,30 +186,37 @@ TEST(BattleMacroProbeCompiler, TurnPlanFakeAttackCountPrependsMeasuredFakeAttack
     EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 0u);
 }
 
-TEST(BattleMacroProbeCompiler, TurnPlanRepeatFakeAttackUsesMeasuredTargetNeutral)
+TEST(BattleMacroProbeCompiler, TurnPlanRepeatFakeAttacksUseMeasuredTargetNeutral)
 {
     auto source = MakePlanningContextSource();
     SetBattleSlot(source, 4, false, true, true);
     const auto context = BuildPlanningContext(source);
 
     soa::battle::actions::TurnPlan turn{};
-    turn.fake_attack_count = 2;
+    turn.fake_attack_count = 3;
     turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
 
     soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
     const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
 
     ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
-    ASSERT_EQ(steps.size(), 14u);
-    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 2u);
-    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 2u);
-    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 1u);
+    ASSERT_EQ(steps.size(), 20u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 2u);
+    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
     ASSERT_EQ(std::string(steps[9].label), "fake_attack_target_neutral_before_b");
     EXPECT_EQ(steps[9].kind, MacroStep::Kind::NeutralFrames);
     EXPECT_EQ(steps[9].frame_count, 7u);
     EXPECT_EQ(steps[10].input.buttons, savor::GC_B);
     EXPECT_EQ(steps[10].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[11].input.buttons, savor::GC_DU);
+    ASSERT_EQ(std::string(steps[15].label), "fake_attack_target_neutral_before_b");
+    EXPECT_EQ(steps[15].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[15].frame_count, 7u);
+    EXPECT_EQ(steps[16].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[16].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(steps[17].input.buttons, savor::GC_DU);
 }
 
 TEST(BattleMacroProbeCompiler, TurnPlanRejectsUseItem)
@@ -476,6 +483,50 @@ TEST(BattleMacroProbeCompiler, FakeAttackTwoEmitsIndependentCaptureChangeCycles)
     EXPECT_EQ(steps[11].kind, MacroStep::Kind::NeutralFrames);
 }
 
+TEST(BattleMacroProbeCompiler, FakeAttackSweepBuilderUsesCandidateFirstAndFixedFinal)
+{
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroProbePlanSteps(
+        {MacroCommand{.mode = MacroMode::Block, .target_slot = 4}},
+        3,
+        3,
+        FakeAttackPattern{
+            .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+            .target_neutral_before_b_frames = 7,
+            .input_neutral_after_b_frames = 0,
+            .memory_timeout_ms = 1000,
+        },
+        FakeAttackPattern{
+            .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+            .target_neutral_before_b_frames = 7,
+            .input_neutral_after_b_frames = 0,
+            .memory_timeout_ms = 1000,
+        },
+        FakeAttackPattern{
+            .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+            .target_neutral_before_b_frames = 0,
+            .input_neutral_after_b_frames = 0,
+            .memory_timeout_ms = 1000,
+        },
+        nullptr,
+        &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 20u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 2u);
+    EXPECT_EQ(steps[3].memory_cycle_index, 0u);
+    EXPECT_EQ(steps[9].memory_cycle_index, 1u);
+    EXPECT_EQ(steps[15].memory_cycle_index, 2u);
+    EXPECT_EQ(std::string(steps[4].label), "fake_attack_target_neutral_before_b");
+    EXPECT_EQ(steps[4].frame_count, 7u);
+    EXPECT_EQ(std::string(steps[10].label), "fake_attack_target_neutral_before_b");
+    EXPECT_EQ(steps[10].frame_count, 7u);
+    EXPECT_EQ(steps[16].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[16].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+}
+
 TEST(BattleMacroProbeCompiler, FakeAttackInputSidePatternCompilesMemoryGateAfterInputReady)
 {
     FailureCode failure = FailureCode::Ok;
@@ -551,6 +602,26 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
                 .input_neutral_after_b_frames = 4,
                 .memory_timeout_ms = 777,
             },
+            .use_mixed_fake_attack_patterns = true,
+            .first_fake_attack_pattern = FakeAttackPattern{
+                .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+                .target_neutral_before_b_frames = 0,
+                .input_neutral_after_b_frames = 0,
+                .memory_timeout_ms = 1000,
+            },
+            .repeat_fake_attack_pattern = FakeAttackPattern{
+                .memory_gate_mode = FakeAttackMemoryGateMode::InputSide,
+                .target_neutral_before_b_frames = 2,
+                .input_neutral_after_b_frames = 4,
+                .memory_timeout_ms = 777,
+            },
+            .use_final_fake_attack_pattern = true,
+            .final_fake_attack_pattern = FakeAttackPattern{
+                .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+                .target_neutral_before_b_frames = 0,
+                .input_neutral_after_b_frames = 0,
+                .memory_timeout_ms = 555,
+            },
         },
         payload));
 
@@ -577,14 +648,44 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
     std::uint32_t target_neutral = 0;
     std::uint32_t input_neutral = 0;
     std::uint32_t memory_timeout = 0;
+    std::uint32_t use_mixed = 0;
+    std::uint32_t first_gate_mode = 0;
+    std::uint32_t first_target_neutral = 99;
+    std::uint32_t first_input_neutral = 99;
+    std::uint32_t first_memory_timeout = 0;
+    std::uint32_t use_final = 0;
+    std::uint32_t final_gate_mode = 0;
+    std::uint32_t final_target_neutral = 99;
+    std::uint32_t final_input_neutral = 99;
+    std::uint32_t final_memory_timeout = 0;
     ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE, gate_mode));
     ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES, target_neutral));
     ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES, input_neutral));
     ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS, memory_timeout));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_USE_MIXED_PATTERNS, use_mixed));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE, first_gate_mode));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES, first_target_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES, first_input_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS, first_memory_timeout));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_USE_FINAL_PATTERN, use_final));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_GATE_MODE, final_gate_mode));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FINAL_TARGET_NEUTRAL_FRAMES, final_target_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FINAL_INPUT_NEUTRAL_FRAMES, final_input_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_TIMEOUT_MS, final_memory_timeout));
     EXPECT_EQ(gate_mode, static_cast<std::uint32_t>(FakeAttackMemoryGateMode::InputSide));
     EXPECT_EQ(target_neutral, 2u);
     EXPECT_EQ(input_neutral, 4u);
     EXPECT_EQ(memory_timeout, 777u);
+    EXPECT_EQ(use_mixed, 1u);
+    EXPECT_EQ(first_gate_mode, static_cast<std::uint32_t>(FakeAttackMemoryGateMode::TargetSide));
+    EXPECT_EQ(first_target_neutral, 0u);
+    EXPECT_EQ(first_input_neutral, 0u);
+    EXPECT_EQ(first_memory_timeout, 1000u);
+    EXPECT_EQ(use_final, 1u);
+    EXPECT_EQ(final_gate_mode, static_cast<std::uint32_t>(FakeAttackMemoryGateMode::TargetSide));
+    EXPECT_EQ(final_target_neutral, 0u);
+    EXPECT_EQ(final_input_neutral, 0u);
+    EXPECT_EQ(final_memory_timeout, 555u);
 }
 
 TEST(BattleTurnRunnerPayload, DecodeInitializesMacroDefaults)

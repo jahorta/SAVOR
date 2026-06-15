@@ -61,7 +61,22 @@ namespace savor::context::key::battle {
   X(MACRO_MEMORY_REPEAT_LATEST,0x0360, "battle.macro.memory.repeat.latest") \
   X(MACRO_MEMORY_REPEAT_CHANGED,0x0361, "battle.macro.memory.repeat.changed") \
   X(MACRO_MEMORY_REPEAT_POLL_COUNT,0x0362, "battle.macro.memory.repeat.poll_count") \
-  X(MACRO_MEMORY_REPEAT_ELAPSED_MS,0x0363, "battle.macro.memory.repeat.elapsed_ms")
+  X(MACRO_MEMORY_REPEAT_ELAPSED_MS,0x0363, "battle.macro.memory.repeat.elapsed_ms") \
+  X(MACRO_FAKE_USE_MIXED_PATTERNS,0x0364, "battle.macro.fake.use_mixed_patterns") \
+  X(MACRO_FAKE_FIRST_MEMORY_GATE_MODE,0x0365, "battle.macro.fake.first.memory_gate_mode") \
+  X(MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES,0x0366, "battle.macro.fake.first.target_neutral_frames") \
+  X(MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES,0x0367, "battle.macro.fake.first.input_neutral_frames") \
+  X(MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS,0x0368, "battle.macro.fake.first.memory_timeout_ms") \
+  X(MACRO_MEMORY_REPEAT2_BASELINE,0x0369, "battle.macro.memory.repeat2.baseline") \
+  X(MACRO_MEMORY_REPEAT2_LATEST,0x036A, "battle.macro.memory.repeat2.latest") \
+  X(MACRO_MEMORY_REPEAT2_CHANGED,0x036B, "battle.macro.memory.repeat2.changed") \
+  X(MACRO_MEMORY_REPEAT2_POLL_COUNT,0x036C, "battle.macro.memory.repeat2.poll_count") \
+  X(MACRO_MEMORY_REPEAT2_ELAPSED_MS,0x036D, "battle.macro.memory.repeat2.elapsed_ms") \
+  X(MACRO_FAKE_USE_FINAL_PATTERN,0x036E, "battle.macro.fake.use_final_pattern") \
+  X(MACRO_FAKE_FINAL_MEMORY_GATE_MODE,0x036F, "battle.macro.fake.final.memory_gate_mode") \
+  X(MACRO_FAKE_FINAL_TARGET_NEUTRAL_FRAMES,0x0370, "battle.macro.fake.final.target_neutral_frames") \
+  X(MACRO_FAKE_FINAL_INPUT_NEUTRAL_FRAMES,0x0371, "battle.macro.fake.final.input_neutral_frames") \
+  X(MACRO_FAKE_FINAL_MEMORY_TIMEOUT_MS,0x0372, "battle.macro.fake.final.memory_timeout_ms")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
 static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");

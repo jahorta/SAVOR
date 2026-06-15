@@ -455,7 +455,7 @@ bool SeedBattleAuthoringRows(
             {
                 .name = "SavorE2E battle plan " + suffix,
                 .fingerprint = "savor-e2e-battle-plan-v1-" + suffix,
-                .num_turns = 2,
+                .num_turns = 3,
                 .created_at_utc = now,
                 .correlation_id = "savor-e2e.battle",
                 .causation_id = "savor-e2e.seed",
@@ -496,55 +496,32 @@ bool SeedBattleAuthoringRows(
         return false;
     }
 
-    std::int64_t turn_id = 0;
-    if (!authoring_db->SaveBattlePlanTurn(
-            {
-                .plan_id = plan_id,
-                .turn_index = 1,
-                .actions = {
-                    {
-                        .actor_slot = 0,
-                        .action_preset_id = attack_any_enemy_preset_id,
-                        .ordinal = 0,
+    for (int turn_index = 1; turn_index <= 3; ++turn_index) {
+        std::int64_t turn_id = 0;
+        if (!authoring_db->SaveBattlePlanTurn(
+                {
+                    .plan_id = plan_id,
+                    .turn_index = turn_index,
+                    .actions = {
+                        {
+                            .actor_slot = 0,
+                            .action_preset_id = attack_any_enemy_preset_id,
+                            .ordinal = 0,
+                        },
+                        {
+                            .actor_slot = 1,
+                            .action_preset_id = attack_same_target_preset_id,
+                            .ordinal = 1,
+                        }
                     },
-                    {
-                        .actor_slot = 1,
-                        .action_preset_id = attack_same_target_preset_id,
-                        .ordinal = 1,
-                    }
+                    .created_at_utc = now,
+                    .correlation_id = "savor-e2e.battle",
+                    .causation_id = "plan-" + std::to_string(plan_id),
                 },
-                .created_at_utc = now,
-                .correlation_id = "savor-e2e.battle",
-                .causation_id = "plan-" + std::to_string(plan_id),
-            },
-            &turn_id,
-            error_out)) {
-        return false;
-    }
-
-    if (!authoring_db->SaveBattlePlanTurn(
-            {
-                .plan_id = plan_id,
-                .turn_index = 2,
-                .actions = {
-                    {
-                        .actor_slot = 0,
-                        .action_preset_id = attack_any_enemy_preset_id,
-                        .ordinal = 0,
-                    },
-                    {
-                        .actor_slot = 1,
-                        .action_preset_id = attack_same_target_preset_id,
-                        .ordinal = 1,
-                    },
-                },
-                .created_at_utc = now,
-                .correlation_id = "savor-e2e.battle",
-                .causation_id = "plan-" + std::to_string(plan_id),
-            },
-            &turn_id,
-            error_out)) {
-        return false;
+                &turn_id,
+                error_out)) {
+            return false;
+        }
     }
 
     std::vector<std::int64_t> predicate_spec_ids;

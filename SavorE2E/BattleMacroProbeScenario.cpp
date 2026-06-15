@@ -157,15 +157,20 @@ struct FakeAttackSweepTrial {
     bool worker_ok{false};
     bool macro_ok{false};
     bool first_ok{false};
-    bool repeat_ok{false};
+    bool repeat1_ok{false};
+    bool repeat2_ok{false};
     std::uint32_t first_before{0};
     std::uint32_t first_after{0};
-    std::uint32_t repeat_before{0};
-    std::uint32_t repeat_after{0};
+    std::uint32_t repeat1_before{0};
+    std::uint32_t repeat1_after{0};
+    std::uint32_t repeat2_before{0};
+    std::uint32_t repeat2_after{0};
     std::uint32_t first_polls{0};
-    std::uint32_t repeat_polls{0};
+    std::uint32_t repeat1_polls{0};
+    std::uint32_t repeat2_polls{0};
     std::uint32_t first_elapsed_ms{0};
-    std::uint32_t repeat_elapsed_ms{0};
+    std::uint32_t repeat1_elapsed_ms{0};
+    std::uint32_t repeat2_elapsed_ms{0};
     std::uint32_t failure_code{0};
 };
 
@@ -174,20 +179,23 @@ struct FakeAttackSweepSummary {
     std::uint32_t trials{0};
     std::uint32_t failures{0};
     std::uint32_t first_successes{0};
-    std::uint32_t repeat_successes{0};
+    std::uint32_t repeat1_successes{0};
+    std::uint32_t repeat2_successes{0};
     std::uint64_t total_polls{0};
     std::uint64_t total_elapsed_ms{0};
     std::uint32_t max_polls{0};
     std::uint32_t max_elapsed_ms{0};
 
     bool first_reliable() const { return trials != 0 && first_successes == trials; }
-    bool repeat_reliable() const { return trials != 0 && repeat_successes == trials; }
+    bool repeat1_reliable() const { return trials != 0 && repeat1_successes == trials; }
+    bool repeat2_reliable() const { return trials != 0 && repeat2_successes == trials; }
+    bool repeat_reliable() const { return repeat1_reliable() && repeat2_reliable(); }
     bool reliable() const { return trials != 0 && failures == 0 && first_reliable() && repeat_reliable(); }
     double avg_polls() const {
-        return trials == 0 ? 0.0 : static_cast<double>(total_polls) / static_cast<double>(trials * 2u);
+        return trials == 0 ? 0.0 : static_cast<double>(total_polls) / static_cast<double>(trials * 3u);
     }
     double avg_elapsed_ms() const {
-        return trials == 0 ? 0.0 : static_cast<double>(total_elapsed_ms) / static_cast<double>(trials * 2u);
+        return trials == 0 ? 0.0 : static_cast<double>(total_elapsed_ms) / static_cast<double>(trials * 3u);
     }
 };
 
@@ -622,7 +630,6 @@ bool ResolveBattleMacroPlan(
 bool WriteFakeAttackSweepJson(
     const std::filesystem::path& path,
     const std::vector<FakeAttackSweepSummary>& summaries,
-    const FakeAttackSweepSummary* first_recommendation,
     const FakeAttackSweepSummary* repeat_recommendation,
     std::string* error_out) {
     std::error_code ec;
@@ -659,16 +666,9 @@ bool WriteFakeAttackSweepJson(
     };
 
     out << "{\n";
-    write_recommendation("first_recommendation", first_recommendation);
-    out << ",\n";
+    out << "  \"fixed_last_pattern\": {\"gate\":\"target\",\"target_neutral\":0,\"input_neutral\":0},\n";
     write_recommendation("repeat_recommendation", repeat_recommendation);
     out << ",\n";
-    out << "  \"shared_recommendation\": "
-        << (first_recommendation != nullptr
-            && repeat_recommendation != nullptr
-            && first_recommendation->candidate.id() == repeat_recommendation->candidate.id()
-            ? "true" : "false")
-        << ",\n";
     out << "  \"candidates\": [\n";
     for (std::size_t i = 0; i < summaries.size(); ++i) {
         const auto& summary = summaries[i];
@@ -682,7 +682,9 @@ bool WriteFakeAttackSweepJson(
             << ",\"reliable\":" << (summary.reliable() ? "true" : "false")
             << ",\"failures\":" << summary.failures
             << ",\"first_successes\":" << summary.first_successes
-            << ",\"repeat_successes\":" << summary.repeat_successes
+            << ",\"repeat1_successes\":" << summary.repeat1_successes
+            << ",\"repeat2_successes\":" << summary.repeat2_successes
+            << ",\"repeat_reliable\":" << (summary.repeat_reliable() ? "true" : "false")
             << ",\"max_polls\":" << summary.max_polls
             << ",\"avg_polls\":" << std::fixed << std::setprecision(3) << summary.avg_polls()
             << ",\"max_elapsed_ms\":" << summary.max_elapsed_ms
@@ -708,8 +710,14 @@ bool RunBattleFakeAttackSweep(
     std::uint64_t* next_job_id,
     std::string* error_out) {
     constexpr std::uint32_t kTransitionNeutralFrames = 3;
-    constexpr std::uint32_t kFakeAttacksPerTrial = 2;
+    constexpr std::uint32_t kFakeAttacksPerTrial = 3;
     constexpr std::uint32_t kObservationTailMs = 1;
+    const phase::battle::macroprobe::FakeAttackPattern kFixedLastFakeAttackPattern{
+        .memory_gate_mode = phase::battle::macroprobe::FakeAttackMemoryGateMode::TargetSide,
+        .target_neutral_before_b_frames = 0,
+        .input_neutral_after_b_frames = 0,
+        .memory_timeout_ms = 1000,
+    };
 
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
     if (options.battle_macro_plan_spec.has_value()) {
@@ -766,6 +774,8 @@ bool RunBattleFakeAttackSweep(
             kTransitionNeutralFrames,
             kFakeAttacksPerTrial,
             candidate.pattern,
+            candidate.pattern,
+            kFixedLastFakeAttackPattern,
             nullptr,
             &build_failure);
         if (steps.empty() || build_failure != phase::battle::macroprobe::FailureCode::Ok) {
@@ -798,6 +808,11 @@ bool RunBattleFakeAttackSweep(
                     .observation_tail_ms = kObservationTailMs,
                     .fake_attack_count = kFakeAttacksPerTrial,
                     .fake_attack_pattern = candidate.pattern,
+                    .use_mixed_fake_attack_patterns = true,
+                    .first_fake_attack_pattern = candidate.pattern,
+                    .repeat_fake_attack_pattern = candidate.pattern,
+                    .use_final_fake_attack_pattern = true,
+                    .final_fake_attack_pattern = kFixedLastFakeAttackPattern,
                 },
                 payload);
             savor::PSJob job{};
@@ -835,31 +850,47 @@ bool RunBattleFakeAttackSweep(
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST, trial_result.first_after);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT, trial_result.first_polls);
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_ELAPSED_MS, trial_result.first_elapsed_ms);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat_before);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat_after);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat_polls);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS, trial_result.repeat_elapsed_ms);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat1_before);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat1_after);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat1_polls);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS, trial_result.repeat1_elapsed_ms);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE, trial_result.repeat2_before);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST, trial_result.repeat2_after);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT, trial_result.repeat2_polls);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS, trial_result.repeat2_elapsed_ms);
                 std::uint32_t first_changed = 0;
-                std::uint32_t repeat_changed = 0;
+                std::uint32_t repeat1_changed = 0;
+                std::uint32_t repeat2_changed = 0;
                 result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED, first_changed);
-                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED, repeat_changed);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED, repeat1_changed);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED, repeat2_changed);
                 trial_result.worker_ok = result.ps.ok;
                 trial_result.macro_ok = result.ps.ok && macro_result == 0;
                 trial_result.first_ok = first_changed != 0 && trial_result.first_before != trial_result.first_after;
-                trial_result.repeat_ok = repeat_changed != 0 && trial_result.repeat_before != trial_result.repeat_after;
+                trial_result.repeat1_ok = repeat1_changed != 0 && trial_result.repeat1_before != trial_result.repeat1_after;
+                trial_result.repeat2_ok = repeat2_changed != 0 && trial_result.repeat2_before != trial_result.repeat2_after;
             }
 
-            if (!trial_result.worker_ok || !trial_result.macro_ok || !trial_result.first_ok || !trial_result.repeat_ok) {
+            if (!trial_result.worker_ok
+                || !trial_result.macro_ok
+                || !trial_result.first_ok
+                || !trial_result.repeat1_ok
+                || !trial_result.repeat2_ok) {
                 ++summary.failures;
             }
             if (trial_result.first_ok) ++summary.first_successes;
-            if (trial_result.repeat_ok) ++summary.repeat_successes;
-            const std::uint32_t trial_polls = trial_result.first_polls + trial_result.repeat_polls;
-            const std::uint32_t trial_elapsed = trial_result.first_elapsed_ms + trial_result.repeat_elapsed_ms;
+            if (trial_result.repeat1_ok) ++summary.repeat1_successes;
+            if (trial_result.repeat2_ok) ++summary.repeat2_successes;
+            const std::uint32_t trial_polls = trial_result.first_polls + trial_result.repeat1_polls + trial_result.repeat2_polls;
+            const std::uint32_t trial_elapsed = trial_result.first_elapsed_ms + trial_result.repeat1_elapsed_ms + trial_result.repeat2_elapsed_ms;
             summary.total_polls += trial_polls;
             summary.total_elapsed_ms += trial_elapsed;
-            summary.max_polls = std::max(summary.max_polls, std::max(trial_result.first_polls, trial_result.repeat_polls));
-            summary.max_elapsed_ms = std::max(summary.max_elapsed_ms, std::max(trial_result.first_elapsed_ms, trial_result.repeat_elapsed_ms));
+            summary.max_polls = std::max(
+                summary.max_polls,
+                std::max(trial_result.first_polls, std::max(trial_result.repeat1_polls, trial_result.repeat2_polls)));
+            summary.max_elapsed_ms = std::max(
+                summary.max_elapsed_ms,
+                std::max(trial_result.first_elapsed_ms, std::max(trial_result.repeat1_elapsed_ms, trial_result.repeat2_elapsed_ms)));
 
             std::ostringstream trial_line;
             trial_line << "[battle-fake-sweep-trial]"
@@ -869,11 +900,14 @@ bool RunBattleFakeAttackSweep(
                 << " target_neutral=" << candidate.pattern.target_neutral_before_b_frames
                 << " input_neutral=" << candidate.pattern.input_neutral_after_b_frames
                 << " first_ok=" << (trial_result.first_ok ? 1 : 0)
-                << " repeat_ok=" << (trial_result.repeat_ok ? 1 : 0)
+                << " repeat1_ok=" << (trial_result.repeat1_ok ? 1 : 0)
+                << " repeat2_ok=" << (trial_result.repeat2_ok ? 1 : 0)
                 << " first_before=" << FormatHexPc(trial_result.first_before)
                 << " first_after=" << FormatHexPc(trial_result.first_after)
-                << " repeat_before=" << FormatHexPc(trial_result.repeat_before)
-                << " repeat_after=" << FormatHexPc(trial_result.repeat_after)
+                << " repeat1_before=" << FormatHexPc(trial_result.repeat1_before)
+                << " repeat1_after=" << FormatHexPc(trial_result.repeat1_after)
+                << " repeat2_before=" << FormatHexPc(trial_result.repeat2_before)
+                << " repeat2_after=" << FormatHexPc(trial_result.repeat2_after)
                 << " polls=" << trial_polls
                 << " elapsed_ms=" << trial_elapsed
                 << " failure=" << trial_result.failure_code;
@@ -886,7 +920,8 @@ bool RunBattleFakeAttackSweep(
             << " reliable=" << (summary.reliable() ? 1 : 0)
             << " failures=" << summary.failures
             << " first_successes=" << summary.first_successes << "/" << summary.trials
-            << " repeat_successes=" << summary.repeat_successes << "/" << summary.trials
+            << " repeat1_successes=" << summary.repeat1_successes << "/" << summary.trials
+            << " repeat2_successes=" << summary.repeat2_successes << "/" << summary.trials
             << " max_polls=" << summary.max_polls
             << " avg_polls=" << std::fixed << std::setprecision(3) << summary.avg_polls()
             << " max_elapsed_ms=" << summary.max_elapsed_ms
@@ -897,14 +932,8 @@ bool RunBattleFakeAttackSweep(
         summaries.push_back(summary);
     }
 
-    const FakeAttackSweepSummary* first_recommendation = nullptr;
     const FakeAttackSweepSummary* repeat_recommendation = nullptr;
     for (const auto& summary : summaries) {
-        if (IsSweepRecommendationEligible(summary)
-            && summary.first_reliable()
-            && (first_recommendation == nullptr || IsBetterSweepRecommendation(summary, *first_recommendation))) {
-            first_recommendation = &summary;
-        }
         if (IsSweepRecommendationEligible(summary)
             && summary.repeat_reliable()
             && (repeat_recommendation == nullptr || IsBetterSweepRecommendation(summary, *repeat_recommendation))) {
@@ -913,29 +942,20 @@ bool RunBattleFakeAttackSweep(
     }
 
     std::ostringstream recommendation_line;
-    recommendation_line << "[battle-fake-sweep-recommendation]";
-    if (first_recommendation != nullptr) {
-        recommendation_line << " first=" << first_recommendation->candidate.id();
-    } else {
-        recommendation_line << " first=none";
-    }
+    recommendation_line << "[battle-fake-sweep-recommendation]"
+        << " fixed_last=target-tn0-in0";
     if (repeat_recommendation != nullptr) {
         recommendation_line << " repeat=" << repeat_recommendation->candidate.id();
     } else {
         recommendation_line << " repeat=none";
     }
-    recommendation_line << " shared="
-        << (first_recommendation != nullptr
-            && repeat_recommendation != nullptr
-            && first_recommendation->candidate.id() == repeat_recommendation->candidate.id() ? 1 : 0)
-        << " report=\"" << EscapeLogValue(report_path.string()) << "\"";
+    recommendation_line << " report=\"" << EscapeLogValue(report_path.string()) << "\"";
     durable_log.AppendLine(recommendation_line.str());
     std::cout << recommendation_line.str() << '\n';
 
     return WriteFakeAttackSweepJson(
         report_path,
         summaries,
-        first_recommendation,
         repeat_recommendation,
         error_out);
 }

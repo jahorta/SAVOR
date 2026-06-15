@@ -187,6 +187,16 @@ namespace phase::battle::turnrunner {
         out_ctx[savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES] = (uint32_t)7;
         out_ctx[savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES] = (uint32_t)0;
         out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS] = (uint32_t)1000;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_USE_MIXED_PATTERNS] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS] = (uint32_t)1000;
+        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = (uint32_t)0;
         out_ctx[savor::context::key::core::RUN_POLL_MS] = (uint32_t)10;
 
         out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;

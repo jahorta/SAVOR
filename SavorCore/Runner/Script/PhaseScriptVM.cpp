@@ -633,6 +633,11 @@ namespace savor {
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED] = 0u;
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = 0u;
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = 0u;
         battle_macro_memory_baseline_valid_ = false;
         battle_macro_memory_addr_ = 0u;
         battle_macro_memory_baseline_ = 0u;
@@ -739,23 +744,74 @@ namespace savor {
         uint32_t fake_target_neutral_frames = 0;
         uint32_t fake_input_neutral_frames = 20;
         uint32_t fake_memory_timeout_ms = 1000;
+        uint32_t use_mixed_fake_attack_patterns = 0;
+        uint32_t raw_first_fake_memory_gate_mode = static_cast<uint32_t>(FakeAttackMemoryGateMode::TargetSide);
+        uint32_t first_fake_target_neutral_frames = 0;
+        uint32_t first_fake_input_neutral_frames = 20;
+        uint32_t first_fake_memory_timeout_ms = 1000;
+        uint32_t use_final_fake_attack_pattern = 0;
+        uint32_t raw_final_fake_memory_gate_mode = static_cast<uint32_t>(FakeAttackMemoryGateMode::TargetSide);
+        uint32_t final_fake_target_neutral_frames = 0;
+        uint32_t final_fake_input_neutral_frames = 20;
+        uint32_t final_fake_memory_timeout_ms = 1000;
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE, raw_fake_memory_gate_mode);
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES, fake_target_neutral_frames);
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES, fake_input_neutral_frames);
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS, fake_memory_timeout_ms);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_USE_MIXED_PATTERNS, use_mixed_fake_attack_patterns);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_GATE_MODE, raw_first_fake_memory_gate_mode);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FIRST_TARGET_NEUTRAL_FRAMES, first_fake_target_neutral_frames);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FIRST_INPUT_NEUTRAL_FRAMES, first_fake_input_neutral_frames);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FIRST_MEMORY_TIMEOUT_MS, first_fake_memory_timeout_ms);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_USE_FINAL_PATTERN, use_final_fake_attack_pattern);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_GATE_MODE, raw_final_fake_memory_gate_mode);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FINAL_TARGET_NEUTRAL_FRAMES, final_fake_target_neutral_frames);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FINAL_INPUT_NEUTRAL_FRAMES, final_fake_input_neutral_frames);
+        ctx.get<uint32_t>(savor::context::key::battle::MACRO_FAKE_FINAL_MEMORY_TIMEOUT_MS, final_fake_memory_timeout_ms);
         FakeAttackPattern fake_attack_pattern{
             .memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_fake_memory_gate_mode),
             .target_neutral_before_b_frames = fake_target_neutral_frames,
             .input_neutral_after_b_frames = fake_input_neutral_frames,
             .memory_timeout_ms = fake_memory_timeout_ms,
         };
-        const auto steps = BuildMacroProbePlanSteps(
-            commands,
-            transition_neutral_frames,
-            fake_attack_count,
-            fake_attack_pattern,
-            &planning_context,
-            &build_failure);
+        FakeAttackPattern first_fake_attack_pattern{
+            .memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_first_fake_memory_gate_mode),
+            .target_neutral_before_b_frames = first_fake_target_neutral_frames,
+            .input_neutral_after_b_frames = first_fake_input_neutral_frames,
+            .memory_timeout_ms = first_fake_memory_timeout_ms,
+        };
+        FakeAttackPattern final_fake_attack_pattern{
+            .memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_final_fake_memory_gate_mode),
+            .target_neutral_before_b_frames = final_fake_target_neutral_frames,
+            .input_neutral_after_b_frames = final_fake_input_neutral_frames,
+            .memory_timeout_ms = final_fake_memory_timeout_ms,
+        };
+        const auto steps = use_final_fake_attack_pattern != 0
+            ? BuildMacroProbePlanSteps(
+                commands,
+                transition_neutral_frames,
+                fake_attack_count,
+                use_mixed_fake_attack_patterns != 0 ? first_fake_attack_pattern : fake_attack_pattern,
+                fake_attack_pattern,
+                final_fake_attack_pattern,
+                &planning_context,
+                &build_failure)
+            : use_mixed_fake_attack_patterns != 0
+            ? BuildMacroProbePlanSteps(
+                commands,
+                transition_neutral_frames,
+                fake_attack_count,
+                first_fake_attack_pattern,
+                fake_attack_pattern,
+                &planning_context,
+                &build_failure)
+            : BuildMacroProbePlanSteps(
+                commands,
+                transition_neutral_frames,
+                fake_attack_count,
+                fake_attack_pattern,
+                &planning_context,
+                &build_failure);
         ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(build_failure);
         ctx[savor::context::key::battle::MACRO_STEP_COUNT] = static_cast<uint32_t>(steps.size());
         if (steps.empty() || build_failure != FailureCode::Ok) {
@@ -825,6 +881,11 @@ namespace savor {
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED] = 0u;
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = 0u;
         ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = 0u;
+        ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = 0u;
         ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = static_cast<uint32_t>(MaterializeErr::OK);
         battle_macro_memory_baseline_valid_ = false;
         battle_macro_memory_addr_ = 0u;
@@ -1099,6 +1160,12 @@ namespace savor {
                 ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED] = changed ? 1u : 0u;
                 ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = polls;
                 ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = elapsed_ms;
+            } else if (step.memory_cycle_index == 2) {
+                ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_BASELINE] = battle_macro_memory_baseline_;
+                ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_LATEST] = latest;
+                ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_CHANGED] = changed ? 1u : 0u;
+                ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_POLL_COUNT] = polls;
+                ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT2_ELAPSED_MS] = elapsed_ms;
             }
             SCLOGI("[battle-macro-memory-gate] label=%s addr=%08X before=%08X after=%08X changed=%u polls=%u elapsed_ms=%u timeout_ms=%u",
                 step.label.c_str(),

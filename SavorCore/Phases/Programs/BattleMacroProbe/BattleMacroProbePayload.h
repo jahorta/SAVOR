@@ -14,7 +14,7 @@
 
 namespace phase::battle::macroprobe {
 
-static constexpr int PayloadVersion = 5;
+static constexpr int PayloadVersion = 7;
 
 enum class MacroMode : std::uint32_t {
     Attack = 1,
@@ -97,6 +97,11 @@ struct EncodeSpec {
     std::uint32_t observation_tail_ms{10000};
     std::uint32_t fake_attack_count{0};
     FakeAttackPattern fake_attack_pattern{};
+    bool use_mixed_fake_attack_patterns{false};
+    FakeAttackPattern first_fake_attack_pattern{};
+    FakeAttackPattern repeat_fake_attack_pattern{};
+    bool use_final_fake_attack_pattern{false};
+    FakeAttackPattern final_fake_attack_pattern{};
 };
 
 const char* MacroModeName(MacroMode mode);
@@ -134,6 +139,23 @@ std::vector<MacroStep> BuildMacroProbePlanSteps(
     std::uint32_t transition_neutral_frames,
     std::uint32_t fake_attack_count,
     const FakeAttackPattern& fake_attack_pattern,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out);
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const FakeAttackPattern& first_fake_attack_pattern,
+    const FakeAttackPattern& repeat_fake_attack_pattern,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out);
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const FakeAttackPattern& first_fake_attack_pattern,
+    const FakeAttackPattern& repeat_fake_attack_pattern,
+    const FakeAttackPattern& final_fake_attack_pattern,
     const BattleMacroPlanningContext* planning_context,
     FailureCode* failure_out);
 std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
