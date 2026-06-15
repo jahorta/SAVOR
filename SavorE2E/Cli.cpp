@@ -17,6 +17,7 @@ namespace {
 constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
     "tasmovie",
     "seedprobe",
+    "seedprobe_battle",
     "battle",
     "battle_macro_probe",
     "tasmovie_seedprobe",
@@ -38,7 +39,7 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "tasmovie") {
         return {.requires_dtm_file = true};
     }
-    if (scenario == "battle") {
+    if (scenario == "seedprobe_battle" || scenario == "battle") {
         return {.requires_savestate_file = true};
     }
     if (scenario == "battle_macro_probe") {
@@ -291,7 +292,7 @@ void PrintUsage() {
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|all]"
+              << " [--scenario seedprobe|seedprobe_battle|battle|all]"
               << " [--timeout-ms <100..800000000 - default 30000>]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>"
@@ -316,13 +317,22 @@ void PrintUsage() {
               << " [--battle-plan <block,focus|attack:4,block>]"
               << " [--battle-macro attack|focus|block]"
               << " [--battle-macro-target-slot <4..11>]"
+              << " [--battle-fake-attacks <count>]"
+              << " [--battle-fake-attack-sweep]"
+              << " [--battle-fake-sweep-trials <count>]"
+              << " [--battle-fake-sweep-min-target-neutral <frames>]"
+              << " [--battle-fake-sweep-max-target-neutral <frames>]"
+              << " [--battle-fake-sweep-min-input-neutral <frames>]"
+              << " [--battle-fake-sweep-max-input-neutral <frames>]"
+              << " [--battle-fake-sweep-output <path>]"
               << " [--battle-macro-debug]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
     std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
     std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
     std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
+    std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
+    std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
               << "battle_macro_probe, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
@@ -492,6 +502,37 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             if (!require_int(arg.c_str(), &v)) return false;
             options.battle_macro_target_slot = v;
             options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-fake-attacks") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_macro_fake_attacks = v;
+        } else if (arg == "--battle-fake-attack-sweep") {
+            options.battle_fake_attack_sweep = true;
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-fake-sweep-trials") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_trials = v;
+        } else if (arg == "--battle-fake-sweep-min-target-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_min_target_neutral = v;
+        } else if (arg == "--battle-fake-sweep-max-target-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_max_target_neutral = v;
+        } else if (arg == "--battle-fake-sweep-min-input-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_min_input_neutral = v;
+        } else if (arg == "--battle-fake-sweep-max-input-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_max_input_neutral = v;
+        } else if (arg == "--battle-fake-sweep-output") {
+            std::string v;
+            if (!require_value("--battle-fake-sweep-output", &v)) return false;
+            options.battle_fake_sweep_output = std::filesystem::path(v);
         } else if (arg == "--battle-macro-debug") {
             options.battle_macro_debug = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -696,6 +737,39 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     if (options.battle_macro_target_slot.has_value()
         && (*options.battle_macro_target_slot < 4 || *options.battle_macro_target_slot > 11)) {
         if (error_out) *error_out = "--battle-macro-target-slot must be between 4 and 11";
+        return false;
+    }
+    if (options.battle_macro_fake_attacks.has_value()
+        && (*options.battle_macro_fake_attacks < 0 || *options.battle_macro_fake_attacks > 255)) {
+        if (error_out) *error_out = "--battle-fake-attacks must be between 0 and 255";
+        return false;
+    }
+    if (options.battle_fake_sweep_trials <= 0 || options.battle_fake_sweep_trials > 1000) {
+        if (error_out) *error_out = "--battle-fake-sweep-trials must be between 1 and 1000";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_target_neutral < 0 || options.battle_fake_sweep_min_target_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_max_target_neutral < 0 || options.battle_fake_sweep_max_target_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-max-target-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_target_neutral > options.battle_fake_sweep_max_target_neutral) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be <= --battle-fake-sweep-max-target-neutral";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_input_neutral < 0 || options.battle_fake_sweep_min_input_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_max_input_neutral < 0 || options.battle_fake_sweep_max_input_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-max-input-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_input_neutral > options.battle_fake_sweep_max_input_neutral) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be <= --battle-fake-sweep-max-input-neutral";
         return false;
     }
 

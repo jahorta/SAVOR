@@ -7,12 +7,14 @@
 #include <vector>
 
 #include "../../../Core/Memory/Soa/Battle/BattleContext.h"
+#include "../../../Core/Input/SoaBattle/ActionTypes.h"
+#include "../../../Core/Input/SoaBattle/PlanWriter.h"
 #include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "../../../Runner/Script/PhaseScriptVM.h"
 
 namespace phase::battle::macroprobe {
 
-static constexpr int PayloadVersion = 3;
+static constexpr int PayloadVersion = 5;
 
 enum class MacroMode : std::uint32_t {
     Attack = 1,
@@ -28,12 +30,15 @@ enum class FailureCode : std::uint32_t {
     Timeout = 4,
     UnexpectedBreakpoint = 5,
     BattleContextUnavailable = 6,
+    MemoryReadFailed = 7,
 };
 
 struct MacroStep {
     enum class Kind : std::uint32_t {
         InputGate = 0,
         NeutralFrames = 1,
+        CaptureMemoryU32 = 2,
+        WaitMemoryU32Changed = 3,
     };
 
     const char* label = "";
@@ -41,12 +46,28 @@ struct MacroStep {
     savor::GCInputFrame input{};
     std::uint32_t frame_count = 0;
     bool hold_input_through_hit_opcode = false;
+    std::uint32_t memory_addr = 0;
+    std::uint32_t memory_timeout_ms = 0;
+    std::uint32_t memory_cycle_index = 0;
     std::vector<BPKey> expected_bps;
 };
 
 struct MacroCommand {
     MacroMode mode{MacroMode::Attack};
     std::uint32_t target_slot{4};
+};
+
+enum class FakeAttackMemoryGateMode : std::uint32_t {
+    TargetSide = 1,
+    InputSide = 2,
+    Both = 3,
+};
+
+struct FakeAttackPattern {
+    FakeAttackMemoryGateMode memory_gate_mode{FakeAttackMemoryGateMode::TargetSide};
+    std::uint32_t target_neutral_before_b_frames{0};
+    std::uint32_t input_neutral_after_b_frames{20};
+    std::uint32_t memory_timeout_ms{1000};
 };
 
 struct BattleMacroItemRow {
@@ -74,6 +95,8 @@ struct EncodeSpec {
     std::uint32_t step_timeout_ms{5000};
     std::uint32_t vi_stall_ms{5000};
     std::uint32_t observation_tail_ms{10000};
+    std::uint32_t fake_attack_count{0};
+    FakeAttackPattern fake_attack_pattern{};
 };
 
 const char* MacroModeName(MacroMode mode);
@@ -100,6 +123,24 @@ std::vector<MacroStep> BuildMacroPlanSteps(
     std::uint32_t transition_neutral_frames,
     const BattleMacroPlanningContext* planning_context,
     FailureCode* failure_out);
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out);
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const FakeAttackPattern& fake_attack_pattern,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out);
+std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
+    const soa::battle::actions::TurnPlan& turn_plan,
+    std::uint32_t transition_neutral_frames,
+    const BattleMacroPlanningContext* planning_context,
+    soa::battle::actions::MaterializeErr* materialize_err_out);
 
 bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out);
 bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_ctx);

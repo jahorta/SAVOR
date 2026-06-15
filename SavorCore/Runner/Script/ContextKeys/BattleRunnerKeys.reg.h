@@ -40,7 +40,28 @@ namespace savor::context::key::battle {
   X(MACRO_LAST_HIT_PC,        0x034B, "battle.macro.last_hit_pc") \
   X(MACRO_PLAN_BLOB,          0x034C, "battle.macro.plan_blob") \
   X(MACRO_TRANSITION_NEUTRAL_FRAMES,0x034D, "battle.macro.transition_neutral_frames") \
-  X(MACRO_OBSERVATION_TAIL_MS,0x034E, "battle.macro.observation_tail_ms")
+  X(MACRO_OBSERVATION_TAIL_MS,0x034E, "battle.macro.observation_tail_ms") \
+  X(MACRO_MEMORY_ADDR,        0x034F, "battle.macro.memory.addr") \
+  X(MACRO_MEMORY_BASELINE,    0x0350, "battle.macro.memory.baseline") \
+  X(MACRO_MEMORY_LATEST,      0x0351, "battle.macro.memory.latest") \
+  X(MACRO_MEMORY_CHANGED,     0x0352, "battle.macro.memory.changed") \
+  X(MACRO_MEMORY_POLL_COUNT,  0x0353, "battle.macro.memory.poll_count") \
+  X(MACRO_MEMORY_ELAPSED_MS,  0x0354, "battle.macro.memory.elapsed_ms") \
+  X(MACRO_FAKE_MEMORY_GATE_MODE,0x0355, "battle.macro.fake.memory_gate_mode") \
+  X(MACRO_FAKE_TARGET_NEUTRAL_FRAMES,0x0356, "battle.macro.fake.target_neutral_frames") \
+  X(MACRO_FAKE_INPUT_NEUTRAL_FRAMES,0x0357, "battle.macro.fake.input_neutral_frames") \
+  X(MACRO_FAKE_MEMORY_TIMEOUT_MS,0x0358, "battle.macro.fake.memory_timeout_ms") \
+  X(MACRO_MEMORY_GATE_COUNT,  0x0359, "battle.macro.memory.gate_count") \
+  X(MACRO_MEMORY_FIRST_BASELINE,0x035A, "battle.macro.memory.first.baseline") \
+  X(MACRO_MEMORY_FIRST_LATEST,0x035B, "battle.macro.memory.first.latest") \
+  X(MACRO_MEMORY_FIRST_CHANGED,0x035C, "battle.macro.memory.first.changed") \
+  X(MACRO_MEMORY_FIRST_POLL_COUNT,0x035D, "battle.macro.memory.first.poll_count") \
+  X(MACRO_MEMORY_FIRST_ELAPSED_MS,0x035E, "battle.macro.memory.first.elapsed_ms") \
+  X(MACRO_MEMORY_REPEAT_BASELINE,0x035F, "battle.macro.memory.repeat.baseline") \
+  X(MACRO_MEMORY_REPEAT_LATEST,0x0360, "battle.macro.memory.repeat.latest") \
+  X(MACRO_MEMORY_REPEAT_CHANGED,0x0361, "battle.macro.memory.repeat.changed") \
+  X(MACRO_MEMORY_REPEAT_POLL_COUNT,0x0362, "battle.macro.memory.repeat.poll_count") \
+  X(MACRO_MEMORY_REPEAT_ELAPSED_MS,0x0363, "battle.macro.memory.repeat.elapsed_ms")
 
 #define DECL_KEY(NAME, ID, STR) inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
 static_assert(NAME >= savor::context::key::BATTLE_MIN && NAME <= savor::context::key::BATTLE_MAX, "battle key out of range");

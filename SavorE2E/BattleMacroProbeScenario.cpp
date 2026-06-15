@@ -1,11 +1,15 @@
 #include "BattleMacroProbeScenario.h"
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -53,6 +57,12 @@ std::string MacroResultLine(const savor::PRResult& result) {
     std::uint32_t expected_bp = 0;
     std::uint32_t hit_bp = 0;
     std::uint32_t hit_pc = 0;
+    std::uint32_t memory_addr = 0;
+    std::uint32_t memory_baseline = 0;
+    std::uint32_t memory_latest = 0;
+    std::uint32_t memory_changed = 0;
+    std::uint32_t memory_poll_count = 0;
+    std::uint32_t memory_elapsed_ms = 0;
     result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_err);
     result.ps.ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result);
     result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, macro_failure);
@@ -61,6 +71,12 @@ std::string MacroResultLine(const savor::PRResult& result) {
     result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_EXPECTED_BP, expected_bp);
     result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_BP, hit_bp);
     result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_PC, hit_pc);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_ADDR, memory_addr);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_BASELINE, memory_baseline);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_LATEST, memory_latest);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_CHANGED, memory_changed);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_POLL_COUNT, memory_poll_count);
+    result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_ELAPSED_MS, memory_elapsed_ms);
 
     std::ostringstream line;
     line << "[battle-macro-probe-result]"
@@ -76,7 +92,13 @@ std::string MacroResultLine(const savor::PRResult& result) {
          << " last_step=" << last_step
          << " expected_bp=" << expected_bp
          << " hit_bp=" << hit_bp
-         << " hit_pc=" << FormatHexPc(hit_pc);
+         << " hit_pc=" << FormatHexPc(hit_pc)
+         << " memory_addr=" << FormatHexPc(memory_addr)
+         << " memory_before=" << FormatHexPc(memory_baseline)
+         << " memory_after=" << FormatHexPc(memory_latest)
+         << " memory_changed=" << memory_changed
+         << " memory_polls=" << memory_poll_count
+         << " memory_elapsed_ms=" << memory_elapsed_ms;
     return line.str();
 }
 
@@ -103,6 +125,136 @@ std::string MacroProgressLine(const savor::PRProgress& progress) {
          << " worker=" << progress.worker_id
          << " text=\"" << EscapeLogValue(progress.text) << "\"";
     return line.str();
+}
+
+const char* SweepGateModeName(phase::battle::macroprobe::FakeAttackMemoryGateMode mode) {
+    switch (mode) {
+    case phase::battle::macroprobe::FakeAttackMemoryGateMode::TargetSide: return "target";
+    case phase::battle::macroprobe::FakeAttackMemoryGateMode::InputSide: return "input";
+    case phase::battle::macroprobe::FakeAttackMemoryGateMode::Both: return "both";
+    default: return "unknown";
+    }
+}
+
+struct FakeAttackSweepCandidate {
+    std::uint32_t index{0};
+    phase::battle::macroprobe::FakeAttackPattern pattern{};
+
+    std::uint32_t frame_cost() const {
+        return pattern.target_neutral_before_b_frames + pattern.input_neutral_after_b_frames;
+    }
+
+    std::string id() const {
+        std::ostringstream out;
+        out << SweepGateModeName(pattern.memory_gate_mode)
+            << "-tn" << pattern.target_neutral_before_b_frames
+            << "-in" << pattern.input_neutral_after_b_frames;
+        return out.str();
+    }
+};
+
+struct FakeAttackSweepTrial {
+    bool worker_ok{false};
+    bool macro_ok{false};
+    bool first_ok{false};
+    bool repeat_ok{false};
+    std::uint32_t first_before{0};
+    std::uint32_t first_after{0};
+    std::uint32_t repeat_before{0};
+    std::uint32_t repeat_after{0};
+    std::uint32_t first_polls{0};
+    std::uint32_t repeat_polls{0};
+    std::uint32_t first_elapsed_ms{0};
+    std::uint32_t repeat_elapsed_ms{0};
+    std::uint32_t failure_code{0};
+};
+
+struct FakeAttackSweepSummary {
+    FakeAttackSweepCandidate candidate{};
+    std::uint32_t trials{0};
+    std::uint32_t failures{0};
+    std::uint32_t first_successes{0};
+    std::uint32_t repeat_successes{0};
+    std::uint64_t total_polls{0};
+    std::uint64_t total_elapsed_ms{0};
+    std::uint32_t max_polls{0};
+    std::uint32_t max_elapsed_ms{0};
+
+    bool first_reliable() const { return trials != 0 && first_successes == trials; }
+    bool repeat_reliable() const { return trials != 0 && repeat_successes == trials; }
+    bool reliable() const { return trials != 0 && failures == 0 && first_reliable() && repeat_reliable(); }
+    double avg_polls() const {
+        return trials == 0 ? 0.0 : static_cast<double>(total_polls) / static_cast<double>(trials * 2u);
+    }
+    double avg_elapsed_ms() const {
+        return trials == 0 ? 0.0 : static_cast<double>(total_elapsed_ms) / static_cast<double>(trials * 2u);
+    }
+};
+
+std::vector<FakeAttackSweepCandidate> BuildFakeAttackSweepCandidates(
+    std::uint32_t min_target_neutral,
+    std::uint32_t max_target_neutral,
+    std::uint32_t min_input_neutral,
+    std::uint32_t max_input_neutral) {
+    std::vector<FakeAttackSweepCandidate> candidates;
+    const auto modes = {
+        phase::battle::macroprobe::FakeAttackMemoryGateMode::TargetSide,
+        phase::battle::macroprobe::FakeAttackMemoryGateMode::InputSide,
+        phase::battle::macroprobe::FakeAttackMemoryGateMode::Both,
+    };
+    for (std::uint32_t target_neutral = min_target_neutral; target_neutral <= max_target_neutral; ++target_neutral) {
+        for (std::uint32_t input_neutral = min_input_neutral; input_neutral <= max_input_neutral; ++input_neutral) {
+            for (const auto mode : modes) {
+                candidates.push_back(FakeAttackSweepCandidate{
+                    .index = static_cast<std::uint32_t>(candidates.size()),
+                    .pattern = phase::battle::macroprobe::FakeAttackPattern{
+                        .memory_gate_mode = mode,
+                        .target_neutral_before_b_frames = target_neutral,
+                        .input_neutral_after_b_frames = input_neutral,
+                        .memory_timeout_ms = 1000,
+                    },
+                });
+            }
+        }
+    }
+    return candidates;
+}
+
+bool IsBetterSweepRecommendation(const FakeAttackSweepSummary& lhs, const FakeAttackSweepSummary& rhs) {
+    if (lhs.candidate.frame_cost() != rhs.candidate.frame_cost()) {
+        return lhs.candidate.frame_cost() < rhs.candidate.frame_cost();
+    }
+    if (lhs.max_polls != rhs.max_polls) {
+        return lhs.max_polls < rhs.max_polls;
+    }
+    if (lhs.avg_polls() != rhs.avg_polls()) {
+        return lhs.avg_polls() < rhs.avg_polls();
+    }
+    if (lhs.max_elapsed_ms != rhs.max_elapsed_ms) {
+        return lhs.max_elapsed_ms < rhs.max_elapsed_ms;
+    }
+    return lhs.candidate.index < rhs.candidate.index;
+}
+
+bool IsSweepRecommendationEligible(const FakeAttackSweepSummary& summary) {
+    return summary.candidate.pattern.memory_gate_mode != phase::battle::macroprobe::FakeAttackMemoryGateMode::Both;
+}
+
+
+std::string JsonEscape(std::string_view value) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (const char c : value) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(c); break;
+        }
+    }
+    return out;
 }
 
 bool IsInteractiveStdin() {
@@ -276,6 +428,55 @@ bool ParseObservationTailSeconds(const std::string& value, std::uint32_t* second
     return true;
 }
 
+bool ParseFakeAttackCount(const std::string& value, std::uint32_t* count_out) {
+    const auto trimmed = TrimPromptValue(value);
+    if (trimmed.empty()) return false;
+    std::uint32_t count = 0;
+    const char* first = trimmed.data();
+    const char* last = trimmed.data() + trimmed.size();
+    const auto result = std::from_chars(first, last, count);
+    if (result.ec != std::errc{} || result.ptr != last) return false;
+    if (count > 255) return false;
+    if (count_out) *count_out = count;
+    return true;
+}
+
+PromptResult PromptBattleMacroFakeAttackCount(
+    std::uint32_t default_count,
+    std::uint32_t* count_out,
+    std::string* error_out) {
+    if (!IsInteractiveStdin()) {
+        if (error_out) *error_out = "battle_macro_probe requires explicit battle plan arguments when stdin is not interactive";
+        return PromptResult::Cancel;
+    }
+
+    for (;;) {
+        std::string line;
+        if (!ReadPromptLine("Fake attacks [0..255, Enter current, b back, q cancel]\n  current: "
+            + std::to_string(default_count) + "\n> ", &line, error_out)) {
+            return PromptResult::Cancel;
+        }
+        line = TrimPromptValue(std::move(line));
+        if (IsCancelInput(line)) {
+            if (error_out) *error_out = "battle macro probe cancelled";
+            return PromptResult::Cancel;
+        }
+        if (IsBackInput(line)) {
+            return PromptResult::Back;
+        }
+        if (line.empty()) {
+            *count_out = default_count;
+            return PromptResult::Done;
+        }
+        std::uint32_t parsed = 0;
+        if (ParseFakeAttackCount(line, &parsed)) {
+            *count_out = parsed;
+            return PromptResult::Done;
+        }
+        std::cout << "Enter a fake attack count from 0 through 255.\n";
+    }
+}
+
 PromptResult PromptBattleMacroObservationTailSeconds(
     std::uint32_t default_seconds,
     std::uint32_t* seconds_out,
@@ -316,16 +517,19 @@ PromptResult PromptBattleMacroObservationTailSeconds(
 struct BattleMacroInteractiveDraft {
     std::filesystem::path savestate_path;
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
+    std::uint32_t fake_attack_count{0};
     std::uint32_t observation_tail_seconds{kDefaultObservationTailSeconds};
 };
 
 PromptResult PromptBattleMacroInteractiveDraft(
     const std::filesystem::path& default_savestate_path,
+    std::uint32_t default_fake_attack_count,
     std::uint32_t default_observation_tail_seconds,
     BattleMacroInteractiveDraft* draft,
     std::string* error_out) {
     enum class Step {
         Savestate,
+        FakeAttacks,
         Plan,
         TailSeconds,
         Done,
@@ -334,6 +538,7 @@ PromptResult PromptBattleMacroInteractiveDraft(
     Step step = Step::Savestate;
     std::filesystem::path savestate_path = default_savestate_path;
     std::vector<phase::battle::macroprobe::MacroCommand> commands;
+    std::uint32_t fake_attack_count = default_fake_attack_count;
     std::uint32_t observation_tail_seconds = default_observation_tail_seconds;
 
     while (step != Step::Done) {
@@ -341,6 +546,16 @@ PromptResult PromptBattleMacroInteractiveDraft(
         case Step::Savestate: {
             const auto result = PromptBattleMacroSavestatePath(savestate_path, &savestate_path, error_out);
             if (result == PromptResult::Cancel) return PromptResult::Cancel;
+            step = Step::FakeAttacks;
+            break;
+        }
+        case Step::FakeAttacks: {
+            const auto result = PromptBattleMacroFakeAttackCount(fake_attack_count, &fake_attack_count, error_out);
+            if (result == PromptResult::Cancel) return PromptResult::Cancel;
+            if (result == PromptResult::Back) {
+                step = Step::Savestate;
+                break;
+            }
             step = Step::Plan;
             break;
         }
@@ -348,14 +563,15 @@ PromptResult PromptBattleMacroInteractiveDraft(
             const auto result = PromptBattleMacroPlan(&commands, error_out);
             if (result == PromptResult::Cancel) return PromptResult::Cancel;
             if (result == PromptResult::Back) {
-                step = Step::Savestate;
+                step = Step::FakeAttacks;
                 break;
             }
             step = Step::TailSeconds;
             break;
         }
         case Step::TailSeconds: {
-            std::cout << "Plan: " << phase::battle::macroprobe::FormatCommandPlanSpec(commands) << "\n";
+            std::cout << "Plan: fake_attacks=" << fake_attack_count
+                      << " commands=" << phase::battle::macroprobe::FormatCommandPlanSpec(commands) << "\n";
             const auto result = PromptBattleMacroObservationTailSeconds(
                 observation_tail_seconds,
                 &observation_tail_seconds,
@@ -375,6 +591,7 @@ PromptResult PromptBattleMacroInteractiveDraft(
 
     draft->savestate_path = std::move(savestate_path);
     draft->commands = std::move(commands);
+    draft->fake_attack_count = fake_attack_count;
     draft->observation_tail_seconds = observation_tail_seconds;
     return PromptResult::Done;
 }
@@ -400,6 +617,327 @@ bool ResolveBattleMacroPlan(
 
     const auto result = PromptBattleMacroPlan(commands, error_out);
     return result == PromptResult::Done;
+}
+
+bool WriteFakeAttackSweepJson(
+    const std::filesystem::path& path,
+    const std::vector<FakeAttackSweepSummary>& summaries,
+    const FakeAttackSweepSummary* first_recommendation,
+    const FakeAttackSweepSummary* repeat_recommendation,
+    std::string* error_out) {
+    std::error_code ec;
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) {
+            if (error_out) *error_out = "failed creating sweep report directory: " + ec.message();
+            return false;
+        }
+    }
+
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out) {
+        if (error_out) *error_out = "failed opening sweep report: " + path.string();
+        return false;
+    }
+
+    const auto write_recommendation = [&](const char* name, const FakeAttackSweepSummary* summary) {
+        out << "  \"" << name << "\": ";
+        if (summary == nullptr) {
+            out << "null";
+            return;
+        }
+        out << "{\"candidate\":\"" << JsonEscape(summary->candidate.id()) << "\""
+            << ",\"gate\":\"" << SweepGateModeName(summary->candidate.pattern.memory_gate_mode) << "\""
+            << ",\"target_neutral\":" << summary->candidate.pattern.target_neutral_before_b_frames
+            << ",\"input_neutral\":" << summary->candidate.pattern.input_neutral_after_b_frames
+            << ",\"frame_cost\":" << summary->candidate.frame_cost()
+            << ",\"max_polls\":" << summary->max_polls
+            << ",\"avg_polls\":" << std::fixed << std::setprecision(3) << summary->avg_polls()
+            << ",\"max_elapsed_ms\":" << summary->max_elapsed_ms
+            << ",\"avg_elapsed_ms\":" << std::fixed << std::setprecision(3) << summary->avg_elapsed_ms()
+            << "}";
+    };
+
+    out << "{\n";
+    write_recommendation("first_recommendation", first_recommendation);
+    out << ",\n";
+    write_recommendation("repeat_recommendation", repeat_recommendation);
+    out << ",\n";
+    out << "  \"shared_recommendation\": "
+        << (first_recommendation != nullptr
+            && repeat_recommendation != nullptr
+            && first_recommendation->candidate.id() == repeat_recommendation->candidate.id()
+            ? "true" : "false")
+        << ",\n";
+    out << "  \"candidates\": [\n";
+    for (std::size_t i = 0; i < summaries.size(); ++i) {
+        const auto& summary = summaries[i];
+        out << "    {"
+            << "\"candidate\":\"" << JsonEscape(summary.candidate.id()) << "\""
+            << ",\"gate\":\"" << SweepGateModeName(summary.candidate.pattern.memory_gate_mode) << "\""
+            << ",\"target_neutral\":" << summary.candidate.pattern.target_neutral_before_b_frames
+            << ",\"input_neutral\":" << summary.candidate.pattern.input_neutral_after_b_frames
+            << ",\"frame_cost\":" << summary.candidate.frame_cost()
+            << ",\"trials\":" << summary.trials
+            << ",\"reliable\":" << (summary.reliable() ? "true" : "false")
+            << ",\"failures\":" << summary.failures
+            << ",\"first_successes\":" << summary.first_successes
+            << ",\"repeat_successes\":" << summary.repeat_successes
+            << ",\"max_polls\":" << summary.max_polls
+            << ",\"avg_polls\":" << std::fixed << std::setprecision(3) << summary.avg_polls()
+            << ",\"max_elapsed_ms\":" << summary.max_elapsed_ms
+            << ",\"avg_elapsed_ms\":" << std::fixed << std::setprecision(3) << summary.avg_elapsed_ms()
+            << "}";
+        if (i + 1 < summaries.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+    return true;
+}
+
+bool RunBattleFakeAttackSweep(
+    const CliOptions& options,
+    const std::filesystem::path& worker_exe,
+    savor::ProcessWorker& worker,
+    TSQueue<savor::PRResult>& results,
+    TSQueue<savor::PRProgress>& progress,
+    DurableLogFile& durable_log,
+    std::uint64_t* next_job_id,
+    std::string* error_out) {
+    constexpr std::uint32_t kTransitionNeutralFrames = 3;
+    constexpr std::uint32_t kFakeAttacksPerTrial = 2;
+    constexpr std::uint32_t kObservationTailMs = 1;
+
+    std::vector<phase::battle::macroprobe::MacroCommand> commands;
+    if (options.battle_macro_plan_spec.has_value()) {
+        if (!phase::battle::macroprobe::ParseCommandPlanSpec(*options.battle_macro_plan_spec, &commands, error_out)) {
+            return false;
+        }
+    } else {
+        commands = {
+            phase::battle::macroprobe::MacroCommand{
+                .mode = phase::battle::macroprobe::MacroMode::Block,
+                .target_slot = 4,
+            },
+            phase::battle::macroprobe::MacroCommand{
+                .mode = phase::battle::macroprobe::MacroMode::Focus,
+                .target_slot = 4,
+            },
+        };
+    }
+
+    const auto candidates = BuildFakeAttackSweepCandidates(
+        static_cast<std::uint32_t>(options.battle_fake_sweep_min_target_neutral),
+        static_cast<std::uint32_t>(options.battle_fake_sweep_max_target_neutral),
+        static_cast<std::uint32_t>(options.battle_fake_sweep_min_input_neutral),
+        static_cast<std::uint32_t>(options.battle_fake_sweep_max_input_neutral));
+    std::vector<FakeAttackSweepSummary> summaries;
+    summaries.reserve(candidates.size());
+
+    const auto report_path = options.battle_fake_sweep_output.value_or(
+        durable_log.path().parent_path() / "battle-fake-sweep-summary.json");
+    durable_log.AppendLine("[battle-fake-sweep-start] candidates=" + std::to_string(candidates.size())
+        + " trials=" + std::to_string(options.battle_fake_sweep_trials)
+        + " target_neutral_range=" + std::to_string(options.battle_fake_sweep_min_target_neutral)
+        + ".." + std::to_string(options.battle_fake_sweep_max_target_neutral)
+        + " input_neutral_range=" + std::to_string(options.battle_fake_sweep_min_input_neutral)
+        + ".." + std::to_string(options.battle_fake_sweep_max_input_neutral)
+        + " fake_attacks_per_trial=" + std::to_string(kFakeAttacksPerTrial)
+        + " plan=" + phase::battle::macroprobe::FormatCommandPlanSpec(commands)
+        + " report=\"" + EscapeLogValue(report_path.string()) + "\""
+        + " worker=\"" + EscapeLogValue(worker_exe.string()) + "\"");
+
+    const auto drain_progress = [&]() {
+        savor::PRProgress progress_item{};
+        while (progress.try_pop(progress_item)) {
+        }
+    };
+
+    for (const auto& candidate : candidates) {
+        FakeAttackSweepSummary summary{};
+        summary.candidate = candidate;
+        summary.trials = static_cast<std::uint32_t>(options.battle_fake_sweep_trials);
+        phase::battle::macroprobe::FailureCode build_failure = phase::battle::macroprobe::FailureCode::Ok;
+        const auto steps = phase::battle::macroprobe::BuildMacroProbePlanSteps(
+            commands,
+            kTransitionNeutralFrames,
+            kFakeAttacksPerTrial,
+            candidate.pattern,
+            nullptr,
+            &build_failure);
+        if (steps.empty() || build_failure != phase::battle::macroprobe::FailureCode::Ok) {
+            summary.failures = summary.trials;
+            summaries.push_back(summary);
+            continue;
+        }
+
+        for (int trial = 0; trial < options.battle_fake_sweep_trials; ++trial) {
+            savor::PSInit init{};
+            init.savestate_path = options.savestate_file.string();
+            init.default_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms);
+            init.derived_buffer_type = savor::DBuf::DK_None;
+            if (!worker.ctl_set_program(savor::PK_None, savor::PK_BattleMacroProbe, init)) {
+                if (error_out) *error_out = "battle fake sweep worker failed SET_PROGRAM";
+                return false;
+            }
+            if (!worker.ctl_activate_main()) {
+                if (error_out) *error_out = "battle fake sweep worker failed ACTIVATE_MAIN";
+                return false;
+            }
+
+            std::vector<std::uint8_t> payload;
+            phase::battle::macroprobe::encode_payload(
+                phase::battle::macroprobe::EncodeSpec{
+                    .commands = commands,
+                    .transition_neutral_frames = kTransitionNeutralFrames,
+                    .step_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms),
+                    .vi_stall_ms = 5000,
+                    .observation_tail_ms = kObservationTailMs,
+                    .fake_attack_count = kFakeAttacksPerTrial,
+                    .fake_attack_pattern = candidate.pattern,
+                },
+                payload);
+            savor::PSJob job{};
+            job.payload = std::move(payload);
+            if (!worker.try_acquire_slot()) {
+                if (error_out) *error_out = "battle fake sweep worker slot was unexpectedly busy";
+                return false;
+            }
+            const std::uint64_t job_id = (*next_job_id)++;
+            if (!worker.send_job(job_id, job_id, job)) {
+                if (error_out) *error_out = "battle fake sweep worker failed sending job";
+                return false;
+            }
+
+            const auto result_timeout_ms = options.timeout_ms * static_cast<std::int64_t>(steps.size() + 3);
+            const auto deadline = Clock::now() + std::chrono::milliseconds(result_timeout_ms);
+            savor::PRResult result{};
+            bool have_result = false;
+            while (Clock::now() < deadline) {
+                drain_progress();
+                if (results.try_pop(result)) {
+                    have_result = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
+            }
+            drain_progress();
+
+            FakeAttackSweepTrial trial_result{};
+            if (have_result) {
+                std::uint32_t macro_result = 1;
+                result.ps.ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, trial_result.failure_code);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE, trial_result.first_before);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST, trial_result.first_after);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT, trial_result.first_polls);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_ELAPSED_MS, trial_result.first_elapsed_ms);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE, trial_result.repeat_before);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST, trial_result.repeat_after);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT, trial_result.repeat_polls);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS, trial_result.repeat_elapsed_ms);
+                std::uint32_t first_changed = 0;
+                std::uint32_t repeat_changed = 0;
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED, first_changed);
+                result.ps.ctx.get(savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED, repeat_changed);
+                trial_result.worker_ok = result.ps.ok;
+                trial_result.macro_ok = result.ps.ok && macro_result == 0;
+                trial_result.first_ok = first_changed != 0 && trial_result.first_before != trial_result.first_after;
+                trial_result.repeat_ok = repeat_changed != 0 && trial_result.repeat_before != trial_result.repeat_after;
+            }
+
+            if (!trial_result.worker_ok || !trial_result.macro_ok || !trial_result.first_ok || !trial_result.repeat_ok) {
+                ++summary.failures;
+            }
+            if (trial_result.first_ok) ++summary.first_successes;
+            if (trial_result.repeat_ok) ++summary.repeat_successes;
+            const std::uint32_t trial_polls = trial_result.first_polls + trial_result.repeat_polls;
+            const std::uint32_t trial_elapsed = trial_result.first_elapsed_ms + trial_result.repeat_elapsed_ms;
+            summary.total_polls += trial_polls;
+            summary.total_elapsed_ms += trial_elapsed;
+            summary.max_polls = std::max(summary.max_polls, std::max(trial_result.first_polls, trial_result.repeat_polls));
+            summary.max_elapsed_ms = std::max(summary.max_elapsed_ms, std::max(trial_result.first_elapsed_ms, trial_result.repeat_elapsed_ms));
+
+            std::ostringstream trial_line;
+            trial_line << "[battle-fake-sweep-trial]"
+                << " candidate=" << candidate.id()
+                << " trial=" << (trial + 1)
+                << " gate=" << SweepGateModeName(candidate.pattern.memory_gate_mode)
+                << " target_neutral=" << candidate.pattern.target_neutral_before_b_frames
+                << " input_neutral=" << candidate.pattern.input_neutral_after_b_frames
+                << " first_ok=" << (trial_result.first_ok ? 1 : 0)
+                << " repeat_ok=" << (trial_result.repeat_ok ? 1 : 0)
+                << " first_before=" << FormatHexPc(trial_result.first_before)
+                << " first_after=" << FormatHexPc(trial_result.first_after)
+                << " repeat_before=" << FormatHexPc(trial_result.repeat_before)
+                << " repeat_after=" << FormatHexPc(trial_result.repeat_after)
+                << " polls=" << trial_polls
+                << " elapsed_ms=" << trial_elapsed
+                << " failure=" << trial_result.failure_code;
+            durable_log.AppendLine(trial_line.str());
+        }
+
+        std::ostringstream summary_line;
+        summary_line << "[battle-fake-sweep-summary]"
+            << " candidate=" << candidate.id()
+            << " reliable=" << (summary.reliable() ? 1 : 0)
+            << " failures=" << summary.failures
+            << " first_successes=" << summary.first_successes << "/" << summary.trials
+            << " repeat_successes=" << summary.repeat_successes << "/" << summary.trials
+            << " max_polls=" << summary.max_polls
+            << " avg_polls=" << std::fixed << std::setprecision(3) << summary.avg_polls()
+            << " max_elapsed_ms=" << summary.max_elapsed_ms
+            << " avg_elapsed_ms=" << std::fixed << std::setprecision(3) << summary.avg_elapsed_ms()
+            << " frame_cost=" << candidate.frame_cost();
+        durable_log.AppendLine(summary_line.str());
+        std::cout << summary_line.str() << '\n';
+        summaries.push_back(summary);
+    }
+
+    const FakeAttackSweepSummary* first_recommendation = nullptr;
+    const FakeAttackSweepSummary* repeat_recommendation = nullptr;
+    for (const auto& summary : summaries) {
+        if (IsSweepRecommendationEligible(summary)
+            && summary.first_reliable()
+            && (first_recommendation == nullptr || IsBetterSweepRecommendation(summary, *first_recommendation))) {
+            first_recommendation = &summary;
+        }
+        if (IsSweepRecommendationEligible(summary)
+            && summary.repeat_reliable()
+            && (repeat_recommendation == nullptr || IsBetterSweepRecommendation(summary, *repeat_recommendation))) {
+            repeat_recommendation = &summary;
+        }
+    }
+
+    std::ostringstream recommendation_line;
+    recommendation_line << "[battle-fake-sweep-recommendation]";
+    if (first_recommendation != nullptr) {
+        recommendation_line << " first=" << first_recommendation->candidate.id();
+    } else {
+        recommendation_line << " first=none";
+    }
+    if (repeat_recommendation != nullptr) {
+        recommendation_line << " repeat=" << repeat_recommendation->candidate.id();
+    } else {
+        recommendation_line << " repeat=none";
+    }
+    recommendation_line << " shared="
+        << (first_recommendation != nullptr
+            && repeat_recommendation != nullptr
+            && first_recommendation->candidate.id() == repeat_recommendation->candidate.id() ? 1 : 0)
+        << " report=\"" << EscapeLogValue(report_path.string()) << "\"";
+    durable_log.AppendLine(recommendation_line.str());
+    std::cout << recommendation_line.str() << '\n';
+
+    return WriteFakeAttackSweepJson(
+        report_path,
+        summaries,
+        first_recommendation,
+        repeat_recommendation,
+        error_out);
 }
 
 bool IsBattleMacroPromptCancel(const std::string& error) {
@@ -473,16 +1011,32 @@ bool RunBattleMacroProbeScenario(
     std::uint64_t next_job_id = 1;
     std::uint64_t successful_runs = 0;
     std::filesystem::path current_savestate = options.savestate_file;
+    std::uint32_t current_fake_attack_count = static_cast<std::uint32_t>(options.battle_macro_fake_attacks.value_or(0));
     std::uint32_t current_observation_tail_seconds = kDefaultObservationTailSeconds;
+    if (options.battle_fake_attack_sweep) {
+        const bool ok = RunBattleFakeAttackSweep(
+            options,
+            worker_exe,
+            worker,
+            results,
+            progress,
+            durable_log,
+            &next_job_id,
+            error_out);
+        stop_worker();
+        return ok;
+    }
     for (;;) {
         std::filesystem::path run_savestate;
         std::vector<phase::battle::macroprobe::MacroCommand> commands;
+        std::uint32_t fake_attack_count = current_fake_attack_count;
         std::uint32_t observation_tail_seconds = current_observation_tail_seconds;
         if (interactive_loop) {
             BattleMacroInteractiveDraft draft{};
             std::string prompt_error;
             const auto prompt_result = PromptBattleMacroInteractiveDraft(
                 current_savestate,
+                current_fake_attack_count,
                 current_observation_tail_seconds,
                 &draft,
                 &prompt_error);
@@ -498,6 +1052,7 @@ bool RunBattleMacroProbeScenario(
             }
             run_savestate = std::move(draft.savestate_path);
             commands = std::move(draft.commands);
+            fake_attack_count = draft.fake_attack_count;
             observation_tail_seconds = draft.observation_tail_seconds;
         } else {
             run_savestate = current_savestate;
@@ -507,14 +1062,21 @@ bool RunBattleMacroProbeScenario(
                 if (error_out) *error_out = prompt_error;
                 return false;
             }
+            fake_attack_count = current_fake_attack_count;
             observation_tail_seconds = kDefaultObservationTailSeconds;
         }
         current_savestate = run_savestate;
+        current_fake_attack_count = fake_attack_count;
         current_observation_tail_seconds = observation_tail_seconds;
         const std::uint32_t observation_tail_ms = observation_tail_seconds * 1000u;
 
         phase::battle::macroprobe::FailureCode build_failure = phase::battle::macroprobe::FailureCode::Ok;
-        const auto steps = phase::battle::macroprobe::BuildMacroPlanSteps(commands, kTransitionNeutralFrames, &build_failure);
+        const auto steps = phase::battle::macroprobe::BuildMacroProbePlanSteps(
+            commands,
+            kTransitionNeutralFrames,
+            fake_attack_count,
+            nullptr,
+            &build_failure);
         if (steps.empty() || build_failure != phase::battle::macroprobe::FailureCode::Ok) {
             stop_worker();
             if (error_out) {
@@ -527,6 +1089,7 @@ bool RunBattleMacroProbeScenario(
         const std::string plan_spec = phase::battle::macroprobe::FormatCommandPlanSpec(commands);
         durable_log.AppendLine("[battle-macro-probe-start] job=" + std::to_string(next_job_id)
             + " plan=" + plan_spec
+            + " fake_attacks=" + std::to_string(fake_attack_count)
             + " savestate=\"" + EscapeLogValue(run_savestate.string()) + "\""
             + " commands=" + std::to_string(commands.size())
             + " observation_tail_seconds=" + std::to_string(observation_tail_seconds)
@@ -558,6 +1121,7 @@ bool RunBattleMacroProbeScenario(
                 .step_timeout_ms = static_cast<std::uint32_t>(options.timeout_ms),
                 .vi_stall_ms = 5000,
                 .observation_tail_ms = observation_tail_ms,
+                .fake_attack_count = fake_attack_count,
             },
             payload);
         savor::PSJob job{};

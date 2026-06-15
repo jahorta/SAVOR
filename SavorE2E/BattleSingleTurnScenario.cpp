@@ -618,6 +618,7 @@ bool SeedBattleAuthoringRows(
     std::int64_t predicate_set_id = 0;
     if (!authoring_db->SavePredicateSet(
             {
+                .name = "SavorE2E battle predicates " + suffix,
                 .predicate_spec_ids = predicate_spec_ids,
                 .created_at_utc = now,
             },
@@ -801,6 +802,50 @@ bool EnsureNeutralAuthoringInputSet(
                 {
                     .main_x = 128,
                     .main_y = 128,
+                    .cstick_x = 128,
+                    .cstick_y = 128,
+                    .trigger_x = 0,
+                    .trigger_y = 0,
+                },
+            },
+            .created_at_utc = savor::db::types::UtcNow(),
+        },
+        input_set_id_out,
+        error_out);
+}
+
+bool EnsureBattleOnlyAuthoringInputSet(
+    savor::db::IAuthoringDb* authoring_db,
+    std::int64_t* input_set_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || input_set_id_out == nullptr) {
+        if (error_out) *error_out = "authoring db/input set output unavailable";
+        return false;
+    }
+
+    return authoring_db->EnsureAuthoringInputSet(
+        {
+            .name = "SavorE2E battle-only joystick input",
+            .frames = {
+                {
+                    .main_x = 128,
+                    .main_y = 128,
+                    .cstick_x = 128,
+                    .cstick_y = 128,
+                    .trigger_x = 0,
+                    .trigger_y = 0,
+                },
+                {
+                    .main_x = 160,
+                    .main_y = 128,
+                    .cstick_x = 128,
+                    .cstick_y = 128,
+                    .trigger_x = 0,
+                    .trigger_y = 0,
+                },
+                {
+                    .main_x = 128,
+                    .main_y = 160,
                     .cstick_x = 128,
                     .cstick_y = 128,
                     .trigger_x = 0,
@@ -1117,6 +1162,106 @@ bool SeedTasMovieBattleGraphExecution(
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
+bool SeedBattleGraphExecution(
+    savor::db::IAuthoringDb* authoring_db,
+    savor::db::IExecutionDb* execution_db,
+    std::int64_t entry_savestate_id,
+    std::int64_t battle_chain_spec_id,
+    std::int64_t input_set_id,
+    const CliOptions& options,
+    std::int64_t* workflow_instance_id_out,
+    std::string* error_out) {
+    if (authoring_db == nullptr || execution_db == nullptr || workflow_instance_id_out == nullptr) {
+        if (error_out) *error_out = "authoring/execution db unavailable";
+        return false;
+    }
+    if (entry_savestate_id <= 0 || battle_chain_spec_id <= 0 || input_set_id <= 0) {
+        if (error_out) *error_out = "entry savestate, battle chain spec, and input set ids must be > 0";
+        return false;
+    }
+
+    const auto graph_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(0),
+        false);
+    savor::db::SaveWorkflowGraphResult saved{};
+    if (!authoring_db->SaveWorkflowGraph(
+            {
+                .name = "SavorE2E Battle graph " + graph_suffix,
+                .description = "Battle graph-style e2e scenario with external input frames",
+                .graph_version = 1,
+                .graph_hash = "savor-e2e.workflow_graph.battle.v1." + graph_suffix,
+                .nodes = {
+                    {
+                        .node_key = "battle_1",
+                        .unit_kind = "battle_chain",
+                        .display_name = "Battle Chain",
+                        .authored_ref_kind = std::string("authoring.battle_chain_spec"),
+                        .authored_ref_id = battle_chain_spec_id,
+                        .inputs = {
+                            { .input_key = "entry_savestate", .data_kind = "state.savestate_id", .display_name = "Entry savestate" },
+                            { .input_key = "initial_input_frames", .data_kind = "analysis.input_frame_set_id", .display_name = "Initial input frames" },
+                        },
+                        .possible_outputs = {
+                            { .output_key = "battle_context", .data_kind = "analysisbattle.context_probe", .display_name = "Battle context" },
+                        },
+                    },
+                },
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "savor-e2e.workflow_graph.battle",
+                .causation_id = "savor-e2e.seed",
+            },
+            &saved,
+            error_out)) {
+        return false;
+    }
+
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand command{};
+    command.workflow_kind = "workflow_graph";
+    command.root_scope_kind = "manual";
+    command.root_scope_id = entry_savestate_id;
+    command.workflow_graph_revision_id = saved.workflow_graph_revision_id;
+    command.created_by = "savor-e2e";
+    command.created_at_utc = savor::db::types::UtcNow().time_since_epoch().count();
+    const auto registry = savor::db::execution::workflow::BuildDefaultWorkflowUnitRegistry();
+    std::string activation_error;
+    auto battle_activation = savor::db::execution::workflow::BuildUnitActivationSpecFromDefinition(
+        registry,
+        "battle_1",
+        "battle_1",
+        "battle_chain",
+        "Battle Chain",
+        std::optional<std::string>("authoring.battle_chain_spec"),
+        battle_chain_spec_id,
+        {},
+        &activation_error);
+    if (!battle_activation.has_value()) {
+        if (error_out) *error_out = activation_error;
+        return false;
+    }
+    command.unit_activations.push_back(std::move(*battle_activation));
+    command.input_bindings.push_back({
+        .node_key = "battle_1",
+        .input_key = "entry_savestate",
+        .data_kind = "state.savestate_id",
+        .ref_kind = "state.savestate",
+        .ref_id = entry_savestate_id,
+        .source_kind = "external",
+    });
+    command.input_bindings.push_back({
+        .node_key = "battle_1",
+        .input_key = "initial_input_frames",
+        .data_kind = "analysis.input_frame_set_id",
+        .ref_kind = "au.input_set",
+        .ref_id = input_set_id,
+        .source_kind = "external",
+    });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_min", .value_type = "integer", .integer_value = options.battle_fake_attack_low.value_or(0), .source_kind = "scenario" });
+    command.arguments.push_back({ .node_key = "battle_1", .argument_key = "fake_attack_max", .value_type = "integer", .integer_value = options.battle_fake_attack_high.value_or(0), .source_kind = "scenario" });
+    return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
+}
+
 std::int64_t ResolveProbeRunIdFromGraph(
     const std::optional<savor::db::execution::workflow::WorkflowGraphSnapshot>& graph) {
     if (!graph.has_value()) {
@@ -1155,7 +1300,7 @@ std::int64_t ResolveBattleContextProbeIdFromGraph(
 
 } // namespace
 
-bool RunBattleSingleTurnRealWorkerScenario(
+bool RunSeedProbeBattleRealWorkerScenario(
     const CliOptions& options,
     const char* argv0,
     savor::db::core::DBService* db_service,
@@ -1484,6 +1629,390 @@ bool RunBattleSingleTurnRealWorkerScenario(
         if (error_out) *error_out = failed
             ? "workflow did not complete successfully"
             : "workflow did not reach COMPLETED state before timeout - timed out";
+        return false;
+    }
+    return true;
+}
+
+bool RunBattleWorkflowGraphRealWorkerScenario(
+    const CliOptions& options,
+    const char* argv0,
+    savor::db::core::DBService* db_service,
+    std::string* error_out) {
+    if (db_service == nullptr || !db_service->IsRunning()) {
+        if (error_out) *error_out = "DBService must be running";
+        return false;
+    }
+    if (db_service->ExecutionDb() == nullptr
+        || db_service->StateDb() == nullptr
+        || db_service->AnalysisDb() == nullptr
+        || db_service->AuthoringDb() == nullptr) {
+        if (error_out) *error_out = "one or more SavorDb contexts are unavailable";
+        return false;
+    }
+
+    const auto worker_exe = ResolveWorkerExePath(argv0);
+    if (!std::filesystem::exists(worker_exe)) {
+        if (error_out) *error_out = "SavorWorker.exe was not found next to SavorE2E: " + worker_exe.string();
+        return false;
+    }
+
+    DurableLogFile durable_log;
+    if (!durable_log.Open(options, options.scenario, error_out)) {
+        return false;
+    }
+    std::cout << "[durable-log] path=" << durable_log.path().string() << '\n';
+
+    std::string err;
+    std::int64_t entry_savestate_id = 0;
+    if (!SeedStateSavestate(db_service->StateDb(), options.savestate_file, &entry_savestate_id, &err)) {
+        if (error_out) *error_out = "failed seeding StateDB battle entry savestate: " + err;
+        return false;
+    }
+
+    std::int64_t battle_run_spec_id = 0;
+    std::int64_t explorer_settings_id = 0;
+    const auto battle_suffix = BattleSeedSuffix(
+        options.scenario,
+        options.battle_fake_attack_low.value_or(0),
+        options.battle_fake_attack_high.value_or(0),
+        false);
+    if (!SeedBattleAuthoringRows(
+            db_service->AuthoringDb(),
+            battle_suffix,
+            options.battle_fake_attack_low.value_or(0),
+            options.battle_fake_attack_high.value_or(0),
+            false,
+            &battle_run_spec_id,
+            &explorer_settings_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding battle authoring rows: " + err;
+        return false;
+    }
+
+    std::int64_t battle_chain_spec_id = 0;
+    if (!db_service->AuthoringDb()->SaveBattleChainSpec(
+            {
+                .name = "SavorE2E Battle chain spec " + battle_suffix,
+                .description = "Battle-only graph-style chain spec",
+                .battle_run_spec_id = battle_run_spec_id,
+                .explorer_settings_id = explorer_settings_id,
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "savor-e2e.workflow_graph.battle",
+                .causation_id = "savor-e2e.seed",
+            },
+            &battle_chain_spec_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding battle chain spec: " + err;
+        return false;
+    }
+
+    std::int64_t input_set_id = 0;
+    if (!EnsureBattleOnlyAuthoringInputSet(
+            db_service->AuthoringDb(),
+            &input_set_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding authored battle input set: " + err;
+        return false;
+    }
+
+    std::int64_t workflow_instance_id = 0;
+    if (!SeedBattleGraphExecution(
+            db_service->AuthoringDb(),
+            db_service->ExecutionDb(),
+            entry_savestate_id,
+            battle_chain_spec_id,
+            input_set_id,
+            options,
+            &workflow_instance_id,
+            &err)) {
+        if (error_out) *error_out = "failed seeding Battle graph workflow execution rows: " + err;
+        return false;
+    }
+
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    savor::db::execution::programdb::battlecontext::BattleContextProbePhaseRegistrationConfig context_config{};
+    context_config.authoring_db = db_service->AuthoringDb();
+    context_config.working_dir_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-context";
+    savor::db::execution::programdb::battlecontext::RegisterBattleContextProbePhaseDescriptor(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->AnalysisDb(),
+        std::move(context_config));
+
+    savor::db::execution::programdb::battle::BattleSingleTurnPhaseRegistrationConfig battle_config{};
+    battle_config.authoring_db = db_service->AuthoringDb();
+    battle_config.working_dir_root = options.workspace_root.value_or(
+        std::filesystem::temp_directory_path() / "savor-e2e-default") / "battle-single-turn";
+    savor::db::execution::programdb::battle::RegisterBattleSingleTurnPhaseDescriptor(
+        &registry,
+        db_service->ExecutionDb(),
+        db_service->StateDb(),
+        db_service->AnalysisDb(),
+        std::move(battle_config));
+
+    if (!registry.HasRequiredAdaptersForStepKind("battle_chain")
+        || !registry.HasRequiredAdaptersForStepKind("battle.context_probe")
+        || !registry.HasRequiredAdaptersForStepKind("battle.single_turn")) {
+        if (error_out) *error_out = "battle graph workflow descriptor registration is incomplete";
+        return false;
+    }
+
+    const auto run_spec = db_service->AuthoringDb()->GetBattleRunSpec(battle_run_spec_id);
+    const auto scenario_timeout_ms = run_spec.has_value()
+        ? ComputeBattleScenarioTimeoutMs(*run_spec, options)
+        : std::max<std::int64_t>(options.timeout_ms, 300000);
+
+    std::cout << "[battle-graph-setup] entry_savestate_id=" << entry_savestate_id
+              << " battle_run_spec_id=" << battle_run_spec_id
+              << " explorer_settings_id=" << explorer_settings_id
+              << " battle_chain_spec_id=" << battle_chain_spec_id
+              << " input_set_id=" << input_set_id
+              << " workflow_instance_id=" << workflow_instance_id
+              << " fake_attacks=" << options.battle_fake_attack_low.value_or(0)
+              << ".." << options.battle_fake_attack_high.value_or(0) << "\n";
+
+    auto coordinator = savor::runner::parallel::savordb::BuildDbBackedWorkflowCoordinator(
+        db_service->ExecutionDb(),
+        db_service->StateDb(),
+        savor::runner::parallel::savordb::DBWorkflowWorkerCoordinatorConfig{
+            .desired_workers = static_cast<std::size_t>(options.worker_count),
+            .controller_sleep_ms = static_cast<std::uint32_t>(options.poll_ms),
+            .worker_exe_path = worker_exe.string(),
+            .iso_path = options.iso_path.string(),
+            .dolphin_base_dir = options.dolphin_base_dir.string(),
+            .worker_dir_root = options.worker_dir_root.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default") / ".workers").string(),
+            .visual_workers = options.visual_worker,
+            .auto_resume_visual_workers = false,
+            .visual_screenshot_dir = options.visual_screenshot_dir.value_or(
+                options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default")
+                    / "visual-screenshots").string(),
+        },
+        savor::runner::parallel::savordb::CoordinatorIntegrationConfig{},
+        &registry);
+
+    std::mutex lines_mtx;
+    std::deque<std::string> pending_lines;
+    const auto push_line = [&](std::string line) {
+        durable_log.AppendLine(line);
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        pending_lines.push_back(std::move(line));
+    };
+    const auto drain_lines = [&]() {
+        std::deque<std::string> out;
+        std::lock_guard<std::mutex> lock(lines_mtx);
+        std::swap(out, pending_lines);
+        return out;
+    };
+    std::mutex progress_mtx;
+    std::unordered_map<std::size_t, savor::PRProgress> last_progress_by_worker;
+
+    coordinator.SetResultCallback([&](const savor::PRResult& result) {
+        std::ostringstream line;
+        line << "[battle-graph-worker-result] job=" << result.job_id
+             << " worker=" << result.worker_id
+             << " ok=" << (result.ps.ok ? "true" : "false")
+             << " w_err=" << savor::WErrToString(result.ps.w_err) << "(" << static_cast<int>(result.ps.w_err) << ")";
+        push_line(line.str());
+    });
+    coordinator.SetResultMapEventCallback([&](const std::string& line) {
+        push_line(line);
+    });
+    coordinator.SetProgressCallback([&](const savor::PRProgress& progress) {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        last_progress_by_worker[progress.worker_id] = progress;
+    });
+
+    ScopedWorkflowCoordinatorService workflow_coordinator;
+    if (!workflow_coordinator.Start(
+            db_service->ExecutionDb(),
+            db_service->AuthoringDb(),
+            &registry,
+            options,
+            &err,
+            [&](const std::string& line) {
+                push_line(line);
+            })) {
+        if (error_out) *error_out = err;
+        return false;
+    }
+
+    coordinator.Start();
+    const auto started = std::chrono::steady_clock::now();
+    const bool interactive_stdout = IsInteractiveStdout();
+    MultiLineProgressRenderer progress_renderer;
+    const auto interactive_refresh_cadence = std::chrono::milliseconds(100);
+    bool completed = false;
+    bool failed = false;
+    std::string latest_state = "workflow=unavailable";
+    std::size_t poll_count = 0;
+    std::size_t ticks_since_snapshot = 0;
+    std::size_t terminal_steps_seen_count = 0;
+    std::vector<std::string> latest_lines;
+    while (std::chrono::steady_clock::now() - started < std::chrono::milliseconds(scenario_timeout_ms)) {
+        ++poll_count;
+        ++ticks_since_snapshot;
+        const auto event_lines = drain_lines();
+        const auto graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        WorkerProgressById progress_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(progress_mtx);
+            progress_snapshot = last_progress_by_worker;
+        }
+        const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
+        latest_lines = BuildCoordinatorProgressLines(
+            db_service->ExecutionDb(),
+            telemetry,
+            worker_snapshot,
+            graph,
+            &progress_snapshot);
+        if (interactive_stdout) {
+            progress_renderer.SetLines(latest_lines);
+            progress_renderer.WriteEventLines(std::cout, event_lines);
+            progress_renderer.RenderIfDue(std::cout, std::chrono::steady_clock::now(), interactive_refresh_cadence);
+        } else {
+            for (const auto& line : event_lines) {
+                std::cout << line << '\n';
+            }
+            if (ticks_since_snapshot >= 10 || poll_count == 1) {
+                ticks_since_snapshot = 0;
+                std::cout << "[battle-graph] ";
+                for (std::size_t i = 0; i < latest_lines.size(); ++i) {
+                    if (i > 0) {
+                        std::cout << " | ";
+                    }
+                    std::cout << latest_lines[i];
+                }
+                std::cout << '\n';
+            }
+        }
+        if (graph.has_value()) {
+            latest_state = FormatWorkflowStateLine(*graph);
+            using savor::db::execution::workflow::WorkflowInstanceState;
+            if (graph->instance.state == WorkflowInstanceState::Completed) {
+                completed = true;
+                break;
+            }
+            if (graph->instance.state == WorkflowInstanceState::Failed
+                || graph->instance.state == WorkflowInstanceState::Canceled) {
+                failed = true;
+                break;
+            }
+            if (AreWorkflowStepsTerminal(*graph)) {
+                ++terminal_steps_seen_count;
+                if (terminal_steps_seen_count >= 2) {
+                    if (HasFailedWorkflowStep(*graph)) {
+                        failed = true;
+                    } else {
+                        completed = true;
+                    }
+                    break;
+                }
+            } else {
+                terminal_steps_seen_count = 0;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(options.poll_ms));
+    }
+
+    coordinator.Stop();
+    workflow_coordinator.Stop();
+    const auto final_event_lines = drain_lines();
+    if (interactive_stdout) {
+        progress_renderer.WriteEventLines(std::cout, final_event_lines);
+    } else {
+        for (const auto& line : final_event_lines) {
+            std::cout << line << '\n';
+        }
+    }
+
+    const auto final_graph = db_service->ExecutionDb()->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+    WorkerProgressById final_progress_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(progress_mtx);
+        final_progress_snapshot = last_progress_by_worker;
+    }
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
+    latest_lines = BuildCoordinatorProgressLines(
+        db_service->ExecutionDb(),
+        final_telemetry,
+        final_worker_snapshot,
+        final_graph,
+        &final_progress_snapshot);
+    if (final_graph.has_value()) {
+        latest_state = FormatWorkflowStateLine(*final_graph);
+    }
+    if (interactive_stdout) {
+        progress_renderer.SetLines(latest_lines);
+        progress_renderer.Render(std::cout);
+    }
+
+    const auto authored_input_frames = db_service->AuthoringDb()->ListAuthoringInputSetFrames(input_set_id);
+    const auto context_probe_id = ResolveBattleContextProbeIdFromGraph(final_graph);
+    const auto context_probe = db_service->AnalysisDb()->GetBattleContextProbe(context_probe_id);
+    const auto waves = context_probe_id > 0
+        ? db_service->AnalysisDb()->ListBattleTurnWavesForContextProbe(context_probe_id)
+        : std::vector<savor::db::BattleTurnWaveSnapshot>{};
+    const auto all_waves = !waves.empty()
+        ? db_service->AnalysisDb()->ListBattleTurnWaves(waves.front().battle_set_id)
+        : std::vector<savor::db::BattleTurnWaveSnapshot>{};
+    std::size_t job_count = 0;
+    std::size_t succeeded_count = 0;
+    std::size_t victory_count = 0;
+    for (const auto& wave : all_waves) {
+        const auto jobs = db_service->AnalysisDb()->ListBattleTurnJobsForWave(wave.wave_id);
+        job_count += jobs.size();
+        for (const auto& job : jobs) {
+            if (job.job_state == savor::db::BattleTurnJobState::Succeeded) {
+                ++succeeded_count;
+            }
+            if (job.battle_outcome.has_value()
+                && *job.battle_outcome == savor::battle::Outcome::Victory) {
+                ++victory_count;
+            }
+        }
+    }
+
+    std::cout << "[battle-graph-final] status=" << (completed ? "success" : failed ? "failure" : "timeout") << '\n';
+    std::cout << "  timeout_ms=" << scenario_timeout_ms << '\n';
+    std::cout << "  " << latest_state << '\n';
+    std::cout << "  workflow_instance_id=" << workflow_instance_id
+              << " input_set_id=" << input_set_id
+              << " input_frames=" << authored_input_frames.size()
+              << " context_probe_id=" << context_probe_id
+              << " first_turn_waves=" << waves.size()
+              << " expected_first_turn_waves=" << authored_input_frames.size()
+              << " turn_jobs=" << job_count
+              << " succeeded_turn_jobs=" << succeeded_count
+              << " victory_jobs=" << victory_count << '\n';
+
+    if (!completed) {
+        if (error_out) *error_out = failed
+            ? "workflow did not complete successfully"
+            : "workflow did not reach COMPLETED state before timeout - timed out";
+        return false;
+    }
+    if (authored_input_frames.empty()) {
+        if (error_out) *error_out = "battle graph workflow completed with an empty authored battle input set";
+        return false;
+    }
+    if (context_probe_id <= 0 || !context_probe.has_value()) {
+        if (error_out) *error_out = "battle graph workflow completed without a battle context probe output";
+        return false;
+    }
+    if (waves.size() != authored_input_frames.size()) {
+        if (error_out) *error_out = "battle context wave fanout mismatch: waves="
+            + std::to_string(waves.size()) + " expected=" + std::to_string(authored_input_frames.size());
+        return false;
+    }
+    if (job_count == 0) {
+        if (error_out) *error_out = "battle graph workflow completed without turn jobs";
         return false;
     }
     return true;

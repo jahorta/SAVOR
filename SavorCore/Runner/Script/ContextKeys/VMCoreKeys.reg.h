@@ -12,6 +12,7 @@ namespace savor::context::key::core {
   X(ELAPSED_MS,              0x0003, "core.run.elapsed_ms")    \
   X(LAST_SAVESTATE_PATH,     0x0004, "core.run.last_savestate_path")    \
   X(GAME_ISO_PATH,           0x0005, "core.run.game_iso_path")    \
+  X(RUN_EXPECTED_MATCH,      0x0006, "core.run.expected_match")    \
 \
   X(VI_FIRST,                0x0020, "core.metrics.vi_first")  \
   X(VI_LAST,                 0x0021, "core.metrics.vi_last")   \
@@ -22,6 +23,7 @@ namespace savor::context::key::core {
   X(VI_STALL_MS,             0x0041, "core.input.vi_stall_ms") \
   X(PROGRESS_RATE,           0x0042, "core.input.progress_rate") \
   X(PROGRESS_CORE_FLAGS,     0x0043, "core.input.progress_core_flags") \
+  X(RUN_POLL_MS,             0x0044, "core.input.run_poll_ms") \
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \

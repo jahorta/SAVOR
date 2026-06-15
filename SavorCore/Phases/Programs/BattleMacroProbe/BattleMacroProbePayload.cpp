@@ -3,6 +3,7 @@
 #include "../../../Runner/IPC/Wire.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/ScriptProgress.h"
+#include "../../../Core/Memory/Soa/SoaAddrRegistry.h"
 
 #include <algorithm>
 #include <charconv>
@@ -33,6 +34,12 @@ bool get_u32(const std::uint8_t*& p, const std::uint8_t* e, std::uint32_t& v) {
 savor::GCInputFrame PressA() {
     savor::GCInputFrame f{};
     f.A();
+    return f;
+}
+
+savor::GCInputFrame PressB() {
+    savor::GCInputFrame f{};
+    f.B();
     return f;
 }
 
@@ -94,6 +101,18 @@ void AddEnemyTargetReadyStep(std::vector<MacroStep>& steps, const char* label) {
         .label = label,
         .input = savor::GCInputFrame{},
         .expected_bps = {bp::battle::BattleMacroEnemyTargetReady},
+    });
+}
+
+void AddNeutralFrames(std::vector<MacroStep>& steps, const char* label, std::uint32_t frame_count) {
+    if (frame_count == 0) {
+        return;
+    }
+    steps.push_back(MacroStep{
+        .label = label,
+        .kind = MacroStep::Kind::NeutralFrames,
+        .input = savor::GCInputFrame{},
+        .frame_count = frame_count,
     });
 }
 
@@ -162,6 +181,65 @@ void AddAttackSteps(std::vector<MacroStep>& steps, std::uint32_t target_move_cou
     });
 }
 
+void AddFakeAttackMemoryGate(
+    std::vector<MacroStep>& steps,
+    const char* label,
+    std::uint32_t cycle_index,
+    std::uint32_t rng_addr,
+    std::uint32_t timeout_ms) {
+    steps.push_back(MacroStep{
+        .label = label,
+        .kind = MacroStep::Kind::WaitMemoryU32Changed,
+        .memory_addr = rng_addr,
+        .memory_timeout_ms = timeout_ms,
+        .memory_cycle_index = cycle_index,
+    });
+}
+
+void AddFakeAttackCycleSteps(
+    std::vector<MacroStep>& steps,
+    std::uint32_t cycle_index,
+    const FakeAttackPattern& pattern) {
+    const auto rng_addr = addr::AddrRegistry::base(addr::core::RNG_SEED);
+    steps.push_back(MacroStep{
+        .label = "fake_attack_rng_capture",
+        .kind = MacroStep::Kind::CaptureMemoryU32,
+        .memory_addr = rng_addr,
+        .memory_cycle_index = cycle_index,
+    });
+    steps.push_back(MacroStep{
+        .label = "fake_attack_accept_attack",
+        .input = PressA(),
+        .expected_bps = {bp::battle::BattleMacroMainMenuAcceptDispatch},
+    });
+    AddEnemyTargetReadyStep(steps, "fake_attack_enemy_target_ready");
+    if (pattern.memory_gate_mode == FakeAttackMemoryGateMode::TargetSide
+        || pattern.memory_gate_mode == FakeAttackMemoryGateMode::Both) {
+        AddFakeAttackMemoryGate(
+            steps,
+            "fake_attack_rng_changed_target",
+            cycle_index,
+            rng_addr,
+            pattern.memory_timeout_ms);
+    }
+    AddNeutralFrames(steps, "fake_attack_target_neutral_before_b", pattern.target_neutral_before_b_frames);
+    steps.push_back(MacroStep{
+        .label = "fake_attack_back_to_input_ready",
+        .input = PressB(),
+        .expected_bps = {bp::battle::BattleMacroInputReadyGate},
+    });
+    AddNeutralFrames(steps, "fake_attack_input_neutral_after_b", pattern.input_neutral_after_b_frames);
+    if (pattern.memory_gate_mode == FakeAttackMemoryGateMode::InputSide
+        || pattern.memory_gate_mode == FakeAttackMemoryGateMode::Both) {
+        AddFakeAttackMemoryGate(
+            steps,
+            "fake_attack_rng_changed_input",
+            cycle_index,
+            rng_addr,
+            pattern.memory_timeout_ms);
+    }
+}
+
 } // namespace
 
 const char* MacroModeName(MacroMode mode) {
@@ -182,6 +260,7 @@ const char* FailureCodeName(FailureCode code) {
     case FailureCode::Timeout: return "timeout";
     case FailureCode::UnexpectedBreakpoint: return "unexpected_breakpoint";
     case FailureCode::BattleContextUnavailable: return "battle_context_unavailable";
+    case FailureCode::MemoryReadFailed: return "memory_read_failed";
     default: return "unknown";
     }
 }
@@ -430,6 +509,128 @@ std::vector<MacroStep> BuildMacroPlanSteps(
     return plan_steps;
 }
 
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out) {
+    return BuildMacroProbePlanSteps(
+        commands,
+        transition_neutral_frames,
+        fake_attack_count,
+        FakeAttackPattern{},
+        planning_context,
+        failure_out);
+}
+
+std::vector<MacroStep> BuildMacroProbePlanSteps(
+    const std::vector<MacroCommand>& commands,
+    std::uint32_t transition_neutral_frames,
+    std::uint32_t fake_attack_count,
+    const FakeAttackPattern& fake_attack_pattern,
+    const BattleMacroPlanningContext* planning_context,
+    FailureCode* failure_out) {
+    if (failure_out) *failure_out = FailureCode::Ok;
+    std::vector<MacroStep> steps;
+    for (std::uint32_t i = 0; i < fake_attack_count; ++i) {
+        AddFakeAttackCycleSteps(steps, i, fake_attack_pattern);
+    }
+
+    FailureCode command_failure = FailureCode::Ok;
+    auto command_steps = BuildMacroPlanSteps(
+        commands,
+        transition_neutral_frames,
+        planning_context,
+        &command_failure);
+    if (command_failure != FailureCode::Ok || command_steps.empty()) {
+        if (failure_out) *failure_out = command_failure;
+        return {};
+    }
+    steps.insert(steps.end(), command_steps.begin(), command_steps.end());
+    return steps;
+}
+
+std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
+    const soa::battle::actions::TurnPlan& turn_plan,
+    std::uint32_t transition_neutral_frames,
+    const BattleMacroPlanningContext* planning_context,
+    soa::battle::actions::MaterializeErr* materialize_err_out) {
+    using soa::battle::actions::BattleAction;
+    using soa::battle::actions::MaterializeErr;
+
+    if (materialize_err_out) *materialize_err_out = MaterializeErr::OK;
+    if (turn_plan.spec.empty()) {
+        if (materialize_err_out) *materialize_err_out = MaterializeErr::BadBlob;
+        return {};
+    }
+
+    std::vector<MacroCommand> commands;
+    commands.reserve(turn_plan.spec.size());
+    for (const auto& action : turn_plan.spec) {
+        switch (action.macro) {
+        case BattleAction::Attack:
+            if (action.params.target_slot < 4 || action.params.target_slot > 11) {
+                if (materialize_err_out) *materialize_err_out = MaterializeErr::NoValidTarget;
+                return {};
+            }
+            commands.push_back(MacroCommand{
+                .mode = MacroMode::Attack,
+                .target_slot = action.params.target_slot,
+            });
+            break;
+        case BattleAction::Defend:
+            commands.push_back(MacroCommand{.mode = MacroMode::Block, .target_slot = 4});
+            break;
+        case BattleAction::Focus:
+            commands.push_back(MacroCommand{.mode = MacroMode::Focus, .target_slot = 4});
+            break;
+        case BattleAction::FakeAttack:
+        case BattleAction::UseItem:
+        default:
+            if (materialize_err_out) *materialize_err_out = MaterializeErr::InvalidNavigation;
+            return {};
+        }
+    }
+
+    FailureCode failure = FailureCode::Ok;
+    auto command_steps = BuildMacroPlanSteps(
+        commands,
+        transition_neutral_frames,
+        planning_context,
+        &failure);
+    if (failure != FailureCode::Ok || command_steps.empty()) {
+        if (materialize_err_out) {
+            *materialize_err_out = failure == FailureCode::InvalidTarget
+                ? MaterializeErr::NoValidTarget
+                : MaterializeErr::InvalidNavigation;
+        }
+        return {};
+    }
+
+    std::vector<MacroStep> steps;
+    for (std::uint32_t i = 0; i < turn_plan.fake_attack_count; ++i) {
+        AddFakeAttackCycleSteps(
+            steps,
+            i,
+            i == 0
+                ? FakeAttackPattern{
+                    .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+                    .target_neutral_before_b_frames = 0,
+                    .input_neutral_after_b_frames = 0,
+                    .memory_timeout_ms = 1000,
+                }
+                : FakeAttackPattern{
+                    .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+                    .target_neutral_before_b_frames = 7,
+                    .input_neutral_after_b_frames = 0,
+                    .memory_timeout_ms = 1000,
+                });
+    }
+    steps.insert(steps.end(), command_steps.begin(), command_steps.end());
+    return steps;
+}
+
 bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out) {
     out.clear();
     std::vector<MacroCommand> commands = spec.commands;
@@ -448,6 +649,11 @@ bool encode_payload(const EncodeSpec& spec, std::vector<std::uint8_t>& out) {
     put_u32(out, spec.step_timeout_ms);
     put_u32(out, spec.vi_stall_ms);
     put_u32(out, spec.observation_tail_ms);
+    put_u32(out, spec.fake_attack_count);
+    put_u32(out, static_cast<std::uint32_t>(spec.fake_attack_pattern.memory_gate_mode));
+    put_u32(out, spec.fake_attack_pattern.target_neutral_before_b_frames);
+    put_u32(out, spec.fake_attack_pattern.input_neutral_after_b_frames);
+    put_u32(out, spec.fake_attack_pattern.memory_timeout_ms);
     return true;
 }
 
@@ -465,7 +671,9 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     std::uint32_t step_timeout_ms = 0;
     std::uint32_t vi_stall_ms = 0;
     std::uint32_t observation_tail_ms = 0;
-    if (!get_u32(p, e, version) || version != PayloadVersion) return false;
+    std::uint32_t fake_attack_count = 0;
+    FakeAttackPattern fake_attack_pattern{};
+    if (!get_u32(p, e, version) || (version != PayloadVersion && version != 4 && version != 3)) return false;
     if (!get_u32(p, e, command_count)) return false;
     if (command_count == 0 || command_count > 16) return false;
     std::vector<MacroCommand> commands;
@@ -486,6 +694,20 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     if (!get_u32(p, e, step_timeout_ms)) return false;
     if (!get_u32(p, e, vi_stall_ms)) return false;
     if (!get_u32(p, e, observation_tail_ms)) return false;
+    if (version >= 4 && !get_u32(p, e, fake_attack_count)) return false;
+    if (version >= 5) {
+        std::uint32_t raw_gate_mode = 0;
+        if (!get_u32(p, e, raw_gate_mode)) return false;
+        if (!get_u32(p, e, fake_attack_pattern.target_neutral_before_b_frames)) return false;
+        if (!get_u32(p, e, fake_attack_pattern.input_neutral_after_b_frames)) return false;
+        if (!get_u32(p, e, fake_attack_pattern.memory_timeout_ms)) return false;
+        fake_attack_pattern.memory_gate_mode = static_cast<FakeAttackMemoryGateMode>(raw_gate_mode);
+        if (fake_attack_pattern.memory_gate_mode != FakeAttackMemoryGateMode::TargetSide
+            && fake_attack_pattern.memory_gate_mode != FakeAttackMemoryGateMode::InputSide
+            && fake_attack_pattern.memory_gate_mode != FakeAttackMemoryGateMode::Both) {
+            return false;
+        }
+    }
     if (p != e) return false;
 
     out_ctx[savor::context::key::battle::MACRO_MODE] = static_cast<std::uint32_t>(commands.front().mode);
@@ -493,8 +715,18 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     out_ctx[savor::context::key::battle::MACRO_PLAN_BLOB] = SerializeCommandPlan(commands);
     out_ctx[savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES] = transition_neutral_frames;
     out_ctx[savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS] = observation_tail_ms;
+    out_ctx[savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN] = fake_attack_count;
+    out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE] =
+        static_cast<std::uint32_t>(fake_attack_pattern.memory_gate_mode);
+    out_ctx[savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES] =
+        fake_attack_pattern.target_neutral_before_b_frames;
+    out_ctx[savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES] =
+        fake_attack_pattern.input_neutral_after_b_frames;
+    out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS] =
+        fake_attack_pattern.memory_timeout_ms;
     out_ctx[savor::context::key::core::RUN_MS] = step_timeout_ms;
     out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
+    out_ctx[savor::context::key::core::RUN_POLL_MS] = 10u;
     savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
     progress.set_flag(CoreProgressFlags::BattleProgress);
     progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
@@ -503,6 +735,23 @@ bool decode_payload(const std::vector<std::uint8_t>& in, savor::PSContext& out_c
     out_ctx[savor::context::key::battle::MACRO_RESULT] = 1u;
     out_ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<std::uint32_t>(FailureCode::NoSteps);
     out_ctx[savor::context::key::battle::MACRO_STEP_COUNT] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_ADDR] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_BASELINE] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_LATEST] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_CHANGED] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_POLL_COUNT] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_ELAPSED_MS] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_GATE_COUNT] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_BASELINE] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_LATEST] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_CHANGED] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_POLL_COUNT] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_FIRST_ELAPSED_MS] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_BASELINE] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_LATEST] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_CHANGED] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_POLL_COUNT] = 0u;
+    out_ctx[savor::context::key::battle::MACRO_MEMORY_REPEAT_ELAPSED_MS] = 0u;
     return true;
 }
 

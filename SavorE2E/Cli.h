@@ -92,6 +92,14 @@ struct CliOptions {
     std::optional<int> battle_macro_target_slot;
     bool battle_macro_args_supplied = false;
     std::optional<std::string> battle_macro_plan_spec;
+    std::optional<int> battle_macro_fake_attacks;
+    bool battle_fake_attack_sweep = false;
+    int battle_fake_sweep_trials = 10;
+    int battle_fake_sweep_min_target_neutral = 0;
+    int battle_fake_sweep_max_target_neutral = 10;
+    int battle_fake_sweep_min_input_neutral = 0;
+    int battle_fake_sweep_max_input_neutral = 20;
+    std::optional<std::filesystem::path> battle_fake_sweep_output;
     bool battle_macro_debug = false;
     WorkerCoordinatorPerfAccumulator* worker_coordinator_perf = nullptr;
 };

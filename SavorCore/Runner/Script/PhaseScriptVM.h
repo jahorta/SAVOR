@@ -58,7 +58,9 @@ namespace savor {
 		ADD_U32,                    // ctx[key] += imm
 		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
 		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
-		EXECUTE_BATTLE_MACRO_PROBE,
+		MATERIALIZE_BATTLE_MACRO_STEPS,
+		MATERIALIZE_BATTLE_TURN_MACRO_STEPS,
+		EXECUTE_BATTLE_MACRO_STEP,
 		RECORD_TAS_INPUT_SAMPLE,
 		STEP_OPCODE
 	};
@@ -120,7 +122,9 @@ namespace savor {
 	inline PSOp OpAddU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
 	inline PSOp OpApplyPlanFrameFrom(savor::context::key::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
-	inline PSOp OpExecuteBattleMacroProbe() { PSOp o; o.code = PSOpCode::EXECUTE_BATTLE_MACRO_PROBE; return o; }
+	inline PSOp OpMaterializeBattleMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_MACRO_STEPS; return o; }
+	inline PSOp OpMaterializeBattleTurnMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS; return o; }
+	inline PSOp OpExecuteBattleMacroStep() { PSOp o; o.code = PSOpCode::EXECUTE_BATTLE_MACRO_STEP; return o; }
 	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
@@ -244,6 +248,52 @@ namespace savor {
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
 
+		enum class RuntimeMacroStepKind {
+			InputGate,
+			NeutralFrames,
+			CaptureMemoryU32,
+			WaitMemoryU32Changed,
+		};
+
+		struct RuntimeBreakpointStep {
+			std::string label;
+			RuntimeMacroStepKind kind{ RuntimeMacroStepKind::InputGate };
+			GCInputFrame input{};
+			uint32_t frame_count{ 0 };
+			bool hold_input_through_hit_opcode{ false };
+			uint32_t memory_addr{ 0 };
+			uint32_t memory_timeout_ms{ 0 };
+			uint32_t memory_cycle_index{ 0 };
+			std::vector<BPKey> expected_bp_keys;
+		};
+
+		struct RunUntilBpSpec {
+			std::vector<BPKey> expected_bp_keys;
+			GCInputFrame input{};
+			bool apply_input{ false };
+			bool release_input{ false };
+			bool hold_input_through_hit_opcode{ false };
+			bool step_off_current_bp{ false };
+			bool expected_only_scope{ false };
+			bool watch_movie{ true };
+			bool include_reserved_hit_lookup{ false };
+			bool update_derived{ true };
+			uint32_t poll_ms_override{ 0 };
+		};
+
+		struct RunUntilBpCoreResult {
+			DolphinWrapper::RunUntilHitResult run{};
+			RunToBpOutcome outcome{ RunToBpOutcome::Unknown };
+			uint32_t hit_bp_key{ 0 };
+			bool expected_match{ false };
+			uint32_t elapsed_ms{ 0 };
+		};
+
+		std::vector<RuntimeBreakpointStep> battle_macro_steps_;
+		bool battle_macro_memory_baseline_valid_{ false };
+		uint32_t battle_macro_memory_addr_{ 0 };
+		uint32_t battle_macro_memory_baseline_{ 0 };
+
 		// helpers
 		void arm_bps_once();
 		void restore_canonical_breakpoint_scope();
@@ -254,6 +304,7 @@ namespace savor {
 		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
 		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
 		void wait_for_visual_debug_gate();
+		RunUntilBpCoreResult run_until_bp_core(PSContext& ctx, const RunUntilBpSpec& spec);
 
 		bool op_arm_phase_bps_once();
 		bool op_load_snapshot(PSContext& ctx);
@@ -266,7 +317,9 @@ namespace savor {
 		void op_set_u32(const PSOp& op, PSContext& ctx) const;
 		void op_add_u32(const PSOp& op, PSContext& ctx) const;
 		void op_build_turn_inputplan_from_battle_path(PSContext& ctx) const;
-		void op_execute_battle_macro_probe(PSContext& ctx);
+		void op_materialize_battle_macro_steps(PSContext& ctx);
+		void op_materialize_battle_turn_macro_steps(PSContext& ctx);
+		void op_execute_battle_macro_step(PSContext& ctx);
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);

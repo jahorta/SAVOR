@@ -175,6 +175,19 @@ namespace phase::battle::turnrunner {
         out_ctx[savor::context::key::battle::FAKE_ATTACK_BUDGET_MAX] = budget_max;
         out_ctx[savor::context::key::battle::FAKE_ATTACK_USED_BEFORE] = used_before;
         out_ctx[savor::context::key::battle::OUTPUT_SAVESTATE_PATH] = output_savestate_path;
+        out_ctx[savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES] = (uint32_t)3;
+        out_ctx[savor::context::key::battle::MACRO_RESULT] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_STEP_COUNT] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_LAST_STEP_INDEX] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_LAST_EXPECTED_BP] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE] = (uint32_t)1;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES] = (uint32_t)7;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS] = (uint32_t)1000;
+        out_ctx[savor::context::key::core::RUN_POLL_MS] = (uint32_t)10;
 
         out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;
         out_ctx[savor::context::key::core::PRED_TABLE] = pred_table;

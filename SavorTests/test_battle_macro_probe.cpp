@@ -7,8 +7,13 @@
 
 #include "Cli.h"
 #include "Core/Input/InputPlan.h"
+#include "Core/Input/SoaBattle/ActionTypes.h"
+#include "Core/Input/SoaBattle/PlanWriter.h"
+#include "Core/Memory/Soa/SoaAddrRegistry.h"
 #include "Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
 #include "Phases/Programs/BattleMacroProbe/BattleMacroProbeScript.h"
+#include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
+#include "Phases/Programs/BattleTurnRunner/BattleTurnRunnerScript.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Script/CtxRegistry.h"
 #include "Runner/Script/ScriptProgress.h"
@@ -16,8 +21,12 @@
 namespace {
 
 using phase::battle::macroprobe::BuildMacroPlanSteps;
+using phase::battle::macroprobe::BuildMacroProbePlanSteps;
+using phase::battle::macroprobe::BuildMacroPlanStepsFromTurnPlan;
 using phase::battle::macroprobe::BuildMacroSteps;
 using phase::battle::macroprobe::BuildPlanningContext;
+using phase::battle::macroprobe::FakeAttackMemoryGateMode;
+using phase::battle::macroprobe::FakeAttackPattern;
 using phase::battle::macroprobe::FailureCode;
 using phase::battle::macroprobe::MacroCommand;
 using phase::battle::macroprobe::MacroMode;
@@ -68,6 +77,26 @@ std::uint32_t CountInput(const std::vector<MacroStep>& steps, std::uint16_t butt
         [&](const MacroStep& step) { return step.input.buttons == buttons; }));
 }
 
+std::uint32_t CountLabel(const std::vector<MacroStep>& steps, const char* label)
+{
+    return static_cast<std::uint32_t>(std::count_if(
+        steps.begin(),
+        steps.end(),
+        [&](const MacroStep& step) { return std::string(step.label) == label; }));
+}
+
+soa::battle::actions::ActionPlan MakeTurnAction(
+    soa::battle::actions::BattleAction macro,
+    std::uint8_t actor_slot,
+    std::uint8_t target_slot = 0xFF)
+{
+    soa::battle::actions::ActionPlan action{};
+    action.actor_slot = actor_slot;
+    action.macro = macro;
+    action.params.target_slot = target_slot;
+    return action;
+}
+
 TEST(BattleMacroProbePlanningContext, ExtractsAliveTargetsAndInventoryRows)
 {
     auto source = MakePlanningContextSource();
@@ -100,6 +129,120 @@ TEST(BattleMacroProbePlanningContext, ExtractsAliveTargetsAndInventoryRows)
     EXPECT_EQ(context.usable_items[1].item_id, 999u);
     EXPECT_EQ(context.usable_items[1].count, 1u);
     EXPECT_EQ(context.usable_items[1].name, "item:999");
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanAttackBlockFocusCompilesInActorOrder)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    SetBattleSlot(source, 5, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.spec = {
+        MakeTurnAction(soa::battle::actions::BattleAction::Attack, 0, 5),
+        MakeTurnAction(soa::battle::actions::BattleAction::Defend, 1),
+        MakeTurnAction(soa::battle::actions::BattleAction::Focus, 2),
+    };
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
+    ASSERT_FALSE(steps.empty());
+    EXPECT_EQ(steps[0].input.buttons, savor::GC_A);
+    EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(CountLabel(steps, "block_menu_up"), 1u);
+    EXPECT_EQ(CountLabel(steps, "focus_menu_down"), 3u);
+    EXPECT_EQ(CountLabel(steps, "direct_command_queued"), 2u);
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanFakeAttackCountPrependsMeasuredFakeAttackMacro)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.fake_attack_count = 1;
+    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
+    ASSERT_EQ(steps.size(), 8u);
+    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
+    EXPECT_EQ(std::string(steps[0].label), "fake_attack_rng_capture");
+    EXPECT_EQ(steps[1].input.buttons, savor::GC_A);
+    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(std::string(steps[3].label), "fake_attack_rng_changed_target");
+    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(steps[5].input.buttons, savor::GC_DU);
+    EXPECT_EQ(steps[7].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 0u);
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanRepeatFakeAttackUsesMeasuredTargetNeutral)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.fake_attack_count = 2;
+    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
+    ASSERT_EQ(steps.size(), 14u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 2u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 2u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 1u);
+    ASSERT_EQ(std::string(steps[9].label), "fake_attack_target_neutral_before_b");
+    EXPECT_EQ(steps[9].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[9].frame_count, 7u);
+    EXPECT_EQ(steps[10].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[10].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(steps[11].input.buttons, savor::GC_DU);
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanRejectsUseItem)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::UseItem, 0, 4)};
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    EXPECT_TRUE(steps.empty());
+    EXPECT_EQ(err, soa::battle::actions::MaterializeErr::InvalidNavigation);
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanRejectsDeadExplicitAttackTarget)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, false);
+    SetBattleSlot(source, 5, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Attack, 0, 4)};
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    EXPECT_TRUE(steps.empty());
+    EXPECT_EQ(err, soa::battle::actions::MaterializeErr::NoValidTarget);
 }
 
 TEST(BattleMacroProbeCompiler, FocusCompilesThreeDownsThenAccept)
@@ -281,6 +424,87 @@ TEST(BattleMacroProbeCompiler, AttackThenBlockPlanPreservesAttackTargetMovement)
     EXPECT_EQ(steps[11].expected_bps.front(), bp::battle::BattleMacroDirectCommandQueued);
 }
 
+TEST(BattleMacroProbeCompiler, FakeAttackOneCompilesMemoryGateCycle)
+{
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroProbePlanSteps(
+        {MacroCommand{.mode = MacroMode::Block, .target_slot = 4}},
+        3,
+        1,
+        nullptr,
+        &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 9u);
+    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
+    EXPECT_EQ(steps[0].memory_addr, addr::AddrRegistry::base(addr::core::RNG_SEED));
+    EXPECT_EQ(std::string(steps[0].label), "fake_attack_rng_capture");
+    EXPECT_EQ(steps[1].input.buttons, savor::GC_A);
+    EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroMainMenuAcceptDispatch);
+    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroEnemyTargetReady);
+    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(std::string(steps[3].label), "fake_attack_rng_changed_target");
+    EXPECT_EQ(steps[3].memory_addr, addr::AddrRegistry::base(addr::core::RNG_SEED));
+    EXPECT_EQ(steps[3].memory_timeout_ms, 1000u);
+    EXPECT_EQ(steps[3].memory_cycle_index, 0u);
+    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[5].frame_count, 20u);
+    EXPECT_EQ(steps[6].input.buttons, savor::GC_DU);
+}
+
+TEST(BattleMacroProbeCompiler, FakeAttackTwoEmitsIndependentCaptureChangeCycles)
+{
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroProbePlanSteps(
+        {MacroCommand{.mode = MacroMode::Block, .target_slot = 4}},
+        3,
+        2,
+        nullptr,
+        &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 15u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 2u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 2u);
+    EXPECT_EQ(steps[0].kind, MacroStep::Kind::CaptureMemoryU32);
+    EXPECT_EQ(steps[3].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[6].kind, MacroStep::Kind::CaptureMemoryU32);
+    EXPECT_EQ(steps[9].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(steps[11].kind, MacroStep::Kind::NeutralFrames);
+}
+
+TEST(BattleMacroProbeCompiler, FakeAttackInputSidePatternCompilesMemoryGateAfterInputReady)
+{
+    FailureCode failure = FailureCode::Ok;
+    const auto steps = BuildMacroProbePlanSteps(
+        {MacroCommand{.mode = MacroMode::Block, .target_slot = 4}},
+        3,
+        1,
+        FakeAttackPattern{
+            .memory_gate_mode = FakeAttackMemoryGateMode::InputSide,
+            .target_neutral_before_b_frames = 2,
+            .input_neutral_after_b_frames = 4,
+            .memory_timeout_ms = 777,
+        },
+        nullptr,
+        &failure);
+
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ASSERT_EQ(steps.size(), 10u);
+    EXPECT_EQ(steps[3].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[3].frame_count, 2u);
+    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
+    EXPECT_EQ(steps[5].kind, MacroStep::Kind::NeutralFrames);
+    EXPECT_EQ(steps[5].frame_count, 4u);
+    EXPECT_EQ(steps[6].kind, MacroStep::Kind::WaitMemoryU32Changed);
+    EXPECT_EQ(std::string(steps[6].label), "fake_attack_rng_changed_input");
+    EXPECT_EQ(steps[6].memory_timeout_ms, 777u);
+}
+
 TEST(BattleMacroProbeCompiler, ParsesPlanSpec)
 {
     std::vector<MacroCommand> commands;
@@ -320,6 +544,13 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
             .step_timeout_ms = 10000,
             .vi_stall_ms = 5000,
             .observation_tail_ms = 17000,
+            .fake_attack_count = 2,
+            .fake_attack_pattern = FakeAttackPattern{
+                .memory_gate_mode = FakeAttackMemoryGateMode::InputSide,
+                .target_neutral_before_b_frames = 2,
+                .input_neutral_after_b_frames = 4,
+                .memory_timeout_ms = 777,
+            },
         },
         payload));
 
@@ -330,9 +561,77 @@ TEST(BattleMacroProbePayload, DecodeEnablesBattleProgress)
     ASSERT_TRUE(ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags));
     EXPECT_NE(progress_flags & static_cast<std::uint32_t>(CoreProgressFlags::BattleProgress), 0u);
     EXPECT_NE(progress_flags & static_cast<std::uint32_t>(CoreProgressFlags::DontRecordHeartbeat), 0u);
+    std::uint32_t run_poll_ms = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::core::RUN_POLL_MS, run_poll_ms));
+    EXPECT_EQ(run_poll_ms, 10u);
     std::uint32_t observation_tail_ms = 0;
     ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS, observation_tail_ms));
     EXPECT_EQ(observation_tail_ms, 17000u);
+    std::uint32_t fake_attack_count = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN, fake_attack_count));
+    EXPECT_EQ(fake_attack_count, 2u);
+    std::uint32_t memory_addr = 1;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_MEMORY_ADDR, memory_addr));
+    EXPECT_EQ(memory_addr, 0u);
+    std::uint32_t gate_mode = 0;
+    std::uint32_t target_neutral = 0;
+    std::uint32_t input_neutral = 0;
+    std::uint32_t memory_timeout = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE, gate_mode));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES, target_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES, input_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS, memory_timeout));
+    EXPECT_EQ(gate_mode, static_cast<std::uint32_t>(FakeAttackMemoryGateMode::InputSide));
+    EXPECT_EQ(target_neutral, 2u);
+    EXPECT_EQ(input_neutral, 4u);
+    EXPECT_EQ(memory_timeout, 777u);
+}
+
+TEST(BattleTurnRunnerPayload, DecodeInitializesMacroDefaults)
+{
+    phase::battle::turnrunner::EncodeSpec spec{};
+    spec.run_ms = 120000;
+    spec.vi_stall_ms = 5000;
+    spec.current_turn = 1;
+    spec.max_turn = 1;
+    spec.turn_plan.spec = {
+        MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
+        MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
+    };
+
+    std::vector<std::uint8_t> payload;
+    ASSERT_TRUE(phase::battle::turnrunner::encode_payload(spec, payload));
+
+    savor::PSContext ctx;
+    ASSERT_TRUE(phase::battle::turnrunner::decode_payload(payload, ctx));
+
+    std::uint32_t run_poll_ms = 0;
+    std::uint32_t transition_frames = 0;
+    std::uint32_t macro_result = 0;
+    std::uint32_t macro_failure = 99;
+    std::uint32_t macro_step_count = 99;
+    std::uint32_t gate_mode = 0;
+    std::uint32_t target_neutral = 0;
+    std::uint32_t input_neutral = 99;
+    std::uint32_t memory_timeout = 0;
+    ASSERT_TRUE(ctx.get(savor::context::key::core::RUN_POLL_MS, run_poll_ms));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES, transition_frames));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_RESULT, macro_result));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, macro_failure));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_STEP_COUNT, macro_step_count));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_GATE_MODE, gate_mode));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_TARGET_NEUTRAL_FRAMES, target_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_INPUT_NEUTRAL_FRAMES, input_neutral));
+    ASSERT_TRUE(ctx.get(savor::context::key::battle::MACRO_FAKE_MEMORY_TIMEOUT_MS, memory_timeout));
+    EXPECT_EQ(run_poll_ms, 10u);
+    EXPECT_EQ(transition_frames, 3u);
+    EXPECT_EQ(macro_result, 1u);
+    EXPECT_EQ(macro_failure, 0u);
+    EXPECT_EQ(macro_step_count, 0u);
+    EXPECT_EQ(gate_mode, static_cast<std::uint32_t>(FakeAttackMemoryGateMode::TargetSide));
+    EXPECT_EQ(target_neutral, 7u);
+    EXPECT_EQ(input_neutral, 0u);
+    EXPECT_EQ(memory_timeout, 1000u);
 }
 
 TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
@@ -367,28 +666,78 @@ TEST(BattleMacroProbeProgram, ArmsInputReadyStartGate)
     EXPECT_FALSE(has_canonical(bp::battle::BattleMacroDirectCommandQueued));
     EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetCursorMoved));
     EXPECT_FALSE(has_reserved(bp::battle::BattleMacroEnemyTargetWritten));
-    ASSERT_GT(program.ops.size(), 15u);
-    EXPECT_EQ(program.ops[4].code, savor::PSOpCode::STEP_OPCODE);
-    EXPECT_EQ(program.ops[4].imm.v, 1u);
-    EXPECT_EQ(program.ops[5].code, savor::PSOpCode::SET_TIMEOUT);
-    EXPECT_EQ(program.ops[5].imm.v, 1000u);
-    EXPECT_EQ(program.ops[6].code, savor::PSOpCode::RUN_UNTIL_BP);
+    ASSERT_EQ(program.ops.size(), 23u);
+    EXPECT_EQ(program.ops[0].code, savor::PSOpCode::ARM_PHASE_BPS_ONCE);
+    EXPECT_EQ(program.ops[1].code, savor::PSOpCode::LOAD_SNAPSHOT);
+    EXPECT_EQ(program.ops[2].code, savor::PSOpCode::MATERIALIZE_BATTLE_MACRO_STEPS);
+    EXPECT_EQ(program.ops[3].code, savor::PSOpCode::GOTO_IF);
+    EXPECT_EQ(program.ops[3].jcc.key, savor::context::key::battle::MACRO_FAILURE_CODE);
+    EXPECT_EQ(program.ops[3].jcc.cmp, savor::PSCmp::NE);
+    EXPECT_EQ(program.ops[3].jcc.imm, 0u);
+    EXPECT_EQ(program.ops[4].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[5].code, savor::PSOpCode::EXECUTE_BATTLE_MACRO_STEP);
+    EXPECT_EQ(program.ops[6].code, savor::PSOpCode::GOTO_IF);
+    EXPECT_EQ(program.ops[6].jcc.key, savor::context::key::battle::MACRO_FAILURE_CODE);
+    EXPECT_EQ(program.ops[6].jcc.cmp, savor::PSCmp::NE);
     EXPECT_EQ(program.ops[7].code, savor::PSOpCode::GOTO_IF);
-    EXPECT_EQ(program.ops[7].jcc.key, savor::context::key::core::RUN_HIT_BP_KEY);
+    EXPECT_EQ(program.ops[7].jcc.key, savor::context::key::battle::MACRO_RESULT);
     EXPECT_EQ(program.ops[7].jcc.cmp, savor::PSCmp::EQ);
-    EXPECT_EQ(program.ops[7].jcc.imm, static_cast<std::uint32_t>(bp::battle::TurnIsReady));
+    EXPECT_EQ(program.ops[7].jcc.imm, 0u);
     EXPECT_EQ(program.ops[8].code, savor::PSOpCode::GOTO);
     EXPECT_EQ(program.ops[9].code, savor::PSOpCode::LABEL);
     EXPECT_EQ(program.ops[10].code, savor::PSOpCode::STEP_OPCODE);
     EXPECT_EQ(program.ops[10].imm.v, 1u);
-    EXPECT_EQ(program.ops[11].code, savor::PSOpCode::SET_TIMEOUT_FROM);
-    EXPECT_EQ(program.ops[11].key.id, savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS);
+    EXPECT_EQ(program.ops[11].code, savor::PSOpCode::SET_TIMEOUT);
+    EXPECT_EQ(program.ops[11].imm.v, 1000u);
     EXPECT_EQ(program.ops[12].code, savor::PSOpCode::RUN_UNTIL_BP);
-    EXPECT_EQ(program.ops[13].code, savor::PSOpCode::LABEL);
-    EXPECT_EQ(program.ops[14].code, savor::PSOpCode::SET_U32);
-    EXPECT_EQ(program.ops[14].keyimm.key, savor::context::key::core::DW_RUN_OUTCOME_CODE);
-    EXPECT_EQ(program.ops[14].keyimm.imm, 0u);
+    EXPECT_EQ(program.ops[13].code, savor::PSOpCode::GOTO_IF);
+    EXPECT_EQ(program.ops[13].jcc.key, savor::context::key::core::RUN_HIT_BP_KEY);
+    EXPECT_EQ(program.ops[13].jcc.cmp, savor::PSCmp::EQ);
+    EXPECT_EQ(program.ops[13].jcc.imm, static_cast<std::uint32_t>(bp::battle::TurnIsReady));
+    EXPECT_EQ(program.ops[14].code, savor::PSOpCode::GOTO);
     EXPECT_EQ(program.ops[15].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[16].code, savor::PSOpCode::STEP_OPCODE);
+    EXPECT_EQ(program.ops[16].imm.v, 1u);
+    EXPECT_EQ(program.ops[17].code, savor::PSOpCode::SET_TIMEOUT_FROM);
+    EXPECT_EQ(program.ops[17].key.id, savor::context::key::battle::MACRO_OBSERVATION_TAIL_MS);
+    EXPECT_EQ(program.ops[18].code, savor::PSOpCode::RUN_UNTIL_BP);
+    EXPECT_EQ(program.ops[19].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[20].code, savor::PSOpCode::SET_U32);
+    EXPECT_EQ(program.ops[20].keyimm.key, savor::context::key::core::DW_RUN_OUTCOME_CODE);
+    EXPECT_EQ(program.ops[20].keyimm.imm, 0u);
+    EXPECT_EQ(program.ops[21].code, savor::PSOpCode::LABEL);
+    EXPECT_EQ(program.ops[22].code, savor::PSOpCode::RETURN_RESULT);
+}
+
+TEST(BattleTurnRunnerProgram, UsesMacroLoopInsteadOfRawInputTape)
+{
+    const auto program = phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
+    const auto has_reserved = [&](BPKey key) {
+        return std::find(program.reserved_bp_keys.begin(), program.reserved_bp_keys.end(), key)
+            != program.reserved_bp_keys.end();
+    };
+    const auto has_op = [&](savor::PSOpCode code) {
+        return std::any_of(program.ops.begin(), program.ops.end(), [&](const savor::PSOp& op) {
+            return op.code == code;
+        });
+    };
+    const auto has_set_run_poll = [&](std::uint32_t value) {
+        return std::any_of(program.ops.begin(), program.ops.end(), [&](const savor::PSOp& op) {
+            return op.code == savor::PSOpCode::SET_U32
+                && op.keyimm.key == savor::context::key::core::RUN_POLL_MS
+                && op.keyimm.imm == value;
+        });
+    };
+
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroInputReadyGate));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetReady));
+    EXPECT_TRUE(has_reserved(bp::battle::BattleMacroEnemyTargetFinalized));
+    EXPECT_TRUE(has_op(savor::PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS));
+    EXPECT_TRUE(has_op(savor::PSOpCode::EXECUTE_BATTLE_MACRO_STEP));
+    EXPECT_FALSE(has_op(savor::PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH));
+    EXPECT_FALSE(has_op(savor::PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES));
+    EXPECT_TRUE(has_set_run_poll(10u));
+    EXPECT_TRUE(has_set_run_poll(0u));
 }
 
 TEST(BattleMacroProbeCli, BattlePlanDisablesInteractivePrompt)
@@ -406,6 +755,32 @@ TEST(BattleMacroProbeCli, BattlePlanDisablesInteractivePrompt)
     EXPECT_TRUE(options.battle_macro_args_supplied);
     ASSERT_TRUE(options.battle_macro_plan_spec.has_value());
     EXPECT_EQ(*options.battle_macro_plan_spec, "block,focus");
+}
+
+TEST(BattleMacroProbeCli, BattleScenarioNamesParse)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "seedprobe_battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+    }, &options, &error)) << error;
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios[0], "seedprobe_battle");
+
+    error.clear();
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+    }, &options, &error)) << error;
+    ASSERT_EQ(options.scenarios.size(), 1u);
+    EXPECT_EQ(options.scenarios[0], "battle");
 }
 
 TEST(BattleMacroProbeCli, BattleMacroLegacyArgDisablesInteractivePrompt)
@@ -438,6 +813,113 @@ TEST(BattleMacroProbeCli, InvalidBattlePlanFailsClearly)
         "--battle-plan", "attack:99",
     }, &options, &error));
     EXPECT_NE(error.find("target slot"), std::string::npos);
+}
+
+TEST(BattleMacroProbeCli, BattleFakeAttacksParsesWithoutDisablingInteractivePlan)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attacks", "2",
+    }, &options, &error)) << error;
+    EXPECT_EQ(options.battle_macro_fake_attacks.value_or(-1), 2);
+    EXPECT_FALSE(options.battle_macro_args_supplied);
+    EXPECT_FALSE(options.battle_macro_plan_spec.has_value());
+}
+
+TEST(BattleMacroProbeCli, InvalidBattleFakeAttacksFailsClearly)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attacks", "256",
+    }, &options, &error));
+    EXPECT_NE(error.find("--battle-fake-attacks"), std::string::npos);
+}
+
+TEST(BattleMacroProbeCli, BattleFakeAttackSweepParsesKnobs)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    ASSERT_TRUE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attack-sweep",
+        "--battle-fake-sweep-trials", "2",
+        "--battle-fake-sweep-min-target-neutral", "1",
+        "--battle-fake-sweep-max-target-neutral", "3",
+        "--battle-fake-sweep-min-input-neutral", "2",
+        "--battle-fake-sweep-max-input-neutral", "4",
+        "--battle-fake-sweep-output", "out.json",
+    }, &options, &error)) << error;
+    EXPECT_TRUE(options.battle_fake_attack_sweep);
+    EXPECT_TRUE(options.battle_macro_args_supplied);
+    EXPECT_EQ(options.battle_fake_sweep_trials, 2);
+    EXPECT_EQ(options.battle_fake_sweep_min_target_neutral, 1);
+    EXPECT_EQ(options.battle_fake_sweep_max_target_neutral, 3);
+    EXPECT_EQ(options.battle_fake_sweep_min_input_neutral, 2);
+    EXPECT_EQ(options.battle_fake_sweep_max_input_neutral, 4);
+    ASSERT_TRUE(options.battle_fake_sweep_output.has_value());
+    EXPECT_EQ(options.battle_fake_sweep_output->string(), "out.json");
+}
+
+TEST(BattleMacroProbeCli, InvalidBattleFakeAttackSweepKnobsFailClearly)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attack-sweep",
+        "--battle-fake-sweep-trials", "0",
+    }, &options, &error));
+    EXPECT_NE(error.find("--battle-fake-sweep-trials"), std::string::npos);
+}
+
+TEST(BattleMacroProbeCli, InvalidBattleFakeAttackSweepMinMaxFailsClearly)
+{
+    savor::e2e::CliOptions options;
+    std::string error;
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attack-sweep",
+        "--battle-fake-sweep-min-target-neutral", "8",
+        "--battle-fake-sweep-max-target-neutral", "7",
+    }, &options, &error));
+    EXPECT_NE(error.find("--battle-fake-sweep-min-target-neutral"), std::string::npos);
+
+    error.clear();
+    EXPECT_FALSE(ParseTestArgs({
+        "SavorE2E",
+        "--scenario", "battle_macro_probe",
+        "--iso", ".",
+        "--dolphin-base-dir", ".",
+        "--savestate-file", ".",
+        "--battle-fake-attack-sweep",
+        "--battle-fake-sweep-min-input-neutral", "3",
+        "--battle-fake-sweep-max-input-neutral", "2",
+    }, &options, &error));
+    EXPECT_NE(error.find("--battle-fake-sweep-min-input-neutral"), std::string::npos);
 }
 
 } // namespace

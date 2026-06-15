@@ -9,6 +9,8 @@ namespace phase::battle::macroprobe {
 inline savor::PhaseScript MakeBattleMacroProbeProgram()
 {
     static const std::string LabelReturn = "RETURN";
+    static const std::string LabelRunMacroLoop = "RUN_MACRO_LOOP";
+    static const std::string LabelAfterMacro = "AFTER_MACRO";
     static const std::string LabelPostTurnReadyTail = "POST_TURN_READY_TAIL";
     static const std::string LabelClearTailResult = "CLEAR_TAIL_RESULT";
 
@@ -41,12 +43,26 @@ inline savor::PhaseScript MakeBattleMacroProbeProgram()
     };
     ps.ops.push_back(savor::OpArmPhaseBps());
     ps.ops.push_back(savor::OpLoadSnapshot());
-    ps.ops.push_back(savor::OpExecuteBattleMacroProbe());
+    ps.ops.push_back(savor::OpMaterializeBattleMacroSteps());
     ps.ops.push_back(savor::OpGotoIf(
-        savor::context::key::battle::MACRO_RESULT,
+        savor::context::key::battle::MACRO_FAILURE_CODE,
         savor::PSCmp::NE,
         0u,
         LabelReturn));
+    ps.ops.push_back(savor::OpLabel(LabelRunMacroLoop));
+    ps.ops.push_back(savor::OpExecuteBattleMacroStep());
+    ps.ops.push_back(savor::OpGotoIf(
+        savor::context::key::battle::MACRO_FAILURE_CODE,
+        savor::PSCmp::NE,
+        0u,
+        LabelReturn));
+    ps.ops.push_back(savor::OpGotoIf(
+        savor::context::key::battle::MACRO_RESULT,
+        savor::PSCmp::EQ,
+        0u,
+        LabelAfterMacro));
+    ps.ops.push_back(savor::OpGoto(LabelRunMacroLoop));
+    ps.ops.push_back(savor::OpLabel(LabelAfterMacro));
     ps.ops.push_back(savor::OpStepOpcode(true));
     ps.ops.push_back(savor::OpSetTimeoutToMS(1000));
     ps.ops.push_back(savor::OpRunUntilBp());

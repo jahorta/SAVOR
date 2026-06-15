@@ -98,6 +98,12 @@ struct ResultsIni {
     std::uint32_t pred_passed = 0;
     std::uint32_t pred_total = 0;
     std::uint32_t pred_abort_run = 0;
+    std::uint32_t macro_failure_code = 0;
+    std::uint32_t macro_step_count = 0;
+    std::uint32_t macro_last_step_index = 0;
+    std::uint32_t macro_last_expected_bp = 0;
+    std::uint32_t macro_last_hit_bp = 0;
+    std::uint32_t macro_last_hit_pc = 0;
     std::int64_t applied_input_artifact_id = 0;
     std::string applied_input_tape_text;
     std::string savestate_path;
@@ -118,6 +124,12 @@ struct ResultsIni {
         ini.set(kResultsSection, "pred_passed", std::to_string(pred_passed));
         ini.set(kResultsSection, "pred_total", std::to_string(pred_total));
         ini.set(kResultsSection, "pred_abort_run", std::to_string(pred_abort_run));
+        ini.set(kResultsSection, "macro_failure_code", std::to_string(macro_failure_code));
+        ini.set(kResultsSection, "macro_step_count", std::to_string(macro_step_count));
+        ini.set(kResultsSection, "macro_last_step_index", std::to_string(macro_last_step_index));
+        ini.set(kResultsSection, "macro_last_expected_bp", std::to_string(macro_last_expected_bp));
+        ini.set(kResultsSection, "macro_last_hit_bp", std::to_string(macro_last_hit_bp));
+        ini.set(kResultsSection, "macro_last_hit_pc", std::to_string(macro_last_hit_pc));
         ini.set(kResultsSection, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         ini.set(kResultsSection, "applied_input_tape_text", applied_input_tape_text);
         ini.set(kResultsSection, "savestate_path", savestate_path);
@@ -143,6 +155,12 @@ struct ResultsIni {
         out.pred_passed = ini.get_u32(kResultsSection, "pred_passed", 0);
         out.pred_total = ini.get_u32(kResultsSection, "pred_total", 0);
         out.pred_abort_run = ini.get_u32(kResultsSection, "pred_abort_run", 0);
+        out.macro_failure_code = ini.get_u32(kResultsSection, "macro_failure_code", 0);
+        out.macro_step_count = ini.get_u32(kResultsSection, "macro_step_count", 0);
+        out.macro_last_step_index = ini.get_u32(kResultsSection, "macro_last_step_index", 0);
+        out.macro_last_expected_bp = ini.get_u32(kResultsSection, "macro_last_expected_bp", 0);
+        out.macro_last_hit_bp = ini.get_u32(kResultsSection, "macro_last_hit_bp", 0);
+        out.macro_last_hit_pc = ini.get_u32(kResultsSection, "macro_last_hit_pc", 0);
         out.applied_input_artifact_id = ini.get_i64(kResultsSection, "applied_input_artifact_id", 0);
         out.applied_input_tape_text = ini.get(kResultsSection, "applied_input_tape_text", "");
         out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
@@ -664,12 +682,7 @@ bool IsVictory(savor::battle::Outcome outcome) {
 }
 
 bool IsBadMaterialize(const ResultsIni& results) {
-    if (results.battle_outcome != static_cast<std::uint32_t>(savor::battle::Outcome::PlanMaterializeFailure)) {
-        return false;
-    }
-    return results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::NoValidTarget)
-        && results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::OutOfTurns)
-        && results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::NotEnoughResource);
+    return results.battle_outcome == static_cast<std::uint32_t>(savor::battle::Outcome::PlanMaterializeFailure);
 }
 
 class BattleSingleTurnJobPersistenceAdapter final : public IJobPersistenceAdapter {
@@ -1038,6 +1051,12 @@ public:
         result.ps.ctx.get(savor::context::key::core::PRED_PASSED, out.pred_passed);
         result.ps.ctx.get(savor::context::key::core::PRED_TOTAL, out.pred_total);
         result.ps.ctx.get(savor::context::key::core::PRED_ABORT_RUN, out.pred_abort_run);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, out.macro_failure_code);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_STEP_COUNT, out.macro_step_count);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_STEP_INDEX, out.macro_last_step_index);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_EXPECTED_BP, out.macro_last_expected_bp);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_BP, out.macro_last_hit_bp);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_PC, out.macro_last_hit_pc);
         std::string turn_blob;
         result.ps.ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
@@ -1140,7 +1159,17 @@ public:
             + " pred_passed=" + std::to_string(parsed.pred_passed)
             + " pred_total=" + std::to_string(parsed.pred_total)
             + " pred_abort_run=" + std::to_string(parsed.pred_abort_run)
-            + " plan_materialize_err=" + std::to_string(parsed.plan_materialize_err));
+            + " plan_materialize_err=" + std::to_string(parsed.plan_materialize_err)
+            + " macro_failure=" + std::to_string(parsed.macro_failure_code)
+            + " macro_step_count=" + std::to_string(parsed.macro_step_count)
+            + " macro_last_step=" + std::to_string(parsed.macro_last_step_index)
+            + " macro_expected_bp=" + std::to_string(parsed.macro_last_expected_bp)
+            + " macro_hit_bp=" + std::to_string(parsed.macro_last_hit_bp)
+            + " macro_hit_pc=0x" + [&]() {
+                std::ostringstream pc;
+                pc << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << parsed.macro_last_hit_pc;
+                return pc.str();
+            }());
         AppendJobCompleted(execution_db_, job_id, failed ? "FAILED" : "SUCCEEDED", &payload.event_lines);
         payload.result_ref_id = turn_job->turn_job_id;
         payload.event_lines.push_back("[battle-single-turn-result] job=" + std::to_string(job_id)

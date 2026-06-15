@@ -20,7 +20,9 @@ namespace phase::battle::turnrunner {
     static const std::string LabelStartAttempt = "START_ATTEMPT";
     static const std::string LabelAdvanceToTurnInput = "ADV_TO_TURN_INPUT";
     static const std::string LabelTurnInputs = "AFTER_PRELUDE";
-    static const std::string LabelApplyTurn = "APPLY_TURN";
+    static const std::string LabelMaterializeTurnMacro = "MATERIALIZE_TURN_MACRO";
+    static const std::string LabelRunTurnMacro = "RUN_TURN_MACRO";
+    static const std::string LabelAfterTurnMacro = "AFTER_TURN_MACRO";
     static const std::string LabelConfirmTurnReady = "CONFIRM_TURN_READY";
     static const std::string LabelRunAppliedInputs = "RUN_APPLIED_INPUTS";
     static const std::string LabelRetryInput = "RETRY_INPUT";
@@ -40,11 +42,34 @@ namespace phase::battle::turnrunner {
 
         savor::PhaseScript ps{};
         ps.canonical_bp_keys = { BP_BattleAcceptInput, BP_BattleInputsDone, BP_Victory, BP_Defeat, BP_BattleLoadComplete };
+        ps.reserved_bp_keys = {
+            bp::battle::BattleMacroInputReadyGate,
+            bp::battle::BattleMacroMainMenuMoveHigher,
+            bp::battle::BattleMacroMainMenuMoveLower,
+            bp::battle::BattleMacroMainMenuMoveHigherAlt,
+            bp::battle::BattleMacroMainMenuMoveLowerAlt,
+            bp::battle::BattleMacroCommandTransitionDone,
+            bp::battle::BattleMacroMainMenuAcceptDispatch,
+            bp::battle::BattleMacroDirectCommandQueued,
+            bp::battle::BattleMacroAttackTargetSelectorCreated,
+            bp::battle::BattleMacroEnemyTargetMoveDownAccepted,
+            bp::battle::BattleMacroEnemyTargetMoveUpAccepted,
+            bp::battle::BattleMacroEnemyTargetFinalized,
+            bp::battle::BattleMacroMagicReady,
+            bp::battle::BattleMacroSMoveReady,
+            bp::battle::BattleMacroConditionalRunReady,
+            bp::battle::BattleMacroItemCategoryReady,
+            bp::battle::BattleMacroItemRowListReady,
+            bp::battle::BattleMacroItemDetailReady,
+            bp::battle::BattleMacroEnemyTargetReady,
+            bp::battle::BattleMacroAllyTargetReady,
+        };
 
         ps.ops.push_back(savor::OpArmPhaseBps());
         ps.ops.push_back(savor::OpArmBpsFromPredTable());
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpSetU32(savor::context::key::battle::INPUT_RETRY_COUNT, 0u));
 
         // Infer prelude path by current turn. current_turn > 1 starts near TurnInputs and should not apply initial input.
@@ -70,23 +95,27 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelAdvanceToTurnInput));
 
         // ============  Label Turn Inputs  ===================
-        // current_turn > 1 path: run a single frame to avoid desync before materialization
         ps.ops.push_back(savor::OpLabel(LabelTurnInputs));
-        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::TURN_OUTPUT_INDEX, savor::PSCmp::LE, 1u, LabelApplyTurn));
-
-        // Build and apply exactly one turn
-        ps.ops.push_back(savor::OpGetBattleContext());
-        ps.ops.push_back(savor::OpBuildTurnInputFromActions());
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 10u));
+        ps.ops.push_back(savor::OpLabel(LabelMaterializeTurnMacro));
+        ps.ops.push_back(savor::OpMaterializeBattleTurnMacroSteps());
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::PLAN_MATERIALIZE_ERR, savor::PSCmp::NE, 0u, LabelRetMaterializeFail));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::MACRO_FAILURE_CODE, savor::PSCmp::NE, 0u, LabelRetryInput));
 
-        ps.ops.push_back(savor::OpApplyPlanFrameFrom(savor::context::key::battle::ACTIVE_TURN));
-        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::INPUT_PLAYBACK_ERR, savor::PSCmp::NE, 0u, LabelRetryInput));
-        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::PLAN_DONE, savor::PSCmp::EQ, 1u, LabelConfirmTurnReady));
-        ps.ops.push_back(savor::OpGoto(LabelApplyTurn));
+        ps.ops.push_back(savor::OpLabel(LabelRunTurnMacro));
+        ps.ops.push_back(savor::OpExecuteBattleMacroStep());
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::MACRO_FAILURE_CODE, savor::PSCmp::NE, 0u, LabelRetryInput));
+        ps.ops.push_back(savor::OpGotoIf(savor::context::key::battle::MACRO_RESULT, savor::PSCmp::EQ, 0u, LabelAfterTurnMacro));
+        ps.ops.push_back(savor::OpGoto(LabelRunTurnMacro));
+
+        ps.ops.push_back(savor::OpLabel(LabelAfterTurnMacro));
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
+        ps.ops.push_back(savor::OpGoto(LabelConfirmTurnReady));
 
         // ============  Label Confirm Turn Ready  ===================
         // Require the game to accept the applied turn and finish instruction generation before normal post-input wait.
         ps.ops.push_back(savor::OpLabel(LabelConfirmTurnReady));
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpSetTimeoutToMS(gate_timeout));
         ps.ops.push_back(savor::OpRunUntilBp());
         ps.ops.push_back(savor::OpGotoIf(DW_Outcome, savor::PSCmp::NE, 0u, LabelRetryInput));
@@ -119,6 +148,7 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpAddU32(savor::context::key::battle::INPUT_RETRY_COUNT, 1u));
         ps.ops.push_back(savor::OpLoadSnapshot());
         ps.ops.push_back(savor::OpSetTimeoutToMS(long_timeout));
+        ps.ops.push_back(savor::OpSetU32(savor::context::key::core::RUN_POLL_MS, 0u));
         ps.ops.push_back(savor::OpGoto(LabelStartAttempt));
 
         ps.ops.push_back(savor::OpLabel(LabelRetryExhausted));
