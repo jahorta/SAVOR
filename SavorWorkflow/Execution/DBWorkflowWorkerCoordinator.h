@@ -200,6 +200,8 @@ private:
         std::optional<std::string> loaded_savestate_affinity_key;
         std::int64_t dispatch_success_count = 0;
         std::int64_t program_kind_switch_count = 0;
+        std::chrono::steady_clock::time_point in_flight_started_at{};
+        std::chrono::steady_clock::time_point dead_in_flight_observed_at{};
         uint64_t visual_render_widget_handle = 0;
         std::string visual_host_events_pipe_name;
     };
@@ -236,6 +238,7 @@ private:
     void WorkerLifecycleCoordinatorLoop();
     void DrainProgressLoop();
     void DrainResultsLoop();
+    void RecoverDeadInFlightWorkers();
     void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
     void ReconcileWorkerPool();
     bool StartWorkerSlot(size_t worker_idx);

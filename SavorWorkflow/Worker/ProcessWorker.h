@@ -89,6 +89,7 @@ namespace savor {
 
 		bool is_ready()  const { return ready_received_.load() && ready_ok_.load(); }
 		bool is_failed() const { return ready_received_.load() && !ready_ok_.load(); }
+		bool is_running() const { return running_.load(); }
 		uint32_t ready_error() const { return ready_error_.load(); }
 		HANDLE process_handle() const { return hProcess; }
 

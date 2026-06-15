@@ -414,14 +414,25 @@ namespace savor {
 
     void ProcessWorker::stop()
     {
-        if (!running_.exchange(false)) return;
+        const bool was_running = running_.exchange(false);
 
-        // kill first (so reader unblocks), then join/close
-        if (hJob) {
-            TerminateJobObject(hJob, /*exit_code*/1);
-        }
-        else if (hProcess) {
-            TerminateProcess(hProcess, /*exit_code*/1);
+        // Kill first when still active so the reader unblocks, then always join/close.
+        if (was_running) {
+            if (hJob) {
+                TerminateJobObject(hJob, /*exit_code*/1);
+            }
+            else if (hProcess) {
+                TerminateProcess(hProcess, /*exit_code*/1);
+            }
+        } else if (hProcess) {
+            DWORD exit_code = 0;
+            if (GetExitCodeProcess(hProcess, &exit_code) && exit_code == STILL_ACTIVE) {
+                if (hJob) {
+                    TerminateJobObject(hJob, /*exit_code*/1);
+                } else {
+                    TerminateProcess(hProcess, /*exit_code*/1);
+                }
+            }
         }
 
         if (reader_.joinable()) reader_.join();

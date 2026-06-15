@@ -2290,6 +2290,18 @@ VALUES(601, 501, 1, 1, 'seed_probe', 10, 'fp-stage3d-601', 5, 'QUEUED', 0, 3, un
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "50%");
     sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT state, claimed_by_token, lease_expires_at_utc FROM exec_job WHERE job_id=601;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "SUCCEEDED");
+    EXPECT_EQ(sqlite3_column_type(st, 1), SQLITE_NULL);
+    EXPECT_EQ(sqlite3_column_type(st, 2), SQLITE_NULL);
+    sqlite3_finalize(st);
 }
 
 TEST_F(SqliteDbFixture, Stage3dExecutionJobProgressEventsAreRepeatableAndDoNotDemoteTerminalJobs) {
@@ -2855,7 +2867,9 @@ VALUES
   (1773, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-running-no-token', 4, 'RUNNING', 1, 3, NULL, NULL, 1100, 2100, NULL, NULL, NULL),
   (1774, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-claimed', 3, 'CLAIMED', 0, 3, 'worker-old', 9999999999999, 1200, NULL, NULL, NULL, NULL),
   (1775, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-queued-token', 2, 'QUEUED', 0, 3, 'worker-old', 9999999999999, 1300, NULL, NULL, NULL, NULL),
-  (1776, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-queued-clean', 1, 'QUEUED', 0, 3, NULL, NULL, 1400, NULL, NULL, NULL, NULL);
+  (1776, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-queued-clean', 1, 'QUEUED', 0, 3, NULL, NULL, 1400, NULL, NULL, NULL, NULL),
+  (1777, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-terminal-token', 1, 'SUCCEEDED', 0, 3, 'worker-old', 9999999999999, 1500, 2100, 2300, NULL, NULL),
+  (1778, 1771, 7, 1, 'seed_probe', 33, 'fp-startup-terminal-failed-token', 1, 'FAILED', 0, 3, 'worker-old', 9999999999999, 1600, 2200, 2400, 'FAIL', 'old fail');
 )SQL"));
 
     SqliteExecutionDb execution_db(db_);
@@ -2880,6 +2894,20 @@ VALUES
         nullptr));
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 4);
+    sqlite3_finalize(st);
+
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+        db_,
+        "SELECT COUNT(1) FROM exec_job "
+        "WHERE job_id IN (1777,1778) "
+        "AND state IN ('SUCCEEDED','FAILED') "
+        "AND claimed_by_token IS NULL "
+        "AND lease_expires_at_utc IS NULL;",
+        -1,
+        &st,
+        nullptr));
+    ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+    EXPECT_EQ(sqlite3_column_int(st, 0), 2);
     sqlite3_finalize(st);
 
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(

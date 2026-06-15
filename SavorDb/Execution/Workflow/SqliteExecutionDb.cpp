@@ -1515,7 +1515,9 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
             "SELECT job_id, job_set_id "
             "FROM exec_job "
             "WHERE state IN ('CLAIMED','RUNNING') "
-            "   OR (claimed_by_token IS NOT NULL AND claimed_by_token<>'') "
+            "   OR (state IN ('QUEUED','INTERRUPTED') "
+            "       AND claimed_by_token IS NOT NULL "
+            "       AND claimed_by_token<>'') "
             "ORDER BY job_id ASC;",
             -1,
             &select.st,
@@ -1547,7 +1549,9 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
             "SET state='QUEUED', claimed_by_token=NULL, lease_expires_at_utc=NULL, "
             "started_at_utc=NULL, ended_at_utc=NULL, error_code=NULL, error_text=NULL "
             "WHERE state IN ('CLAIMED','RUNNING') "
-            "   OR (claimed_by_token IS NOT NULL AND claimed_by_token<>'');",
+            "   OR (state IN ('QUEUED','INTERRUPTED') "
+            "       AND claimed_by_token IS NOT NULL "
+            "       AND claimed_by_token<>'');",
         -1,
         &update.st,
         nullptr)
@@ -1562,6 +1566,26 @@ bool SqliteExecutionDb::RequeueInterruptedExecutionJobs(
         return false;
     }
     const int changed = sqlite3_changes(db_);
+
+    Statement terminal_cleanup;
+    if (sqlite3_prepare_v2(db_,
+        "UPDATE exec_job "
+            "SET claimed_by_token=NULL, lease_expires_at_utc=NULL "
+            "WHERE state NOT IN ('QUEUED','CLAIMED','RUNNING','INTERRUPTED') "
+            "  AND (claimed_by_token IS NOT NULL OR lease_expires_at_utc IS NOT NULL);",
+        -1,
+        &terminal_cleanup.st,
+        nullptr)
+        != SQLITE_OK) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
+    if (sqlite3_step(terminal_cleanup.st) != SQLITE_DONE) {
+        Rollback(db_);
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        return false;
+    }
 
     for (const auto& [job_id, job_set_id] : jobs) {
         if (!InsertJobActionEventAndOutbox(
