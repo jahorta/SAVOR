@@ -147,6 +147,7 @@
     <ClCompile Include="test_savordb_fixture_sqlite.cpp" />
     <ClCompile Include="test_savordb_phase3_nonfixture.cpp" />
     <ClCompile Include="test_runtime_symbols.cpp" />
+    <ClCompile Include="test_tsqueue.cpp" />
     <ClCompile Include="test_TASPad.cpp" />
     <ClCompile Include="test_worker_runtime_materialization.cpp" />
   </ItemGroup>

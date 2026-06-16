@@ -108,7 +108,10 @@ ClaimJobsResult JobMaterializationService::ClaimJobsDetailed(
             record.claim_sequence = ++claim_sequence_counter_;
             record.claimed_at = now;
             record.state = ClaimedJobLifecycleState::Claimed;
-            claimed_jobs_q_.push(record);
+            if (!claimed_jobs_q_.push(record)) {
+                claimed_jobs_.erase(it);
+                continue;
+            }
             ++claimed;
 
             std::ostringstream line;

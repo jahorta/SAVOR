@@ -487,6 +487,8 @@ void DBWorkflowWorkerCoordinator::Start() {
 
     stop_.store(false);
     job_materialization_service_.ResetForStart();
+    progress_q_.reset();
+    results_q_.reset();
     last_claim_lease_maintenance_ = {};
     no_jobs_available_.store(false);
     claim_attempt_count_.store(0);
@@ -531,8 +533,6 @@ void DBWorkflowWorkerCoordinator::Stop() {
     stop_.store(true);
     queue_cv_.notify_all();
     job_materialization_service_.StopMaterializationLoop();
-    progress_q_.close();
-    results_q_.close();
 
     if (worker_job_thread_.joinable()) {
         worker_job_thread_.join();
@@ -542,12 +542,6 @@ void DBWorkflowWorkerCoordinator::Stop() {
     }
     if (job_materializer_thread_.joinable()) {
         job_materializer_thread_.join();
-    }
-    if (progress_drainer_thread_.joinable()) {
-        progress_drainer_thread_.join();
-    }
-    if (results_drainer_thread_.joinable()) {
-        results_drainer_thread_.join();
     }
 
     std::vector<std::thread> startup_threads;
@@ -572,6 +566,16 @@ void DBWorkflowWorkerCoordinator::Stop() {
         }
         workers_.clear();
         worker_slot_count_.store(0, std::memory_order_relaxed);
+    }
+
+    progress_q_.close();
+    results_q_.close();
+
+    if (progress_drainer_thread_.joinable()) {
+        progress_drainer_thread_.join();
+    }
+    if (results_drainer_thread_.joinable()) {
+        results_drainer_thread_.join();
     }
 }
 

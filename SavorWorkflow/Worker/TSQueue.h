@@ -2,13 +2,21 @@
 #include <deque>
 #include <mutex>
 #include <condition_variable>
+#include <utility>
 
 template <class T>
 class TSQueue {
 public:
-    void push(T v) {
-        { std::lock_guard<std::mutex> lk(m_); q_.emplace_back(std::move(v)); }
+    bool push(T v) {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            if (closed_) {
+                return false;
+            }
+            q_.emplace_back(std::move(v));
+        }
         cv_.notify_one();
+        return true;
     }
 
     bool try_pop(T& out) {
