@@ -309,10 +309,12 @@ namespace savor {
             waitForCompletion ? 1 : 0, Core::IsRunning(*m_system) ? 1 : 0, (int)Core::GetState(*m_system));
 
         std::atomic<bool> done{ false };
+        SCLOGD("[DW] runOnCpuThread dispatch begin");
         Core::RunOnCPUThread(*m_system, [&] {
             fn();
             done = true;
             }, waitForCompletion);
+        SCLOGD("[DW] runOnCpuThread dispatch returned done=%d", done ? 1 : 0);
 
         auto deadline = std::chrono::steady_clock::now() + 5s;
         while (!done && std::chrono::steady_clock::now() < deadline)
@@ -1397,6 +1399,22 @@ namespace savor {
     static ArmedSet& armed_singleton() { static ArmedSet a; return a; }
     static ArmedSet& armed_battle_singleton() { static ArmedSet a; return a; }
 
+    bool DolphinWrapper::mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+
+        const auto state = Core::GetState(*m_system);
+        if (state == Core::State::Paused) {
+            SCLOGD("[core] breakpoint mutate label=%s mode=direct_paused state=%d", label, static_cast<int>(state));
+            fn();
+            return true;
+        }
+
+        SCLOGD("[core] breakpoint mutate label=%s mode=cpu_thread state=%d", label, static_cast<int>(state));
+        return runOnCpuThread(fn, true);
+    }
+
     bool DolphinWrapper::armBattleBreakpoints()
     {
         if (!armed_battle_singleton().pcs.empty()) return true;
@@ -1504,27 +1522,50 @@ namespace savor {
 
     bool DolphinWrapper::setEnableBreakpoint(uint32_t pc, bool enabled)
     {
-        SCLOGT("[core] silencing all breakpoints");
-        bool silence_result = runOnCpuThread([&] {
+        SCLOGT("[core] set breakpoint enable pc=%08X enabled=%d", pc, enabled ? 1 : 0);
+        bool enable_result = mutatePcBreakpoints("setEnableBreakpoint", [&] {
             if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled)
                 m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
-            }, true);
+            });
 
-        return false;
+        return enable_result;
     }
 
     bool DolphinWrapper::setEnableAllBreakpoints(bool enabled)
     {
-        SCLOGT("[core] silencing all breakpoints");
-        auto& armed = armed_singleton().pcs; bool silence_result = runOnCpuThread([&] {
+        auto& armed = armed_singleton().pcs;
+        SCLOGT("[core] set all breakpoints enabled=%d armed_count=%zu", enabled ? 1 : 0, armed.size());
+        bool enable_result = mutatePcBreakpoints("setEnableAllBreakpoints", [&] {
             for (auto pc : armed)
             {
                 if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled) 
                     m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
             }
-            }, true);
+            });
         
-        return false;
+        return enable_result;
+    }
+
+    bool DolphinWrapper::setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs)
+    {
+        auto& armed = armed_singleton().pcs;
+        std::unordered_set<uint32_t> enabled_set;
+        enabled_set.reserve(enabled_pcs.size());
+        for (const auto pc : enabled_pcs)
+            enabled_set.insert(pc);
+
+        SCLOGT("[core] set enabled breakpoint set requested_count=%zu armed_count=%zu",
+            enabled_set.size(),
+            armed.size());
+
+        return mutatePcBreakpoints("setEnabledPcBreakpointsOnly", [&] {
+            auto& breakpoints = m_system->GetPowerPC().GetBreakPoints();
+            for (const auto pc : armed) {
+                const bool should_enable = enabled_set.find(pc) != enabled_set.end();
+                if (breakpoints.IsBreakPointEnable(pc) != should_enable)
+                    breakpoints.ToggleEnable(pc);
+            }
+            });
     }
 
     DolphinWrapper::RunUntilHitResult DolphinWrapper::runUntilBreakpointBlocking(uint32_t timeout_ms)

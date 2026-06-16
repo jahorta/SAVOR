@@ -155,6 +155,7 @@ namespace savor {
         void clearAllPcBreakpoints();
         bool setEnableBreakpoint(uint32_t pc, bool enabled);
         bool setEnableAllBreakpoints(bool enabled);
+        bool setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs);
 
         using ProgressSink = std::function<void(const char* text, const bool record)>;
 
@@ -224,6 +225,7 @@ namespace savor {
         void* m_render_window_handle = nullptr;
         bool createRenderSurfaceWindow();
         void destroyRenderSurfaceWindow();
+        bool mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const;
 
         ProgressSink m_progress_sink{};
     };

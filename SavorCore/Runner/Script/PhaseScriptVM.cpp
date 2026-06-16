@@ -267,22 +267,27 @@ namespace savor {
     }
 
     void PhaseScriptVM::restore_canonical_breakpoint_scope() {
-        host_.setEnableAllBreakpoints(false);
-        for (const auto& k : canonical_bp_keys_) {
-            if (const auto* e = bpmap_.find(k)) {
-                host_.setEnableBreakpoint(e->pc, true);
+        std::vector<uint32_t> enabled_pcs;
+        enabled_pcs.reserve(canonical_bp_keys_.size() + predicate_bp_keys_.size());
+        const auto append_pc = [&](BPKey key) {
+            if (const auto* e = bpmap_.find(key)) {
+                if (std::find(enabled_pcs.begin(), enabled_pcs.end(), e->pc) == enabled_pcs.end()) {
+                    enabled_pcs.push_back(e->pc);
+                }
             }
+        };
+        for (const auto& k : canonical_bp_keys_) {
+            append_pc(k);
         }
         for (const auto& k : predicate_bp_keys_) {
-            if (const auto* e = bpmap_.find(k)) {
-                host_.setEnableBreakpoint(e->pc, true);
-            }
+            append_pc(k);
         }
+        host_.setEnabledPcBreakpointsOnly(enabled_pcs);
     }
 
     void PhaseScriptVM::begin_macro_breakpoint_scope() {
         disable_macro_step_breakpoint();
-        host_.setEnableAllBreakpoints(false);
+        host_.setEnabledPcBreakpointsOnly({});
         macro_breakpoint_scope_active_ = true;
         SCLOGI("[battle-macro-scope] begin");
     }
@@ -290,7 +295,7 @@ namespace savor {
     void PhaseScriptVM::enable_macro_step_breakpoint(BPKey key) {
         disable_macro_step_breakpoint();
         if (const auto* e = bpmap_.find(key)) {
-            host_.setEnableBreakpoint(e->pc, true);
+            host_.setEnabledPcBreakpointsOnly({ e->pc });
             macro_enabled_bp_keys_.push_back(key);
             SCLOGI("[battle-macro-scope] enable key=%u pc=%08X",
                 static_cast<uint32_t>(key),
@@ -301,9 +306,11 @@ namespace savor {
     }
 
     void PhaseScriptVM::disable_macro_step_breakpoint() {
+        if (!macro_enabled_bp_keys_.empty()) {
+            host_.setEnabledPcBreakpointsOnly({});
+        }
         for (const auto key : macro_enabled_bp_keys_) {
             if (const auto* e = bpmap_.find(key)) {
-                host_.setEnableBreakpoint(e->pc, false);
                 SCLOGI("[battle-macro-scope] disable key=%u pc=%08X",
                     static_cast<uint32_t>(key),
                     e->pc);
@@ -491,6 +498,19 @@ namespace savor {
             poll_ms = host_.pickPollIntervalMs(timeout_ms);
         }
 
+        const auto collect_expected_pcs = [&]() {
+            std::vector<uint32_t> pcs;
+            pcs.reserve(spec.expected_bp_keys.size());
+            for (const auto expected_bp : spec.expected_bp_keys) {
+                if (const auto* e = bpmap_.find(expected_bp)) {
+                    if (std::find(pcs.begin(), pcs.end(), e->pc) == pcs.end()) {
+                        pcs.push_back(e->pc);
+                    }
+                }
+            }
+            return pcs;
+        };
+
         if (spec.apply_input) {
             host_.setInput(spec.input);
         }
@@ -507,27 +527,18 @@ namespace savor {
                     entry_pc,
                     static_cast<uint32_t>(entry_bp->key),
                     spec.input.buttons);
-                host_.setEnableAllBreakpoints(false);
+                host_.setEnabledPcBreakpointsOnly({});
                 (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
                 if (spec.expected_only_scope) {
                     restore_canonical_breakpoint_scope();
                 } else {
-                    for (const auto expected_bp : spec.expected_bp_keys) {
-                        if (const auto* e = bpmap_.find(expected_bp)) {
-                            host_.setEnableBreakpoint(e->pc, true);
-                        }
-                    }
+                    host_.setEnabledPcBreakpointsOnly(collect_expected_pcs());
                 }
             }
         }
 
         if (spec.expected_only_scope) {
-            host_.setEnableAllBreakpoints(false);
-            for (const auto expected_bp : spec.expected_bp_keys) {
-                if (const auto* e = bpmap_.find(expected_bp)) {
-                    host_.setEnableBreakpoint(e->pc, true);
-                }
-            }
+            host_.setEnabledPcBreakpointsOnly(collect_expected_pcs());
         }
 
         run_until_bp_active_.store(true, std::memory_order_release);
@@ -547,7 +558,7 @@ namespace savor {
             SCLOGI("[VM] run_until_bp hold-through-hit pc=%08X input_btn=%04X",
                 static_cast<uint32_t>(rr.pc),
                 spec.input.buttons);
-            host_.setEnableAllBreakpoints(false);
+            host_.setEnabledPcBreakpointsOnly({});
             (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
             if (spec.expected_only_scope) {
                 restore_canonical_breakpoint_scope();
@@ -1174,7 +1185,7 @@ namespace savor {
             }
 
             host_.setInput(GCInputFrame{});
-            host_.setEnableAllBreakpoints(false);
+            host_.setEnabledPcBreakpointsOnly({});
             const auto start = std::chrono::steady_clock::now();
             const uint32_t timeout_ms = step.memory_timeout_ms != 0 ? step.memory_timeout_ms : 1000u;
             uint32_t latest = battle_macro_memory_baseline_;
@@ -1258,7 +1269,7 @@ namespace savor {
 
         if (step.kind == RuntimeMacroStepKind::NeutralFrames) {
             host_.setInput(GCInputFrame{});
-            host_.setEnableAllBreakpoints(false);
+            host_.setEnabledPcBreakpointsOnly({});
             for (uint32_t frame = 0; frame < step.frame_count; ++frame) {
                 host_.stepOneFrameBlocking();
             }
