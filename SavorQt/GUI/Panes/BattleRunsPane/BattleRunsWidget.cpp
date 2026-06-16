@@ -493,23 +493,16 @@ void BattleRunsWidget::build()
     toolbarLayout->addWidget(pageSizeSpin_, 0, 7);
     toolbarLayout->addWidget(summaryLabel_, 0, 8);
     toolbarLayout->addWidget(lastRefreshLabel_, 0, 9);
-    toolbarLayout->addWidget(childVictoryOnlyCheck_, 1, 0, 1, 2);
-    toolbarLayout->addWidget(winnersOnlyCheck_, 1, 2);
-    toolbarLayout->addWidget(showDuplicatesCheck_, 1, 3);
-    toolbarLayout->addWidget(successOnlyCheck_, 1, 4);
-    toolbarLayout->addWidget(new QLabel(QStringLiteral("Sort"), toolbar), 1, 5);
-    toolbarLayout->addWidget(primarySortCombo_, 1, 6);
-    toolbarLayout->addWidget(secondarySortCombo_, 1, 7);
     toolbarLayout->setColumnStretch(8, 1);
     rootLayout->addWidget(toolbar);
 
-    auto* mainSplitter = new QSplitter(Qt::Vertical, this);
+    auto* mainSplitter = new QSplitter(Qt::Horizontal, this);
     mainSplitter->setChildrenCollapsible(false);
 
-    auto* topSplitter = new QSplitter(Qt::Horizontal, mainSplitter);
-    topSplitter->setChildrenCollapsible(false);
+    auto* leftSplitter = new QSplitter(Qt::Vertical, mainSplitter);
+    leftSplitter->setChildrenCollapsible(false);
 
-    auto* groupsPanel = makePanel(QStringLiteral("Run Groups"), topSplitter);
+    auto* groupsPanel = makePanel(QStringLiteral("Run Groups"), leftSplitter);
     auto* groupsLayout = qobject_cast<QVBoxLayout*>(groupsPanel->layout());
     groupsTable_ = new QTableWidget(groupsPanel);
     configureTable(groupsTable_);
@@ -526,7 +519,7 @@ void BattleRunsWidget::build()
     groupsTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     groupsLayout->addWidget(groupsTable_, 1);
 
-    auto* wavesPanel = makePanel(QStringLiteral("Wave Tree"), topSplitter);
+    auto* wavesPanel = makePanel(QStringLiteral("Wave Tree"), leftSplitter);
     auto* wavesLayout = qobject_cast<QVBoxLayout*>(wavesPanel->layout());
     waveTree_ = new QTreeWidget(wavesPanel);
     waveTree_->setHeaderLabels({ QStringLiteral("Wave"), QStringLiteral("Jobs"), QStringLiteral("Status") });
@@ -535,13 +528,27 @@ void BattleRunsWidget::build()
     waveTree_->header()->setStretchLastSection(true);
     wavesLayout->addWidget(waveTree_, 1);
 
-    topSplitter->addWidget(groupsPanel);
-    topSplitter->addWidget(wavesPanel);
-    topSplitter->setStretchFactor(0, 2);
-    topSplitter->setStretchFactor(1, 1);
+    leftSplitter->addWidget(groupsPanel);
+    leftSplitter->addWidget(wavesPanel);
+    leftSplitter->setStretchFactor(0, 1);
+    leftSplitter->setStretchFactor(1, 1);
 
     auto* jobsPanel = makePanel(QStringLiteral("Wave Jobs"), mainSplitter);
     auto* jobsLayout = qobject_cast<QVBoxLayout*>(jobsPanel->layout());
+    auto* jobsFilterLayout = new QGridLayout();
+    jobsFilterLayout->setContentsMargins(0, 0, 0, 0);
+    jobsFilterLayout->setHorizontalSpacing(8);
+    jobsFilterLayout->setVerticalSpacing(6);
+    jobsFilterLayout->addWidget(childVictoryOnlyCheck_, 0, 0);
+    jobsFilterLayout->addWidget(winnersOnlyCheck_, 0, 1);
+    jobsFilterLayout->addWidget(showDuplicatesCheck_, 0, 2);
+    jobsFilterLayout->addWidget(successOnlyCheck_, 0, 3);
+    jobsFilterLayout->addWidget(new QLabel(QStringLiteral("Sort"), jobsPanel), 0, 4);
+    jobsFilterLayout->addWidget(primarySortCombo_, 0, 5);
+    jobsFilterLayout->addWidget(secondarySortCombo_, 0, 6);
+    jobsFilterLayout->setColumnStretch(7, 1);
+    jobsLayout->addLayout(jobsFilterLayout);
+
     jobsTable_ = new QTableWidget(jobsPanel);
     configureTable(jobsTable_);
     jobsTable_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -562,10 +569,10 @@ void BattleRunsWidget::build()
     jobsTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     jobsLayout->addWidget(jobsTable_, 1);
 
-    mainSplitter->addWidget(topSplitter);
+    mainSplitter->addWidget(leftSplitter);
     mainSplitter->addWidget(jobsPanel);
     mainSplitter->setStretchFactor(0, 1);
-    mainSplitter->setStretchFactor(1, 2);
+    mainSplitter->setStretchFactor(1, 1);
     rootLayout->addWidget(mainSplitter, 1);
 
     inlineMessageLabel_ = new QLabel(this);
@@ -743,8 +750,9 @@ void BattleRunsWidget::refreshWaves(const std::vector<WaveRow>& rows)
         QTreeWidgetItem* parent = nullptr;
         auto it = turnItems.find(row.turnIndex);
         if (it == turnItems.end()) {
+            const int displayTurn = row.turnIndex <= 0 ? 1 : row.turnIndex;
             parent = new QTreeWidgetItem(waveTree_);
-            parent->setText(0, QStringLiteral("Turn %1").arg(row.turnIndex + 1));
+            parent->setText(0, QStringLiteral("Turn %1").arg(displayTurn));
             parent->setText(1, QString());
             parent->setText(2, QString());
             parent->setFlags(parent->flags() & ~Qt::ItemIsSelectable);
