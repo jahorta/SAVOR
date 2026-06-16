@@ -36,6 +36,15 @@ public:
     std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const override;
 
+    UiReadPage<UiBattleGroupSummary> ListBattleGroups(
+        const UiBattleGroupListQuery& query) const override;
+    std::vector<UiBattleWaveSummary> ListBattleWaves(
+        std::int64_t battle_set_id) const override;
+    std::vector<UiBattleTurnJobSummary> ListBattleTurnJobsForWaves(
+        const std::vector<std::int64_t>& wave_ids) const override;
+    std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
+        std::int64_t turn_job_id) const override;
+
     UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const override;
     std::optional<UiSeedProbeRunSummary> GetSeedProbeRunSummary(

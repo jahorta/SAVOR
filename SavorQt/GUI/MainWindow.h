@@ -18,7 +18,7 @@
 
 class CoordinatorController;
 class CoordinatorPane;
-class ExplorerRunsPage;
+class AnalysisTab;
 class JobsPage;
 class QLabel;
 class QDialog;
@@ -41,7 +41,7 @@ public:
         BattleRunSettings,
         Artifacts,
         SeedProbe,
-        ExplorerRuns,
+        BattleRuns,
         DtmEditor,
         Settings
     };
@@ -75,6 +75,7 @@ private:
     void emitCoordinatorStateChanged();
     void refreshWorkspaceBadges();
     void openFocusedTool(FocusedTool tool);
+    void showBattleRunsAnalysisPane();
     void openWorkflowGraphEditor();
     void openWorkflowGraphEditor(const savor::db::WorkflowGraphSnapshot& snapshot, bool duplicate);
     void openSettingsTool(SettingsPage::CoordinatorFocusTarget focusTarget = SettingsPage::CoordinatorFocusTarget::Section);
@@ -84,6 +85,7 @@ private:
 
     QStackedWidget* workspaceStack_ = nullptr;
     savorqt::gui::WorkspaceSelectorBar* workspaceSelector_ = nullptr;
+    AnalysisTab* analysisTab_ = nullptr;
     CoordinatorController* coordinatorController_ = nullptr;
     CoordinatorPane* visualReplayHost_ = nullptr;
     StatusBarWidget* statusBarWidget_ = nullptr;

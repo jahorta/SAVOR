@@ -180,6 +180,42 @@ std::optional<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetail(
         std::nullopt);
 }
 
+UiReadPage<UiBattleGroupSummary> QueuedUiReadDb::ListBattleGroups(
+    const UiBattleGroupListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiBattleGroupSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListBattleGroups(query) : UiReadPage<UiBattleGroupSummary>{};
+        },
+        {});
+}
+
+std::vector<UiBattleWaveSummary> QueuedUiReadDb::ListBattleWaves(
+    std::int64_t battle_set_id) const {
+    return ExecuteRead<std::vector<UiBattleWaveSummary>>(
+        [this, battle_set_id]() {
+            return inner_ != nullptr ? inner_->ListBattleWaves(battle_set_id) : std::vector<UiBattleWaveSummary>{};
+        },
+        {});
+}
+
+std::vector<UiBattleTurnJobSummary> QueuedUiReadDb::ListBattleTurnJobsForWaves(
+    const std::vector<std::int64_t>& wave_ids) const {
+    return ExecuteRead<std::vector<UiBattleTurnJobSummary>>(
+        [this, wave_ids]() {
+            return inner_ != nullptr ? inner_->ListBattleTurnJobsForWaves(wave_ids) : std::vector<UiBattleTurnJobSummary>{};
+        },
+        {});
+}
+
+std::optional<UiBattleTurnJobDetail> QueuedUiReadDb::GetBattleTurnJobDetail(
+    std::int64_t turn_job_id) const {
+    return ExecuteRead<std::optional<UiBattleTurnJobDetail>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr ? inner_->GetBattleTurnJobDetail(turn_job_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
 UiSeedProbeRunPage QueuedUiReadDb::ListSeedProbeRuns(
     const UiReadSeedProbeRunListQuery& query) const {
     return ExecuteRead<UiSeedProbeRunPage>(

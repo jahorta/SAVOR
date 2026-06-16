@@ -308,6 +308,76 @@ struct UiWorkflowDetail {
     std::vector<UiWorkflowAlertSummary> alerts;
 };
 
+struct UiBattleGroupListQuery {
+    std::optional<UiReadListCursor> before;
+    std::optional<UiReadListCursor> after;
+    int limit = 50;
+    bool child_victory_only = false;
+};
+
+struct UiBattleGroupSummary {
+    std::int64_t battle_set_id = 0;
+    std::string name;
+    std::string status;
+    std::int64_t created_at_utc = 0;
+    std::optional<std::int64_t> completed_at_utc;
+    std::int64_t wave_count = 0;
+    std::int64_t job_count = 0;
+    std::int64_t winner_count = 0;
+    std::int64_t success_count = 0;
+    std::int64_t failed_count = 0;
+    std::int64_t victory_followup_count = 0;
+};
+
+struct UiBattleWaveSummary {
+    std::int64_t wave_id = 0;
+    std::int64_t battle_set_id = 0;
+    std::optional<std::int64_t> parent_wave_id;
+    int turn_index = 0;
+    std::string status;
+    std::int64_t created_at_utc = 0;
+    std::optional<std::int64_t> completed_at_utc;
+    std::int64_t job_count = 0;
+    std::int64_t winner_count = 0;
+    std::int64_t success_count = 0;
+    std::int64_t failed_count = 0;
+};
+
+struct UiBattleFollowupSummary {
+    std::int64_t turn_job_id = 0;
+    bool is_victory = false;
+    std::string manual_followup_status;
+    std::optional<std::int64_t> recorded_dtm_artifact_id;
+    std::string note;
+    std::int64_t updated_at_utc = 0;
+};
+
+struct UiBattleTurnJobSummary {
+    std::int64_t turn_job_id = 0;
+    std::optional<std::int64_t> exec_job_id;
+    std::int64_t wave_id = 0;
+    std::int64_t battle_set_id = 0;
+    int turn_index = 0;
+    std::string job_state;
+    int fake_attacks_this_turn = 0;
+    int fake_attacks_used_before = 0;
+    std::optional<std::int64_t> rng_seed;
+    std::optional<std::int64_t> delta_vi;
+    std::optional<int> pred_passed;
+    std::optional<int> pred_total;
+    std::optional<int> battle_outcome;
+    std::optional<std::int64_t> started_at_utc;
+    std::optional<std::int64_t> ended_at_utc;
+    std::optional<UiBattleFollowupSummary> followup;
+};
+
+struct UiBattleTurnJobDetail {
+    UiBattleTurnJobSummary summary;
+    std::optional<UiBattleGroupSummary> group;
+    std::optional<UiBattleWaveSummary> wave;
+    std::vector<UiJobArtifact> artifacts;
+};
+
 struct IUiReadDb {
     virtual ~IUiReadDb() = default;
 
@@ -347,6 +417,18 @@ struct IUiReadDb {
 
     virtual std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const = 0;
+
+    virtual UiReadPage<UiBattleGroupSummary> ListBattleGroups(
+        const UiBattleGroupListQuery& query) const = 0;
+
+    virtual std::vector<UiBattleWaveSummary> ListBattleWaves(
+        std::int64_t battle_set_id) const = 0;
+
+    virtual std::vector<UiBattleTurnJobSummary> ListBattleTurnJobsForWaves(
+        const std::vector<std::int64_t>& wave_ids) const = 0;
+
+    virtual std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
+        std::int64_t turn_job_id) const = 0;
 
     virtual UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const = 0;

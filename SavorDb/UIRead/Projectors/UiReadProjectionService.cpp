@@ -761,20 +761,20 @@ bool ProjectBattleTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id
     if (turn_job_id <= 0) return true;
     Statement jobs;
     constexpr const char* kJobs =
-        "SELECT j.turn_job_id,j.wave_id,j.job_state,j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,j.pred_passed,j.pred_total,j.battle_outcome,j.started_at_utc,j.ended_at_utc "
+        "SELECT j.turn_job_id,j.exec_job_id,j.wave_id,j.job_state,j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,j.pred_passed,j.pred_total,j.battle_outcome,j.started_at_utc,j.ended_at_utc "
         "FROM ab_turn_job j WHERE j.turn_job_id=?1;";
     if (!Prepare(source, kJobs, &jobs, error_out)) return false;
     sqlite3_bind_int64(jobs.st, 1, turn_job_id);
     while (sqlite3_step(jobs.st) == SQLITE_ROW) {
         Statement upsert;
         constexpr const char* kSql =
-            "INSERT INTO ui_battle_turn_job(turn_job_id,wave_id,job_state,fake_attacks_this_turn,fake_attacks_used_before,rng_seed,delta_vi,pred_passed,pred_total,battle_outcome,started_at_utc,ended_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) "
-            "ON CONFLICT(turn_job_id) DO UPDATE SET wave_id=excluded.wave_id,job_state=excluded.job_state,fake_attacks_this_turn=excluded.fake_attacks_this_turn,"
+            "INSERT INTO ui_battle_turn_job(turn_job_id,exec_job_id,wave_id,job_state,fake_attacks_this_turn,fake_attacks_used_before,rng_seed,delta_vi,pred_passed,pred_total,battle_outcome,started_at_utc,ended_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+            "ON CONFLICT(turn_job_id) DO UPDATE SET exec_job_id=excluded.exec_job_id,wave_id=excluded.wave_id,job_state=excluded.job_state,fake_attacks_this_turn=excluded.fake_attacks_this_turn,"
             "fake_attacks_used_before=excluded.fake_attacks_used_before,rng_seed=excluded.rng_seed,delta_vi=excluded.delta_vi,pred_passed=excluded.pred_passed,pred_total=excluded.pred_total,"
             "battle_outcome=excluded.battle_outcome,started_at_utc=excluded.started_at_utc,ended_at_utc=excluded.ended_at_utc;";
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-        for (int i = 0; i < 12; ++i) BindColumn(upsert.st, i + 1, jobs.st, i);
+        for (int i = 0; i < 13; ++i) BindColumn(upsert.st, i + 1, jobs.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
     }
     return true;

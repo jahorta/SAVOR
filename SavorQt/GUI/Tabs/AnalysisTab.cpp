@@ -3,6 +3,7 @@
 #include "DB/SavorDbArtifactService.h"
 #include "DB/SavorDbExplorerRunService.h"
 #include "DB/SavorDbWorkflowService.h"
+#include "GUI/Panes/BattleRunsPane/BattleRunsWidget.h"
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Refresh/RowUpdate.h"
 #include "SavorDbRuntime.h"
@@ -32,28 +33,28 @@ namespace {
 
 enum PaneIndex {
     OverviewPane = 0,
-    ExplorerPane = 1,
+    BattleRunsPane = 1,
     WorkflowPane = 2,
     FuturePane = 3,
 };
 
 struct AnalysisSnapshot {
     bool uiReadAvailable = false;
-    bool explorerOk = false;
+    bool battleRunsOk = false;
     bool artifactsOk = false;
     bool workflowsOk = false;
 
-    std::string explorerError;
+    std::string battleRunsError;
     std::string artifactsError;
     std::string workflowsError;
 
-    std::vector<savor::db::UiJobSetSummary> explorerGroups;
+    std::vector<savor::db::UiBattleGroupSummary> battleGroups;
     std::vector<savor::db::UiArtifactSummary> artifacts;
     std::vector<savor::db::UiWorkflowInstanceSummary> workflows;
     std::vector<savor::db::UiSeedProbeRunSummary> seedProbes;
 
-    int completedExplorerGroups = 0;
-    int explorerGroupsWithIssues = 0;
+    int completedBattleGroups = 0;
+    int battleGroupsWithIssues = 0;
     int completedSeedProbes = 0;
     int failedWorkflows = 0;
     int blockedWorkflows = 0;
@@ -124,6 +125,21 @@ QString formatTime(std::int64_t epochSeconds)
 QString formatOptionalTime(const std::optional<std::int64_t>& epochSeconds)
 {
     return epochSeconds.has_value() ? formatTime(*epochSeconds) : QStringLiteral("--");
+}
+
+QString formatBattleTime(const std::optional<std::int64_t>& epochMillis)
+{
+    if (!epochMillis.has_value() || *epochMillis <= 0) {
+        return QStringLiteral("--");
+    }
+    return QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(*epochMillis), QTimeZone::fromSecondsAheadOfUtc(0))
+        .toLocalTime()
+        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+}
+
+QString formatBattleTime(std::int64_t epochMillis)
+{
+    return formatBattleTime(std::optional<std::int64_t>{ epochMillis });
 }
 
 QString compactText(QString text, int maxLength = 90)
@@ -244,15 +260,6 @@ QString workflowProblemText(const savor::db::UiWorkflowInstanceSummary& workflow
     return QStringLiteral("--");
 }
 
-QString explorerProgressText(const savor::db::UiJobSetSummary& group)
-{
-    return QStringLiteral("%1/%2 complete, %3 failed, %4 canceled")
-        .arg(group.completed_jobs)
-        .arg(group.total_jobs)
-        .arg(group.failed_jobs)
-        .arg(group.canceled_jobs);
-}
-
 AnalysisSnapshot loadSnapshot()
 {
     AnalysisSnapshot snapshot{};
@@ -271,22 +278,22 @@ AnalysisSnapshot loadSnapshot()
         }
     }
 
-    savorqt::db::ExplorerRunGroupQuery explorerQuery{};
-    explorerQuery.limit = 50;
-    const auto explorer = savorqt::db::SavorDbExplorerRunService::ListGroups(explorerQuery);
-    snapshot.explorerOk = explorer.ok;
-    if (explorer.ok) {
-        snapshot.explorerGroups = explorer.value.groups;
-        for (const auto& group : snapshot.explorerGroups) {
-            if (group.total_jobs > 0 && group.completed_jobs >= group.total_jobs) {
-                ++snapshot.completedExplorerGroups;
+    savorqt::db::BattleRunGroupQuery battleQuery{};
+    battleQuery.limit = 50;
+    const auto battleGroups = savorqt::db::SavorDbExplorerRunService::ListBattleGroups(battleQuery);
+    snapshot.battleRunsOk = battleGroups.ok;
+    if (battleGroups.ok) {
+        snapshot.battleGroups = battleGroups.value.groups;
+        for (const auto& group : snapshot.battleGroups) {
+            if (group.completed_at_utc.has_value()) {
+                ++snapshot.completedBattleGroups;
             }
-            if (group.failed_jobs > 0 || group.canceled_jobs > 0) {
-                ++snapshot.explorerGroupsWithIssues;
+            if (group.failed_count > 0) {
+                ++snapshot.battleGroupsWithIssues;
             }
         }
     } else {
-        snapshot.explorerError = explorer.error.message;
+        snapshot.battleRunsError = battleGroups.error.message;
     }
 
     savor::db::UiReadArtifactListQuery artifactQuery{};
@@ -386,8 +393,8 @@ void populateProvenanceRow(QTableWidget* table, int row, const ProvenanceRow& it
 AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
 {
     AnalysisRefreshData data;
-    data.outcomesValue = snapshot.explorerOk
-        ? QStringLiteral("%1").arg(static_cast<int>(snapshot.explorerGroups.size()))
+    data.outcomesValue = snapshot.battleRunsOk
+        ? QStringLiteral("%1").arg(static_cast<int>(snapshot.battleGroups.size()))
         : QStringLiteral("--");
     data.workflowsValue = snapshot.workflowsOk
         ? QStringLiteral("%1").arg(static_cast<int>(snapshot.workflows.size()))
@@ -395,8 +402,8 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
     data.artifactsValue = snapshot.artifactsOk
         ? QStringLiteral("%1").arg(static_cast<int>(snapshot.artifacts.size()))
         : QStringLiteral("--");
-    data.problemsValue = snapshot.explorerOk && snapshot.workflowsOk
-        ? QStringLiteral("%1").arg(snapshot.explorerGroupsWithIssues + snapshot.failedWorkflows + snapshot.blockedWorkflows)
+    data.problemsValue = snapshot.battleRunsOk && snapshot.workflowsOk
+        ? QStringLiteral("%1").arg(snapshot.battleGroupsWithIssues + snapshot.failedWorkflows + snapshot.blockedWorkflows)
         : QStringLiteral("--");
     data.lastRefreshValue = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
 
@@ -407,8 +414,8 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
         .arg(seedProbeCount);
 
     data.overviewSummary = QStringLiteral(
-        "%1 explorer/battle groups, %2 workflows, %3 supporting artifacts, and %4 seed probe evidence rows sampled.")
-        .arg(snapshot.explorerOk ? static_cast<int>(snapshot.explorerGroups.size()) : 0)
+        "%1 battle run groups, %2 workflows, %3 supporting artifacts, and %4 seed probe evidence rows sampled.")
+        .arg(snapshot.battleRunsOk ? static_cast<int>(snapshot.battleGroups.size()) : 0)
         .arg(snapshot.workflowsOk ? static_cast<int>(snapshot.workflows.size()) : 0)
         .arg(artifactCount)
         .arg(seedProbeCount);
@@ -419,10 +426,10 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
     data.overviewRows = {
         OverviewRow{
             0,
-            QStringLiteral("Explorer / Battle Outcomes"),
-            snapshot.explorerOk ? QString::number(static_cast<int>(snapshot.explorerGroups.size())) : QStringLiteral("--"),
-            snapshot.explorerOk ? QString::number(snapshot.completedExplorerGroups) : QStringLiteral("--"),
-            snapshot.explorerOk ? QString::number(snapshot.explorerGroupsWithIssues) : qs(snapshot.explorerError),
+            QStringLiteral("Battle Runs"),
+            snapshot.battleRunsOk ? QString::number(static_cast<int>(snapshot.battleGroups.size())) : QStringLiteral("--"),
+            snapshot.battleRunsOk ? QString::number(snapshot.completedBattleGroups) : QStringLiteral("--"),
+            snapshot.battleRunsOk ? QString::number(snapshot.battleGroupsWithIssues) : qs(snapshot.battleRunsError),
             sampledEvidence,
         },
         OverviewRow{
@@ -453,34 +460,14 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
         },
     };
 
-    data.outcomesSummary = snapshot.explorerOk
-        ? QStringLiteral("%1 sampled groups, %2 complete, %3 with failed or canceled jobs. Supporting sample: %4 artifacts, %5 seed probe rows.")
-            .arg(static_cast<int>(snapshot.explorerGroups.size()))
-            .arg(snapshot.completedExplorerGroups)
-            .arg(snapshot.explorerGroupsWithIssues)
+    data.outcomesSummary = snapshot.battleRunsOk
+        ? QStringLiteral("%1 sampled battle run groups, %2 complete, %3 with failed jobs. Supporting sample: %4 artifacts, %5 seed probe rows.")
+            .arg(static_cast<int>(snapshot.battleGroups.size()))
+            .arg(snapshot.completedBattleGroups)
+            .arg(snapshot.battleGroupsWithIssues)
             .arg(artifactCount)
             .arg(seedProbeCount)
-        : QStringLiteral("Explorer/battle outcomes unavailable: %1").arg(qs(snapshot.explorerError));
-    data.outcomeRows.reserve(snapshot.explorerGroups.size());
-    if (snapshot.explorerOk) {
-        for (const auto& group : snapshot.explorerGroups) {
-            const bool complete = group.total_jobs > 0 && group.completed_jobs >= group.total_jobs;
-            const bool issue = group.failed_jobs > 0 || group.canceled_jobs > 0;
-            QString state = complete ? QStringLiteral("Complete") : QStringLiteral("Active");
-            if (issue) {
-                state = QStringLiteral("Attention");
-            }
-            data.outcomeRows.push_back(OutcomeRow{
-                group.job_set_id,
-                QStringLiteral("#%1").arg(group.job_set_id),
-                state,
-                explorerProgressText(group),
-                formatTime(group.created_at_utc),
-                snapshot.artifactsOk ? QStringLiteral("%1 sampled").arg(artifactCount) : QStringLiteral("--"),
-                QStringLiteral("%1/%2 complete").arg(snapshot.completedSeedProbes).arg(seedProbeCount),
-            });
-        }
-    }
+        : QStringLiteral("Battle runs unavailable: %1").arg(qs(snapshot.battleRunsError));
 
     data.workflowsSummary = snapshot.workflowsOk
         ? QStringLiteral("%1 sampled workflows, %2 failed, %3 blocked. Supporting sample: %4 artifacts, %5 seed probe rows.")
@@ -507,6 +494,39 @@ AnalysisRefreshData prepareAnalysisData(const AnalysisSnapshot& snapshot)
     }
 
     return data;
+}
+
+QString fieldHtml(const QString& label, const QString& value)
+{
+    return QStringLiteral("<tr><td style='padding:3px 12px 3px 0;color:#aac7bf;'>%1</td><td style='padding:3px 0;'>%2</td></tr>")
+        .arg(label.toHtmlEscaped(), value.toHtmlEscaped());
+}
+
+QString optionalInt64Html(const std::optional<std::int64_t>& value)
+{
+    return value.has_value() ? QString::number(*value) : QStringLiteral("--");
+}
+
+QString optionalIntHtml(const std::optional<int>& value)
+{
+    return value.has_value() ? QString::number(*value) : QStringLiteral("--");
+}
+
+QString artifactSummaryHtml(const std::vector<savor::db::UiJobArtifact>& artifacts)
+{
+    if (artifacts.empty()) {
+        return QStringLiteral("<p>No related artifacts are projected for this job.</p>");
+    }
+    QString html = QStringLiteral("<ul>");
+    for (const auto& artifact : artifacts) {
+        html += QStringLiteral("<li>#%1 %2 %3 (%4 bytes)</li>")
+            .arg(artifact.artifact_id)
+            .arg(qs(artifact.role_kind).toHtmlEscaped())
+            .arg(qs(artifact.filename).toHtmlEscaped())
+            .arg(artifact.size_bytes);
+    }
+    html += QStringLiteral("</ul>");
+    return html;
 }
 
 } // namespace
@@ -541,13 +561,11 @@ void AnalysisTab::build()
     lastRefreshLabel_->setObjectName("sectionDescription");
     statusLayout->addWidget(lastRefreshLabel_);
 
-    openExplorerButton_ = createActionButton(QStringLiteral("Open Explorer Runs"), statusStrip, true);
-    QObject::connect(openExplorerButton_, &QPushButton::clicked, statusStrip, [this]() {
-        if (actions_.openExplorerRuns) {
-            actions_.openExplorerRuns();
-        }
+    openBattleRunsButton_ = createActionButton(QStringLiteral("Battle Runs"), statusStrip, true);
+    QObject::connect(openBattleRunsButton_, &QPushButton::clicked, statusStrip, [this]() {
+        showBattleRunsPane();
     });
-    statusLayout->addWidget(openExplorerButton_);
+    statusLayout->addWidget(openBattleRunsButton_);
 
     openWorkflowsButton_ = createActionButton(QStringLiteral("Open Workflows"), statusStrip, true);
     QObject::connect(openWorkflowsButton_, &QPushButton::clicked, statusStrip, [this]() {
@@ -582,11 +600,11 @@ void AnalysisTab::build()
     selectorGroup_->setExclusive(true);
 
     auto* overviewButton = createSelectorButton(QStringLiteral("Overview"), selectorPanel);
-    auto* explorerButton = createSelectorButton(QStringLiteral("Explorer / Battle Outcomes"), selectorPanel);
+    auto* explorerButton = createSelectorButton(QStringLiteral("Battle Runs"), selectorPanel);
     auto* workflowButton = createSelectorButton(QStringLiteral("Workflow Provenance"), selectorPanel);
     auto* futureButton = createSelectorButton(QStringLiteral("Future Analyses"), selectorPanel);
     selectorGroup_->addButton(overviewButton, OverviewPane);
-    selectorGroup_->addButton(explorerButton, ExplorerPane);
+    selectorGroup_->addButton(explorerButton, BattleRunsPane);
     selectorGroup_->addButton(workflowButton, WorkflowPane);
     selectorGroup_->addButton(futureButton, FuturePane);
     selectorLayout->addWidget(overviewButton);
@@ -625,8 +643,8 @@ void AnalysisTab::build()
     overviewTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     overviewTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     QObject::connect(overviewTable_, &QTableWidget::cellDoubleClicked, overviewTable_, [this](int row, int) {
-        if (row == 0 && actions_.openExplorerRuns) {
-            actions_.openExplorerRuns();
+        if (row == 0) {
+            showBattleRunsPane();
         } else if (row == 1 && actions_.openWorkflows) {
             actions_.openWorkflows();
         } else if (row >= 2 && actions_.openArtifacts) {
@@ -636,39 +654,35 @@ void AnalysisTab::build()
     overviewLayout->addWidget(overviewTable_, 1);
     paneStack_->addWidget(overviewPanel);
 
-    auto* outcomesPanel = createSectionPanel(QStringLiteral("Explorer / Battle Outcomes"), paneStack_);
-    outcomesPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* outcomesLayout = qobject_cast<QVBoxLayout*>(outcomesPanel->layout());
-    auto* outcomesHeader = new QHBoxLayout();
-    outcomesHeader->setContentsMargins(0, 0, 0, 0);
-    outcomesHeader->setSpacing(8);
-    outcomesSummaryLabel_ = createSummaryLabel(outcomesPanel);
-    outcomesHeader->addWidget(outcomesSummaryLabel_, 1);
-    outcomesLayout->addLayout(outcomesHeader);
-    outcomesTable_ = new QTableWidget(outcomesPanel);
-    configureTable(outcomesTable_);
-    outcomesTable_->setColumnCount(6);
-    outcomesTable_->setHorizontalHeaderLabels(QStringList{
-        QStringLiteral("Group"),
-        QStringLiteral("State"),
-        QStringLiteral("Jobs"),
-        QStringLiteral("Created"),
-        QStringLiteral("Artifacts"),
-        QStringLiteral("Seed evidence"),
-    });
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    outcomesTable_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    QObject::connect(outcomesTable_, &QTableWidget::cellDoubleClicked, outcomesTable_, [this](int, int) {
-        if (actions_.openExplorerRuns) {
-            actions_.openExplorerRuns();
-        }
-    });
-    outcomesLayout->addWidget(outcomesTable_, 1);
-    paneStack_->addWidget(outcomesPanel);
+    battleRunsWidget_ = new savorqt::gui::BattleRunsWidget(savorqt::gui::BattleRunsWidget::Actions{
+        [this](std::int64_t jobId) { showBattleJobDetails(static_cast<qint64>(jobId)); },
+        [this](std::int64_t jobId) {
+            showBattleUnavailable(
+                static_cast<qint64>(jobId),
+                QStringLiteral("Battle Plan"),
+                QStringLiteral("Battle plan reconstruction is not projected into UIRead yet."));
+        },
+        [this](std::int64_t jobId) {
+            showBattleUnavailable(
+                static_cast<qint64>(jobId),
+                QStringLiteral("Replication Details"),
+                QStringLiteral("Replication details are not projected into UIRead yet."));
+        },
+        [this](std::int64_t jobId) {
+            showBattleUnavailable(
+                static_cast<qint64>(jobId),
+                QStringLiteral("Turn Inputs"),
+                QStringLiteral("Turn input detail is not projected into UIRead yet."));
+        },
+        [this](std::int64_t jobId) {
+            if (actions_.replayVisual) {
+                actions_.replayVisual(static_cast<qint64>(jobId));
+            }
+        },
+        {}
+    }, paneStack_);
+    battleRunsWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    paneStack_->addWidget(battleRunsWidget_);
 
     auto* workflowsPanel = createSectionPanel(QStringLiteral("Workflow Provenance"), paneStack_);
     workflowsPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -722,7 +736,6 @@ void AnalysisTab::build()
 
     auto* refreshPipeline = new savorqt::gui::AsyncRefreshPipeline<AnalysisRefreshRequest, AnalysisRefreshData>(this);
     auto overviewRows = std::make_shared<std::vector<OverviewRow>>();
-    auto outcomeRows = std::make_shared<std::vector<OutcomeRow>>();
     auto workflowRows = std::make_shared<std::vector<ProvenanceRow>>();
     refreshPipeline->setRefreshIntervalMs(5000);
     refreshPipeline->setRequestBuilder([](savorqt::gui::RefreshReason) {
@@ -747,15 +760,6 @@ void AnalysisTab::build()
             overviewRowsEqual,
             populateOverviewRow);
 
-        outcomesSummaryLabel_->setText(data.outcomesSummary);
-        savorqt::gui::ApplyTableRowsByKey(
-            outcomesTable_,
-            *outcomeRows,
-            data.outcomeRows,
-            [](const OutcomeRow& row) { return row.groupId; },
-            outcomeRowsEqual,
-            populateOutcomeRow);
-
         workflowsSummaryLabel_->setText(data.workflowsSummary);
         savorqt::gui::ApplyTableRowsByKey(
             workflowsTable_,
@@ -769,7 +773,6 @@ void AnalysisTab::build()
     });
     refreshPipeline->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
         overviewSummaryLabel_->setText(error);
-        outcomesSummaryLabel_->setText(error);
         workflowsSummaryLabel_->setText(error);
     });
     requestResultsRefresh_ = [refreshPipeline]() {
@@ -786,14 +789,17 @@ void AnalysisTab::setCurrentPane(int index)
     if (paneStack_ != nullptr) {
         paneStack_->setCurrentIndex(index);
     }
-    if (openExplorerButton_ != nullptr) {
-        openExplorerButton_->setVisible(index == OverviewPane || index == ExplorerPane);
+    if (battleRunsWidget_ != nullptr) {
+        battleRunsWidget_->setPageActive(pageActive_ && index == BattleRunsPane);
+    }
+    if (openBattleRunsButton_ != nullptr) {
+        openBattleRunsButton_->setVisible(index == OverviewPane || index == BattleRunsPane);
     }
     if (openWorkflowsButton_ != nullptr) {
         openWorkflowsButton_->setVisible(index == OverviewPane || index == WorkflowPane);
     }
     if (openArtifactsButton_ != nullptr) {
-        openArtifactsButton_->setVisible(index == ExplorerPane || index == WorkflowPane);
+        openArtifactsButton_->setVisible(index == BattleRunsPane || index == WorkflowPane);
     }
 }
 
@@ -802,4 +808,145 @@ void AnalysisTab::refreshResults()
     if (requestResultsRefresh_) {
         requestResultsRefresh_();
     }
+}
+
+void AnalysisTab::showBattleRunsPane()
+{
+    if (selectorGroup_ != nullptr) {
+        if (auto* button = selectorGroup_->button(BattleRunsPane); button != nullptr) {
+            button->setChecked(true);
+        }
+    }
+    setCurrentPane(BattleRunsPane);
+}
+
+void AnalysisTab::setPageActive(bool active)
+{
+    pageActive_ = active;
+    if (battleRunsWidget_ != nullptr) {
+        battleRunsWidget_->setPageActive(pageActive_ && currentPaneIndex_ == BattleRunsPane);
+    }
+}
+
+void AnalysisTab::showBattleJobDetails(qint64 jobId)
+{
+    const auto detail = savorqt::db::SavorDbExplorerRunService::GetBattleTurnJobDetail(jobId);
+    if (!detail.ok) {
+        showBattleUnavailable(
+            jobId,
+            QStringLiteral("Battle Job #%1").arg(jobId),
+            QStringLiteral("Battle job detail is unavailable: %1").arg(qs(detail.error.message)));
+        return;
+    }
+
+    const auto& battle = detail.value.battle;
+    const auto& job = battle.summary;
+    const qint64 execJobId = job.exec_job_id.has_value() ? static_cast<qint64>(*job.exec_job_id) : 0;
+    QString body;
+    body += QStringLiteral("<table>");
+    body += fieldHtml(QStringLiteral("Turn job"), QStringLiteral("#%1").arg(job.turn_job_id));
+    body += fieldHtml(QStringLiteral("Execution job"), execJobId > 0 ? QStringLiteral("#%1").arg(execJobId) : QStringLiteral("--"));
+    body += fieldHtml(QStringLiteral("Battle set"), battle.group.has_value()
+        ? QStringLiteral("#%1 %2").arg(battle.group->battle_set_id).arg(qs(battle.group->name))
+        : QStringLiteral("#%1").arg(job.battle_set_id));
+    body += fieldHtml(QStringLiteral("Wave"), battle.wave.has_value()
+        ? QStringLiteral("#%1 turn %2").arg(battle.wave->wave_id).arg(battle.wave->turn_index + 1)
+        : QStringLiteral("#%1").arg(job.wave_id));
+    body += fieldHtml(QStringLiteral("State"), qs(job.job_state));
+    body += fieldHtml(QStringLiteral("Outcome"), optionalIntHtml(job.battle_outcome));
+    body += fieldHtml(QStringLiteral("Predicates"), QStringLiteral("%1/%2")
+        .arg(optionalIntHtml(job.pred_passed), optionalIntHtml(job.pred_total)));
+    body += fieldHtml(QStringLiteral("Delta VI"), optionalInt64Html(job.delta_vi));
+    body += fieldHtml(QStringLiteral("RNG seed"), optionalInt64Html(job.rng_seed));
+    body += fieldHtml(QStringLiteral("Fake attacks"), QStringLiteral("%1 turn / %2 before")
+        .arg(job.fake_attacks_this_turn)
+        .arg(job.fake_attacks_used_before));
+    if (job.followup.has_value()) {
+        body += fieldHtml(QStringLiteral("Victory"), job.followup->is_victory ? QStringLiteral("yes") : QStringLiteral("no"));
+        body += fieldHtml(QStringLiteral("Follow-up"), qs(job.followup->manual_followup_status));
+        body += fieldHtml(QStringLiteral("Recorded DTM"), job.followup->recorded_dtm_artifact_id.has_value()
+            ? QStringLiteral("#%1").arg(*job.followup->recorded_dtm_artifact_id)
+            : QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Note"), qs(job.followup->note));
+        body += fieldHtml(QStringLiteral("Follow-up updated"), formatBattleTime(job.followup->updated_at_utc));
+    } else {
+        body += fieldHtml(QStringLiteral("Follow-up"), QStringLiteral("--"));
+    }
+    body += fieldHtml(QStringLiteral("Started"), formatBattleTime(job.started_at_utc));
+    body += fieldHtml(QStringLiteral("Ended"), formatBattleTime(job.ended_at_utc));
+    if (detail.value.job.has_value()) {
+        const auto& summary = detail.value.job->summary;
+        body += fieldHtml(QStringLiteral("Attempts"), QStringLiteral("%1/%2").arg(summary.attempts).arg(summary.max_attempts));
+        body += fieldHtml(QStringLiteral("Error"), summary.error_text.empty() ? QStringLiteral("--") : qs(summary.error_text));
+    }
+    body += QStringLiteral("</table>");
+
+    body += QStringLiteral("<h4>Artifacts</h4>");
+    body += artifactSummaryHtml(battle.artifacts);
+
+    body += QStringLiteral("<h4>Lifecycle Events</h4>");
+    if (detail.value.events.empty()) {
+        body += QStringLiteral("<p>No execution lifecycle events are available.</p>");
+    } else {
+        body += QStringLiteral("<ul>");
+        for (const auto& event : detail.value.events) {
+            QString line = QStringLiteral("%1 %2")
+                .arg(formatBattleTime(event.event_ts_utc))
+                .arg(qs(event.event_kind));
+            if (!event.message.empty()) {
+                line += QStringLiteral(" - %1").arg(qs(event.message));
+            }
+            body += QStringLiteral("<li>%1</li>").arg(line.toHtmlEscaped());
+        }
+        body += QStringLiteral("</ul>");
+    }
+
+    setContext(
+        savorqt::gui::UiEntityRef{
+            QStringLiteral("analysis"),
+            QStringLiteral("battle_job"),
+            jobId,
+            QStringLiteral("battle_job:%1").arg(jobId),
+        },
+        QStringLiteral("Battle Job #%1").arg(jobId),
+        body,
+        QVector<std::pair<QString, std::function<void()>>>{
+            {
+                QStringLiteral("Replay Visually"),
+                [this, execJobId]() {
+                    if (actions_.replayVisual && execJobId > 0) {
+                        actions_.replayVisual(execJobId);
+                    }
+                },
+            },
+            {
+                QStringLiteral("Open Artifacts"),
+                [this]() {
+                    if (actions_.openArtifacts) {
+                        actions_.openArtifacts();
+                    }
+                },
+            },
+        },
+        savorqt::gui::ContextDrawerMode::Expanded);
+}
+
+void AnalysisTab::showBattleUnavailable(qint64 jobId, const QString& title, const QString& message)
+{
+    setContext(
+        savorqt::gui::UiEntityRef{
+            QStringLiteral("analysis"),
+            QStringLiteral("battle_job"),
+            jobId,
+            QStringLiteral("battle_job:%1").arg(jobId),
+        },
+        title,
+        QStringLiteral("<p>%1</p><p>Battle job: #%2</p>").arg(message.toHtmlEscaped()).arg(jobId),
+        QVector<std::pair<QString, std::function<void()>>>{
+            {
+                QStringLiteral("View Job Details"),
+                [this, jobId]() { showBattleJobDetails(jobId); },
+            },
+        },
+        savorqt::gui::ContextDrawerMode::Expanded);
 }
