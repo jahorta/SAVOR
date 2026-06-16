@@ -46,8 +46,6 @@ namespace phase::battle::turnrunner {
             bp::battle::BattleMacroInputReadyGate,
             bp::battle::BattleMacroMainMenuMoveHigher,
             bp::battle::BattleMacroMainMenuMoveLower,
-            bp::battle::BattleMacroMainMenuMoveHigherAlt,
-            bp::battle::BattleMacroMainMenuMoveLowerAlt,
             bp::battle::BattleMacroCommandTransitionDone,
             bp::battle::BattleMacroMainMenuAcceptDispatch,
             bp::battle::BattleMacroDirectCommandQueued,

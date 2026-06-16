@@ -280,6 +280,48 @@ namespace savor {
         }
     }
 
+    void PhaseScriptVM::begin_macro_breakpoint_scope() {
+        disable_macro_step_breakpoint();
+        host_.setEnableAllBreakpoints(false);
+        macro_breakpoint_scope_active_ = true;
+        SCLOGI("[battle-macro-scope] begin");
+    }
+
+    void PhaseScriptVM::enable_macro_step_breakpoint(BPKey key) {
+        disable_macro_step_breakpoint();
+        if (const auto* e = bpmap_.find(key)) {
+            host_.setEnableBreakpoint(e->pc, true);
+            macro_enabled_bp_keys_.push_back(key);
+            SCLOGI("[battle-macro-scope] enable key=%u pc=%08X",
+                static_cast<uint32_t>(key),
+                e->pc);
+        } else {
+            SCLOGW("[battle-macro-scope] enable_missing key=%u", static_cast<uint32_t>(key));
+        }
+    }
+
+    void PhaseScriptVM::disable_macro_step_breakpoint() {
+        for (const auto key : macro_enabled_bp_keys_) {
+            if (const auto* e = bpmap_.find(key)) {
+                host_.setEnableBreakpoint(e->pc, false);
+                SCLOGI("[battle-macro-scope] disable key=%u pc=%08X",
+                    static_cast<uint32_t>(key),
+                    e->pc);
+            }
+        }
+        macro_enabled_bp_keys_.clear();
+    }
+
+    void PhaseScriptVM::end_macro_breakpoint_scope() {
+        if (!macro_breakpoint_scope_active_ && macro_enabled_bp_keys_.empty()) {
+            return;
+        }
+        disable_macro_step_breakpoint();
+        macro_breakpoint_scope_active_ = false;
+        restore_canonical_breakpoint_scope();
+        SCLOGI("[battle-macro-scope] end");
+    }
+
     bool PhaseScriptVM::init(const PSInit& init, const PhaseScript& program)
     {
         init_ = init;
@@ -295,6 +337,8 @@ namespace savor {
 
         // Disarm any previously armed set (enables program swapping)
         if (armed_ && !armed_pcs_.empty()) {
+            macro_breakpoint_scope_active_ = false;
+            macro_enabled_bp_keys_.clear();
             host_.disarmPcBreakpoints(armed_pcs_);
             armed_pcs_.clear();
         }
@@ -465,7 +509,15 @@ namespace savor {
                     spec.input.buttons);
                 host_.setEnableAllBreakpoints(false);
                 (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-                restore_canonical_breakpoint_scope();
+                if (spec.expected_only_scope) {
+                    restore_canonical_breakpoint_scope();
+                } else {
+                    for (const auto expected_bp : spec.expected_bp_keys) {
+                        if (const auto* e = bpmap_.find(expected_bp)) {
+                            host_.setEnableBreakpoint(e->pc, true);
+                        }
+                    }
+                }
             }
         }
 
@@ -497,7 +549,9 @@ namespace savor {
                 spec.input.buttons);
             host_.setEnableAllBreakpoints(false);
             (void)host_.stepOneOpcodeBlocking(static_cast<int>(timeout_ms));
-            restore_canonical_breakpoint_scope();
+            if (spec.expected_only_scope) {
+                restore_canonical_breakpoint_scope();
+            }
         }
 
         if (spec.release_input) {
@@ -596,6 +650,7 @@ namespace savor {
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_TARGET_SLOT, target_slot);
         ctx.get<std::string>(savor::context::key::battle::MACRO_PLAN_BLOB, plan_blob);
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_TRANSITION_NEUTRAL_FRAMES, transition_neutral_frames);
+        end_macro_breakpoint_scope();
         battle_macro_steps_.clear();
 
         std::vector<MacroCommand> commands;
@@ -847,6 +902,7 @@ namespace savor {
                 .expected_bp_keys = step.expected_bps,
             });
         }
+        begin_macro_breakpoint_scope();
     }
 
     void PhaseScriptVM::op_materialize_battle_turn_macro_steps(PSContext& ctx) {
@@ -856,6 +912,7 @@ namespace savor {
         using phase::battle::macroprobe::FormatPlanningContext;
         using soa::battle::actions::MaterializeErr;
 
+        end_macro_breakpoint_scope();
         battle_macro_steps_.clear();
         ctx[savor::context::key::battle::MACRO_RESULT] = 1u;
         ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Ok);
@@ -1043,6 +1100,7 @@ namespace savor {
                 .expected_bp_keys = step.expected_bps,
             });
         }
+        begin_macro_breakpoint_scope();
         ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Ok);
     }
 
@@ -1052,6 +1110,7 @@ namespace savor {
         uint32_t step_index = 0;
         ctx.get<uint32_t>(savor::context::key::battle::MACRO_LAST_STEP_INDEX, step_index);
         if (step_index >= battle_macro_steps_.size()) {
+            end_macro_breakpoint_scope();
             ctx[savor::context::key::battle::MACRO_RESULT] = 0u;
             ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Ok);
             return;
@@ -1066,6 +1125,7 @@ namespace savor {
 
         const auto advance_macro_step = [&]() {
             if (step_index + 1u >= battle_macro_steps_.size()) {
+                end_macro_breakpoint_scope();
                 ctx[savor::context::key::battle::MACRO_RESULT] = 0u;
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Ok);
             } else {
@@ -1078,6 +1138,7 @@ namespace savor {
             if (!read_u32(step.memory_addr, value)) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::MemoryReadFailed);
+                end_macro_breakpoint_scope();
                 SCLOGW("[battle-macro-memory-gate] label=%s capture_failed=true addr=%08X",
                     step.label.c_str(),
                     step.memory_addr);
@@ -1104,6 +1165,7 @@ namespace savor {
             if (!battle_macro_memory_baseline_valid_ || battle_macro_memory_addr_ != step.memory_addr) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::MemoryReadFailed);
+                end_macro_breakpoint_scope();
                 SCLOGW("[battle-macro-memory-gate] label=%s missing_baseline=true addr=%08X baseline_addr=%08X",
                     step.label.c_str(),
                     step.memory_addr,
@@ -1136,7 +1198,9 @@ namespace savor {
                 host_.stepOneFrameBlocking();
                 ++polls;
             }
-            restore_canonical_breakpoint_scope();
+            if (!macro_breakpoint_scope_active_) {
+                restore_canonical_breakpoint_scope();
+            }
             const uint32_t elapsed_ms = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start).count());
             ctx[savor::context::key::battle::MACRO_MEMORY_ADDR] = step.memory_addr;
@@ -1179,11 +1243,13 @@ namespace savor {
             if (read_failed) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::MemoryReadFailed);
+                end_macro_breakpoint_scope();
                 return;
             }
             if (!changed) {
                 ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
                 ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
+                end_macro_breakpoint_scope();
                 return;
             }
             advance_macro_step();
@@ -1196,7 +1262,9 @@ namespace savor {
             for (uint32_t frame = 0; frame < step.frame_count; ++frame) {
                 host_.stepOneFrameBlocking();
             }
-            restore_canonical_breakpoint_scope();
+            if (!macro_breakpoint_scope_active_) {
+                restore_canonical_breakpoint_scope();
+            }
             SCLOGI("[battle-macro-probe-step] index=%u label=%s neutral_frames=%u ok=1",
                 step_index,
                 step.label.c_str(),
@@ -1206,18 +1274,34 @@ namespace savor {
             return;
         }
 
+        if (step.expected_bp_keys.size() != 1u) {
+            ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
+            ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::InvalidMode);
+            SCLOGW("[battle-macro-probe-step] invalid_expected_count index=%u label=%s expected=%s",
+                step_index,
+                step.label.c_str(),
+                bp_key_list_desc(step.expected_bp_keys).c_str());
+            end_macro_breakpoint_scope();
+            return;
+        }
+
+        enable_macro_step_breakpoint(step.expected_bp_keys.front());
         const auto rr = run_until_bp_core(ctx, RunUntilBpSpec{
             .expected_bp_keys = step.expected_bp_keys,
             .input = step.input,
             .apply_input = true,
-            .release_input = true,
+            .release_input = false,
             .hold_input_through_hit_opcode = step.hold_input_through_hit_opcode,
             .step_off_current_bp = true,
-            .expected_only_scope = true,
+            .expected_only_scope = false,
             .watch_movie = false,
             .include_reserved_hit_lookup = true,
             .update_derived = false,
         });
+        disable_macro_step_breakpoint();
+        GCInputFrame released_input = step.input;
+        released_input.buttons = static_cast<uint16_t>(released_input.buttons & ~step.input.buttons);
+        host_.setInput(released_input);
         ctx[savor::context::key::battle::MACRO_LAST_HIT_BP] = rr.hit_bp_key;
         ctx[savor::context::key::battle::MACRO_LAST_HIT_PC] = rr.run.hit ? static_cast<uint32_t>(rr.run.pc) : 0u;
 
@@ -1232,11 +1316,13 @@ namespace savor {
         if (!rr.run.hit) {
             ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::Timeout);
             ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::Timeout);
+            end_macro_breakpoint_scope();
             return;
         }
         if (!rr.expected_match) {
             ctx[savor::context::key::core::DW_RUN_OUTCOME_CODE] = static_cast<uint32_t>(RunToBpOutcome::InputPlaybackFailed);
             ctx[savor::context::key::battle::MACRO_FAILURE_CODE] = static_cast<uint32_t>(FailureCode::UnexpectedBreakpoint);
+            end_macro_breakpoint_scope();
             return;
         }
 

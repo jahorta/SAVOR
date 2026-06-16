@@ -244,6 +244,8 @@ namespace savor {
 		std::atomic<bool> visual_debug_paused_{ false };
 		std::atomic<uint32_t> visual_debug_vm_step_budget_{ 0 };
 		std::atomic<bool> run_until_bp_active_{ false };
+		bool macro_breakpoint_scope_active_{ false };
+		std::vector<BPKey> macro_enabled_bp_keys_;
 
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
@@ -297,6 +299,10 @@ namespace savor {
 		// helpers
 		void arm_bps_once();
 		void restore_canonical_breakpoint_scope();
+		void begin_macro_breakpoint_scope();
+		void enable_macro_step_breakpoint(BPKey key);
+		void disable_macro_step_breakpoint();
+		void end_macro_breakpoint_scope();
 		bool save_snapshot();
 		bool load_snapshot();
 

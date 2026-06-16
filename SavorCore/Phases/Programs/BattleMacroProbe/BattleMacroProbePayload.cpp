@@ -56,11 +56,11 @@ savor::GCInputFrame PressDown() {
 }
 
 std::vector<BPKey> MainMenuMoveHigherBps() {
-    return {bp::battle::BattleMacroMainMenuMoveHigher, bp::battle::BattleMacroMainMenuMoveHigherAlt};
+    return {bp::battle::BattleMacroMainMenuMoveHigher};
 }
 
 std::vector<BPKey> MainMenuMoveLowerBps() {
-    return {bp::battle::BattleMacroMainMenuMoveLower, bp::battle::BattleMacroMainMenuMoveLowerAlt};
+    return {bp::battle::BattleMacroMainMenuMoveLower};
 }
 
 void AddDirectCommandAcceptSteps(std::vector<MacroStep>& steps) {
@@ -637,41 +637,78 @@ std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
         }
     }
 
-    FailureCode failure = FailureCode::Ok;
-    auto command_steps = BuildMacroPlanSteps(
-        commands,
-        transition_neutral_frames,
-        planning_context,
-        &failure);
-    if (failure != FailureCode::Ok || command_steps.empty()) {
-        if (materialize_err_out) {
-            *materialize_err_out = failure == FailureCode::InvalidTarget
-                ? MaterializeErr::NoValidTarget
-                : MaterializeErr::InvalidNavigation;
-        }
-        return {};
-    }
-
     std::vector<MacroStep> steps;
-    const FakeAttackPattern first_fake_attack_pattern{
+    const FakeAttackPattern fast_fake_attack_pattern{
         .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
         .target_neutral_before_b_frames = 0,
         .input_neutral_after_b_frames = 0,
         .memory_timeout_ms = 1000,
     };
-    const FakeAttackPattern repeat_fake_attack_pattern{
+    const FakeAttackPattern slow_fake_attack_pattern{
         .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
         .target_neutral_before_b_frames = 7,
         .input_neutral_after_b_frames = 0,
         .memory_timeout_ms = 1000,
     };
-    for (std::uint32_t i = 0; i < turn_plan.fake_attack_count; ++i) {
+
+    const std::uint32_t alive_player_count = planning_context
+        ? static_cast<std::uint32_t>(planning_context->alive_ally_slots.size())
+        : static_cast<std::uint32_t>(commands.size());
+    const std::uint32_t fast_fake_capacity_by_players =
+        alive_player_count > 0 ? alive_player_count - 1u : 0u;
+    const std::uint32_t fast_fake_capacity = std::min<std::uint32_t>(
+        fast_fake_capacity_by_players,
+        static_cast<std::uint32_t>(commands.size()));
+    const std::uint32_t fast_fake_count = std::min(turn_plan.fake_attack_count, fast_fake_capacity);
+    const std::uint32_t slow_fake_count = turn_plan.fake_attack_count - fast_fake_count;
+
+    std::uint32_t fake_cycle_index = 0;
+    for (; fake_cycle_index < slow_fake_count; ++fake_cycle_index) {
         AddFakeAttackCycleSteps(
             steps,
-            i,
-            i == 0 ? first_fake_attack_pattern : repeat_fake_attack_pattern);
+            fake_cycle_index,
+            slow_fake_attack_pattern);
     }
-    steps.insert(steps.end(), command_steps.begin(), command_steps.end());
+
+    for (size_t i = 0; i < commands.size(); ++i) {
+        if (i < static_cast<size_t>(fast_fake_count)) {
+            AddFakeAttackCycleSteps(
+                steps,
+                fake_cycle_index++,
+                fast_fake_attack_pattern);
+        }
+
+        FailureCode command_failure = FailureCode::Ok;
+        auto command_steps = BuildMacroSteps(
+            commands[i].mode,
+            commands[i].target_slot,
+            planning_context,
+            &command_failure);
+        if (command_failure != FailureCode::Ok || command_steps.empty()) {
+            if (materialize_err_out) {
+                *materialize_err_out = command_failure == FailureCode::InvalidTarget
+                    ? MaterializeErr::NoValidTarget
+                    : MaterializeErr::InvalidNavigation;
+            }
+            return {};
+        }
+        steps.insert(
+            steps.end(),
+            std::make_move_iterator(command_steps.begin()),
+            std::make_move_iterator(command_steps.end()));
+
+        if (i + 1 < commands.size()) {
+            AddInputReadyGateStep(steps, "character_transition_input_ready");
+            if (transition_neutral_frames > 0) {
+                steps.push_back(MacroStep{
+                    .label = "character_transition_neutral",
+                    .kind = MacroStep::Kind::NeutralFrames,
+                    .input = savor::GCInputFrame{},
+                    .frame_count = transition_neutral_frames,
+                });
+            }
+        }
+    }
     return steps;
 }
 

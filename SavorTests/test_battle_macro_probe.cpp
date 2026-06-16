@@ -85,6 +85,26 @@ std::uint32_t CountLabel(const std::vector<MacroStep>& steps, const char* label)
         [&](const MacroStep& step) { return std::string(step.label) == label; }));
 }
 
+std::vector<size_t> LabelIndexes(const std::vector<MacroStep>& steps, const char* label)
+{
+    std::vector<size_t> indexes;
+    for (size_t i = 0; i < steps.size(); ++i) {
+        if (std::string(steps[i].label) == label) {
+            indexes.push_back(i);
+        }
+    }
+    return indexes;
+}
+
+void ExpectSingleBreakpointInputGates(const std::vector<MacroStep>& steps)
+{
+    for (const auto& step : steps) {
+        if (step.kind == MacroStep::Kind::InputGate) {
+            EXPECT_EQ(step.expected_bps.size(), 1u) << step.label;
+        }
+    }
+}
+
 soa::battle::actions::ActionPlan MakeTurnAction(
     soa::battle::actions::BattleAction macro,
     std::uint8_t actor_slot,
@@ -186,7 +206,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanFirstFakeAttackUsesFixedFastPattern)
     EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 0u);
 }
 
-TEST(BattleMacroProbeCompiler, TurnPlanRepeatFakeAttacksUseMeasuredTargetNeutral)
+TEST(BattleMacroProbeCompiler, TurnPlanFastFakeAttacksAreInterleavedWithCommands)
 {
     auto source = MakePlanningContextSource();
     SetBattleSlot(source, 4, false, true, true);
@@ -194,29 +214,72 @@ TEST(BattleMacroProbeCompiler, TurnPlanRepeatFakeAttacksUseMeasuredTargetNeutral
 
     soa::battle::actions::TurnPlan turn{};
     turn.fake_attack_count = 3;
-    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
+    turn.spec = {
+        MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
+        MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
+        MakeTurnAction(soa::battle::actions::BattleAction::Defend, 2),
+        MakeTurnAction(soa::battle::actions::BattleAction::Focus, 3),
+    };
 
     soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
     const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
 
     ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
-    ASSERT_EQ(steps.size(), 20u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 3u);
+    EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 0u);
+
+    const auto captures = LabelIndexes(steps, "fake_attack_rng_capture");
+    const auto accepts = LabelIndexes(steps, "direct_command_queued");
+    ASSERT_EQ(captures.size(), 3u);
+    ASSERT_EQ(accepts.size(), 4u);
+    EXPECT_LT(captures[0], accepts[0]);
+    EXPECT_LT(accepts[0], captures[1]);
+    EXPECT_LT(captures[1], accepts[1]);
+    EXPECT_LT(accepts[1], captures[2]);
+    EXPECT_LT(captures[2], accepts[2]);
+    EXPECT_LT(accepts[2], accepts[3]);
+}
+
+TEST(BattleMacroProbeCompiler, TurnPlanExcessFakeAttacksUseMeasuredPrefixBeforeFastCharacterFakes)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 2, true, true, false);
+    SetBattleSlot(source, 3, true, true, false);
+    SetBattleSlot(source, 4, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    ASSERT_EQ(context.alive_ally_slots.size(), 2u);
+
+    soa::battle::actions::TurnPlan turn{};
+    turn.fake_attack_count = 3;
+    turn.spec = {
+        MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
+        MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
+    };
+
+    soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
+    const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
+
+    ASSERT_EQ(err, soa::battle::actions::MaterializeErr::OK);
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_capture"), 3u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_rng_changed_target"), 3u);
     EXPECT_EQ(CountLabel(steps, "fake_attack_target_neutral_before_b"), 2u);
-    EXPECT_EQ(steps[4].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    ASSERT_EQ(std::string(steps[9].label), "fake_attack_target_neutral_before_b");
-    EXPECT_EQ(steps[9].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[9].frame_count, 7u);
-    EXPECT_EQ(steps[10].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[10].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    ASSERT_EQ(std::string(steps[15].label), "fake_attack_target_neutral_before_b");
-    EXPECT_EQ(steps[15].kind, MacroStep::Kind::NeutralFrames);
-    EXPECT_EQ(steps[15].frame_count, 7u);
-    EXPECT_EQ(steps[16].input.buttons, savor::GC_B);
-    EXPECT_EQ(steps[16].expected_bps.front(), bp::battle::BattleMacroInputReadyGate);
-    EXPECT_EQ(steps[17].input.buttons, savor::GC_DU);
+
+    const auto captures = LabelIndexes(steps, "fake_attack_rng_capture");
+    const auto slow_neutrals = LabelIndexes(steps, "fake_attack_target_neutral_before_b");
+    const auto accepts = LabelIndexes(steps, "direct_command_queued");
+    ASSERT_EQ(captures.size(), 3u);
+    ASSERT_EQ(slow_neutrals.size(), 2u);
+    ASSERT_EQ(accepts.size(), 2u);
+    EXPECT_LT(captures[0], slow_neutrals[0]);
+    EXPECT_EQ(steps[slow_neutrals[0]].frame_count, 7u);
+    EXPECT_LT(slow_neutrals[0], captures[1]);
+    EXPECT_LT(captures[1], slow_neutrals[1]);
+    EXPECT_EQ(steps[slow_neutrals[1]].frame_count, 7u);
+    EXPECT_LT(slow_neutrals[1], captures[2]);
+    EXPECT_LT(captures[2], accepts[0]);
+    EXPECT_LT(accepts[0], accepts[1]);
 }
 
 TEST(BattleMacroProbeCompiler, TurnPlanRejectsUseItem)
@@ -233,6 +296,42 @@ TEST(BattleMacroProbeCompiler, TurnPlanRejectsUseItem)
 
     EXPECT_TRUE(steps.empty());
     EXPECT_EQ(err, soa::battle::actions::MaterializeErr::InvalidNavigation);
+}
+
+TEST(BattleMacroProbeCompiler, InputGateStepsUseSingleExpectedBreakpoint)
+{
+    auto source = MakePlanningContextSource();
+    SetBattleSlot(source, 4, false, true, true);
+    SetBattleSlot(source, 5, false, true, true);
+    SetBattleSlot(source, 6, false, true, true);
+    const auto context = BuildPlanningContext(source);
+
+    FailureCode failure = FailureCode::Ok;
+    ExpectSingleBreakpointInputGates(BuildMacroSteps(MacroMode::Attack, 6, &context, &failure));
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ExpectSingleBreakpointInputGates(BuildMacroSteps(MacroMode::Focus, 4, &context, &failure));
+    ASSERT_EQ(failure, FailureCode::Ok);
+    ExpectSingleBreakpointInputGates(BuildMacroSteps(MacroMode::Block, 4, &context, &failure));
+    ASSERT_EQ(failure, FailureCode::Ok);
+
+    const std::vector<MacroCommand> commands{
+        MacroCommand{.mode = MacroMode::Attack, .target_slot = 6},
+        MacroCommand{.mode = MacroMode::Focus, .target_slot = 4},
+        MacroCommand{.mode = MacroMode::Block, .target_slot = 4},
+    };
+    ExpectSingleBreakpointInputGates(BuildMacroProbePlanSteps(
+        commands,
+        3,
+        2,
+        FakeAttackPattern{
+            .memory_gate_mode = FakeAttackMemoryGateMode::TargetSide,
+            .target_neutral_before_b_frames = 7,
+            .input_neutral_after_b_frames = 0,
+            .memory_timeout_ms = 1000,
+        },
+        &context,
+        &failure));
+    ASSERT_EQ(failure, FailureCode::Ok);
 }
 
 TEST(BattleMacroProbeCompiler, TurnPlanRejectsDeadExplicitAttackTarget)
@@ -263,7 +362,12 @@ TEST(BattleMacroProbeCompiler, FocusCompilesThreeDownsThenAccept)
     EXPECT_EQ(steps[2].input.buttons, savor::GC_DD);
     EXPECT_EQ(steps[3].input.buttons, 0u);
     EXPECT_EQ(steps[4].input.buttons, savor::GC_DD);
+    ASSERT_EQ(steps[0].expected_bps.size(), 1u);
     EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
+    ASSERT_EQ(steps[2].expected_bps.size(), 1u);
+    EXPECT_EQ(steps[2].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
+    ASSERT_EQ(steps[4].expected_bps.size(), 1u);
+    EXPECT_EQ(steps[4].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveLower);
     EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroCommandTransitionDone);
     EXPECT_EQ(steps[6].input.buttons, savor::GC_A);
     ASSERT_EQ(steps[6].expected_bps.size(), 1u);
@@ -277,6 +381,7 @@ TEST(BattleMacroProbeCompiler, BlockCompilesUpThenAccept)
     ASSERT_EQ(failure, FailureCode::Ok);
     ASSERT_EQ(steps.size(), 3u);
     EXPECT_EQ(steps[0].input.buttons, savor::GC_DU);
+    ASSERT_EQ(steps[0].expected_bps.size(), 1u);
     EXPECT_EQ(steps[0].expected_bps.front(), bp::battle::BattleMacroMainMenuMoveHigher);
     EXPECT_EQ(steps[1].input.buttons, 0u);
     EXPECT_EQ(steps[1].expected_bps.front(), bp::battle::BattleMacroCommandTransitionDone);
