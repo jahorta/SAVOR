@@ -5,6 +5,7 @@
 #include "BattleRunSettingsDragDrop.h"
 
 #include <QtCore/QMimeData>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QDragEnterEvent>
@@ -91,26 +92,6 @@ QString targetKindLabel(savor::db::BattlePlanTargetKind kind)
     return QStringLiteral("Any Enemy");
 }
 
-QString presetDetailText(const savor::db::BattlePlanActionPresetSnapshot& preset)
-{
-    QString detail = macroLabel(preset.macro);
-    detail += QStringLiteral(" / ");
-    detail += targetKindLabel(preset.target_kind);
-    if (preset.target_kind == savor::db::BattlePlanTargetKind::SingleEnemy) {
-        detail += QStringLiteral(" %1").arg(preset.target_single_slot.value_or(4));
-    }
-    if (preset.item_id.has_value()) {
-        detail += QStringLiteral(" / item %1").arg(*preset.item_id);
-    }
-    if (preset.target_mask_bits.has_value()) {
-        detail += QStringLiteral(" / mask 0x%1").arg(QString::number(preset.target_mask_bits.value(), 16));
-    }
-    if (preset.target_same_as_actor_slot.has_value()) {
-        detail += QStringLiteral(" / same as actor %1").arg(preset.target_same_as_actor_slot.value());
-    }
-    return detail;
-}
-
 QString actionSummary(const BattlePlanEditorWindow::ActionDraft& action, const savor::db::BattlePlanActionPresetSnapshot* preset)
 {
     if (preset == nullptr) {
@@ -119,9 +100,21 @@ QString actionSummary(const BattlePlanEditorWindow::ActionDraft& action, const s
         }
         return QStringLiteral("[empty]");
     }
-    return QStringLiteral("%1  [#%2]")
+    QString summary = QStringLiteral("%1  [#%2]  %3 / %4")
         .arg(QString::fromStdString(preset->name))
-        .arg(preset->action_preset_id);
+        .arg(preset->action_preset_id)
+        .arg(macroLabel(preset->macro))
+        .arg(targetKindLabel(preset->target_kind));
+    if (preset->item_id.has_value()) {
+        summary += QStringLiteral(" / item %1").arg(*preset->item_id);
+    }
+    if (preset->target_mask_bits.has_value()) {
+        summary += QStringLiteral(" / mask 0x%1").arg(QString::number(preset->target_mask_bits.value(), 16));
+    }
+    if (preset->target_same_as_actor_slot.has_value()) {
+        summary += QStringLiteral(" / same as actor %1").arg(preset->target_same_as_actor_slot.value());
+    }
+    return summary;
 }
 
 QString presetLibraryLabel(const savor::db::BattlePlanActionPresetSnapshot& preset)
@@ -253,9 +246,10 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
     turns_.clear();
     const int turnCount = std::max(1, snapshot.num_turns);
     turns_.resize(static_cast<std::size_t>(turnCount));
+    int combatantCount = kMinPlayerCombatants;
     for (int index = 0; index < turnCount; ++index) {
         turns_[static_cast<std::size_t>(index)].turn_index = index + 1;
-        turns_[static_cast<std::size_t>(index)].player_combatants = 1;
+        turns_[static_cast<std::size_t>(index)].player_combatants = kMinPlayerCombatants;
     }
 
     for (const auto& turn : snapshot.turns) {
@@ -279,13 +273,16 @@ void BattlePlanEditorWindow::loadSnapshot(const savor::db::BattlePlanSnapshot& s
                     actionPresets_.push_back(preset);
                 }
             }
-            targetTurn.player_combatants = std::clamp(targetTurn.player_combatants, kMinPlayerCombatants, kMaxPlayerCombatants);
-            targetTurn.player_combatants = std::max(targetTurn.player_combatants, draft.actor_slot + 1);
-            targetTurn.player_combatants = std::clamp(targetTurn.player_combatants, kMinPlayerCombatants, kMaxPlayerCombatants);
+            combatantCount = std::max(combatantCount, draft.actor_slot + 1);
             targetTurn.actions.push_back(std::move(draft));
         }
-        normalizeTurnSlots(targetTurn);
     }
+    combatantCount = std::clamp(combatantCount, kMinPlayerCombatants, kMaxPlayerCombatants);
+    {
+        const QSignalBlocker blocker(combatantCountSpin_);
+        combatantCountSpin_->setValue(combatantCount);
+    }
+    applyCombatantCountToAllTurns(combatantCount);
 
     turnCountSpin_->setValue(turnCount);
     rebuildPlanTree();
@@ -315,8 +312,12 @@ void BattlePlanEditorWindow::createWidgets()
     turnCountSpin_ = new QSpinBox(topPanel);
     turnCountSpin_->setRange(1, 20);
     turnCountSpin_->setValue(1);
+    combatantCountSpin_ = new QSpinBox(topPanel);
+    combatantCountSpin_->setRange(kMinPlayerCombatants, kMaxPlayerCombatants);
+    combatantCountSpin_->setValue(kMinPlayerCombatants);
     topLayout->addRow(QStringLiteral("Name"), nameEdit_);
     topLayout->addRow(QStringLiteral("Turns"), turnCountSpin_);
+    topLayout->addRow(QStringLiteral("Combatants"), combatantCountSpin_);
     rootLayout->addWidget(topPanel);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
@@ -355,49 +356,17 @@ void BattlePlanEditorWindow::createWidgets()
     planTree_->setHeaderLabels(QStringList{ QStringLiteral("Turn Tree"), QStringLiteral("Actions") });
     planTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     planTree_->setContextMenuPolicy(Qt::CustomContextMenu);
-    planTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    planTree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    planTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    planTree_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     tree->actionDropped = [this](std::int64_t presetId, int turnIndex, int actionIndex, int slotIndex) {
         assignActionPreset(presetId, turnIndex, actionIndex, slotIndex);
     };
     planLayout->addWidget(planTree_, 1);
 
-    auto* inspectorPanel = new QFrame(splitter);
-    inspectorPanel->setObjectName("jobsSurfacePanel");
-    auto* inspectorLayout = new QVBoxLayout(inspectorPanel);
-    inspectorLayout->setContentsMargins(12, 12, 12, 12);
-    inspectorLayout->setSpacing(8);
-    selectionLabel_ = new QLabel(QStringLiteral("No selection"), inspectorPanel);
-    selectionLabel_->setObjectName("sectionHeading");
-    inspectorLayout->addWidget(selectionLabel_);
-
-    auto* inspectorForm = new QFormLayout();
-    combatantCountSpin_ = new QSpinBox(inspectorPanel);
-    combatantCountSpin_->setRange(kMinPlayerCombatants, kMaxPlayerCombatants);
-    actorSlotSpin_ = new QSpinBox(inspectorPanel);
-    actorSlotSpin_->setRange(0, std::max(0, kMaxPlayerCombatants - 1));
-    slotLabel_ = new QLabel(inspectorPanel);
-    slotLabel_->setObjectName("sectionDescription");
-    presetSummaryLabel_ = new QLabel(QStringLiteral("No preset"), inspectorPanel);
-    presetSummaryLabel_->setObjectName("sectionDescription");
-    presetDetailLabel_ = new QLabel(QStringLiteral(""), inspectorPanel);
-    presetDetailLabel_->setObjectName("sectionDescription");
-    presetDetailLabel_->setWordWrap(true);
-
-    inspectorForm->addRow(QStringLiteral("Combatants"), combatantCountSpin_);
-    inspectorForm->addRow(QStringLiteral("Slot"), slotLabel_);
-    inspectorForm->addRow(QStringLiteral("Actor"), actorSlotSpin_);
-    inspectorForm->addRow(QStringLiteral("Preset"), presetSummaryLabel_);
-    inspectorForm->addRow(QStringLiteral("Details"), presetDetailLabel_);
-    inspectorLayout->addLayout(inspectorForm);
-    inspectorLayout->addStretch();
-
     splitter->addWidget(libraryPanel);
     splitter->addWidget(planPanel);
-    splitter->addWidget(inspectorPanel);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 3);
-    splitter->setStretchFactor(2, 1);
     rootLayout->addWidget(splitter, 1);
 
     auto* buttonRow = new QHBoxLayout();
@@ -414,21 +383,17 @@ void BattlePlanEditorWindow::createWidgets()
     connect(actionLibraryList_, &QListWidget::itemDoubleClicked, this, &BattlePlanEditorWindow::addActionFromLibrarySelection);
     connect(newPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openNewActionPresetEditor);
     connect(editPresetButton, &QPushButton::clicked, this, &BattlePlanEditorWindow::openActionPresetEditorForSelection);
-    connect(planTree_, &QTreeWidget::currentItemChanged, this, [this]() { refreshSelectionPanel(); });
     connect(planTree_, &QWidget::customContextMenuRequested, this, &BattlePlanEditorWindow::showPlanContextMenu);
     connect(nameEdit_, &QLineEdit::textChanged, this, [this]() { markDirty(); });
     connect(turnCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
         ensureTurnCount(value);
         markDirty();
     });
-
-    const auto syncAction = [this]() {
-        if (!refreshingSelection_) {
-            syncSelectionPanelToAction();
-        }
-    };
-    connect(combatantCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
-    connect(actorSlotSpin_, qOverload<int>(&QSpinBox::valueChanged), this, syncAction);
+    connect(combatantCountSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+        applyCombatantCountToAllTurns(value);
+        markDirty();
+        rebuildPlanTree();
+    });
 }
 
 void BattlePlanEditorWindow::populateActionLibrary()
@@ -471,9 +436,12 @@ void BattlePlanEditorWindow::rebuildPlanTree()
 
         auto* turnItem = new QTreeWidgetItem(planTree_);
         turnItem->setText(0, QStringLiteral("Turn %1").arg(turn.turn_index));
-        turnItem->setText(1, QStringLiteral("%1 combatants, %2 actions")
-            .arg(turn.player_combatants)
-            .arg(static_cast<int>(turn.actions.size())));
+        const int assignedActions = static_cast<int>(std::count_if(turn.actions.begin(), turn.actions.end(), [](const ActionDraft& action) {
+            return action.action_preset_id > 0;
+        }));
+        turnItem->setText(1, QStringLiteral("%1/%2 slots assigned")
+            .arg(assignedActions)
+            .arg(turn.player_combatants));
         turnItem->setData(0, kNodeKindRole, kNodeTurn);
         turnItem->setData(0, kTurnIndexRole, turnIndex);
         turnItem->setExpanded(true);
@@ -507,119 +475,14 @@ void BattlePlanEditorWindow::rebuildPlanTree()
         planTree_->setCurrentItem(restoreItem);
     }
     rebuildingTree_ = false;
-    refreshSelectionPanel();
 }
 
-void BattlePlanEditorWindow::refreshSelectionPanel()
+void BattlePlanEditorWindow::applyCombatantCountToAllTurns(int combatantCount)
 {
-    if (rebuildingTree_) {
-        return;
-    }
-    refreshingSelection_ = true;
-    const int selectedSlot = selectedSlotIndex();
-    const auto* turn = selectedTurn();
-    const auto* action = selectedAction();
-    const bool hasTurn = turn != nullptr;
-    const bool hasAction = action != nullptr;
-
-    selectionLabel_->setText(hasAction || selectedSlot >= 0
-        ? QStringLiteral("Selected Slot")
-        : (hasTurn ? QStringLiteral("Selected Turn") : QStringLiteral("No Selection")));
-    slotLabel_->setText(selectedSlot >= 0 ? QStringLiteral("Slot %1").arg(selectedSlot + 1) : QStringLiteral("-"));
-    combatantCountSpin_->setEnabled(hasTurn);
-    actorSlotSpin_->setEnabled(hasAction);
-    presetSummaryLabel_->setEnabled(hasAction);
-    presetDetailLabel_->setEnabled(hasAction);
-    presetSummaryLabel_->setText(QStringLiteral("No preset assigned"));
-    presetDetailLabel_->setText(QStringLiteral("Drag a preset here to assign it. Double-click also assigns to action if one is selected."));
-
-    if (hasTurn) {
-        combatantCountSpin_->setValue(turn->player_combatants);
-        actorSlotSpin_->setValue(std::clamp(selectedSlot, 0, turn->player_combatants - 1));
-        actorSlotSpin_->setEnabled(hasAction || selectedSlot >= 0);
-    }
-    if (hasAction) {
-        const auto* preset = actionPresetById(action->action_preset_id);
-        if (preset != nullptr) {
-            presetSummaryLabel_->setText(QStringLiteral("%1 [#%2]")
-                .arg(QString::fromStdString(preset->name))
-                .arg(preset->action_preset_id));
-            presetDetailLabel_->setText(presetDetailText(*preset));
-        } else {
-            presetSummaryLabel_->setText(QStringLiteral("Missing preset %1").arg(action->action_preset_id));
-            presetDetailLabel_->setText(QStringLiteral("This action references a preset that no longer exists."));
-        }
-    }
-    refreshingSelection_ = false;
-}
-
-void BattlePlanEditorWindow::syncSelectionPanelToAction()
-{
-    const int selectedTurnIdx = selectedTurnIndex();
-    const int selectedSlot = selectedSlotIndex();
-    auto* turn = selectedTurn();
-    if (turn != nullptr) {
-        bool shouldMarkDirty = false;
-        const int requestedCombatants = combatantCountSpin_->value();
-        if (turn->player_combatants != requestedCombatants) {
-            turn->player_combatants = requestedCombatants;
-            shouldMarkDirty = true;
-        }
-        normalizeTurnSlots(*turn);
-        actorSlotSpin_->setMaximum(std::max(0, turn->player_combatants - 1));
-        if (selectedSlot < 0 || selectedSlot >= turn->player_combatants) {
-            if (shouldMarkDirty) {
-                markDirty();
-                rebuildPlanTree();
-            }
-            return;
-        }
-        const int sourceActionIndex = findActionIndexBySlot(*turn, selectedSlot);
-        if (sourceActionIndex < 0) {
-            actorSlotSpin_->setValue(selectedSlot);
-            if (shouldMarkDirty) {
-                markDirty();
-                rebuildPlanTree();
-            }
-            return;
-        }
-
-        const int requestedSlot = std::clamp(actorSlotSpin_->value(), 0, turn->player_combatants - 1);
-        if (requestedSlot == selectedSlot) {
-            if (shouldMarkDirty) {
-                markDirty();
-                rebuildPlanTree();
-            }
-            return;
-        }
-        shouldMarkDirty = true;
-        const int targetActionIndex = findActionIndexBySlot(*turn, requestedSlot);
-        if (targetActionIndex >= 0) {
-            std::swap(turn->actions[static_cast<std::size_t>(sourceActionIndex)].actor_slot,
-                turn->actions[static_cast<std::size_t>(targetActionIndex)].actor_slot);
-        } else {
-            turn->actions[static_cast<std::size_t>(sourceActionIndex)].actor_slot = requestedSlot;
-        }
-        normalizeTurnSlots(*turn);
-
-        if (selectedTurnIdx >= 0 && selectedTurnIdx < static_cast<int>(planTree_->topLevelItemCount())) {
-            if (auto* turnItem = planTree_->topLevelItem(selectedTurnIdx)) {
-                turnItem->setExpanded(true);
-                if (const int restoredSlot = std::clamp(requestedSlot, 0, turn->player_combatants - 1);
-                    restoredSlot < turnItem->childCount()) {
-                    planTree_->setCurrentItem(turnItem->child(restoredSlot));
-                }
-            }
-        }
-        actorSlotSpin_->setValue(requestedSlot);
-        if (shouldMarkDirty) {
-            markDirty();
-            rebuildPlanTree();
-            return;
-        }
-    }
-    if (turn == nullptr) {
-        return;
+    combatantCount = std::clamp(combatantCount, kMinPlayerCombatants, kMaxPlayerCombatants);
+    for (auto& turn : turns_) {
+        turn.player_combatants = combatantCount;
+        normalizeTurnSlots(turn);
     }
 }
 
@@ -644,7 +507,6 @@ void BattlePlanEditorWindow::openNewActionPresetEditor()
     });
     editor->setSavedCallback([this]() {
         populateActionLibrary();
-        refreshSelectionPanel();
     });
     editor->loadNew();
     editor->show();
@@ -708,7 +570,6 @@ void BattlePlanEditorWindow::openPresetEditor(std::int64_t presetId, bool duplic
     editor->setSavedCallback([this]() {
         populateActionLibrary();
         rebuildPlanTree();
-        refreshSelectionPanel();
     });
     editor->loadSnapshot(result.value, duplicate);
     editor->show();
@@ -1008,13 +869,13 @@ void BattlePlanEditorWindow::ensureTurnCount(int count)
         return;
     }
     turns_.resize(static_cast<std::size_t>(count));
+    const int combatantCount = combatantCountSpin_ != nullptr
+        ? combatantCountSpin_->value()
+        : kMinPlayerCombatants;
     for (int index = 0; index < count; ++index) {
         auto& turn = turns_[static_cast<std::size_t>(index)];
         turn.turn_index = index + 1;
-        if (turn.player_combatants <= 0) {
-            turn.player_combatants = 1;
-        }
-        turn.player_combatants = std::clamp(turn.player_combatants, kMinPlayerCombatants, kMaxPlayerCombatants);
+        turn.player_combatants = std::clamp(combatantCount, kMinPlayerCombatants, kMaxPlayerCombatants);
         normalizeTurnSlots(turn);
     }
     rebuildPlanTree();

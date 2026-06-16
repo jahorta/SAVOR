@@ -44,8 +44,8 @@
     <ClCompile Include="MultiLineProgressRenderer.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <Filter>Imports</Filter>
+    <ClCompile Include="WorkerCoordinatorPerf.cpp">
+      <Filter>Helpers</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -71,6 +71,9 @@
       <Filter>Scenarios</Filter>
     </ClInclude>
     <ClInclude Include="MultiLineProgressRenderer.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="WorkerCoordinatorPerf.h">
       <Filter>Helpers</Filter>
     </ClInclude>
   </ItemGroup>

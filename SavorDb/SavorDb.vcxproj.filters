@@ -82,6 +82,9 @@
     <ClInclude Include="Common\DbService.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\Performance\DbPerfReport.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\DbConfigPaths.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -140,6 +143,9 @@
       <Filter>Authoring</Filter>
     </ClInclude>
     <ClInclude Include="Authoring\QueuedAuthoringDb.h">
+      <Filter>Authoring</Filter>
+    </ClInclude>
+    <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h">
       <Filter>Authoring</Filter>
     </ClInclude>
     <ClInclude Include="State\SqliteStateDb.h">
@@ -235,6 +241,9 @@
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
+    <ClInclude Include="UIRead\Projectors\UiReadProjectionService.h">
+      <Filter>UiRead</Filter>
+    </ClInclude>
     <ClInclude Include="UIRead\IUiReadDb.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -274,6 +283,9 @@
     <ClInclude Include="Common\Events\EventPayloadViews.h">
       <Filter>Events</Filter>
     </ClInclude>
+    <ClInclude Include="Common\Events\OutboxEventIds.h">
+      <Filter>Events</Filter>
+    </ClInclude>
     <ClInclude Include="SavorDb.h">
       <Filter>Entrypoint</Filter>
     </ClInclude>
@@ -283,6 +295,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\DbService.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Performance\DbPerfReport.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\QueuedDb.cpp">
@@ -331,6 +346,9 @@
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp">
+      <Filter>Authoring</Filter>
+    </ClCompile>
+    <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp">
       <Filter>Authoring</Filter>
     </ClCompile>
     <ClCompile Include="State\SqliteStateDb.cpp">
@@ -408,6 +426,9 @@
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
+    <ClCompile Include="UIRead\Projectors\UiReadProjectionService.cpp">
+      <Filter>UiRead</Filter>
+    </ClCompile>
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp">
       <Filter>UiRead</Filter>
     </ClCompile>
@@ -428,6 +449,9 @@
     </ClCompile>
     <ClCompile Include="SavorDb.cpp">
       <Filter>Entrypoint</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
+      <Filter>Common</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -472,6 +496,9 @@
       <Filter>Migrations\Authoring</Filter>
     </None>
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
+    <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
@@ -520,6 +547,15 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606111200_uiread_projection_stream_telemetry.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606121000_uiread_projection_failure_payload_refs.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606161200_uiread_battle_turn_job_exec_id.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

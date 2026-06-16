@@ -2,6 +2,11 @@
 
 Date: 2026-04-14
 
+## Status
+
+Future SPICE-side plan retained as NavigationPhase reference material. SAVOR consumes SPICE outputs rather
+than implementing this parsing/IR layer directly.
+
 ## 1) Current SPICE MLD status (what we have now)
 
 This is the current effective pipeline:
@@ -27,7 +32,7 @@ What is missing versus Blender/SA3D style ingest:
 
 ## 2) Target intermediate representation (IR)
 
-Create a new SAVOR IR that mirrors the concepts used by SAIO/SA3D weighted buffers.
+Create a new SPICE IR that mirrors the concepts used by SAIO/SA3D weighted buffers.
 
 ### 2.1 New core types (new files)
 

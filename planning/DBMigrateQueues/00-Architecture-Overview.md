@@ -1,7 +1,11 @@
 # DBMigrateQueues 00 — CQRS + Per-Context Queues Architecture Overview
 
 ## Status
-Draft v0.3 (planning)
+Historical target architecture plus current direction notes.
+
+The immediate implementation direction is facade-first queued DB access, not a mandatory full command/query
+bus rollout. The CQRS bus/envelope model remains a long-term reference for paths that outgrow the facade
+model.
 
 ## Purpose
 Define the target architecture for moving SavorDb from direct synchronous DB service calls to a CQRS-inspired model with per-context async queues/workers.
@@ -27,6 +31,8 @@ Out of scope (deferred):
 - Connection defaults already include WAL and FULLMUTEX, which support multi-threaded access patterns.
 
 ## Target Architecture Summary
+Long-term reference model:
+
 For each bounded context:
 1. **Command path**
    - Command bus entrypoint

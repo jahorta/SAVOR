@@ -61,7 +61,7 @@ CREATE TABLE asp_outbox_message (
 );
 CREATE INDEX ix_asp_outbox_unpublished
     ON asp_outbox_message(published_at_utc, outbox_id);
-CREATE TABLE sp_probe_set (
+CREATE TABLE sp_probe_set (
     probe_set_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     probe_flavor TEXT NOT NULL CHECK(probe_flavor IN ('BATTLE_PRE', 'DUNGEON_PRE', 'OVERWORLD_PRE')),
@@ -71,18 +71,31 @@ CREATE TABLE sp_probe_set (
     dungeon_segment_code TEXT NULL,
     segment_source_kind TEXT NOT NULL,
     created_at_utc INTEGER NOT NULL,
-    CONSTRAINT uq_sp_probe_set_name UNIQUE (name)
+    CONSTRAINT uq_sp_probe_set_name UNIQUE (name)
 );
-CREATE TABLE sp_probe_run (
-    probe_run_id INTEGER PRIMARY KEY,
-    probe_set_id INTEGER NOT NULL,
-    entry_savestate_id INTEGER NOT NULL,
-    seed_probe_spec_id INTEGER NOT NULL,
-    codec_version INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    requested_at_utc INTEGER NOT NULL,
-    completed_at_utc INTEGER NULL,
-    FOREIGN KEY(probe_set_id) REFERENCES sp_probe_set(probe_set_id)
+CREATE TABLE an_input_set (
+    input_set_id INTEGER PRIMARY KEY,
+    content_hash TEXT NULL,
+    source_ref_kind TEXT NULL,
+    source_ref_id INTEGER NULL,
+    created_at_utc INTEGER NOT NULL,
+    CONSTRAINT uq_an_input_set_content_hash UNIQUE (content_hash)
+);
+CREATE UNIQUE INDEX ux_an_input_set_source
+    ON an_input_set(source_ref_kind, source_ref_id)
+    WHERE source_ref_kind IS NOT NULL AND source_ref_id IS NOT NULL;
+CREATE TABLE sp_probe_run (
+    probe_run_id INTEGER PRIMARY KEY,
+    probe_set_id INTEGER NOT NULL,
+    entry_savestate_id INTEGER NOT NULL,
+    seed_probe_spec_id INTEGER NOT NULL,
+    codec_version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    unique_input_set_id INTEGER NOT NULL,
+    requested_at_utc INTEGER NOT NULL,
+    completed_at_utc INTEGER NULL,
+    FOREIGN KEY(probe_set_id) REFERENCES sp_probe_set(probe_set_id),
+    FOREIGN KEY(unique_input_set_id) REFERENCES an_input_set(input_set_id)
 );
 CREATE TABLE sp_probe_result (
     probe_result_id INTEGER PRIMARY KEY,
@@ -101,7 +114,7 @@ CREATE TABLE sp_axis_xy (
     y INTEGER NOT NULL CHECK(y BETWEEN 0 AND 255),
     CONSTRAINT uq_sp_axis_xy_xy UNIQUE (x, y)
 );
-CREATE TABLE sp_input_frame (
+CREATE TABLE sp_input_frame (
     input_frame_id INTEGER PRIMARY KEY,
     main_axis_xy_id INTEGER NOT NULL,
     cstick_axis_xy_id INTEGER NOT NULL,
@@ -109,7 +122,16 @@ CREATE TABLE sp_input_frame (
     FOREIGN KEY(main_axis_xy_id) REFERENCES sp_axis_xy(axis_xy_id),
     FOREIGN KEY(cstick_axis_xy_id) REFERENCES sp_axis_xy(axis_xy_id),
     FOREIGN KEY(trigger_axis_xy_id) REFERENCES sp_axis_xy(axis_xy_id),
-    CONSTRAINT uq_sp_input_frame_axes UNIQUE (main_axis_xy_id, cstick_axis_xy_id, trigger_axis_xy_id)
+    CONSTRAINT uq_sp_input_frame_axes UNIQUE (main_axis_xy_id, cstick_axis_xy_id, trigger_axis_xy_id)
+);
+CREATE TABLE an_input_set_frame (
+    input_set_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    input_frame_id INTEGER NOT NULL,
+    added_at_utc INTEGER NOT NULL,
+    PRIMARY KEY(input_set_id, ordinal),
+    FOREIGN KEY(input_set_id) REFERENCES an_input_set(input_set_id),
+    FOREIGN KEY(input_frame_id) REFERENCES sp_input_frame(input_frame_id)
 );
 CREATE TABLE sp_neutral_seed (
     neutral_seed_id INTEGER PRIMARY KEY,
@@ -174,9 +196,11 @@ CREATE INDEX ix_sp_probe_run_probe_set_status
     ON sp_probe_run(probe_set_id, status, requested_at_utc DESC);
 CREATE INDEX ix_sp_grid_seed_probe_result_family
     ON sp_grid_seed(probe_result_id, source_family, axis_xy_id);
-CREATE INDEX ix_sp_unique_seed_probe_result
+CREATE INDEX ix_sp_unique_seed_probe_result
     ON sp_unique_seed(probe_result_id, input_frame_id);
-CREATE INDEX ix_sp_outbox_unpublished
+CREATE INDEX ix_an_input_set_frame_input_set
+    ON an_input_set_frame(input_set_id, ordinal);
+CREATE INDEX ix_sp_outbox_unpublished
     ON sp_outbox_message(published_at_utc, outbox_id);
 CREATE TABLE ab_battle_set (
     battle_set_id INTEGER PRIMARY KEY,
@@ -190,10 +214,11 @@ CREATE TABLE ab_battle_set (
     CONSTRAINT uq_ab_battle_set_name UNIQUE (name)
 );
 CREATE TABLE ab_seed_candidate (
-    seed_candidate_id INTEGER PRIMARY KEY,
-    battle_set_id INTEGER NOT NULL,
-    source_unique_seed_id INTEGER NULL,
-    seed_value INTEGER NOT NULL,
+    seed_candidate_id INTEGER PRIMARY KEY,
+    battle_set_id INTEGER NOT NULL,
+    source_unique_seed_id INTEGER NULL,
+    source_input_frame_id INTEGER NULL,
+    seed_value INTEGER NOT NULL,
     source_kind TEXT NOT NULL CHECK(source_kind IN ('SP_UNIQUE', 'MANUAL', 'SYNTHETIC')),
     candidate_status TEXT NOT NULL,
     created_at_utc INTEGER NOT NULL,
@@ -208,20 +233,37 @@ CREATE TABLE ab_selection_pool (
     created_at_utc INTEGER NOT NULL,
     FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id)
 );
-CREATE TABLE ab_turn_wave (
+CREATE TABLE ab_turn_wave (
     wave_id INTEGER PRIMARY KEY,
-    battle_set_id INTEGER NOT NULL,
-    turn_index INTEGER NOT NULL,
-    parent_wave_id INTEGER NULL,
-    seed_candidate_id INTEGER NOT NULL,
-    selection_pool_id INTEGER NULL,
+    battle_set_id INTEGER NOT NULL,
+    turn_index INTEGER NOT NULL,
+    context_probe_id INTEGER NULL,
+    parent_wave_id INTEGER NULL,
+    parent_turn_job_id INTEGER NULL,
+    seed_candidate_id INTEGER NOT NULL,
+    selection_pool_id INTEGER NULL,
     status TEXT NOT NULL,
-    created_at_utc INTEGER NOT NULL,
-    completed_at_utc INTEGER NULL,
-    FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id),
-    FOREIGN KEY(parent_wave_id) REFERENCES ab_turn_wave(wave_id),
-    FOREIGN KEY(seed_candidate_id) REFERENCES ab_seed_candidate(seed_candidate_id),
-    FOREIGN KEY(selection_pool_id) REFERENCES ab_selection_pool(selection_pool_id)
+    created_at_utc INTEGER NOT NULL,
+    completed_at_utc INTEGER NULL,
+    FOREIGN KEY(battle_set_id) REFERENCES ab_battle_set(battle_set_id),
+    FOREIGN KEY(context_probe_id) REFERENCES ab_battle_context_probe(context_probe_id),
+    FOREIGN KEY(parent_wave_id) REFERENCES ab_turn_wave(wave_id),
+    FOREIGN KEY(parent_turn_job_id) REFERENCES ab_turn_job(turn_job_id),
+    FOREIGN KEY(seed_candidate_id) REFERENCES ab_seed_candidate(seed_candidate_id),
+    FOREIGN KEY(selection_pool_id) REFERENCES ab_selection_pool(selection_pool_id)
+);
+CREATE TABLE ab_battle_context_probe (
+    context_probe_id INTEGER PRIMARY KEY,
+    wave_id INTEGER NULL,
+    source_savestate_id INTEGER NOT NULL,
+    exec_job_id INTEGER NULL,
+    probe_status TEXT NOT NULL,
+    context_blob TEXT NULL,
+    context_version INTEGER NULL,
+    recorded_at_utc INTEGER NULL,
+    created_at_utc INTEGER NOT NULL,
+    FOREIGN KEY(wave_id) REFERENCES ab_turn_wave(wave_id),
+    CONSTRAINT uq_ab_battle_context_probe_exec_job_id UNIQUE (exec_job_id)
 );
 CREATE TABLE ab_turn_job (
     turn_job_id INTEGER PRIMARY KEY,
@@ -242,9 +284,10 @@ CREATE TABLE ab_turn_job (
     plan_materialize_err INTEGER NULL,
     pred_passed INTEGER NULL,
     pred_total INTEGER NULL,
-    pred_abort_run INTEGER NULL,
-    output_savestate_id INTEGER NULL,
-    recorded_at_utc INTEGER NULL,
+    pred_abort_run INTEGER NULL,
+    output_savestate_id INTEGER NULL,
+    applied_input_artifact_id INTEGER NULL,
+    recorded_at_utc INTEGER NULL, result_context_blob_base64 TEXT NULL, result_context_version INTEGER NULL,
     FOREIGN KEY(wave_id) REFERENCES ab_turn_wave(wave_id),
     CONSTRAINT uq_ab_turn_job_exec_job_id UNIQUE (exec_job_id)
 );
@@ -291,10 +334,20 @@ CREATE TABLE ab_outbox_message (
     last_error TEXT NULL,
     CONSTRAINT uq_ab_outbox_event_id UNIQUE (event_id)
 );
-CREATE INDEX ix_ab_turn_wave_parent_wave_id
+CREATE INDEX ix_ab_turn_wave_parent_wave_id
     ON ab_turn_wave(parent_wave_id);
-CREATE INDEX ix_ab_turn_wave_battle_set_turn
+CREATE INDEX ix_ab_turn_wave_parent_turn_job_id
+    ON ab_turn_wave(parent_turn_job_id);
+CREATE INDEX ix_ab_turn_wave_battle_set_turn
     ON ab_turn_wave(battle_set_id, turn_index);
+CREATE INDEX ix_ab_battle_context_probe_wave_status
+    ON ab_battle_context_probe(wave_id, probe_status);
+CREATE INDEX ix_ab_battle_context_probe_savestate
+    ON ab_battle_context_probe(source_savestate_id);
+CREATE UNIQUE INDEX uq_ab_selection_pool_battle_turn_name
+    ON ab_selection_pool(battle_set_id, turn_index, pool_name);
+CREATE UNIQUE INDEX uq_ab_selection_decision_pool_turn_job
+    ON ab_selection_decision(selection_pool_id, turn_job_id);
 CREATE INDEX ix_ab_turn_job_wave_outcome
     ON ab_turn_job(wave_id, battle_outcome);
 CREATE INDEX ix_ab_selection_decision_pool_kind

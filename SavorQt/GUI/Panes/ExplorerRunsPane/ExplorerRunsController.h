@@ -8,8 +8,7 @@
 #include <optional>
 
 #include "DB/SavorDbExplorerRunService.h"
-
-class QTimer;
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 
 class ExplorerRunsController final : public QObject
 {
@@ -55,6 +54,9 @@ private:
     using GroupPageResult = savorqt::db::ServiceResult<savorqt::db::ExplorerRunGroupPage>;
     using GroupDetailResult = savorqt::db::ServiceResult<savor::db::UiJobSetDetail>;
     using JobDetailResult = savorqt::db::ServiceResult<savorqt::db::ExplorerRunJobDetail>;
+    struct GroupPageFetchRequest {
+        savorqt::db::ExplorerRunGroupQuery query{};
+    };
 
     void loadInitial();
     void kickGroupsFetch();
@@ -72,14 +74,12 @@ private:
     bool pageActive_ = false;
     bool initialLoadStarted_ = false;
     bool groupsInFlight_ = false;
-    bool pendingGroupsFetch_ = false;
     bool groupDetailInFlight_ = false;
     bool jobDetailInFlight_ = false;
     qint64 groupDetailRequestId_ = 0;
     qint64 jobDetailRequestId_ = 0;
 
-    QFutureWatcher<GroupPageResult> groupsWatcher_;
+    savorqt::gui::AsyncRefreshPipeline<GroupPageFetchRequest, GroupPageResult>* groupRefreshPipeline_ = nullptr;
     QFutureWatcher<GroupDetailResult> groupDetailWatcher_;
     QFutureWatcher<JobDetailResult> jobDetailWatcher_;
-    QTimer* refreshTimer_ = nullptr;
 };

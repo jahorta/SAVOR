@@ -57,8 +57,8 @@ Finalize operational correctness, recovery behavior, and runbook readiness.
 
 1. **SavorTests**
    - Run full phase-4 recovery matrix suites.
-2. **SavorDbValidation CLI**
-   - Add/run phase-4 hardening and recovery validations in `SavorDbValidation`.
+2. **Validation coverage**
+   - Add/run phase-4 hardening and recovery coverage in `SavorTests` and relevant SavorE2E scenarios.
    - Phase cannot exit until both test suites and CLI validations pass.
 
 ## Suggested SavorTests to add for phase exit readiness

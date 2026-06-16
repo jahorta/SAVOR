@@ -10,7 +10,13 @@ class DBService;
 
 namespace savor::e2e {
 
-bool RunBattleSingleTurnRealWorkerScenario(
+bool RunSeedProbeBattleRealWorkerScenario(
+    const CliOptions& options,
+    const char* argv0,
+    savor::db::core::DBService* db_service,
+    std::string* error_out);
+
+bool RunBattleWorkflowGraphRealWorkerScenario(
     const CliOptions& options,
     const char* argv0,
     savor::db::core::DBService* db_service,

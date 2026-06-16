@@ -7,6 +7,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QVector>
 
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "UIRead/IUiReadDb.h"
 
 #include <optional>
@@ -127,6 +128,9 @@ private:
         DetailBundle value;
         QString errorMessage;
     };
+    struct ListFetchRequest {
+        savor::db::UiReadSeedProbeRunListQuery query{};
+    };
 
     void kickPageFetch();
     void kickDetailFetch(qint64 probeId, bool force = false);
@@ -145,11 +149,10 @@ private:
     std::optional<savor::db::UiReadSeedProbeRunListCursor> after_;
     bool initialLoadStarted_ = false;
     bool pageInFlight_ = false;
-    bool pendingPageFetch_ = false;
     bool detailInFlight_ = false;
     bool runningRefreshInFlight_ = false;
     qint64 detailRequestProbeId_ = 0;
-    QFutureWatcher<ListBundleResult> pageWatcher_;
+    savorqt::gui::AsyncRefreshPipeline<ListFetchRequest, ListBundleResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<DetailBundleResult> detailWatcher_;
     QFutureWatcher<RunningProbeUpdateResult> runningRefreshWatcher_;
     QTimer* refreshTimer_ = nullptr;

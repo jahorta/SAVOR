@@ -2,7 +2,7 @@
 #include <cstddef>
 #include "KeyIds.h"
 
-namespace savor::keys::core {
+namespace savor::context::key::core {
 
 	// One-line per key via X-macro: NAME, ID, "string"
 #define CORE_KEYS(X) \
@@ -12,6 +12,7 @@ namespace savor::keys::core {
   X(ELAPSED_MS,              0x0003, "core.run.elapsed_ms")    \
   X(LAST_SAVESTATE_PATH,     0x0004, "core.run.last_savestate_path")    \
   X(GAME_ISO_PATH,           0x0005, "core.run.game_iso_path")    \
+  X(RUN_EXPECTED_MATCH,      0x0006, "core.run.expected_match")    \
 \
   X(VI_FIRST,                0x0020, "core.metrics.vi_first")  \
   X(VI_LAST,                 0x0021, "core.metrics.vi_last")   \
@@ -22,6 +23,7 @@ namespace savor::keys::core {
   X(VI_STALL_MS,             0x0041, "core.input.vi_stall_ms") \
   X(PROGRESS_RATE,           0x0042, "core.input.progress_rate") \
   X(PROGRESS_CORE_FLAGS,     0x0043, "core.input.progress_core_flags") \
+  X(RUN_POLL_MS,             0x0044, "core.input.run_poll_ms") \
 \
   X(PLAN_FRAME_IDX,          0x0060, "core.plan.frame_idx")    \
   X(PLAN_DONE,               0x0061, "core.plan.done")         \
@@ -37,14 +39,14 @@ namespace savor::keys::core {
 
 // Emit KeyId constants + per-module range guards
 #define DECL_KEY(NAME, ID, STR) \
-	inline constexpr savor::keys::KeyId NAME = static_cast<savor::keys::KeyId>(ID); \
-	static_assert(NAME >= savor::keys::CORE_MIN && NAME <= savor::keys::CORE_MAX, "core key out of range");
+	inline constexpr savor::context::key::KeyId NAME = static_cast<savor::context::key::KeyId>(ID); \
+	static_assert(NAME >= savor::context::key::CORE_MIN && NAME <= savor::context::key::CORE_MAX, "core key out of range");
 	CORE_KEYS(DECL_KEY)
 #undef DECL_KEY
 
 // Emit the module table used by the aggregator (names + ids for logging/inspection)
-inline constexpr savor::keys::KeyPair kKeys[] = {
-	#define ROW(NAME, ID, STR) savor::keys::KeyPair{ static_cast<savor::keys::KeyId>(ID), STR },
+inline constexpr savor::context::key::KeyPair kKeys[] = {
+	#define ROW(NAME, ID, STR) savor::context::key::KeyPair{ static_cast<savor::context::key::KeyId>(ID), STR },
 	CORE_KEYS(ROW)
 	#undef ROW
 };
@@ -52,4 +54,4 @@ inline constexpr std::size_t kCount = sizeof(kKeys) / sizeof(kKeys[0]);
 
 #undef CORE_KEYS
 
-} // namespace savor::keys::core
+} // namespace savor::context::key::core

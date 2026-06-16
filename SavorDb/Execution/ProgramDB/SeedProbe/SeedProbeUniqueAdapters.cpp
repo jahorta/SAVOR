@@ -7,12 +7,12 @@
 #include <string>
 #include <utility>
 
-#include "../../Execution/Jobs/JobEventOrchestration.h"
+#include "../../Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SavorCore/Phases/RNGSeedDeltaMap.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 
 namespace savor::db::execution::programdb::seedprobe {
 namespace {
@@ -261,6 +261,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
             singleton.target_delta);
         enqueue.priority = 1;
         enqueue.max_attempts = 2;
+        enqueue.pending_until_workflow_materialized = true;
         std::int64_t job_id = 0;
         if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
             ++jobs_enqueued;
@@ -310,6 +311,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
                 sample.target_delta);
             enqueue.priority = 0;
             enqueue.max_attempts = 2;
+            enqueue.pending_until_workflow_materialized = true;
             std::int64_t job_id = 0;
             if (execution_db_->EnqueueJob(enqueue, &job_id, &error) && job_id > 0) {
                 ++jobs_enqueued;
@@ -432,12 +434,12 @@ std::string SeedProbeUniqueResultMapper::BuildResultIniFromPrResult(std::int64_t
     ResultsIni out{};
     out.w_err = result.ps.w_err;
     if (out.w_err == 0) {
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
     }
     if (result.ps.ok) {
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, out.rng_seed);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
     }
     IniDoc ini;
     return out.append_section(ini).to_string_sorted();
@@ -509,9 +511,6 @@ ResultMapPayload SeedProbeUniqueResultMapper::MapPrimaryResult(std::int64_t job_
     cmd.seed_value = parsed.rng_seed;
     cmd.seed_delta = observed_delta;
     cmd.recorded_at_utc = savor::db::types::UtcNow();
-    cmd.event_id = "seedprobe-result-" + std::to_string(*probe_result_id)
-        + "-job-" + std::to_string(job_id)
-        + "-unique";
     cmd.correlation_id = "seedprobe-run-" + std::to_string(job->program_ref_id);
     cmd.causation_id = "job-" + std::to_string(job_id);
 

@@ -13,6 +13,33 @@ namespace savor::e2e {
 
 using savor::db::types::UtcNow;
 
+void AppendTasMovieRtcArgumentIfSingle(
+    savor::db::execution::workflow::WorkflowCreateInstanceCommand* command,
+    const CliOptions& options,
+    int default_value) {
+    if (command == nullptr) {
+        return;
+    }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "headroom",
+        .value_type = "integer",
+        .integer_value = options.tasmovie_headroom_x10.value_or(15),
+        .source_kind = "scenario",
+    });
+    const auto range = ResolveTasMovieRtcRange(options, default_value);
+    if (range.low != range.high) {
+        return;
+    }
+    command->arguments.push_back({
+        .node_key = "tas_1",
+        .argument_key = "rtc",
+        .value_type = "integer",
+        .integer_value = range.low,
+        .source_kind = "scenario",
+    });
+}
+
 savor::db::DbConfigPaths BuildDbPaths(const CliOptions& options) {
     const auto root = options.workspace_root.value_or(std::filesystem::temp_directory_path() / "savor-e2e-default");
 
@@ -131,7 +158,6 @@ bool SeedStateSavestate(
                 .file_ext = savestate_file.extension().string(),
                 .artifact_kind = "SAV",
                 .created_at_utc = UtcNow(),
-                .event_id = "savor-e2e.state.artifact",
                 .correlation_id = "savor-e2e.seedprobe",
                 .causation_id = "savor-e2e.seed",
             },
@@ -147,7 +173,6 @@ bool SeedStateSavestate(
                 .note = "SavorE2E start state",
                 .is_complete = true,
                 .created_at_utc = UtcNow(),
-                .event_id = "savor-e2e.state.savestate",
                 .correlation_id = "savor-e2e.seedprobe",
                 .causation_id = "savor-e2e.seed",
             },
@@ -184,7 +209,6 @@ bool SeedStateDtmArtifact(
             .file_ext = dtm_file.extension().string(),
             .artifact_kind = "DTM",
             .created_at_utc = UtcNow(),
-            .event_id = "savor-e2e.state.dtm_artifact",
             .correlation_id = "savor-e2e.tasmovie",
             .causation_id = "savor-e2e.seed",
         },
@@ -208,7 +232,6 @@ bool SeedAuthoringSpec(
             .priority = 1,
             .run_ms = 10000,
             .vi_stall_ms = 2000,
-            .samples_per_axis = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
             .min_value = 47,
             .max_value = 207,
             .cap_trigger_top = true,
@@ -217,7 +240,6 @@ bool SeedAuthoringSpec(
             .combo_sampler_tries = 4,
             .auto_schedule_battle_run = false,
             .created_at_utc = UtcNow(),
-            .event_id = "savor-e2e.authoring.seedprobe",
             .correlation_id = "savor-e2e.seedprobe",
             .causation_id = "savor-e2e.seed",
         },
@@ -230,6 +252,7 @@ bool SeedWorkflowGraphExecution(
     savor::db::IExecutionDb* execution_db,
     std::int64_t savestate_id,
     std::int64_t seed_probe_spec_id,
+    const CliOptions& options,
     std::int64_t* workflow_instance_id_out,
     std::string* error_out) {
     if (authoring_db == nullptr || execution_db == nullptr) {
@@ -264,7 +287,6 @@ bool SeedWorkflowGraphExecution(
                     },
                 },
                 .created_at_utc = UtcNow(),
-                .event_id = "savor-e2e.authoring.workflow_graph.seedprobe",
                 .correlation_id = "savor-e2e.workflow_graph.seedprobe",
                 .causation_id = "savor-e2e.seed",
             },
@@ -304,6 +326,13 @@ bool SeedWorkflowGraphExecution(
         .ref_id = savestate_id,
         .source_kind = "external",
     });
+    command.arguments.push_back({
+        .node_key = "probe_1",
+        .argument_key = "samples_per_axis",
+        .value_type = "integer",
+        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
+        .source_kind = "scenario",
+    });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
@@ -340,7 +369,6 @@ bool SeedTasMovieWorkflow(
                     },
                 },
                 .created_at_utc = UtcNow(),
-                .event_id = "savor-e2e.authoring.workflow_graph.tasmovie",
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie",
                 .causation_id = "savor-e2e.seed",
             },
@@ -381,13 +409,7 @@ bool SeedTasMovieWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
-    command.arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "rtc",
-        .value_type = "integer",
-        .integer_value = options.tasmovie_rtc.value_or(0),
-        .source_kind = "scenario",
-    });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);
 }
 
@@ -445,7 +467,6 @@ bool SeedTasMovieSeedProbeWorkflow(
                     { .from_node_key = "tas_1", .output_key = "savestate", .to_node_key = "probe_1", .input_key = "entry_savestate" },
                 },
                 .created_at_utc = UtcNow(),
-                .event_id = "savor-e2e.authoring.workflow_graph.tasmovie_seedprobe",
                 .correlation_id = "savor-e2e.workflow_graph.tasmovie_seedprobe",
                 .causation_id = "savor-e2e.seed",
             },
@@ -501,11 +522,12 @@ bool SeedTasMovieSeedProbeWorkflow(
         .ref_id = dtm_artifact_id,
         .source_kind = "external",
     });
+    AppendTasMovieRtcArgumentIfSingle(&command, options, 0);
     command.arguments.push_back({
-        .node_key = "tas_1",
-        .argument_key = "rtc",
+        .node_key = "probe_1",
+        .argument_key = "samples_per_axis",
         .value_type = "integer",
-        .integer_value = options.tasmovie_rtc.value_or(0),
+        .integer_value = options.seedprobe_samples_per_axis.value_or(kSeedProbeSamplesPerAxis),
         .source_kind = "scenario",
     });
     return execution_db->CreateWorkflowInstance(command, workflow_instance_id_out, error_out);

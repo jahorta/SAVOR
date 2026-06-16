@@ -36,16 +36,16 @@ CREATE TABLE ui_job_artifact (
     created_at_utc INTEGER NOT NULL,
     CONSTRAINT uq_ui_job_artifact_job_artifact UNIQUE (job_id, artifact_id, role_kind)
 );
-CREATE TABLE ui_seed_probe_summary (
-    probe_run_id INTEGER PRIMARY KEY,
-    probe_set_id INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    neutral_seed_value INTEGER NULL,
-    grid_count INTEGER NOT NULL,
+CREATE TABLE ui_seed_probe_summary (
+    probe_run_id INTEGER PRIMARY KEY,
+    probe_set_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    neutral_seed_value INTEGER NULL,
+    grid_count INTEGER NOT NULL,
     unique_count INTEGER NOT NULL,
     requested_at_utc INTEGER NOT NULL,
     completed_at_utc INTEGER NULL
-);
+, entry_savestate_id INTEGER NOT NULL DEFAULT 0, seed_probe_spec_id INTEGER NOT NULL DEFAULT 0, codec_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE ui_seed_probe_delta_point (
     delta_point_id INTEGER PRIMARY KEY,
     probe_run_id INTEGER NOT NULL,
@@ -177,7 +177,7 @@ CREATE TABLE ui_workflow_step (
     started_at_utc INTEGER NULL,
     completed_at_utc INTEGER NULL,
     failed_at_utc INTEGER NULL,
-    created_at_utc INTEGER NOT NULL,
+    created_at_utc INTEGER NOT NULL, workflow_unit_activation_id INTEGER NULL,
     CONSTRAINT uq_ui_workflow_step_instance_key UNIQUE (workflow_instance_id, step_key)
 );
 CREATE TABLE ui_workflow_edge (
@@ -249,3 +249,40 @@ CREATE INDEX ix_ui_archive_rehydrate_request_recent
     ON ui_archive_rehydrate_request(requested_at_utc DESC, rehydrate_request_id DESC);
 CREATE INDEX ix_ui_archive_rehydrate_request_status_recent
     ON ui_archive_rehydrate_request(status, requested_at_utc DESC, rehydrate_request_id DESC);
+CREATE TABLE ui_workflow_unit_activation (
+    workflow_unit_activation_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    parent_workflow_unit_activation_id INTEGER NULL,
+    activation_key TEXT NOT NULL,
+    graph_node_key TEXT NOT NULL,
+    unit_kind TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    activation_params_json TEXT NOT NULL DEFAULT '',
+    authored_ref_kind TEXT NULL,
+    authored_ref_id INTEGER NULL,
+    failure_code TEXT NULL,
+    failure_text TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    ready_at_utc INTEGER NULL,
+    started_at_utc INTEGER NULL,
+    completed_at_utc INTEGER NULL,
+    failed_at_utc INTEGER NULL,
+    CONSTRAINT uq_ui_workflow_unit_activation_key UNIQUE (workflow_instance_id, activation_key)
+);
+CREATE TABLE ui_workflow_unit_activation_edge (
+    workflow_unit_activation_edge_id INTEGER PRIMARY KEY,
+    workflow_instance_id INTEGER NOT NULL,
+    from_workflow_unit_activation_id INTEGER NOT NULL,
+    to_workflow_unit_activation_id INTEGER NOT NULL,
+    output_key TEXT NULL,
+    input_key TEXT NULL,
+    condition_kind TEXT NULL,
+    condition_value TEXT NULL,
+    created_at_utc INTEGER NOT NULL,
+    CONSTRAINT uq_ui_workflow_unit_activation_edge UNIQUE (workflow_instance_id, from_workflow_unit_activation_id, to_workflow_unit_activation_id, output_key, input_key)
+);
+CREATE INDEX ix_ui_workflow_unit_activation_instance_state
+    ON ui_workflow_unit_activation(workflow_instance_id, state, created_at_utc ASC);
+CREATE INDEX ix_ui_workflow_step_activation
+    ON ui_workflow_step(workflow_instance_id, workflow_unit_activation_id);

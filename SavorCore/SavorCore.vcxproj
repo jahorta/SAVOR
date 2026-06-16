@@ -201,6 +201,8 @@
     <ClInclude Include="Phases\BattleExplorer.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
+    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
+    <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbeScript.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleOutcome.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerPayload.h" />
     <ClInclude Include="Phases\Programs\BattleRunner\BattleRunnerScript.h" />
@@ -215,29 +217,15 @@
     <ClInclude Include="Phases\Programs\SeedProbe\SeedProbeScript.h" />
     <ClInclude Include="Phases\RNGSeedDeltaMap.h" />
     <ClInclude Include="Runner\Breakpoints\BP.def.h" />
-    <ClInclude Include="Runner\Breakpoints\BPRegistry.h" />
+    <ClInclude Include="Runner\Breakpoints\BpRegistry.h" />
     <ClInclude Include="Runner\Breakpoints\Predicate.h" />
     <ClInclude Include="Runner\IPC\Wire.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\DBWorkflowCoordinatorFactory.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\DBWorkflowWorkerCoordinator.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowCoordinatorBridge.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowIntegrationMode.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowSchedulerAdapter.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\JobMaterializationService.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\StepInputAggregationService.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowMaterializationService.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\WorkflowDispatchCoordinator.h" />
-    <ClInclude Include="Runner\Parallel\SavorDb\ArchiveWorkflowCommands.h" />
     <ClInclude Include="Runner\Parallel\ParallelPhaseScriptRunnerApi.h" />
     <ClInclude Include="Runner\Parallel\WorkerBootPlan.h" />
-    <ClInclude Include="Runner\Parallel\ProcessWorker.h" />
     <ClInclude Include="Runner\Parallel\PRTypes.h" />
-    <ClInclude Include="Runner\Parallel\TSQueue.h" />
-    <ClInclude Include="Runner\Parallel\WorkerStatusRegistry.h" />
-    <ClInclude Include="Runner\Parallel\WorkerTelemetry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\BattleRunnerKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\KeyIds.h" />
-    <ClInclude Include="Runner\Script\KeyRegistry.h" />
+    <ClInclude Include="Runner\Script\CtxRegistry.h" />
     <ClInclude Include="Runner\Script\ContextKeys\SeedProbeKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasMovieKeys.reg.h" />
     <ClInclude Include="Runner\Script\ContextKeys\TasFrameDetectorKeys.reg.h" />
@@ -246,6 +234,7 @@
     <ClInclude Include="Runner\Script\PSContext.h" />
     <ClInclude Include="Runner\Script\PSContextCodec.h" />
     <ClInclude Include="Runner\Script\ScriptProgress.h" />
+    <ClInclude Include="Runner\Symbols\RuntimeSymbolRegistry.h" />
     <ClInclude Include="Tas\DtmAnnotationFile.h" />
     <ClInclude Include="Tas\DtmFile.h" />
     <ClInclude Include="Utils\DeltaColorizer.h" />
@@ -265,9 +254,6 @@
     <ClInclude Include="Utils\Time.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="Boot\Boot.cpp" />
     <ClCompile Include="Core\Config\SimConfig.cpp" />
     <ClCompile Include="Core\DolphinWrapper.cpp" />
@@ -285,6 +271,7 @@
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
     <ClCompile Include="Phases\BattleExplorer.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
+    <ClCompile Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleTurnRunner\BattleTurnRunnerPayload.cpp" />
     <ClCompile Include="Phases\Programs\PlayTasMovie\TasMoviePayload.cpp" />
@@ -292,22 +279,12 @@
     <ClCompile Include="Phases\Programs\ProgramRegistry.cpp" />
     <ClCompile Include="Phases\Programs\SeedProbe\SeedProbePayload.cpp" />
     <ClCompile Include="Phases\RNGSeedDeltaMap.cpp" />
-    <ClCompile Include="Runner\Breakpoints\BPRegistry.cpp" />
+    <ClCompile Include="Runner\Breakpoints\BpRegistry.cpp" />
     <ClCompile Include="Runner\Breakpoints\Predicate.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\DBWorkflowCoordinatorFactory.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\DBWorkflowWorkerCoordinator.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowCoordinatorBridge.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowSchedulerAdapter.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\JobMaterializationService.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\StepInputAggregationService.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowMaterializationService.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\WorkflowDispatchCoordinator.cpp" />
-    <ClCompile Include="Runner\Parallel\SavorDb\ArchiveWorkflowCommands.cpp" />
-    <ClCompile Include="Runner\Parallel\ProcessWorker.cpp" />
-    <ClCompile Include="Runner\Parallel\WorkerStatusRegistry.cpp" />
-    <ClCompile Include="Runner\Script\KeyRegistry.cpp" />
+    <ClCompile Include="Runner\Script\CtxRegistry.cpp" />
     <ClCompile Include="Runner\Script\PhaseScriptVM.cpp" />
     <ClCompile Include="Runner\Script\PSContextCodec.cpp" />
+    <ClCompile Include="Runner\Symbols\RuntimeSymbolRegistry.cpp" />
     <ClCompile Include="Tas\DtmAnnotationFile.cpp" />
     <ClCompile Include="Tas\DtmFile.cpp" />
     <ClCompile Include="Utils\EnsureSys.cpp" />

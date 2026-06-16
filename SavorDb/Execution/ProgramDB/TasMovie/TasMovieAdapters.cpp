@@ -6,12 +6,12 @@
 #include <sstream>
 #include <string>
 
-#include "../../Execution/Jobs/JobEventOrchestration.h"
+#include "../../Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SavorCore/Phases/Programs/PlayTasMovie/TasMoviePayload.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Tas/DtmFile.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
@@ -27,10 +27,6 @@ constexpr int kProgramVersion = 2;
 
 std::string ToString(std::int64_t value) {
     return std::to_string(value);
-}
-
-std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
-    return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
 }
 
 TasMovieBlueprintConfig ParseBlueprint(const std::string& input_ini) {
@@ -82,9 +78,14 @@ std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) 
     return ini.to_string_sorted();
 }
 
-std::string VariantFingerprint(const TasMovieBlueprintConfig& cfg, std::int64_t tas_variant_id, std::int64_t rtc) {
+std::string VariantFingerprint(
+    const TasMovieBlueprintConfig& cfg,
+    std::int64_t job_set_id,
+    std::int64_t tas_variant_id,
+    std::int64_t rtc) {
     return "PK=2;PV=" + std::to_string(kProgramVersion)
         + ";phase=tasmovie;variant_id=" + std::to_string(tas_variant_id)
+        + ";job_set_id=" + std::to_string(job_set_id)
         + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
         + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id)
         + ";rtc=" + std::to_string(rtc)
@@ -238,7 +239,6 @@ public:
                         .mutation_mode = "RTC_OVERRIDE",
                         .rtc_value = rtc,
                         .created_at_utc = savor::db::types::UtcNow(),
-                        .event_id = "tasmovie.variant." + identity_suffix + ".created",
                         .correlation_id = "tasmovie-" + identity_suffix,
                         .causation_id = "workflow-input-" + std::to_string(domain_ref_id),
                     },
@@ -255,10 +255,11 @@ public:
             enqueue.program_version = kProgramVersion;
             enqueue.program_ref_kind = kVariantRefKind;
             enqueue.program_ref_id = tas_variant_id;
-            enqueue.fingerprint = VariantFingerprint(cfg, tas_variant_id, rtc);
+            enqueue.fingerprint = VariantFingerprint(cfg, job_set_id, tas_variant_id, rtc);
             enqueue.priority = cfg.priority;
             enqueue.max_attempts = 1;
             enqueue.input_ini = BuildInputIni(cfg, rtc);
+            enqueue.pending_until_workflow_materialized = true;
             if (execution_db_->EnqueueJob(enqueue, nullptr, &error)) {
                 ++jobs_enqueued;
             } else {
@@ -270,7 +271,8 @@ public:
         persisted.program_ref_kind = "state_artifact";
         persisted.program_ref_id = cfg.base_dtm_artifact_id;
         persisted.program_version = kProgramVersion;
-        persisted.fingerprint = "PK=2;PV=2;phase=tasmovie"
+        persisted.fingerprint = std::string("PK=2;PV=2;phase=tasmovie")
+            + ";job_set_id=" + std::to_string(job_set_id)
             + (cfg.tas_spec_id.has_value() ? ";tas_spec_id=" + std::to_string(*cfg.tas_spec_id) : "")
             + ";base_dtm_artifact_id=" + std::to_string(cfg.base_dtm_artifact_id);
         scheduled.persistence = std::move(persisted);
@@ -379,10 +381,11 @@ public:
             cfg.priority = spec->priority;
             cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
             cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
-            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp(spec->headroom_x10, 0, 255));
             cfg.progress_enable = spec->progress_enable;
-            cfg.rtc_low = spec->rtc_low;
-            cfg.rtc_high = spec->rtc_high;
+        }
+        const auto headroom_argument = FindIntegerArgument(context, "headroom");
+        if (headroom_argument.has_value()) {
+            cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp<std::int64_t>(*headroom_argument, 0, 255));
         }
 
         const auto* dtm = FindBinding(context, "dtm_artifact", "state_artifact.dtm_artifact_id");
@@ -391,13 +394,17 @@ public:
         }
         cfg.base_dtm_artifact_id = dtm->ref_id;
         const auto rtc_argument = FindIntegerArgument(context, "rtc");
-        if (rtc_argument.has_value()) {
-            cfg.rtc_low = *rtc_argument;
-            cfg.rtc_high = *rtc_argument;
+        if (!rtc_argument.has_value()) {
+            WorkflowStepScheduleResult scheduled{};
+            scheduled.event_lines.push_back(
+                "[workflow-graph-tasmovie-bootstrap] ok=false error=missing_required_rtc_argument"
+                " workflow_instance_id=" + std::to_string(context.workflow_instance_id)
+                + " workflow_step_id=" + std::to_string(context.workflow_step_id)
+                + " step=" + context.step_key);
+            return scheduled;
         }
-        if (cfg.rtc_high < cfg.rtc_low) {
-            cfg.rtc_high = cfg.rtc_low;
-        }
+        cfg.rtc_low = *rtc_argument;
+        cfg.rtc_high = *rtc_argument;
 
         auto adapter = TasMovieJobPersistenceAdapter(
             execution_db_,
@@ -517,12 +524,12 @@ public:
         TasMovieResultsIni out{};
         out.w_err = result.ps.w_err;
         if (out.w_err == 0) {
-            result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+            result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
-        result.ps.ctx.get(savor::keys::core::RUN_MS, out.run_ms_used);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
-        result.ps.ctx.get(savor::keys::tas::SAVE_PATH, out.savestate_path);
+        result.ps.ctx.get(savor::context::key::core::RUN_MS, out.run_ms_used);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::tas::SAVE_PATH, out.savestate_path);
         return out.ToIniText();
     }
 
@@ -576,7 +583,6 @@ public:
                     .file_ext = sav_path.extension().string(),
                     .artifact_kind = "SAV",
                     .created_at_utc = now,
-                    .event_id = EventId("tasmovie.sav.artifact", job_id, "stored"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -597,7 +603,6 @@ public:
                     .note = "TasMovie produced savestate",
                     .is_complete = true,
                     .created_at_utc = now,
-                    .event_id = EventId("tasmovie.savestate", job_id, "created"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "artifact-" + std::to_string(artifact_id),
                 },
@@ -615,7 +620,6 @@ public:
                     .tas_variant_id = job->program_ref_id,
                     .produced_savestate_id = savestate_id,
                     .updated_at_utc = now,
-                    .event_id = EventId("tasmovie.variant", job->program_ref_id, "produced_savestate"),
                     .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                     .causation_id = "savestate-" + std::to_string(savestate_id),
                 },
@@ -630,7 +634,6 @@ public:
                         .probe_run_id = *cfg.bind_seed_probe_run_id,
                         .entry_savestate_id = savestate_id,
                         .updated_at_utc = now,
-                        .event_id = EventId("tasmovie.seedprobe", *cfg.bind_seed_probe_run_id, "entry_savestate"),
                         .correlation_id = "tasmovie-job-" + std::to_string(job_id),
                         .causation_id = "savestate-" + std::to_string(savestate_id),
                     },

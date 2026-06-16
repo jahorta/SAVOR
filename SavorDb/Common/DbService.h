@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -23,12 +24,23 @@
 #include "../State/SqliteStateDb.h"
 #include "../UIRead/IUiReadDb.h"
 #include "../UIRead/QueuedUiReadDb.h"
-#include "../UIRead/Projectors/AttachedUiReadProjectionService.h"
+#include "../UIRead/Projectors/UiReadProjectionService.h"
 #include "../UIRead/SqliteUiReadDb.h"
 #include "DbConfigPaths.h"
 #include "Migrations/MigrationRunner.h"
 
 namespace savor::db::core {
+
+struct NamedQueuedDbTelemetrySnapshot {
+    std::string db_context;
+    QueuedDbTelemetrySnapshot queue;
+};
+
+struct DBServicePerformanceSnapshot {
+    bool running = false;
+    std::vector<NamedQueuedDbTelemetrySnapshot> databases;
+    uiread::projectors::UiReadProjectionTelemetrySnapshot ui_read_projection;
+};
 
 class DBService {
 public:
@@ -54,6 +66,7 @@ public:
     savor::db::IUiReadDb* UiReadDb();
     savor::db::IArchiveDb* ArchiveDb();
     bool RunUiReadProjectionOnce(std::string* error_out = nullptr);
+    [[nodiscard]] DBServicePerformanceSnapshot SnapshotPerformance() const;
 
 private:
     bool OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out);
@@ -83,7 +96,7 @@ private:
     std::unique_ptr<savor::db::QueuedAuthoringDb> authoring_db_;
     std::unique_ptr<savor::db::SqliteUiReadDb> sqlite_ui_read_db_;
     std::unique_ptr<savor::db::QueuedUiReadDb> ui_read_db_;
-    std::unique_ptr<savor::db::uiread::projectors::AttachedUiReadProjectionService> ui_read_projection_service_;
+    std::unique_ptr<savor::db::uiread::projectors::UiReadProjectionService> ui_read_projection_service_;
     std::unique_ptr<savor::db::SqliteArchiveDb> sqlite_archive_db_;
     std::unique_ptr<savor::db::QueuedArchiveDb> archive_db_;
 };

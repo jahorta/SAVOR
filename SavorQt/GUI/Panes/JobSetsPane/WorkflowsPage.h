@@ -8,6 +8,7 @@
 #include "DB/SavorDbJobSetService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Common/StatusToast.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 
 #include <cstdint>
 #include <optional>
@@ -20,7 +21,6 @@ class QLineEdit;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
-class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -68,7 +68,6 @@ private:
     bool workflowFetchInFlight_ = false;
     bool detailFetchInFlight_ = false;
     bool jobSetsFetchInFlight_ = false;
-    bool pendingWorkflowRefresh_ = false;
     std::int64_t jobSetsFetchWorkflowInstanceId_ = 0;
     QDateTime lastRefresh_;
     QString errorMessage_;
@@ -79,10 +78,9 @@ private:
     QString lastWorkflowJobSetsSignature_;
     std::vector<savorqt::db::WorkflowJobSetRow> workflowJobSets_;
 
-    QFutureWatcher<WorkflowPageResult> workflowWatcher_;
+    savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;
     QFutureWatcher<WorkflowDetailResult> detailWatcher_;
     QFutureWatcher<WorkflowJobSetsResult> jobSetsWatcher_;
-    QTimer* refreshTimer_ = nullptr;
 
     QComboBox* stateFilter_ = nullptr;
     QLineEdit* kindFilter_ = nullptr;

@@ -9,13 +9,17 @@
 #include <sstream>
 #include <vector>
 
+#include "Phases/Programs/BattleMacroProbe/BattleMacroProbePayload.h"
+
 namespace savor::e2e {
 namespace {
 
 constexpr auto kAllScenarioOrder = std::to_array<std::string_view>({
     "tasmovie",
     "seedprobe",
+    "seedprobe_battle",
     "battle",
+    "battle_macro_probe",
     "tasmovie_seedprobe",
     "tasmovie_seedprobe_battle",
     "tasmovie_seedprobe_battle_override",
@@ -35,7 +39,10 @@ ScenarioRequirement GetScenarioRequirement(const std::string_view scenario) {
     if (scenario == "tasmovie") {
         return {.requires_dtm_file = true};
     }
-    if (scenario == "battle") {
+    if (scenario == "seedprobe_battle" || scenario == "battle") {
+        return {.requires_savestate_file = true};
+    }
+    if (scenario == "battle_macro_probe") {
         return {.requires_savestate_file = true};
     }
     if (scenario == "tasmovie_seedprobe") {
@@ -220,6 +227,35 @@ bool ParseDurableLineMask(const std::string& value, std::uint32_t* mask_out, std
     return true;
 }
 
+struct LoadProfile {
+    int samples_per_axis = 3;
+    int fake_attack_low = 0;
+    int fake_attack_high = 2;
+};
+
+bool ResolveLoadProfile(const std::string& raw_value, LoadProfile* profile_out, std::string* error_out) {
+    if (profile_out == nullptr) {
+        return false;
+    }
+    const auto value = LowerAscii(raw_value);
+    if (value == "low") {
+        *profile_out = LoadProfile{ .samples_per_axis = 3, .fake_attack_low = 0, .fake_attack_high = 2 };
+        return true;
+    }
+    if (value == "mid") {
+        *profile_out = LoadProfile{ .samples_per_axis = 5, .fake_attack_low = 0, .fake_attack_high = 10 };
+        return true;
+    }
+    if (value == "high") {
+        *profile_out = LoadProfile{ .samples_per_axis = 20, .fake_attack_low = 0, .fake_attack_high = 20 };
+        return true;
+    }
+    if (error_out != nullptr) {
+        *error_out = "unknown --load-level: " + raw_value;
+    }
+    return false;
+}
+
 } // namespace
 
 std::filesystem::path ResolveWorkerExePath(const char* argv0) {
@@ -256,27 +292,48 @@ void PrintUsage() {
               << " --dolphin-base-dir <path>"
               << " [--savestate-file <path>]"
               << " [--dtm-file <path>]"
-              << " [--scenario seedprobe|all]"
+              << " [--scenario seedprobe|seedprobe_battle|battle|all]"
               << " [--timeout-ms <100..800000000 - default 30000>]"
               << " [--poll-ms <100..5000 - default 100>]"
               << " [--worker-count <1..30 - default 1>"
               << " [--migration-root <path>]"
               << " [--workspace-root <path>]"
               << " [--worker-dir-root <path>]"
+              << " [--perf-report-dir <path>]"
+              << " [--perf-snapshot-interval-ms <100..5000 - default 1000>]"
+              << " [--repeat <count>]"
+              << " [--load-level low|mid|high]"
               << " [--visual-worker *]"
               << " [--visual-screenshot-dir <path>]"
               << " [--durable-lines <mode>]"
               << " [--tasmovie-headroom <x10>]"
               << " [--tasmovie-rtc <value>]"
+              << " [--tasmovie-rtc-min <value>]"
+              << " [--tasmovie-rtc-max <value>]"
               << " [--seedprobe-samples-per-axis <count>]"
               << " [--seedprobe-combo-attempts-per-target <count>]"
               << " [--battle-fake-attack-low <count>]"
-              << " [--battle-fake-attack-high <count>]\n\n";
+              << " [--battle-fake-attack-high <count>]"
+              << " [--battle-plan <block,focus|attack:4,block>]"
+              << " [--battle-macro attack|focus|block]"
+              << " [--battle-macro-target-slot <4..11>]"
+              << " [--battle-fake-attacks <count>]"
+              << " [--battle-fake-attack-sweep]"
+              << " [--battle-fake-sweep-trials <count>]"
+              << " [--battle-fake-sweep-min-target-neutral <frames>]"
+              << " [--battle-fake-sweep-max-target-neutral <frames>]"
+              << " [--battle-fake-sweep-min-input-neutral <frames>]"
+              << " [--battle-fake-sweep-max-input-neutral <frames>]"
+              << " [--battle-fake-sweep-output <path>]"
+              << " [--battle-macro-debug]\n\n";
     std::cout << "Durable line modes: quiet, normal, verbose, all, or a comma list.\n";
-    std::cout << "TAS rtc sets both rtc_low and rtc_high. TAS headroom is the existing x10 value.\n";
-    std::cout << "Visual worker locks worker count to 1.\n";
+    std::cout << "E2E perf mode requires Release builds, worker-count 15, and load-level low|mid|high.\n";
+    std::cout << "TAS rtc sets one concrete launch value; rtc-min/max fans out graph scenarios into one workflow per value. TAS headroom is the existing x10 value.\n";
+    std::cout << "Visual worker locks worker count to 1. battle_macro_probe opens an interactive prompt unless --battle-plan or --battle-macro is supplied.\n";
+    std::cout << "Battle macro CLI: use --battle-plan block,attack:5 for a multi-character plan, --battle-fake-attacks N for experimental RNG fake attacks, --battle-fake-attack-sweep to measure fake-attack timing, or --battle-macro attack --battle-macro-target-slot 5 for one command.\n";
     std::cout << "Categories: result,failure,warning,workflow,materialization,claim,dispatch,supersede,worker,adapter,db,debug\n\n";
-    std::cout << "Scenarios: all, seedprobe, tasmovie, battle, "
+    std::cout << "Scenarios: all, seedprobe, tasmovie, seedprobe_battle, battle, "
+              << "battle_macro_probe, "
               << "tasmovie_seedprobe, tasmovie_seedprobe_battle, "
               << "tasmovie_seedprobe_battle_override, tasmovie_battle\n";
     std::cout << "You may pass --scenario multiple times and they will run in order.\n\n";
@@ -285,6 +342,10 @@ void PrintUsage() {
 bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* error_out) {
     CliOptions options{};
     std::vector<std::string> requested_scenarios;
+    bool worker_count_explicit = false;
+    bool samples_per_axis_explicit = false;
+    bool fake_attack_low_explicit = false;
+    bool fake_attack_high_explicit = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -328,6 +389,7 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--worker-count", &v)) return false;
             options.worker_count = std::stoll(v);
+            worker_count_explicit = true;
         } else if (arg == "--savestate-file") {
             std::string v;
             if (!require_value("--savestate-file", &v)) return false;
@@ -356,6 +418,22 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             std::string v;
             if (!require_value("--worker-dir-root", &v)) return false;
             options.worker_dir_root = std::filesystem::path(v);
+        } else if (arg == "--perf-report-dir") {
+            std::string v;
+            if (!require_value("--perf-report-dir", &v)) return false;
+            options.perf_report_dir = std::filesystem::path(v);
+        } else if (arg == "--perf-snapshot-interval-ms") {
+            std::string v;
+            if (!require_value("--perf-snapshot-interval-ms", &v)) return false;
+            options.perf_snapshot_interval_ms = std::stoll(v);
+        } else if (arg == "--repeat") {
+            int v = 0;
+            if (!require_int("--repeat", &v)) return false;
+            options.repeat = v;
+        } else if (arg == "--load-level") {
+            std::string v;
+            if (!require_value("--load-level", &v)) return false;
+            options.load_level = LowerAscii(v);
         } else if (arg == "--visual-worker") {
             options.visual_worker = true;
         } else if (arg == "--visual-screenshot-dir") {
@@ -374,10 +452,21 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.tasmovie_rtc = v;
+            options.tasmovie_rtc_min = v;
+            options.tasmovie_rtc_max = v;
+        } else if (arg == "--tasmovie-rtc-min" || arg == "--rtc-min") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.tasmovie_rtc_min = v;
+        } else if (arg == "--tasmovie-rtc-max" || arg == "--rtc-max") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.tasmovie_rtc_max = v;
         } else if (arg == "--seedprobe-samples-per-axis" || arg == "--samples-per-axis") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.seedprobe_samples_per_axis = v;
+            samples_per_axis_explicit = true;
         } else if (arg == "--seedprobe-combo-attempts-per-target" || arg == "--combo-attempts-per-target") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
@@ -386,10 +475,66 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.battle_fake_attack_low = v;
+            fake_attack_low_explicit = true;
         } else if (arg == "--battle-fake-attack-high" || arg == "--fake-attack-high") {
             int v = 0;
             if (!require_int(arg.c_str(), &v)) return false;
             options.battle_fake_attack_high = v;
+            fake_attack_high_explicit = true;
+        } else if (arg == "--battle-plan") {
+            std::string v;
+            if (!require_value("--battle-plan", &v)) return false;
+            std::vector<phase::battle::macroprobe::MacroCommand> commands;
+            std::string parse_error;
+            if (!phase::battle::macroprobe::ParseCommandPlanSpec(v, &commands, &parse_error)) {
+                if (error_out) *error_out = parse_error;
+                return false;
+            }
+            options.battle_macro_plan_spec = phase::battle::macroprobe::FormatCommandPlanSpec(commands);
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-macro") {
+            std::string v;
+            if (!require_value("--battle-macro", &v)) return false;
+            options.battle_macro_mode = LowerAscii(v);
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-macro-target-slot" || arg == "--target-slot") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_macro_target_slot = v;
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-fake-attacks") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_macro_fake_attacks = v;
+        } else if (arg == "--battle-fake-attack-sweep") {
+            options.battle_fake_attack_sweep = true;
+            options.battle_macro_args_supplied = true;
+        } else if (arg == "--battle-fake-sweep-trials") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_trials = v;
+        } else if (arg == "--battle-fake-sweep-min-target-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_min_target_neutral = v;
+        } else if (arg == "--battle-fake-sweep-max-target-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_max_target_neutral = v;
+        } else if (arg == "--battle-fake-sweep-min-input-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_min_input_neutral = v;
+        } else if (arg == "--battle-fake-sweep-max-input-neutral") {
+            int v = 0;
+            if (!require_int(arg.c_str(), &v)) return false;
+            options.battle_fake_sweep_max_input_neutral = v;
+        } else if (arg == "--battle-fake-sweep-output") {
+            std::string v;
+            if (!require_value("--battle-fake-sweep-output", &v)) return false;
+            options.battle_fake_sweep_output = std::filesystem::path(v);
+        } else if (arg == "--battle-macro-debug") {
+            options.battle_macro_debug = true;
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -412,6 +557,40 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
     }
     if (!options.scenarios.empty()) {
         options.scenario = options.scenarios.front();
+    }
+
+    const bool perf_mode = options.perf_report_dir.has_value();
+    if (perf_mode) {
+#ifdef NDEBUG
+        if (options.load_level.empty()) {
+            options.load_level = "low";
+        }
+        if (!worker_count_explicit) {
+            options.worker_count = 15;
+        } else if (options.worker_count != 15) {
+            if (error_out) *error_out = "E2E perf mode requires --worker-count 15";
+            return false;
+        }
+#else
+        if (error_out) *error_out = "E2E perf mode must be run from a Release SavorE2E build";
+        return false;
+#endif
+    }
+
+    if (!options.load_level.empty()) {
+        LoadProfile profile{};
+        if (!ResolveLoadProfile(options.load_level, &profile, error_out)) {
+            return false;
+        }
+        if (perf_mode || !samples_per_axis_explicit) {
+            options.seedprobe_samples_per_axis = profile.samples_per_axis;
+        }
+        if (perf_mode || !fake_attack_low_explicit) {
+            options.battle_fake_attack_low = profile.fake_attack_low;
+        }
+        if (perf_mode || !fake_attack_high_explicit) {
+            options.battle_fake_attack_high = profile.fake_attack_high;
+        }
     }
 
     bool is_tasmovie = false;
@@ -492,12 +671,38 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--timeout-ms and --poll-ms must be <= 5000";
         return false;
     }
+    if (options.perf_snapshot_interval_ms < 100 || options.perf_snapshot_interval_ms > 5000) {
+        if (error_out) *error_out = "--perf-snapshot-interval-ms must be between 100 and 5000";
+        return false;
+    }
+    if (options.repeat <= 0) {
+        if (error_out) *error_out = "--repeat must be > 0";
+        return false;
+    }
+    if (perf_mode && options.visual_worker) {
+        if (error_out) *error_out = "E2E perf mode does not support --visual-worker";
+        return false;
+    }
     if (options.tasmovie_headroom_x10.has_value() && (*options.tasmovie_headroom_x10 < 0 || *options.tasmovie_headroom_x10 > 255)) {
         if (error_out) *error_out = "--tasmovie-headroom must be between 0 and 255";
         return false;
     }
     if (options.tasmovie_rtc.has_value() && (*options.tasmovie_rtc < 0 || *options.tasmovie_rtc > 255)) {
         if (error_out) *error_out = "--tasmovie-rtc must be between 0 and 255";
+        return false;
+    }
+    if (options.tasmovie_rtc_min.has_value() && (*options.tasmovie_rtc_min < 0 || *options.tasmovie_rtc_min > 255)) {
+        if (error_out) *error_out = "--tasmovie-rtc-min must be between 0 and 255";
+        return false;
+    }
+    if (options.tasmovie_rtc_max.has_value() && (*options.tasmovie_rtc_max < 0 || *options.tasmovie_rtc_max > 255)) {
+        if (error_out) *error_out = "--tasmovie-rtc-max must be between 0 and 255";
+        return false;
+    }
+    if (options.tasmovie_rtc_min.has_value()
+        && options.tasmovie_rtc_max.has_value()
+        && *options.tasmovie_rtc_min > *options.tasmovie_rtc_max) {
+        if (error_out) *error_out = "--tasmovie-rtc-min must be <= --tasmovie-rtc-max";
         return false;
     }
     if (options.seedprobe_samples_per_axis.has_value() && *options.seedprobe_samples_per_axis <= 0) {
@@ -522,8 +727,53 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
         if (error_out) *error_out = "--battle-fake-attack-low must be <= --battle-fake-attack-high";
         return false;
     }
+    if (options.battle_macro_mode != "attack"
+        && options.battle_macro_mode != "focus"
+        && options.battle_macro_mode != "block"
+        && options.battle_macro_mode != "defend") {
+        if (error_out) *error_out = "--battle-macro must be attack, focus, or block";
+        return false;
+    }
+    if (options.battle_macro_target_slot.has_value()
+        && (*options.battle_macro_target_slot < 4 || *options.battle_macro_target_slot > 11)) {
+        if (error_out) *error_out = "--battle-macro-target-slot must be between 4 and 11";
+        return false;
+    }
+    if (options.battle_macro_fake_attacks.has_value()
+        && (*options.battle_macro_fake_attacks < 0 || *options.battle_macro_fake_attacks > 255)) {
+        if (error_out) *error_out = "--battle-fake-attacks must be between 0 and 255";
+        return false;
+    }
+    if (options.battle_fake_sweep_trials <= 0 || options.battle_fake_sweep_trials > 1000) {
+        if (error_out) *error_out = "--battle-fake-sweep-trials must be between 1 and 1000";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_target_neutral < 0 || options.battle_fake_sweep_min_target_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_max_target_neutral < 0 || options.battle_fake_sweep_max_target_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-max-target-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_target_neutral > options.battle_fake_sweep_max_target_neutral) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-target-neutral must be <= --battle-fake-sweep-max-target-neutral";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_input_neutral < 0 || options.battle_fake_sweep_min_input_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_max_input_neutral < 0 || options.battle_fake_sweep_max_input_neutral > 120) {
+        if (error_out) *error_out = "--battle-fake-sweep-max-input-neutral must be between 0 and 120";
+        return false;
+    }
+    if (options.battle_fake_sweep_min_input_neutral > options.battle_fake_sweep_max_input_neutral) {
+        if (error_out) *error_out = "--battle-fake-sweep-min-input-neutral must be <= --battle-fake-sweep-max-input-neutral";
+        return false;
+    }
 
-    if (options.visual_worker) {
+    if (options.visual_worker || options.battle_macro_debug) {
         options.worker_count = 1;
     }
 
@@ -533,6 +783,24 @@ bool ParseArgs(int argc, char** argv, CliOptions* options_out, std::string* erro
 
     *options_out = std::move(options);
     return true;
+}
+
+TasMovieRtcRange ResolveTasMovieRtcRange(const CliOptions& options, int default_value) {
+    TasMovieRtcRange range{};
+    if (options.tasmovie_rtc_min.has_value() || options.tasmovie_rtc_max.has_value()) {
+        range.low = options.tasmovie_rtc_min.value_or(options.tasmovie_rtc_max.value_or(default_value));
+        range.high = options.tasmovie_rtc_max.value_or(range.low);
+    } else if (options.tasmovie_rtc.has_value()) {
+        range.low = *options.tasmovie_rtc;
+        range.high = *options.tasmovie_rtc;
+    } else {
+        range.low = default_value;
+        range.high = default_value;
+    }
+    if (range.high < range.low) {
+        range.high = range.low;
+    }
+    return range;
 }
 
 } // namespace savor::e2e

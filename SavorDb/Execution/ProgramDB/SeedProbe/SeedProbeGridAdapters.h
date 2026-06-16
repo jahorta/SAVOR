@@ -114,7 +114,6 @@ public:
 
 private:
     std::optional<GridResultContext> ResolveContextFromJob(std::int64_t job_id) const;
-    static std::string EventId(std::int64_t probe_result_id, std::int64_t job_id, const char* phase_label);
     static std::optional<savor::GCInputFrame> ParseFrame(const std::string& frame_hex);
     static std::string FamilyLabel(savor::ElementFamily family);
     static std::string NormalizeFamilyLabel(const std::string& family);

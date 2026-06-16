@@ -12,6 +12,7 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
 
@@ -279,8 +280,9 @@ public:
         for (const auto& row : rows_) {
             rows.push_back(SpecLibraryRow{
                 static_cast<qint64>(row.predicate_set_id),
-                QStringLiteral("#%1  %2 predicates")
+                QStringLiteral("#%1  %2 (%3 predicates)")
                     .arg(static_cast<qint64>(row.predicate_set_id))
+                    .arg(QString::fromStdString(row.name))
                     .arg(static_cast<int>(row.predicates.size()))
             });
         }
@@ -401,6 +403,55 @@ private:
     std::vector<savor::db::ExplorerSettingsSnapshot> rows_;
 };
 
+class BattleChainSpecLibraryAdapter final : public ISpecLibraryAdapter {
+public:
+    AuthoringLibraryKey key() const override { return AuthoringLibraryKey::BattleChain; }
+    QString title() const override { return QStringLiteral("Battle Chain Specs"); }
+    QString placeholderText() const override { return QStringLiteral("Create a new battle chain spec, or select one from the library to edit a copy."); }
+
+    std::vector<SpecLibraryRow> refreshRows(QString* errorText) override
+    {
+        const auto result = savorqt::db::SavorDbAuthoringService::ListBattleChainSpecs();
+        if (!result.ok) {
+            if (errorText != nullptr) *errorText = QString::fromStdString(result.error.message);
+            return {};
+        }
+        rows_ = result.value;
+        std::vector<SpecLibraryRow> rows;
+        rows.reserve(rows_.size());
+        for (const auto& row : rows_) {
+            rows.push_back(SpecLibraryRow{
+                static_cast<qint64>(row.battle_chain_spec_id),
+                QStringLiteral("#%1  %2  battle=%3 explorer=%4")
+                    .arg(static_cast<qint64>(row.battle_chain_spec_id))
+                    .arg(QString::fromStdString(row.name))
+                    .arg(static_cast<qint64>(row.battle_run_spec_id))
+                    .arg(static_cast<qint64>(row.explorer_settings_id))
+            });
+        }
+        return rows;
+    }
+
+    QWidget* createNewEditor(QWidget* parent, SpecLibraryCallbacks callbacks) override
+    {
+        auto* editor = new BattleChainSpecEditorWindow(parent, true);
+        attachCallbacks(editor, callbacks);
+        return editor;
+    }
+
+    QWidget* createEditorForRow(int row, bool duplicate, QWidget* parent, SpecLibraryCallbacks callbacks) override
+    {
+        if (row < 0 || row >= static_cast<int>(rows_.size())) return nullptr;
+        auto* editor = new BattleChainSpecEditorWindow(parent, true);
+        attachCallbacks(editor, callbacks);
+        editor->loadSnapshot(rows_[static_cast<std::size_t>(row)], duplicate);
+        return editor;
+    }
+
+private:
+    std::vector<savor::db::BattleChainSpecSnapshot> rows_;
+};
+
 } // namespace
 
 QString ISpecLibraryAdapter::savedItemsLabel() const
@@ -469,6 +520,7 @@ void AuthoringLibraryWidget::createAdapters()
     adapters_.push_back(std::make_unique<SeedProbeSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<BattleRunSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<ExplorerSettingsSpecLibraryAdapter>());
+    adapters_.push_back(std::make_unique<BattleChainSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<BattlePlanSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<PredicateSpecLibraryAdapter>());
     adapters_.push_back(std::make_unique<PredicateSetSpecLibraryAdapter>());
@@ -544,7 +596,6 @@ void AuthoringLibraryWidget::createWidgets()
     placeholderLabel_->setObjectName("sectionDescription");
     placeholderLabel_->setWordWrap(true);
     rightPaneLayout_->addWidget(placeholderLabel_);
-    rightPaneLayout_->addStretch(1);
 
     contentSplitter_->addWidget(savedPanel);
     contentSplitter_->addWidget(rightPane_);
@@ -572,6 +623,45 @@ void AuthoringLibraryWidget::createWidgets()
     connect(refreshButton_, &QPushButton::clicked, this, &AuthoringLibraryWidget::refreshLibrary);
     connect(savedItemsList_, &QListWidget::currentRowChanged, this, &AuthoringLibraryWidget::handleSavedRowChanged);
     connect(savedItemsList_, &QListWidget::itemDoubleClicked, this, [this]() { showEditorForSelectedRow(); });
+
+    refreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<LibraryRefreshRequest, LibraryRefreshData>(this);
+    refreshPipeline_->setAutoRefreshEnabled(false);
+    refreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason) -> std::optional<LibraryRefreshRequest> {
+        auto* adapter = currentAdapter();
+        if (adapter == nullptr) {
+            return std::nullopt;
+        }
+        return LibraryRefreshRequest{ currentAdapterIndex_, adapter };
+    });
+    refreshPipeline_->setLoadAndPrepare([](LibraryRefreshRequest request) {
+        LibraryRefreshData data;
+        data.adapterIndex = request.adapterIndex;
+        if (request.adapter != nullptr) {
+            data.rows = request.adapter->refreshRows(&data.errorText);
+        }
+        return savorqt::gui::AsyncRefreshResult<LibraryRefreshData>::Ok(std::move(data));
+    });
+    refreshPipeline_->setApply([this](const LibraryRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (data.adapterIndex != currentAdapterIndex_) {
+            return;
+        }
+        if (!data.errorText.isEmpty()) {
+            postStatusMessage(data.errorText, StatusToast::Severity::Error);
+            return;
+        }
+
+        savedItemsList_->clear();
+        for (const auto& row : data.rows) {
+            auto* item = new QListWidgetItem(row.text, savedItemsList_);
+            item->setData(Qt::UserRole, row.id);
+        }
+        libraryStatusLabel_->setText(QStringLiteral("Saved: %1").arg(static_cast<int>(data.rows.size())));
+        updateActionState();
+    });
+    refreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        postStatusMessage(error, StatusToast::Severity::Error);
+    });
+    refreshPipeline_->setActive(true);
 }
 
 void AuthoringLibraryWidget::selectLibraryIndex(int index, bool forceRefresh)
@@ -606,20 +696,7 @@ void AuthoringLibraryWidget::refreshLibrary()
         return;
     }
 
-    QString errorText;
-    const auto rows = adapter->refreshRows(&errorText);
-    if (!errorText.isEmpty()) {
-        postStatusMessage(errorText, StatusToast::Severity::Error);
-        return;
-    }
-
-    savedItemsList_->clear();
-    for (const auto& row : rows) {
-        auto* item = new QListWidgetItem(row.text, savedItemsList_);
-        item->setData(Qt::UserRole, row.id);
-    }
-    libraryStatusLabel_->setText(QStringLiteral("Saved: %1").arg(static_cast<int>(rows.size())));
-    updateActionState();
+    refreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
 }
 
 void AuthoringLibraryWidget::clearRightPane()
@@ -649,6 +726,7 @@ void AuthoringLibraryWidget::installEditorWidget(QWidget* editor)
     }
 
     activeEditor_ = editor;
+    activeEditor_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     rightPaneLayout_->addWidget(editor, 1);
     editor->show();
 }

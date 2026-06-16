@@ -32,6 +32,16 @@ static inline uint32_t clamp_to_u32(std::int64_t value) {
     return static_cast<uint32_t>(value);
 }
 
+static inline int clamp_to_int(std::int64_t value) {
+    if (value < static_cast<std::int64_t>(std::numeric_limits<int>::min())) {
+        return std::numeric_limits<int>::min();
+    }
+    if (value > static_cast<std::int64_t>(std::numeric_limits<int>::max())) {
+        return std::numeric_limits<int>::max();
+    }
+    return static_cast<int>(value);
+}
+
 static inline std::optional<SeedProbeTimingConfig> resolve_timing_from_authoring_spec(
     const savor::db::IAnalysisDb* analysis_db,
     const savor::db::IAuthoringDb* authoring_db,
@@ -69,7 +79,7 @@ struct GridIni {
         GridIni grid{};
         if (!doc.has_section(SECTION_NAME)) return grid;
         IniKV section = doc.section_kv(SECTION_NAME);
-        grid.samples_per_axis = section.get_i64("samples_per_axis", grid.samples_per_axis);
+        grid.samples_per_axis = clamp_to_int(section.get_i64("samples_per_axis", grid.samples_per_axis));
         grid.min_value = section.get_u8("min_value", grid.min_value);
         grid.max_value = section.get_u8("max_value", grid.max_value);
         grid.cap_trigger_top = section.get_bool("cap_trigger_top", grid.cap_trigger_top);
@@ -97,8 +107,8 @@ struct UniqueIni {
         UniqueIni unique{};
         if (!doc.has_section(SECTION_NAME)) return unique;
         IniKV section = doc.section_kv(SECTION_NAME);
-        unique.combo_attempts_per_target = section.get_i64("combo_attempts_per_target", unique.combo_attempts_per_target);
-        unique.combo_sampler_tries = section.get_i64("combo_sampler_tries", unique.combo_sampler_tries);
+        unique.combo_attempts_per_target = clamp_to_int(section.get_i64("combo_attempts_per_target", unique.combo_attempts_per_target));
+        unique.combo_sampler_tries = clamp_to_int(section.get_i64("combo_sampler_tries", unique.combo_sampler_tries));
         return unique;
     }
 
@@ -142,7 +152,7 @@ struct BlueprintIni {
         bp.cur_phase = (SeedProbePhase)section.get_u32("cur_phase", 0);
         bp.clear_result_winners = section.get_bool("clear_result_winners", true);
         bp.auto_schedule_battle_run = section.get_bool("auto_schedule_battle_run", false);
-        bp.priority = section.get_i64("priority", 0);
+        bp.priority = clamp_to_int(section.get_i64("priority", 0));
         return bp;
     }
 

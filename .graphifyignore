@@ -1,36 +1,46 @@
-# Ignore everything by default, then explicitly include source-bearing trees.
-*
+# Graphify corpus policy for SAVOR:
+# local-only, code-only, and no generated/build/reference trees.
+#
+# Prefer positive ignores over deny-all plus negated allowlists. This keeps
+# renamed source trees visible while excluding known non-source material.
 
-!Compression/
-!Compression/**
-!Sa3Dport/
-!Sa3Dport/**
-!SavorCore/
-!SavorCore/**
-!SavorDb/
-!SavorDb/**
-!SavorDbSchemaExport/
-!SavorDbSchemaExport/**
-!SavorE2E/
-!SavorE2E/**
-!SavorQt/
-!SavorQt/**
-!SavorQt3D/
-!SavorQt3D/**
-!SavorTests/
-!SavorTests/**
-!SavorWorker/
-!SavorWorker/**
-!planning/
-!planning/NavigationPhase/
-!planning/NavigationPhase/Resources/
-!planning/NavigationPhase/Resources/ninja/
-!planning/NavigationPhase/Resources/ninja/**
-!tools/
-!tools/**
+# VCS, IDE state, Codex scratch data, and previous local backups.
+.git/
+.vs/
+.codex/
+.non_qt2_backup/
+_old files if needed/
+.gitattributes
+.gitignore
+.graphifyignore
 
-# Keep the corpus code-only.
+# Graphify output and build/generated output.
+graphify-out/
+bin/
+obj/
+x64/
+**/bin/
+**/obj/
+**/x64/
+**/.db_val/
+**/.db_schema_cur/
+**/.savor-e2e*/
+
+# Stale generated folders left from pre-SAVOR project names.
+SavorQt/SoaSimQt2/
+
+# Vendored Dolphin emulator source overwhelms the SAVOR architecture graph.
+SavorCore/_Dolphin_src/
+
+# External/reference/prose-heavy trees are not part of the repo code graph.
+third-party/
+planning/
+phase0/
+
+# Keep the corpus code-only and AST/local-friendly.
 *.db
+*.db-shm
+*.db-wal
 *.ifc
 *.json
 *.log
@@ -48,18 +58,20 @@
 *.txt
 *.user
 *.vcxproj
+*.filters
 *.xml
 *.yml
-*.zip
+*.yaml
 
-# Exclude generated and build output even inside included source trees.
-.git/
-bin/
-graphify-out/
-x64/
-**/bin/
-**/obj/
-**/x64/
-**/.db_val/
-**/.db_schema_cur/
-**/.savor-e2e*/
+# Non-code documents and media.
+*.bmp
+*.gif
+*.htm
+*.html
+*.ico
+*.jpeg
+*.jpg
+*.pdf
+*.png
+*.svg
+*.zip

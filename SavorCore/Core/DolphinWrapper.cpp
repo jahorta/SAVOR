@@ -309,10 +309,12 @@ namespace savor {
             waitForCompletion ? 1 : 0, Core::IsRunning(*m_system) ? 1 : 0, (int)Core::GetState(*m_system));
 
         std::atomic<bool> done{ false };
+        SCLOGD("[DW] runOnCpuThread dispatch begin");
         Core::RunOnCPUThread(*m_system, [&] {
             fn();
             done = true;
             }, waitForCompletion);
+        SCLOGD("[DW] runOnCpuThread dispatch returned done=%d", done ? 1 : 0);
 
         auto deadline = std::chrono::steady_clock::now() + 5s;
         while (!done && std::chrono::steady_clock::now() < deadline)
@@ -414,7 +416,7 @@ namespace savor {
 
         std::string name{"..."};
         uint32_t section_offset = 0;
-        for (int i = 0; i < section_count - 1; i++) {
+        for (uint32_t i = 0; i + 1 < section_count; i++) {
             uint32_t next_offset = 0;
             if (!readU32(p_index + ((i + 1) * 0x14), next_offset)) return {};
             if (next_offset >= offset) 
@@ -712,7 +714,7 @@ namespace savor {
             }
             else 
             {
-                fs:copy_file(raw_path, memcard_path, fs::copy_options::overwrite_existing);
+                fs::copy_file(raw_path, memcard_path, fs::copy_options::overwrite_existing);
                 SCLOGI("[MemCard] Copied RAW to %s", gc_dir.string());
             }
 
@@ -1310,7 +1312,7 @@ namespace savor {
 
     bool DolphinWrapper::resolveKey(addr::AddrKey k, uint32_t& out_va) const
     {
-        out_va = addr::Registry::base(k);
+        out_va = addr::AddrRegistry::base(k);
         return true;
     }
 
@@ -1318,12 +1320,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU8(va, out);
@@ -1333,12 +1335,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU16(va, out);
@@ -1348,12 +1350,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
         return readU32(va, out);
@@ -1363,12 +1365,12 @@ namespace savor {
     {
         if (!isRunning()) return false;
         if (require_paused && Core::GetState(*m_system) != Core::State::Paused) {
-            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) denied: core not paused", addr::AddrRegistry::name(k));
             return false;
         }
         uint32_t va = 0;
         if (!resolveKey(k, va)) {
-            SCLOGE("[DW] readByKey(%s) resolve failed", addr::Registry::name(k));
+            SCLOGE("[DW] readByKey(%s) resolve failed", addr::AddrRegistry::name(k));
             return false;
         }
 
@@ -1382,7 +1384,7 @@ namespace savor {
     bool DolphinWrapper::readByKeyAny(addr::AddrKey k, uint8_t width, uint64_t& out, uint8_t& out_width) const
     {
         out = 0; out_width = width;
-        const auto& spec = addr::Registry::spec(k);
+        const auto& spec = addr::AddrRegistry::spec(k);
         switch (width) {
         case 1: { uint8_t  v = 0; if (!readByKey(k, v)) return false; out = v; return true; }
         case 2: { uint16_t v = 0; if (!readByKey(k, v)) return false; out = v; return true; }
@@ -1396,6 +1398,22 @@ namespace savor {
     struct ArmedSet { std::unordered_set<uint32_t> pcs; };
     static ArmedSet& armed_singleton() { static ArmedSet a; return a; }
     static ArmedSet& armed_battle_singleton() { static ArmedSet a; return a; }
+
+    bool DolphinWrapper::mutatePcBreakpoints(const char* label, const std::function<void()>& fn) const
+    {
+        if (!m_system || !Core::IsRunning(*m_system))
+            return false;
+
+        const auto state = Core::GetState(*m_system);
+        if (state == Core::State::Paused) {
+            SCLOGD("[core] breakpoint mutate label=%s mode=direct_paused state=%d", label, static_cast<int>(state));
+            fn();
+            return true;
+        }
+
+        SCLOGD("[core] breakpoint mutate label=%s mode=cpu_thread state=%d", label, static_cast<int>(state));
+        return runOnCpuThread(fn, true);
+    }
 
     bool DolphinWrapper::armBattleBreakpoints()
     {
@@ -1504,27 +1522,50 @@ namespace savor {
 
     bool DolphinWrapper::setEnableBreakpoint(uint32_t pc, bool enabled)
     {
-        SCLOGT("[core] silencing all breakpoints");
-        bool silence_result = runOnCpuThread([&] {
+        SCLOGT("[core] set breakpoint enable pc=%08X enabled=%d", pc, enabled ? 1 : 0);
+        bool enable_result = mutatePcBreakpoints("setEnableBreakpoint", [&] {
             if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled)
                 m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
-            }, true);
+            });
 
-        return false;
+        return enable_result;
     }
 
     bool DolphinWrapper::setEnableAllBreakpoints(bool enabled)
     {
-        SCLOGT("[core] silencing all breakpoints");
-        auto& armed = armed_singleton().pcs; bool silence_result = runOnCpuThread([&] {
+        auto& armed = armed_singleton().pcs;
+        SCLOGT("[core] set all breakpoints enabled=%d armed_count=%zu", enabled ? 1 : 0, armed.size());
+        bool enable_result = mutatePcBreakpoints("setEnableAllBreakpoints", [&] {
             for (auto pc : armed)
             {
                 if (m_system->GetPowerPC().GetBreakPoints().IsBreakPointEnable(pc) != enabled) 
                     m_system->GetPowerPC().GetBreakPoints().ToggleEnable(pc);
             }
-            }, true);
+            });
         
-        return false;
+        return enable_result;
+    }
+
+    bool DolphinWrapper::setEnabledPcBreakpointsOnly(const std::vector<uint32_t>& enabled_pcs)
+    {
+        auto& armed = armed_singleton().pcs;
+        std::unordered_set<uint32_t> enabled_set;
+        enabled_set.reserve(enabled_pcs.size());
+        for (const auto pc : enabled_pcs)
+            enabled_set.insert(pc);
+
+        SCLOGT("[core] set enabled breakpoint set requested_count=%zu armed_count=%zu",
+            enabled_set.size(),
+            armed.size());
+
+        return mutatePcBreakpoints("setEnabledPcBreakpointsOnly", [&] {
+            auto& breakpoints = m_system->GetPowerPC().GetBreakPoints();
+            for (const auto pc : armed) {
+                const bool should_enable = enabled_set.find(pc) != enabled_set.end();
+                if (breakpoints.IsBreakPointEnable(pc) != should_enable)
+                    breakpoints.ToggleEnable(pc);
+            }
+            });
     }
 
     DolphinWrapper::RunUntilHitResult DolphinWrapper::runUntilBreakpointBlocking(uint32_t timeout_ms)

@@ -29,7 +29,7 @@
 #include "../../../../SavorCore/Phases/Programs/BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Utils/Base64.h"
 #include "../../../../SavorCore/Utils/Hash.h"
 #include "../../../../SavorCore/Utils/IniDoc.h"
@@ -98,6 +98,12 @@ struct ResultsIni {
     std::uint32_t pred_passed = 0;
     std::uint32_t pred_total = 0;
     std::uint32_t pred_abort_run = 0;
+    std::uint32_t macro_failure_code = 0;
+    std::uint32_t macro_step_count = 0;
+    std::uint32_t macro_last_step_index = 0;
+    std::uint32_t macro_last_expected_bp = 0;
+    std::uint32_t macro_last_hit_bp = 0;
+    std::uint32_t macro_last_hit_pc = 0;
     std::int64_t applied_input_artifact_id = 0;
     std::string applied_input_tape_text;
     std::string savestate_path;
@@ -118,6 +124,12 @@ struct ResultsIni {
         ini.set(kResultsSection, "pred_passed", std::to_string(pred_passed));
         ini.set(kResultsSection, "pred_total", std::to_string(pred_total));
         ini.set(kResultsSection, "pred_abort_run", std::to_string(pred_abort_run));
+        ini.set(kResultsSection, "macro_failure_code", std::to_string(macro_failure_code));
+        ini.set(kResultsSection, "macro_step_count", std::to_string(macro_step_count));
+        ini.set(kResultsSection, "macro_last_step_index", std::to_string(macro_last_step_index));
+        ini.set(kResultsSection, "macro_last_expected_bp", std::to_string(macro_last_expected_bp));
+        ini.set(kResultsSection, "macro_last_hit_bp", std::to_string(macro_last_hit_bp));
+        ini.set(kResultsSection, "macro_last_hit_pc", std::to_string(macro_last_hit_pc));
         ini.set(kResultsSection, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
         ini.set(kResultsSection, "applied_input_tape_text", applied_input_tape_text);
         ini.set(kResultsSection, "savestate_path", savestate_path);
@@ -143,6 +155,12 @@ struct ResultsIni {
         out.pred_passed = ini.get_u32(kResultsSection, "pred_passed", 0);
         out.pred_total = ini.get_u32(kResultsSection, "pred_total", 0);
         out.pred_abort_run = ini.get_u32(kResultsSection, "pred_abort_run", 0);
+        out.macro_failure_code = ini.get_u32(kResultsSection, "macro_failure_code", 0);
+        out.macro_step_count = ini.get_u32(kResultsSection, "macro_step_count", 0);
+        out.macro_last_step_index = ini.get_u32(kResultsSection, "macro_last_step_index", 0);
+        out.macro_last_expected_bp = ini.get_u32(kResultsSection, "macro_last_expected_bp", 0);
+        out.macro_last_hit_bp = ini.get_u32(kResultsSection, "macro_last_hit_bp", 0);
+        out.macro_last_hit_pc = ini.get_u32(kResultsSection, "macro_last_hit_pc", 0);
         out.applied_input_artifact_id = ini.get_i64(kResultsSection, "applied_input_artifact_id", 0);
         out.applied_input_tape_text = ini.get(kResultsSection, "applied_input_tape_text", "");
         out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
@@ -152,10 +170,6 @@ struct ResultsIni {
         return out;
     }
 };
-
-std::string EventId(std::string_view prefix, std::int64_t id, std::string_view suffix) {
-    return std::string(prefix) + "-" + std::to_string(id) + "-" + std::string(suffix);
-}
 
 std::filesystem::path WorkingRoot(const std::filesystem::path& configured) {
     if (!configured.empty()) {
@@ -549,7 +563,7 @@ std::vector<savor::pred::Spec> BuildPredicates(
             return std::nullopt;
         }
         const auto key = static_cast<addr::AddrKey>(static_cast<std::uint16_t>(value));
-        return addr::Registry::exists(key) ? std::optional<addr::AddrKey>(key) : std::nullopt;
+        return addr::AddrRegistry::exists(key) ? std::optional<addr::AddrKey>(key) : std::nullopt;
     };
     std::uint16_t ordinal = 0;
     for (const auto& pred : predicate_set->predicates) {
@@ -668,12 +682,7 @@ bool IsVictory(savor::battle::Outcome outcome) {
 }
 
 bool IsBadMaterialize(const ResultsIni& results) {
-    if (results.battle_outcome != static_cast<std::uint32_t>(savor::battle::Outcome::PlanMaterializeFailure)) {
-        return false;
-    }
-    return results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::NoValidTarget)
-        && results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::OutOfTurns)
-        && results.plan_materialize_err != static_cast<std::uint32_t>(soa::battle::actions::MaterializeErr::NotEnoughResource);
+    return results.battle_outcome == static_cast<std::uint32_t>(savor::battle::Outcome::PlanMaterializeFailure);
 }
 
 class BattleSingleTurnJobPersistenceAdapter final : public IJobPersistenceAdapter {
@@ -768,8 +777,8 @@ public:
             return scheduled;
         }
 
-        const int max_fake = std::max(run_spec->min_fake_attacks, run_spec->max_fake_attacks);
-        const int min_fake = std::min(run_spec->min_fake_attacks, run_spec->max_fake_attacks);
+        const int max_fake = std::max(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max);
+        const int min_fake = std::min(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max);
         if (fake_used_before > max_fake) {
             scheduled.event_lines.push_back("[battle-single-turn-enqueue] ok=false error=fake_budget_exhausted");
             return scheduled;
@@ -829,7 +838,6 @@ public:
                             .job_state = savor::db::BattleTurnJobState::Queued,
                             .started_at_utc = now,
                             .recorded_at_utc = now,
-                            .event_id = EventId("battle.turn_job", wave->wave_id, std::to_string(variant_index) + "." + std::to_string(fake)),
                             .correlation_id = "battle-set-" + std::to_string(battle_set->battle_set_id),
                             .causation_id = "wave-" + std::to_string(wave->wave_id),
                         },
@@ -854,6 +862,7 @@ public:
                             .priority = run_spec->priority,
                             .max_attempts = 1,
                             .input_ini = BuildInputIni(job_ini),
+                            .pending_until_workflow_materialized = true,
                         },
                         &exec_job_id,
                         &error)
@@ -974,7 +983,7 @@ public:
             spec.turn_plan = BuildTurnPlan(*turn, job_ini.fake_attacks_this_turn);
         }
         spec.predicates = BuildPredicates(predicate_set.has_value() ? &*predicate_set : nullptr, authoring_db_);
-        spec.fake_attack_budget_max = static_cast<std::uint32_t>(std::max(run_spec->min_fake_attacks, run_spec->max_fake_attacks));
+        spec.fake_attack_budget_max = static_cast<std::uint32_t>(std::max(battle_set->launch_fake_attack_min, battle_set->launch_fake_attack_max));
         spec.fake_attacks_used_before_turn = static_cast<std::uint32_t>(std::max(0, job_ini.fake_attacks_used_before));
 
         if (job_ini.turn_index == 1) {
@@ -1027,32 +1036,38 @@ public:
         ResultsIni out{};
         out.w_err = result.ps.w_err;
         if (out.w_err == 0) {
-            result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+            result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
         }
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, out.rng_seed);
-        result.ps.ctx.get(savor::keys::battle::BATTLE_OUTCOME, out.battle_outcome);
-        result.ps.ctx.get(savor::keys::battle::PLAN_MATERIALIZE_ERR, out.plan_materialize_err);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(savor::context::key::battle::BATTLE_OUTCOME, out.battle_outcome);
+        result.ps.ctx.get(savor::context::key::battle::PLAN_MATERIALIZE_ERR, out.plan_materialize_err);
         std::uint32_t before = 0;
         std::uint32_t cur = 0;
-        result.ps.ctx.get(savor::keys::battle::FAKE_ATTACK_USED_BEFORE, before);
-        result.ps.ctx.get(savor::keys::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
+        result.ps.ctx.get(savor::context::key::battle::FAKE_ATTACK_USED_BEFORE, before);
+        result.ps.ctx.get(savor::context::key::battle::FAKE_ATTACK_COUNT_THIS_TURN, cur);
         out.fake_attacks_used = before + cur;
-        result.ps.ctx.get(savor::keys::core::PRED_PASSED, out.pred_passed);
-        result.ps.ctx.get(savor::keys::core::PRED_TOTAL, out.pred_total);
-        result.ps.ctx.get(savor::keys::core::PRED_ABORT_RUN, out.pred_abort_run);
+        result.ps.ctx.get(savor::context::key::core::PRED_PASSED, out.pred_passed);
+        result.ps.ctx.get(savor::context::key::core::PRED_TOTAL, out.pred_total);
+        result.ps.ctx.get(savor::context::key::core::PRED_ABORT_RUN, out.pred_abort_run);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_FAILURE_CODE, out.macro_failure_code);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_STEP_COUNT, out.macro_step_count);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_STEP_INDEX, out.macro_last_step_index);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_EXPECTED_BP, out.macro_last_expected_bp);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_BP, out.macro_last_hit_bp);
+        result.ps.ctx.get(savor::context::key::battle::MACRO_LAST_HIT_PC, out.macro_last_hit_pc);
         std::string turn_blob;
-        result.ps.ctx.get(savor::keys::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
+        result.ps.ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
             std::vector<savor::inputtape::TurnChunk> chunks;
             if (savor::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
                 out.applied_input_tape_text = turn_blob;
             }
         }
-        result.ps.ctx.get(savor::keys::core::LAST_SAVESTATE_PATH, out.savestate_path);
+        result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, out.savestate_path);
         std::string context_blob;
-        if (result.ps.ctx.get(savor::keys::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
+        if (result.ps.ctx.get(savor::context::key::battle::CTX_BLOB, context_blob) && !context_blob.empty()) {
             out.context_blob_base64 = savor::utils::Base64Encode(context_blob);
             out.context_version = soa::battle::ctx::codec::ver;
         }
@@ -1144,7 +1159,17 @@ public:
             + " pred_passed=" + std::to_string(parsed.pred_passed)
             + " pred_total=" + std::to_string(parsed.pred_total)
             + " pred_abort_run=" + std::to_string(parsed.pred_abort_run)
-            + " plan_materialize_err=" + std::to_string(parsed.plan_materialize_err));
+            + " plan_materialize_err=" + std::to_string(parsed.plan_materialize_err)
+            + " macro_failure=" + std::to_string(parsed.macro_failure_code)
+            + " macro_step_count=" + std::to_string(parsed.macro_step_count)
+            + " macro_last_step=" + std::to_string(parsed.macro_last_step_index)
+            + " macro_expected_bp=" + std::to_string(parsed.macro_last_expected_bp)
+            + " macro_hit_bp=" + std::to_string(parsed.macro_last_hit_bp)
+            + " macro_hit_pc=0x" + [&]() {
+                std::ostringstream pc;
+                pc << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << parsed.macro_last_hit_pc;
+                return pc.str();
+            }());
         AppendJobCompleted(execution_db_, job_id, failed ? "FAILED" : "SUCCEEDED", &payload.event_lines);
         payload.result_ref_id = turn_job->turn_job_id;
         payload.event_lines.push_back("[battle-single-turn-result] job=" + std::to_string(job_id)
@@ -1182,7 +1207,6 @@ private:
                     .file_ext = path.extension().string(),
                     .artifact_kind = "SAV",
                     .created_at_utc = now,
-                    .event_id = EventId("battle.sav.artifact", job_id, "stored"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -1200,7 +1224,6 @@ private:
                     .note = "BattleSingleTurnRunner produced savestate",
                     .is_complete = true,
                     .created_at_utc = now,
-                    .event_id = EventId("battle.savestate", job_id, "created"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "artifact-" + std::to_string(artifact_id),
                 },
@@ -1242,7 +1265,6 @@ private:
                     .file_ext = ".aitb",
                     .artifact_kind = "OTHER",
                     .created_at_utc = now,
-                    .event_id = EventId("battle.applied_input", job_id, "stored"),
                     .correlation_id = "battle-job-" + std::to_string(job_id),
                     .causation_id = "job-" + std::to_string(job_id),
                 },
@@ -1321,7 +1343,6 @@ public:
                     .pool_name = "turn-rng-seed-survivors",
                     .criterion_kind = savor::db::BattleSelectionCriterionKind::BestFakeAttacksByRngSeed,
                     .created_at_utc = now,
-                    .event_id = EventId("battle.selection_pool", current_wave->battle_set_id, std::to_string(current_wave->turn_index)),
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                     .causation_id = "wave-" + std::to_string(current_wave->wave_id),
                 },
@@ -1447,7 +1468,6 @@ public:
                     .decision_kind = winner ? savor::db::BattleSelectionDecisionKind::Winner : savor::db::BattleSelectionDecisionKind::Duplicate,
                     .decision_reason = winner ? std::optional<std::string>("best_for_rng_seed") : std::optional<std::string>("rng_seed_duplicate"),
                     .created_at_utc = now,
-                    .event_id = EventId("battle.selection_decision", pool_id, std::to_string(survivor.job.turn_job_id)),
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                     .causation_id = "selection-pool-" + std::to_string(pool_id),
                 },
@@ -1494,7 +1514,6 @@ public:
                         .selection_pool_id = pool_id,
                         .status = savor::db::BattleTurnWaveStatus::Ready,
                         .created_at_utc = now,
-                        .event_id = EventId("battle.turn_wave", winner.job.turn_job_id, "next"),
                         .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                         .causation_id = "turn-job-" + std::to_string(winner.job.turn_job_id),
                     },

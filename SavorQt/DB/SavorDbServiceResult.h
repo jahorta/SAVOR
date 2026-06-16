@@ -18,6 +18,8 @@ struct ServiceError {
     std::string message;
 };
 
+inline constexpr const char* kSavorDbRuntimeUnavailableMessage = "SavorDb runtime is unavailable";
+
 template <typename T>
 struct ServiceResult {
     bool ok = false;

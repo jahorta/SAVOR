@@ -160,6 +160,29 @@ UiJobDetail ReadJobDetailRow(sqlite3_stmt* st) {
     return row;
 }
 
+void AddJobStateCount(UiJobStateCounts& counts, const std::string& state, std::int64_t count) {
+    counts.total += count;
+    if (state == "QUEUED") {
+        counts.queued += count;
+    } else if (state == "CLAIMED") {
+        counts.claimed += count;
+    } else if (state == "RUNNING") {
+        counts.running += count;
+    } else if (state == "FAILED") {
+        counts.failed += count;
+    } else if (state == "CANCELED") {
+        counts.canceled += count;
+    } else if (state == "SUPERSEDED") {
+        counts.superseded += count;
+    } else if (state == "SUCCEEDED"
+        || state == "SUCCEEDED_WINNER"
+        || state == "SUCCEEDED_DUPLICATE") {
+        counts.succeeded += count;
+    } else {
+        counts.other += count;
+    }
+}
+
 UiJobSetSummary ReadJobSetSummaryRow(sqlite3_stmt* st) {
     UiJobSetSummary row{};
     row.job_set_id = sqlite3_column_int64(st, 0);
@@ -279,6 +302,78 @@ UiWorkflowAlertSummary ReadWorkflowAlertRow(sqlite3_stmt* st) {
     return row;
 }
 
+UiBattleGroupSummary ReadBattleGroupRow(sqlite3_stmt* st) {
+    UiBattleGroupSummary row{};
+    row.battle_set_id = sqlite3_column_int64(st, 0);
+    row.name = ColumnText(st, 1);
+    row.status = ColumnText(st, 2);
+    row.created_at_utc = sqlite3_column_int64(st, 3);
+    row.completed_at_utc = ColumnInt64Optional(st, 4);
+    row.wave_count = sqlite3_column_int64(st, 5);
+    row.job_count = sqlite3_column_int64(st, 6);
+    row.winner_count = sqlite3_column_int64(st, 7);
+    row.success_count = sqlite3_column_int64(st, 8);
+    row.failed_count = sqlite3_column_int64(st, 9);
+    row.victory_followup_count = sqlite3_column_int64(st, 10);
+    return row;
+}
+
+UiBattleWaveSummary ReadBattleWaveRow(sqlite3_stmt* st) {
+    UiBattleWaveSummary row{};
+    row.wave_id = sqlite3_column_int64(st, 0);
+    row.battle_set_id = sqlite3_column_int64(st, 1);
+    row.parent_wave_id = ColumnInt64Optional(st, 2);
+    row.turn_index = sqlite3_column_int(st, 3);
+    row.status = ColumnText(st, 4);
+    row.created_at_utc = sqlite3_column_int64(st, 5);
+    row.completed_at_utc = ColumnInt64Optional(st, 6);
+    row.job_count = sqlite3_column_int64(st, 7);
+    row.winner_count = sqlite3_column_int64(st, 8);
+    row.success_count = sqlite3_column_int64(st, 9);
+    row.failed_count = sqlite3_column_int64(st, 10);
+    return row;
+}
+
+UiBattleFollowupSummary ReadBattleFollowupRow(sqlite3_stmt* st, int first_column) {
+    UiBattleFollowupSummary row{};
+    row.turn_job_id = sqlite3_column_int64(st, first_column);
+    row.is_victory = sqlite3_column_int(st, first_column + 1) != 0;
+    row.manual_followup_status = ColumnText(st, first_column + 2);
+    row.recorded_dtm_artifact_id = ColumnInt64Optional(st, first_column + 3);
+    row.note = ColumnText(st, first_column + 4);
+    row.updated_at_utc = sqlite3_column_int64(st, first_column + 5);
+    return row;
+}
+
+UiBattleTurnJobSummary ReadBattleTurnJobRow(sqlite3_stmt* st) {
+    UiBattleTurnJobSummary row{};
+    row.turn_job_id = sqlite3_column_int64(st, 0);
+    row.exec_job_id = ColumnInt64Optional(st, 1);
+    row.wave_id = sqlite3_column_int64(st, 2);
+    row.battle_set_id = sqlite3_column_int64(st, 3);
+    row.turn_index = sqlite3_column_int(st, 4);
+    row.job_state = ColumnText(st, 5);
+    row.fake_attacks_this_turn = sqlite3_column_int(st, 6);
+    row.fake_attacks_used_before = sqlite3_column_int(st, 7);
+    row.rng_seed = ColumnInt64Optional(st, 8);
+    row.delta_vi = ColumnInt64Optional(st, 9);
+    if (sqlite3_column_type(st, 10) != SQLITE_NULL) {
+        row.pred_passed = sqlite3_column_int(st, 10);
+    }
+    if (sqlite3_column_type(st, 11) != SQLITE_NULL) {
+        row.pred_total = sqlite3_column_int(st, 11);
+    }
+    if (sqlite3_column_type(st, 12) != SQLITE_NULL) {
+        row.battle_outcome = sqlite3_column_int(st, 12);
+    }
+    row.started_at_utc = ColumnInt64Optional(st, 13);
+    row.ended_at_utc = ColumnInt64Optional(st, 14);
+    if (sqlite3_column_type(st, 15) != SQLITE_NULL) {
+        row.followup = ReadBattleFollowupRow(st, 15);
+    }
+    return row;
+}
+
 } // namespace
 
 SqliteUiReadDb::SqliteUiReadDb(sqlite3* db)
@@ -360,6 +455,42 @@ UiReadPage<UiJobSummary> SqliteUiReadDb::ListJobs(
         page.next = UiReadListCursor{ last.queued_at_utc, last.job_id };
     }
     return page;
+}
+
+UiJobStateCounts SqliteUiReadDb::CountJobsByState(
+    const UiReadJobListQuery& query) const {
+    UiJobStateCounts counts{};
+    if (db_ == nullptr) {
+        return counts;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT s.state, COUNT(*) "
+        "FROM ui_job_summary s "
+        "WHERE (?1=0 OR s.program_kind=?2) "
+        "AND (?3=0 OR s.job_set_id=?4) "
+        "AND (?5=1 OR s.state IN (?6,?7,?8,?9,?10)) "
+        "GROUP BY s.state;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return counts;
+    }
+
+    sqlite3_bind_int(st, 1, query.program_kind.has_value() ? 1 : 0);
+    sqlite3_bind_int(st, 2, query.program_kind.value_or(0));
+    sqlite3_bind_int(st, 3, query.job_set_id.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 4, query.job_set_id.value_or(0));
+    sqlite3_bind_int(st, 5, query.states.empty() ? 1 : 0);
+    for (int i = 0; i < 5; ++i) {
+        const std::string value = i < static_cast<int>(query.states.size()) ? query.states[static_cast<std::size_t>(i)] : std::string{};
+        sqlite3_bind_text(st, 6 + i, value.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        AddJobStateCount(counts, ColumnText(st, 0), sqlite3_column_int64(st, 1));
+    }
+    sqlite3_finalize(st);
+    return counts;
 }
 
 std::optional<UiJobSummary> SqliteUiReadDb::GetJobSummary(std::int64_t job_id) const {
@@ -772,6 +903,181 @@ std::optional<UiWorkflowDetail> SqliteUiReadDb::GetWorkflowDetail(
     }
     sqlite3_finalize(alerts);
 
+    return detail;
+}
+
+UiReadPage<UiBattleGroupSummary> SqliteUiReadDb::ListBattleGroups(
+    const UiBattleGroupListQuery& query) const {
+    UiReadPage<UiBattleGroupSummary> page{};
+    if (db_ == nullptr || query.limit <= 0) {
+        return page;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT g.battle_set_id,g.name,g.status,g.created_at_utc,g.completed_at_utc,"
+        "COUNT(DISTINCT w.wave_id),COUNT(DISTINCT j.turn_job_id),"
+        "COALESCE(SUM(CASE WHEN f.is_victory=1 THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN f.is_victory=1 OR j.battle_outcome IS NOT NULL THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN j.job_state='FAILED' THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN f.is_victory=1 THEN 1 ELSE 0 END),0) "
+        "FROM ui_battle_group g "
+        "LEFT JOIN ui_battle_wave w ON w.battle_set_id=g.battle_set_id "
+        "LEFT JOIN ui_battle_turn_job j ON j.wave_id=w.wave_id "
+        "LEFT JOIN ui_battle_followup f ON f.turn_job_id=j.turn_job_id "
+        "WHERE (?1=0 OR g.created_at_utc < ?2 OR (g.created_at_utc=?2 AND g.battle_set_id < ?3)) "
+        "AND (?4=0 OR g.created_at_utc > ?5 OR (g.created_at_utc=?5 AND g.battle_set_id > ?6)) "
+        "GROUP BY g.battle_set_id,g.name,g.status,g.created_at_utc,g.completed_at_utc "
+        "HAVING (?7=0 OR COALESCE(SUM(CASE WHEN f.is_victory=1 THEN 1 ELSE 0 END),0) > 0) "
+        "ORDER BY g.created_at_utc DESC,g.battle_set_id DESC LIMIT ?8;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return page;
+    }
+
+    sqlite3_bind_int(st, 1, query.before.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 2, query.before.value_or(UiReadListCursor{}).primary);
+    sqlite3_bind_int64(st, 3, query.before.value_or(UiReadListCursor{}).secondary);
+    sqlite3_bind_int(st, 4, query.after.has_value() ? 1 : 0);
+    sqlite3_bind_int64(st, 5, query.after.value_or(UiReadListCursor{}).primary);
+    sqlite3_bind_int64(st, 6, query.after.value_or(UiReadListCursor{}).secondary);
+    sqlite3_bind_int(st, 7, query.child_victory_only ? 1 : 0);
+    sqlite3_bind_int(st, 8, query.limit);
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        page.items.push_back(ReadBattleGroupRow(st));
+    }
+    sqlite3_finalize(st);
+
+    if (!page.items.empty()) {
+        const auto& first = page.items.front();
+        const auto& last = page.items.back();
+        page.prev = UiReadListCursor{ first.created_at_utc, first.battle_set_id };
+        page.next = UiReadListCursor{ last.created_at_utc, last.battle_set_id };
+    }
+    return page;
+}
+
+std::vector<UiBattleWaveSummary> SqliteUiReadDb::ListBattleWaves(
+    std::int64_t battle_set_id) const {
+    std::vector<UiBattleWaveSummary> rows;
+    if (db_ == nullptr || battle_set_id <= 0) {
+        return rows;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT w.wave_id,w.battle_set_id,w.parent_wave_id,w.turn_index,w.status,w.created_at_utc,w.completed_at_utc,"
+        "COUNT(j.turn_job_id),"
+        "COALESCE(SUM(CASE WHEN f.is_victory=1 THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN f.is_victory=1 OR j.battle_outcome IS NOT NULL THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN j.job_state='FAILED' THEN 1 ELSE 0 END),0) "
+        "FROM ui_battle_wave w "
+        "LEFT JOIN ui_battle_turn_job j ON j.wave_id=w.wave_id "
+        "LEFT JOIN ui_battle_followup f ON f.turn_job_id=j.turn_job_id "
+        "WHERE w.battle_set_id=?1 "
+        "GROUP BY w.wave_id,w.battle_set_id,w.parent_wave_id,w.turn_index,w.status,w.created_at_utc,w.completed_at_utc "
+        "ORDER BY w.turn_index ASC,w.created_at_utc ASC,w.wave_id ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+
+    sqlite3_bind_int64(st, 1, battle_set_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        rows.push_back(ReadBattleWaveRow(st));
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
+std::vector<UiBattleTurnJobSummary> SqliteUiReadDb::ListBattleTurnJobsForWaves(
+    const std::vector<std::int64_t>& wave_ids) const {
+    std::vector<UiBattleTurnJobSummary> rows;
+    if (db_ == nullptr || wave_ids.empty()) {
+        return rows;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT j.turn_job_id,j.exec_job_id,j.wave_id,w.battle_set_id,w.turn_index,j.job_state,"
+        "j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,"
+        "j.pred_passed,j.pred_total,j.battle_outcome,j.started_at_utc,j.ended_at_utc,"
+        "f.turn_job_id,f.is_victory,f.manual_followup_status,f.recorded_dtm_artifact_id,f.note,f.updated_at_utc "
+        "FROM ui_battle_turn_job j "
+        "JOIN ui_battle_wave w ON w.wave_id=j.wave_id "
+        "LEFT JOIN ui_battle_followup f ON f.turn_job_id=j.turn_job_id "
+        "WHERE j.wave_id=?1 "
+        "ORDER BY j.turn_job_id ASC;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return rows;
+    }
+
+    for (std::int64_t wave_id : wave_ids) {
+        if (wave_id <= 0) {
+            continue;
+        }
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        sqlite3_bind_int64(st, 1, wave_id);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            rows.push_back(ReadBattleTurnJobRow(st));
+        }
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
+std::optional<UiBattleTurnJobDetail> SqliteUiReadDb::GetBattleTurnJobDetail(
+    std::int64_t turn_job_id) const {
+    if (db_ == nullptr || turn_job_id <= 0) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT j.turn_job_id,j.exec_job_id,j.wave_id,w.battle_set_id,w.turn_index,j.job_state,"
+        "j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,"
+        "j.pred_passed,j.pred_total,j.battle_outcome,j.started_at_utc,j.ended_at_utc,"
+        "f.turn_job_id,f.is_victory,f.manual_followup_status,f.recorded_dtm_artifact_id,f.note,f.updated_at_utc "
+        "FROM ui_battle_turn_job j "
+        "JOIN ui_battle_wave w ON w.wave_id=j.wave_id "
+        "LEFT JOIN ui_battle_followup f ON f.turn_job_id=j.turn_job_id "
+        "WHERE j.turn_job_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st, 1, turn_job_id);
+    std::optional<UiBattleTurnJobDetail> detail;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        detail = UiBattleTurnJobDetail{};
+        detail->summary = ReadBattleTurnJobRow(st);
+    }
+    sqlite3_finalize(st);
+
+    if (!detail.has_value()) {
+        return std::nullopt;
+    }
+
+    UiBattleGroupListQuery group_query{};
+    group_query.limit = 500;
+    if (auto groups = ListBattleGroups(group_query); !groups.items.empty()) {
+        for (const auto& group : groups.items) {
+            if (group.battle_set_id == detail->summary.battle_set_id) {
+                detail->group = group;
+                break;
+            }
+        }
+    }
+
+    for (const auto& wave : ListBattleWaves(detail->summary.battle_set_id)) {
+        if (wave.wave_id == detail->summary.wave_id) {
+            detail->wave = wave;
+            break;
+        }
+    }
+    detail->artifacts = detail->summary.exec_job_id.has_value()
+        ? ListJobArtifacts(*detail->summary.exec_job_id)
+        : std::vector<UiJobArtifact>{};
     return detail;
 }
 

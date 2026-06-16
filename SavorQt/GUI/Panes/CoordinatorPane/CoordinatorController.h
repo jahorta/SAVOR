@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "Runner/Parallel/PRTypes.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Execution/Workflow/WorkflowCoordinatorService.h"
 
 class CoordinatorController : public QObject
@@ -32,6 +32,7 @@ public:
     QString dolphinBaseDir() const;
     QString validationMessage() const;
     const std::vector<WorkerSnapshot>& snapshot() const;
+    std::vector<WorkerSnapshot> freshSnapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
     QStringList takeVisualLiveLogLineUpdates();
     QString visualReplayRuntimeStateText() const;

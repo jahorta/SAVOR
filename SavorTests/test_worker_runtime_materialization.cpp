@@ -4,7 +4,7 @@
 #include <fstream>
 #include <string>
 
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 
 namespace fs = std::filesystem;
 namespace coordinator = savor::runner::parallel::savordb;

@@ -1,5 +1,6 @@
 .vs/
 .codex/
+**/.codex-runs/
 /build*/
 /out*/
 /x64/
@@ -40,5 +41,8 @@
 /SavorDbSchemaExport/.db_val/
 /SavorE2E/x64/
 /SavorE2E/.savor-e2e*
+/e2e-runs/
+/perf-runs/
 *.mld
 /SavorQt3D/x64/Debug
+/graphify-out

@@ -46,6 +46,9 @@
     <Filter Include="GUI\Panes\ExplorerRuns">
       <UniqueIdentifier>{f11f33c7-16ec-4a11-9d27-7df8e4b86ef3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Panes\BattleRuns">
+      <UniqueIdentifier>{a18f0d0b-402d-46e7-acb5-0a12531f58a2}</UniqueIdentifier>
+    </Filter>
     <Filter Include="GUI\Widgets">
       <UniqueIdentifier>{141bab54-777e-4b46-a5bb-174449f7cf58}</UniqueIdentifier>
     </Filter>
@@ -124,6 +127,9 @@
     </ClCompile>
     <ClCompile Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.cpp">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.cpp">
+      <Filter>GUI\Panes\BattleRuns</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panes\JobsPane\ArtifactsTableModel.cpp">
       <Filter>GUI\Panes\Jobs</Filter>
@@ -285,6 +291,9 @@
     <ClInclude Include="GUI\Panes\BattleRunSettingsPane\PredicateSpecEditorWindow.h">
       <Filter>GUI\Panes\BattleRunSettings</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Panes\BattleRunsPane\BattleRunsWidget.h">
+      <Filter>GUI\Panes\BattleRuns</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Panes\CoordinatorPane\WorkerTableModel.h">
       <Filter>GUI\Panes\Coordinator</Filter>
     </ClInclude>
@@ -304,6 +313,9 @@
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Widgets\BattleContextTreeWidget.h">
+      <Filter>GUI\Widgets</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Widgets\SegmentedProgressDelegate.h">
       <Filter>GUI\Widgets</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Widgets\ToastHistoryDialog.h">

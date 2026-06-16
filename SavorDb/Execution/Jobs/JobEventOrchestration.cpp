@@ -70,19 +70,24 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
         "SET state=(CASE ?2 WHEN '' THEN state ELSE ?2 END), "
         "started_at_utc=(CASE WHEN ?3 IS NULL THEN started_at_utc ELSE ?3 END), "
         "ended_at_utc=(CASE WHEN ?4 IS NULL THEN ended_at_utc ELSE ?4 END), "
-        "claimed_by_token=(CASE WHEN ?5 IS NULL THEN claimed_by_token ELSE ?5 END), "
-        "lease_expires_at_utc=(CASE WHEN ?6 IS NULL THEN lease_expires_at_utc ELSE ?6 END) "
+        "claimed_by_token=(CASE WHEN ?7<>0 THEN NULL WHEN ?5 IS NULL THEN claimed_by_token ELSE ?5 END), "
+        "lease_expires_at_utc=(CASE WHEN ?7<>0 THEN NULL WHEN ?6 IS NULL THEN lease_expires_at_utc ELSE ?6 END) "
         "WHERE job_id=?1;";
 
     const char* state = "";
     std::optional<std::int64_t> started;
     std::optional<std::int64_t> ended;
+    bool clear_claim = false;
 
     switch (command.kind) {
     case JobLifecycleEventKind::JobQueued:
         state = "QUEUED";
+        clear_claim = true;
         break;
     case JobLifecycleEventKind::JobClaimed:
+        state = "CLAIMED";
+        break;
+    case JobLifecycleEventKind::JobStarted:
         state = "RUNNING";
         started = now;
         break;
@@ -97,6 +102,7 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
         }
         state = command.terminal_state->c_str();
         ended = now;
+        clear_claim = true;
         break;
     case JobLifecycleEventKind::JobEventArchived:
     case JobLifecycleEventKind::JobRestored:
@@ -134,6 +140,7 @@ bool UpdateJobLifecycleColumns(sqlite3* db, const JobLifecycleEventCommand& comm
     } else {
         sqlite3_bind_null(st.st, 6);
     }
+    sqlite3_bind_int(st.st, 7, clear_claim ? 1 : 0);
 
     if (!StepDone(db, st.st, error_out)) {
         return false;
@@ -154,6 +161,7 @@ const char* ToEventType(JobLifecycleEventKind kind) {
     case JobLifecycleEventKind::JobSetCreated: return "Execution.JobSetCreated.v1";
     case JobLifecycleEventKind::JobQueued: return "Execution.JobQueued.v1";
     case JobLifecycleEventKind::JobClaimed: return "Execution.JobClaimed.v1";
+    case JobLifecycleEventKind::JobStarted: return "Execution.JobStarted.v1";
     case JobLifecycleEventKind::JobLeaseRenewed: return "Execution.JobLeaseRenewed.v1";
     case JobLifecycleEventKind::JobProgressed: return "Execution.JobProgressed.v1";
     case JobLifecycleEventKind::JobCompleted: return "Execution.JobCompleted.v1";

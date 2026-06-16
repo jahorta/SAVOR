@@ -36,6 +36,27 @@ struct ExplorerRunJobDetail {
     std::vector<savor::db::ExecutionJobEventRecord> events;
 };
 
+using BattleRunCursor = ExplorerRunCursor;
+
+struct BattleRunGroupQuery {
+    std::optional<BattleRunCursor> before;
+    std::optional<BattleRunCursor> after;
+    int limit = 50;
+    bool child_victory_only = false;
+};
+
+struct BattleRunGroupPage {
+    std::vector<savor::db::UiBattleGroupSummary> groups;
+    std::optional<BattleRunCursor> next;
+    std::optional<BattleRunCursor> prev;
+};
+
+struct BattleRunJobDetail {
+    savor::db::UiBattleTurnJobDetail battle;
+    std::optional<savor::db::UiJobDetail> job;
+    std::vector<savor::db::ExecutionJobEventRecord> events;
+};
+
 class SavorDbExplorerRunService {
 public:
     static constexpr int kBattleSingleTurnProgramKind = 5;
@@ -100,6 +121,78 @@ public:
         }
 
         return ServiceResult<ExplorerRunJobDetail>::Ok(std::move(out));
+    }
+
+    static ServiceResult<BattleRunGroupPage> ListBattleGroups(const BattleRunGroupQuery& request) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<BattleRunGroupPage>("SavorDb UIRead is unavailable");
+        }
+
+        savor::db::UiBattleGroupListQuery query{};
+        query.limit = (std::max)(1, request.limit);
+        query.child_victory_only = request.child_victory_only;
+        if (request.before.has_value()) {
+            query.before = savor::db::UiReadListCursor{ request.before->primary, request.before->secondary };
+        }
+        if (request.after.has_value()) {
+            query.after = savor::db::UiReadListCursor{ request.after->primary, request.after->secondary };
+        }
+
+        const auto page = db->ListBattleGroups(query);
+        BattleRunGroupPage out{};
+        out.groups = page.items;
+        if (page.next.has_value()) {
+            out.next = BattleRunCursor{ page.next->primary, page.next->secondary };
+        }
+        if (page.prev.has_value()) {
+            out.prev = BattleRunCursor{ page.prev->primary, page.prev->secondary };
+        }
+        return ServiceResult<BattleRunGroupPage>::Ok(std::move(out));
+    }
+
+    static ServiceResult<std::vector<savor::db::UiBattleWaveSummary>> ListBattleWaves(
+        std::int64_t battle_set_id) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<savor::db::UiBattleWaveSummary>>("SavorDb UIRead is unavailable");
+        }
+        return ServiceResult<std::vector<savor::db::UiBattleWaveSummary>>::Ok(db->ListBattleWaves(battle_set_id));
+    }
+
+    static ServiceResult<std::vector<savor::db::UiBattleTurnJobSummary>> ListBattleTurnJobsForWaves(
+        const std::vector<std::int64_t>& wave_ids) {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<std::vector<savor::db::UiBattleTurnJobSummary>>("SavorDb UIRead is unavailable");
+        }
+        return ServiceResult<std::vector<savor::db::UiBattleTurnJobSummary>>::Ok(
+            db->ListBattleTurnJobsForWaves(wave_ids));
+    }
+
+    static ServiceResult<BattleRunJobDetail> GetBattleTurnJobDetail(std::int64_t turn_job_id) {
+        auto* ui_read = UiReadDb();
+        if (ui_read == nullptr) {
+            return Unavailable<BattleRunJobDetail>("SavorDb UIRead is unavailable");
+        }
+
+        const auto battle = ui_read->GetBattleTurnJobDetail(turn_job_id);
+        if (!battle.has_value()) {
+            return NotFound<BattleRunJobDetail>("battle job not found");
+        }
+
+        BattleRunJobDetail out{};
+        out.battle = *battle;
+        const std::int64_t exec_job_id = battle->summary.exec_job_id.value_or(0);
+        if (exec_job_id > 0) {
+            out.job = ui_read->GetJobDetail(exec_job_id);
+        }
+        if (auto* execution = ExecutionDb(); execution != nullptr) {
+            if (exec_job_id > 0) {
+                out.events = execution->ListJobEvents(exec_job_id, 128);
+            }
+        }
+        return ServiceResult<BattleRunJobDetail>::Ok(std::move(out));
     }
 
 private:

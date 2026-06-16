@@ -71,8 +71,6 @@ CREATE TABLE IF NOT EXISTS au_tas_spec (
     tas_spec_id INTEGER PRIMARY KEY,
     tas_spec_base_id INTEGER NOT NULL,
     base_dtm_artifact_id INTEGER NOT NULL,
-    rtc_low INTEGER NOT NULL,
-    rtc_high INTEGER NOT NULL,
     created_at_utc INTEGER NOT NULL,
     FOREIGN KEY(tas_spec_base_id) REFERENCES au_tas_spec_base(tas_spec_base_id)
 );

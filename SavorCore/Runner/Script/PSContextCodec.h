@@ -6,7 +6,7 @@
 #include <variant>
 #include <unordered_map>
 #include "PhaseScriptVM.h"     // PSContext, PSValue
-#include "KeyRegistry.h"
+#include "CtxRegistry.h"
 
 namespace savor::psctx {
 
@@ -21,6 +21,8 @@ namespace savor::psctx {
 		F32 = 0x04,
 		F64 = 0x05,
 		STR = 0x10,
+		GC_INPUT_FRAME = 0x20,
+		BATTLE_PATH = 0x21,
 	};
 
 	struct Header {
@@ -31,14 +33,13 @@ namespace savor::psctx {
 	};
 
 	struct EntryPrefix {
-		uint16_t key_id;      // savor::keys::KeyId
+		uint16_t key_id;      // savor::context::key::KeyId
 		uint8_t  type;        // TypeCode
 		uint8_t  reserved;    // 0
 		uint32_t vlen;        // payload length
 	};
 
 	// Returns true on success. Unknown keys are skipped.
-	// Values of type GCInputFrame are ignored by encoder.
 	bool encode_numeric(const PSContext& ctx, std::vector<uint8_t>& out);
 
 	// Returns true on success; unknown key_ids are skipped.

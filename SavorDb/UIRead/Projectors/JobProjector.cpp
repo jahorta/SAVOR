@@ -53,6 +53,7 @@ bool JobProjector::ProjectFromOutbox(const std::string& projector_name, int max_
         { { "Execution.JobSetCreated.v1", 1 }, project_jobs },
         { { "Execution.JobQueued.v1", 1 }, project_jobs },
         { { "Execution.JobClaimed.v1", 1 }, project_jobs },
+        { { "Execution.JobStarted.v1", 1 }, project_jobs },
         { { "Execution.JobLeaseRenewed.v1", 1 }, project_jobs },
         { { "Execution.JobProgressed.v1", 1 }, project_jobs },
         { { "Execution.JobCompleted.v1", 1 }, project_jobs },

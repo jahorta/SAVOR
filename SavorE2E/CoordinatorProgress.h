@@ -9,8 +9,8 @@
 #include "Execution/IExecutionDb.h"
 #include "Execution/Workflow/WorkflowOrchestration.h"
 #include "Runner/Parallel/PRTypes.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
-#include "Runner/Parallel/WorkerTelemetry.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
+#include "Worker/WorkerTelemetry.h"
 
 namespace savor::e2e {
 

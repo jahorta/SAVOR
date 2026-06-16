@@ -2,6 +2,11 @@
 
 Date: 2026-04-13
 
+## Status
+
+Historical/reference resource. Keep this as background for SPICE parser/rendering work. SAVOR should not use
+this as current implementation guidance for in-repo file parsing.
+
 ## Scope
 
 This note maps:

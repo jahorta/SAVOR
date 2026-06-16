@@ -511,8 +511,6 @@ Target cleanup: `auto_schedule_battle_run` should be removed or ignored by new g
 - `tas_spec_id` (PK)
 - `tas_spec_base_id` (FK -> `au_tas_spec_base.tas_spec_base_id`)
 - `base_dtm_artifact_id` (int cross-context reference)
-- `rtc_low` (int)
-- `rtc_high` (int)
 - `created_at_utc` (int)
 
 Target cleanup: selected DTM artifacts are workflow instance input bindings, and RTC values/ranges are launcher input that fan out to per-instance arguments. Authored TAS specs should retain reusable TAS behavior only.

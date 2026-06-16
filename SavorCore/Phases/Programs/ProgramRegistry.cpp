@@ -11,6 +11,8 @@
 #include "BattleContext/BattleContextPayload.h"
 #include "BattleTurnRunner/BattleTurnRunnerPayload.h"
 #include "BattleTurnRunner/BattleTurnRunnerScript.h"
+#include "BattleMacroProbe/BattleMacroProbePayload.h"
+#include "BattleMacroProbe/BattleMacroProbeScript.h"
 #include "../../Runner/IPC/Wire.h"
 
 namespace savor::programs {
@@ -46,6 +48,8 @@ namespace savor::programs {
             return phase::battle::ctx::MakeBattleContextProbeProgram();
         case PK_BattleSingleTurnRunner:
             return phase::battle::turnrunner::MakeBattleTurnRunnerProgram();
+        case PK_BattleMacroProbe:
+            return phase::battle::macroprobe::MakeBattleMacroProbeProgram();
         default:
             return PhaseScript{};
         }
@@ -75,6 +79,8 @@ namespace savor::programs {
             return phase::battle::ctx::decode_payload(payload, out_ctx);
         case PK_BattleSingleTurnRunner:
             return phase::battle::turnrunner::decode_payload(payload, out_ctx);
+        case PK_BattleMacroProbe:
+            return phase::battle::macroprobe::decode_payload(payload, out_ctx);
         default:
             return false;
         }

@@ -7,6 +7,7 @@
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
+#include "../Common/Events/OutboxEventIds.h"
 
 namespace savor::db::analysis {
 
@@ -122,7 +123,6 @@ OutboxMode ResolveOutboxMode(sqlite3* db) {
 
 bool InsertSeedProbeOutboxEvent(
     sqlite3* db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_kind,
     std::string_view aggregate_id,
@@ -132,43 +132,64 @@ bool InsertSeedProbeOutboxEvent(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO sp_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'AnalysisSeedProbe',?3,?4,?5,?6,?7,?8,?9);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "AnalysisSeedProbe",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
-    }
 
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO sp_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,?2,1,'AnalysisSeedProbe',?3,?4,?5,?6,?7,?8,?9);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
         }
-        return false;
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 9, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
     }
-    return true;
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique seed-probe outbox event id";
+    }
+    return false;
 }
 
 bool InsertBattleOutboxEvent(
     sqlite3* db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_kind,
     std::string_view aggregate_id,
@@ -178,38 +199,60 @@ bool InsertBattleOutboxEvent(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO ab_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'AnalysisBattle',?3,?4,?5,?6,?7,?8,?9);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "AnalysisBattle",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
-    }
 
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO ab_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,?2,1,'AnalysisBattle',?3,?4,?5,?6,?7,?8,?9);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
         }
-        return false;
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 9, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
     }
-    return true;
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique battle outbox event id";
+    }
+    return false;
 }
 
 std::optional<std::int64_t> ProbeRunIdForResult(sqlite3* db, std::int64_t probe_result_id) {
@@ -1053,7 +1096,7 @@ bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_result_id <= 0 || command.input_frame_id <= 0 || command.event_id.empty()) {
+    if (command.probe_result_id <= 0 || command.input_frame_id <= 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1155,7 +1198,6 @@ bool SqliteAnalysisDb::EnsureSeedProbeUniqueSeedDelta(
 
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.UniqueSeedRecorded.v1",
             "probe_run",
             std::to_string(probe_run_id.value()),
@@ -1191,8 +1233,7 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
     if (command.name.empty()
         || command.probe_flavor.empty()
         || command.breakpoint_policy_name.empty()
-        || command.segment_source_kind.empty()
-        || command.event_id.empty()) {
+        || command.segment_source_kind.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1240,7 +1281,6 @@ bool SqliteAnalysisDb::CreateSeedProbeSet(
     const auto probe_set_id = sqlite3_last_insert_rowid(db_);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.SetCreated.v1",
             "probe_set",
             std::to_string(probe_set_id),
@@ -1279,8 +1319,7 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     if (command.probe_set_id <= 0
         || command.entry_savestate_id <= 0
         || command.seed_probe_spec_id <= 0
-        || command.status.empty()
-        || command.event_id.empty()) {
+        || command.status.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1304,8 +1343,8 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1318,10 +1357,15 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     sqlite3_bind_int64(insert_run.st, 1, command.probe_set_id);
     sqlite3_bind_int64(insert_run.st, 2, command.entry_savestate_id);
     sqlite3_bind_int64(insert_run.st, 3, command.seed_probe_spec_id);
-    sqlite3_bind_int(insert_run.st, 4, command.codec_version);
-    sqlite3_bind_text(insert_run.st, 5, command.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_run.st, 6, *unique_input_set_id);
-    sqlite3_bind_int64(insert_run.st, 7, command.requested_at_utc.time_since_epoch().count());
+    if (command.launch_samples_per_axis > 0) {
+        sqlite3_bind_int(insert_run.st, 4, command.launch_samples_per_axis);
+    } else {
+        sqlite3_bind_null(insert_run.st, 4);
+    }
+    sqlite3_bind_int(insert_run.st, 5, command.codec_version);
+    sqlite3_bind_text(insert_run.st, 6, command.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_run.st, 7, *unique_input_set_id);
+    sqlite3_bind_int64(insert_run.st, 8, command.requested_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_run.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -1362,7 +1406,6 @@ bool SqliteAnalysisDb::RequestSeedProbeRun(
     const auto aggregate_id = std::to_string(probe_run_id);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.RunRequested.v1",
             "probe_run",
             aggregate_id,
@@ -1419,8 +1462,8 @@ bool SqliteAnalysisDb::CreateSeedProbeRunForSet(
     Statement insert_run;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,NULL);",
+            "INSERT INTO sp_probe_run(probe_set_id,entry_savestate_id,seed_probe_spec_id,launch_samples_per_axis,codec_version,status,unique_input_set_id,requested_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,NULL,?4,?5,?6,?7,NULL);",
             -1,
             &insert_run.st,
             nullptr)
@@ -1492,7 +1535,7 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT probe_run_id, probe_set_id, seed_probe_spec_id, entry_savestate_id, codec_version, status, "
+            "SELECT probe_run_id, probe_set_id, seed_probe_spec_id, entry_savestate_id, launch_samples_per_axis, codec_version, status, "
             "unique_input_set_id, requested_at_utc, completed_at_utc "
             "FROM sp_probe_run WHERE probe_run_id=?1 LIMIT 1;",
             -1,
@@ -1511,12 +1554,13 @@ std::optional<SeedProbeRunSnapshot> SqliteAnalysisDb::GetSeedProbeRun(std::int64
     snapshot.probe_set_id = sqlite3_column_int64(st.st, 1);
     snapshot.seed_probe_spec_id = sqlite3_column_int64(st.st, 2);
     snapshot.entry_savestate_id = sqlite3_column_int64(st.st, 3);
-    snapshot.codec_version = sqlite3_column_int(st.st, 4);
-    snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 5));
-    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 6);
-    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 7)));
-    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
-        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 8)));
+    snapshot.launch_samples_per_axis = sqlite3_column_type(st.st, 4) == SQLITE_NULL ? 0 : sqlite3_column_int(st.st, 4);
+    snapshot.codec_version = sqlite3_column_int(st.st, 5);
+    snapshot.status = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+    snapshot.unique_input_set_id = sqlite3_column_int64(st.st, 7);
+    snapshot.requested_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 8)));
+    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
+        snapshot.completed_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 9)));
     }
     return snapshot;
 }
@@ -1689,7 +1733,7 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_result_id <= 0 || command.source_kind.empty() || command.event_id.empty()) {
+    if (command.probe_result_id <= 0 || command.source_kind.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1737,7 +1781,6 @@ bool SqliteAnalysisDb::RecordSeedProbeNeutralSeed(
     const auto neutral_seed_id = sqlite3_last_insert_rowid(db_);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.NeutralSeedRecorded.v1",
             "probe_run",
             std::to_string(probe_run_id.value()),
@@ -1773,7 +1816,7 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_result_id <= 0 || command.axis_xy_id < 0 || command.source_family.empty() || command.event_id.empty()) {
+    if (command.probe_result_id <= 0 || command.axis_xy_id < 0 || command.source_family.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1791,27 +1834,32 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         return false;
     }
 
-    Statement existing_event;
+    const auto axis_x = static_cast<int>((static_cast<std::uint64_t>(command.axis_xy_id) >> 8) & 0xff);
+    const auto axis_y = static_cast<int>(static_cast<std::uint64_t>(command.axis_xy_id) & 0xff);
+
+    Statement existing_grid;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT payload_ref_id FROM sp_outbox_message "
-            "WHERE event_id=?1 "
-            "  AND event_type='AnalysisSeedProbe.GridSeedRecorded.v1' "
-            "  AND payload_ref_kind='grid_seed' "
+            "SELECT grid_seed_id FROM sp_grid_seed "
+            "WHERE probe_result_id=?1 AND source_family=?2 AND axis_xy_id=?3 AND seed_value=?4 AND seed_delta=?5 "
             "LIMIT 1;",
             -1,
-            &existing_event.st,
+            &existing_grid.st,
             nullptr)
         != SQLITE_OK) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    sqlite3_bind_text(existing_event.st, 1, command.event_id.c_str(), -1, SQLITE_TRANSIENT);
-    const auto existing_event_rc = sqlite3_step(existing_event.st);
-    if (existing_event_rc == SQLITE_ROW) {
+    sqlite3_bind_int64(existing_grid.st, 1, command.probe_result_id);
+    sqlite3_bind_text(existing_grid.st, 2, command.source_family.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(existing_grid.st, 3, command.axis_xy_id);
+    sqlite3_bind_int64(existing_grid.st, 4, command.seed_value);
+    sqlite3_bind_int64(existing_grid.st, 5, command.seed_delta);
+    const auto existing_grid_rc = sqlite3_step(existing_grid.st);
+    if (existing_grid_rc == SQLITE_ROW) {
         if (grid_seed_id_out) {
-            *grid_seed_id_out = sqlite3_column_int64(existing_event.st, 0);
+            *grid_seed_id_out = sqlite3_column_int64(existing_grid.st, 0);
         }
         if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
             if (error_out != nullptr) {
@@ -1822,16 +1870,13 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
         }
         return true;
     }
-    if (existing_event_rc != SQLITE_DONE) {
+    if (existing_grid_rc != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
         }
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-
-    const auto axis_x = static_cast<int>((static_cast<std::uint64_t>(command.axis_xy_id) >> 8) & 0xff);
-    const auto axis_y = static_cast<int>(static_cast<std::uint64_t>(command.axis_xy_id) & 0xff);
 
     Statement insert_axis;
     if (sqlite3_prepare_v2(
@@ -1889,7 +1934,6 @@ bool SqliteAnalysisDb::RecordSeedProbeGridSeed(
     const auto grid_seed_id = sqlite3_last_insert_rowid(db_);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.GridSeedRecorded.v1",
             "probe_run",
             std::to_string(probe_run_id.value()),
@@ -1933,7 +1977,7 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_run_id <= 0 || command.encounter_id.empty() || command.event_id.empty()) {
+    if (command.probe_run_id <= 0 || command.encounter_id.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -1982,7 +2026,6 @@ bool SqliteAnalysisDb::RecordSeedProbeEncounterProjection(
     const auto encounter_projection_id = sqlite3_last_insert_rowid(db_);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.EncounterProjectionRecorded.v1",
             "probe_run",
             std::to_string(command.probe_run_id),
@@ -2018,7 +2061,7 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.probe_run_id <= 0 || command.result_status.empty() || command.run_status.empty() || command.event_id.empty()) {
+    if (command.probe_run_id <= 0 || command.result_status.empty() || command.run_status.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2086,7 +2129,6 @@ bool SqliteAnalysisDb::CompleteSeedProbeRun(
     const auto probe_result_id = sqlite3_last_insert_rowid(db_);
     if (!InsertSeedProbeOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisSeedProbe.RunCompleted.v1",
             "probe_run",
             std::to_string(command.probe_run_id),
@@ -2126,8 +2168,7 @@ bool SqliteAnalysisDb::CreateBattleSet(
         || command.entry_savestate_id <= 0
         || command.battle_run_spec_id <= 0
         || command.explorer_settings_id <= 0
-        || command.status == BattleSetStatus::Unknown
-        || command.event_id.empty()) {
+        || command.status == BattleSetStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2142,8 +2183,8 @@ bool SqliteAnalysisDb::CreateBattleSet(
     Statement insert_set;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,NULL);",
+            "INSERT INTO ab_battle_set(name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL);",
             -1,
             &insert_set.st,
             nullptr)
@@ -2157,9 +2198,11 @@ bool SqliteAnalysisDb::CreateBattleSet(
     sqlite3_bind_int64(insert_set.st, 2, command.entry_savestate_id);
     sqlite3_bind_int64(insert_set.st, 3, command.battle_run_spec_id);
     sqlite3_bind_int64(insert_set.st, 4, command.explorer_settings_id);
+    sqlite3_bind_int(insert_set.st, 5, command.launch_fake_attack_min);
+    sqlite3_bind_int(insert_set.st, 6, command.launch_fake_attack_max);
     const auto status = ToDbString(command.status);
-    sqlite3_bind_text(insert_set.st, 5, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(insert_set.st, 6, command.created_at_utc.time_since_epoch().count());
+    sqlite3_bind_text(insert_set.st, 7, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(insert_set.st, 8, command.created_at_utc.time_since_epoch().count());
     if (sqlite3_step(insert_set.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -2171,7 +2214,6 @@ bool SqliteAnalysisDb::CreateBattleSet(
     const auto battle_set_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.BattleSetCreated.v1",
             "battle_set",
             std::to_string(battle_set_id),
@@ -2209,8 +2251,7 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     }
     if (command.battle_set_id <= 0
         || command.source_kind == BattleSeedCandidateSourceKind::Unknown
-        || command.candidate_status == BattleSeedCandidateStatus::Unknown
-        || command.event_id.empty()) {
+        || command.candidate_status == BattleSeedCandidateStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2258,7 +2299,6 @@ bool SqliteAnalysisDb::AddBattleSeedCandidate(
     const auto seed_candidate_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.SeedCandidateAdded.v1",
             "battle_set",
             std::to_string(command.battle_set_id),
@@ -2296,8 +2336,7 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     }
     if (command.battle_set_id <= 0
         || command.seed_candidate_id <= 0
-        || command.status == BattleTurnWaveStatus::Unknown
-        || command.event_id.empty()) {
+        || command.status == BattleTurnWaveStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2350,7 +2389,6 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     const auto wave_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.TurnWaveCreated.v1",
             "battle_set",
             std::to_string(command.battle_set_id),
@@ -2386,7 +2424,7 @@ bool SqliteAnalysisDb::CreateBattleContextProbe(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.source_savestate_id <= 0 || command.probe_status == BattleContextProbeStatus::Unknown || command.event_id.empty()) {
+    if (command.source_savestate_id <= 0 || command.probe_status == BattleContextProbeStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2433,7 +2471,6 @@ bool SqliteAnalysisDb::CreateBattleContextProbe(
     const auto context_probe_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.ContextProbeCreated.v1",
             battle_set_id.has_value() ? "battle_set" : "battle_context_probe",
             battle_set_id.has_value() ? std::to_string(*battle_set_id) : std::to_string(context_probe_id),
@@ -2541,7 +2578,7 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.wave_id <= 0 || command.plan_id <= 0 || command.job_state == BattleTurnJobState::Unknown || command.event_id.empty()) {
+    if (command.wave_id <= 0 || command.plan_id <= 0 || command.job_state == BattleTurnJobState::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2629,7 +2666,6 @@ bool SqliteAnalysisDb::RecordBattleTurnJob(
         : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.TurnJobRecorded.v1",
             "battle_set",
             std::to_string(battle_set_id.value()),
@@ -2756,8 +2792,7 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
     }
     if (command.battle_set_id <= 0
         || command.pool_name.empty()
-        || command.criterion_kind == BattleSelectionCriterionKind::Unknown
-        || command.event_id.empty()) {
+        || command.criterion_kind == BattleSelectionCriterionKind::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2800,7 +2835,6 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
     const auto selection_pool_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.SelectionPoolCreated.v1",
             "battle_set",
             std::to_string(command.battle_set_id),
@@ -2874,7 +2908,7 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.selection_pool_id <= 0 || command.turn_job_id <= 0 || command.decision_kind == BattleSelectionDecisionKind::Unknown || command.event_id.empty()) {
+    if (command.selection_pool_id <= 0 || command.turn_job_id <= 0 || command.decision_kind == BattleSelectionDecisionKind::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2941,7 +2975,6 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
     }
     if (inserted_decision && !InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.SelectionDecisionRecorded.v1",
             "battle_set",
             std::to_string(battle_set_id.value()),
@@ -2977,7 +3010,7 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.turn_job_id <= 0 || command.manual_followup_status == BattleManualFollowupStatus::Unknown || command.event_id.empty()) {
+    if (command.turn_job_id <= 0 || command.manual_followup_status == BattleManualFollowupStatus::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -3047,7 +3080,6 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
 
     if (!InsertBattleOutboxEvent(
             db_,
-            command.event_id,
             "AnalysisBattle.TerminalFollowupUpdated.v1",
             "battle_set",
             std::to_string(battle_set_id.value()),
@@ -3153,7 +3185,7 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,status,created_at_utc,completed_at_utc "
+        "SELECT battle_set_id,name,entry_savestate_id,battle_run_spec_id,explorer_settings_id,launch_fake_attack_min,launch_fake_attack_max,status,created_at_utc,completed_at_utc "
         "FROM ab_battle_set WHERE battle_set_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -3168,9 +3200,11 @@ std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t bat
     out.entry_savestate_id = sqlite3_column_int64(st.st, 2);
     out.battle_run_spec_id = sqlite3_column_int64(st.st, 3);
     out.explorer_settings_id = sqlite3_column_int64(st.st, 4);
-    out.status = ParseBattleSetStatus(ColumnText(st.st, 5));
-    out.created_at_utc = ColumnTime(st.st, 6);
-    out.completed_at_utc = ColumnTimeOptional(st.st, 7);
+    out.launch_fake_attack_min = sqlite3_column_int(st.st, 5);
+    out.launch_fake_attack_max = sqlite3_column_int(st.st, 6);
+    out.status = ParseBattleSetStatus(ColumnText(st.st, 7));
+    out.created_at_utc = ColumnTime(st.st, 8);
+    out.completed_at_utc = ColumnTimeOptional(st.st, 9);
     return out;
 }
 

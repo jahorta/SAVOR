@@ -1,5 +1,10 @@
 # SCT Parsing Plan
 
+## Status
+
+Historical/reference resource. New SCT parsing belongs in SPICE. SAVOR should consume SPICE script/trigger
+analysis outputs for navigation planning rather than implementing this parser plan directly.
+
 ## Purpose
 
 This document plans the first implementation pass for parsing **Skies of Arcadia Legends SCT files** for SAVOR's Navigation Phase.
@@ -15,13 +20,13 @@ The immediate goal is to parse SCT files into a form where we can:
 This plan is specifically aligned to the **DBMigrate** branch architecture and the current Navigation Phase goals already documented in that branch. It also assumes the existing Python parser in `SALSA` is the best current behavioral reference, but that the C++ implementation for SAVOR should intentionally differ in one major way:
 
 - the SALSA parser aims for broad reconstruction and attempts to account for essentially all bytes,
-- the SAVOR parser should instead be **control-flow guided**, using `jmp` and `switch` instructions to follow reachable script paths and avoid parsing garbage or intentionally skipped regions.
+- the SPICE parser should instead be **control-flow guided**, using `jmp` and `switch` instructions to follow reachable script paths and avoid parsing garbage or intentionally skipped regions.
 
 ## Scope
 
 The initial implementation should support the following:
 
-- read SCT bytes from the ISO through the existing Dolphin-oriented extraction direction, not from an external extractor pipeline. [#2]
+- consume SCT-derived script/trigger analysis from SPICE. [#2]
 - parse the SCT container and section structure,
 - decode instructions well enough to build section-local and cross-section control flow,
 - follow `jmp` and `switch` instructions to identify reachable instruction streams,
@@ -49,7 +54,7 @@ The existing DBMigrate planning docs already establish several requirements that
 2. The planner needs trigger and cutscene modeling, including activation predicates, required flags, and resulting state transitions. [#1]
 3. Cutscene detection should combine MLD trigger and flag combinations with script decoding and runtime heuristics. [#2]
 4. Script section starts, jump targets, and player-position-set behavior are useful for transition cataloging. [#2]
-5. The current file acquisition direction is to read required files from the ISO through Dolphin APIs. [#2]
+5. The historical file acquisition direction was Dolphin APIs; current direction is SPICE-owned file parsing and SAVOR-side consumption of SPICE artifacts. [#2]
 
 ### Confirmed from the current project direction
 
@@ -57,7 +62,7 @@ The user also established the following implementation constraints for this work
 
 1. We are working on the **DBMigrate** branch of `SAVOR`.
 2. The existing Python parser in `SALSA` is a useful reference but should **not** be ported mechanically.
-3. The new C++ parser should be designed for simulator use, not archival reconstruction.
+3. The SPICE parser output used by SAVOR should be designed for simulator/navigation use, not only archival reconstruction.
 4. Reachability should be guided by `jmp` and `switch` instructions so we avoid treating all skipped bytes as meaningful script.
 5. Flag information is important enough that the parser likely needs broad enough coverage to preserve trigger-related semantics.
 

@@ -55,16 +55,16 @@ Prepare contracts and schema so later phases can ship safely without changing co
 3. **Validation gates before phase exit**
    - New events pass schema checks.
    - Replay/backfill pass has zero unresolved payload rows.
-   - Both verification paths are required: `SavorTests` and `SavorDbValidation`.
+   - Both current verification paths are required: `SavorTests` and relevant SavorE2E scenarios.
+   - Future schema-report output should come from `SavorDbSchemaExport`.
 
 ## Validation execution requirements
 
 1. **SavorTests**
    - Run phase-0 schema/contract tests in `SavorTests`.
-2. **SavorDbValidation CLI**
-   - Run `SavorDbValidation --run phase0.event_contracts`.
-   - Run `SavorDbValidation --run phase0.replay_backfill`.
-   - Optional discovery: `SavorDbValidation --list`.
+2. **Schema/reporting utility**
+   - Keep phase-0 contract checks in `SavorTests` and SavorE2E scenarios.
+   - Once functional, run `SavorDbSchemaExport` to refresh human-readable schema reports.
 
 ## Suggested SavorTests to add for phase exit readiness
 

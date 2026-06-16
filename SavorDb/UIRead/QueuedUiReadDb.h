@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,8 @@ public:
     std::vector<UiProgramKind> ListProgramKinds() const override;
     UiReadPage<UiJobSummary> ListJobs(
         const UiReadJobListQuery& query) const override;
+    UiJobStateCounts CountJobsByState(
+        const UiReadJobListQuery& query) const override;
     std::optional<UiJobSummary> GetJobSummary(
         std::int64_t job_id) const override;
     std::optional<UiJobDetail> GetJobDetail(
@@ -50,6 +53,15 @@ public:
         const UiWorkflowInstanceListQuery& query) const override;
     std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const override;
+
+    UiReadPage<UiBattleGroupSummary> ListBattleGroups(
+        const UiBattleGroupListQuery& query) const override;
+    std::vector<UiBattleWaveSummary> ListBattleWaves(
+        std::int64_t battle_set_id) const override;
+    std::vector<UiBattleTurnJobSummary> ListBattleTurnJobsForWaves(
+        const std::vector<std::int64_t>& wave_ids) const override;
+    std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
+        std::int64_t turn_job_id) const override;
 
     UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const override;
@@ -111,10 +123,18 @@ public:
 
 private:
     template <typename Result, typename Fn>
-    Result ExecuteRead(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteRead(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     template <typename Result, typename Fn>
-    Result ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteWrite(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     IUiReadDb* inner_ = nullptr;
     core::QueuedDbConfig config_{};

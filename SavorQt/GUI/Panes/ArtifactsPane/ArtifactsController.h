@@ -7,6 +7,7 @@
 #include <QtCore/QString>
 
 #include "DB/SavorDbArtifactService.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 
 #include <optional>
 
@@ -52,6 +53,9 @@ private:
     using ObjectPageResult = savorqt::db::ServiceResult<savor::db::UiReadPage<savor::db::UiArtifactSummary>>;
     using ObjectRowResult = savorqt::db::ServiceResult<savor::db::UiArtifactSummary>;
     using VoidResult = savorqt::db::ServiceResult<void>;
+    struct ObjectPageFetchRequest {
+        savor::db::UiReadArtifactListQuery query{};
+    };
 
     void refreshRootsState();
     void kickPageFetch();
@@ -69,8 +73,7 @@ private:
     std::optional<savor::db::UiReadListCursor> before_;
     std::optional<savor::db::UiReadListCursor> after_;
     bool initialLoadStarted_ = false;
-    bool pendingPageFetch_ = false;
-    QFutureWatcher<ObjectPageResult> pageWatcher_;
+    savorqt::gui::AsyncRefreshPipeline<ObjectPageFetchRequest, ObjectPageResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<ObjectRowResult> importWatcher_;
     QFutureWatcher<VoidResult> materializeWatcher_;
 };

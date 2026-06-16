@@ -68,6 +68,7 @@ namespace savor {
         PK_BattleContextProbe = 4,
         PK_BattleSingleTurnRunner = 5,
         PK_TasInputStreamDetector = 6,
+        PK_BattleMacroProbe = 7,
     };
 
     // Payload used for TAS jobs (paths are NUL-terminated, Windows MAX_PATH safe)

@@ -76,6 +76,7 @@ inline bool ValidateExecutionWorkflowJobPayloadV1(const EventEnvelope& envelope,
     }
     if (envelope.event_type == "Execution.JobQueued.v1"
         || envelope.event_type == "Execution.JobClaimed.v1"
+        || envelope.event_type == "Execution.JobStarted.v1"
         || envelope.event_type == "Execution.JobLeaseRenewed.v1"
         || envelope.event_type == "Execution.JobProgressed.v1"
         || envelope.event_type == "Execution.JobCompleted.v1"

@@ -1,7 +1,7 @@
 #pragma once
 #include "../../../Runner/Script/PhaseScriptVM.h"
-#include "../../../Runner/Script/KeyRegistry.h"
-#include "../../../Runner/Breakpoints/BPRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
+#include "../../../Runner/Breakpoints/BpRegistry.h"
 #include "BattleOutcome.h"
 
 using namespace savor;
@@ -14,8 +14,8 @@ namespace phase::battle::runner {
     static constexpr BPKey BP_Victory = bp::battle::EndBattleVictory;
     static constexpr BPKey BP_Defeat = bp::battle::EndBattleDefeat;
 
-    static constexpr keys::KeyId DW_Outcome = keys::core::DW_RUN_OUTCOME_CODE;
-    static constexpr keys::KeyId Battle_Outcome = keys::battle::BATTLE_OUTCOME;
+    static constexpr savor::context::key::KeyId DW_Outcome = savor::context::key::core::DW_RUN_OUTCOME_CODE;
+    static constexpr savor::context::key::KeyId Battle_Outcome = savor::context::key::battle::BATTLE_OUTCOME;
 
     static const std::string LabelInputTurnActions = "APPLY_INPUTS";
     static const std::string LabelRunTurn = "RUN_TURN";
@@ -41,8 +41,8 @@ namespace phase::battle::runner {
         ps.ops.push_back(OpArmBpsFromPredTable());
         ps.ops.push_back(OpLoadSnapshot());
 
-        ps.ops.push_back(OpSetU32(keys::battle::ACTIVE_TURN, 0));
-        ps.ops.push_back(OpApplyInputFrom(keys::battle::INITIAL_INPUT));
+        ps.ops.push_back(OpSetU32(savor::context::key::battle::ACTIVE_TURN, 0));
+        ps.ops.push_back(OpApplyInputFrom(savor::context::key::battle::INITIAL_INPUT));
         ps.ops.push_back(OpGoto(LabelRunTurn));  // Going to LabelRunTurn so that we can run until turn inputs checking that the initial battle state is favorable (might need to check turn_type at start of battle)
 
         // ============  Label Input Turn Actions  ===================
@@ -52,11 +52,11 @@ namespace phase::battle::runner {
         // Get context and build a plan - fail fast if plan fails
         ps.ops.push_back(OpGetBattleContext());
         ps.ops.push_back(OpBuildTurnInputFromActions());
-        ps.ops.push_back(OpGotoIf(keys::battle::PLAN_MATERIALIZE_ERR, PSCmp::NE, 0, LabelMaterializeFail));
+        ps.ops.push_back(OpGotoIf(savor::context::key::battle::PLAN_MATERIALIZE_ERR, PSCmp::NE, 0, LabelMaterializeFail));
 
         // apply input plan
-        ps.ops.push_back(OpApplyPlanFrameFrom(keys::battle::ACTIVE_TURN));
-        ps.ops.push_back(OpGotoIf(keys::core::PLAN_DONE, PSCmp::EQ, 1, LabelRunTurn));
+        ps.ops.push_back(OpApplyPlanFrameFrom(savor::context::key::battle::ACTIVE_TURN));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::PLAN_DONE, PSCmp::EQ, 1, LabelRunTurn));
         ps.ops.push_back(OpGoto(LabelInputTurnActions));
 
         // ============  Label Run Turn  ===================
@@ -66,26 +66,26 @@ namespace phase::battle::runner {
         ps.ops.push_back(OpRunUntilBp());
         ps.ops.push_back(OpGotoIf(DW_Outcome, PSCmp::NE, 0, LabelDWErr));
         ps.ops.push_back(OpCapturePredBaselines());
-        ps.ops.push_back(OpEvalPredicatesAtHitBP()); // Sets whether all predicates passed into keys::core::PRED_ALL_PASSED
+        ps.ops.push_back(OpEvalPredicatesAtHitBP()); // Sets whether all predicates passed into savor::context::key::core::PRED_ALL_PASSED
 
         // Check exit conditions
-        ps.ops.push_back(OpGotoIf(keys::core::PRED_ABORT_RUN, PSCmp::EQ, (uint32_t)1, LabelPredFail));
-        ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Victory, LabelVictory));
-        ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Defeat, LabelDefeat));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::PRED_ABORT_RUN, PSCmp::EQ, (uint32_t)1, LabelPredFail));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Victory, LabelVictory));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_Defeat, LabelDefeat));
 
         
         // If we are not to the next input bp, keep running
-        ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelADV));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::EQ, (uint32_t)BP_BattleLoadComplete, LabelADV));
         ps.ops.push_back(OpSetTimeoutToMS(long_timeout));
-        ps.ops.push_back(OpGotoIf(keys::core::RUN_HIT_BP_KEY, PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelRunTurn));
+        ps.ops.push_back(OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, PSCmp::NE, (uint32_t)BP_BattleAcceptInput, LabelRunTurn));
 
-        ps.ops.push_back(OpGotoIfKeys(keys::battle::ACTIVE_TURN, PSCmp::LT, keys::battle::LAST_TURN, LabelADV));
+        ps.ops.push_back(OpGotoIfKeys(savor::context::key::battle::ACTIVE_TURN, PSCmp::LT, savor::context::key::battle::LAST_TURN, LabelADV));
         ps.ops.push_back(OpReturnResult(Battle_Outcome, (uint32_t)Outcome::TurnsExhausted));
 
         // ============  Label ADV  ===================
         ps.ops.push_back(OpLabel(LabelADV));
         ps.ops.push_back(OpSetTimeoutToMS(short_timeout));
-        ps.ops.push_back(OpAddU32(keys::battle::ACTIVE_TURN, 1));
+        ps.ops.push_back(OpAddU32(savor::context::key::battle::ACTIVE_TURN, 1));
         ps.ops.push_back(OpGoto(LabelInputTurnActions));
 
         // ============  Label Victory  ===================

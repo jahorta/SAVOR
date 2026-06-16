@@ -1,18 +1,21 @@
 # 04 - Phase and Job Integration
 
+## Status
+
+Future plan. SAVOR owns workflow/job integration. SPICE owns file parsing and 3D area-content generation.
+
 ## Goal
 
 Define how Navigation Phase fits into existing SAVOR phase/job infrastructure and UI workflow.
 
 ## Runtime Data Source Decision
 
-- No fallback source required for MVP.
-- Use ISO path configured in UI settings.
-- Read game content through Dolphin stack:
-  - `UICommon::GameFile(path)`
-  - `DiscIO::CreateVolume(game.GetFilePath())`
-  - partition discovery and filesystem walk
-- Use Game ID (`GetGameID`) as extraction/version key.
+- No SAVOR-side file parser fallback required for MVP.
+- Use the SPICE submodule to read package/file content for the current area.
+- SPICE is responsible for MLD/SCT and related SoA filetype parsing.
+- SAVOR passes the active area identity and source artifact references to SPICE and consumes the generated
+  area view/navigation-content artifact.
+- Use Game ID plus area/content identity as extraction/version keys.
 
 ## Versioning Decision
 
@@ -33,13 +36,14 @@ Draft identifiers:
 
 ## 1) `nav.build_world`
 Input:
-- ISO path
-- map/dungeon ID
+- SPICE area-content request or existing SPICE area artifact
+- map/dungeon/area ID
 
 Output artifacts:
+- `spice_area_view`
 - `nav_world_blob`
 - `nav_script_index`
-- extraction diagnostics
+- parse/integration diagnostics
 
 ## 2) `nav.plan_global`
 Input:
@@ -76,9 +80,10 @@ Output:
 ## Draft Job Payload Fields
 
 - `seed_snapshot_path`
-- `iso_path`
+- `source_artifact_id`
 - `game_id`
 - `map_id`
+- `spice_area_artifact_id`
 - `start_descriptor`
 - `target_descriptor`
 - `planner_config_json`
@@ -97,13 +102,14 @@ Output:
 
 - ISO missing/unreadable
 - Unsupported game ID
-- World extraction/decode failure (MLD/SCT)
+- SPICE area content generation failure
 - Start/target resolution failed
 - No feasible route in graph
 - Control solver failed to realize spline
 
 ## Artifact Inventory (Draft)
 
+- `spice_area_view.json`
 - `nav_world_blob.bin`
 - `nav_script_index.bin`
 - `nav_route_candidates.jsonl`
@@ -113,9 +119,9 @@ Output:
 
 ## UI/Visualization Integration
 
-- Add service to produce visual world-model reconstruction.
+- Add service to request/consume SPICE visual world-model reconstruction.
 - Add 3D viewer pane for:
-  - world geometry/triggers visualization
+  - SPICE area geometry, walking planes, and target visualization
   - start/target specification
   - selected path/spline overlay
 - Phase is UI-first; no CLI objective-entry path planned for MVP.

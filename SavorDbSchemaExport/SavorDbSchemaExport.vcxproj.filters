@@ -16,9 +16,6 @@
     <ClCompile Include="SavorDbSchemaExport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="ExportCurrentDbSchemas.cpp">
       <Filter>Utils</Filter>
     </ClCompile>

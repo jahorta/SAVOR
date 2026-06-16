@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Execution">
+      <UniqueIdentifier>{00cbe8a2-8c34-49a8-a7f0-a476bb23445e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Worker">
+      <UniqueIdentifier>{099a8d7b-3b57-4ecf-a70d-8175ec0d9359}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Execution\ArchiveWorkflowCommands.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\DBWorkflowCoordinatorFactory.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\DBWorkflowWorkerCoordinator.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\JobMaterializationService.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\StepInputAggregationService.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\WorkflowCoordinatorBridge.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\WorkflowDispatchCoordinator.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\WorkflowIntegrationMode.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Execution\WorkflowSchedulerAdapter.h">
+      <Filter>Execution</Filter>
+    </ClInclude>
+    <ClInclude Include="Worker\ProcessWorker.h">
+      <Filter>Worker</Filter>
+    </ClInclude>
+    <ClInclude Include="Worker\TSQueue.h">
+      <Filter>Worker</Filter>
+    </ClInclude>
+    <ClInclude Include="Worker\WorkerStatusRegistry.h">
+      <Filter>Worker</Filter>
+    </ClInclude>
+    <ClInclude Include="Worker\WorkerTelemetry.h">
+      <Filter>Worker</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Execution\ArchiveWorkflowCommands.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\DBWorkflowCoordinatorFactory.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\DBWorkflowWorkerCoordinator.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\JobMaterializationService.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\StepInputAggregationService.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\WorkflowCoordinatorBridge.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\WorkflowDispatchCoordinator.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Execution\WorkflowSchedulerAdapter.cpp">
+      <Filter>Execution</Filter>
+    </ClCompile>
+    <ClCompile Include="Worker\ProcessWorker.cpp">
+      <Filter>Worker</Filter>
+    </ClCompile>
+    <ClCompile Include="Worker\WorkerStatusRegistry.cpp">
+      <Filter>Worker</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

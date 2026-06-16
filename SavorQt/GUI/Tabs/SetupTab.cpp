@@ -4,9 +4,13 @@
 #include "DB/SavorDbAuthoringService.h"
 #include "DB/SavorDbWorkflowService.h"
 #include "GUI/Panes/CoordinatorPane/CoordinatorController.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
+#include "GUI/Refresh/RowUpdate.h"
 #include "SavorDbRuntime.h"
 
 #include <QtCore/QSize>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QIcon>
 #include <QtWidgets/QAbstractItemView>
@@ -29,8 +33,11 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <exception>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace {
@@ -65,6 +72,51 @@ struct LaunchEditors {
     std::vector<LaunchInputEditor> inputs;
     std::vector<LaunchArgumentEditor> arguments;
     std::vector<TasRtcEditor> tasRtc;
+};
+
+struct LaunchInputDraft {
+    bool overrideChecked = false;
+    QString refKind;
+    QString refId;
+};
+
+struct LaunchArgumentDraft {
+    QString value;
+};
+
+struct TasRtcDraft {
+    bool rangeChecked = false;
+    QString single;
+    QString min;
+    QString max;
+};
+
+struct LaunchDraft {
+    std::map<QString, LaunchInputDraft> inputs;
+    std::map<QString, LaunchArgumentDraft> arguments;
+    std::map<QString, TasRtcDraft> tasRtc;
+};
+
+struct WorkflowGraphViewRow {
+    QString name;
+    QString comboText;
+    QString nodeCount;
+    QString revision;
+    qint64 graphId = -1;
+    int graphIndex = -1;
+};
+
+struct WorkflowGraphRefreshRequest {
+    bool showHidden = false;
+    qint64 selectedGraphId = -1;
+};
+
+struct WorkflowGraphRefreshData {
+    std::vector<savor::db::WorkflowGraphSnapshot> graphs;
+    std::vector<WorkflowGraphViewRow> rows;
+    int visibleCount = 0;
+    int hiddenCount = 0;
+    int comboIndexToSelect = -1;
 };
 
 QString qs(const std::string& value)
@@ -152,6 +204,32 @@ bool isBattleChainUnit(const QString& unitKind)
     return unitKind == QStringLiteral("battle_chain");
 }
 
+bool coordinatorIsoReady(const CoordinatorController* controller)
+{
+    if (controller == nullptr) {
+        return true;
+    }
+
+    const QString isoPath = controller->isoPath().trimmed();
+    return !isoPath.isEmpty() && QFileInfo(isoPath).isFile();
+}
+
+bool coordinatorDolphinBaseReady(const CoordinatorController* controller)
+{
+    if (controller == nullptr) {
+        return true;
+    }
+
+    const QString dolphinBase = controller->dolphinBaseDir().trimmed();
+    if (dolphinBase.isEmpty() || !QFileInfo(dolphinBase).isDir()) {
+        return false;
+    }
+
+    const QDir dolphinDir(dolphinBase);
+    return QFileInfo(dolphinDir.filePath(QStringLiteral("portable.txt"))).isFile()
+        && QFileInfo(dolphinDir.filePath(QStringLiteral("Sys/GC/dsp_coef.bin"))).isFile();
+}
+
 QFrame* createStatusPill(const QString& label, const QString& value, QWidget* parent)
 {
     auto* pill = new QFrame(parent);
@@ -168,6 +246,13 @@ QFrame* createStatusPill(const QString& label, const QString& value, QWidget* pa
     layout->addWidget(labelText);
     layout->addWidget(valueText);
     return pill;
+}
+
+QPushButton* createSetupWarningButton(const QString& text, QWidget* parent)
+{
+    auto* button = new QPushButton(text, parent);
+    button->setObjectName("setupWarningButton");
+    return button;
 }
 
 QFrame* createSectionPanel(const QString& title, QWidget* parent)
@@ -192,6 +277,162 @@ QTableWidgetItem* createTableItem(const QString& text, int graphIndex)
     return item;
 }
 
+void populateWorkflowGraphRow(QTableWidget* table, int row, const WorkflowGraphViewRow& viewRow)
+{
+    table->setItem(row, 0, createTableItem(viewRow.name, viewRow.graphIndex));
+    table->setItem(row, 1, createTableItem(viewRow.nodeCount, viewRow.graphIndex));
+    table->setItem(row, 2, createTableItem(viewRow.revision, viewRow.graphIndex));
+}
+
+bool workflowGraphRowsEqual(const WorkflowGraphViewRow& lhs, const WorkflowGraphViewRow& rhs)
+{
+    return lhs.name == rhs.name
+        && lhs.comboText == rhs.comboText
+        && lhs.nodeCount == rhs.nodeCount
+        && lhs.revision == rhs.revision
+        && lhs.graphId == rhs.graphId
+        && lhs.graphIndex == rhs.graphIndex;
+}
+
+QString launchKey(const QString& nodeKey, const QString& childKey)
+{
+    return nodeKey + QChar(0x1f) + childKey;
+}
+
+LaunchDraft captureLaunchDraft(const LaunchEditors& editors)
+{
+    LaunchDraft draft;
+    for (const auto& input : editors.inputs) {
+        draft.inputs[launchKey(input.nodeKey, input.inputKey)] = LaunchInputDraft{
+            input.overrideCheck != nullptr && input.overrideCheck->isChecked(),
+            input.refKindEdit == nullptr ? QString() : input.refKindEdit->text(),
+            input.refIdEdit == nullptr ? QString() : input.refIdEdit->text(),
+        };
+    }
+    for (const auto& argument : editors.arguments) {
+        draft.arguments[launchKey(argument.nodeKey, argument.argumentKey)] = LaunchArgumentDraft{
+            argument.edit == nullptr ? QString() : argument.edit->text(),
+        };
+    }
+    for (const auto& rtc : editors.tasRtc) {
+        draft.tasRtc[rtc.nodeKey] = TasRtcDraft{
+            rtc.rangeCheck != nullptr && rtc.rangeCheck->isChecked(),
+            rtc.singleEdit == nullptr ? QString() : rtc.singleEdit->text(),
+            rtc.minEdit == nullptr ? QString() : rtc.minEdit->text(),
+            rtc.maxEdit == nullptr ? QString() : rtc.maxEdit->text(),
+        };
+    }
+    return draft;
+}
+
+void restoreLaunchDraft(const LaunchDraft& draft, const LaunchEditors& editors)
+{
+    for (const auto& input : editors.inputs) {
+        const auto it = draft.inputs.find(launchKey(input.nodeKey, input.inputKey));
+        if (it == draft.inputs.end()) {
+            continue;
+        }
+        if (input.overrideCheck != nullptr) {
+            input.overrideCheck->setChecked(it->second.overrideChecked);
+        }
+        if (input.refKindEdit != nullptr) {
+            input.refKindEdit->setText(it->second.refKind);
+        }
+        if (input.refIdEdit != nullptr) {
+            input.refIdEdit->setText(it->second.refId);
+        }
+    }
+    for (const auto& argument : editors.arguments) {
+        const auto it = draft.arguments.find(launchKey(argument.nodeKey, argument.argumentKey));
+        if (it != draft.arguments.end() && argument.edit != nullptr) {
+            argument.edit->setText(it->second.value);
+        }
+    }
+    for (const auto& rtc : editors.tasRtc) {
+        const auto it = draft.tasRtc.find(rtc.nodeKey);
+        if (it == draft.tasRtc.end()) {
+            continue;
+        }
+        if (rtc.rangeCheck != nullptr) {
+            rtc.rangeCheck->setChecked(it->second.rangeChecked);
+        }
+        if (rtc.singleEdit != nullptr) {
+            rtc.singleEdit->setText(it->second.single);
+        }
+        if (rtc.minEdit != nullptr) {
+            rtc.minEdit->setText(it->second.min);
+        }
+        if (rtc.maxEdit != nullptr) {
+            rtc.maxEdit->setText(it->second.max);
+        }
+    }
+}
+
+QString launchShapeSignature(const savor::db::WorkflowGraphSnapshot& graph)
+{
+    QStringList parts;
+    parts.reserve(static_cast<int>(graph.nodes.size()));
+    for (const auto& node : graph.nodes) {
+        QStringList nodeParts;
+        nodeParts << qs(node.node_key) << qs(node.unit_kind);
+        const QString unitKind = qs(node.unit_kind);
+        if (isTasMovieUnit(unitKind)) {
+            nodeParts << QStringLiteral("arg:headroom") << QStringLiteral("rtc");
+        } else if (isSeedProbeUnit(unitKind)) {
+            nodeParts << QStringLiteral("arg:samples_per_axis");
+        } else if (isBattleChainUnit(unitKind)) {
+            nodeParts << QStringLiteral("arg:fake_attack_min") << QStringLiteral("arg:fake_attack_max");
+        }
+        for (const auto& input : node.inputs) {
+            if (!input.required) {
+                continue;
+            }
+            const auto* incomingEdge = findIncomingEdge(graph, node.node_key, input.input_key);
+            nodeParts << QStringLiteral("input:%1:%2:%3")
+                .arg(qs(input.input_key), qs(input.data_kind), incomingEdge == nullptr ? QStringLiteral("external") : QStringLiteral("edge"));
+        }
+        parts << nodeParts.join(QChar(0x1e));
+    }
+    return parts.join(QChar(0x1d));
+}
+
+WorkflowGraphRefreshData prepareWorkflowGraphData(
+    const std::vector<savor::db::WorkflowGraphSnapshot>& graphs,
+    const WorkflowGraphRefreshRequest& request)
+{
+    WorkflowGraphRefreshData data;
+    data.graphs = graphs;
+    data.rows.reserve(graphs.size());
+
+    for (int graphIndex = 0; graphIndex < static_cast<int>(graphs.size()); ++graphIndex) {
+        const auto& graph = graphs[static_cast<std::size_t>(graphIndex)];
+        if (graph.hidden) {
+            ++data.hiddenCount;
+            if (!request.showHidden) {
+                continue;
+            }
+        } else {
+            ++data.visibleCount;
+        }
+
+        const QString name = qs(graph.name);
+        const int comboIndex = static_cast<int>(data.rows.size());
+        if (graph.workflow_graph_id == request.selectedGraphId) {
+            data.comboIndexToSelect = comboIndex;
+        }
+        data.rows.push_back(WorkflowGraphViewRow{
+            name,
+            graph.hidden ? name + QStringLiteral(" (hidden)") : name,
+            QString::number(static_cast<int>(graph.nodes.size())),
+            QStringLiteral("#%1").arg(graph.graph_version),
+            graph.workflow_graph_id,
+            graphIndex,
+        });
+    }
+
+    return data;
+}
+
 QString describeSpecRef(const std::optional<std::string>& refKind, const std::optional<std::int64_t>& refId)
 {
     if (!refKind.has_value() || !refId.has_value() || *refId <= 0) {
@@ -205,12 +446,9 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         if (!spec.ok) {
             return QStringLiteral("TAS spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
         }
-        return QStringLiteral("TAS spec: %1 (#%2)\n  rtc: %3-%4\n  headroom x10: %5\n  base DTM artifact: %6")
+        return QStringLiteral("TAS spec: %1 (#%2)\n  base DTM artifact: %3")
             .arg(qs(spec.value.base_name))
             .arg(id)
-            .arg(spec.value.rtc_low)
-            .arg(spec.value.rtc_high)
-            .arg(spec.value.headroom_x10)
             .arg(spec.value.base_dtm_artifact_id);
     }
     if (*refKind == "seed_probe_spec") {
@@ -218,10 +456,9 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         if (!spec.ok) {
             return QStringLiteral("Seed probe spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
         }
-        return QStringLiteral("Seed probe spec: %1 (#%2)\n  samples/axis: %3\n  combo attempts: %4\n  value range: %5 to %6")
+        return QStringLiteral("Seed probe spec: %1 (#%2)\n  combo attempts: %3\n  value range: %4 to %5")
             .arg(qs(spec.value.name))
             .arg(id)
-            .arg(spec.value.samples_per_axis)
             .arg(spec.value.combo_attempts_per_target)
             .arg(spec.value.min_value)
             .arg(spec.value.max_value);
@@ -231,11 +468,9 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
         if (!spec.ok) {
             return QStringLiteral("Battle run spec #%1 unavailable: %2").arg(id).arg(qs(spec.error.message));
         }
-        return QStringLiteral("Battle run spec: %1 (#%2)\n  fake attacks: %3-%4\n  run ms: %5\n  single-turn runner: %6")
+        return QStringLiteral("Battle run spec: %1 (#%2)\n  run ms: %3\n  single-turn runner: %4")
             .arg(qs(spec.value.name))
             .arg(id)
-            .arg(spec.value.min_fake_attacks)
-            .arg(spec.value.max_fake_attacks)
             .arg(spec.value.run_ms)
             .arg(spec.value.use_single_turn_runner ? QStringLiteral("yes") : QStringLiteral("no"));
     }
@@ -251,10 +486,7 @@ QString describeSpecRef(const std::optional<std::string>& refKind, const std::op
             .arg(spec.value.explorer_settings_id);
         const auto battleRun = savorqt::db::SavorDbAuthoringService::GetBattleRunSpec(spec.value.battle_run_spec_id);
         if (battleRun.ok) {
-            text += QStringLiteral("\n  battle run: %1, fake attacks %2-%3")
-                .arg(qs(battleRun.value.name))
-                .arg(battleRun.value.min_fake_attacks)
-                .arg(battleRun.value.max_fake_attacks);
+            text += QStringLiteral("\n  battle run: %1").arg(qs(battleRun.value.name));
         }
         const auto explorer = savorqt::db::SavorDbAuthoringService::GetExplorerSettings(spec.value.explorer_settings_id);
         if (explorer.ok) {
@@ -372,6 +604,43 @@ void SetupTab::build()
     statusLayout->addWidget(createStatusPill(QStringLiteral("Graphs"), graphs.ok ? QString::number(static_cast<int>(graphs.value.size())) : QStringLiteral("--"), statusStrip));
     statusLayout->addWidget(createStatusPill(QStringLiteral("Units"), units.ok ? QString::number(static_cast<int>(units.value.size())) : QStringLiteral("--"), statusStrip));
     statusLayout->addStretch();
+
+    auto* isoSetupButton = createSetupWarningButton(QStringLiteral("Set ISO"), statusStrip);
+    QObject::connect(isoSetupButton, &QPushButton::clicked, statusStrip, [this]() {
+        if (actions_.openIsoSettings) {
+            actions_.openIsoSettings();
+        } else if (actions_.openSettings) {
+            actions_.openSettings();
+        }
+    });
+    statusLayout->addWidget(isoSetupButton);
+
+    auto* dolphinSetupButton = createSetupWarningButton(QStringLiteral("Set Dolphin base"), statusStrip);
+    QObject::connect(dolphinSetupButton, &QPushButton::clicked, statusStrip, [this]() {
+        if (actions_.openDolphinSettings) {
+            actions_.openDolphinSettings();
+        } else if (actions_.openSettings) {
+            actions_.openSettings();
+        }
+    });
+    statusLayout->addWidget(dolphinSetupButton);
+
+    const auto refreshCoordinatorSetupWarnings = [this, isoSetupButton, dolphinSetupButton]() {
+        const bool isoReady = coordinatorIsoReady(coordinatorController_);
+        const bool dolphinReady = coordinatorDolphinBaseReady(coordinatorController_);
+        const bool isoMissing = coordinatorController_ != nullptr && coordinatorController_->isoPath().trimmed().isEmpty();
+        const bool dolphinMissing = coordinatorController_ != nullptr && coordinatorController_->dolphinBaseDir().trimmed().isEmpty();
+
+        isoSetupButton->setText(isoMissing ? QStringLiteral("Set ISO") : QStringLiteral("Fix ISO"));
+        dolphinSetupButton->setText(dolphinMissing ? QStringLiteral("Set Dolphin base") : QStringLiteral("Fix Dolphin base"));
+        isoSetupButton->setVisible(!isoReady);
+        dolphinSetupButton->setVisible(!dolphinReady);
+    };
+    refreshCoordinatorSetupWarnings();
+    if (coordinatorController_ != nullptr) {
+        QObject::connect(coordinatorController_, &CoordinatorController::stateChanged, statusStrip, refreshCoordinatorSetupWarnings);
+    }
+
     if (!artifactStorageReady) {
         auto* fixButton = new QPushButton(QStringLiteral("Fix storage"), statusStrip);
         fixButton->setObjectName("jobsPrimaryButton");
@@ -475,18 +744,48 @@ void SetupTab::build()
     launchLayout->addWidget(launchGroupsScroll, 1);
 
     auto launchEditors = std::make_shared<LaunchEditors>();
-    auto refreshLaunchSelection = [workflowGraphs, workflowCombo, launchGroupsLayout, launchGroupsHost, launchEditors]() {
+    auto launchDrafts = std::make_shared<std::map<qint64, LaunchDraft>>();
+    auto renderedLaunchGraphId = std::make_shared<qint64>(-1);
+    auto renderedLaunchShape = std::make_shared<QString>();
+
+    auto selectedWorkflowGraphId = [workflowGraphs, workflowCombo]() -> qint64 {
+        const int selectedIndex = workflowCombo->currentIndex() >= 0 ? workflowCombo->currentData().toInt() : -1;
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(workflowGraphs->size())) {
+            return (*workflowGraphs)[static_cast<std::size_t>(selectedIndex)].workflow_graph_id;
+        }
+        return -1;
+    };
+
+    auto captureCurrentLaunchDraft = [launchEditors, launchDrafts, renderedLaunchGraphId]() {
+        const qint64 graphId = *renderedLaunchGraphId;
+        if (graphId > 0) {
+            (*launchDrafts)[graphId] = captureLaunchDraft(*launchEditors);
+        }
+    };
+
+    auto refreshLaunchSelection = [workflowGraphs, workflowCombo, launchGroupsLayout, launchGroupsHost, launchEditors, launchDrafts, renderedLaunchGraphId, renderedLaunchShape, selectedWorkflowGraphId](bool forceRebuild = false) {
+        const qint64 graphId = selectedWorkflowGraphId();
+        QString shape;
+        const int graphIndex = workflowCombo->currentIndex() >= 0 ? workflowCombo->currentData().toInt() : -1;
+        if (graphIndex >= 0 && graphIndex < static_cast<int>(workflowGraphs->size())) {
+            shape = launchShapeSignature((*workflowGraphs)[static_cast<std::size_t>(graphIndex)]);
+        }
+        if (!forceRebuild && graphId == *renderedLaunchGraphId && shape == *renderedLaunchShape) {
+            return;
+        }
+
         clearLayout(launchGroupsLayout);
         launchEditors->inputs.clear();
         launchEditors->arguments.clear();
         launchEditors->tasRtc.clear();
+        *renderedLaunchGraphId = graphId;
+        *renderedLaunchShape = shape;
         if (workflowCombo->currentIndex() < 0 || workflowCombo->currentIndex() >= workflowCombo->count()) {
             auto* none = new QLabel(QStringLiteral("No workflow selected."), launchGroupsHost);
             none->setObjectName("sectionDescription");
             launchGroupsLayout->addWidget(none);
             return;
         }
-        const int graphIndex = workflowCombo->currentData().toInt();
         if (graphIndex < 0 || graphIndex >= static_cast<int>(workflowGraphs->size())) {
             auto* invalid = new QLabel(QStringLiteral("Invalid workflow selection."), launchGroupsHost);
             invalid->setObjectName("sectionDescription");
@@ -549,7 +848,6 @@ void SetupTab::build()
                 addArgumentRow(QStringLiteral("Headroom"), QStringLiteral("headroom"));
             } else if (isSeedProbeUnit(unitKind)) {
                 addArgumentRow(QStringLiteral("samples/axis"), QStringLiteral("samples_per_axis"));
-                addArgumentRow(QStringLiteral("combo attempts"), QStringLiteral("combo_attempts_per_target"));
             } else if (isBattleChainUnit(unitKind)) {
                 addArgumentRow(QStringLiteral("fake attack low"), QStringLiteral("fake_attack_min"));
                 addArgumentRow(QStringLiteral("fake attack high"), QStringLiteral("fake_attack_max"));
@@ -621,9 +919,14 @@ void SetupTab::build()
             launchGroupsLayout->addWidget(none);
         }
         launchGroupsLayout->addStretch();
+        const auto draftIt = launchDrafts->find(graph.workflow_graph_id);
+        if (draftIt != launchDrafts->end()) {
+            restoreLaunchDraft(draftIt->second, *launchEditors);
+        }
     };
-    QObject::connect(workflowCombo, &QComboBox::currentIndexChanged, launchPanel, [refreshLaunchSelection](int) {
-        refreshLaunchSelection();
+    QObject::connect(workflowCombo, &QComboBox::currentIndexChanged, launchPanel, [captureCurrentLaunchDraft, refreshLaunchSelection](int) {
+        captureCurrentLaunchDraft();
+        refreshLaunchSelection(true);
     });
 
     auto selectLaunchWorkflow = [workflowCombo](int graphIndex) {
@@ -633,72 +936,77 @@ void SetupTab::build()
         }
     };
 
-    auto refreshWorkflowViews = std::make_shared<std::function<void()>>();
-    *refreshWorkflowViews = [=]() {
-        const bool showHidden = showHiddenWorkflowsCheck->isChecked();
-        qint64 selectedGraphId = -1;
-        const int selectedIndex = workflowCombo->currentIndex() >= 0 ? workflowCombo->currentData().toInt() : -1;
-        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(workflowGraphs->size())) {
-            selectedGraphId = (*workflowGraphs)[static_cast<std::size_t>(selectedIndex)].workflow_graph_id;
+    auto workflowRows = std::make_shared<std::vector<WorkflowGraphViewRow>>();
+    auto workflowRefreshPipeline =
+        new savorqt::gui::AsyncRefreshPipeline<WorkflowGraphRefreshRequest, WorkflowGraphRefreshData>(createWorkflowPanel);
+    auto kickWorkflowRefresh = std::make_shared<std::function<void()>>();
+
+    workflowRefreshPipeline->setRequestBuilder([showHiddenWorkflowsCheck, selectedWorkflowGraphId](savorqt::gui::RefreshReason) {
+        return WorkflowGraphRefreshRequest{
+            showHiddenWorkflowsCheck->isChecked(),
+            selectedWorkflowGraphId(),
+        };
+    });
+    workflowRefreshPipeline->setLoadAndPrepare([](WorkflowGraphRefreshRequest request) {
+        const auto result = savorqt::db::SavorDbAuthoringService::ListWorkflowGraphs(100, true);
+        if (!result.ok) {
+            return savorqt::gui::AsyncRefreshResult<WorkflowGraphRefreshData>::Err(qs(result.error.message));
         }
-
-        int visibleCount = 0;
-        int hiddenCount = 0;
-        int comboIndexToSelect = -1;
-
+        return savorqt::gui::AsyncRefreshResult<WorkflowGraphRefreshData>::Ok(prepareWorkflowGraphData(result.value, request));
+    });
+    workflowRefreshPipeline->setApply([=](const WorkflowGraphRefreshData& data, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        captureCurrentLaunchDraft();
+        const qint64 previousGraphId = selectedWorkflowGraphId();
+        *workflowGraphs = data.graphs;
         {
             QSignalBlocker comboBlocker(workflowCombo);
-            QSignalBlocker tableBlocker(workflowTable);
             workflowCombo->clear();
-            workflowTable->setRowCount(0);
-
-            for (int graphIndex = 0; graphIndex < static_cast<int>(workflowGraphs->size()); ++graphIndex) {
-                const auto& graph = (*workflowGraphs)[static_cast<std::size_t>(graphIndex)];
-                if (graph.hidden) {
-                    ++hiddenCount;
-                    if (!showHidden) {
-                        continue;
-                    }
-                } else {
-                    ++visibleCount;
-                }
-
-                const QString name = qs(graph.name);
-                const QString comboText = graph.hidden ? name + QStringLiteral(" (hidden)") : name;
-                workflowCombo->addItem(comboText, graphIndex);
-                if (graph.workflow_graph_id == selectedGraphId) {
-                    comboIndexToSelect = workflowCombo->count() - 1;
-                }
-
-                const int row = workflowTable->rowCount();
-                workflowTable->setRowCount(row + 1);
-                workflowTable->setItem(row, 0, createTableItem(name, graphIndex));
-                workflowTable->setItem(row, 1, createTableItem(QString::number(static_cast<int>(graph.nodes.size())), graphIndex));
-                workflowTable->setItem(row, 2, createTableItem(QStringLiteral("#%1").arg(graph.graph_version), graphIndex));
+            for (const auto& viewRow : data.rows) {
+                workflowCombo->addItem(viewRow.comboText, viewRow.graphIndex);
             }
-
             if (workflowCombo->count() > 0) {
+                int comboIndexToSelect = data.comboIndexToSelect;
+                if (comboIndexToSelect < 0 && previousGraphId > 0) {
+                    for (int i = 0; i < static_cast<int>(data.rows.size()); ++i) {
+                        if (data.rows[static_cast<std::size_t>(i)].graphId == previousGraphId) {
+                            comboIndexToSelect = i;
+                            break;
+                        }
+                    }
+                }
                 workflowCombo->setCurrentIndex(comboIndexToSelect >= 0 ? comboIndexToSelect : 0);
             }
         }
+        savorqt::gui::ApplyTableRowsByKey(
+            workflowTable,
+            *workflowRows,
+            data.rows,
+            [](const WorkflowGraphViewRow& row) { return row.graphId; },
+            workflowGraphRowsEqual,
+            populateWorkflowGraphRow);
 
-        if (!graphs.ok) {
-            workflowSummaryLabel->setText(qs(graphs.error.message));
-        } else if (workflowTable->rowCount() == 0) {
-            workflowSummaryLabel->setText(showHidden
+        if (data.rows.empty()) {
+            workflowSummaryLabel->setText(showHiddenWorkflowsCheck->isChecked()
                 ? QStringLiteral("No workflow graphs found.")
                 : QStringLiteral("No visible workflow graphs found. Enable Show hidden to include hidden graphs."));
         } else {
             workflowSummaryLabel->setText(QStringLiteral("%1 visible, %2 hidden workflow graphs.")
-                .arg(visibleCount)
-                .arg(hiddenCount));
+                .arg(data.visibleCount)
+                .arg(data.hiddenCount));
         }
         refreshLaunchSelection();
+    });
+    workflowRefreshPipeline->setApplyError([workflowSummaryLabel](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        workflowSummaryLabel->setText(error);
+    });
+
+    *kickWorkflowRefresh = [workflowRefreshPipeline]() {
+        workflowRefreshPipeline->requestRefresh(savorqt::gui::RefreshReason::Manual);
     };
 
-    QObject::connect(showHiddenWorkflowsCheck, &QCheckBox::toggled, createWorkflowPanel, [refreshWorkflowViews](bool) {
-        if (*refreshWorkflowViews) {
-            (*refreshWorkflowViews)();
+    QObject::connect(showHiddenWorkflowsCheck, &QCheckBox::toggled, createWorkflowPanel, [kickWorkflowRefresh](bool) {
+        if (*kickWorkflowRefresh) {
+            (*kickWorkflowRefresh)();
         }
     });
     QObject::connect(workflowTable, &QTableWidget::currentCellChanged, createWorkflowPanel, [workflowTable, selectLaunchWorkflow](int currentRow, int, int, int) {
@@ -739,7 +1047,7 @@ void SetupTab::build()
             },
             savorqt::gui::ContextDrawerMode::Expanded);
     });
-    QObject::connect(workflowTable, &QWidget::customContextMenuRequested, createWorkflowPanel, [this, workflowGraphs, workflowTable, workflowSummaryLabel, refreshWorkflowViews](const QPoint& pos) {
+    QObject::connect(workflowTable, &QWidget::customContextMenuRequested, createWorkflowPanel, [this, workflowGraphs, workflowTable, workflowSummaryLabel, kickWorkflowRefresh](const QPoint& pos) {
         const auto* item = workflowTable->itemAt(pos);
         if (item == nullptr) {
             return;
@@ -769,7 +1077,7 @@ void SetupTab::build()
         });
         menu.addSeparator();
         const bool hide = !graph.hidden;
-        menu.addAction(hide ? QStringLiteral("Hide") : QStringLiteral("Unhide"), workflowTable, [workflowGraphs, graphIndex, hide, workflowSummaryLabel, refreshWorkflowViews]() {
+        menu.addAction(hide ? QStringLiteral("Hide") : QStringLiteral("Unhide"), workflowTable, [workflowGraphs, graphIndex, hide, workflowSummaryLabel, kickWorkflowRefresh]() {
             const auto graphId = (*workflowGraphs)[static_cast<std::size_t>(graphIndex)].workflow_graph_id;
             const auto result = savorqt::db::SavorDbAuthoringService::SetWorkflowGraphHidden(graphId, hide);
             if (!result.ok) {
@@ -777,15 +1085,15 @@ void SetupTab::build()
                 return;
             }
             (*workflowGraphs)[static_cast<std::size_t>(graphIndex)].hidden = hide;
-            if (*refreshWorkflowViews) {
-                (*refreshWorkflowViews)();
+            if (*kickWorkflowRefresh) {
+                (*kickWorkflowRefresh)();
             }
         });
         menu.exec(workflowTable->viewport()->mapToGlobal(pos));
     });
-    if (*refreshWorkflowViews) {
-        (*refreshWorkflowViews)();
-    }
+    workflowRefreshPipeline->setRefreshIntervalMs(2000);
+    workflowRefreshPipeline->setActive(true);
+    workflowRefreshPipeline->requestRefresh(savorqt::gui::RefreshReason::Initial);
 
     auto* launchButton = new QPushButton(QStringLiteral("Launch"), launchPanel);
     launchButton->setObjectName("jobsPrimaryButton");
@@ -910,6 +1218,10 @@ void SetupTab::build()
                     }
                     value.hasSingle = true;
                     value.single = parsedSingle;
+                }
+                if (!value.hasSingle) {
+                    blockLaunch(QStringLiteral("RTC for %1 is required. Enter a single value or enable Range.").arg(rtcEditor.nodeKey));
+                    return;
                 }
             }
             rtcLaunchValues.push_back(value);

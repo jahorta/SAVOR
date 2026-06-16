@@ -25,6 +25,11 @@ struct Statement {
     Statement& operator=(const Statement&) = delete;
 };
 
+struct RelayRow {
+    EventEnvelope envelope{};
+    int attempt_count = 0;
+};
+
 std::int64_t UtcNowMillis() {
     const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now());
@@ -217,7 +222,11 @@ bool OutboxRelay::RelayBatchInternal(
 
     sqlite3_bind_int(st.st, limit_param_index, max_batch_size);
 
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
+    std::vector<RelayRow> rows;
+    rows.reserve(static_cast<std::size_t>(max_batch_size));
+
+    int step_rc = SQLITE_ROW;
+    while ((step_rc = sqlite3_step(st.st)) == SQLITE_ROW) {
         EventEnvelope envelope{};
         const auto outbox_id = sqlite3_column_int64(st.st, 0);
         const auto* event_id = sqlite3_column_text(st.st, 1);
@@ -250,6 +259,24 @@ bool OutboxRelay::RelayBatchInternal(
         result.last_scanned_event_id = envelope.event_id;
         result.scanned_count += 1;
 
+        rows.push_back(RelayRow{
+            .envelope = std::move(envelope),
+            .attempt_count = attempt_count,
+        });
+    }
+
+    if (step_rc != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(config_.db);
+        return false;
+    }
+
+    sqlite3_finalize(st.st);
+    st.st = nullptr;
+
+    for (const auto& row : rows) {
+        const auto& envelope = row.envelope;
+        const auto outbox_id = envelope.outbox_id;
+        const auto attempt_count = row.attempt_count;
         std::string handler_error;
         if (!ValidateEventPayloadRequiredFieldsV1(envelope, &handler_error)) {
             bool dead_lettered = false;

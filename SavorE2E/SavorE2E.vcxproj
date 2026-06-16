@@ -88,7 +88,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
@@ -106,7 +106,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)SavorCore;$(SolutionDir)SavorDb;$(SolutionDir)SavorWorkflow;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
     </ClCompile>
     <Link>
@@ -115,6 +115,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BattleMacroProbeScenario.cpp" />
     <ClCompile Include="BattleSingleTurnScenario.cpp" />
     <ClCompile Include="Cli.cpp" />
     <ClCompile Include="CoordinatorProgress.cpp" />
@@ -124,9 +125,10 @@
     <ClCompile Include="MultiLineProgressRenderer.cpp" />
     <ClCompile Include="SeedProbeRealWorkerScenario.cpp" />
     <ClCompile Include="TasMovieRealWorkerScenario.cpp" />
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
+    <ClCompile Include="WorkerCoordinatorPerf.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BattleMacroProbeScenario.h" />
     <ClInclude Include="BattleSingleTurnScenario.h" />
     <ClInclude Include="Cli.h" />
     <ClInclude Include="CoordinatorProgress.h" />
@@ -135,6 +137,7 @@
     <ClInclude Include="MultiLineProgressRenderer.h" />
     <ClInclude Include="SeedProbeRealWorkerScenario.h" />
     <ClInclude Include="TasMovieRealWorkerScenario.h" />
+    <ClInclude Include="WorkerCoordinatorPerf.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorWorker\SavorWorker.vcxproj">
@@ -142,6 +145,9 @@
     </ProjectReference>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">
       <Project>{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SavorWorkflow\SavorWorkflow.vcxproj">
+      <Project>{9F364C36-2F44-4B54-8A7B-58C18D0F6852}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SavorCore\SavorCore.vcxproj">
       <Project>{673E613D-F810-4AEA-B4F6-40E80A21301A}</Project>

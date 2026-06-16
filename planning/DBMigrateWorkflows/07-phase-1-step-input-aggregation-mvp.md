@@ -60,8 +60,8 @@ Introduce step input aggregation as a first-class path with strict readiness and
 
 1. **SavorTests**
    - Run phase-1 aggregation behavior and idempotency suites.
-2. **SavorDbValidation CLI**
-   - Add/run phase-1 validation entries in `SavorDbValidation`.
+2. **Validation coverage**
+   - Add/run phase-1 coverage in `SavorTests` and relevant SavorE2E scenarios.
    - Phase cannot exit until both test suites and CLI validations pass.
 
 ## Suggested SavorTests to add for phase exit readiness

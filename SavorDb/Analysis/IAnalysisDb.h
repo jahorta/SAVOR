@@ -259,7 +259,6 @@ struct CreateSeedProbeSetCommand {
     std::optional<std::string> dungeon_segment_code;
     std::string segment_source_kind;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -268,10 +267,10 @@ struct RequestSeedProbeRunCommand {
     std::int64_t probe_set_id = 0;
     std::int64_t entry_savestate_id = 0;
     std::int64_t seed_probe_spec_id = 0;
+    int launch_samples_per_axis = 0;
     int codec_version = 1;
     std::string status;
     types::UtcTimePoint requested_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -281,7 +280,6 @@ struct RecordSeedProbeNeutralSeedCommand {
     std::int64_t neutral_seed_value = 0;
     std::string source_kind;
     types::UtcTimePoint recorded_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -291,6 +289,7 @@ struct SeedProbeRunSnapshot {
     std::int64_t probe_set_id = 0;
     std::int64_t seed_probe_spec_id = 0;
     std::int64_t entry_savestate_id = 0;
+    int launch_samples_per_axis = 0;
     int codec_version = 0;
     std::string status;
     std::int64_t unique_input_set_id = 0;
@@ -302,7 +301,6 @@ struct SetSeedProbeRunEntrySavestateCommand {
     std::int64_t probe_run_id = 0;
     std::int64_t entry_savestate_id = 0;
     types::UtcTimePoint updated_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -314,7 +312,6 @@ struct RecordSeedProbeGridSeedCommand {
     std::int64_t seed_value = 0;
     std::int64_t seed_delta = 0;
     types::UtcTimePoint recorded_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -359,7 +356,6 @@ struct RecordSeedProbeUniqueSeedCommand {
     std::int64_t seed_value = 0;
     std::int64_t seed_delta = 0;
     types::UtcTimePoint recorded_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -373,7 +369,6 @@ struct RecordSeedProbeEncounterProjectionCommand {
     std::optional<std::int64_t> stutter_step_at;
     bool movement_required = false;
     types::UtcTimePoint recorded_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -387,7 +382,6 @@ struct CompleteSeedProbeRunCommand {
     std::string run_status;
     types::UtcTimePoint recorded_at_utc{};
     types::UtcTimePoint completed_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -397,9 +391,10 @@ struct CreateBattleSetCommand {
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    int launch_fake_attack_min = 0;
+    int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -412,7 +407,6 @@ struct AddBattleSeedCandidateCommand {
     BattleSeedCandidateSourceKind source_kind = BattleSeedCandidateSourceKind::Unknown;
     BattleSeedCandidateStatus candidate_status = BattleSeedCandidateStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -428,7 +422,6 @@ struct CreateBattleTurnWaveCommand {
     BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -457,7 +450,6 @@ struct RecordBattleTurnJobCommand {
     std::optional<std::string> result_context_blob_base64;
     std::optional<int> result_context_version;
     std::optional<types::UtcTimePoint> recorded_at_utc;
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -468,7 +460,6 @@ struct CreateBattleSelectionPoolCommand {
     std::string pool_name;
     BattleSelectionCriterionKind criterion_kind = BattleSelectionCriterionKind::Unknown;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -479,7 +470,6 @@ struct RecordBattleSelectionDecisionCommand {
     BattleSelectionDecisionKind decision_kind = BattleSelectionDecisionKind::Unknown;
     std::optional<std::string> decision_reason;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -493,7 +483,6 @@ struct UpsertBattleTerminalFollowupCommand {
     std::optional<std::int64_t> recorded_sav_artifact_id;
     std::optional<std::string> note;
     types::UtcTimePoint updated_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -504,6 +493,8 @@ struct BattleSetSnapshot {
     std::int64_t entry_savestate_id = 0;
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
+    int launch_fake_attack_min = 0;
+    int launch_fake_attack_max = 0;
     BattleSetStatus status = BattleSetStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
@@ -539,7 +530,6 @@ struct CreateBattleContextProbeCommand {
     std::int64_t source_savestate_id = 0;
     BattleContextProbeStatus probe_status = BattleContextProbeStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };

@@ -8,12 +8,12 @@
 #include <string>
 #include <utility>
 
-#include "../../Execution/Jobs/JobEventOrchestration.h"
+#include "../../Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SavorCore/Phases/RNGSeedDeltaMap.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Utils/Hex.h"
 #include "SeedProbeContracts.h"
 
@@ -158,6 +158,7 @@ WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing
                 enqueue.priority = 0;
                 enqueue.max_attempts = 3;
                 enqueue.input_ini = "";
+                enqueue.pending_until_workflow_materialized = true;
                 (void)execution_db_->EnqueueJob(enqueue, nullptr, &error);
             }
         }
@@ -277,14 +278,15 @@ SeedProbeGridSpec SeedProbeGridJobPersistenceAdapter::ResolveGridSpecForRun(std:
         return resolved;
     }
 
+    if (probe_run->launch_samples_per_axis > 0) {
+        resolved.samples_per_axis = probe_run->launch_samples_per_axis;
+    }
+
     const auto spec = authoring_db_->GetSeedProbeSpec(probe_run->seed_probe_spec_id);
     if (!spec.has_value()) {
         return resolved;
     }
 
-    if (spec->samples_per_axis > 0) {
-        resolved.samples_per_axis = spec->samples_per_axis;
-    }
     resolved.min_value = ClampToU8(spec->min_value, resolved.min_value);
     resolved.max_value = ClampToU8(spec->max_value, resolved.max_value);
     resolved.cap_trigger_top = spec->cap_trigger_top;
@@ -356,12 +358,12 @@ std::string SeedProbeGridResultMapper::BuildResultIniFromPrResult(std::int64_t /
     ResultsIni out{};
     out.w_err = result.ps.w_err;
     if (out.w_err == 0) {
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
     }
     if (result.ps.ok) {
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, out.rng_seed);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
     }
     IniDoc ini;
     return out.append_section(ini).to_string_sorted();
@@ -402,7 +404,6 @@ ResultMapPayload SeedProbeGridResultMapper::MapPrimaryResult(std::int64_t job_id
         cmd.seed_value = observed_seed;
         cmd.seed_delta = seed_delta;
         cmd.recorded_at_utc = savor::db::types::UtcNow();
-        cmd.event_id = EventId(context->probe_result_id, job_id, "grid");
         cmd.correlation_id = context->correlation_id;
         cmd.causation_id = context->causation_id;
 
@@ -471,15 +472,6 @@ std::optional<GridResultContext> SeedProbeGridResultMapper::ResolveContextFromJo
         }
     }
     return context;
-}
-
-std::string SeedProbeGridResultMapper::EventId(
-    std::int64_t probe_result_id,
-    std::int64_t job_id,
-    const char* phase_label) {
-    return "seedprobe-result-" + std::to_string(probe_result_id)
-        + "-job-" + std::to_string(job_id)
-        + "-" + phase_label;
 }
 
 std::optional<savor::GCInputFrame> SeedProbeGridResultMapper::ParseFrame(const std::string& frame_hex) {

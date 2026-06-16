@@ -2,7 +2,6 @@
 
 #include "GUI/Panes/ArtifactsPane/ArtifactsPage.h"
 #include "GUI/Panes/BattleRunSettingsPane/BattleRunSettingsPage.h"
-#include "GUI/Panes/ExplorerRunsPane/ExplorerRunsPage.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowGraphEditorWindow.h"
 #include "GUI/Panes/JobBuilderPane/WorkflowLauncherPage.h"
 #include "GUI/Panes/JobsPane/JobsPage.h"
@@ -50,7 +49,7 @@ QString focusedToolKey(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("battle_run_settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("seed_probe");
-    case MainWindow::FocusedTool::ExplorerRuns: return QStringLiteral("explorer_runs");
+    case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("battle_runs");
     case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("dtm_editor");
     case MainWindow::FocusedTool::Settings: return QStringLiteral("settings");
     }
@@ -67,7 +66,7 @@ QString focusedToolTitle(MainWindow::FocusedTool tool)
     case MainWindow::FocusedTool::BattleRunSettings: return QStringLiteral("Battle Run Settings");
     case MainWindow::FocusedTool::Artifacts: return QStringLiteral("Artifacts");
     case MainWindow::FocusedTool::SeedProbe: return QStringLiteral("Seed Probe");
-    case MainWindow::FocusedTool::ExplorerRuns: return QStringLiteral("Explorer Runs");
+    case MainWindow::FocusedTool::BattleRuns: return QStringLiteral("Battle Runs");
     case MainWindow::FocusedTool::DtmEditor: return QStringLiteral("DTM Editor");
     case MainWindow::FocusedTool::Settings: return QStringLiteral("Settings");
     }
@@ -166,6 +165,20 @@ void MainWindow::createMenus()
     connect(specsMenu->addAction(QStringLiteral("Battle Plans")), &QAction::triggered, this, &MainWindow::openBattlePlanSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Predicates")), &QAction::triggered, this, &MainWindow::openPredicateSpecLibrary);
     connect(specsMenu->addAction(QStringLiteral("Predicate Sets")), &QAction::triggered, this, &MainWindow::openPredicateSetSpecLibrary);
+
+    auto* analysisMenu = menuBar()->addMenu(QStringLiteral("Analysis"));
+    connect(analysisMenu->addAction(QStringLiteral("Seed Probe Results")), &QAction::triggered, this, [this]() {
+        openFocusedTool(FocusedTool::SeedProbe);
+    });
+    connect(analysisMenu->addAction(QStringLiteral("Battle Runs")), &QAction::triggered, this, [this]() {
+        showBattleRunsAnalysisPane();
+    });
+    connect(analysisMenu->addAction(QStringLiteral("Artifacts")), &QAction::triggered, this, [this]() {
+        openFocusedTool(FocusedTool::Artifacts);
+    });
+    connect(analysisMenu->addAction(QStringLiteral("Workflow Provenance")), &QAction::triggered, this, [this]() {
+        openFocusedTool(FocusedTool::Workflows);
+    });
 }
 
 void MainWindow::openAuthoringLibraryLast()
@@ -275,6 +288,8 @@ void MainWindow::createWidgets()
             openWorkflowGraphEditor(snapshot, duplicate);
         },
         [this]() { openSettingsTool(); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); },
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
         [this]() { openFocusedTool(FocusedTool::DtmEditor); },
         [this]() { openFocusedTool(FocusedTool::BattleRunSettings); }
@@ -282,19 +297,56 @@ void MainWindow::createWidgets()
     workspaceStack_->addWidget(new RunningTab(coordinatorController_, RunningTab::Actions{
         [this]() { openFocusedTool(FocusedTool::Workflows); },
         [this]() { openFocusedTool(FocusedTool::Jobs); },
-        [this]() { openFocusedTool(FocusedTool::Workers); }
+        [this]() { openFocusedTool(FocusedTool::Workers); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::Section); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::IsoPath); },
+        [this]() { openSettingsTool(SettingsPage::CoordinatorFocusTarget::DolphinBaseDir); }
     }, root));
-    workspaceStack_->addWidget(new AnalysisTab(AnalysisTab::Actions{
+    analysisTab_ = new AnalysisTab(AnalysisTab::Actions{
         [this]() { openFocusedTool(FocusedTool::SeedProbe); },
-        [this]() { openFocusedTool(FocusedTool::ExplorerRuns); },
+        [this]() { showBattleRunsAnalysisPane(); },
         [this]() { openFocusedTool(FocusedTool::Artifacts); },
-        [this]() { openFocusedTool(FocusedTool::Workflows); }
-    }, root));
+        [this]() { openFocusedTool(FocusedTool::Workflows); },
+        [this](qint64 jobId) { handleVisualReplayRequested(jobId); }
+    }, root);
+    workspaceStack_->addWidget(analysisTab_);
 
     workspaceSelector_ = new savorqt::gui::WorkspaceSelectorBar(root);
     workspaceSelector_->setSelectionChangedCallback([this](int index) {
         handleWorkspaceChanged(index);
     });
+    workspaceBadgeRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<int, QPair<int, int>>(this);
+    workspaceBadgeRefreshPipeline_->setAutoRefreshEnabled(false);
+    workspaceBadgeRefreshPipeline_->setRequestBuilder([](savorqt::gui::RefreshReason) {
+        return 0;
+    });
+    workspaceBadgeRefreshPipeline_->setLoadAndPrepare([](int) {
+        savor::db::UiReadJobListQuery query{};
+        const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(query, std::nullopt, std::nullopt, 50);
+        int activeJobs = 0;
+        if (jobs.ok) {
+            for (const auto& job : jobs.value.items) {
+                const QString state = QString::fromStdString(job.state);
+                if (state == QStringLiteral("RUNNING") || state == QStringLiteral("CLAIMED") || state == QStringLiteral("QUEUED")) {
+                    ++activeJobs;
+                }
+            }
+        }
+
+        savorqt::db::BattleRunGroupQuery battleQuery{};
+        battleQuery.limit = 10;
+        const auto battleRuns = savorqt::db::SavorDbExplorerRunService::ListBattleGroups(battleQuery);
+        const int battleGroups = battleRuns.ok ? static_cast<int>(battleRuns.value.groups.size()) : 0;
+        return savorqt::gui::AsyncRefreshResult<QPair<int, int>>::Ok(qMakePair(activeJobs, battleGroups));
+    });
+    workspaceBadgeRefreshPipeline_->setApply([this](const QPair<int, int>& counts, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        if (workspaceSelector_ == nullptr) {
+            return;
+        }
+        workspaceSelector_->setBadge(1, counts.first > 0 ? QString::number(counts.first) : QString());
+        workspaceSelector_->setBadge(2, counts.second > 0 ? QString::number(counts.second) : QString());
+    });
+    workspaceBadgeRefreshPipeline_->setActive(true);
 
     rootLayout->addWidget(workspaceStack_, 1);
     rootLayout->addWidget(workspaceSelector_);
@@ -314,31 +366,27 @@ void MainWindow::refreshWorkspaceBadges()
         || (coordinatorController_ != nullptr && !coordinatorController_->validationMessage().isEmpty());
     workspaceSelector_->setBadge(0, setupWarning ? QStringLiteral("!") : QString());
 
-    savor::db::UiReadJobListQuery query{};
-    const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(query, std::nullopt, std::nullopt, 50);
-    int activeJobs = 0;
-    if (jobs.ok) {
-        for (const auto& job : jobs.value.items) {
-            const QString state = QString::fromStdString(job.state);
-            if (state == QStringLiteral("RUNNING") || state == QStringLiteral("CLAIMED") || state == QStringLiteral("QUEUED")) {
-                ++activeJobs;
-            }
-        }
+    if (workspaceBadgeRefreshPipeline_ != nullptr) {
+        workspaceBadgeRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-    workspaceSelector_->setBadge(1, activeJobs > 0 ? QString::number(activeJobs) : QString());
+}
 
-    savorqt::db::ExplorerRunGroupQuery explorerQuery{};
-    explorerQuery.limit = 10;
-    const auto explorer = savorqt::db::SavorDbExplorerRunService::ListGroups(explorerQuery);
-    workspaceSelector_->setBadge(2, explorer.ok && !explorer.value.groups.empty()
-        ? QString::number(static_cast<int>(explorer.value.groups.size()))
-        : QString());
+void MainWindow::showBattleRunsAnalysisPane()
+{
+    setWorkspaceIndex(2);
+    if (analysisTab_ != nullptr) {
+        analysisTab_->showBattleRunsPane();
+    }
 }
 
 void MainWindow::openFocusedTool(FocusedTool tool)
 {
     if (tool == FocusedTool::Settings) {
         openSettingsTool();
+        return;
+    }
+    if (tool == FocusedTool::BattleRuns) {
+        showBattleRunsAnalysisPane();
         return;
     }
 
@@ -402,15 +450,8 @@ void MainWindow::openFocusedTool(FocusedTool tool)
         page = seedProbe;
         break;
     }
-    case FocusedTool::ExplorerRuns: {
-        auto* explorer = new ExplorerRunsPage(dialog);
-        explorer->setPageActive(true);
-        connect(dialog, &QDialog::finished, explorer, [explorer]() { explorer->setPageActive(false); });
-        connect(explorer, &ExplorerRunsPage::statusToastRequested, statusBarWidget_, qOverload<StatusToast>(&StatusBarWidget::postToast));
-        connect(explorer, &ExplorerRunsPage::visualReplayRequested, this, &MainWindow::handleVisualReplayRequested);
-        page = explorer;
+    case FocusedTool::BattleRuns:
         break;
-    }
     case FocusedTool::DtmEditor: {
         auto* dtm = new DtmEditorPage(dialog);
         dtm->setPageActive(true);
@@ -518,6 +559,9 @@ void MainWindow::setWorkspaceIndex(int index)
     workspaceStack_->setCurrentIndex(index);
     if (workspaceSelector_ != nullptr) {
         workspaceSelector_->setCurrentIndex(index);
+    }
+    if (analysisTab_ != nullptr) {
+        analysisTab_->setPageActive(index == 2);
     }
 }
 

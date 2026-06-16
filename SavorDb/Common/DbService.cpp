@@ -92,6 +92,9 @@ bool DBService::Start(std::string* error_out) {
     }
 
     sqlite_execution_db_ = std::make_unique<savor::db::execution::workflow::SqliteExecutionDb>(execution_sqlite_);
+    if (!sqlite_execution_db_->RequeueInterruptedExecutionJobs(nullptr, error_out)) {
+        return fail_start("Failed requeueing interrupted execution jobs: " + (error_out ? *error_out : std::string{}));
+    }
     execution_db_ = std::make_unique<savor::db::execution::QueuedExecutionDb>(sqlite_execution_db_.get());
     if (!execution_db_->Start(error_out)) {
         return fail_start("Failed starting Execution queue workers: " + (error_out ? *error_out : std::string{}));
@@ -127,18 +130,16 @@ bool DBService::Start(std::string* error_out) {
         return fail_start("Failed starting Archive queue workers: " + (error_out ? *error_out : std::string{}));
     }
 
-    ui_read_projection_service_ = std::make_unique<savor::db::uiread::projectors::AttachedUiReadProjectionService>(
-        savor::db::uiread::projectors::AttachedUiReadProjectionConfig{
+    ui_read_projection_service_ = std::make_unique<savor::db::uiread::projectors::UiReadProjectionService>(
+        savor::db::uiread::projectors::UiReadProjectionConfig{
             .ui_read_db_path = config_paths_.ui_read_db_path,
             .execution_db_path = config_paths_.execution_db_path,
             .state_db_path = config_paths_.state_db_path,
             .analysis_db_path = config_paths_.analysis_db_path,
-            .authoring_db_path = config_paths_.authoring_db_path,
             .archive_db_path = config_paths_.archive_db_path,
             .max_batch_size = 100,
             .max_attempts = 5,
             .poll_interval = std::chrono::milliseconds{ 250 },
-            .include_archive = true,
         });
     if (!ui_read_projection_service_->Start(error_out)) {
         return fail_start("Failed starting UIRead projection service: " + (error_out ? *error_out : std::string{}));
@@ -199,6 +200,52 @@ bool DBService::RunUiReadProjectionOnce(std::string* error_out) {
         return false;
     }
     return ui_read_projection_service_->RunOnce(error_out);
+}
+
+DBServicePerformanceSnapshot DBService::SnapshotPerformance() const {
+    DBServicePerformanceSnapshot snapshot{};
+    snapshot.running = running_;
+    if (execution_db_ != nullptr) {
+        const auto execution = execution_db_->GetTelemetrySnapshot();
+        snapshot.databases.push_back({
+            .db_context = "Execution",
+            .queue = execution.queued,
+        });
+    }
+    if (state_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "State",
+            .queue = state_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (analysis_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Analysis",
+            .queue = analysis_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (authoring_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Authoring",
+            .queue = authoring_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (ui_read_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "UiRead",
+            .queue = ui_read_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (archive_db_ != nullptr) {
+        snapshot.databases.push_back({
+            .db_context = "Archive",
+            .queue = archive_db_->GetTelemetrySnapshot(),
+        });
+    }
+    if (ui_read_projection_service_ != nullptr) {
+        snapshot.ui_read_projection = ui_read_projection_service_->SnapshotTelemetry();
+    }
+    return snapshot;
 }
 
 bool DBService::OpenDatabase(sqlite3** db, const std::filesystem::path& db_path, std::string* error_out) {

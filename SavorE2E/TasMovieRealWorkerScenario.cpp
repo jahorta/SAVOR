@@ -11,8 +11,8 @@
 #include "Execution/ProgramDB/SeedProbe/SeedProbePhaseRegistration.h"
 #include "Execution/ProgramDB/TasMovie/TasMoviePhaseRegistration.h"
 #include "Phases/Programs/PlayTasMovie/TasMoviePayload.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowCoordinatorFactory.h"
-#include "Runner/Parallel/SavorDb/DBWorkflowWorkerCoordinator.h"
+#include "Execution/DBWorkflowCoordinatorFactory.h"
+#include "Execution/DBWorkflowWorkerCoordinator.h"
 #include "Tas/DtmFile.h"
 #include "UIRead/IUiReadDb.h"
 
@@ -20,6 +20,7 @@
 #include "DbSetup.h"
 #include "DurableLogFile.h"
 #include "MultiLineProgressRenderer.h"
+#include "WorkerCoordinatorPerf.h"
 
 namespace savor::e2e {
 namespace {
@@ -250,10 +251,11 @@ bool RunTasMovieScenario(
 
     savor::db::execution::programdb::ProgramKindRegistry registry;
     savor::db::execution::programdb::tasmovie::TasMoviePhaseRegistrationConfig tas_config{};
+    const auto rtc_range = ResolveTasMovieRtcRange(options, 0);
     tas_config.authoring_db = db_service->AuthoringDb();
     tas_config.blueprint.base_dtm_artifact_id = dtm_artifact_id;
-    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
-    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(options.tasmovie_rtc.value_or(0));
+    tas_config.blueprint.rtc_low = static_cast<std::uint8_t>(rtc_range.low);
+    tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
     tas_config.blueprint.progress_enable = false;
@@ -330,13 +332,13 @@ bool RunTasMovieScenario(
         uint32_t vi_last = 0;
         std::string save_path;
         std::string last_savestate_path;
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, dw_err);
-        result.ps.ctx.get(savor::keys::core::RUN_HIT_PC, hit_pc);
-        result.ps.ctx.get(savor::keys::core::RUN_HIT_BP_KEY, hit_bp_key);
-        result.ps.ctx.get(savor::keys::core::VI_DELTA, vi_delta);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, vi_last);
-        result.ps.ctx.get(savor::keys::tas::SAVE_PATH, save_path);
-        result.ps.ctx.get(savor::keys::core::LAST_SAVESTATE_PATH, last_savestate_path);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, dw_err);
+        result.ps.ctx.get(savor::context::key::core::RUN_HIT_PC, hit_pc);
+        result.ps.ctx.get(savor::context::key::core::RUN_HIT_BP_KEY, hit_bp_key);
+        result.ps.ctx.get(savor::context::key::core::VI_DELTA, vi_delta);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, vi_last);
+        result.ps.ctx.get(savor::context::key::tas::SAVE_PATH, save_path);
+        result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, last_savestate_path);
         std::ostringstream line;
         line << "[tasmovie-worker-result] job=" << result.job_id
              << " worker=" << result.worker_id
@@ -404,10 +406,13 @@ bool RunTasMovieScenario(
             std::lock_guard<std::mutex> lock(progress_mtx);
             progress_snapshot = last_progress_by_worker;
         }
+        const auto telemetry = coordinator.SnapshotTelemetry();
+        const auto worker_snapshot = coordinator.SnapshotWorkers();
+        RecordWorkerCoordinatorPerfSample(options, telemetry, worker_snapshot);
         latest_lines = BuildCoordinatorProgressLines(
             db_service->ExecutionDb(),
-            coordinator.SnapshotTelemetry(),
-            coordinator.SnapshotWorkers(),
+            telemetry,
+            worker_snapshot,
             graph,
             &progress_snapshot);
         if (interactive_stdout) {
@@ -469,10 +474,13 @@ bool RunTasMovieScenario(
         std::lock_guard<std::mutex> lock(progress_mtx);
         final_progress_snapshot = last_progress_by_worker;
     }
+    const auto final_telemetry = coordinator.SnapshotTelemetry();
+    const auto final_worker_snapshot = coordinator.SnapshotWorkers();
+    RecordWorkerCoordinatorPerfSample(options, final_telemetry, final_worker_snapshot);
     latest_lines = BuildCoordinatorProgressLines(
         db_service->ExecutionDb(),
-        coordinator.SnapshotTelemetry(),
-        coordinator.SnapshotWorkers(),
+        final_telemetry,
+        final_worker_snapshot,
         final_graph,
         &final_progress_snapshot);
     if (final_graph.has_value()) {

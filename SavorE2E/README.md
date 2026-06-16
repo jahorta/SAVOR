@@ -22,7 +22,9 @@ SavorE2E \
 ```
 `--scenario` is optional, defaults to `seedprobe`.
 You can pass it multiple times or use `--scenario all` to run:
-`tasmovie`, `seedprobe`, `battle`, `tasmovie_seedprobe`, `tasmovie_seedprobe_battle` in that order.
+`tasmovie`, `seedprobe`, `seedprobe_battle`, `battle`, `battle_macro_probe`,
+`tasmovie_seedprobe`, `tasmovie_seedprobe_battle`,
+`tasmovie_seedprobe_battle_override`, `tasmovie_battle` in that order.
 
 Optional:
 
@@ -42,3 +44,9 @@ Optional:
   - saves an authored workflow graph revision and creates a `workflow_graph` execution instance via API,
   - runs `DBWorkflowWorkerCoordinator` with one worker,
   - polls UiReadDB subscription state while coordinator loop is active.
+- `seedprobe_battle`
+  - preserves the previous seedprobe-backed battle smoke behavior.
+- `battle`
+  - starts from `--savestate-file`,
+  - seeds a three-frame authored input set,
+  - runs a direct `battle_chain` workflow without TAS or seedprobe prelude.

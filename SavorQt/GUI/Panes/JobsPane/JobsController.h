@@ -9,12 +9,11 @@
 
 #include "DB/SavorDbServiceResult.h"
 #include "Execution/IExecutionDb.h"
+#include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "UIRead/IUiReadDb.h"
 
 #include <optional>
 #include <vector>
-
-class QTimer;
 
 class JobsController final : public QObject
 {
@@ -81,6 +80,12 @@ private:
     using JobDetailResult = savorqt::db::ServiceResult<JobDetailBundle>;
     using InputIniResult = savorqt::db::ServiceResult<QString>;
     using VoidResult = savorqt::db::ServiceResult<void>;
+    struct JobPageFetchRequest {
+        savor::db::UiReadJobListQuery scope{};
+        std::optional<savor::db::UiReadListCursor> before;
+        std::optional<savor::db::UiReadListCursor> after;
+        int limit = 100;
+    };
 
     enum class Operation { FetchKinds, FetchPage, FetchDetail, FetchInputIni, Requeue, Cancel, Restart };
 
@@ -105,7 +110,6 @@ private:
     bool initialLoadStarted_ = false;
     bool kindsInFlight_ = false;
     bool pageInFlight_ = false;
-    bool pendingPageFetch_ = false;
     bool detailInFlight_ = false;
     bool inputIniInFlight_ = false;
     bool requeueInFlight_ = false;
@@ -115,12 +119,11 @@ private:
     qint64 inputIniRequestJobId_ = 0;
     qint64 actionJobId_ = 0;
     QFutureWatcher<ProgramKindsResult> kindsWatcher_;
-    QFutureWatcher<JobPageResult> pageWatcher_;
+    savorqt::gui::AsyncRefreshPipeline<JobPageFetchRequest, JobPageResult>* pageRefreshPipeline_ = nullptr;
     QFutureWatcher<JobDetailResult> detailWatcher_;
     QFutureWatcher<InputIniResult> inputIniWatcher_;
     QFutureWatcher<VoidResult> requeueWatcher_;
     QFutureWatcher<VoidResult> cancelWatcher_;
     QFutureWatcher<VoidResult> restartWatcher_;
-    QTimer* refreshTimer_ = nullptr;
     bool pageActive_ = false;
 };

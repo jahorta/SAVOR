@@ -163,7 +163,7 @@ public:
         const WorkflowListRequest& request) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::UiReadPage<savor::db::UiWorkflowInstanceSummary>>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::UiReadPage<savor::db::UiWorkflowInstanceSummary>>(kSavorDbRuntimeUnavailableMessage);
         }
 
         savor::db::UiWorkflowInstanceListQuery query{};
@@ -179,7 +179,7 @@ public:
     static ServiceResult<savor::db::UiWorkflowDetail> GetWorkflowDetail(std::int64_t workflow_instance_id) {
         auto* db = UiReadDb();
         if (db == nullptr) {
-            return Unavailable<savor::db::UiWorkflowDetail>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<savor::db::UiWorkflowDetail>(kSavorDbRuntimeUnavailableMessage);
         }
         const auto detail = db->GetWorkflowDetail(workflow_instance_id);
         if (!detail.has_value()) {
@@ -191,7 +191,7 @@ public:
     static ServiceResult<std::int64_t> StartWorkflowGraphRevision(const WorkflowGraphStartRequest& request) {
         auto* command_service = WorkflowCommandService();
         if (command_service == nullptr) {
-            return Unavailable<std::int64_t>("legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice");
+            return Unavailable<std::int64_t>(kSavorDbRuntimeUnavailableMessage);
         }
         if (request.workflow_graph_revision_id <= 0) {
             return Invalid<std::int64_t>("workflow graph revision id is required");
@@ -357,7 +357,7 @@ public:
     static ServiceResult<void> CancelWorkflow(std::int64_t workflow_instance_id, std::string reason) {
         auto* command_service = WorkflowCommandService();
         if (command_service == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         savor::db::execution::workflow::WorkflowCancelInstanceCommand command{};
         command.workflow_instance_id = workflow_instance_id;
@@ -374,7 +374,7 @@ public:
     static ServiceResult<void> ResumeWorkflow(std::int64_t workflow_instance_id) {
         auto* command_service = WorkflowCommandService();
         if (command_service == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         savor::db::execution::workflow::WorkflowResumeInstanceCommand command{};
         command.workflow_instance_id = workflow_instance_id;
@@ -390,7 +390,7 @@ public:
     static ServiceResult<void> RetryStep(std::int64_t workflow_step_id) {
         auto* command_service = WorkflowCommandService();
         if (command_service == nullptr) {
-            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, "legacy SavorCore/DB path is temporarily unavailable in this Qt2 migration slice" });
+            return ServiceResult<void>::Err({ ServiceErrorKind::Unavailable, kSavorDbRuntimeUnavailableMessage });
         }
         savor::db::execution::workflow::WorkflowRetryStepCommand command{};
         command.workflow_step_id = workflow_step_id;

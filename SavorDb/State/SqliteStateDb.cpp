@@ -7,6 +7,7 @@
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
+#include "../Common/Events/OutboxEventIds.h"
 
 namespace savor::db::state {
 
@@ -121,7 +122,6 @@ std::optional<std::string> CopyArtifactFromRecord(
 
 bool InsertStateOutboxEvent(
     sqlite3* db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_kind,
     std::string_view aggregate_id,
@@ -131,38 +131,60 @@ bool InsertStateOutboxEvent(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO state_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'State',?3,?4,?5,?6,?7,?8,?9);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "State",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
-    }
 
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO state_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,?2,1,'State',?3,?4,?5,?6,?7,?8,?9);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
         }
-        return false;
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 9, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
     }
-    return true;
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique state outbox event id";
+    }
+    return false;
 }
 
 std::optional<events::StateArtifactPayloadView> ResolveArtifactRef(sqlite3* db, std::int64_t artifact_id) {
@@ -263,6 +285,64 @@ std::optional<events::StateArtifactPayloadView> ResolveTasVariantRef(sqlite3* db
     return view;
 }
 
+std::optional<TasVariantRecord> LoadTasVariantByName(sqlite3* db, std::string_view name) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT tas_variant_id,name,base_dtm_artifact_id,dtmini_artifact_id,mutation_mode,rtc_value,"
+            "bookmark_name,insert_frame_count,parent_tas_variant_id,produced_savestate_id,created_at_utc "
+            "FROM state_tas_movie_variant WHERE name=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_text(st.st, 1, name.data(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    TasVariantRecord row{};
+    row.tas_variant_id = sqlite3_column_int64(st.st, 0);
+    const auto* name_text = sqlite3_column_text(st.st, 1);
+    row.name = name_text == nullptr ? "" : reinterpret_cast<const char*>(name_text);
+    row.base_dtm_artifact_id = sqlite3_column_int64(st.st, 2);
+    if (sqlite3_column_type(st.st, 3) != SQLITE_NULL) {
+        row.dtmini_artifact_id = sqlite3_column_int64(st.st, 3);
+    }
+    const auto* mode = sqlite3_column_text(st.st, 4);
+    row.mutation_mode = mode == nullptr ? "" : reinterpret_cast<const char*>(mode);
+    if (sqlite3_column_type(st.st, 5) != SQLITE_NULL) {
+        row.rtc_value = sqlite3_column_int64(st.st, 5);
+    }
+    if (sqlite3_column_type(st.st, 6) != SQLITE_NULL) {
+        row.bookmark_name = reinterpret_cast<const char*>(sqlite3_column_text(st.st, 6));
+    }
+    if (sqlite3_column_type(st.st, 7) != SQLITE_NULL) {
+        row.insert_frame_count = sqlite3_column_int64(st.st, 7);
+    }
+    if (sqlite3_column_type(st.st, 8) != SQLITE_NULL) {
+        row.parent_tas_variant_id = sqlite3_column_int64(st.st, 8);
+    }
+    if (sqlite3_column_type(st.st, 9) != SQLITE_NULL) {
+        row.produced_savestate_id = sqlite3_column_int64(st.st, 9);
+    }
+    row.created_at_utc = types::UtcTimePoint(std::chrono::milliseconds(sqlite3_column_int64(st.st, 10)));
+    return row;
+}
+
+bool TasVariantIdentityMatches(const TasVariantRecord& row, const CreateTasVariantCommand& command) {
+    return row.name == command.name
+        && row.base_dtm_artifact_id == command.base_dtm_artifact_id
+        && row.dtmini_artifact_id == command.dtmini_artifact_id
+        && row.mutation_mode == command.mutation_mode
+        && row.rtc_value == command.rtc_value
+        && row.bookmark_name == command.bookmark_name
+        && row.insert_frame_count == command.insert_frame_count
+        && row.parent_tas_variant_id == command.parent_tas_variant_id;
+}
+
 } // namespace
 
 SqliteStateDb::SqliteStateDb(sqlite3* db)
@@ -280,8 +360,7 @@ bool SqliteStateDb::StoreArtifact(
     if (command.sha256.empty()
         || command.filename.empty()
         || command.file_ext.empty()
-        || command.artifact_kind.empty()
-        || command.event_id.empty()) {
+        || command.artifact_kind.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -333,7 +412,6 @@ bool SqliteStateDb::StoreArtifact(
     const auto aggregate_id = std::to_string(artifact_id);
     if (!InsertStateOutboxEvent(
             db_,
-            command.event_id,
             "State.ArtifactStored.v1",
             "artifact",
             aggregate_id,
@@ -369,7 +447,7 @@ bool SqliteStateDb::CreateSavestate(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.artifact_id <= 0 || command.savestate_type.empty() || command.event_id.empty()) {
+    if (command.artifact_id <= 0 || command.savestate_type.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -417,7 +495,6 @@ bool SqliteStateDb::CreateSavestate(
     const auto aggregate_id = std::to_string(savestate_id);
     if (!InsertStateOutboxEvent(
             db_,
-            command.event_id,
             "State.SavestateCreated.v1",
             "savestate",
             aggregate_id,
@@ -457,8 +534,7 @@ bool SqliteStateDb::DeriveSavestate(
         || command.to_savestate_id <= 0
         || command.method_kind.empty()
         || command.source_context_kind.empty()
-        || command.source_context_id <= 0
-        || command.event_id.empty()) {
+        || command.source_context_id <= 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -503,7 +579,6 @@ bool SqliteStateDb::DeriveSavestate(
     const auto aggregate_id = std::to_string(command.to_savestate_id);
     if (!InsertStateOutboxEvent(
             db_,
-            command.event_id,
             "State.SavestateDerived.v1",
             "savestate_derivation",
             aggregate_id,
@@ -541,8 +616,7 @@ bool SqliteStateDb::CreateTasVariant(
     }
     if (command.name.empty()
         || command.base_dtm_artifact_id <= 0
-        || command.mutation_mode.empty()
-        || command.event_id.empty()) {
+        || command.mutation_mode.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -552,6 +626,25 @@ bool SqliteStateDb::CreateTasVariant(
             *error_out = sqlite3_errmsg(db_);
         }
         return false;
+    }
+
+    if (const auto existing = LoadTasVariantByName(db_, command.name); existing.has_value()) {
+        if (!TasVariantIdentityMatches(*existing, command)) {
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            if (error_out) *error_out = "tas variant name already exists with different defining fields";
+            return false;
+        }
+        if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db_);
+            }
+            (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+        if (tas_variant_id_out) {
+            *tas_variant_id_out = existing->tas_variant_id;
+        }
+        return true;
     }
 
     Statement insert_variant;
@@ -598,7 +691,6 @@ bool SqliteStateDb::CreateTasVariant(
     const auto aggregate_id = std::to_string(tas_variant_id);
     if (!InsertStateOutboxEvent(
             db_,
-            command.event_id,
             "State.TasVariantCreated.v1",
             "tas_variant",
             aggregate_id,
@@ -685,7 +777,7 @@ bool SqliteStateDb::UpdateTasVariantProducedSavestate(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.tas_variant_id <= 0 || command.produced_savestate_id <= 0 || command.event_id.empty()) {
+    if (command.tas_variant_id <= 0 || command.produced_savestate_id <= 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -716,7 +808,6 @@ bool SqliteStateDb::UpdateTasVariantProducedSavestate(
 
     if (!InsertStateOutboxEvent(
             db_,
-            command.event_id,
             "State.TasVariantProducedSavestateSet.v1",
             "tas_variant",
             std::to_string(command.tas_variant_id),

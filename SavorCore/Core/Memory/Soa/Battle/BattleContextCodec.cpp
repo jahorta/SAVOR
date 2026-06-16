@@ -17,7 +17,7 @@ namespace soa::battle::ctx::codec {
 
         for (int i = 0; i < 12; ++i) {
             uint32_t p = 0;
-            if (!view.read_u32(addr::Registry::spec(addr::battle::CombatantInstancesTable).base + i * 4, p)) return false;
+            if (!view.read_u32(addr::AddrRegistry::spec(addr::battle::CombatantInstancesTable).base + i * 4, p)) return false;
             if (p && view.in_mem1(p)) {
                 out.slots_[i].instance_addr = p;
                 (void)soa::readers::read(view, p, out.slots_[i].instance);
@@ -28,7 +28,7 @@ namespace soa::battle::ctx::codec {
 
         for (int i = 0; i < 12; ++i) {
             uint16_t id = 0;
-            if (!view.read_u16(addr::Registry::spec(addr::battle::CombatantIdTable).base + i * 2, id)) return false;
+            if (!view.read_u16(addr::AddrRegistry::spec(addr::battle::CombatantIdTable).base + i * 2, id)) return false;
             out.slots_[i].id = id;
         }
 
@@ -45,12 +45,12 @@ namespace soa::battle::ctx::codec {
         }
 
         uint32_t p = 0;
-        if (!view.read_u32(addr::Registry::base(addr::battle::MainInstancePtr), p)) return false;
+        if (!view.read_u32(addr::AddrRegistry::base(addr::battle::MainInstancePtr), p)) return false;
         if (p && view.in_mem1(p)) {
             (void)soa::readers::read(view, p, out.state);
         }
 
-        p = addr::Registry::base(addr::battle::TurnType);
+        p = addr::AddrRegistry::base(addr::battle::TurnType);
         if (p && view.in_mem1(p)) {
             uint32_t v;
             (void)soa::readers::read(view, p, v);
@@ -58,11 +58,11 @@ namespace soa::battle::ctx::codec {
         }
 
         uint32_t bp;
-        if (!view.read_u32(addr::Registry::base(addr::battle::BattlePhase), bp)) return false;
+        if (!view.read_u32(addr::AddrRegistry::base(addr::battle::BattlePhase), bp)) return false;
         out.battle_phase = bp;
 
         uint8_t ct;
-        if (!view.read_u8(addr::Registry::base(addr::battle::CurrentTurn), ct)) return false;
+        if (!view.read_u8(addr::AddrRegistry::base(addr::battle::CurrentTurn), ct)) return false;
         out.turn_count = ct;
 
         return true;
@@ -168,9 +168,9 @@ namespace soa::battle::ctx::codec {
         return true;
     }
 
-    bool readU8(const savor::MemView& v, addr::AddrKey k, uint8_t& out) { uint32_t va = 0; if (!resolve(v, addr::Registry::spec(k), va)) return false; return v.read_u8(va, out); }
-    bool readU16(const savor::MemView& v, addr::AddrKey k, uint16_t& out) { uint32_t va = 0; if (!resolve(v, addr::Registry::spec(k), va)) return false; return v.read_u16(va, out); }
-    bool readU32(const savor::MemView& v, addr::AddrKey k, uint32_t& out) { uint32_t va = 0; if (!resolve(v, addr::Registry::spec(k), va)) return false; return v.read_u32(va, out); }
-    bool readU64(const savor::MemView& v, addr::AddrKey k, uint64_t& out) { uint32_t va = 0; if (!resolve(v, addr::Registry::spec(k), va)) return false; return v.read_u64(va, out); }
+    bool readU8(const savor::MemView& v, addr::AddrKey k, uint8_t& out) { uint32_t va = 0; if (!resolve(v, addr::AddrRegistry::spec(k), va)) return false; return v.read_u8(va, out); }
+    bool readU16(const savor::MemView& v, addr::AddrKey k, uint16_t& out) { uint32_t va = 0; if (!resolve(v, addr::AddrRegistry::spec(k), va)) return false; return v.read_u16(va, out); }
+    bool readU32(const savor::MemView& v, addr::AddrKey k, uint32_t& out) { uint32_t va = 0; if (!resolve(v, addr::AddrRegistry::spec(k), va)) return false; return v.read_u32(va, out); }
+    bool readU64(const savor::MemView& v, addr::AddrKey k, uint64_t& out) { uint32_t va = 0; if (!resolve(v, addr::AddrRegistry::spec(k), va)) return false; return v.read_u64(va, out); }
 
 } // namespace savor::battlectx::codec

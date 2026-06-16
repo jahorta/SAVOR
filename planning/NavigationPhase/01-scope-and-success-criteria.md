@@ -1,10 +1,15 @@
 # 01 - Scope and Success Criteria
 
+## Status
+
+Future plan. SPICE owns MLD/SCT and other Skies of Arcadia filetype parsing; SAVOR consumes SPICE
+area/navigation content and owns route planning, control solving, workflow integration, and UI behavior.
+
 ## Problem Statement
 
 Given:
-- Walkable geometry extracted from dungeon data (GRND and related assets).
-- Collision geometry and interaction/cutscene trigger volumes.
+- Walkable geometry, collision geometry, and interaction/cutscene trigger volumes supplied by SPICE from
+  the current area's MLD/SCT content.
 - A start condition and target objective.
 
 We need to produce an input strategy that reaches the objective in the fewest VI frames, with acceptable determinism/reliability.
@@ -12,8 +17,8 @@ We need to produce an input strategy that reaches the objective in the fewest VI
 ## In-Scope (MVP)
 
 1. **Static world navigation**
-   - Reconstruct walkable graph/mesh from extracted level data.
-   - Represent non-walkable obstacles and trigger volumes.
+   - Consume SPICE walking-plane and target-discovery output for the active area.
+   - Represent non-walkable obstacles and trigger volumes in SAVOR planning artifacts.
 
 2. **Objective-based routing**
    - Route between named objectives:
@@ -56,11 +61,11 @@ We need to produce an input strategy that reaches the objective in the fewest VI
    - Beats a hand-authored baseline route in at least one benchmark objective pair.
 
 5. **World-model visibility**
-   - UI can render a reconstructed 3D world model and selected path for inspection.
+   - UI can render a SPICE-backed 3D world model, available walking planes, potential targets, and selected path for inspection.
 
 ## Deliverables
 
-- Data extraction spec for navigation-relevant world data.
+- SPICE integration contract for navigation-relevant world data.
 - Planner/refiner artifact format for routes and candidate telemetry.
 - Phase integration contract (job payload/result schema and step kinds).
 - 3D world-model viewer and path overlay support in UI.

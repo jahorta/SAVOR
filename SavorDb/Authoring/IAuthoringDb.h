@@ -10,7 +10,7 @@
 #include "../Common/Types/UtcTimestamp.h"
 #include "../Common/Retention/OutboxRetention.h"
 #include "../../SavorCore/Core/Input/SoaBattle/ActionTypes.h"
-#include "../../SavorCore/Runner/Breakpoints/BPRegistry.h"
+#include "../../SavorCore/Runner/Breakpoints/BpRegistry.h"
 #include "../../SavorCore/Runner/Breakpoints/Predicate.h"
 
 namespace savor::db {
@@ -89,7 +89,6 @@ struct SaveSeedProbeSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int samples_per_axis = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -98,7 +97,6 @@ struct SaveSeedProbeSpecCommand {
     int combo_sampler_tries = 0;
     bool auto_schedule_battle_run = false;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -109,7 +107,6 @@ struct SeedProbeSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int samples_per_axis = 0;
     std::int64_t min_value = 0;
     std::int64_t max_value = 0;
     bool cap_trigger_top = false;
@@ -149,14 +146,10 @@ struct SaveTasSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int headroom_x10 = 0;
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
-    std::int64_t rtc_low = 0;
-    std::int64_t rtc_high = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -168,12 +161,9 @@ struct TasSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    int headroom_x10 = 0;
     bool progress_enable = false;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
-    std::int64_t rtc_low = 0;
-    std::int64_t rtc_high = 0;
 };
 
 struct SaveBattleRunSpecCommand {
@@ -184,10 +174,7 @@ struct SaveBattleRunSpecCommand {
     bool progress_enable = false;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
-    int min_fake_attacks = 0;
-    int max_fake_attacks = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -197,7 +184,6 @@ struct SavePlanCommand {
     std::string fingerprint;
     int num_turns = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -213,7 +199,6 @@ struct SaveBattlePlanActionPresetCommand {
     std::optional<int> item_id;
     int flags = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -222,7 +207,6 @@ struct RenameBattlePlanActionPresetCommand {
     std::int64_t action_preset_id = 0;
     std::string name;
     types::UtcTimePoint updated_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -239,7 +223,6 @@ struct SaveBattlePlanTurnCommand {
     std::vector<SaveBattlePlanActionCommand> actions;
     bool replace_existing_actions = true;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -267,7 +250,6 @@ struct SavePredicateSpecCommand {
     std::optional<std::int64_t> rhs_address_program_id;
     bool abort_on_fail = false;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -278,12 +260,12 @@ struct SaveExplorerSettingsCommand {
     std::optional<std::int64_t> default_plan_id;
     std::optional<std::int64_t> default_predicate_set_id;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
 
 struct SavePredicateSetCommand {
+    std::string name;
     std::vector<std::int64_t> predicate_spec_ids;
     types::UtcTimePoint created_at_utc{};
 };
@@ -294,7 +276,6 @@ struct SaveBattleChainSpecCommand {
     std::int64_t battle_run_spec_id = 0;
     std::int64_t explorer_settings_id = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -302,7 +283,6 @@ struct SaveBattleChainSpecCommand {
 struct DeletePredicateSpecCommand {
     std::int64_t predicate_spec_id = 0;
     types::UtcTimePoint deleted_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -359,7 +339,6 @@ struct SaveWorkflowGraphCommand {
     std::vector<SaveWorkflowGraphNodeCommand> nodes;
     std::vector<SaveWorkflowGraphEdgeCommand> edges;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -378,8 +357,6 @@ struct BattleRunSpecSnapshot {
     bool progress_enable = false;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
-    int min_fake_attacks = 0;
-    int max_fake_attacks = 0;
 };
 
 struct BattlePlanActionPresetSnapshot {
@@ -458,6 +435,7 @@ struct PredicateSpecUsageSnapshot {
 
 struct PredicateSetSnapshot {
     std::int64_t predicate_set_id = 0;
+    std::string name;
     std::vector<PredicateSpecSnapshot> predicates;
 };
 

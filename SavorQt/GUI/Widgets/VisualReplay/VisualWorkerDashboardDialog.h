@@ -6,7 +6,7 @@
 
 #include <vector>
 
-#include "Runner/Parallel/WorkerTelemetry.h"
+#include "Worker/WorkerTelemetry.h"
 
 struct VisualWorkerSurfaceBinding {
     int workerIndex = 0;

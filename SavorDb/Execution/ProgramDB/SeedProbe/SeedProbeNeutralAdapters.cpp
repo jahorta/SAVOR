@@ -2,11 +2,11 @@
 
 #include <sstream>
 
-#include "../../Execution/Jobs/JobEventOrchestration.h"
+#include "../../Jobs/JobEventOrchestration.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../../SavorCore/Runner/IPC/Wire.h"
 #include "../../../../SavorCore/Runner/Parallel/PRTypes.h"
-#include "../../../../SavorCore/Runner/Script/KeyRegistry.h"
+#include "../../../../SavorCore/Runner/Script/CtxRegistry.h"
 #include "../../../../SavorCore/Phases/Programs/SeedProbe/SeedProbePayload.h"
 #include "SeedProbeContracts.h"
 
@@ -104,6 +104,7 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
                     .fingerprint = persisted.fingerprint,
                     .priority = 0,
                     .max_attempts = 1,
+                    .pending_until_workflow_materialized = true,
                 },
                 nullptr,
                 &error);
@@ -193,12 +194,12 @@ std::string NeutralSeedResultMapper::BuildResultIniFromPrResult(std::int64_t /*j
     ResultsIni out{};
     out.w_err = result.ps.w_err;
     if (out.w_err == 0) {
-        result.ps.ctx.get(savor::keys::core::DW_RUN_OUTCOME_CODE, out.dw_err);
+        result.ps.ctx.get(savor::context::key::core::DW_RUN_OUTCOME_CODE, out.dw_err);
     }
     if (result.ps.ok) {
-        result.ps.ctx.get(savor::keys::seed::RNG_SEED, out.rng_seed);
-        result.ps.ctx.get(savor::keys::core::VI_FIRST, out.vi_start);
-        result.ps.ctx.get(savor::keys::core::VI_LAST, out.vi_end);
+        result.ps.ctx.get(savor::context::key::seed::RNG_SEED, out.rng_seed);
+        result.ps.ctx.get(savor::context::key::core::VI_FIRST, out.vi_start);
+        result.ps.ctx.get(savor::context::key::core::VI_LAST, out.vi_end);
     }
     IniDoc ini;
     return out.append_section(ini).to_string_sorted();

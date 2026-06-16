@@ -311,22 +311,25 @@ bool QueuedExecutionDb::IsRunning() const {
 
 ExecutionQueueTelemetrySnapshot QueuedExecutionDb::GetTelemetrySnapshot() const {
     ExecutionQueueTelemetrySnapshot snapshot{};
-    if (write_lane_) {
-        const auto lane = write_lane_->GetTelemetrySnapshot();
-        snapshot.write_depth = lane.depth;
-        snapshot.write_enqueued = lane.enqueued;
-        snapshot.write_rejected = lane.rejected;
-        snapshot.write_completed = lane.completed;
-        snapshot.write_failed = lane.failed;
-    }
-    if (read_lane_) {
-        const auto lane = read_lane_->GetTelemetrySnapshot();
-        snapshot.read_depth = lane.depth;
-        snapshot.read_enqueued = lane.enqueued;
-        snapshot.read_rejected = lane.rejected;
-        snapshot.read_completed = lane.completed;
-        snapshot.read_failed = lane.failed;
-    }
+    snapshot.queued = core::BuildQueuedDbTelemetrySnapshot(write_lane_.get(), read_lane_.get());
+    snapshot.write_depth = snapshot.queued.write_depth;
+    snapshot.read_depth = snapshot.queued.read_depth;
+    snapshot.write_capacity = snapshot.queued.write_capacity;
+    snapshot.read_capacity = snapshot.queued.read_capacity;
+    snapshot.write_high_water_depth = snapshot.queued.write_high_water_depth;
+    snapshot.read_high_water_depth = snapshot.queued.read_high_water_depth;
+    snapshot.write_oldest_queued_age_ms = snapshot.queued.write_oldest_queued_age_ms;
+    snapshot.read_oldest_queued_age_ms = snapshot.queued.read_oldest_queued_age_ms;
+    snapshot.write_enqueued = snapshot.queued.write_enqueued;
+    snapshot.read_enqueued = snapshot.queued.read_enqueued;
+    snapshot.write_rejected = snapshot.queued.write_rejected;
+    snapshot.read_rejected = snapshot.queued.read_rejected;
+    snapshot.write_completed = snapshot.queued.write_completed;
+    snapshot.read_completed = snapshot.queued.read_completed;
+    snapshot.write_failed = snapshot.queued.write_failed;
+    snapshot.read_failed = snapshot.queued.read_failed;
+    snapshot.sqlite_busy = snapshot.queued.sqlite_busy;
+    snapshot.sqlite_locked = snapshot.queued.sqlite_locked;
     return snapshot;
 }
 
@@ -427,6 +430,45 @@ bool QueuedExecutionDb::RequeueExpiredExecutionLeases(
     return ExecuteWrite<bool>(
         [this, rows_requeued_out, error_out]() {
             return inner_ != nullptr ? inner_->RequeueExpiredExecutionLeases(rows_requeued_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueExpiredClaimedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, rows_requeued_out, error_out]() {
+            return inner_ != nullptr ? inner_->RequeueExpiredClaimedExecutionJobs(rows_requeued_out, error_out) : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueClaimedExecutionJob(
+    std::int64_t job_id,
+    std::string_view claimed_by_token,
+    std::string_view message,
+    std::string* error_out) {
+    const auto token = std::string(claimed_by_token);
+    const auto message_value = std::string(message);
+    return ExecuteWrite<bool>(
+        [this, job_id, token, message_value, error_out]() {
+            return inner_ != nullptr
+                ? inner_->RequeueClaimedExecutionJob(job_id, token, message_value, error_out)
+                : false;
+        },
+        false,
+        error_out);
+}
+
+bool QueuedExecutionDb::RequeueInterruptedExecutionJobs(
+    int* rows_requeued_out,
+    std::string* error_out) {
+    return ExecuteWrite<bool>(
+        [this, rows_requeued_out, error_out]() {
+            return inner_ != nullptr ? inner_->RequeueInterruptedExecutionJobs(rows_requeued_out, error_out) : false;
         },
         false,
         error_out);
@@ -605,20 +647,30 @@ std::optional<events::ExecutionWorkflowJobPayloadView> QueuedExecutionDb::Resolv
 }
 
 template <typename Result, typename Fn>
-Result QueuedExecutionDb::ExecuteRead(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedExecutionDb::ExecuteRead(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return core::QueuedDbExecutor::ExecuteQueued<Result>(
         *read_lane_,
         sqlite_call_mtx_,
+        core::MakeQueuedDbOperationName("Execution", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);
 }
 
 template <typename Result, typename Fn>
-Result QueuedExecutionDb::ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedExecutionDb::ExecuteWrite(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return core::QueuedDbExecutor::ExecuteQueued<Result>(
         *write_lane_,
         sqlite_call_mtx_,
+        core::MakeQueuedDbOperationName("Execution", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);

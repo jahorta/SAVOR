@@ -1,5 +1,9 @@
 # DB Migrate Workflows Plan (Hybrid Approach)
 
+## Status
+
+Current plan with historical phase notes.
+
 This folder contains design docs for migrating SavorDb workflow execution toward the **Hybrid orchestration model**:
 
 - Central workflow control/orchestration path for step progression.
@@ -20,13 +24,16 @@ These docs define how to evolve from current state to a robust hybrid architectu
 
 - Workflow-migration phases use two verification paths:
   1. `SavorTests` (unit/integration coverage),
-  2. `SavorDbValidation` CLI executable (phase-gate operational validations and replay/backfill checks).
+  2. SavorE2E scenario runs for executable workflow/runtime validation.
+- `SavorDbSchemaExport` is the future schema-reporting utility. It should emit current human-readable
+  schema snapshots and validation-friendly schema summaries, but it is not yet the combined phase-gate
+  validation runner described by older notes.
 - Phase docs below should include both paths in implementation and exit criteria.
 
 ## Current phase status
 
-- **Phase 2 (Adapter invocation chain + Seed Probe split):** Completed on 2026-04-08 via manual verification (`SavorTests` and `SavorDbValidation` phase-2 checks passed).
-- **Phase 3 (Pub/sub extraction and scaling):** Completed on 2026-04-09 via manual validation (`SavorTests` phase-3 suites and `SavorDbValidation` phase-3 checks passed).
+- **Phase 2 (Adapter invocation chain + Seed Probe split):** Historical completion note from 2026-04-08. Treat current verification as `SavorTests` plus relevant SavorE2E scenarios.
+- **Phase 3 (Pub/sub extraction and scaling):** Historical completion note from 2026-04-09. Treat current verification as `SavorTests`, SavorE2E scenarios, and future `SavorDbSchemaExport` schema snapshots once that tool is completed.
 
 ## Documents
 

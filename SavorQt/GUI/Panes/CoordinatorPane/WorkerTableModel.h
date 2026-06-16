@@ -4,7 +4,7 @@
 
 #include <vector>
 
-#include "Runner/Parallel/WorkerTelemetry.h"
+#include "Worker/WorkerTelemetry.h"
 
 class WorkerTableModel : public QAbstractTableModel
 {

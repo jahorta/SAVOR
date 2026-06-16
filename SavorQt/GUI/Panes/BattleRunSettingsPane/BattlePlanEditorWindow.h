@@ -47,8 +47,7 @@ private:
     void createWidgets();
     void populateActionLibrary();
     void rebuildPlanTree();
-    void refreshSelectionPanel();
-    void syncSelectionPanelToAction();
+    void applyCombatantCountToAllTurns(int combatantCount);
     void addActionFromLibrarySelection();
     void assignPresetToSelection(std::int64_t presetId);
     void addActionToSelectedTurn(std::int64_t presetId, int turnIndex = -1, int slotIndex = -1);
@@ -88,17 +87,11 @@ private:
     std::function<void()> savedCallback_;
     bool dirty_ = false;
     bool rebuildingTree_ = false;
-    bool refreshingSelection_ = false;
     QLineEdit* nameEdit_ = nullptr;
     QSpinBox* turnCountSpin_ = nullptr;
     QListWidget* actionLibraryList_ = nullptr;
     QTreeWidget* planTree_ = nullptr;
-    QLabel* selectionLabel_ = nullptr;
-    QLabel* presetSummaryLabel_ = nullptr;
-    QLabel* presetDetailLabel_ = nullptr;
-    QLabel* slotLabel_ = nullptr;
     QSpinBox* combatantCountSpin_ = nullptr;
-    QSpinBox* actorSlotSpin_ = nullptr;
     QPushButton* saveButton_ = nullptr;
     std::vector<savor::db::BattlePlanActionPresetSnapshot> actionPresets_;
     std::vector<TurnDraft> turns_;

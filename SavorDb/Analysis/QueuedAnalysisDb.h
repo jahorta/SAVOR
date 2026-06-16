@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -201,10 +202,18 @@ public:
 
 private:
     template <typename Result, typename Fn>
-    Result ExecuteRead(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteRead(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     template <typename Result, typename Fn>
-    Result ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out = nullptr) const;
+    Result ExecuteWrite(
+        Fn&& fn,
+        Result fallback,
+        std::string* error_out = nullptr,
+        const std::source_location& location = std::source_location::current()) const;
 
     savor::db::IAnalysisDb* inner_ = nullptr;
     savor::db::core::QueuedDbConfig config_{};

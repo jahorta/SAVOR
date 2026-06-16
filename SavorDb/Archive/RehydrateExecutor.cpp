@@ -7,6 +7,7 @@
 #include <unordered_set>
 
 #include "../Common/Migrations/MigrationRunner.h"
+#include "../Common/Events/OutboxEventIds.h"
 
 namespace savor::db::archive {
 namespace {
@@ -164,7 +165,6 @@ bool InsertMap(sqlite3* archive_db, std::int64_t request_id, std::string_view ki
 
 bool InsertExecutionOutbox(
     sqlite3* execution_db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_kind,
     std::string_view aggregate_id,
@@ -174,26 +174,50 @@ bool InsertExecutionOutbox(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (!Prepare(execution_db,
-        "INSERT INTO exec_outbox_message(event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-        "VALUES(?1,?2,1,'Execution',?3,?4,?5,?6,?7,?8,?9);",
-        &st,
-        error_out)) {
-        return false;
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                execution_db,
+                "Execution",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
+        }
+
+        Statement st;
+        if (!Prepare(execution_db,
+            "INSERT INTO exec_outbox_message(event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+            "VALUES(?1,?2,1,'Execution',?3,?4,?5,?6,?7,?8,?9);",
+            &st,
+            error_out)) {
+            return false;
+        }
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 9, payload_ref_id);
+
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(execution_db)) {
+            if (error_out) *error_out = sqlite3_errmsg(execution_db);
+            return false;
+        }
     }
-
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 9, payload_ref_id);
-
-    return StepDone(execution_db, st.st, error_out);
+    if (error_out) *error_out = "failed to generate a unique execution outbox event id";
+    return false;
 }
 
 } // namespace
@@ -650,9 +674,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         if (!result.error.has_value()) {
             std::string db_error2;
             const auto now_epoch = request.now_utc.time_since_epoch().count();
-            std::string event_prefix = request.event_id_prefix.empty()
-                ? ("rehydrate-" + std::to_string(request.rehydrate_request_id))
-                : request.event_id_prefix;
             std::string correlation = request.correlation_id.empty()
                 ? ("rehydrate-request-" + std::to_string(request.rehydrate_request_id))
                 : request.correlation_id;
@@ -661,10 +682,8 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 : request.causation_id;
 
             for (const auto job_id : restored_jobs) {
-                const auto ev = event_prefix + ".job-restored." + std::to_string(job_id);
                 if (!InsertExecutionOutbox(
                         execution_db_,
-                        ev,
                         "Execution.JobRestored.v1",
                         "job",
                         std::to_string(job_id),
@@ -685,7 +704,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
                 done.rehydrate_request_id = request.rehydrate_request_id;
                 done.status = "COMPLETED";
                 done.completed_at_utc = request.now_utc;
-                done.event_id = event_prefix + ".completed";
                 done.correlation_id = correlation;
                 done.causation_id = causation;
                 std::string archive_error;
@@ -711,10 +729,6 @@ RehydrateExecutionResult SqliteRehydrateExecutor::Execute(const RehydrateExecuti
         fail.status = "FAILED";
         fail.completed_at_utc = request.now_utc;
         fail.error_text = *result.error;
-        const auto prefix = request.event_id_prefix.empty()
-            ? ("rehydrate-" + std::to_string(request.rehydrate_request_id))
-            : request.event_id_prefix;
-        fail.event_id = prefix + ".failed";
         fail.correlation_id = request.correlation_id.empty()
             ? ("rehydrate-request-" + std::to_string(request.rehydrate_request_id))
             : request.correlation_id;

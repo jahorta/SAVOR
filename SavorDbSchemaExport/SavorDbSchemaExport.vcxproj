@@ -144,7 +144,6 @@
   <ItemGroup>
     <ClCompile Include="ExportCurrentDbSchemas.cpp" />
     <ClCompile Include="SavorDbSchemaExport.cpp" />
-    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SavorDb\SavorDb.vcxproj">

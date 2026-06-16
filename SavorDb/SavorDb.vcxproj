@@ -168,15 +168,18 @@
     <ClInclude Include="Analysis\SqliteAnalysisDb.h" />
     <ClInclude Include="Authoring\IAuthoringDb.h" />
     <ClInclude Include="Authoring\QueuedAuthoringDb.h" />
+    <ClInclude Include="Authoring\RuntimeSymbolAuthoringService.h" />
     <ClInclude Include="Authoring\SqliteAuthoringDb.h" />
     <ClInclude Include="Common\DbConfigPaths.h" />
     <ClInclude Include="Common\DbService.h" />
+    <ClInclude Include="Common\Performance\DbPerfReport.h" />
     <ClInclude Include="Common\Events\EventEnvelope.h" />
     <ClInclude Include="Common\Events\EventCatalog.h" />
     <ClInclude Include="Common\Events\EventPayloadDispatch.h" />
     <ClInclude Include="Common\Events\EventPayloadValidation.h" />
     <ClInclude Include="Common\Events\EventPayloadViews.h" />
     <ClInclude Include="Common\Events\EventPayloadResolvers.h" />
+    <ClInclude Include="Common\Events\OutboxEventIds.h" />
     <ClInclude Include="Common\Events\OutboxRelay.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbeAdapters.h" />
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h" />
@@ -225,6 +228,7 @@
     <ClInclude Include="UIRead\Projectors\ProjectorContract.h" />
     <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" />
     <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" />
+    <ClInclude Include="UIRead\Projectors\UiReadProjectionService.h" />
     <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
   <ItemGroup>
@@ -236,11 +240,13 @@
     <ClCompile Include="Common\Migrations\MigrationRunner.cpp" />
     <ClCompile Include="Common\Events\OutboxRelay.cpp" />
     <ClCompile Include="Common\DbService.cpp" />
+    <ClCompile Include="Common\Performance\DbPerfReport.cpp" />
     <ClCompile Include="Common\QueuedDb.cpp" />
     <ClCompile Include="Analysis\QueuedAnalysisDb.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisPayloadResolvers.cpp" />
     <ClCompile Include="Analysis\SqliteAnalysisDb.cpp" />
     <ClCompile Include="Authoring\QueuedAuthoringDb.cpp" />
+    <ClCompile Include="Authoring\RuntimeSymbolAuthoringService.cpp" />
     <ClCompile Include="Authoring\SqliteAuthoringDb.cpp" />
     <ClCompile Include="Execution\Jobs\JobEventOrchestration.cpp" />
     <ClCompile Include="Execution\QueuedExecutionDb.cpp" />
@@ -276,8 +282,10 @@
     <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" />
     <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
+    <ClCompile Include="UIRead\Projectors\UiReadProjectionService.cpp" />
     <ClCompile Include="UIRead\QueuedUiReadDb.cpp" />
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />
+    <ClCompile Include="..\third-party\sqlite\include\sqlite3.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />
@@ -294,6 +302,7 @@
     <None Include="migration\Authoring\202604101250_authoring_workflow_graph_hidden.sql" />
     <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql" />
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
+    <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
@@ -310,6 +319,9 @@
     <None Include="migration\UIRead\202604051500_uiread_stage3f_projection_checkpoint_retire.sql" />
     <None Include="migration\UIRead\202604051600_uiread_stage3g_archive_rehydrate_projection.sql" />
     <None Include="migration\UIRead\202604101000_uiread_seedprobe_query_fields.sql" />
+    <None Include="migration\UIRead\202606111200_uiread_projection_stream_telemetry.sql" />
+    <None Include="migration\UIRead\202606121000_uiread_projection_failure_payload_refs.sql" />
+    <None Include="migration\UIRead\202606161200_uiread_battle_turn_job_exec_id.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

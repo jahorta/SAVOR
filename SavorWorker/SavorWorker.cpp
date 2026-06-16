@@ -16,10 +16,10 @@
 #include "Boot/Boot.h"
 #include "Core/DolphinWrapper.h"
 #include "Core/HostStubs.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Script/PhaseScriptVM.h"
 #include "Runner/Script/PSContextCodec.h"
-#include "Runner/Script/KeyRegistry.h"
+#include "Runner/Script/CtxRegistry.h"
 #include "Phases/Programs/ProgramRegistry.h"
 #include "Runner/Parallel/WorkerBootPlan.h"
 #include "Runner/IPC/Wire.h"
@@ -203,7 +203,7 @@ int main(int argc, char** argv)
     host.ConfigurePortsStandardPadP1();
 
     // ----- New control-mode only -----
-    BreakpointMap bpmap = bp::BPRegistry::as_map();
+    BreakpointMap bpmap = bp::BpRegistry::as_map();
     PhaseScriptVM vm(host, bpmap);
 
     if (visual) {
@@ -414,7 +414,7 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            pj.ctx[keys::core::GAME_ISO_PATH] = boot.iso_path;
+            pj.ctx[savor::context::key::core::GAME_ISO_PATH] = boot.iso_path;
 
             auto progress_sink = [hOut, jh](const char* text, bool record = true)
                 {
@@ -430,7 +430,7 @@ int main(int argc, char** argv)
                 };
 
             uint32_t progress_flags;
-            pj.ctx.get(keys::core::PROGRESS_CORE_FLAGS, progress_flags);
+            pj.ctx.get(savor::context::key::core::PROGRESS_CORE_FLAGS, progress_flags);
 
             if (progress_flags != 0)
                 host.setProgressSink(progress_sink);

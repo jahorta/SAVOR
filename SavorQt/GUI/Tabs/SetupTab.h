@@ -16,6 +16,8 @@ public:
         std::function<void()> openGraphEditor;
         std::function<void(const savor::db::WorkflowGraphSnapshot&, bool)> openGraphEditorSnapshot;
         std::function<void()> openSettings;
+        std::function<void()> openIsoSettings;
+        std::function<void()> openDolphinSettings;
         std::function<void()> openArtifacts;
         std::function<void()> openDtmEditor;
         std::function<void()> openBattleSettings;

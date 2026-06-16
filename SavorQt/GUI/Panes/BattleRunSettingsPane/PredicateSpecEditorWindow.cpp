@@ -4,7 +4,7 @@
 #include "Core/Memory/Soa/SoaAddrCatalog.h"
 #include "Core/Memory/Soa/SoaAddrProgramBuilder.h"
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
-#include "Runner/Breakpoints/BPRegistry.h"
+#include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Breakpoints/Predicate.h"
 
 #include <QtCore/QSignalBlocker>
@@ -21,6 +21,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
@@ -399,13 +400,14 @@ void PredicateSpecEditorWindow::createFlagsSection()
 void PredicateSpecEditorWindow::createMatchSection()
 {
     auto* matchContainer = new QWidget(this);
+    matchContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* matchLayout = new QHBoxLayout(matchContainer);
     matchLayout->setContentsMargins(0, 0, 0, 0);
     matchLayout->setSpacing(10);
-    matchLayout->setAlignment(Qt::AlignTop);
 
     auto buildValueBox = [this](const QString& title, const bool lhs) -> QGroupBox* {
         auto* box = new QGroupBox(title, this);
+        box->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         auto* layout = new QFormLayout(box);
         layout->setContentsMargins(12, 12, 12, 12);
         layout->setSpacing(8);
@@ -516,14 +518,14 @@ void PredicateSpecEditorWindow::createMatchSection()
     matchLayout->addWidget(buildValueBox(QStringLiteral("LHS"), true), 1);
     matchLayout->addWidget(compareBox);
     matchLayout->addWidget(buildValueBox(QStringLiteral("RHS"), false), 1);
-    contentLayout_->addWidget(matchContainer);
+    contentLayout_->addWidget(matchContainer, 1);
 }
 
 void PredicateSpecEditorWindow::populateAddrKeys()
 {
     addrKeys_.clear();
     addrNames_.clear();
-    for (const auto& rec : addr::Registry::all()) {
+    for (const auto& rec : addr::AddrRegistry::all()) {
         addrKeys_.push_back(static_cast<int>(rec.key));
         addrNames_.push_back(QString::fromUtf8(rec.name));
     }
@@ -536,7 +538,7 @@ void PredicateSpecEditorWindow::populateBreakpointCombo(QComboBox* combo) const
     }
     combo->clear();
     combo->addItem(QStringLiteral("(none)"), 0);
-    for (const BPAddr& bp : bp::BPRegistry::all()) {
+    for (const BPAddr& bp : bp::BpRegistry::all()) {
         combo->addItem(QStringLiteral("%1 @ 0x%2")
                            .arg(QString::fromUtf8(bp.name))
                            .arg(bp.pc, 8, 16, QLatin1Char('0')),
@@ -846,7 +848,7 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
         }
     } else if (lhsMode == ValueSourceMode::AddrKey) {
         const int keyValue = lhsKeyCombo_ != nullptr ? lhsKeyCombo_->currentData().toInt() : 0;
-        if (lhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::Registry::exists(static_cast<addr::AddrKey>(keyValue))) {
+        if (lhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::AddrRegistry::exists(static_cast<addr::AddrKey>(keyValue))) {
             errors.push_back(QStringLiteral("LHS AddrKey is not set or invalid."));
         }
     } else if (lhsMode == ValueSourceMode::AddrProgram && lhsProgramDraft_.blob.isEmpty()) {
@@ -869,7 +871,7 @@ std::vector<QString> PredicateSpecEditorWindow::validateDraft() const
         }
     } else if (rhsMode == ValueSourceMode::AddrKey) {
         const int keyValue = rhsKeyCombo_ != nullptr ? rhsKeyCombo_->currentData().toInt() : 0;
-        if (rhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::Registry::exists(static_cast<addr::AddrKey>(keyValue))) {
+        if (rhsKeyCombo_ == nullptr || keyValue <= 0 || !addr::AddrRegistry::exists(static_cast<addr::AddrKey>(keyValue))) {
             errors.push_back(QStringLiteral("RHS AddrKey is not set or invalid."));
         }
     } else if (rhsMode == ValueSourceMode::AddrProgram && rhsProgramDraft_.blob.isEmpty()) {

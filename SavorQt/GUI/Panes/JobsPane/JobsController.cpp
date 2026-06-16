@@ -3,7 +3,6 @@
 #include "DB/SavorDbJobService.h"
 
 #include <QtCore/QSettings>
-#include <QtCore/QTimer>
 
 #include <exception>
 #include <algorithm>
@@ -68,49 +67,59 @@ JobsController::JobsController(QObject* parent)
         emitStateChanged();
     });
 
-    connect(&pageWatcher_, &QFutureWatcher<JobPageResult>::finished, this, [this]() {
-        const bool shouldRefetch = pendingPageFetch_;
-        pendingPageFetch_ = false;
-        try {
-            const auto result = pageWatcher_.result();
-            pageInFlight_ = false;
-            if (result.ok) {
-                state_.page = result.value;
-                state_.lastRefresh = QDateTime::currentDateTime();
-                state_.errorMessage.clear();
-                state_.infoMessage.clear();
+    pageRefreshPipeline_ = new savorqt::gui::AsyncRefreshPipeline<JobPageFetchRequest, JobPageResult>(this);
+    pageRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
+    pageRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
+    pageRefreshPipeline_->setRequestBuilder([this](savorqt::gui::RefreshReason reason) -> std::optional<JobPageFetchRequest> {
+        if (reason == savorqt::gui::RefreshReason::Auto && !canAutoRefresh()) {
+            return std::nullopt;
+        }
+        pageInFlight_ = true;
+        state_.errorMessage.clear();
+        emitStateChanged();
+        return JobPageFetchRequest{ fetchScope_, before_, after_, fetchPageLimit_ };
+    });
+    pageRefreshPipeline_->setLoadAndPrepare([](JobPageFetchRequest request) {
+        return savorqt::gui::AsyncRefreshResult<JobPageResult>::Ok(
+            SavorDbJobService::FetchJobsPage(request.scope, request.before, request.after, request.limit));
+    });
+    pageRefreshPipeline_->setApply([this](const JobPageResult& result, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        pageInFlight_ = false;
+        if (result.ok) {
+            state_.page = result.value;
+            state_.lastRefresh = QDateTime::currentDateTime();
+            state_.errorMessage.clear();
+            state_.infoMessage.clear();
 
-                bool foundSelection = false;
-                for (const savor::db::UiJobSummary& item : state_.page.items) {
-                    if (item.job_id == state_.selectedJobId) {
-                        foundSelection = true;
-                        break;
-                    }
+            bool foundSelection = false;
+            for (const savor::db::UiJobSummary& item : state_.page.items) {
+                if (item.job_id == state_.selectedJobId) {
+                    foundSelection = true;
+                    break;
                 }
-                if (!foundSelection) {
-                    state_.selectedJobId = state_.page.items.empty() ? 0 : state_.page.items.front().job_id;
-                    state_.detail = {};
-                }
-                if (state_.selectedJobId > 0) {
-                    kickDetailFetch(state_.selectedJobId);
-                } else {
-                    state_.detail = {};
-                }
-            } else {
-                state_.page = {};
-                state_.detail = {};
-                state_.errorMessage = QStringLiteral("Jobs failed: %1").arg(QString::fromStdString(result.error.message));
             }
-        } catch (...) {
-            pageInFlight_ = false;
+            if (!foundSelection) {
+                state_.selectedJobId = state_.page.items.empty() ? 0 : state_.page.items.front().job_id;
+                state_.detail = {};
+            }
+            if (state_.selectedJobId > 0) {
+                kickDetailFetch(state_.selectedJobId);
+            } else {
+                state_.detail = {};
+            }
+        } else {
             state_.page = {};
             state_.detail = {};
-            state_.errorMessage = describeException("Jobs failed");
+            state_.errorMessage = QStringLiteral("Jobs failed: %1").arg(QString::fromStdString(result.error.message));
         }
         emitStateChanged();
-        if (shouldRefetch) {
-            kickPageFetch();
-        }
+    });
+    pageRefreshPipeline_->setApplyError([this](const QString& error, savorqt::gui::RefreshReason, const savorqt::gui::RefreshStatus&) {
+        pageInFlight_ = false;
+        state_.page = {};
+        state_.detail = {};
+        state_.errorMessage = error;
+        emitStateChanged();
     });
 
     connect(&detailWatcher_, &QFutureWatcher<JobDetailResult>::finished, this, [this]() {
@@ -188,15 +197,7 @@ JobsController::JobsController(QObject* parent)
     connect(&restartWatcher_, &QFutureWatcher<VoidResult>::finished, this, [this, finishAction]() mutable {
         finishAction(restartWatcher_, restartInFlight_, Operation::Restart, QStringLiteral("Restarted job %1.").arg(actionJobId_), "Restart failed");
     });
-    refreshTimer_ = new QTimer(this);
-    connect(refreshTimer_, &QTimer::timeout, this, [this]() {
-        if (canAutoRefresh()) {
-            requestRefresh();
-        }
-    });
-    if (pageActive_) {
-        refreshTimer_->start(state_.refreshSeconds * 1000);
-    }
+    pageRefreshPipeline_->setActive(pageActive_);
 }
 
 const JobsController::ViewState& JobsController::viewState() const { return state_; }
@@ -216,15 +217,9 @@ void JobsController::setPageActive(bool active)
     }
 
     pageActive_ = active;
-    if (!pageActive_) {
-        if (refreshTimer_) {
-            refreshTimer_->stop();
-        }
-        return;
-    }
-
-    if (refreshTimer_) {
-        refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->setActive(pageActive_);
+        pageRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
     }
     loadInitial();
 }
@@ -263,15 +258,33 @@ void JobsController::resetFilters()
     state_.infoMessage.clear();
     syncFetchStateFromView();
     persistSettings();
-    if (pageActive_) {
-        refreshTimer_->start(state_.refreshSeconds * 1000);
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->setAutoRefreshEnabled(state_.autoRefresh);
+        pageRefreshPipeline_->setRefreshIntervalMs(state_.refreshSeconds * 1000);
     }
     kickPageFetch();
     emitStateChanged();
 }
 
-void JobsController::setAutoRefreshEnabled(bool enabled) { state_.autoRefresh = enabled; persistSettings(); emitStateChanged(); }
-void JobsController::setRefreshSeconds(int seconds) { state_.refreshSeconds = seconds; persistSettings(); if (pageActive_) refreshTimer_->start(seconds * 1000); emitStateChanged(); }
+void JobsController::setAutoRefreshEnabled(bool enabled)
+{
+    state_.autoRefresh = enabled;
+    persistSettings();
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->setAutoRefreshEnabled(enabled);
+    }
+    emitStateChanged();
+}
+
+void JobsController::setRefreshSeconds(int seconds)
+{
+    state_.refreshSeconds = seconds;
+    persistSettings();
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->setRefreshIntervalMs(seconds * 1000);
+    }
+    emitStateChanged();
+}
 void JobsController::requestRefresh() { before_.reset(); after_.reset(); kickPageFetch(); }
 void JobsController::requestNextPage() { if (state_.page.next) { before_ = state_.page.next; after_.reset(); kickPageFetch(); } }
 void JobsController::requestPreviousPage() { if (state_.page.prev) { after_ = state_.page.prev; before_.reset(); kickPageFetch(); } }
@@ -329,17 +342,9 @@ void JobsController::kickKindsFetch()
 
 void JobsController::kickPageFetch()
 {
-    if (pageInFlight_) {
-        pendingPageFetch_ = true;
-        return;
+    if (pageRefreshPipeline_ != nullptr) {
+        pageRefreshPipeline_->requestRefresh(savorqt::gui::RefreshReason::Manual);
     }
-    pageInFlight_ = true;
-    pendingPageFetch_ = false;
-    state_.errorMessage.clear();
-    pageWatcher_.setFuture(runDataServiceCall([scope = fetchScope_, before = before_, after = after_, limit = fetchPageLimit_]() -> JobPageResult {
-        return SavorDbJobService::FetchJobsPage(scope, before, after, limit);
-    }));
-    emitStateChanged();
 }
 
 void JobsController::kickDetailFetch(qint64 jobId, bool force)

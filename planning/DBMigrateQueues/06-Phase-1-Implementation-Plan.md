@@ -136,6 +136,13 @@ Emit counters/gauges/histograms for:
 ### D3. Stuck work detection hooks
 Add duration threshold checks per operation type (warn-level first) with contextual logging.
 
+### D4. Current database stress probe
+Add an early, non-tuning stress probe for the current queued facades:
+- run representative read/write bursts against Execution, State, Analysis, Authoring, UIRead, and Archive,
+- capture queue depth, completion count, failure count, rejection count, and elapsed wall time,
+- keep thresholds loose at first so the probe establishes baseline behavior instead of blocking development,
+- promote the same metrics into Phase 4 tuning once the workload shape is known.
+
 ## Workstream E — Test and Verification Harness
 
 ### E1. Unit tests
@@ -164,7 +171,7 @@ Phase 1 closes only when:
 1. Build shared queue/worker core (A).
 2. Harden facade result/error semantics and CQRS extension points (B).
 3. Wire first context slice and outbox worker (C).
-4. Add logs/metrics/stuck detection (D).
+4. Add logs/metrics/stuck detection and the current database stress probe (D).
 5. Lock in automated validation (E).
 
 ## Risks and Mitigations

@@ -6,6 +6,7 @@
 
 #include "../Common/Events/EventPayloadDispatch.h"
 #include "../Common/Events/EventPayloadValidation.h"
+#include "../Common/Events/OutboxEventIds.h"
 
 namespace savor::db {
 
@@ -31,7 +32,6 @@ struct Statement {
 
 bool InsertArchiveOutboxEvent(
     sqlite3* db,
-    std::string_view event_id,
     std::string_view event_type,
     std::string_view aggregate_kind,
     std::string_view aggregate_id,
@@ -41,38 +41,60 @@ bool InsertArchiveOutboxEvent(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id,
     std::string* error_out) {
-    Statement st;
-    if (sqlite3_prepare_v2(
-            db,
-            "INSERT INTO ar_outbox_message("
-            "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
-            "VALUES(?1,?2,1,'Archive',?3,?4,?5,?6,?7,?8,?9);",
-            -1,
-            &st.st,
-            nullptr)
-        != SQLITE_OK) {
-        if (error_out) {
-            *error_out = sqlite3_errmsg(db);
+    constexpr int kMaxEventIdAttempts = 5;
+    for (int attempt = 0; attempt < kMaxEventIdAttempts; ++attempt) {
+        std::string event_id;
+        if (!outbox::MakeDbOwnedEventId(
+                db,
+                "Archive",
+                event_type,
+                payload_ref_kind,
+                payload_ref_id,
+                &event_id,
+                error_out)) {
+            return false;
         }
-        return false;
-    }
 
-    sqlite3_bind_text(st.st, 1, event_id.data(), static_cast<int>(event_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 7, occurred_at_utc);
-    sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st.st, 9, payload_ref_id);
-    if (sqlite3_step(st.st) != SQLITE_DONE) {
-        if (error_out != nullptr) {
-            *error_out = sqlite3_errmsg(db);
+        Statement st;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO ar_outbox_message("
+                "event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id) "
+                "VALUES(?1,?2,1,'Archive',?3,?4,?5,?6,?7,?8,?9);",
+                -1,
+                &st.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
         }
-        return false;
+
+        sqlite3_bind_text(st.st, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, event_type.data(), static_cast<int>(event_type.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, aggregate_kind.data(), static_cast<int>(aggregate_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, aggregate_id.data(), static_cast<int>(aggregate_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 5, correlation_id.data(), static_cast<int>(correlation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 6, causation_id.data(), static_cast<int>(causation_id.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 7, occurred_at_utc);
+        sqlite3_bind_text(st.st, 8, payload_ref_kind.data(), static_cast<int>(payload_ref_kind.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 9, payload_ref_id);
+        const auto rc = sqlite3_step(st.st);
+        if (rc == SQLITE_DONE) {
+            return true;
+        }
+        if (!outbox::IsUniqueConstraint(db)) {
+            if (error_out != nullptr) {
+                *error_out = sqlite3_errmsg(db);
+            }
+            return false;
+        }
     }
-    return true;
+    if (error_out != nullptr) {
+        *error_out = "failed to generate a unique archive outbox event id";
+    }
+    return false;
 }
 
 std::optional<std::int64_t> PackageIdForRehydrateRequest(sqlite3* db, std::int64_t rehydrate_request_id) {
@@ -217,8 +239,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
     if (command.source_context.empty()
         || command.source_root_job_set_id <= 0
         || command.manifest_path.empty()
-        || command.checksum_status.empty()
-        || command.event_id.empty()) {
+        || command.checksum_status.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -247,7 +268,7 @@ bool SqliteArchiveDb::CreateArchivePackage(
     sqlite3_bind_text(insert_package.st, 1, command.source_context.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(insert_package.st, 2, command.source_root_job_set_id);
     sqlite3_bind_int64(insert_package.st, 3, command.created_at_utc.time_since_epoch().count());
-    sqlite3_bind_int(insert_package.st, 4, command.schema_version);
+    sqlite3_bind_int64(insert_package.st, 4, command.schema_version);
     sqlite3_bind_int(insert_package.st, 5, command.event_catalog_version);
     sqlite3_bind_int64(insert_package.st, 6, command.time_range_start_utc.time_since_epoch().count());
     sqlite3_bind_int64(insert_package.st, 7, command.time_range_end_utc.time_since_epoch().count());
@@ -264,7 +285,6 @@ bool SqliteArchiveDb::CreateArchivePackage(
     const auto archive_package_id = sqlite3_last_insert_rowid(db_);
     if (!InsertArchiveOutboxEvent(
             db_,
-            command.event_id,
             "Archive.PackageCreated.v1",
             "archive_package",
             std::to_string(archive_package_id),
@@ -300,7 +320,7 @@ bool SqliteArchiveDb::AddArchiveItem(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.archive_package_id <= 0 || command.item_kind.empty() || command.item_count < 0 || command.event_id.empty()) {
+    if (command.archive_package_id <= 0 || command.item_kind.empty() || command.item_count < 0) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -344,7 +364,6 @@ bool SqliteArchiveDb::AddArchiveItem(
     const auto archive_item_id = sqlite3_last_insert_rowid(db_);
     if (!InsertArchiveOutboxEvent(
             db_,
-            command.event_id,
             "Archive.PackageIndexed.v1",
             "archive_package",
             std::to_string(command.archive_package_id),
@@ -382,8 +401,7 @@ bool SqliteArchiveDb::RequestRehydrate(
     }
     if (command.archive_package_id <= 0
         || command.status.empty()
-        || command.target_namespace.empty()
-        || command.event_id.empty()) {
+        || command.target_namespace.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -424,7 +442,6 @@ bool SqliteArchiveDb::RequestRehydrate(
     const auto rehydrate_request_id = sqlite3_last_insert_rowid(db_);
     if (!InsertArchiveOutboxEvent(
             db_,
-            command.event_id,
             "Archive.RehydrateRequested.v1",
             "archive_package",
             std::to_string(command.archive_package_id),
@@ -459,7 +476,7 @@ bool SqliteArchiveDb::CompleteRehydrate(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.rehydrate_request_id <= 0 || command.status.empty() || command.event_id.empty()) {
+    if (command.rehydrate_request_id <= 0 || command.status.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -532,7 +549,6 @@ bool SqliteArchiveDb::CompleteRehydrate(
 
     if (!InsertArchiveOutboxEvent(
             db_,
-            command.event_id,
             "Archive.RehydrateCompleted.v1",
             "archive_package",
             std::to_string(archive_package_id.value()),
@@ -563,7 +579,7 @@ bool SqliteArchiveDb::FailRehydrate(
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.rehydrate_request_id <= 0 || command.status.empty() || command.error_text.empty() || command.event_id.empty()) {
+    if (command.rehydrate_request_id <= 0 || command.status.empty() || command.error_text.empty()) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -608,7 +624,6 @@ bool SqliteArchiveDb::FailRehydrate(
 
     if (!InsertArchiveOutboxEvent(
             db_,
-            command.event_id,
             "Archive.RehydrateFailed.v1",
             "archive_package",
             std::to_string(archive_package_id.value()),

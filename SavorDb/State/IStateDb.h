@@ -23,7 +23,6 @@ struct StoreArtifactCommand {
     std::string file_ext;
     std::string artifact_kind;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -34,7 +33,6 @@ struct CreateSavestateCommand {
     std::string note;
     bool is_complete = false;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -46,7 +44,6 @@ struct DeriveSavestateCommand {
     std::string source_context_kind;
     std::int64_t source_context_id = 0;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -62,7 +59,6 @@ struct CreateTasVariantCommand {
     std::optional<std::int64_t> parent_tas_variant_id;
     std::optional<std::int64_t> produced_savestate_id;
     types::UtcTimePoint created_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };
@@ -85,7 +81,6 @@ struct UpdateTasVariantProducedSavestateCommand {
     std::int64_t tas_variant_id = 0;
     std::int64_t produced_savestate_id = 0;
     types::UtcTimePoint updated_at_utc{};
-    std::string event_id;
     std::string correlation_id;
     std::string causation_id;
 };

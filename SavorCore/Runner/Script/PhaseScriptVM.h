@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <atomic>
 
-#include "../Breakpoints/BPRegistry.h"    // BreakpointMap, BPKey
+#include "../Breakpoints/BpRegistry.h"    // BreakpointMap, BPKey
 #include "../Breakpoints/Predicate.h"
 #include "../../Core/DolphinWrapper.h"
 #include "../../Core/Input/InputPlan.h" // GCInputFrame
@@ -15,7 +15,7 @@
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/KeyHostRouter.h"
 #include "Core/Common/Buffer.h"
-#include "KeyRegistry.h"
+#include "CtxRegistry.h"
 #include "PSContext.h"
 
 namespace savor {
@@ -58,6 +58,9 @@ namespace savor {
 		ADD_U32,                    // ctx[key] += imm
 		APPLY_BATTLE_INPUTPLAN_FRAMES,   // plan_id = ctx[key]
 		BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH, // build plan from actions
+		MATERIALIZE_BATTLE_MACRO_STEPS,
+		MATERIALIZE_BATTLE_TURN_MACRO_STEPS,
+		EXECUTE_BATTLE_MACRO_STEP,
 		RECORD_TAS_INPUT_SAMPLE,
 		STEP_OPCODE
 	};
@@ -68,29 +71,29 @@ namespace savor {
 
 	enum class PSCmp : uint8_t { EQ, NE, LT, LE, GT, GE };
 
-	struct PSArg_Read { uint32_t addr; savor::keys::KeyId dst; };
+	struct PSArg_Read { uint32_t addr; savor::context::key::KeyId dst; };
 	struct PSArg_Step { uint32_t n; };
 	struct PSArg_Path { std::string path; };
 	struct PSArg_ID6 { char id[6]{}; };
-	struct PSArg_Key { savor::keys::KeyId id; };
+	struct PSArg_Key { savor::context::key::KeyId id; };
 
 	struct PSArg_Label { std::string name; };
 	struct PSArg_Goto { std::string name; };
 	struct PSArg_GotoIf {
-		savor::keys::KeyId key;
+		savor::context::key::KeyId key;
 		PSCmp cmp;
 		uint32_t imm;
 		std::string name;
 	};
 	struct PSArg_GotoIfKeys {
-		savor::keys::KeyId left;
+		savor::context::key::KeyId left;
 		PSCmp cmp;
-		savor::keys::KeyId right;
+		savor::context::key::KeyId right;
 		std::string name;
 	};
 	struct PSArg_Plan { uint32_t id; };
 	struct PSArg_ImmU32 { uint32_t v; };
-	struct PSArg_KeyImm { savor::keys::KeyId key; uint32_t imm; };
+	struct PSArg_KeyImm { savor::context::key::KeyId key; uint32_t imm; };
 
 	// Only one of these will be used depending on `code`
 	struct PSOp {           
@@ -109,39 +112,42 @@ namespace savor {
 
 	inline PSOp OpLabel(const std::string& s) { PSOp o; o.code = PSOpCode::LABEL; o.label.name = s; return o; }
 	inline PSOp OpGoto(const std::string& s) { PSOp o; o.code = PSOpCode::GOTO;  o.jmp.name = s;  return o; }
-	inline PSOp OpGotoIf(savor::keys::KeyId k, PSCmp c, uint32_t v, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF; o.jcc = { k,c,v,s }; return o; }
-	inline PSOp OpGotoIfKeys(savor::keys::KeyId left, PSCmp c, savor::keys::KeyId right, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF_KEYS; o.jcc2 = { left, c, right, s }; return o; }
-	inline PSOp OpReturnResult(savor::keys::KeyId k, uint32_t code) { PSOp o; o.code = PSOpCode::RETURN_RESULT; o.keyimm = {k, code}; return o; }
+	inline PSOp OpGotoIf(savor::context::key::KeyId k, PSCmp c, uint32_t v, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF; o.jcc = { k,c,v,s }; return o; }
+	inline PSOp OpGotoIfKeys(savor::context::key::KeyId left, PSCmp c, savor::context::key::KeyId right, const std::string& s) { PSOp o; o.code = PSOpCode::GOTO_IF_KEYS; o.jcc2 = { left, c, right, s }; return o; }
+	inline PSOp OpReturnResult(savor::context::key::KeyId k, uint32_t code) { PSOp o; o.code = PSOpCode::RETURN_RESULT; o.keyimm = {k, code}; return o; }
 	inline PSOp OpCapturePredBaselines() { PSOp o; o.code = PSOpCode::CAPTURE_PRED_BASELINES; return o; }
 	inline PSOp OpArmBpsFromPredTable() { PSOp o; o.code = PSOpCode::ARM_BPS_FROM_PRED_TABLE; return o; }
 	inline PSOp OpEvalPredicatesAtHitBP() { PSOp o; o.code = PSOpCode::EVAL_PREDICATES_AT_HIT_BP; return o; }
-	inline PSOp OpSetU32(savor::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpAddU32(savor::keys::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
-	inline PSOp OpApplyPlanFrameFrom(savor::keys::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
+	inline PSOp OpSetU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::SET_U32; o.keyimm = { key,v }; return o; }
+	inline PSOp OpAddU32(savor::context::key::KeyId key, uint32_t v) { PSOp o; o.code = PSOpCode::ADD_U32; o.keyimm = { key,v }; return o; }
+	inline PSOp OpApplyPlanFrameFrom(savor::context::key::KeyId key) { PSOp o; o.code = PSOpCode::APPLY_BATTLE_INPUTPLAN_FRAMES; o.key = { key }; return o; }
 	inline PSOp OpBuildTurnInputFromActions() { PSOp o; o.code = PSOpCode::BUILD_TURN_INPUTPLAN_FROM_BATTLE_PATH; return o; }
+	inline PSOp OpMaterializeBattleMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_MACRO_STEPS; return o; }
+	inline PSOp OpMaterializeBattleTurnMacroSteps() { PSOp o; o.code = PSOpCode::MATERIALIZE_BATTLE_TURN_MACRO_STEPS; return o; }
+	inline PSOp OpExecuteBattleMacroStep() { PSOp o; o.code = PSOpCode::EXECUTE_BATTLE_MACRO_STEP; return o; }
 	inline PSOp OpRecordTasInputSample() { PSOp o; o.code = PSOpCode::RECORD_TAS_INPUT_SAMPLE; return o; }
 
 	inline PSOp OpStepFrames(uint32_t frame_count, bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_FRAMES; o.step = { frame_count }; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 	inline PSOp OpStepOpcode(bool disable_breakpoints = false) { PSOp o; o.code = PSOpCode::STEP_OPCODE; o.imm = { (uint32_t)(disable_breakpoints ? 1 : 0) }; return o; }
 
-	inline PSOp OpGcSlotASet(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
-	inline PSOp OpApplyInputFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
-	inline PSOp OpSetTimeoutFromKey(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::SET_TIMEOUT_FROM;   o.key.id = k; return o; }
+	inline PSOp OpGcSlotASet(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::GC_SLOT_A_SET_FROM; o.key.id = k; return o; }
+	inline PSOp OpApplyInputFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::APPLY_INPUT_FROM;   o.key.id = k; return o; }
+	inline PSOp OpSetTimeoutFromKey(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SET_TIMEOUT_FROM;   o.key.id = k; return o; }
 	inline PSOp OpSetTimeoutToMS(uint32_t ms) { PSOp o; o.code = PSOpCode::SET_TIMEOUT;   o.imm.v = ms; return o; }
-	inline PSOp OpMoviePlayFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::MOVIE_PLAY_FROM;    o.key.id = k; return o; }
-	inline PSOp OpSaveSavestateFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::SAVE_SAVESTATE_FROM; o.key.id = k; return o; }
-	inline PSOp OpRequireDiscGameIdFrom(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; o.key.id = k; return o; }
+	inline PSOp OpMoviePlayFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::MOVIE_PLAY_FROM;    o.key.id = k; return o; }
+	inline PSOp OpSaveSavestateFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::SAVE_SAVESTATE_FROM; o.key.id = k; return o; }
+	inline PSOp OpRequireDiscGameIdFrom(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::REQUIRE_DISC_GAMEID_FROM; o.key.id = k; return o; }
 
 	// READ_* ops now store into a numeric key:
-	inline PSOp OpReadU8(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU16(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadU32(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadF32(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
-	inline PSOp OpReadF64(uint32_t addr, savor::keys::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU8(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U8;  o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU16(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U16; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadU32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_U32; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadF32(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F32; o.rd = { addr,dst }; return o; }
+	inline PSOp OpReadF64(uint32_t addr, savor::context::key::KeyId dst) { PSOp o; o.code = PSOpCode::READ_F64; o.rd = { addr,dst }; return o; }
 	inline PSOp OpGetBattleContext() { PSOp o; o.code = PSOpCode::GET_BATTLE_CONTEXT; return o; }
 
 	// EMIT_RESULT now exports a numeric key:
-	inline PSOp OpEmitResult(savor::keys::KeyId k) { PSOp o; o.code = PSOpCode::EMIT_RESULT; o.key.id = k; return o; }
+	inline PSOp OpEmitResult(savor::context::key::KeyId k) { PSOp o; o.code = PSOpCode::EMIT_RESULT; o.key.id = k; return o; }
 
 	// OTHERS
 	inline PSOp OpMovieStop() { PSOp o; o.code = PSOpCode::MOVIE_STOP; return o; }
@@ -156,7 +162,8 @@ namespace savor {
 
 
 	struct PhaseScript {
-		std::vector<BPKey> canonical_bp_keys;   // armed once
+		std::vector<BPKey> canonical_bp_keys;   // normal phase breakpoints
+		std::vector<BPKey> reserved_bp_keys;    // armed but enabled only by specialized ops
 		std::vector<PSOp>  ops;                 // executed in order per job
 	};
 
@@ -228,6 +235,7 @@ namespace savor {
 		savor::DolphinWrapper& host_;
 		const BreakpointMap& bpmap_;
 		std::vector<BPKey> canonical_bp_keys_;
+		std::vector<BPKey> reserved_bp_keys_;
 		std::vector<BPKey> predicate_bp_keys_;
 		PhaseScript prog_;
 		PSInit init_;
@@ -236,12 +244,65 @@ namespace savor {
 		std::atomic<bool> visual_debug_paused_{ false };
 		std::atomic<uint32_t> visual_debug_vm_step_budget_{ 0 };
 		std::atomic<bool> run_until_bp_active_{ false };
+		bool macro_breakpoint_scope_active_{ false };
+		std::vector<BPKey> macro_enabled_bp_keys_;
 
 		bool armed_{ false };
 		Common::UniqueBuffer<u8> snapshot_;
 
+		enum class RuntimeMacroStepKind {
+			InputGate,
+			NeutralFrames,
+			CaptureMemoryU32,
+			WaitMemoryU32Changed,
+		};
+
+		struct RuntimeBreakpointStep {
+			std::string label;
+			RuntimeMacroStepKind kind{ RuntimeMacroStepKind::InputGate };
+			GCInputFrame input{};
+			uint32_t frame_count{ 0 };
+			bool hold_input_through_hit_opcode{ false };
+			uint32_t memory_addr{ 0 };
+			uint32_t memory_timeout_ms{ 0 };
+			uint32_t memory_cycle_index{ 0 };
+			std::vector<BPKey> expected_bp_keys;
+		};
+
+		struct RunUntilBpSpec {
+			std::vector<BPKey> expected_bp_keys;
+			GCInputFrame input{};
+			bool apply_input{ false };
+			bool release_input{ false };
+			bool hold_input_through_hit_opcode{ false };
+			bool step_off_current_bp{ false };
+			bool expected_only_scope{ false };
+			bool watch_movie{ true };
+			bool include_reserved_hit_lookup{ false };
+			bool update_derived{ true };
+			uint32_t poll_ms_override{ 0 };
+		};
+
+		struct RunUntilBpCoreResult {
+			DolphinWrapper::RunUntilHitResult run{};
+			RunToBpOutcome outcome{ RunToBpOutcome::Unknown };
+			uint32_t hit_bp_key{ 0 };
+			bool expected_match{ false };
+			uint32_t elapsed_ms{ 0 };
+		};
+
+		std::vector<RuntimeBreakpointStep> battle_macro_steps_;
+		bool battle_macro_memory_baseline_valid_{ false };
+		uint32_t battle_macro_memory_addr_{ 0 };
+		uint32_t battle_macro_memory_baseline_{ 0 };
+
 		// helpers
 		void arm_bps_once();
+		void restore_canonical_breakpoint_scope();
+		void begin_macro_breakpoint_scope();
+		void enable_macro_step_breakpoint(BPKey key);
+		void disable_macro_step_breakpoint();
+		void end_macro_breakpoint_scope();
 		bool save_snapshot();
 		bool load_snapshot();
 
@@ -249,6 +310,7 @@ namespace savor {
 		bool compare_u32(uint32_t lhs, PSCmp cmp, uint32_t rhs) const;
 		void jump_to_label_if_exists(const std::string& label, const std::unordered_map<std::string, size_t>& label_vm_pc_map, size_t& vm_pc, std::string& section) const;
 		void wait_for_visual_debug_gate();
+		RunUntilBpCoreResult run_until_bp_core(PSContext& ctx, const RunUntilBpSpec& spec);
 
 		bool op_arm_phase_bps_once();
 		bool op_load_snapshot(PSContext& ctx);
@@ -261,6 +323,9 @@ namespace savor {
 		void op_set_u32(const PSOp& op, PSContext& ctx) const;
 		void op_add_u32(const PSOp& op, PSContext& ctx) const;
 		void op_build_turn_inputplan_from_battle_path(PSContext& ctx) const;
+		void op_materialize_battle_macro_steps(PSContext& ctx);
+		void op_materialize_battle_turn_macro_steps(PSContext& ctx);
+		void op_execute_battle_macro_step(PSContext& ctx);
 		void op_apply_battle_inputplan_frames(PSContext& ctx);
 		void op_step_frames(const PSOp& op);
 		void op_step_opcode(const PSOp& op);

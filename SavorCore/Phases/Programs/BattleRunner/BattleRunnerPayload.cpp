@@ -3,7 +3,7 @@
 #include <cstring>
 
 #include "../../../Runner/IPC/Wire.h"
-#include "../../../Runner/Script/KeyRegistry.h"
+#include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Core/Input/SoaBattle/ActionPlanSerializer.h"
 #include "../../../Runner/Script/ScriptProgress.h"
 
@@ -90,30 +90,30 @@ namespace phase::battle::runner {
         soa::battle::actions::decode_battle_plan_from_buffer(std::span<const uint8_t>(p, p + battle_plan_buf_size), b_path);
         p += battle_plan_buf_size;
 
-        out_ctx[keys::core::RUN_MS] = run_ms;
-        out_ctx[keys::core::VI_STALL_MS] = vi_stall_ms;
+        out_ctx[savor::context::key::core::RUN_MS] = run_ms;
+        out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
 
         uint32_t n_plans = (uint32_t)b_path.size();
-        out_ctx[keys::battle::INITIAL_INPUT] = initial;
-        out_ctx[keys::battle::NUM_TURN_PLANS] = (uint32_t)0;
-        out_ctx[keys::battle::LAST_TURN] = n_plans;
+        out_ctx[savor::context::key::battle::INITIAL_INPUT] = initial;
+        out_ctx[savor::context::key::battle::NUM_TURN_PLANS] = (uint32_t)0;
+        out_ctx[savor::context::key::battle::LAST_TURN] = n_plans;
 
-        out_ctx[keys::core::PRED_COUNT] = pred_count;
-        out_ctx[keys::core::PRED_TABLE] = pred_table;   // now [records || blob]
-        out_ctx[keys::core::PRED_BASELINES] = pred_bases;
-        out_ctx[keys::core::PRED_PASSED] = (uint32_t) 0;
-        out_ctx[keys::core::PRED_TOTAL] = (uint32_t) 0;
-        out_ctx[keys::core::PRED_ABORT_RUN] = (uint32_t) 0;
+        out_ctx[savor::context::key::core::PRED_COUNT] = pred_count;
+        out_ctx[savor::context::key::core::PRED_TABLE] = pred_table;   // now [records || blob]
+        out_ctx[savor::context::key::core::PRED_BASELINES] = pred_bases;
+        out_ctx[savor::context::key::core::PRED_PASSED] = (uint32_t) 0;
+        out_ctx[savor::context::key::core::PRED_TOTAL] = (uint32_t) 0;
+        out_ctx[savor::context::key::core::PRED_ABORT_RUN] = (uint32_t) 0;
 
-        out_ctx[keys::battle::TURN_PLANS] = b_path;
+        out_ctx[savor::context::key::battle::TURN_PLANS] = b_path;
 
         savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
         progress.set_flag(CoreProgressFlags::BattleProgress);
         progress.set_flag(CoreProgressFlags::PredicateProgress);
         progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
         
-        out_ctx[savor::keys::core::PROGRESS_RATE] = progress.poll_rate;
-        out_ctx[savor::keys::core::PROGRESS_CORE_FLAGS] = progress.flags;
+        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
         return true;
     }
 

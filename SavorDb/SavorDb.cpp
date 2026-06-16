@@ -2,12 +2,8 @@
 
 namespace savor::db {
 
-bool Stage1ScaffoldReady() {
-    return !migrations::ListAllMigrationContexts().empty();
-}
-
 bool Stage3cWorkflowSliceReady(sqlite3* db, std::string* reason_out) {
-    constexpr int kRequiredStage3bVersion = 202604051200;
+    constexpr auto kRequiredStage3bVersion = 202604051200LL;
 
     if (db == nullptr) {
         if (reason_out) {

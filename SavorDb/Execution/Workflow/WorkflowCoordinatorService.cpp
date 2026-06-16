@@ -435,6 +435,17 @@ bool WorkflowCoordinatorService::MaterializeWorkflowStep(const WorkflowReadyStep
     const auto started = std::chrono::steady_clock::now();
     const auto scheduled = ScheduleReadyStep(step);
     if (!scheduled.has_value() || scheduled->root_job_set_id <= 0) {
+        ++materialization_failure_count_;
+        if (scheduled.has_value()) {
+            for (const auto& line : scheduled->event_lines) {
+                EmitEventLine(line);
+            }
+        }
+        EmitWorkflowFailureEvent(
+            step,
+            "MaterializeWorkflowStep",
+            scheduled.has_value() ? "schedule result did not include a job set" : "no schedule result");
+        MaybeTerminalFailStepInStrictSmokeMode(step, "workflow_coordinator_materialize_strict_smoke");
         return false;
     }
 

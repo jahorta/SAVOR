@@ -14,24 +14,7 @@ void SetError(std::string* error_out, std::string message) {
 core::QueuedDbTelemetrySnapshot BuildTelemetrySnapshot(
     const core::QueuedDbLane* write_lane,
     const core::QueuedDbLane* read_lane) {
-    core::QueuedDbTelemetrySnapshot snapshot{};
-    if (write_lane != nullptr) {
-        const auto lane = write_lane->GetTelemetrySnapshot();
-        snapshot.write_depth = lane.depth;
-        snapshot.write_enqueued = lane.enqueued;
-        snapshot.write_rejected = lane.rejected;
-        snapshot.write_completed = lane.completed;
-        snapshot.write_failed = lane.failed;
-    }
-    if (read_lane != nullptr) {
-        const auto lane = read_lane->GetTelemetrySnapshot();
-        snapshot.read_depth = lane.depth;
-        snapshot.read_enqueued = lane.enqueued;
-        snapshot.read_rejected = lane.rejected;
-        snapshot.read_completed = lane.completed;
-        snapshot.read_failed = lane.failed;
-    }
-    return snapshot;
+    return core::BuildQueuedDbTelemetrySnapshot(write_lane, read_lane);
 }
 
 } // namespace
@@ -100,6 +83,15 @@ UiReadPage<UiJobSummary> QueuedUiReadDb::ListJobs(
     return ExecuteRead<UiReadPage<UiJobSummary>>(
         [this, query]() {
             return inner_ != nullptr ? inner_->ListJobs(query) : UiReadPage<UiJobSummary>{};
+        },
+        {});
+}
+
+UiJobStateCounts QueuedUiReadDb::CountJobsByState(
+    const UiReadJobListQuery& query) const {
+    return ExecuteRead<UiJobStateCounts>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->CountJobsByState(query) : UiJobStateCounts{};
         },
         {});
 }
@@ -184,6 +176,42 @@ std::optional<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetail(
     return ExecuteRead<std::optional<UiWorkflowDetail>>(
         [this, workflow_instance_id]() {
             return inner_ != nullptr ? inner_->GetWorkflowDetail(workflow_instance_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+UiReadPage<UiBattleGroupSummary> QueuedUiReadDb::ListBattleGroups(
+    const UiBattleGroupListQuery& query) const {
+    return ExecuteRead<UiReadPage<UiBattleGroupSummary>>(
+        [this, query]() {
+            return inner_ != nullptr ? inner_->ListBattleGroups(query) : UiReadPage<UiBattleGroupSummary>{};
+        },
+        {});
+}
+
+std::vector<UiBattleWaveSummary> QueuedUiReadDb::ListBattleWaves(
+    std::int64_t battle_set_id) const {
+    return ExecuteRead<std::vector<UiBattleWaveSummary>>(
+        [this, battle_set_id]() {
+            return inner_ != nullptr ? inner_->ListBattleWaves(battle_set_id) : std::vector<UiBattleWaveSummary>{};
+        },
+        {});
+}
+
+std::vector<UiBattleTurnJobSummary> QueuedUiReadDb::ListBattleTurnJobsForWaves(
+    const std::vector<std::int64_t>& wave_ids) const {
+    return ExecuteRead<std::vector<UiBattleTurnJobSummary>>(
+        [this, wave_ids]() {
+            return inner_ != nullptr ? inner_->ListBattleTurnJobsForWaves(wave_ids) : std::vector<UiBattleTurnJobSummary>{};
+        },
+        {});
+}
+
+std::optional<UiBattleTurnJobDetail> QueuedUiReadDb::GetBattleTurnJobDetail(
+    std::int64_t turn_job_id) const {
+    return ExecuteRead<std::optional<UiBattleTurnJobDetail>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr ? inner_->GetBattleTurnJobDetail(turn_job_id) : std::nullopt;
         },
         std::nullopt);
 }
@@ -374,20 +402,30 @@ bool QueuedUiReadDb::ResumeProjectionSubscription(
 }
 
 template <typename Result, typename Fn>
-Result QueuedUiReadDb::ExecuteRead(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedUiReadDb::ExecuteRead(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return core::QueuedDbExecutor::ExecuteQueued<Result>(
         *read_lane_,
         sqlite_call_mtx_,
+        core::MakeQueuedDbOperationName("UiRead", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);
 }
 
 template <typename Result, typename Fn>
-Result QueuedUiReadDb::ExecuteWrite(Fn&& fn, Result fallback, std::string* error_out) const {
+Result QueuedUiReadDb::ExecuteWrite(
+    Fn&& fn,
+    Result fallback,
+    std::string* error_out,
+    const std::source_location& location) const {
     return core::QueuedDbExecutor::ExecuteQueued<Result>(
         *write_lane_,
         sqlite_call_mtx_,
+        core::MakeQueuedDbOperationName("UiRead", location),
         std::forward<Fn>(fn),
         std::move(fallback),
         error_out);
