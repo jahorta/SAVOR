@@ -97,4 +97,5 @@ private:
     AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::Tas;
     QHash<QString, QPointer<QDialog>> focusedDialogs_;
     QString lastCoordinatorWarningToastSignature_;
+    bool shutdownCoordinatorStarted_ = false;
 };

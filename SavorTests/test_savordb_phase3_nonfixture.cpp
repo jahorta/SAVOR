@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -539,6 +540,171 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_GE(telemetry.dispatch_success_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_count, 0);
         EXPECT_GE(telemetry.dispatch_miss_rate_basis_points, 0);
+    }
+
+    TEST(Stage3Phase3Shutdown, StopIsIdempotentAndEmitsOneCompletePhase) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        DBWorkflowWorkerCoordinator coordinator(
+            nullptr,
+            DBWorkflowWorkerCoordinatorConfig{
+                .desired_workers = 0,
+                .controller_sleep_ms = 1,
+            },
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 17000 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        std::mutex event_mtx;
+        std::vector<std::string> events;
+        coordinator.SetResultMapEventCallback([&](const std::string& line) {
+            std::lock_guard<std::mutex> lock(event_mtx);
+            events.push_back(line);
+        });
+
+        coordinator.Start();
+        coordinator.Stop();
+        coordinator.Stop();
+
+        std::lock_guard<std::mutex> lock(event_mtx);
+        const auto complete_count = std::count_if(events.begin(), events.end(), [](const std::string& line) {
+            return line.find("[workflow-coordinator-shutdown] phase=stop_complete") != std::string::npos;
+        });
+        EXPECT_EQ(complete_count, 1);
+    }
+
+    TEST(Stage3Phase3Shutdown, StopDrainsQueuedResultBeforeClosingResultQueue) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        DBWorkflowWorkerCoordinator coordinator(
+            nullptr,
+            DBWorkflowWorkerCoordinatorConfig{
+                .desired_workers = 0,
+                .controller_sleep_ms = 1,
+            },
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 17100 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        std::atomic<int> results_seen{ 0 };
+        coordinator.SetResultCallback([&](const savor::PRResult&) {
+            ++results_seen;
+        });
+
+        coordinator.Start();
+        coordinator.EnqueueResultForTest(savor::PRResult{
+            .job_id = 777,
+            .epoch = 1,
+            .worker_id = 0,
+            .accepted = true,
+        });
+        coordinator.Stop();
+
+        EXPECT_EQ(results_seen.load(), 1);
+        EXPECT_GE(coordinator.SnapshotTelemetry().results_received_count, 1);
+    }
+
+    TEST(Stage3Phase3Shutdown, StopCompletesAfterStartupInProgressIsReleased) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        auto startup_entered = std::make_shared<std::promise<void>>();
+        auto startup_release = std::make_shared<std::promise<void>>();
+        auto release_future = startup_release->get_future().share();
+
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 1,
+            .controller_sleep_ms = 1,
+            .max_concurrent_worker_starts = 1,
+        };
+        cfg.runtime_slot_preparer = [startup_entered, release_future](
+            size_t,
+            const DBWorkflowWorkerCoordinatorConfig&,
+            std::filesystem::path*,
+            std::string* error_out) mutable {
+            startup_entered->set_value();
+            release_future.wait();
+            if (error_out != nullptr) {
+                *error_out = "released by shutdown test";
+            }
+            return false;
+        };
+
+        DBWorkflowWorkerCoordinator coordinator(
+            nullptr,
+            std::move(cfg),
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 17200 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        coordinator.Start();
+        ASSERT_EQ(startup_entered->get_future().wait_for(std::chrono::milliseconds(1000)), std::future_status::ready);
+
+        auto stop_future = std::async(std::launch::async, [&]() {
+            coordinator.Stop();
+        });
+        EXPECT_NE(stop_future.wait_for(std::chrono::milliseconds(30)), std::future_status::ready);
+        startup_release->set_value();
+        EXPECT_EQ(stop_future.wait_for(std::chrono::milliseconds(2000)), std::future_status::ready);
+        coordinator.Stop();
+    }
+
+    TEST(Stage3Phase3Shutdown, WorkerStopPhasePrecedesCoordinatorThreadJoins) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        DBWorkflowWorkerCoordinator coordinator(
+            nullptr,
+            DBWorkflowWorkerCoordinatorConfig{
+                .desired_workers = 1,
+                .controller_sleep_ms = 1,
+                .worker_exe_path = "missing-worker-binary.exe",
+            },
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 17300 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        std::mutex event_mtx;
+        std::vector<std::string> events;
+        coordinator.SetResultMapEventCallback([&](const std::string& line) {
+            std::lock_guard<std::mutex> lock(event_mtx);
+            events.push_back(line);
+        });
+
+        coordinator.Start();
+        ASSERT_TRUE(WaitForCondition([&]() {
+            return !coordinator.SnapshotWorkers().empty();
+        }, std::chrono::milliseconds{ 1000 }));
+        coordinator.Stop();
+
+        std::lock_guard<std::mutex> lock(event_mtx);
+        const auto worker_stop_it = std::find_if(events.begin(), events.end(), [](const std::string& line) {
+            return line.find("phase=worker_stop_begin") != std::string::npos;
+        });
+        const auto join_it = std::find_if(events.begin(), events.end(), [](const std::string& line) {
+            return line.find("phase=join_begin thread=worker_job") != std::string::npos;
+        });
+        ASSERT_NE(worker_stop_it, events.end());
+        ASSERT_NE(join_it, events.end());
+        EXPECT_LT(std::distance(events.begin(), worker_stop_it), std::distance(events.begin(), join_it));
     }
 
     TEST(Stage3Phase3ClaimAccounting, DistinguishesCleanZeroClaimFromClaimErrorAndPartialClaim) {

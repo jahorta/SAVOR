@@ -114,6 +114,10 @@ MainWindow::~MainWindow()
 
 void MainWindow::shutdownCoordinator()
 {
+    if (shutdownCoordinatorStarted_) {
+        return;
+    }
+    shutdownCoordinatorStarted_ = true;
     statusBarRefreshTimer_.stop();
     if (coordinatorController_) {
         coordinatorController_->stopCoordinator();

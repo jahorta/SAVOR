@@ -269,8 +269,9 @@ private:
     void ReconcileWorkerPool();
     bool StartWorkerSlot(WorkerSlotPtr slot);
     void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
-    void ResetWorkerSlotRuntime(WorkerSlot& slot);
+    std::shared_ptr<savor::ProcessWorker> ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlotPtr slot);
+    void EmitShutdownPhase(const std::string& phase, const std::string& detail = {}) const;
     void RecordWorkerContactLocked(WorkerSlot& slot, std::chrono::steady_clock::time_point observed_at);
     WorkerSlotPtr MakeWorkerSlot(size_t worker_idx);
     WorkerSlotPtr GetWorkerSlot(size_t worker_idx) const;
@@ -355,6 +356,7 @@ private:
     ResultMapEventCallback result_map_event_callback_;
 
     std::atomic<bool> stop_{ false };
+    std::atomic<bool> stop_started_{ false };
     std::atomic<bool> paused_{ false };
     std::atomic<uint64_t> epoch_{ 1 };
     std::thread worker_job_thread_;

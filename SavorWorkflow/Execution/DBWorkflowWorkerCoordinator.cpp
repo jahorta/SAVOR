@@ -555,6 +555,7 @@ void DBWorkflowWorkerCoordinator::Start() {
         return;
     }
 
+    stop_started_.store(false);
     stop_.store(false);
     job_materialization_service_.ResetForStart();
     progress_q_.reset();
@@ -601,20 +602,16 @@ void DBWorkflowWorkerCoordinator::Start() {
 }
 
 void DBWorkflowWorkerCoordinator::Stop() {
-    StopVisualDebugReplay();
+    if (stop_started_.exchange(true)) {
+        return;
+    }
+    EmitShutdownPhase("stop_requested");
     stop_.store(true);
     queue_cv_.notify_all();
     job_materialization_service_.StopMaterializationLoop();
 
-    if (worker_job_thread_.joinable()) {
-        worker_job_thread_.join();
-    }
-    if (worker_lifecycle_thread_.joinable()) {
-        worker_lifecycle_thread_.join();
-    }
-    if (job_materializer_thread_.joinable()) {
-        job_materializer_thread_.join();
-    }
+    StopVisualDebugReplay();
+    EmitShutdownPhase("visual_debug_stopped");
 
     std::vector<WorkerSlotPtr> slots_to_stop;
     std::vector<std::thread> startup_threads;
@@ -623,6 +620,11 @@ void DBWorkflowWorkerCoordinator::Stop() {
         slots_to_stop = workers_;
         workers_.clear();
         worker_slot_count_.store(0, std::memory_order_relaxed);
+    }
+    {
+        std::ostringstream detail;
+        detail << "workers=" << slots_to_stop.size();
+        EmitShutdownPhase("workers_snapshot", detail.str());
     }
     for (const auto& slot : slots_to_stop) {
         if (!slot) {
@@ -633,27 +635,57 @@ void DBWorkflowWorkerCoordinator::Stop() {
             startup_threads.push_back(std::move(slot->startup_thread));
         }
     }
-    for (auto& thread : startup_threads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-
     for (const auto& slot : slots_to_stop) {
         if (slot) {
             StopWorkerSlot(slot);
         }
     }
+    EmitShutdownPhase("workers_stopped");
 
+    queue_cv_.notify_all();
+
+    EmitShutdownPhase("join_begin", "thread=worker_job");
+    if (worker_job_thread_.joinable()) {
+        worker_job_thread_.join();
+    }
+    EmitShutdownPhase("join_end", "thread=worker_job");
+    EmitShutdownPhase("join_begin", "thread=worker_lifecycle");
+    if (worker_lifecycle_thread_.joinable()) {
+        worker_lifecycle_thread_.join();
+    }
+    EmitShutdownPhase("join_end", "thread=worker_lifecycle");
+    EmitShutdownPhase("join_begin", "thread=job_materializer");
+    if (job_materializer_thread_.joinable()) {
+        job_materializer_thread_.join();
+    }
+    EmitShutdownPhase("join_end", "thread=job_materializer");
+    for (auto& thread : startup_threads) {
+        EmitShutdownPhase("join_begin", "thread=startup");
+        if (thread.joinable()) {
+            thread.join();
+        }
+        EmitShutdownPhase("join_end", "thread=startup");
+    }
+
+    EmitShutdownPhase("queues_close");
     progress_q_.close();
     results_q_.close();
 
+    EmitShutdownPhase("join_begin", "thread=progress_drainer");
     if (progress_drainer_thread_.joinable()) {
         progress_drainer_thread_.join();
     }
+    EmitShutdownPhase("join_end", "thread=progress_drainer");
+    EmitShutdownPhase("join_begin", "thread=results_drainer");
     if (results_drainer_thread_.joinable()) {
         results_drainer_thread_.join();
     }
+    EmitShutdownPhase("join_end", "thread=results_drainer");
+    {
+        std::lock_guard<std::mutex> lock(workers_mtx_);
+        dispatched_job_context_by_id_.clear();
+    }
+    EmitShutdownPhase("stop_complete");
 }
 
 void DBWorkflowWorkerCoordinator::SetPaused(bool paused) {
@@ -1515,6 +1547,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
     const auto now = std::chrono::steady_clock::now();
     std::vector<LostJob> lost_jobs;
     std::vector<std::string> event_lines;
+    std::vector<std::shared_ptr<savor::ProcessWorker>> workers_to_stop;
     const auto slots = CopyWorkerSlots();
     for (auto& slot_ptr : slots) {
         if (!slot_ptr) {
@@ -1560,7 +1593,14 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
             .job_id = job_id,
             .message = worker_silent ? "WORKER_SILENT_DURING_JOB" : "WORKER_EXITED_DURING_JOB",
         });
-        ResetWorkerSlotRuntime(slot);
+        if (auto worker_to_stop = ResetWorkerSlotRuntime(slot)) {
+            workers_to_stop.push_back(std::move(worker_to_stop));
+        }
+    }
+    for (auto& worker : workers_to_stop) {
+        if (worker) {
+            worker->stop();
+        }
     }
     if (!lost_jobs.empty()) {
         std::lock_guard<std::mutex> lock(workers_mtx_);
@@ -2092,6 +2132,7 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
     }
 
     std::vector<std::string> event_lines;
+    std::vector<std::shared_ptr<savor::ProcessWorker>> workers_to_stop;
     for (const auto& slot_handle : slots) {
         if (active_startups >= max_concurrent_starts) {
             break;
@@ -2141,7 +2182,9 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
                     line << " last_error=" << slot.last_start_error;
                 }
                 event_lines.push_back(line.str());
-                ResetWorkerSlotRuntime(slot);
+                if (auto worker_to_stop = ResetWorkerSlotRuntime(slot)) {
+                    workers_to_stop.push_back(std::move(worker_to_stop));
+                }
             }
             if (slot.start_attempted) {
                 continue;
@@ -2155,6 +2198,11 @@ void DBWorkflowWorkerCoordinator::ReconcileWorkerPool() {
 
     for (const auto& line : event_lines) {
         EmitDurableEventLine(line);
+    }
+    for (auto& worker : workers_to_stop) {
+        if (worker) {
+            worker->stop();
+        }
     }
     for (auto& thread : completed_startup_threads) {
         if (thread.joinable()) {
@@ -2195,27 +2243,31 @@ bool DBWorkflowWorkerCoordinator::StartWorkerSlot(WorkerSlotPtr slot_handle) {
     }
 
     const auto schedule_retry = [&](const std::string& error) {
-        std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-        auto& slot = *slot_handle;
-        slot.ready.store(false);
-        slot.startup_in_progress = false;
-        slot.last_start_error = error;
-        slot.next_start_after = std::chrono::steady_clock::now()
-            + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
-        slot.loaded_program_kind.reset();
-        slot.loaded_program_runtime_affinity_key.reset();
-        slot.loaded_savestate_affinity_key.reset();
-        if (slot.worker) {
-            slot.worker->stop();
+        std::shared_ptr<savor::ProcessWorker> worker_to_stop;
+        {
+            std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
+            auto& slot = *slot_handle;
+            slot.ready.store(false);
+            slot.startup_in_progress = false;
+            slot.last_start_error = error;
+            slot.next_start_after = std::chrono::steady_clock::now()
+                + std::chrono::milliseconds(worker_cfg_.worker_start_retry_backoff_ms);
+            slot.loaded_program_kind.reset();
+            slot.loaded_program_runtime_affinity_key.reset();
+            slot.loaded_savestate_affinity_key.reset();
+            worker_to_stop = slot.worker;
+            std::ostringstream line;
+            line << "[workflow-worker-start-failed]"
+                 << " worker=" << worker_idx
+                 << " attempt=" << attempt
+                 << " max_attempts=" << std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts)
+                 << " error=" << error;
+            EmitDurableEventLine(line.str());
+            MarkWorkerError(slot, error);
         }
-        std::ostringstream line;
-        line << "[workflow-worker-start-failed]"
-             << " worker=" << worker_idx
-             << " attempt=" << attempt
-             << " max_attempts=" << std::max<std::uint32_t>(1u, worker_cfg_.max_worker_start_attempts)
-             << " error=" << error;
-        EmitDurableEventLine(line.str());
-        MarkWorkerError(slot, error);
+        if (worker_to_stop) {
+            worker_to_stop->stop();
+        }
         return false;
     };
 
@@ -2358,7 +2410,8 @@ void DBWorkflowWorkerCoordinator::CompleteWorkerSlotStartup(
     queue_cv_.notify_all();
 }
 
-void DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
+std::shared_ptr<savor::ProcessWorker> DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
+    auto worker_to_stop = std::move(slot.worker);
     slot.ready.store(false);
     slot.start_attempted = false;
     slot.startup_in_progress = false;
@@ -2369,38 +2422,71 @@ void DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
     slot.loaded_savestate_affinity_key.reset();
-    if (slot.worker) {
-        slot.worker->stop();
-    }
     slot.worker = std::make_shared<savor::ProcessWorker>();
     slot.worker->set_progress_queue(&progress_q_);
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Spawning);
     worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
+    return worker_to_stop;
 }
 
 void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
     if (!slot_handle) {
         return;
     }
-    std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
-    auto& slot = *slot_handle;
-    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Stopping);
-    worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
-    slot.ready.store(false);
-    slot.start_attempted = false;
-    slot.startup_in_progress = false;
-    slot.in_flight_job_id.reset();
-    slot.in_flight_started_at = {};
-    slot.last_worker_contact_at = {};
-    slot.dead_in_flight_observed_at = {};
-    slot.loaded_program_kind.reset();
-    slot.loaded_program_runtime_affinity_key.reset();
-    slot.loaded_savestate_affinity_key.reset();
-    if (slot.worker) {
-        slot.worker->stop();
+    std::shared_ptr<savor::ProcessWorker> worker_to_stop;
+    std::int64_t worker_id = -1;
+    std::int64_t pid = 0;
+    {
+        std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
+        auto& slot = *slot_handle;
+        worker_id = static_cast<std::int64_t>(slot.id);
+        worker_status_.UpdateState(worker_id, WorkerStateKind::Stopping);
+        worker_status_.SetCurrentJob(worker_id, std::nullopt, std::nullopt);
+        slot.ready.store(false);
+        slot.start_attempted = false;
+        slot.startup_in_progress = false;
+        slot.in_flight_job_id.reset();
+        slot.in_flight_started_at = {};
+        slot.last_worker_contact_at = {};
+        slot.dead_in_flight_observed_at = {};
+        slot.loaded_program_kind.reset();
+        slot.loaded_program_runtime_affinity_key.reset();
+        slot.loaded_savestate_affinity_key.reset();
+        worker_to_stop = slot.worker;
+        if (worker_to_stop) {
+            pid = worker_to_stop->GetPid();
+        }
+        slot.worker.reset();
     }
-    worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
-    worker_status_.UnregisterWorker(static_cast<std::int64_t>(slot.id));
+
+    {
+        std::ostringstream detail;
+        detail << "worker=" << worker_id << " pid=" << pid;
+        EmitShutdownPhase("worker_stop_begin", detail.str());
+    }
+    if (worker_to_stop) {
+        worker_to_stop->stop();
+    }
+    {
+        std::ostringstream detail;
+        detail << "worker=" << worker_id << " pid=" << pid;
+        EmitShutdownPhase("worker_stop_end", detail.str());
+    }
+
+    {
+        std::lock_guard<std::mutex> slot_lock(slot_handle->mtx);
+        worker_status_.UpdateState(worker_id, WorkerStateKind::Dead);
+        worker_status_.UnregisterWorker(worker_id);
+    }
+}
+
+void DBWorkflowWorkerCoordinator::EmitShutdownPhase(const std::string& phase, const std::string& detail) const {
+    std::ostringstream line;
+    line << "[workflow-coordinator-shutdown] phase=" << phase;
+    if (!detail.empty()) {
+        line << " " << detail;
+    }
+    EmitDurableEventLine(line.str());
 }
 
 void DBWorkflowWorkerCoordinator::RecordWorkerContactLocked(
