@@ -34,6 +34,7 @@ public:
     const std::vector<WorkerSnapshot>& snapshot() const;
     std::vector<WorkerSnapshot> freshSnapshot() const;
     const std::vector<WorkerSnapshot>& visualSnapshot() const;
+    const std::vector<savor::runner::parallel::savordb::CoordinatorWarningSnapshot>& warningSnapshot() const;
     QStringList takeVisualLiveLogLineUpdates();
     QString visualReplayRuntimeStateText() const;
     bool visualReplayControlsEnabled() const;
@@ -91,6 +92,7 @@ private:
     std::unique_ptr<savor::runner::parallel::savordb::DBWorkflowWorkerCoordinator> coordinator_;
     std::vector<WorkerSnapshot> snapshotCache_;
     std::vector<WorkerSnapshot> visualSnapshotCache_;
+    std::vector<savor::runner::parallel::savordb::CoordinatorWarningSnapshot> warningSnapshotCache_;
     savor::PRStatus statusSnapshot_{};
     savor::db::execution::workflow::WorkflowCoordinatorTelemetry telemetrySnapshot_{};
     int targetWorkers_ = 1;

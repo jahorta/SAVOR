@@ -220,6 +220,27 @@ void MainWindow::syncStatusBar()
         lastCoordinatorRefresh_ = QDateTime::currentDateTime();
     }
     statusBarWidget_->setSnapshot(StatusBarWidget::buildSnapshot(coordinatorController_, lastCoordinatorRefresh_));
+    if (coordinatorController_ != nullptr && !coordinatorController_->warningSnapshot().empty()) {
+        const auto& warning = coordinatorController_->warningSnapshot().back();
+        const QString signature = QStringLiteral("%1|%2|%3|%4")
+            .arg(static_cast<qulonglong>(warning.sequence))
+            .arg(warning.worker_id)
+            .arg(warning.job_id)
+            .arg(QString::fromStdString(warning.message));
+        if (signature != lastCoordinatorWarningToastSignature_) {
+            lastCoordinatorWarningToastSignature_ = signature;
+            statusBarWidget_->postToast(StatusToast{
+                StatusToast::Severity::Warn,
+                QString::fromStdString(warning.message),
+                QString::fromStdString(warning.detail),
+                1,
+                QDateTime::currentDateTimeUtc(),
+                7000
+            });
+        }
+    } else {
+        lastCoordinatorWarningToastSignature_.clear();
+    }
     emitCoordinatorStateChanged();
 }
 

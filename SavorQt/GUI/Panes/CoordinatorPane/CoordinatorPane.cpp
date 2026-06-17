@@ -67,6 +67,7 @@ void CoordinatorPane::refreshUi()
     const QString validationMessage = controller_->validationMessage();
     const bool valid = validationMessage.isEmpty();
     const auto& snapshot = controller_->snapshot();
+    const auto& warnings = controller_->warningSnapshot();
 
     {
         const QSignalBlocker blocker(targetWorkersSpin_);
@@ -108,6 +109,19 @@ void CoordinatorPane::refreshUi()
     validationLabel_->setProperty("validationState", valid ? QStringLiteral("ok") : QStringLiteral("warn"));
     validationLabel_->style()->unpolish(validationLabel_);
     validationLabel_->style()->polish(validationLabel_);
+
+    if (warnings.empty()) {
+        warningLabel_->setVisible(false);
+        warningLabel_->clear();
+    } else {
+        const auto& warning = warnings.back();
+        warningLabel_->setVisible(true);
+        warningLabel_->setText(QStringLiteral("Coordinator warning: %1 Job #%2, worker %3. %4")
+            .arg(QString::fromStdString(warning.message))
+            .arg(warning.job_id)
+            .arg(warning.worker_id)
+            .arg(QString::fromStdString(warning.detail)));
+    }
 
     if (!validationMessage.isEmpty()) {
         const QString signature = QStringLiteral("validation|%1").arg(validationMessage);
@@ -237,6 +251,12 @@ QWidget* CoordinatorPane::createControlsCard()
     validationLabel_->setOpenExternalLinks(false);
     rootLayout->addWidget(validationLabel_);
     connect(validationLabel_, &QLabel::linkActivated, this, &CoordinatorPane::handleValidationLinkActivated);
+
+    warningLabel_ = new QLabel(card);
+    warningLabel_->setObjectName("coordinatorWarning");
+    warningLabel_->setWordWrap(true);
+    warningLabel_->setVisible(false);
+    rootLayout->addWidget(warningLabel_);
 
     connect(startButton_, &QPushButton::clicked, this, &CoordinatorPane::handleStartRequested);
     connect(pauseButton_, &QPushButton::clicked, controller_, &CoordinatorController::togglePaused);

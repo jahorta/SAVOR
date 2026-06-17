@@ -71,6 +71,7 @@ private:
     QLabel* statusValueLabel_ = nullptr;
     QLabel* snapshotCountLabel_ = nullptr;
     QLabel* validationLabel_ = nullptr;
+    QLabel* warningLabel_ = nullptr;
     QLabel* stoppedLabel_ = nullptr;
     QLabel* tableSummaryLabel_ = nullptr;
     QTreeView* workerTableView_ = nullptr;

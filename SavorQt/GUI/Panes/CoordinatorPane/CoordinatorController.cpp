@@ -69,6 +69,7 @@ std::vector<WorkerSnapshot> CoordinatorController::freshSnapshot() const
     return coordinator_ ? coordinator_->SnapshotWorkers() : std::vector<WorkerSnapshot>{};
 }
 const std::vector<WorkerSnapshot>& CoordinatorController::visualSnapshot() const { return visualSnapshotCache_; }
+const std::vector<savor::runner::parallel::savordb::CoordinatorWarningSnapshot>& CoordinatorController::warningSnapshot() const { return warningSnapshotCache_; }
 QStringList CoordinatorController::takeVisualLiveLogLineUpdates()
 {
     if (!coordinator_) {
@@ -458,6 +459,7 @@ void CoordinatorController::updateSnapshotCache()
     if (!coordinator_) {
         snapshotCache_.clear();
         visualSnapshotCache_.clear();
+        warningSnapshotCache_.clear();
         statusSnapshot_ = {};
         telemetrySnapshot_ = savorqt::SavorDbRuntime::instance().workflowCoordinatorTelemetry();
         return;
@@ -465,6 +467,7 @@ void CoordinatorController::updateSnapshotCache()
 
     snapshotCache_ = coordinator_->SnapshotWorkers();
     visualSnapshotCache_.clear();
+    warningSnapshotCache_ = coordinator_->SnapshotWarnings();
     statusSnapshot_ = coordinator_->SnapshotStatus();
     telemetrySnapshot_ = savorqt::SavorDbRuntime::instance().workflowCoordinatorTelemetry();
 }

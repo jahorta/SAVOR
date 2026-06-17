@@ -86,6 +86,15 @@ struct WorkflowCoordinatorTelemetry {
     std::vector<WorkerEfficiency> workers;
 };
 
+struct CoordinatorWarningSnapshot {
+    std::uint64_t sequence = 0;
+    std::int64_t worker_id = 0;
+    std::int64_t job_id = 0;
+    std::int64_t observed_mono_ns = 0;
+    std::string message;
+    std::string detail;
+};
+
 enum class VisualReplayRuntimeState {
     Idle = 0,
     QueuedStartup,
@@ -171,6 +180,7 @@ public:
 
     PRStatus SnapshotStatus() const;
     WorkflowCoordinatorTelemetry SnapshotTelemetry() const;
+    std::vector<CoordinatorWarningSnapshot> SnapshotWarnings() const;
     std::vector<WorkerSnapshot> SnapshotWorkers() const;
     bool SetWorkerVisualSurface(size_t worker_idx, uint64_t render_widget_handle, std::string host_events_pipe_name);
     bool StartVisualDebugReplay(
@@ -298,6 +308,11 @@ private:
 
     void RegisterWorkerSlotTelemetry(const WorkerSlot& slot);
     void MarkWorkerError(const WorkerSlot& slot, const std::string& error);
+    void RecordCoordinatorWarning(
+        std::int64_t worker_id,
+        std::int64_t job_id,
+        std::string message,
+        std::string detail);
     std::optional<std::string> PrepareWorkerSavestatePathForJob(
         size_t worker_idx,
         const ClaimedJobRecord& claimed_job,
@@ -380,6 +395,9 @@ private:
     std::atomic<std::int64_t> adapter_input_complete_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_claimed_invocations_{ 0 };
     std::atomic<std::int64_t> adapter_job_terminal_invocations_{ 0 };
+    mutable std::mutex coordinator_warning_mtx_;
+    std::deque<CoordinatorWarningSnapshot> coordinator_warnings_;
+    std::uint64_t next_coordinator_warning_sequence_ = 1;
     WorkerStatusRegistry worker_status_;
 };
 

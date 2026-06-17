@@ -133,10 +133,9 @@ namespace phase::battle::turnrunner {
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Victory, LabelRetVictory));
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_Defeat, LabelRetDefeat));
         ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::EQ, (uint32_t)BP_BattleAcceptInput, LabelRetReachedNext));
-        ps.ops.push_back(savor::OpGotoIf(savor::context::key::core::RUN_HIT_BP_KEY, savor::PSCmp::NE, (uint32_t)BP_BattleInputsDone, LabelRunAppliedInputs));
-        ps.ops.push_back(savor::OpStepOpcode(true));
 
         // Keep running until one of the terminals above.
+        ps.ops.push_back(savor::OpStepOpcode(true));
         ps.ops.push_back(savor::OpGoto(LabelRunAppliedInputs));
 
         // ============  Label Retry Input  ===================

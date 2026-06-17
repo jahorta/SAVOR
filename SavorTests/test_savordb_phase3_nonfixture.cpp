@@ -1,4 +1,5 @@
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -33,6 +34,7 @@
 #include "UIRead/QueuedUiReadDb.h"
 #include "common/DbPreparer.h"
 #include "common/RecordingExecutionDb.h"
+#include "common/RecordingJobEventCommandService.h"
 #include "common/savordb_helpers.h"
 
 namespace savordb {
@@ -728,6 +730,73 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_GT(telemetry.progress_batch_count, 0);
         EXPECT_GT(telemetry.max_progress_batch_size, 0);
         EXPECT_GE(telemetry.results_received_count, 1);
+    }
+
+    TEST(Stage3Phase3Batching, ConsecutiveDuplicateProgressRowsAreWarnedAndSummarized) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        class ProgressRecordingExecutionDb final : public RecordingExecutionDb {
+        public:
+            savor::db::execution::jobs::IJobEventCommandService* JobCommandService() override {
+                return &job_events;
+            }
+
+            RecordingJobEventCommandService job_events;
+        };
+
+        ProgressRecordingExecutionDb execution_db;
+        DBWorkflowWorkerCoordinator coordinator(
+            &execution_db,
+            DBWorkflowWorkerCoordinatorConfig{
+                .desired_workers = 0,
+                .controller_sleep_ms = 1,
+            },
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 15000 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        std::atomic<int> progress_seen{ 0 };
+        coordinator.SetProgressCallback([&](const savor::PRProgress&) {
+            ++progress_seen;
+        });
+
+        coordinator.Start();
+        coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
+        coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
+        coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "same" });
+        coordinator.EnqueueProgressForTest(savor::PRProgress{ .worker_id = 3, .job_id = 42, .text = "next" });
+        coordinator.Stop();
+
+        std::vector<std::string> messages;
+        for (const auto& call : execution_db.job_events.calls) {
+            messages.push_back(call.message.value_or(""));
+        }
+
+        const auto exact_same_count = std::count(
+            messages.begin(),
+            messages.end(),
+            std::string("worker=3 progress=same"));
+        EXPECT_EQ(exact_same_count, 1);
+        EXPECT_NE(std::find(messages.begin(), messages.end(), "worker=3 progress=next"), messages.end());
+        EXPECT_TRUE(std::any_of(messages.begin(), messages.end(), [](const std::string& message) {
+            return message.find("progress_warning=duplicate consecutive progress suppressed") != std::string::npos;
+        }));
+        EXPECT_TRUE(std::any_of(messages.begin(), messages.end(), [](const std::string& message) {
+            return message.find("progress_summary=suppressed 2 duplicate consecutive progress line(s)") != std::string::npos;
+        }));
+        EXPECT_EQ(progress_seen.load(), 2);
+
+        const auto warnings = coordinator.SnapshotWarnings();
+        ASSERT_EQ(warnings.size(), 1);
+        EXPECT_EQ(warnings.front().worker_id, 3);
+        EXPECT_EQ(warnings.front().job_id, 42);
+        EXPECT_EQ(warnings.front().message, "Duplicate progress suppressed");
+        EXPECT_NE(warnings.front().detail.find("progress_warning=duplicate consecutive progress suppressed"), std::string::npos);
     }
 
     TEST(Stage3Phase3DispatchGuard, ClaimedJobsMoveThroughMaterializedQueueBeforeDispatch) {

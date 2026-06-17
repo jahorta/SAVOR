@@ -427,6 +427,14 @@ inline constexpr const char* kMainWindowStyleSheet = R"(
         border-color: #294937;
         background-color: #16241b;
     }
+    QLabel#coordinatorWarning {
+        color: #f6c06a;
+        font-size: 12px;
+        border: 1px solid #5a4630;
+        border-radius: 6px;
+        background-color: #241d15;
+        padding: 8px 10px;
+    }
     QCheckBox {
         spacing: 8px;
         color: #dce3ed;

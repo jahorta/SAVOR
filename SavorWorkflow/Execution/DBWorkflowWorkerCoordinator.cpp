@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 
 #include "Execution/Jobs/JobEventOrchestration.h"
@@ -14,6 +15,21 @@
 
 namespace savor::runner::parallel::savordb {
 namespace {
+constexpr std::size_t kMaxCoordinatorWarnings = 32;
+
+std::int64_t NowMonoNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+struct ProgressDedupState {
+    bool has_value = false;
+    std::uint64_t job_id = 0;
+    std::string text;
+    std::size_t duplicate_count = 0;
+    bool warning_written = false;
+};
 
 WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
     savor::db::IExecutionDb* execution_db,
@@ -501,6 +517,10 @@ void DBWorkflowWorkerCoordinator::Start() {
     dispatch_attempt_count_.store(0);
     dispatch_success_count_.store(0);
     dispatch_miss_count_.store(0);
+    {
+        std::lock_guard<std::mutex> warning_lock(coordinator_warning_mtx_);
+        coordinator_warnings_.clear();
+    }
 
     {
         const auto desired_workers = desired_worker_count_.load(std::memory_order_relaxed);
@@ -1171,6 +1191,13 @@ WorkflowCoordinatorTelemetry DBWorkflowWorkerCoordinator::SnapshotTelemetry() co
     return telemetry;
 }
 
+std::vector<CoordinatorWarningSnapshot> DBWorkflowWorkerCoordinator::SnapshotWarnings() const {
+    std::lock_guard<std::mutex> lock(coordinator_warning_mtx_);
+    return std::vector<CoordinatorWarningSnapshot>(
+        coordinator_warnings_.begin(),
+        coordinator_warnings_.end());
+}
+
 std::vector<WorkerSnapshot> DBWorkflowWorkerCoordinator::SnapshotWorkers() const {
     return worker_status_.GetClusterSnapshot();
 }
@@ -1667,6 +1694,54 @@ bool DBWorkflowWorkerCoordinator::CompleteNoWorkWorkflowStep(const WorkflowReady
 
 void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
     constexpr std::size_t kMaxBatchSize = 64;
+    std::unordered_map<std::size_t, ProgressDedupState> progress_dedup_by_worker;
+
+    const auto persist_progress_event = [this](
+        const savor::PRProgress& item,
+        const std::string& message,
+        const char* requested_by) {
+        if (execution_db_ == nullptr || execution_db_->JobCommandService() == nullptr || item.job_id == 0) {
+            return;
+        }
+
+        std::string error;
+        if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
+                {
+                    .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobProgressed,
+                    .job_id = static_cast<std::int64_t>(item.job_id),
+                    .message = message,
+                    .requested_by = requested_by,
+                },
+                &error)) {
+            std::ostringstream line;
+            line << "[workflow-progress-persist-failed] job=" << item.job_id
+                 << " worker=" << item.worker_id;
+            if (!error.empty()) {
+                line << " error=" << error;
+            }
+            EmitDurableEventLine(line.str());
+        }
+    };
+
+    const auto flush_duplicate_summary = [&](std::size_t worker_id, ProgressDedupState& state) {
+        if (!state.has_value || state.duplicate_count == 0) {
+            return;
+        }
+
+        savor::PRProgress summary_progress{
+            .worker_id = worker_id,
+            .job_id = state.job_id,
+            .text = state.text,
+        };
+        std::ostringstream message;
+        message << "worker=" << worker_id
+                << " progress_summary=suppressed " << state.duplicate_count
+                << " duplicate consecutive progress line(s) after first: " << state.text;
+        persist_progress_event(summary_progress, message.str(), "workflow_progress_duplicate_summary");
+        state.duplicate_count = 0;
+        state.warning_written = false;
+    };
+
     savor::PRProgress progress;
     while (progress_q_.pop_wait(progress)) {
         std::vector<savor::PRProgress> batch;
@@ -1698,31 +1773,53 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
                     item.text,
                     static_cast<std::int64_t>(item.job_id));
             }
-            if (item.record_progress && execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr && item.job_id > 0) {
-                std::ostringstream message;
-                message << "worker=" << item.worker_id << " progress=" << item.text;
-                std::string error;
-                if (!execution_db_->JobCommandService()->AppendLifecycleEvent(
-                        {
-                            .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobProgressed,
-                            .job_id = static_cast<std::int64_t>(item.job_id),
-                            .message = message.str(),
-                            .requested_by = "workflow_progress_drainer",
-                        },
-                        &error)) {
-                    std::ostringstream line;
-                    line << "[workflow-progress-persist-failed] job=" << item.job_id
-                         << " worker=" << item.worker_id;
-                    if (!error.empty()) {
-                        line << " error=" << error;
+
+            bool duplicate_progress = false;
+            if (item.record_progress) {
+                auto& dedup_state = progress_dedup_by_worker[item.worker_id];
+                duplicate_progress = dedup_state.has_value
+                    && dedup_state.job_id == item.job_id
+                    && dedup_state.text == item.text;
+
+                if (duplicate_progress) {
+                    ++dedup_state.duplicate_count;
+                    if (!dedup_state.warning_written) {
+                        std::ostringstream warning;
+                        warning << "worker=" << item.worker_id
+                                << " progress_warning=duplicate consecutive progress suppressed for job="
+                                << item.job_id
+                                << " text=" << item.text;
+                        persist_progress_event(item, warning.str(), "workflow_progress_duplicate_warning");
+                        RecordCoordinatorWarning(
+                            static_cast<std::int64_t>(item.worker_id),
+                            static_cast<std::int64_t>(item.job_id),
+                            "Duplicate progress suppressed",
+                            warning.str());
+                        EmitDurableEventLine("[workflow-progress-duplicate-suppressed] " + warning.str());
+                        dedup_state.warning_written = true;
                     }
-                    EmitDurableEventLine(line.str());
+                } else {
+                    flush_duplicate_summary(item.worker_id, dedup_state);
+                    dedup_state.has_value = true;
+                    dedup_state.job_id = item.job_id;
+                    dedup_state.text = item.text;
+                    dedup_state.duplicate_count = 0;
+                    dedup_state.warning_written = false;
+
+                    std::ostringstream message;
+                    message << "worker=" << item.worker_id << " progress=" << item.text;
+                    persist_progress_event(item, message.str(), "workflow_progress_drainer");
                 }
             }
-            if (item.record_progress && progress_callback_) {
+
+            if (item.record_progress && !duplicate_progress && progress_callback_) {
                 progress_callback_(item);
             }
         }
+    }
+
+    for (auto& [worker_id, state] : progress_dedup_by_worker) {
+        flush_duplicate_summary(worker_id, state);
     }
 }
 
@@ -2610,6 +2707,25 @@ void DBWorkflowWorkerCoordinator::RegisterWorkerSlotTelemetry(const WorkerSlot& 
 void DBWorkflowWorkerCoordinator::MarkWorkerError(const WorkerSlot& slot, const std::string& error) {
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
     worker_status_.RecordError(static_cast<std::int64_t>(slot.id), error);
+}
+
+void DBWorkflowWorkerCoordinator::RecordCoordinatorWarning(
+    std::int64_t worker_id,
+    std::int64_t job_id,
+    std::string message,
+    std::string detail) {
+    std::lock_guard<std::mutex> lock(coordinator_warning_mtx_);
+    coordinator_warnings_.push_back(CoordinatorWarningSnapshot{
+        .sequence = next_coordinator_warning_sequence_++,
+        .worker_id = worker_id,
+        .job_id = job_id,
+        .observed_mono_ns = NowMonoNs(),
+        .message = std::move(message),
+        .detail = std::move(detail),
+    });
+    while (coordinator_warnings_.size() > kMaxCoordinatorWarnings) {
+        coordinator_warnings_.pop_front();
+    }
 }
 
 void DBWorkflowWorkerCoordinator::PollReadyStepsFromDb() {

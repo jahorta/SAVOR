@@ -96,4 +96,5 @@ private:
     QPointer<WorkflowGraphEditorWindow> workflowGraphEditor_;
     AuthoringLibraryKey lastAuthoringLibrary_ = AuthoringLibraryKey::Tas;
     QHash<QString, QPointer<QDialog>> focusedDialogs_;
+    QString lastCoordinatorWarningToastSignature_;
 };
