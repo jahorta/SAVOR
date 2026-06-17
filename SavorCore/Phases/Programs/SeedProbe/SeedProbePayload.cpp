@@ -5,6 +5,7 @@
 #include "../../../Runner/IPC/Wire.h"      // PK_SeedProbe
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/PhaseScriptVM.h" // savor::vmcore::<common keys>
+#include "../../../Runner/Script/ScriptProgress.h"
 #include "SeedProbeScript.h"
 
 namespace savor::seedprobe {
@@ -67,7 +68,10 @@ namespace savor::seedprobe {
         out_ctx[savor::context::key::core::RUN_MS] = run_ms;
         out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
 
-        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
+        savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
+        progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
+        out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
+        out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
 
         return true;
     }

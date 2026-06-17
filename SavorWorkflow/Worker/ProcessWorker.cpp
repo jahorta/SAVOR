@@ -390,6 +390,7 @@ namespace savor {
                 p.worker_id = id_;
                 p.job_id = wp.job_id;
                 p.text.assign(wp.text, strnlen(wp.text, sizeof(wp.text)));
+                p.record_progress = wp.record_progress;
 
                 {
                     std::lock_guard<std::mutex> lk(progress_m_);
@@ -397,7 +398,7 @@ namespace savor {
                     have_progress_ = true;
                 }
 
-                if (progress_out_ && wp.record_progress)
+                if (progress_out_)
                     progress_out_->push(std::move(p));
 
                 continue;

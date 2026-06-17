@@ -1,6 +1,7 @@
 #include "BattleContextTreeWidget.h"
 
 #include "BattleContextTreeModel.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QHeaderView>
@@ -28,6 +29,8 @@ void BattleContextTreeWidget::setBattleContext(
     bool hasContext,
     const soa::battle::ctx::BattleContext& context)
 {
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(this);
     model_->setBattleContext(seedProbeId, savestateId, partySize, hasContext, context);
     expandToDepth(1);
+    restoreItemViewScrollSnapshot(this, scrollSnapshot);
 }

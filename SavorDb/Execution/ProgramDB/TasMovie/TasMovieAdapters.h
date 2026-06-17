@@ -21,7 +21,7 @@ struct TasMovieBlueprintConfig {
     int priority = 0;
     std::uint32_t run_ms = 0;
     std::uint32_t vi_stall_ms = 2000;
-    bool progress_enable = false;
+    bool progress_enable = true;
     std::uint8_t headroom_x10 = 15;
     std::optional<std::int64_t> bind_seed_probe_run_id;
 };

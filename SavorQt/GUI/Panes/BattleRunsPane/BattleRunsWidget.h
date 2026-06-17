@@ -77,6 +77,7 @@ public:
         QString status;
         bool hasWinner = false;
         bool hasFailure = false;
+        bool selected = false;
     };
 
     struct JobRow {
@@ -96,6 +97,12 @@ public:
         std::int64_t deltaViSort = 0;
         int fakeAttackSort = 0;
         std::int64_t rngSeedSort = 0;
+    };
+
+    struct WaveTurnRow {
+        int turnIndex = 0;
+        QString label;
+        std::vector<WaveRow> waves;
     };
 
     struct RefreshData {
@@ -149,6 +156,7 @@ private:
     AsyncRefreshPipeline<RefreshRequest, RefreshData>* refreshPipeline_ = nullptr;
 
     std::vector<GroupRow> currentGroups_;
+    std::vector<WaveTurnRow> currentWaveTurns_;
     std::vector<JobRow> currentJobs_;
     std::int64_t selectedBattleSetId_ = 0;
     std::vector<std::int64_t> selectedWaveIds_;

@@ -3,6 +3,8 @@
 #include "DB/SavorDbAuthoringService.h"
 #include "BattlePlanActionPresetEditorWindow.h"
 #include "BattleRunSettingsDragDrop.h"
+#include "GUI/Refresh/RowUpdate.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QMimeData>
 #include <QtCore/QSignalBlocker>
@@ -429,37 +431,75 @@ void BattlePlanEditorWindow::rebuildPlanTree()
     rebuildingTree_ = true;
     const int previousTurn = selectedTurnIndex();
     const int previousSlot = selectedSlotIndex();
-    planTree_->clear();
+    std::vector<PlanTreeTurnRow> rows;
+    rows.reserve(turns_.size());
     for (int turnIndex = 0; turnIndex < static_cast<int>(turns_.size()); ++turnIndex) {
         auto& turn = turns_[static_cast<std::size_t>(turnIndex)];
         normalizeTurnSlots(turn);
 
-        auto* turnItem = new QTreeWidgetItem(planTree_);
-        turnItem->setText(0, QStringLiteral("Turn %1").arg(turn.turn_index));
         const int assignedActions = static_cast<int>(std::count_if(turn.actions.begin(), turn.actions.end(), [](const ActionDraft& action) {
             return action.action_preset_id > 0;
         }));
-        turnItem->setText(1, QStringLiteral("%1/%2 slots assigned")
+        PlanTreeTurnRow row{};
+        row.turnIndex = turnIndex;
+        row.label = QStringLiteral("Turn %1").arg(turn.turn_index);
+        row.summary = QStringLiteral("%1/%2 slots assigned")
             .arg(assignedActions)
-            .arg(turn.player_combatants));
-        turnItem->setData(0, kNodeKindRole, kNodeTurn);
-        turnItem->setData(0, kTurnIndexRole, turnIndex);
-        turnItem->setExpanded(true);
+            .arg(turn.player_combatants);
 
         for (int slotIndex = 0; slotIndex < turn.player_combatants; ++slotIndex) {
             const int actionIndex = findActionIndexBySlot(turn, slotIndex);
             const bool hasAction = actionIndex >= 0;
             const auto* action = hasAction ? &turn.actions[static_cast<std::size_t>(actionIndex)] : nullptr;
             const auto* preset = hasAction ? actionPresetById(action->action_preset_id) : nullptr;
-            auto* actionItem = new QTreeWidgetItem(turnItem);
-            actionItem->setText(0, QStringLiteral("Slot %1").arg(slotIndex + 1));
-            actionItem->setText(1, actionSummary(hasAction ? *action : ActionDraft{}, preset));
-            actionItem->setData(0, kNodeKindRole, kNodeAction);
-            actionItem->setData(0, kTurnIndexRole, turnIndex);
-            actionItem->setData(0, kSlotIndexRole, slotIndex);
-            actionItem->setData(0, kActionIndexRole, hasAction ? actionIndex : -1);
+            row.actions.push_back(PlanTreeActionRow{
+                slotIndex,
+                hasAction ? actionIndex : -1,
+                actionSummary(hasAction ? *action : ActionDraft{}, preset),
+            });
         }
+        rows.push_back(std::move(row));
     }
+
+    savorqt::gui::ApplyTreeRowsByKey(
+        planTree_,
+        currentPlanTreeRows_,
+        rows,
+        [](const PlanTreeTurnRow& row) { return row.turnIndex; },
+        [](const PlanTreeTurnRow& lhs, const PlanTreeTurnRow& rhs) {
+            return lhs.turnIndex == rhs.turnIndex
+                && lhs.label == rhs.label
+                && lhs.summary == rhs.summary
+                && savorqt::gui::RowsEqual(lhs.actions, rhs.actions, [](const PlanTreeActionRow& lhsAction, const PlanTreeActionRow& rhsAction) {
+                    return lhsAction.slotIndex == rhsAction.slotIndex
+                        && lhsAction.actionIndex == rhsAction.actionIndex
+                        && lhsAction.summary == rhsAction.summary;
+                });
+        },
+        [](QTreeWidget*, QTreeWidgetItem* turnItem, const PlanTreeTurnRow& row) {
+            if (turnItem == nullptr) {
+                return;
+            }
+            turnItem->setText(0, row.label);
+            turnItem->setText(1, row.summary);
+            turnItem->setData(0, kNodeKindRole, kNodeTurn);
+            turnItem->setData(0, kTurnIndexRole, row.turnIndex);
+
+            const auto oldChildren = turnItem->takeChildren();
+            for (QTreeWidgetItem* child : oldChildren) {
+                delete child;
+            }
+            for (const auto& action : row.actions) {
+                auto* actionItem = new QTreeWidgetItem(turnItem);
+                actionItem->setText(0, QStringLiteral("Slot %1").arg(action.slotIndex + 1));
+                actionItem->setText(1, action.summary);
+                actionItem->setData(0, kNodeKindRole, kNodeAction);
+                actionItem->setData(0, kTurnIndexRole, row.turnIndex);
+                actionItem->setData(0, kSlotIndexRole, action.slotIndex);
+                actionItem->setData(0, kActionIndexRole, action.actionIndex);
+            }
+            turnItem->setExpanded(true);
+        });
 
     QTreeWidgetItem* restoreItem = nullptr;
     if (previousTurn >= 0 && previousTurn < planTree_->topLevelItemCount()) {

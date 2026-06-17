@@ -25,7 +25,6 @@ namespace savor::tasmovie {
         std::string dtm_path;
         uint32_t    run_ms{ 0 };       // 0 => derive from DTM header (VI/input count + headroom)
         uint32_t    vi_stall_ms{ 2000 };
-        bool        progress_enable{ false };
         uint8_t     headroom_x10{ 15 };
     };
 

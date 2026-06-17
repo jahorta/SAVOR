@@ -41,7 +41,7 @@ struct TasSpecDraft {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     std::int64_t base_dtm_artifact_id = 0;
 };
 
@@ -103,7 +103,7 @@ struct BattleRunSpecDraft {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
 };

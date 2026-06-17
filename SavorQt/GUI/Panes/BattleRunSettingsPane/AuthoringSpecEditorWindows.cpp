@@ -371,7 +371,6 @@ void TasSpecEditorWindow::loadSnapshot(const savor::db::TasSpecSnapshot& snapsho
     prioritySpin_->setValue(snapshot.priority);
     runMsEdit_->setText(QString::number(snapshot.run_ms));
     viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
-    progressCheck_->setChecked(snapshot.progress_enable);
 }
 
 void TasSpecEditorWindow::createWidgets()
@@ -388,12 +387,10 @@ void TasSpecEditorWindow::createWidgets()
     prioritySpin_->setRange(0, 100000);
     runMsEdit_ = numericEdit(panel, QStringLiteral("0"));
     viStallMsEdit_ = numericEdit(panel, QStringLiteral("2500"));
-    progressCheck_ = new QCheckBox(panel);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
     form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
-    form->addRow(QStringLiteral("Progress"), progressCheck_);
     panelLayout->addLayout(form);
     panelLayout->addStretch(1);
     root->addWidget(panel, 1);
@@ -425,7 +422,7 @@ void TasSpecEditorWindow::saveSpec()
     draft.priority = prioritySpin_->value();
     draft.run_ms = runMs;
     draft.vi_stall_ms = viStallMs;
-    draft.progress_enable = progressCheck_->isChecked();
+    draft.progress_enable = true;
     draft.base_dtm_artifact_id = 0;
     const auto result = savorqt::db::SavorDbAuthoringService::SaveTasSpec(draft);
     if (!result.ok) {
@@ -472,7 +469,6 @@ void BattleRunSpecEditorWindow::loadSnapshot(const savor::db::BattleRunSpecSnaps
     prioritySpin_->setValue(snapshot.priority);
     runMsEdit_->setText(QString::number(snapshot.run_ms));
     viStallMsEdit_->setText(QString::number(snapshot.vi_stall_ms));
-    progressCheck_->setChecked(snapshot.progress_enable);
     singleTurnRunnerCheck_->setChecked(snapshot.use_single_turn_runner);
     autoWaveTriggerCheck_->setChecked(snapshot.auto_wave_trigger_enable);
 }
@@ -491,7 +487,6 @@ void BattleRunSpecEditorWindow::createWidgets()
     prioritySpin_->setRange(0, 100000);
     runMsEdit_ = numericEdit(panel, QStringLiteral("30000"));
     viStallMsEdit_ = numericEdit(panel, QStringLiteral("4000"));
-    progressCheck_ = new QCheckBox(panel);
     singleTurnRunnerCheck_ = new QCheckBox(panel);
     singleTurnRunnerCheck_->setChecked(true);
     autoWaveTriggerCheck_ = new QCheckBox(panel);
@@ -500,7 +495,6 @@ void BattleRunSpecEditorWindow::createWidgets()
     form->addRow(QStringLiteral("Priority"), prioritySpin_);
     form->addRow(QStringLiteral("Run ms"), runMsEdit_);
     form->addRow(QStringLiteral("VI stall ms"), viStallMsEdit_);
-    form->addRow(QStringLiteral("Progress"), progressCheck_);
     form->addRow(QStringLiteral("Single turn runner"), singleTurnRunnerCheck_);
     form->addRow(QStringLiteral("Auto wave trigger"), autoWaveTriggerCheck_);
     panelLayout->addLayout(form);
@@ -534,7 +528,7 @@ void BattleRunSpecEditorWindow::saveSpec()
     draft.priority = prioritySpin_->value();
     draft.run_ms = runMs;
     draft.vi_stall_ms = viStallMs;
-    draft.progress_enable = progressCheck_->isChecked();
+    draft.progress_enable = true;
     draft.use_single_turn_runner = singleTurnRunnerCheck_->isChecked();
     draft.auto_wave_trigger_enable = autoWaveTriggerCheck_->isChecked();
     const auto result = savorqt::db::SavorDbAuthoringService::SaveBattleRunSpec(draft);

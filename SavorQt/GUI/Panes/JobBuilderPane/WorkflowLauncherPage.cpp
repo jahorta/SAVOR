@@ -3,6 +3,8 @@
 #include "WorkflowGraphEditorWindow.h"
 #include "DB/SavorDbAuthoringService.h"
 #include "DB/SavorDbWorkflowService.h"
+#include "GUI/Refresh/RowUpdate.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
@@ -48,6 +50,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         const qint64 previousGraphId = previousGraph.has_value() ? previousGraph->workflow_graph_id : 0;
         workflowGraphs_ = result.value;
         int rowToSelect = -1;
+        const ItemViewScrollSnapshot graphListScrollSnapshot = captureItemViewScrollSnapshot(graphList_);
         {
             QSignalBlocker blocker(graphList_);
             graphList_->clear();
@@ -63,6 +66,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
                 graphList_->setCurrentRow(rowToSelect >= 0 ? rowToSelect : 0);
             }
         }
+        restoreItemViewScrollSnapshot(graphList_, graphListScrollSnapshot);
         if (!standaloneModeActive()) {
             renderCurrentGraphIfNeeded(rowToSelect < 0);
         }
@@ -90,6 +94,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
         const QString previousUnitKind = previousUnit == nullptr ? QString() : QString::fromStdString(previousUnit->unit_kind);
         workflowUnits_ = result.value;
         int rowToSelect = -1;
+        const ItemViewScrollSnapshot unitListScrollSnapshot = captureItemViewScrollSnapshot(unitList_);
         {
             QSignalBlocker blocker(unitList_);
             unitList_->clear();
@@ -105,6 +110,7 @@ WorkflowLauncherPage::WorkflowLauncherPage(QWidget* parent)
                 unitList_->setCurrentRow(rowToSelect >= 0 ? rowToSelect : 0);
             }
         }
+        restoreItemViewScrollSnapshot(unitList_, unitListScrollSnapshot);
         if (standaloneModeActive()) {
             renderCurrentUnitIfNeeded(rowToSelect < 0);
         }
@@ -332,8 +338,7 @@ void WorkflowLauncherPage::renderCurrentGraphIfNeeded(bool forceRebuild)
     renderedTargetShape_ = targetShape;
 
     if (!graph.has_value()) {
-        externalInputs_.clear();
-        externalInputsTable_->setRowCount(0);
+        applyExternalInputs({});
         graphDetailLabel_->setText(QStringLiteral("No workflow graph selected."));
         launchStatusLabel_->setText(QString());
         launchButton_->setEnabled(false);
@@ -402,9 +407,8 @@ void WorkflowLauncherPage::renderCurrentUnitIfNeeded(bool forceRebuild)
     renderedTargetShape_ = targetShape;
 
     if (unit == nullptr) {
-        externalInputs_.clear();
+        applyExternalInputs({});
         authoredRefOptions_.clear();
-        externalInputsTable_->setRowCount(0);
         authoredRefCombo_->clear();
         authoredRefLabel_->hide();
         authoredRefCombo_->hide();
@@ -897,7 +901,7 @@ void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraph
         suppliedByEdge.emplace(QString::fromStdString(edge.to_node_key + "\n" + edge.input_key));
     }
 
-    externalInputs_.clear();
+    std::vector<ExternalInputRow> rows;
     for (const auto& node : graph.nodes) {
         for (const auto& input : node.inputs) {
             if (!input.required) {
@@ -908,7 +912,7 @@ void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraph
                 continue;
             }
             const auto dataKind = QString::fromStdString(input.data_kind);
-            externalInputs_.push_back(ExternalInputRow{
+            rows.push_back(ExternalInputRow{
                 .node_key = QString::fromStdString(node.node_key),
                 .node_name = nodeDisplayName(graph, node.node_key),
                 .input_key = QString::fromStdString(input.input_key),
@@ -919,31 +923,19 @@ void WorkflowLauncherPage::populateExternalInputs(const savor::db::WorkflowGraph
         }
     }
 
-    externalInputsTable_->setRowCount(0);
-    for (const auto& input : externalInputs_) {
-        const int row = externalInputsTable_->rowCount();
-        externalInputsTable_->insertRow(row);
-        externalInputsTable_->setItem(row, 0, new QTableWidgetItem(input.node_name));
-        externalInputsTable_->setItem(row, 1, new QTableWidgetItem(input.display_name.isEmpty() ? input.input_key : input.display_name));
-        externalInputsTable_->setItem(row, 2, new QTableWidgetItem(input.data_kind));
-        externalInputsTable_->setItem(row, 3, new QTableWidgetItem(input.default_ref_kind));
-        externalInputsTable_->setItem(row, 4, new QTableWidgetItem(QString()));
-        for (int column = 0; column < 3; ++column) {
-            externalInputsTable_->item(row, column)->setFlags(externalInputsTable_->item(row, column)->flags() & ~Qt::ItemIsEditable);
-        }
-    }
+    applyExternalInputs(std::move(rows));
 }
 
 void WorkflowLauncherPage::populateExternalInputsForUnit(const WorkflowUnitDefinition& unit)
 {
-    externalInputs_.clear();
+    std::vector<ExternalInputRow> rows;
     const auto nodeKey = QString::fromStdString(standaloneNodeKey(unit));
     for (const auto& input : unit.required_inputs) {
         if (!input.required) {
             continue;
         }
         const auto dataKind = QString::fromStdString(input.data_kind);
-        externalInputs_.push_back(ExternalInputRow{
+        rows.push_back(ExternalInputRow{
             .node_key = nodeKey,
             .node_name = QString::fromStdString(unit.display_name),
             .input_key = QString::fromStdString(input.key),
@@ -953,19 +945,35 @@ void WorkflowLauncherPage::populateExternalInputsForUnit(const WorkflowUnitDefin
         });
     }
 
-    externalInputsTable_->setRowCount(0);
-    for (const auto& input : externalInputs_) {
-        const int row = externalInputsTable_->rowCount();
-        externalInputsTable_->insertRow(row);
-        externalInputsTable_->setItem(row, 0, new QTableWidgetItem(input.node_name));
-        externalInputsTable_->setItem(row, 1, new QTableWidgetItem(input.display_name.isEmpty() ? input.input_key : input.display_name));
-        externalInputsTable_->setItem(row, 2, new QTableWidgetItem(input.data_kind));
-        externalInputsTable_->setItem(row, 3, new QTableWidgetItem(input.default_ref_kind));
-        externalInputsTable_->setItem(row, 4, new QTableWidgetItem(QString()));
-        for (int column = 0; column < 3; ++column) {
-            externalInputsTable_->item(row, column)->setFlags(externalInputsTable_->item(row, column)->flags() & ~Qt::ItemIsEditable);
-        }
-    }
+    applyExternalInputs(std::move(rows));
+}
+
+void WorkflowLauncherPage::applyExternalInputs(std::vector<ExternalInputRow> rows)
+{
+    externalInputs_ = rows;
+    savorqt::gui::ApplyTableRowsByKey(
+        externalInputsTable_,
+        currentExternalInputRows_,
+        externalInputs_,
+        [](const ExternalInputRow& row) { return externalInputKey(row); },
+        [](const ExternalInputRow& lhs, const ExternalInputRow& rhs) {
+            return lhs.node_key == rhs.node_key
+                && lhs.node_name == rhs.node_name
+                && lhs.input_key == rhs.input_key
+                && lhs.display_name == rhs.display_name
+                && lhs.data_kind == rhs.data_kind
+                && lhs.default_ref_kind == rhs.default_ref_kind;
+        },
+        [](QTableWidget* table, int row, const ExternalInputRow& input) {
+            table->setItem(row, 0, new QTableWidgetItem(input.node_name));
+            table->setItem(row, 1, new QTableWidgetItem(input.display_name.isEmpty() ? input.input_key : input.display_name));
+            table->setItem(row, 2, new QTableWidgetItem(input.data_kind));
+            table->setItem(row, 3, new QTableWidgetItem(input.default_ref_kind));
+            table->setItem(row, 4, new QTableWidgetItem(QString()));
+            for (int column = 0; column < 3; ++column) {
+                table->item(row, column)->setFlags(table->item(row, column)->flags() & ~Qt::ItemIsEditable);
+            }
+        });
 }
 
 void WorkflowLauncherPage::refreshAuthoredRefsForStandaloneUnit(const WorkflowUnitDefinition& unit)

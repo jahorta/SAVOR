@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
 #include <cstdint>
+#include <vector>
 
 #include "GUI/Common/StatusToast.h"
 
@@ -30,6 +32,26 @@ signals:
     void statusToastRequested(StatusToast toast);
 
 private:
+    struct GroupRow {
+        qint64 jobSetId = 0;
+        QString created;
+        QString jobs;
+        QString results;
+        QString status;
+    };
+
+    struct WaveTreeRow {
+        qint64 jobSetId = 0;
+        QString label;
+        QString jobs;
+        QString status;
+    };
+
+    struct JobRow {
+        qint64 jobId = 0;
+        QString state;
+    };
+
     void createWidgets();
     void wireSignals();
     void syncControls();
@@ -67,8 +89,8 @@ private:
     QTextEdit* progressText_ = nullptr;
     QTextEdit* resultsText_ = nullptr;
     QString lastToastSignature_;
-    QString lastGroupsSignature_;
-    QString lastWaveSignature_;
-    QString lastJobsSignature_;
+    std::vector<GroupRow> currentGroupRows_;
+    std::vector<WaveTreeRow> currentWaveRows_;
+    std::vector<JobRow> currentJobRows_;
     bool refreshingSelection_ = false;
 };

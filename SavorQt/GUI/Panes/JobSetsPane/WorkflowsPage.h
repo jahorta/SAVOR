@@ -3,6 +3,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QDateTime>
 #include <QtCore/QFutureWatcher>
+#include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
 
 #include "DB/SavorDbJobSetService.h"
@@ -34,6 +36,27 @@ public:
 
 signals:
     void statusToastRequested(StatusToast toast);
+
+public:
+    struct WorkflowTableRow {
+        std::int64_t workflowInstanceId = 0;
+        QString kind;
+        QString state;
+        QString activeStep;
+        QString steps;
+        QString jobs;
+        QString problems;
+        QString created;
+        QString completed;
+    };
+
+    struct TreeDisplayRow {
+        QString key;
+        QStringList columns;
+        bool firstColumnSpanned = false;
+        bool expanded = false;
+        std::vector<TreeDisplayRow> children;
+    };
 
 private:
     using WorkflowPageResult = savorqt::db::ServiceResult<
@@ -73,9 +96,12 @@ private:
     QString errorMessage_;
     QString infoMessage_;
     QString lastToastSignature_;
-    QString lastWorkflowTableSignature_;
-    QString lastWorkflowDetailSignature_;
-    QString lastWorkflowJobSetsSignature_;
+    std::vector<WorkflowTableRow> currentWorkflowRows_;
+    std::vector<TreeDisplayRow> currentCurrentStepRows_;
+    std::vector<TreeDisplayRow> currentFutureStepRows_;
+    std::vector<TreeDisplayRow> currentPastStepRows_;
+    std::vector<TreeDisplayRow> currentAlertRows_;
+    std::vector<TreeDisplayRow> currentJobSetRows_;
     std::vector<savorqt::db::WorkflowJobSetRow> workflowJobSets_;
 
     savorqt::gui::AsyncRefreshPipeline<savorqt::db::WorkflowListRequest, WorkflowPageResult>* workflowRefreshPipeline_ = nullptr;

@@ -1,6 +1,7 @@
 #include "BattleContextPayload.h"
 
 #include "../../../Runner/IPC/Wire.h"
+#include "../../../Runner/Script/ScriptProgress.h"
 
 namespace phase::battle::ctx {
 
@@ -37,7 +38,10 @@ namespace phase::battle::ctx {
 
 		out_ctx[savor::context::key::core::RUN_MS] = run_ms;
 		out_ctx[savor::context::key::core::VI_STALL_MS] = vi_stall_ms;
-		out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = (uint32_t)0;
+		savor::progress::ProgressDeets progress{ .poll_rate = 5000 };
+		progress.set_flag(CoreProgressFlags::DontRecordHeartbeat);
+		out_ctx[savor::context::key::core::PROGRESS_RATE] = progress.poll_rate;
+		out_ctx[savor::context::key::core::PROGRESS_CORE_FLAGS] = progress.flags;
 
 		return true;
 	}

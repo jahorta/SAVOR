@@ -58,7 +58,6 @@ namespace savor::tasmovie {
         put_u16(out, PVersion);                            // version
         
         uint8_t flags = 0;
-        if (spec.progress_enable) flags |= 0x02;
         out.push_back(flags);
 
         put_u32(out, spec.run_ms);

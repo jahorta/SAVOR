@@ -31,6 +31,7 @@ namespace savor {
 		size_t    worker_id{ 0 };
 		uint64_t  job_id{ 0 };
 		std::string text;          // copied from WireProgress::text
+		bool record_progress{ true };
 	};
 
 } // namespace savor

@@ -86,6 +86,7 @@ private:
     void launchStandaloneUnit();
     void populateExternalInputs(const savor::db::WorkflowGraphSnapshot& graph);
     void populateExternalInputsForUnit(const WorkflowUnitDefinition& unit);
+    void applyExternalInputs(std::vector<ExternalInputRow> rows);
     void refreshAuthoredRefsForStandaloneUnit(const WorkflowUnitDefinition& unit);
     std::optional<savor::db::WorkflowGraphSnapshot> selectedGraph() const;
     const WorkflowUnitDefinition* selectedUnit() const;
@@ -142,4 +143,5 @@ private:
     std::vector<WorkflowUnitDefinition> workflowUnits_;
     std::vector<AuthoredRefOption> authoredRefOptions_;
     std::vector<ExternalInputRow> externalInputs_;
+    std::vector<ExternalInputRow> currentExternalInputRows_;
 };

@@ -761,7 +761,7 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
             .priority = 7,
             .run_ms = 10000,
             .vi_stall_ms = 1000,
-            .progress_enable = false,
+            .progress_enable = true,
             .use_single_turn_runner = true,
             .auto_wave_trigger_enable = true,
             .created_at_utc = now,

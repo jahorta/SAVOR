@@ -3,6 +3,7 @@
 #include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QScrollBar>
+#include <QtCore/QPointer>
 #include <QtCore/QTimer>
 
 #include <algorithm>
@@ -65,6 +66,15 @@ inline void restoreItemViewScrollSnapshot(QAbstractItemView* view, const ItemVie
 
     restoreScrollBarSnapshot(view->verticalScrollBar(), snapshot.vertical);
     restoreScrollBarSnapshot(view->horizontalScrollBar(), snapshot.horizontal);
+
+    QPointer<QAbstractItemView> viewPtr(view);
+    QTimer::singleShot(0, view, [viewPtr, snapshot]() {
+        if (viewPtr.isNull()) {
+            return;
+        }
+        restoreScrollBarSnapshot(viewPtr->verticalScrollBar(), snapshot.vertical);
+        restoreScrollBarSnapshot(viewPtr->horizontalScrollBar(), snapshot.horizontal);
+    });
 }
 
 using ScrollAreaScrollSnapshot = ItemViewScrollSnapshot;
@@ -87,8 +97,15 @@ inline void restoreScrollAreaScrollSnapshot(QAbstractScrollArea* scrollArea, con
         return;
     }
 
-    QTimer::singleShot(5, [scrollArea, snapshot]() {
-        restoreScrollBarSnapshot(scrollArea->verticalScrollBar(), snapshot.vertical);
-        restoreScrollBarSnapshot(scrollArea->horizontalScrollBar(), snapshot.horizontal);
-        });
+    restoreScrollBarSnapshot(scrollArea->verticalScrollBar(), snapshot.vertical);
+    restoreScrollBarSnapshot(scrollArea->horizontalScrollBar(), snapshot.horizontal);
+
+    QPointer<QAbstractScrollArea> scrollAreaPtr(scrollArea);
+    QTimer::singleShot(0, scrollArea, [scrollAreaPtr, snapshot]() {
+        if (scrollAreaPtr.isNull()) {
+            return;
+        }
+        restoreScrollBarSnapshot(scrollAreaPtr->verticalScrollBar(), snapshot.vertical);
+        restoreScrollBarSnapshot(scrollAreaPtr->horizontalScrollBar(), snapshot.horizontal);
+    });
 }

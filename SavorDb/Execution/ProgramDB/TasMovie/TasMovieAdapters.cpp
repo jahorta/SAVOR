@@ -42,7 +42,7 @@ TasMovieBlueprintConfig ParseBlueprint(const std::string& input_ini) {
     cfg.priority = static_cast<int>(ini.get_i64(kBlueprintSection, "priority", 0));
     cfg.run_ms = ini.get_u32(kBlueprintSection, "run_ms", 0);
     cfg.vi_stall_ms = ini.get_u32(kBlueprintSection, "vi_stall_ms", 2000);
-    cfg.progress_enable = ini.get_bool(kBlueprintSection, "progress_enable", false);
+    cfg.progress_enable = true;
     cfg.headroom_x10 = static_cast<std::uint8_t>(std::clamp<std::int64_t>(
         ini.get_i64(kBlueprintSection, "headroom_x10", 15),
         0,
@@ -69,7 +69,7 @@ std::string BuildInputIni(const TasMovieBlueprintConfig& cfg, std::int64_t rtc) 
     ini.set(kBlueprintSection, "priority", ToString(cfg.priority));
     ini.set(kBlueprintSection, "run_ms", ToString(cfg.run_ms));
     ini.set(kBlueprintSection, "vi_stall_ms", ToString(cfg.vi_stall_ms));
-    ini.set(kBlueprintSection, "progress_enable", cfg.progress_enable ? "1" : "0");
+    ini.set(kBlueprintSection, "progress_enable", "1");
     ini.set(kBlueprintSection, "headroom_x10", ToString(cfg.headroom_x10));
     if (cfg.bind_seed_probe_run_id.has_value()) {
         ini.set(kBlueprintSection, "bind_seed_probe_run_id", ToString(*cfg.bind_seed_probe_run_id));
@@ -381,7 +381,7 @@ public:
             cfg.priority = spec->priority;
             cfg.run_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->run_ms));
             cfg.vi_stall_ms = static_cast<std::uint32_t>(std::max<std::int64_t>(0, spec->vi_stall_ms));
-            cfg.progress_enable = spec->progress_enable;
+            cfg.progress_enable = true;
         }
         const auto headroom_argument = FindIntegerArgument(context, "headroom");
         if (headroom_argument.has_value()) {
@@ -491,7 +491,6 @@ public:
         spec.dtm_path = derived_path.string();
         spec.run_ms = cfg.run_ms;
         spec.vi_stall_ms = cfg.vi_stall_ms;
-        spec.progress_enable = cfg.progress_enable;
         spec.headroom_x10 = cfg.headroom_x10;
 
         savor::PSJob out{};

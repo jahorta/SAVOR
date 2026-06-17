@@ -146,7 +146,7 @@ struct SaveTasSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
     types::UtcTimePoint created_at_utc{};
@@ -161,7 +161,7 @@ struct TasSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     bool auto_queue_seeds = false;
     std::int64_t base_dtm_artifact_id = 0;
 };
@@ -171,7 +171,7 @@ struct SaveBattleRunSpecCommand {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
     types::UtcTimePoint created_at_utc{};
@@ -354,7 +354,7 @@ struct BattleRunSpecSnapshot {
     int priority = 0;
     std::int64_t run_ms = 0;
     std::int64_t vi_stall_ms = 0;
-    bool progress_enable = false;
+    bool progress_enable = true;
     bool use_single_turn_runner = false;
     bool auto_wave_trigger_enable = false;
 };

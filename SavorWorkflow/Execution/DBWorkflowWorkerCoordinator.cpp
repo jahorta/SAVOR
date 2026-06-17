@@ -118,6 +118,8 @@ bool IsNoWorkWorkflowStep(const WorkflowReadyStep& step) {
     return step.step_kind == "seedprobe.done";
 }
 
+constexpr auto kWorkerSilenceInFlightCutoff = std::chrono::seconds(30);
+
 std::filesystem::path WeaklyCanonicalOrAbsolute(const std::filesystem::path& path) {
     std::error_code ec;
     auto canonical = std::filesystem::weakly_canonical(path, ec);
@@ -738,7 +740,10 @@ std::optional<ScheduledJobSet> DBWorkflowWorkerCoordinator::MaterializeWorkflowS
     return scheduled;
 }
 
-bool DBWorkflowWorkerCoordinator::SendJobToWorker(size_t worker_idx, uint64_t job_id, const savor::PSJob& job) {
+bool DBWorkflowWorkerCoordinator::SendJobToWorker(
+    size_t worker_idx,
+    uint64_t job_id,
+    const savor::PSJob& job) {
     std::lock_guard<std::mutex> lock(workers_mtx_);
     if (worker_idx >= workers_.size()) {
         return false;
@@ -757,6 +762,7 @@ bool DBWorkflowWorkerCoordinator::SendJobToWorker(size_t worker_idx, uint64_t jo
 
     slot.in_flight_job_id = job_id;
     slot.in_flight_started_at = std::chrono::steady_clock::now();
+    slot.last_worker_contact_at = slot.in_flight_started_at;
     slot.dead_in_flight_observed_at = {};
     worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), static_cast<std::int64_t>(job_id), std::nullopt);
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Running);
@@ -1410,6 +1416,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
     struct LostJob {
         size_t worker_idx = 0;
         std::uint64_t job_id = 0;
+        std::string message;
     };
 
     constexpr auto kDeadWorkerResultGrace = std::chrono::seconds(2);
@@ -1423,28 +1430,41 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
                 continue;
             }
             auto& slot = *slot_ptr;
-            if (slot.worker->is_running()) {
+            const bool worker_silent = slot.last_worker_contact_at != std::chrono::steady_clock::time_point{}
+                && now - slot.last_worker_contact_at >= kWorkerSilenceInFlightCutoff;
+            if (slot.worker->is_running() && !worker_silent) {
                 slot.dead_in_flight_observed_at = {};
                 continue;
             }
-            if (slot.dead_in_flight_observed_at == std::chrono::steady_clock::time_point{}) {
+            if (!worker_silent && slot.dead_in_flight_observed_at == std::chrono::steady_clock::time_point{}) {
                 slot.dead_in_flight_observed_at = now;
                 continue;
             }
-            if (now - slot.dead_in_flight_observed_at < kDeadWorkerResultGrace) {
+            if (!worker_silent && now - slot.dead_in_flight_observed_at < kDeadWorkerResultGrace) {
                 continue;
             }
 
             const auto job_id = *slot.in_flight_job_id;
             std::ostringstream line;
-            line << "[workflow-worker-dead-in-flight]"
+            line << (worker_silent ? "[workflow-worker-silent-in-flight]" : "[workflow-worker-dead-in-flight]")
                  << " worker=" << slot.id
                  << " job=" << job_id;
+            if (worker_silent) {
+                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - slot.in_flight_started_at).count();
+                const auto silent_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - slot.last_worker_contact_at).count();
+                line << " elapsed_ms=" << elapsed_ms
+                     << " silent_ms=" << silent_ms;
+            }
             event_lines.push_back(line.str());
-            MarkWorkerError(slot, "worker exited while job was in flight");
+            MarkWorkerError(slot, worker_silent
+                ? "worker was silent for 30 seconds while job was in flight"
+                : "worker exited while job was in flight");
+            (void)job_materialization_service_.CleanupDispatchedOrExpired(static_cast<std::int64_t>(job_id));
+            dispatched_job_context_by_id_.erase(job_id);
             lost_jobs.push_back(LostJob{
                 .worker_idx = slot.id,
                 .job_id = job_id,
+                .message = worker_silent ? "WORKER_SILENT_DURING_JOB" : "WORKER_EXITED_DURING_JOB",
             });
             ResetWorkerSlotRuntime(slot);
         }
@@ -1471,7 +1491,7 @@ void DBWorkflowWorkerCoordinator::RecoverDeadInFlightWorkers() {
                 {
                     .kind = savor::db::execution::jobs::JobLifecycleEventKind::JobQueued,
                     .job_id = static_cast<std::int64_t>(lost.job_id),
-                    .message = "WORKER_EXITED_DURING_JOB",
+                    .message = lost.message,
                     .requested_by = "workflow_worker_recovery",
                 },
                 &error)) {
@@ -1663,11 +1683,22 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
             max_progress_batch_size_.store(batch_size);
         }
         for (const auto& item : batch) {
-            worker_status_.RecordProgress(
-                static_cast<std::int64_t>(item.worker_id),
-                item.text,
-                static_cast<std::int64_t>(item.job_id));
-            if (execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr && item.job_id > 0) {
+            {
+                std::lock_guard<std::mutex> worker_lock(workers_mtx_);
+                if (item.worker_id < workers_.size() && workers_[item.worker_id]) {
+                    auto& slot = *workers_[item.worker_id];
+                    if (slot.in_flight_job_id.has_value() && *slot.in_flight_job_id == item.job_id) {
+                        RecordWorkerContactLocked(slot, std::chrono::steady_clock::now());
+                    }
+                }
+            }
+            if (item.record_progress) {
+                worker_status_.RecordProgress(
+                    static_cast<std::int64_t>(item.worker_id),
+                    item.text,
+                    static_cast<std::int64_t>(item.job_id));
+            }
+            if (item.record_progress && execution_db_ != nullptr && execution_db_->JobCommandService() != nullptr && item.job_id > 0) {
                 std::ostringstream message;
                 message << "worker=" << item.worker_id << " progress=" << item.text;
                 std::string error;
@@ -1688,7 +1719,7 @@ void DBWorkflowWorkerCoordinator::DrainProgressLoop() {
                     EmitDurableEventLine(line.str());
                 }
             }
-            if (progress_callback_) {
+            if (item.record_progress && progress_callback_) {
                 progress_callback_(item);
             }
         }
@@ -2105,6 +2136,7 @@ void DBWorkflowWorkerCoordinator::ResetWorkerSlotRuntime(WorkerSlot& slot) {
     slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
     slot.in_flight_started_at = {};
+    slot.last_worker_contact_at = {};
     slot.dead_in_flight_observed_at = {};
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
@@ -2126,6 +2158,7 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
     slot.startup_in_progress = false;
     slot.in_flight_job_id.reset();
     slot.in_flight_started_at = {};
+    slot.last_worker_contact_at = {};
     slot.dead_in_flight_observed_at = {};
     slot.loaded_program_kind.reset();
     slot.loaded_program_runtime_affinity_key.reset();
@@ -2135,6 +2168,14 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlot& slot) {
     }
     worker_status_.UpdateState(static_cast<std::int64_t>(slot.id), WorkerStateKind::Dead);
     worker_status_.UnregisterWorker(static_cast<std::int64_t>(slot.id));
+}
+
+void DBWorkflowWorkerCoordinator::RecordWorkerContactLocked(
+    WorkerSlot& slot,
+    std::chrono::steady_clock::time_point observed_at) {
+    slot.last_worker_contact_at = observed_at;
+    slot.dead_in_flight_observed_at = {};
+    worker_status_.RecordHeartbeat(static_cast<std::int64_t>(slot.id));
 }
 
 void DBWorkflowWorkerCoordinator::VisualDebugReplayThread(std::uint64_t session_id) {
@@ -2447,8 +2488,10 @@ void DBWorkflowWorkerCoordinator::ReleaseWorkerByResult(const savor::PRResult& r
     }
 
     auto& slot = *workers_[result.worker_id];
+    RecordWorkerContactLocked(slot, std::chrono::steady_clock::now());
     slot.in_flight_job_id.reset();
     slot.in_flight_started_at = {};
+    slot.last_worker_contact_at = {};
     slot.dead_in_flight_observed_at = {};
     worker_status_.SetCurrentJob(static_cast<std::int64_t>(slot.id), std::nullopt, std::nullopt);
     if (slot.worker) {

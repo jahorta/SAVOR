@@ -2,6 +2,7 @@
 
 #include "GUI/Refresh/AsyncRefreshPipeline.h"
 #include "GUI/Refresh/RowUpdate.h"
+#include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimeZone>
@@ -124,6 +125,26 @@ bool jobRowsEqual(const BattleRunsWidget::JobRow& lhs, const BattleRunsWidget::J
         && lhs.success == rhs.success;
 }
 
+bool waveRowsEqual(const BattleRunsWidget::WaveRow& lhs, const BattleRunsWidget::WaveRow& rhs)
+{
+    return lhs.waveId == rhs.waveId
+        && lhs.parentWaveId == rhs.parentWaveId
+        && lhs.turnIndex == rhs.turnIndex
+        && lhs.label == rhs.label
+        && lhs.jobs == rhs.jobs
+        && lhs.status == rhs.status
+        && lhs.hasWinner == rhs.hasWinner
+        && lhs.hasFailure == rhs.hasFailure
+        && lhs.selected == rhs.selected;
+}
+
+bool waveTurnRowsEqual(const BattleRunsWidget::WaveTurnRow& lhs, const BattleRunsWidget::WaveTurnRow& rhs)
+{
+    return lhs.turnIndex == rhs.turnIndex
+        && lhs.label == rhs.label
+        && RowsEqual(lhs.waves, rhs.waves, waveRowsEqual);
+}
+
 void populateGroupRow(QTableWidget* table, int row, const BattleRunsWidget::GroupRow& item)
 {
     table->setItem(row, 0, makeIdItem(item.battleSetId));
@@ -147,6 +168,56 @@ void populateJobRow(QTableWidget* table, int row, const BattleRunsWidget::JobRow
     table->setItem(row, 4, makeItem(item.deltaVi));
     table->setItem(row, 5, makeItem(item.fakeAttacks));
     table->setItem(row, 6, makeItem(item.rngSeed));
+}
+
+void populateWaveTurnRow(QTreeWidget*, QTreeWidgetItem* item, const BattleRunsWidget::WaveTurnRow& row)
+{
+    if (item == nullptr) {
+        return;
+    }
+
+    item->setText(0, row.label);
+    item->setText(1, QString());
+    item->setText(2, QString());
+    item->setData(0, kIdRole, QVariant());
+    item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+
+    const auto oldChildren = item->takeChildren();
+    for (QTreeWidgetItem* child : oldChildren) {
+        delete child;
+    }
+
+    for (const auto& wave : row.waves) {
+        auto* child = new QTreeWidgetItem(item);
+        const QString marker = wave.hasWinner ? QStringLiteral("[win] ") : (wave.hasFailure ? QStringLiteral("[fail] ") : QString());
+        child->setText(0, marker + wave.label);
+        child->setText(1, wave.jobs);
+        child->setText(2, wave.status);
+        child->setData(0, kIdRole, static_cast<qint64>(wave.waveId));
+        child->setSelected(wave.selected);
+    }
+    item->setExpanded(true);
+}
+
+std::vector<BattleRunsWidget::WaveTurnRow> makeWaveTurnRows(std::vector<BattleRunsWidget::WaveRow> waves)
+{
+    std::vector<BattleRunsWidget::WaveTurnRow> turns;
+    for (const auto& wave : waves) {
+        auto it = std::find_if(turns.begin(), turns.end(), [&wave](const auto& turn) {
+            return turn.turnIndex == wave.turnIndex;
+        });
+        if (it == turns.end()) {
+            const int displayTurn = wave.turnIndex <= 0 ? 1 : wave.turnIndex;
+            BattleRunsWidget::WaveTurnRow turn{};
+            turn.turnIndex = wave.turnIndex;
+            turn.label = QStringLiteral("Turn %1").arg(displayTurn);
+            turn.waves.push_back(wave);
+            turns.push_back(std::move(turn));
+        } else {
+            it->waves.push_back(wave);
+        }
+    }
+    return turns;
 }
 
 QString groupStatusText(const savor::db::UiBattleGroupSummary& group)
@@ -740,39 +811,20 @@ void BattleRunsWidget::refreshGroups(const std::vector<GroupRow>& rows)
 
 void BattleRunsWidget::refreshWaves(const std::vector<WaveRow>& rows)
 {
-    const QSignalBlocker blocker(waveTree_);
     refreshingSelection_ = true;
-    waveTree_->clear();
-
-    std::map<int, QTreeWidgetItem*> turnItems;
+    std::vector<WaveRow> waveRows = rows;
     const std::set<std::int64_t> selected(selectedWaveIds_.begin(), selectedWaveIds_.end());
-    for (const auto& row : rows) {
-        QTreeWidgetItem* parent = nullptr;
-        auto it = turnItems.find(row.turnIndex);
-        if (it == turnItems.end()) {
-            const int displayTurn = row.turnIndex <= 0 ? 1 : row.turnIndex;
-            parent = new QTreeWidgetItem(waveTree_);
-            parent->setText(0, QStringLiteral("Turn %1").arg(displayTurn));
-            parent->setText(1, QString());
-            parent->setText(2, QString());
-            parent->setFlags(parent->flags() & ~Qt::ItemIsSelectable);
-            waveTree_->addTopLevelItem(parent);
-            waveTree_->expandItem(parent);
-            turnItems.insert({ row.turnIndex, parent });
-        } else {
-            parent = it->second;
-        }
-
-        auto* item = new QTreeWidgetItem(parent);
-        const QString marker = row.hasWinner ? QStringLiteral("[win] ") : (row.hasFailure ? QStringLiteral("[fail] ") : QString());
-        item->setText(0, marker + row.label);
-        item->setText(1, row.jobs);
-        item->setText(2, row.status);
-        item->setData(0, kIdRole, static_cast<qint64>(row.waveId));
-        if (selected.count(row.waveId) != 0) {
-            item->setSelected(true);
-        }
+    for (auto& row : waveRows) {
+        row.selected = selected.count(row.waveId) != 0;
     }
+    const auto turnRows = makeWaveTurnRows(std::move(waveRows));
+    ApplyTreeRowsByKey(
+        waveTree_,
+        currentWaveTurns_,
+        turnRows,
+        [](const WaveTurnRow& row) { return row.turnIndex; },
+        waveTurnRowsEqual,
+        populateWaveTurnRow);
     refreshingSelection_ = false;
 }
 

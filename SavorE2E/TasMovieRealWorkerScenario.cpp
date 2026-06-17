@@ -258,7 +258,7 @@ bool RunTasMovieScenario(
     tas_config.blueprint.rtc_high = static_cast<std::uint8_t>(rtc_range.high);
     tas_config.blueprint.run_ms = 0;
     tas_config.blueprint.vi_stall_ms = 2000;
-    tas_config.blueprint.progress_enable = false;
+    tas_config.blueprint.progress_enable = true;
     tas_config.blueprint.headroom_x10 = static_cast<std::uint8_t>(options.tasmovie_headroom_x10.value_or(35));
     const auto scenario_timeout_ms = ComputeTasMovieScenarioTimeoutMs(
         options,

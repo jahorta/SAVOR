@@ -1,8 +1,11 @@
 #pragma once
 
+#include "GUI/Widgets/ScrollBarStabilizer.h"
+
 #include <QtCore/QSignalBlocker>
-#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTreeWidget>
+#include <QtWidgets/QTreeWidgetItem>
 
 #include <algorithm>
 #include <optional>
@@ -66,7 +69,7 @@ bool ApplyTableRowsByKey(
         selectedKey = keyFn(currentRows[static_cast<std::size_t>(selectedRow)]);
     }
 
-    const int scrollValue = table->verticalScrollBar() == nullptr ? 0 : table->verticalScrollBar()->value();
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(table);
     const QSignalBlocker blocker(table);
 
     for (int row = static_cast<int>(currentRows.size()) - 1; row >= 0; --row) {
@@ -117,9 +120,93 @@ bool ApplyTableRowsByKey(
             table->selectRow(*selected);
         }
     }
-    if (table->verticalScrollBar() != nullptr) {
-        table->verticalScrollBar()->setValue(scrollValue);
+    restoreItemViewScrollSnapshot(table, scrollSnapshot);
+    return true;
+}
+
+template <typename Row, typename KeyFn, typename EqualFn, typename PopulateFn>
+bool ApplyTreeRowsByKey(
+    QTreeWidget* tree,
+    std::vector<Row>& currentRows,
+    const std::vector<Row>& newRows,
+    KeyFn keyFn,
+    EqualFn equalFn,
+    PopulateFn populateFn)
+{
+    if (tree == nullptr) {
+        currentRows = newRows;
+        return true;
     }
+
+    if (RowsEqual(currentRows, newRows, equalFn)) {
+        return false;
+    }
+
+    using Key = std::decay_t<decltype(keyFn(std::declval<const Row&>()))>;
+
+    std::optional<Key> selectedKey;
+    QTreeWidgetItem* currentItem = tree->currentItem();
+    while (currentItem != nullptr && currentItem->parent() != nullptr) {
+        currentItem = currentItem->parent();
+    }
+    const int selectedRow = currentItem != nullptr ? tree->indexOfTopLevelItem(currentItem) : -1;
+    if (selectedRow >= 0 && selectedRow < static_cast<int>(currentRows.size())) {
+        selectedKey = keyFn(currentRows[static_cast<std::size_t>(selectedRow)]);
+    }
+
+    const ItemViewScrollSnapshot scrollSnapshot = captureItemViewScrollSnapshot(tree);
+    const QSignalBlocker blocker(tree);
+
+    for (int row = static_cast<int>(currentRows.size()) - 1; row >= 0; --row) {
+        const auto key = keyFn(currentRows[static_cast<std::size_t>(row)]);
+        if (!FindRowIndexByKey(newRows, keyFn, key).has_value()) {
+            delete tree->takeTopLevelItem(row);
+            currentRows.erase(currentRows.begin() + row);
+        }
+    }
+
+    for (int row = 0; row < static_cast<int>(newRows.size()); ++row) {
+        const Row& newRow = newRows[static_cast<std::size_t>(row)];
+        const auto newKey = keyFn(newRow);
+
+        if (row < static_cast<int>(currentRows.size()) && keyFn(currentRows[static_cast<std::size_t>(row)]) == newKey) {
+            if (!equalFn(currentRows[static_cast<std::size_t>(row)], newRow)) {
+                populateFn(tree, tree->topLevelItem(row), newRow);
+                currentRows[static_cast<std::size_t>(row)] = newRow;
+            }
+            continue;
+        }
+
+        const auto existing = FindRowIndexByKey(currentRows, keyFn, newKey);
+        if (existing.has_value()) {
+            QTreeWidgetItem* item = tree->takeTopLevelItem(*existing);
+            Row movedRow = currentRows[static_cast<std::size_t>(*existing)];
+            currentRows.erase(currentRows.begin() + *existing);
+            tree->insertTopLevelItem(row, item);
+            populateFn(tree, item, newRow);
+            currentRows.insert(currentRows.begin() + row, newRow);
+            (void)movedRow;
+        } else {
+            auto* item = new QTreeWidgetItem();
+            tree->insertTopLevelItem(row, item);
+            populateFn(tree, item, newRow);
+            currentRows.insert(currentRows.begin() + row, newRow);
+        }
+    }
+
+    while (static_cast<int>(currentRows.size()) > static_cast<int>(newRows.size())) {
+        const int row = static_cast<int>(currentRows.size()) - 1;
+        delete tree->takeTopLevelItem(row);
+        currentRows.pop_back();
+    }
+
+    if (selectedKey.has_value()) {
+        const auto selected = FindRowIndexByKey(currentRows, keyFn, *selectedKey);
+        if (selected.has_value()) {
+            tree->setCurrentItem(tree->topLevelItem(*selected));
+        }
+    }
+    restoreItemViewScrollSnapshot(tree, scrollSnapshot);
     return true;
 }
 

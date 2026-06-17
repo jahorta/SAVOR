@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <QtCore/QPointer>
+#include <QtCore/QString>
 #include <QtWidgets/QWidget>
 
 #include "GUI/Common/StatusToast.h"
@@ -40,6 +41,19 @@ public:
         int turn_index = 1;
         int player_combatants = 1;
         std::vector<ActionDraft> actions;
+    };
+
+    struct PlanTreeActionRow {
+        int slotIndex = 0;
+        int actionIndex = -1;
+        QString summary;
+    };
+
+    struct PlanTreeTurnRow {
+        int turnIndex = 0;
+        QString label;
+        QString summary;
+        std::vector<PlanTreeActionRow> actions;
     };
 
 private:
@@ -95,5 +109,6 @@ private:
     QPushButton* saveButton_ = nullptr;
     std::vector<savor::db::BattlePlanActionPresetSnapshot> actionPresets_;
     std::vector<TurnDraft> turns_;
+    std::vector<PlanTreeTurnRow> currentPlanTreeRows_;
     QPointer<BattlePlanActionPresetEditorWindow> presetEditor_;
 };

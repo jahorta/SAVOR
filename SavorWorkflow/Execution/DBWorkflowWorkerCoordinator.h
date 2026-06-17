@@ -153,7 +153,10 @@ public:
     // Manual injection hook for tests or explicit push-based materialization pipelines.
     void EnqueueReadyStep(const WorkflowReadyStep& step);
     std::optional<ScheduledJobSet> MaterializeWorkflowStep(const WorkflowReadyStep& step);
-    bool SendJobToWorker(size_t worker_idx, uint64_t job_id, const savor::PSJob& job);
+    bool SendJobToWorker(
+        size_t worker_idx,
+        uint64_t job_id,
+        const savor::PSJob& job);
     size_t ActiveWorkerCount() const;
     void SetProgressCallback(ProgressCallback callback);
     void SetResultCallback(ResultCallback callback);
@@ -201,6 +204,7 @@ private:
         std::int64_t dispatch_success_count = 0;
         std::int64_t program_kind_switch_count = 0;
         std::chrono::steady_clock::time_point in_flight_started_at{};
+        std::chrono::steady_clock::time_point last_worker_contact_at{};
         std::chrono::steady_clock::time_point dead_in_flight_observed_at{};
         uint64_t visual_render_widget_handle = 0;
         std::string visual_host_events_pipe_name;
@@ -245,6 +249,7 @@ private:
     void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
     void ResetWorkerSlotRuntime(WorkerSlot& slot);
     void StopWorkerSlot(WorkerSlot& slot);
+    void RecordWorkerContactLocked(WorkerSlot& slot, std::chrono::steady_clock::time_point observed_at);
     void VisualDebugReplayThread(std::uint64_t session_id);
     bool ConfigureVisualDebugWorkerForJob(
         VisualDebugSession& session,

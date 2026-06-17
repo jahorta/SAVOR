@@ -1,6 +1,7 @@
 #include "ExplorerRunsPage.h"
 
 #include "ExplorerRunsController.h"
+#include "GUI/Refresh/RowUpdate.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QSignalBlocker>
@@ -289,37 +290,44 @@ void ExplorerRunsPage::syncControls()
 void ExplorerRunsPage::refreshGroupsTable()
 {
     const auto& state = controller_->viewState();
-    QStringList signatureParts;
-    signatureParts.reserve(static_cast<int>(state.groupPage.groups.size()) + 1);
-    signatureParts.push_back(QString::number(state.selectedJobSetId));
-    for (const auto& group : state.groupPage.groups) {
-        signatureParts.push_back(QStringLiteral("%1:%2:%3:%4:%5:%6:%7")
-            .arg(group.job_set_id)
-            .arg(group.created_at_utc)
-            .arg(group.completed_jobs)
-            .arg(group.total_jobs)
-            .arg(group.succeeded_jobs)
-            .arg(group.failed_jobs)
-            .arg(group.canceled_jobs));
-    }
-    const QString signature = signatureParts.join(QLatin1Char('|'));
-    if (lastGroupsSignature_ == signature) {
-        return;
-    }
-    lastGroupsSignature_ = signature;
 
-    const QSignalBlocker blocker(groupsTable_);
+    std::vector<GroupRow> rows;
+    rows.reserve(state.groupPage.groups.size());
+    for (const auto& group : state.groupPage.groups) {
+        rows.push_back(GroupRow{
+            group.job_set_id,
+            formatTimestamp(group.created_at_utc),
+            QStringLiteral("%1/%2").arg(group.completed_jobs).arg(group.total_jobs),
+            QStringLiteral("%1 succeeded, %2 failed, %3 canceled").arg(group.succeeded_jobs).arg(group.failed_jobs).arg(group.canceled_jobs),
+            groupStatusText(group.completed_jobs, group.total_jobs, group.failed_jobs, group.canceled_jobs),
+        });
+    }
+
     refreshingSelection_ = true;
-    groupsTable_->setRowCount(static_cast<int>(state.groupPage.groups.size()));
-    for (int row = 0; row < static_cast<int>(state.groupPage.groups.size()); ++row) {
-        const auto& group = state.groupPage.groups[static_cast<size_t>(row)];
-        groupsTable_->setItem(row, 0, makeIdItem(group.job_set_id));
-        groupsTable_->setItem(row, 1, makeItem(formatTimestamp(group.created_at_utc)));
-        groupsTable_->setItem(row, 2, makeItem(QStringLiteral("%1/%2").arg(group.completed_jobs).arg(group.total_jobs)));
-        groupsTable_->setItem(row, 3, makeItem(QStringLiteral("%1 succeeded, %2 failed, %3 canceled").arg(group.succeeded_jobs).arg(group.failed_jobs).arg(group.canceled_jobs)));
-        groupsTable_->setItem(row, 4, makeItem(groupStatusText(group.completed_jobs, group.total_jobs, group.failed_jobs, group.canceled_jobs)));
-        if (group.job_set_id == state.selectedJobSetId) {
+    savorqt::gui::ApplyTableRowsByKey(
+        groupsTable_,
+        currentGroupRows_,
+        rows,
+        [](const GroupRow& row) { return row.jobSetId; },
+        [](const GroupRow& lhs, const GroupRow& rhs) {
+            return lhs.jobSetId == rhs.jobSetId
+                && lhs.created == rhs.created
+                && lhs.jobs == rhs.jobs
+                && lhs.results == rhs.results
+                && lhs.status == rhs.status;
+        },
+        [](QTableWidget* table, int row, const GroupRow& item) {
+            table->setItem(row, 0, makeIdItem(item.jobSetId));
+            table->setItem(row, 1, makeItem(item.created));
+            table->setItem(row, 2, makeItem(item.jobs));
+            table->setItem(row, 3, makeItem(item.results));
+            table->setItem(row, 4, makeItem(item.status));
+        });
+    for (int row = 0; row < groupsTable_->rowCount(); ++row) {
+        const auto* item = groupsTable_->item(row, 0);
+        if (item != nullptr && item->data(kIdRole).toLongLong() == state.selectedJobSetId) {
             groupsTable_->selectRow(row);
+            break;
         }
     }
     refreshingSelection_ = false;
@@ -328,77 +336,77 @@ void ExplorerRunsPage::refreshGroupsTable()
 void ExplorerRunsPage::refreshWaveTree()
 {
     const auto& state = controller_->viewState();
-    QString signature;
+    std::vector<WaveTreeRow> rows;
     if (state.selectedGroup.has_value()) {
         const auto& summary = state.selectedGroup->summary;
-        signature = QStringLiteral("%1:%2:%3:%4:%5:%6")
-            .arg(summary.job_set_id)
-            .arg(summary.completed_jobs)
-            .arg(summary.total_jobs)
-            .arg(summary.failed_jobs)
-            .arg(summary.canceled_jobs)
-            .arg(state.selectedGroup->hierarchy_projection_available ? 1 : 0);
-    }
-    if (lastWaveSignature_ == signature) {
-        return;
-    }
-    lastWaveSignature_ = signature;
-
-    const QSignalBlocker blocker(waveTree_);
-    waveTree_->clear();
-    if (!state.selectedGroup.has_value()) {
-        return;
+        rows.push_back(WaveTreeRow{
+            summary.job_set_id,
+            QStringLiteral("Job set %1").arg(summary.job_set_id),
+            QString::number(summary.total_jobs),
+            state.selectedGroup->hierarchy_projection_available
+                ? groupStatusText(summary.completed_jobs, summary.total_jobs, summary.failed_jobs, summary.canceled_jobs)
+                : QStringLiteral("Wave hierarchy projection pending"),
+        });
     }
 
-    const auto& summary = state.selectedGroup->summary;
-    auto* root = new QTreeWidgetItem(waveTree_);
-    root->setText(0, QStringLiteral("Job set %1").arg(summary.job_set_id));
-    root->setText(1, QString::number(summary.total_jobs));
-    root->setText(2, state.selectedGroup->hierarchy_projection_available
-        ? groupStatusText(summary.completed_jobs, summary.total_jobs, summary.failed_jobs, summary.canceled_jobs)
-        : QStringLiteral("Wave hierarchy projection pending"));
-    root->setData(0, kIdRole, summary.job_set_id);
-    waveTree_->addTopLevelItem(root);
-    waveTree_->expandItem(root);
+    savorqt::gui::ApplyTreeRowsByKey(
+        waveTree_,
+        currentWaveRows_,
+        rows,
+        [](const WaveTreeRow& row) { return row.jobSetId; },
+        [](const WaveTreeRow& lhs, const WaveTreeRow& rhs) {
+            return lhs.jobSetId == rhs.jobSetId
+                && lhs.label == rhs.label
+                && lhs.jobs == rhs.jobs
+                && lhs.status == rhs.status;
+        },
+        [](QTreeWidget*, QTreeWidgetItem* item, const WaveTreeRow& row) {
+            item->setText(0, row.label);
+            item->setText(1, row.jobs);
+            item->setText(2, row.status);
+            item->setData(0, kIdRole, row.jobSetId);
+            item->setExpanded(true);
+        });
 }
 
 void ExplorerRunsPage::refreshJobsTable()
 {
     const auto& state = controller_->viewState();
-    QStringList signatureParts;
-    signatureParts.push_back(QString::number(state.selectedJobId));
+    std::vector<JobRow> rows;
     if (state.selectedGroup.has_value()) {
-        signatureParts.reserve(static_cast<int>(state.selectedGroup->jobs.size()) + 1);
+        rows.reserve(state.selectedGroup->jobs.size());
         for (const auto& job : state.selectedGroup->jobs) {
-            signatureParts.push_back(QStringLiteral("%1:%2")
-                .arg(job.job_id)
-                .arg(QString::fromStdString(job.state)));
+            rows.push_back(JobRow{
+                job.job_id,
+                QString::fromStdString(job.state),
+            });
         }
     }
-    const QString signature = signatureParts.join(QLatin1Char('|'));
-    if (lastJobsSignature_ == signature) {
-        return;
-    }
-    lastJobsSignature_ = signature;
 
-    const QSignalBlocker blocker(jobsTable_);
     refreshingSelection_ = true;
-    const auto rows = state.selectedGroup.has_value()
-        ? static_cast<int>(state.selectedGroup->jobs.size())
-        : 0;
-    jobsTable_->setRowCount(rows);
-    for (int row = 0; row < rows; ++row) {
-        const auto& job = state.selectedGroup->jobs[static_cast<size_t>(row)];
-        const QString stateText = QString::fromStdString(job.state);
-        jobsTable_->setItem(row, 0, makeIdItem(job.job_id));
-        jobsTable_->setItem(row, 1, makeItem(stateText));
-        jobsTable_->setItem(row, 2, makeItem(stateText));
-        jobsTable_->setItem(row, 3, makeItem(QStringLiteral("projection pending")));
-        jobsTable_->setItem(row, 4, makeItem(QStringLiteral("--")));
-        jobsTable_->setItem(row, 5, makeItem(QStringLiteral("--")));
-        jobsTable_->setItem(row, 6, makeItem(QStringLiteral("--")));
-        if (job.job_id == state.selectedJobId) {
+    savorqt::gui::ApplyTableRowsByKey(
+        jobsTable_,
+        currentJobRows_,
+        rows,
+        [](const JobRow& row) { return row.jobId; },
+        [](const JobRow& lhs, const JobRow& rhs) {
+            return lhs.jobId == rhs.jobId
+                && lhs.state == rhs.state;
+        },
+        [](QTableWidget* table, int row, const JobRow& item) {
+            table->setItem(row, 0, makeIdItem(item.jobId));
+            table->setItem(row, 1, makeItem(item.state));
+            table->setItem(row, 2, makeItem(item.state));
+            table->setItem(row, 3, makeItem(QStringLiteral("projection pending")));
+            table->setItem(row, 4, makeItem(QStringLiteral("--")));
+            table->setItem(row, 5, makeItem(QStringLiteral("--")));
+            table->setItem(row, 6, makeItem(QStringLiteral("--")));
+        });
+    for (int row = 0; row < jobsTable_->rowCount(); ++row) {
+        const auto* item = jobsTable_->item(row, 0);
+        if (item != nullptr && item->data(kIdRole).toLongLong() == state.selectedJobId) {
             jobsTable_->selectRow(row);
+            break;
         }
     }
     refreshingSelection_ = false;

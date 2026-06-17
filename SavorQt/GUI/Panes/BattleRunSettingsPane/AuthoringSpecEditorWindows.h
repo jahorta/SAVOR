@@ -64,7 +64,6 @@ private:
     QSpinBox* prioritySpin_ = nullptr;
     QLineEdit* runMsEdit_ = nullptr;
     QLineEdit* viStallMsEdit_ = nullptr;
-    QCheckBox* progressCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
 };
 
@@ -87,7 +86,6 @@ private:
     QSpinBox* prioritySpin_ = nullptr;
     QLineEdit* runMsEdit_ = nullptr;
     QLineEdit* viStallMsEdit_ = nullptr;
-    QCheckBox* progressCheck_ = nullptr;
     QCheckBox* singleTurnRunnerCheck_ = nullptr;
     QCheckBox* autoWaveTriggerCheck_ = nullptr;
     QPushButton* saveButton_ = nullptr;
