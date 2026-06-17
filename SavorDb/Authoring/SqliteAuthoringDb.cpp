@@ -100,12 +100,21 @@ void BindOptionalText(sqlite3_stmt* st, int index, const std::optional<std::stri
 }
 
 bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::string* error_out) {
+    std::vector<BPKey> required_bps = command.required_breakpoint_ids;
+    if (required_bps.empty() && command.breakpoint_id != 0) {
+        required_bps.push_back(command.breakpoint_id);
+    }
     if (command.name.empty()
-        || command.breakpoint_id == 0
-        || bp::BpRegistry::find(command.breakpoint_id) == nullptr
+        || required_bps.empty()
         || (command.width != 1 && command.width != 2 && command.width != 4 && command.width != 8)) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
+    }
+    for (const auto bp_key : required_bps) {
+        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
+            if (error_out) *error_out = "required breakpoint is invalid";
+            return false;
+        }
     }
     const auto flags = static_cast<std::uint32_t>(command.flag_mask.value_or(0));
     if ((flags & static_cast<std::uint32_t>(savor::pred::PredFlag::RhsIsDelta)) != 0) {
@@ -121,6 +130,107 @@ bool ValidatePredicateSpecCommand(const SavePredicateSpecCommand& command, std::
         }
     }
     return true;
+}
+
+std::vector<BPKey> NormalizeRequiredBreakpointIds(const SavePredicateSpecCommand& command) {
+    std::vector<BPKey> out = command.required_breakpoint_ids;
+    if (out.empty() && command.breakpoint_id != 0) {
+        out.push_back(command.breakpoint_id);
+    }
+    std::vector<BPKey> normalized;
+    normalized.reserve(out.size());
+    for (const auto bp_key : out) {
+        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
+            continue;
+        }
+        if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
+            normalized.push_back(bp_key);
+        }
+    }
+    return normalized;
+}
+
+std::vector<BPKey> NormalizeReadRequiredBreakpointIds(std::vector<BPKey> values, BPKey fallback) {
+    std::vector<BPKey> normalized;
+    normalized.reserve(values.size());
+    for (const auto bp_key : values) {
+        if (bp_key == 0 || bp::BpRegistry::find(bp_key) == nullptr) {
+            continue;
+        }
+        if (std::find(normalized.begin(), normalized.end(), bp_key) == normalized.end()) {
+            normalized.push_back(bp_key);
+        }
+    }
+    if (normalized.empty() && fallback != 0 && bp::BpRegistry::find(fallback) != nullptr) {
+        normalized.push_back(fallback);
+    }
+    return normalized;
+}
+
+bool ReplacePredicateRequiredBreakpoints(
+    sqlite3* db,
+    std::int64_t predicate_spec_id,
+    const std::vector<BPKey>& required_bps,
+    std::string* error_out) {
+    Statement delete_existing;
+    if (sqlite3_prepare_v2(
+            db,
+            "DELETE FROM au_predicate_spec_required_breakpoint WHERE predicate_spec_id=?1;",
+            -1,
+            &delete_existing.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+    sqlite3_bind_int64(delete_existing.st, 1, predicate_spec_id);
+    if (sqlite3_step(delete_existing.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db);
+        return false;
+    }
+
+    for (int ordinal = 0; ordinal < static_cast<int>(required_bps.size()); ++ordinal) {
+        Statement insert_bp;
+        if (sqlite3_prepare_v2(
+                db,
+                "INSERT INTO au_predicate_spec_required_breakpoint(predicate_spec_id,breakpoint_id,ordinal) "
+                "VALUES(?1,?2,?3);",
+                -1,
+                &insert_bp.st,
+                nullptr)
+            != SQLITE_OK) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+        sqlite3_bind_int64(insert_bp.st, 1, predicate_spec_id);
+        sqlite3_bind_int(insert_bp.st, 2, static_cast<int>(required_bps[ordinal]));
+        sqlite3_bind_int(insert_bp.st, 3, ordinal);
+        if (sqlite3_step(insert_bp.st) != SQLITE_DONE) {
+            if (error_out) *error_out = sqlite3_errmsg(db);
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<BPKey> LoadPredicateRequiredBreakpoints(sqlite3* db, std::int64_t predicate_spec_id) {
+    std::vector<BPKey> out;
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT breakpoint_id FROM au_predicate_spec_required_breakpoint "
+            "WHERE predicate_spec_id=?1 ORDER BY ordinal ASC;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return out;
+    }
+    sqlite3_bind_int64(st.st, 1, predicate_spec_id);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        out.push_back(static_cast<BPKey>(sqlite3_column_int(st.st, 0)));
+    }
+    return out;
 }
 
 std::string FormatBpKeyList(const std::vector<BPKey>& values) {
@@ -1923,6 +2033,8 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     if (!ValidatePredicateSpecCommand(command, error_out)) {
         return false;
     }
+    const auto required_bps = NormalizeRequiredBreakpointIds(command);
+    const auto first_required_bp = required_bps.front();
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out != nullptr) {
@@ -1948,8 +2060,8 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     sqlite3_bind_text(insert_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insert_spec.st, 2, bp::BpRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(command.breakpoint_id));
+    sqlite3_bind_text(insert_spec.st, 2, bp::BpRegistry::name(first_required_bp), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insert_spec.st, 3, static_cast<int>(first_required_bp));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
     sqlite3_bind_int64(insert_spec.st, 4, command.lhs_value);
@@ -1973,6 +2085,11 @@ bool SqliteAuthoringDb::SavePredicateSpec(
     }
 
     const auto predicate_spec_id = sqlite3_last_insert_rowid(db_);
+    if (!ReplacePredicateRequiredBreakpoints(db_, predicate_spec_id, required_bps, error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
     if (!InsertAuthoringOutboxEvent(
             db_,
             "Authoring.PredicateSpecSaved.v1",
@@ -2016,6 +2133,8 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     if (!ValidatePredicateSpecCommand(command, error_out)) {
         return false;
     }
+    const auto required_bps = NormalizeRequiredBreakpointIds(command);
+    const auto first_required_bp = required_bps.front();
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
@@ -2049,8 +2168,8 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
     }
 
     sqlite3_bind_text(update_spec.st, 1, command.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update_spec.st, 2, bp::BpRegistry::name(command.breakpoint_id), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(update_spec.st, 3, static_cast<int>(command.breakpoint_id));
+    sqlite3_bind_text(update_spec.st, 2, bp::BpRegistry::name(first_required_bp), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(update_spec.st, 3, static_cast<int>(first_required_bp));
     const auto baseline_bps = FormatBpKeyList(command.baseline_breakpoint_ids);
     const auto cmp_op = ToDbString(command.cmp_op);
     sqlite3_bind_int64(update_spec.st, 4, command.lhs_value);
@@ -2067,6 +2186,11 @@ bool SqliteAuthoringDb::UpdatePredicateSpec(
 
     if (sqlite3_step(update_spec.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (!ReplacePredicateRequiredBreakpoints(db_, predicate_spec_id, required_bps, error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
@@ -2119,6 +2243,25 @@ bool SqliteAuthoringDb::DeletePredicateSpec(
     const auto usage = GetPredicateSpecUsage(command.predicate_spec_id);
     if (usage.used()) {
         if (error_out) *error_out = "predicate spec is already used by a predicate set";
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    Statement delete_required_bps;
+    if (sqlite3_prepare_v2(
+            db_,
+            "DELETE FROM au_predicate_spec_required_breakpoint WHERE predicate_spec_id=?1;",
+            -1,
+            &delete_required_bps.st,
+            nullptr)
+        != SQLITE_OK) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    sqlite3_bind_int64(delete_required_bps.st, 1, command.predicate_spec_id);
+    if (sqlite3_step(delete_required_bps.st) != SQLITE_DONE) {
+        if (error_out) *error_out = sqlite3_errmsg(db_);
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
@@ -2187,6 +2330,9 @@ std::optional<PredicateSpecSnapshot> SqliteAuthoringDb::GetPredicateSpec(
     out.predicate_spec_id = sqlite3_column_int64(st.st, 0);
     out.name = ColumnText(st.st, 1);
     out.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
+    out.required_breakpoint_ids = NormalizeReadRequiredBreakpointIds(
+        LoadPredicateRequiredBreakpoints(db_, out.predicate_spec_id),
+        out.breakpoint_id);
     out.lhs_value = sqlite3_column_int64(st.st, 3);
     out.rhs_value = sqlite3_column_int64(st.st, 4);
     out.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));
@@ -2365,6 +2511,9 @@ std::optional<PredicateSetSnapshot> SqliteAuthoringDb::GetPredicateSet(
         pred.predicate_spec_id = sqlite3_column_int64(st.st, 0);
         pred.name = ColumnText(st.st, 1);
         pred.breakpoint_id = static_cast<BPKey>(sqlite3_column_int(st.st, 2));
+        pred.required_breakpoint_ids = NormalizeReadRequiredBreakpointIds(
+            LoadPredicateRequiredBreakpoints(db_, pred.predicate_spec_id),
+            pred.breakpoint_id);
         pred.lhs_value = sqlite3_column_int64(st.st, 3);
         pred.rhs_value = sqlite3_column_int64(st.st, 4);
         pred.baseline_breakpoint_ids = ParseBpKeyList(ColumnText(st.st, 5));

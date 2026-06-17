@@ -48,6 +48,7 @@ struct TasSpecDraft {
 struct PredicateSpecDraft {
     std::string name;
     int breakpoint_id = 0;
+    std::vector<BPKey> required_breakpoint_ids;
     std::int64_t lhs_value = 0;
     std::int64_t rhs_value = 0;
     std::vector<BPKey> baseline_breakpoint_ids;
@@ -811,7 +812,13 @@ private:
     static savor::db::SavePredicateSpecCommand BuildPredicateSpecCommand(const PredicateSpecDraft& draft, const char* event_prefix) {
         savor::db::SavePredicateSpecCommand command{};
         command.name = draft.name;
-        command.breakpoint_id = static_cast<BPKey>(draft.breakpoint_id);
+        command.required_breakpoint_ids = draft.required_breakpoint_ids;
+        if (command.required_breakpoint_ids.empty() && draft.breakpoint_id != 0) {
+            command.required_breakpoint_ids.push_back(static_cast<BPKey>(draft.breakpoint_id));
+        }
+        command.breakpoint_id = command.required_breakpoint_ids.empty()
+            ? static_cast<BPKey>(0)
+            : command.required_breakpoint_ids.front();
         command.lhs_value = draft.lhs_value;
         command.rhs_value = draft.rhs_value;
         command.baseline_breakpoint_ids = draft.baseline_breakpoint_ids;

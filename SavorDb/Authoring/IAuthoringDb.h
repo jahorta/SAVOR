@@ -239,6 +239,7 @@ struct EnsureAddressProgramCommand {
 struct SavePredicateSpecCommand {
     std::string name;
     BPKey breakpoint_id = 0;
+    std::vector<BPKey> required_breakpoint_ids;
     std::int64_t lhs_value = 0;
     std::int64_t rhs_value = 0;
     std::vector<BPKey> baseline_breakpoint_ids;
@@ -412,6 +413,7 @@ struct PredicateSpecSnapshot {
     std::int64_t predicate_spec_id = 0;
     std::string name;
     BPKey breakpoint_id = 0;
+    std::vector<BPKey> required_breakpoint_ids;
     std::int64_t lhs_value = 0;
     std::int64_t rhs_value = 0;
     std::vector<BPKey> baseline_breakpoint_ids;

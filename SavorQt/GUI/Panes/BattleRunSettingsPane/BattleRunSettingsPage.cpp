@@ -6,6 +6,7 @@
 #include "DB/SavorDbAuthoringService.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QStringList>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
@@ -19,10 +20,23 @@ namespace {
 
 QString predicateText(const savor::db::PredicateSpecSnapshot& predicate)
 {
-    return QStringLiteral("#%1  %2\nBreakpoint %3")
+    const auto requiredBps = predicate.required_breakpoint_ids.empty()
+        ? std::vector<BPKey>{ predicate.breakpoint_id }
+        : predicate.required_breakpoint_ids;
+    QStringList breakpointIds;
+    breakpointIds.reserve(static_cast<int>(requiredBps.size()));
+    for (const auto bp : requiredBps) {
+        if (bp != 0) {
+            breakpointIds.push_back(QString::number(static_cast<qint64>(bp)));
+        }
+    }
+    const QString breakpointLabel = breakpointIds.size() == 1
+        ? QStringLiteral("Breakpoint %1").arg(breakpointIds.front())
+        : QStringLiteral("Breakpoints %1").arg(breakpointIds.join(QStringLiteral(", ")));
+    return QStringLiteral("#%1  %2\n%3")
         .arg(static_cast<qint64>(predicate.predicate_spec_id))
         .arg(QString::fromStdString(predicate.name))
-        .arg(static_cast<qint64>(predicate.breakpoint_id));
+        .arg(breakpointLabel);
 }
 
 QString battlePlanText(const savor::db::BattlePlanSnapshot& plan)

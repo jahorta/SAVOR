@@ -3534,6 +3534,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         {
             .name = "battle-hp-check",
             .breakpoint_id = bp::battle::EndTurn,
+            .required_breakpoint_ids = { bp::battle::EndTurn },
             .lhs_value = 0x1000,
             .rhs_value = 0,
             .cmp_op = savor::db::PredicateComparisonOp::GT,
@@ -3601,6 +3602,7 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     ASSERT_EQ(predicate_set->predicates.size(), 1);
     EXPECT_EQ(predicate_set->predicates[0].name, "battle-hp-check");
     EXPECT_EQ(predicate_set->predicates[0].breakpoint_id, bp::battle::EndTurn);
+    EXPECT_EQ(predicate_set->predicates[0].required_breakpoint_ids, std::vector<BPKey>({ bp::battle::EndTurn }));
     EXPECT_EQ(predicate_set->predicates[0].width, 2);
     EXPECT_EQ(predicate_set->predicates[0].lhs_address_program_id.value_or(0), lhs_address_program_id);
     EXPECT_FALSE(predicate_set->predicates[0].rhs_address_program_id.has_value());
@@ -6668,6 +6670,139 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefre
     EXPECT_EQ(
         ReadInt64(db_, "SELECT COUNT(*) FROM ab_outbox_message WHERE event_type IN ('AnalysisBattle.TurnJobResultUpdated.v1','AnalysisBattle.TurnWaveStatusUpdated.v1','AnalysisBattle.BattleSetStatusUpdated.v1');"),
         3);
+}
+
+TEST_F(SqliteDbFixture, AuthoringPredicateSpecPersistsMultipleRequiredBreakpoints) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Authoring, embedded_options, &err)) << err;
+
+    SqliteAuthoringDb authoring_db(db_);
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304000000));
+
+    std::int64_t predicate_spec_id = 0;
+    ASSERT_TRUE(authoring_db.SavePredicateSpec(
+        {
+            .name = "multi-trigger-predicate",
+            .required_breakpoint_ids = { bp::battle::TurnIsReady, bp::battle::EndTurn },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+            .correlation_id = "multi-bp-save",
+        },
+        &predicate_spec_id,
+        &err)) << err;
+
+    const auto saved = authoring_db.GetPredicateSpec(predicate_spec_id);
+    ASSERT_TRUE(saved.has_value());
+    EXPECT_EQ(saved->breakpoint_id, bp::battle::TurnIsReady);
+    EXPECT_EQ(saved->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::TurnIsReady, bp::battle::EndTurn }));
+
+    const auto listed = authoring_db.ListPredicateSpecs(10);
+    ASSERT_FALSE(listed.empty());
+    EXPECT_EQ(listed.front().predicate_spec_id, predicate_spec_id);
+    EXPECT_EQ(listed.front().breakpoint_id, bp::battle::TurnIsReady);
+    EXPECT_EQ(listed.front().required_breakpoint_ids, std::vector<BPKey>({ bp::battle::TurnIsReady, bp::battle::EndTurn }));
+
+    ASSERT_TRUE(authoring_db.UpdatePredicateSpec(
+        predicate_spec_id,
+        {
+            .name = "multi-trigger-predicate-updated",
+            .required_breakpoint_ids = { bp::battle::StartAction, bp::battle::EndAction, bp::battle::EndTurn },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+            .correlation_id = "multi-bp-update",
+        },
+        &err)) << err;
+
+    const auto updated = authoring_db.GetPredicateSpec(predicate_spec_id);
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->breakpoint_id, bp::battle::StartAction);
+    EXPECT_EQ(updated->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::StartAction, bp::battle::EndAction, bp::battle::EndTurn }));
+
+    std::int64_t legacy_scalar_predicate_id = 0;
+    ASSERT_TRUE(authoring_db.SavePredicateSpec(
+        {
+            .name = "legacy-scalar-predicate",
+            .breakpoint_id = bp::battle::EndTurn,
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+            .correlation_id = "legacy-scalar-save",
+        },
+        &legacy_scalar_predicate_id,
+        &err)) << err;
+    const auto legacy_scalar = authoring_db.GetPredicateSpec(legacy_scalar_predicate_id);
+    ASSERT_TRUE(legacy_scalar.has_value());
+    EXPECT_EQ(legacy_scalar->breakpoint_id, bp::battle::EndTurn);
+    EXPECT_EQ(legacy_scalar->required_breakpoint_ids, std::vector<BPKey>({ bp::battle::EndTurn }));
+
+    std::int64_t invalid_id = 0;
+    EXPECT_FALSE(authoring_db.SavePredicateSpec(
+        {
+            .name = "missing-trigger",
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+        },
+        &invalid_id,
+        &err));
+    EXPECT_FALSE(authoring_db.SavePredicateSpec(
+        {
+            .name = "invalid-trigger",
+            .required_breakpoint_ids = { static_cast<BPKey>(0) },
+            .lhs_value = 0x1000,
+            .rhs_value = 0,
+            .cmp_op = PredicateComparisonOp::GT,
+            .width = 2,
+            .flag_mask = static_cast<std::int64_t>(static_cast<std::uint32_t>(savor::pred::PredFlag::Active)),
+            .created_at_utc = now,
+        },
+        &invalid_id,
+        &err));
+}
+
+TEST_F(SqliteDbFixture, PredicateTableExpandsRequiredBreakpointList) {
+    using namespace savor;
+
+    pred::Spec spec{};
+    spec.id = 7;
+    spec.required_bp = bp::battle::TurnIsReady;
+    spec.required_bps = {
+        static_cast<std::uint16_t>(bp::battle::TurnIsReady),
+        static_cast<std::uint16_t>(bp::battle::EndTurn),
+    };
+    spec.width = 2;
+    spec.cmp = pred::CmpOp::GT;
+    spec.flags = static_cast<std::uint32_t>(pred::PredFlag::Active);
+    spec.lhs_addr = 0x1000;
+    spec.rhs_value = 0;
+    spec.name = "multi-trigger";
+
+    std::vector<pred::PredicateRecord> records;
+    std::vector<std::uint8_t> blob;
+    ASSERT_TRUE(pred::BuildTable({ spec }, records, blob));
+    ASSERT_EQ(records.size(), 2);
+    EXPECT_EQ(records[0].id, 7);
+    EXPECT_EQ(records[1].id, 7);
+    EXPECT_EQ(records[0].required_bp, bp::battle::TurnIsReady);
+    EXPECT_EQ(records[1].required_bp, bp::battle::EndTurn);
 }
 
 TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSecondTurnSingleTurnJobsRefreshFromResultEvents) {

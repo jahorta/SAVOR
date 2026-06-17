@@ -468,6 +468,9 @@
     <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql">
       <Filter>Migrations\Authoring</Filter>
     </None>
+    <None Include="migration\Authoring\202606171300_authoring_predicate_required_breakpoints.sql">
+      <Filter>Migrations\Authoring</Filter>
+    </None>
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql">
       <Filter>Migrations\Execution</Filter>
     </None>

@@ -174,7 +174,14 @@ void PredicateSpecEditorWindow::loadSnapshot(const savor::db::PredicateSpecSnaps
     if (breakpointCombos_.empty()) {
         addRequiredBreakpointField();
     }
-    breakpointCombos_[0]->setCurrentIndex(std::max(0, breakpointCombos_[0]->findData(snapshot.breakpoint_id)));
+    const auto requiredBps = snapshot.required_breakpoint_ids.empty()
+        ? std::vector<BPKey>{ snapshot.breakpoint_id }
+        : snapshot.required_breakpoint_ids;
+    breakpointCombos_[0]->setCurrentIndex(std::max(0, breakpointCombos_[0]->findData(
+        requiredBps.empty() ? 0 : static_cast<int>(requiredBps.front()))));
+    for (size_t i = 1; i < requiredBps.size(); ++i) {
+        addRequiredBreakpointField(static_cast<int>(requiredBps[i]));
+    }
 
     while (baselineBreakpointCombos_.size() > 1) {
         removeBaselineBreakpointField(static_cast<int>(baselineBreakpointCombos_.size()) - 1);
@@ -899,6 +906,10 @@ void PredicateSpecEditorWindow::savePredicate()
     savorqt::db::PredicateSpecDraft draft{};
     draft.name = nameEdit_ != nullptr ? nameEdit_->text().trimmed().toStdString() : std::string();
     draft.breakpoint_id = requiredBreakpoints.empty() ? 0 : requiredBreakpoints.front();
+    draft.required_breakpoint_ids.reserve(requiredBreakpoints.size());
+    for (const auto breakpoint : requiredBreakpoints) {
+        draft.required_breakpoint_ids.push_back(static_cast<BPKey>(breakpoint));
+    }
     draft.baseline_breakpoint_ids.reserve(baselineBreakpoints.size());
     for (const auto breakpoint : baselineBreakpoints) {
         draft.baseline_breakpoint_ids.push_back(static_cast<BPKey>(breakpoint));
@@ -998,11 +1009,6 @@ void PredicateSpecEditorWindow::savePredicate()
     setWindowTitle(QStringLiteral("Predicate Editor - Edit"));
     saveButton_->setText(QStringLiteral("Save Predicate In Place"));
 
-    if (requiredBreakpoints.size() > 1) {
-        postStatusMessage(
-            QStringLiteral("Saved as single required breakpoint; additional required breakpoints are currently shown in UI only."),
-            StatusToast::Severity::Warn);
-    }
     dirty_ = false;
     if (savedCallback_) {
         savedCallback_();

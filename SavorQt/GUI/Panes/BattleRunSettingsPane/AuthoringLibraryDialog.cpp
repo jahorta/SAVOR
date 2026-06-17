@@ -192,11 +192,16 @@ public:
         std::vector<SpecLibraryRow> rows;
         rows.reserve(rows_.size());
         for (const auto& row : rows_) {
+            const auto requiredBpCount = row.required_breakpoint_ids.empty()
+                ? (row.breakpoint_id == 0 ? 0 : 1)
+                : static_cast<int>(row.required_breakpoint_ids.size());
             rows.push_back(SpecLibraryRow{
                 static_cast<qint64>(row.predicate_spec_id),
-                QStringLiteral("#%1  %2")
+                QStringLiteral("#%1  %2 (%3 bp%4)")
                     .arg(static_cast<qint64>(row.predicate_spec_id))
                     .arg(QString::fromStdString(row.name))
+                    .arg(requiredBpCount)
+                    .arg(requiredBpCount == 1 ? QString() : QStringLiteral("s"))
             });
         }
         return rows;

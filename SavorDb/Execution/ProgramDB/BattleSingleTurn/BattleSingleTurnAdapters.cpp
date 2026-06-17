@@ -569,7 +569,15 @@ std::vector<savor::pred::Spec> BuildPredicates(
     for (const auto& pred : predicate_set->predicates) {
         savor::pred::Spec spec{};
         spec.id = ordinal++;
-        spec.required_bp = pred.breakpoint_id;
+        spec.required_bps.reserve(pred.required_breakpoint_ids.size());
+        for (const auto bp_key : pred.required_breakpoint_ids) {
+            if (bp_key != 0) {
+                spec.required_bps.push_back(static_cast<std::uint16_t>(bp_key));
+            }
+        }
+        spec.required_bp = spec.required_bps.empty()
+            ? pred.breakpoint_id
+            : static_cast<BPKey>(spec.required_bps.front());
         spec.width = static_cast<std::uint8_t>(pred.width);
         spec.cmp = pred.cmp_op;
         spec.flags = static_cast<std::uint32_t>(pred.flag_mask.value_or(0));

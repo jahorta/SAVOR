@@ -292,6 +292,7 @@
     <None Include="migration\Authoring\202604101300_authoring_predicate_delta_baselines.sql" />
     <None Include="migration\Authoring\202604101400_authoring_battle_chain_spec.sql" />
     <None Include="migration\Authoring\202606101300_authoring_runtime_symbol_packs.sql" />
+    <None Include="migration\Authoring\202606171300_authoring_predicate_required_breakpoints.sql" />
     <None Include="migration\Execution\202604051000_execution_stage2_schema.sql" />
     <None Include="migration\Execution\202604051200_execution_stage3b_workflow.sql" />
     <None Include="migration\Execution\202604061000_execution_phase0_workflow_input_contracts.sql" />
