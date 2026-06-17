@@ -3279,41 +3279,40 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
         &err))
         << err;
 
-    std::int64_t selection_pool_id = 0;
-    ASSERT_TRUE(analysis_db.CreateBattleSelectionPool(
+    std::int64_t battle_advancement_pool_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleAdvancementPool(
         {
             .battle_set_id = battle_set_id,
             .turn_index = 1,
             .pool_name = "pool-a",
-            .criterion_kind = savor::db::BattleSelectionCriterionKind::MaxVi,
+            .criterion_kind = savor::db::BattleAdvancementCriterionKind::MaxVi,
             .created_at_utc = now,
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-5",
         },
-        &selection_pool_id,
+        &battle_advancement_pool_id,
         &err))
         << err;
 
-    std::int64_t selection_decision_id = 0;
-    ASSERT_TRUE(analysis_db.RecordBattleSelectionDecision(
+    std::int64_t battle_advancement_decision_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleAdvancementDecision(
         {
-            .selection_pool_id = selection_pool_id,
+            .battle_advancement_pool_id = battle_advancement_pool_id,
             .turn_job_id = turn_job_id,
-            .decision_kind = savor::db::BattleSelectionDecisionKind::Winner,
+            .decision_kind = savor::db::BattleAdvancementDecisionKind::Selected,
             .decision_reason = std::string("best vi"),
             .created_at_utc = now,
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-6",
         },
-        &selection_decision_id,
+        &battle_advancement_decision_id,
         &err))
         << err;
 
-    std::int64_t terminal_followup_id = 0;
-    ASSERT_TRUE(analysis_db.UpsertBattleTerminalFollowup(
+    std::int64_t manual_followup_id = 0;
+    ASSERT_TRUE(analysis_db.UpsertBattleManualFollowup(
         {
             .turn_job_id = turn_job_id,
-            .is_victory = true,
             .manual_followup_status = savor::db::BattleManualFollowupStatus::Recorded,
             .recorded_dtm_artifact_id = 777,
             .note = std::string("stage3d"),
@@ -3321,10 +3320,10 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .correlation_id = "ab-corr-1",
             .causation_id = "ab-cause-7",
         },
-        &terminal_followup_id,
+        &manual_followup_id,
         &err))
         << err;
-    EXPECT_GT(terminal_followup_id, 0);
+    EXPECT_GT(manual_followup_id, 0);
 
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db_, "SELECT COUNT(1) FROM ab_outbox_message;", -1, &st, nullptr));
@@ -3353,16 +3352,16 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
     ASSERT_TRUE(payload_33.has_value());
     EXPECT_EQ(payload_33->turn_job_id, turn_job_id);
 
-    const auto payload_34 = analysis_db.ResolveBattlePayload(1, "selection_pool", selection_pool_id);
+    const auto payload_34 = analysis_db.ResolveBattlePayload(1, "battle_advancement_pool", battle_advancement_pool_id);
     ASSERT_TRUE(payload_34.has_value());
     EXPECT_EQ(payload_34->battle_set_id, battle_set_id);
 
-    const auto payload_35 = analysis_db.ResolveBattlePayload(1, "selection_decision", selection_decision_id);
+    const auto payload_35 = analysis_db.ResolveBattlePayload(1, "battle_advancement_decision", battle_advancement_decision_id);
     ASSERT_TRUE(payload_35.has_value());
     EXPECT_EQ(payload_35->battle_set_id, battle_set_id);
     EXPECT_EQ(payload_35->turn_job_id, turn_job_id);
 
-    const auto payload_36 = analysis_db.ResolveBattlePayload(1, "terminal_followup", terminal_followup_id);
+    const auto payload_36 = analysis_db.ResolveBattlePayload(1, "manual_followup", manual_followup_id);
     ASSERT_TRUE(payload_36.has_value());
     EXPECT_EQ(payload_36->battle_set_id, battle_set_id);
     EXPECT_EQ(payload_36->turn_job_id, turn_job_id);
@@ -3684,32 +3683,32 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
         &turn_job_id,
         &err)) << err;
 
-    std::int64_t selection_pool_id = 0;
-    ASSERT_TRUE(analysis_db.CreateBattleSelectionPool(
+    std::int64_t battle_advancement_pool_id = 0;
+    ASSERT_TRUE(analysis_db.CreateBattleAdvancementPool(
         {
             .battle_set_id = battle_set_id,
             .turn_index = 1,
             .pool_name = "turn-1-results",
-            .criterion_kind = savor::db::BattleSelectionCriterionKind::ViDelta,
+            .criterion_kind = savor::db::BattleAdvancementCriterionKind::ViDelta,
             .created_at_utc = now,
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-5",
         },
-        &selection_pool_id,
+        &battle_advancement_pool_id,
         &err)) << err;
 
-    std::int64_t selection_decision_id = 0;
-    ASSERT_TRUE(analysis_db.RecordBattleSelectionDecision(
+    std::int64_t battle_advancement_decision_id = 0;
+    ASSERT_TRUE(analysis_db.RecordBattleAdvancementDecision(
         {
-            .selection_pool_id = selection_pool_id,
+            .battle_advancement_pool_id = battle_advancement_pool_id,
             .turn_job_id = turn_job_id,
-            .decision_kind = savor::db::BattleSelectionDecisionKind::Winner,
+            .decision_kind = savor::db::BattleAdvancementDecisionKind::Selected,
             .decision_reason = std::string("best delta vi"),
             .created_at_utc = now,
             .correlation_id = "ab-corr",
             .causation_id = "ab-cause-6",
         },
-        &selection_decision_id,
+        &battle_advancement_decision_id,
         &err)) << err;
 
     const auto battle_set = analysis_db.GetBattleSet(battle_set_id);
@@ -3742,10 +3741,10 @@ TEST_F(SqliteDbFixture, Stage3dBattleAuthoringAndAnalysisQueriesRoundTrip) {
     ASSERT_EQ(turn_jobs.size(), 1);
     EXPECT_EQ(turn_jobs[0].exec_job_id.value_or(0), 88001);
 
-    const auto decisions = analysis_db.ListBattleSelectionDecisionsForPool(selection_pool_id);
+    const auto decisions = analysis_db.ListBattleAdvancementDecisionsForPool(battle_advancement_pool_id);
     ASSERT_EQ(decisions.size(), 1);
-    EXPECT_EQ(decisions[0].selection_decision_id, selection_decision_id);
-    EXPECT_EQ(decisions[0].decision_kind, savor::db::BattleSelectionDecisionKind::Winner);
+    EXPECT_EQ(decisions[0].battle_advancement_decision_id, battle_advancement_decision_id);
+    EXPECT_EQ(decisions[0].decision_kind, savor::db::BattleAdvancementDecisionKind::Selected);
     EXPECT_EQ(decisions[0].decision_reason.value_or(""), "best delta vi");
 }
 
@@ -6873,11 +6872,10 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleRefreshesParentAggregateFo
 
     ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_wave SET status='RUNNING' WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()));
 
-    std::int64_t terminal_followup_id = 0;
-    ASSERT_TRUE(analysis_db->UpsertBattleTerminalFollowup(
+    std::int64_t manual_followup_id = 0;
+    ASSERT_TRUE(analysis_db->UpsertBattleManualFollowup(
         {
             .turn_job_id = first_turn_job_id,
-            .is_victory = true,
             .manual_followup_status = BattleManualFollowupStatus::Recorded,
             .recorded_dtm_artifact_id = 777,
             .note = std::string("incremental-followup"),
@@ -6885,12 +6883,12 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleRefreshesParentAggregateFo
             .correlation_id = "projection-incremental",
             .causation_id = "test",
         },
-        &terminal_followup_id,
+        &manual_followup_id,
         &err)) << err;
 
     RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
     EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "RUNNING");
-    EXPECT_EQ(ReadText(db_, ("SELECT note FROM ui_battle_followup WHERE turn_job_id=" + std::to_string(first_turn_job_id) + ";").c_str()), "incremental-followup");
+    EXPECT_EQ(ReadText(db_, ("SELECT note FROM ui_battle_manual_followup WHERE turn_job_id=" + std::to_string(first_turn_job_id) + ";").c_str()), "incremental-followup");
 }
 
 TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
@@ -6956,7 +6954,7 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
             .fake_attacks_used_before = 3,
             .job_state = BattleTurnJobState::Completed,
             .has_results = true,
-            .battle_outcome = savor::battle::Outcome::Defeat,
+            .battle_outcome = savor::battle::Outcome::Victory,
             .recorded_at_utc = now,
             .correlation_id = "query-battle",
             .causation_id = "test",
@@ -6964,11 +6962,81 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
         &turn_job_id,
         &err)) << err;
 
+    std::int64_t candidate_turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 9002,
+            .plan_id = 42,
+            .job_state = BattleTurnJobState::Completed,
+            .has_results = true,
+            .battle_outcome = savor::battle::Outcome::ReachedNextTurn,
+            .recorded_at_utc = now,
+            .correlation_id = "query-battle",
+            .causation_id = "test",
+        },
+        &candidate_turn_job_id,
+        &err)) << err;
+
+    std::int64_t miss_turn_job_id = 0;
+    ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+        {
+            .wave_id = wave_id,
+            .exec_job_id = 9003,
+            .plan_id = 42,
+            .job_state = BattleTurnJobState::Completed,
+            .has_results = true,
+            .battle_outcome = savor::battle::Outcome::Defeat,
+            .recorded_at_utc = now,
+            .correlation_id = "query-battle",
+            .causation_id = "test",
+        },
+        &miss_turn_job_id,
+        &err)) << err;
+
+    std::int64_t pool_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleAdvancementPool(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 2,
+            .pool_name = "query-advancement",
+            .criterion_kind = BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed,
+            .created_at_utc = now,
+            .correlation_id = "query-battle",
+            .causation_id = "test",
+        },
+        &pool_id,
+        &err)) << err;
+
+    ASSERT_TRUE(analysis_db->RecordBattleAdvancementDecision(
+        {
+            .battle_advancement_pool_id = pool_id,
+            .turn_job_id = turn_job_id,
+            .decision_kind = BattleAdvancementDecisionKind::Selected,
+            .decision_reason = std::string("selected"),
+            .created_at_utc = now,
+            .correlation_id = "query-battle",
+            .causation_id = "test",
+        },
+        nullptr,
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->RecordBattleAdvancementDecision(
+        {
+            .battle_advancement_pool_id = pool_id,
+            .turn_job_id = candidate_turn_job_id,
+            .decision_kind = BattleAdvancementDecisionKind::NotSelected,
+            .decision_reason = std::string("candidate"),
+            .created_at_utc = now,
+            .correlation_id = "query-battle",
+            .causation_id = "test",
+        },
+        nullptr,
+        &err)) << err;
+
     std::int64_t followup_id = 0;
-    ASSERT_TRUE(analysis_db->UpsertBattleTerminalFollowup(
+    ASSERT_TRUE(analysis_db->UpsertBattleManualFollowup(
         {
             .turn_job_id = turn_job_id,
-            .is_victory = true,
             .manual_followup_status = BattleManualFollowupStatus::Recorded,
             .recorded_dtm_artifact_id = 7777,
             .note = std::string("query-followup"),
@@ -6991,25 +7059,51 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     ASSERT_NE(group_it, groups.items.end());
     EXPECT_EQ(group_it->name, "query-battle-run");
     EXPECT_EQ(group_it->wave_count, 1);
-    EXPECT_EQ(group_it->job_count, 1);
-    EXPECT_EQ(group_it->winner_count, 1);
-    EXPECT_EQ(group_it->victory_followup_count, 1);
+    EXPECT_EQ(group_it->job_count, 3);
+    EXPECT_EQ(group_it->selected_count, 1);
+    EXPECT_EQ(group_it->desired_outcome_count, 2);
+    EXPECT_EQ(group_it->manual_followup_count, 1);
+    EXPECT_EQ(group_it->advancement_rank, 2);
 
     const auto waves = ui_read_db->ListBattleWaves(battle_set_id);
     ASSERT_EQ(waves.size(), 1u);
     EXPECT_EQ(waves.front().wave_id, wave_id);
     EXPECT_EQ(waves.front().turn_index, 2);
-    EXPECT_EQ(waves.front().winner_count, 1);
+    EXPECT_EQ(waves.front().selected_count, 1);
+    EXPECT_EQ(waves.front().desired_outcome_count, 2);
+    EXPECT_EQ(waves.front().advancement_rank, 2);
 
     const auto jobs = ui_read_db->ListBattleTurnJobsForWaves({ wave_id });
-    ASSERT_EQ(jobs.size(), 1u);
+    ASSERT_EQ(jobs.size(), 3u);
     EXPECT_EQ(jobs.front().turn_job_id, turn_job_id);
     ASSERT_TRUE(jobs.front().exec_job_id.has_value());
     EXPECT_EQ(*jobs.front().exec_job_id, 9001);
     EXPECT_EQ(jobs.front().fake_attacks_this_turn, 4);
-    ASSERT_TRUE(jobs.front().followup.has_value());
-    EXPECT_TRUE(jobs.front().followup->is_victory);
-    EXPECT_EQ(jobs.front().followup->note, "query-followup");
+    EXPECT_TRUE(jobs.front().selected_for_advancement);
+    EXPECT_TRUE(jobs.front().has_desired_outcome);
+    EXPECT_EQ(jobs.front().advancement_rank, 2);
+    ASSERT_TRUE(jobs.front().advancement_decision.has_value());
+    EXPECT_EQ(jobs.front().advancement_decision->decision_kind, "SELECTED");
+    ASSERT_TRUE(jobs.front().manual_followup.has_value());
+    EXPECT_EQ(jobs.front().manual_followup->note, "query-followup");
+
+    const auto candidate_it = std::find_if(jobs.begin(), jobs.end(), [candidate_turn_job_id](const auto& job) {
+        return job.turn_job_id == candidate_turn_job_id;
+    });
+    ASSERT_NE(candidate_it, jobs.end());
+    EXPECT_FALSE(candidate_it->selected_for_advancement);
+    EXPECT_TRUE(candidate_it->has_desired_outcome);
+    EXPECT_EQ(candidate_it->advancement_rank, 1);
+    ASSERT_TRUE(candidate_it->advancement_decision.has_value());
+    EXPECT_EQ(candidate_it->advancement_decision->decision_kind, "NOT_SELECTED");
+
+    const auto miss_it = std::find_if(jobs.begin(), jobs.end(), [miss_turn_job_id](const auto& job) {
+        return job.turn_job_id == miss_turn_job_id;
+    });
+    ASSERT_NE(miss_it, jobs.end());
+    EXPECT_FALSE(miss_it->selected_for_advancement);
+    EXPECT_FALSE(miss_it->has_desired_outcome);
+    EXPECT_EQ(miss_it->advancement_rank, 0);
 
     const auto detail = ui_read_db->GetBattleTurnJobDetail(turn_job_id);
     ASSERT_TRUE(detail.has_value());

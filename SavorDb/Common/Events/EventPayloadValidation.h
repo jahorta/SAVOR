@@ -268,23 +268,23 @@ inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisBattle.SelectionPoolCreated.v1") {
-        if (envelope.payload_ref_kind != "selection_pool") {
-            if (error_out) *error_out = "payload_ref_kind must be selection_pool for AnalysisBattle.SelectionPoolCreated.v1";
+    if (envelope.event_type == "AnalysisBattle.BattleAdvancementPoolCreated.v1") {
+        if (envelope.payload_ref_kind != "battle_advancement_pool") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_advancement_pool for AnalysisBattle.BattleAdvancementPoolCreated.v1";
             return false;
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisBattle.SelectionDecisionRecorded.v1") {
-        if (envelope.payload_ref_kind != "selection_decision") {
-            if (error_out) *error_out = "payload_ref_kind must be selection_decision for AnalysisBattle.SelectionDecisionRecorded.v1";
+    if (envelope.event_type == "AnalysisBattle.BattleAdvancementDecisionRecorded.v1") {
+        if (envelope.payload_ref_kind != "battle_advancement_decision") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_advancement_decision for AnalysisBattle.BattleAdvancementDecisionRecorded.v1";
             return false;
         }
         return true;
     }
-    if (envelope.event_type == "AnalysisBattle.TerminalFollowupUpdated.v1") {
-        if (envelope.payload_ref_kind != "terminal_followup") {
-            if (error_out) *error_out = "payload_ref_kind must be terminal_followup for AnalysisBattle.TerminalFollowupUpdated.v1";
+    if (envelope.event_type == "AnalysisBattle.ManualFollowupUpdated.v1") {
+        if (envelope.payload_ref_kind != "manual_followup") {
+            if (error_out) *error_out = "payload_ref_kind must be manual_followup for AnalysisBattle.ManualFollowupUpdated.v1";
             return false;
         }
         return true;

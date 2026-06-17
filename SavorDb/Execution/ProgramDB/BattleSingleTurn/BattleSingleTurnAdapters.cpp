@@ -1336,12 +1336,12 @@ public:
         }
         std::int64_t pool_id = 0;
         std::string error;
-        if (!analysis_db_->EnsureBattleSelectionPool(
+        if (!analysis_db_->EnsureBattleAdvancementPool(
                 {
                     .battle_set_id = current_wave->battle_set_id,
                     .turn_index = current_wave->turn_index,
                     .pool_name = "turn-rng-seed-survivors",
-                    .criterion_kind = savor::db::BattleSelectionCriterionKind::BestFakeAttacksByRngSeed,
+                    .criterion_kind = savor::db::BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed,
                     .created_at_utc = now,
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
                     .causation_id = "wave-" + std::to_string(current_wave->wave_id),
@@ -1349,10 +1349,10 @@ public:
                 &pool_id,
                 &error)
             || pool_id <= 0) {
-            decision.blocked_reason = "selection_pool_failed:" + error;
+            decision.blocked_reason = "battle_advancement_pool_failed:" + error;
             return decision;
         }
-        if (!analysis_db_->ListBattleSelectionDecisionsForPool(pool_id).empty()) {
+        if (!analysis_db_->ListBattleAdvancementDecisionsForPool(pool_id).empty()) {
             decision.should_advance = false;
             return decision;
         }
@@ -1445,31 +1445,31 @@ public:
             }
         }
 
-        std::vector<std::int64_t> winner_job_ids;
+        std::vector<std::int64_t> selected_job_ids;
         if (!best_victory_by_rng.empty()) {
             for (const auto& [rng, survivor] : best_victory_by_rng) {
                 (void)rng;
-                winner_job_ids.push_back(survivor.job.turn_job_id);
+                selected_job_ids.push_back(survivor.job.turn_job_id);
             }
         } else {
             for (const auto& [rng, survivor] : best_by_rng) {
                 (void)rng;
-                winner_job_ids.push_back(survivor.job.turn_job_id);
+                selected_job_ids.push_back(survivor.job.turn_job_id);
             }
         }
-        std::sort(winner_job_ids.begin(), winner_job_ids.end());
+        std::sort(selected_job_ids.begin(), selected_job_ids.end());
 
         for (const auto& survivor : all_survivors) {
-            const bool winner = std::binary_search(winner_job_ids.begin(), winner_job_ids.end(), survivor.job.turn_job_id);
-            (void)analysis_db_->RecordBattleSelectionDecision(
+            const bool selected_for_advancement = std::binary_search(selected_job_ids.begin(), selected_job_ids.end(), survivor.job.turn_job_id);
+            (void)analysis_db_->RecordBattleAdvancementDecision(
                 {
-                    .selection_pool_id = pool_id,
+                    .battle_advancement_pool_id = pool_id,
                     .turn_job_id = survivor.job.turn_job_id,
-                    .decision_kind = winner ? savor::db::BattleSelectionDecisionKind::Winner : savor::db::BattleSelectionDecisionKind::Duplicate,
-                    .decision_reason = winner ? std::optional<std::string>("best_for_rng_seed") : std::optional<std::string>("rng_seed_duplicate"),
+                    .decision_kind = selected_for_advancement ? savor::db::BattleAdvancementDecisionKind::Selected : savor::db::BattleAdvancementDecisionKind::NotSelected,
+                    .decision_reason = selected_for_advancement ? std::optional<std::string>("best_for_rng_seed") : std::optional<std::string>("rng_seed_duplicate"),
                     .created_at_utc = now,
                     .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
-                    .causation_id = "selection-pool-" + std::to_string(pool_id),
+                    .causation_id = "battle-advancement-pool-" + std::to_string(pool_id),
                 },
                 nullptr,
                 nullptr);
@@ -1498,9 +1498,9 @@ public:
             return decision;
         }
 
-        for (const auto& [rng, winner] : best_by_rng) {
+        for (const auto& [rng, selected] : best_by_rng) {
             (void)rng;
-            if (winner.job.battle_outcome.has_value() && IsVictory(*winner.job.battle_outcome)) {
+            if (selected.job.battle_outcome.has_value() && IsVictory(*selected.job.battle_outcome)) {
                 continue;
             }
             std::int64_t next_wave_id = 0;
@@ -1508,14 +1508,14 @@ public:
                     {
                         .battle_set_id = current_wave->battle_set_id,
                         .turn_index = current_wave->turn_index + 1,
-                        .parent_wave_id = winner.wave.wave_id,
-                        .parent_turn_job_id = winner.job.turn_job_id,
-                        .seed_candidate_id = winner.wave.seed_candidate_id,
-                        .selection_pool_id = pool_id,
+                        .parent_wave_id = selected.wave.wave_id,
+                        .parent_turn_job_id = selected.job.turn_job_id,
+                        .seed_candidate_id = selected.wave.seed_candidate_id,
+                        .battle_advancement_pool_id = pool_id,
                         .status = savor::db::BattleTurnWaveStatus::Ready,
                         .created_at_utc = now,
                         .correlation_id = "battle-set-" + std::to_string(current_wave->battle_set_id),
-                        .causation_id = "turn-job-" + std::to_string(winner.job.turn_job_id),
+                        .causation_id = "turn-job-" + std::to_string(selected.job.turn_job_id),
                     },
                     &next_wave_id,
                     &error)

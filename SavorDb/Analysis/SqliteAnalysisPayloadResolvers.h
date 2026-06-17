@@ -65,13 +65,13 @@ public:
     std::optional<events::AnalysisBattleBattleSetStatusUpdatedPayloadView> ResolveBattleSetStatusUpdated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisBattleSelectionPoolCreatedPayloadView> ResolveBattleSelectionPoolCreated(
+    std::optional<events::AnalysisBattleBattleAdvancementPoolCreatedPayloadView> ResolveBattleBattleAdvancementPoolCreated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisBattleSelectionDecisionRecordedPayloadView> ResolveBattleSelectionDecisionRecorded(
+    std::optional<events::AnalysisBattleBattleAdvancementDecisionRecordedPayloadView> ResolveBattleBattleAdvancementDecisionRecorded(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
-    std::optional<events::AnalysisBattleTerminalFollowupUpdatedPayloadView> ResolveBattleTerminalFollowupUpdated(
+    std::optional<events::AnalysisBattleManualFollowupUpdatedPayloadView> ResolveBattleManualFollowupUpdated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const override;
 

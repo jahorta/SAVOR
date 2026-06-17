@@ -362,17 +362,17 @@ std::optional<events::AnalysisBattleBattleSetStatusUpdatedPayloadView> SqliteBat
     return ResolveBattleSetCreated(payload_ref_kind, payload_ref_id);
 }
 
-std::optional<events::AnalysisBattleSelectionPoolCreatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleSelectionPoolCreated(
+std::optional<events::AnalysisBattleBattleAdvancementPoolCreatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleBattleAdvancementPoolCreated(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("selection_pool", payload_ref_kind, payload_ref_id)) {
+    if (db_ == nullptr || !MatchesRef("battle_advancement_pool", payload_ref_kind, payload_ref_id)) {
         return std::nullopt;
     }
 
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT battle_set_id, selection_pool_id FROM ab_selection_pool WHERE selection_pool_id=?1;",
+            "SELECT battle_set_id, battle_advancement_pool_id FROM ab_battle_advancement_pool WHERE battle_advancement_pool_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -385,26 +385,26 @@ std::optional<events::AnalysisBattleSelectionPoolCreatedPayloadView> SqliteBattl
         return std::nullopt;
     }
 
-    events::AnalysisBattleSelectionPoolCreatedPayloadView view{};
+    events::AnalysisBattleBattleAdvancementPoolCreatedPayloadView view{};
     view.battle_set_id = sqlite3_column_int64(st.st, 0);
-    view.selection_pool_id = sqlite3_column_int64(st.st, 1);
+    view.battle_advancement_pool_id = sqlite3_column_int64(st.st, 1);
     return view;
 }
 
-std::optional<events::AnalysisBattleSelectionDecisionRecordedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleSelectionDecisionRecorded(
+std::optional<events::AnalysisBattleBattleAdvancementDecisionRecordedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleBattleAdvancementDecisionRecorded(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("selection_decision", payload_ref_kind, payload_ref_id)) {
+    if (db_ == nullptr || !MatchesRef("battle_advancement_decision", payload_ref_kind, payload_ref_id)) {
         return std::nullopt;
     }
 
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT p.battle_set_id, d.selection_pool_id, d.turn_job_id, d.selection_decision_id "
-            "FROM ab_selection_decision d "
-            "JOIN ab_selection_pool p ON p.selection_pool_id=d.selection_pool_id "
-            "WHERE d.selection_decision_id=?1;",
+            "SELECT p.battle_set_id, d.battle_advancement_pool_id, d.turn_job_id, d.battle_advancement_decision_id "
+            "FROM ab_battle_advancement_decision d "
+            "JOIN ab_battle_advancement_pool p ON p.battle_advancement_pool_id=d.battle_advancement_pool_id "
+            "WHERE d.battle_advancement_decision_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -417,29 +417,29 @@ std::optional<events::AnalysisBattleSelectionDecisionRecordedPayloadView> Sqlite
         return std::nullopt;
     }
 
-    events::AnalysisBattleSelectionDecisionRecordedPayloadView view{};
+    events::AnalysisBattleBattleAdvancementDecisionRecordedPayloadView view{};
     view.battle_set_id = sqlite3_column_int64(st.st, 0);
-    view.selection_pool_id = sqlite3_column_int64(st.st, 1);
+    view.battle_advancement_pool_id = sqlite3_column_int64(st.st, 1);
     view.turn_job_id = sqlite3_column_int64(st.st, 2);
-    view.selection_decision_id = sqlite3_column_int64(st.st, 3);
+    view.battle_advancement_decision_id = sqlite3_column_int64(st.st, 3);
     return view;
 }
 
-std::optional<events::AnalysisBattleTerminalFollowupUpdatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleTerminalFollowupUpdated(
+std::optional<events::AnalysisBattleManualFollowupUpdatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleManualFollowupUpdated(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
-    if (db_ == nullptr || !MatchesRef("terminal_followup", payload_ref_kind, payload_ref_id)) {
+    if (db_ == nullptr || !MatchesRef("manual_followup", payload_ref_kind, payload_ref_id)) {
         return std::nullopt;
     }
 
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT w.battle_set_id, f.turn_job_id, f.terminal_followup_id "
-            "FROM ab_terminal_followup f "
+            "SELECT w.battle_set_id, f.turn_job_id, f.manual_followup_id "
+            "FROM ab_manual_followup f "
             "JOIN ab_turn_job j ON j.turn_job_id=f.turn_job_id "
             "JOIN ab_turn_wave w ON w.wave_id=j.wave_id "
-            "WHERE f.terminal_followup_id=?1;",
+            "WHERE f.manual_followup_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -452,10 +452,10 @@ std::optional<events::AnalysisBattleTerminalFollowupUpdatedPayloadView> SqliteBa
         return std::nullopt;
     }
 
-    events::AnalysisBattleTerminalFollowupUpdatedPayloadView view{};
+    events::AnalysisBattleManualFollowupUpdatedPayloadView view{};
     view.battle_set_id = sqlite3_column_int64(st.st, 0);
     view.turn_job_id = sqlite3_column_int64(st.st, 1);
-    view.terminal_followup_id = sqlite3_column_int64(st.st, 2);
+    view.manual_followup_id = sqlite3_column_int64(st.st, 2);
     return view;
 }
 

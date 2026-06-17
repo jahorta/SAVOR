@@ -84,22 +84,22 @@ using AnalysisBattleTurnJobResultUpdatedPayloadView = AnalysisBattleTurnJobRecor
 using AnalysisBattleTurnWaveStatusUpdatedPayloadView = AnalysisBattleTurnWaveCreatedPayloadView;
 using AnalysisBattleBattleSetStatusUpdatedPayloadView = AnalysisBattleSetCreatedPayloadView;
 
-struct AnalysisBattleSelectionPoolCreatedPayloadView {
+struct AnalysisBattleBattleAdvancementPoolCreatedPayloadView {
     std::int64_t battle_set_id = 0;
-    std::int64_t selection_pool_id = 0;
+    std::int64_t battle_advancement_pool_id = 0;
 };
 
-struct AnalysisBattleSelectionDecisionRecordedPayloadView {
+struct AnalysisBattleBattleAdvancementDecisionRecordedPayloadView {
     std::int64_t battle_set_id = 0;
-    std::int64_t selection_pool_id = 0;
+    std::int64_t battle_advancement_pool_id = 0;
     std::int64_t turn_job_id = 0;
-    std::int64_t selection_decision_id = 0;
+    std::int64_t battle_advancement_decision_id = 0;
 };
 
-struct AnalysisBattleTerminalFollowupUpdatedPayloadView {
+struct AnalysisBattleManualFollowupUpdatedPayloadView {
     std::int64_t battle_set_id = 0;
     std::int64_t turn_job_id = 0;
-    std::int64_t terminal_followup_id = 0;
+    std::int64_t manual_followup_id = 0;
 };
 
 // Backward-compatible coarse family view.

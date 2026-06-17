@@ -400,50 +400,50 @@ bool QueuedAnalysisDb::UpdateBattleTurnJobResult(
         error_out);
 }
 
-bool QueuedAnalysisDb::CreateBattleSelectionPool(
-    const CreateBattleSelectionPoolCommand& command,
-    std::int64_t* selection_pool_id_out,
+bool QueuedAnalysisDb::CreateBattleAdvancementPool(
+    const CreateBattleAdvancementPoolCommand& command,
+    std::int64_t* battle_advancement_pool_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, selection_pool_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->CreateBattleSelectionPool(command, selection_pool_id_out, error_out) : false;
+        [this, command, battle_advancement_pool_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->CreateBattleAdvancementPool(command, battle_advancement_pool_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::EnsureBattleSelectionPool(
-    const CreateBattleSelectionPoolCommand& command,
-    std::int64_t* selection_pool_id_out,
+bool QueuedAnalysisDb::EnsureBattleAdvancementPool(
+    const CreateBattleAdvancementPoolCommand& command,
+    std::int64_t* battle_advancement_pool_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, selection_pool_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->EnsureBattleSelectionPool(command, selection_pool_id_out, error_out) : false;
+        [this, command, battle_advancement_pool_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->EnsureBattleAdvancementPool(command, battle_advancement_pool_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::RecordBattleSelectionDecision(
-    const RecordBattleSelectionDecisionCommand& command,
-    std::int64_t* selection_decision_id_out,
+bool QueuedAnalysisDb::RecordBattleAdvancementDecision(
+    const RecordBattleAdvancementDecisionCommand& command,
+    std::int64_t* battle_advancement_decision_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, selection_decision_id_out, error_out]() {
-            return inner_ != nullptr ? inner_->RecordBattleSelectionDecision(command, selection_decision_id_out, error_out) : false;
+        [this, command, battle_advancement_decision_id_out, error_out]() {
+            return inner_ != nullptr ? inner_->RecordBattleAdvancementDecision(command, battle_advancement_decision_id_out, error_out) : false;
         },
         false,
         error_out);
 }
 
-bool QueuedAnalysisDb::UpsertBattleTerminalFollowup(
-    const UpsertBattleTerminalFollowupCommand& command,
-    std::int64_t* terminal_followup_id_out,
+bool QueuedAnalysisDb::UpsertBattleManualFollowup(
+    const UpsertBattleManualFollowupCommand& command,
+    std::int64_t* manual_followup_id_out,
     std::string* error_out) {
     return ExecuteWrite<bool>(
-        [this, command, terminal_followup_id_out, error_out]() {
+        [this, command, manual_followup_id_out, error_out]() {
             return inner_ != nullptr
-                ? inner_->UpsertBattleTerminalFollowup(command, terminal_followup_id_out, error_out)
+                ? inner_->UpsertBattleManualFollowup(command, manual_followup_id_out, error_out)
                 : false;
         },
         false,
@@ -576,13 +576,13 @@ std::vector<BattleTurnJobSnapshot> QueuedAnalysisDb::ListBattleTurnJobsForBattle
         {});
 }
 
-std::vector<BattleSelectionDecisionRow> QueuedAnalysisDb::ListBattleSelectionDecisionsForPool(
-    std::int64_t selection_pool_id) const {
-    return ExecuteRead<std::vector<BattleSelectionDecisionRow>>(
-        [this, selection_pool_id]() {
+std::vector<BattleAdvancementDecisionRow> QueuedAnalysisDb::ListBattleAdvancementDecisionsForPool(
+    std::int64_t battle_advancement_pool_id) const {
+    return ExecuteRead<std::vector<BattleAdvancementDecisionRow>>(
+        [this, battle_advancement_pool_id]() {
             return inner_ != nullptr
-                ? inner_->ListBattleSelectionDecisionsForPool(selection_pool_id)
-                : std::vector<BattleSelectionDecisionRow>{};
+                ? inner_->ListBattleAdvancementDecisionsForPool(battle_advancement_pool_id)
+                : std::vector<BattleAdvancementDecisionRow>{};
         },
         {});
 }

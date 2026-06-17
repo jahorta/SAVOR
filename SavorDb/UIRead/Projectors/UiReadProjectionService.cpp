@@ -708,9 +708,9 @@ std::int64_t ResolveBattleSetId(sqlite3* source, const OutboxEvent& event, std::
     if (event.payload_ref_kind == "seed_candidate") sql = "SELECT battle_set_id FROM ab_seed_candidate WHERE seed_candidate_id=?1;";
     else if (event.payload_ref_kind == "turn_wave") sql = "SELECT battle_set_id FROM ab_turn_wave WHERE wave_id=?1;";
     else if (event.payload_ref_kind == "turn_job") sql = "SELECT w.battle_set_id FROM ab_turn_job j JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE j.turn_job_id=?1;";
-    else if (event.payload_ref_kind == "selection_pool") sql = "SELECT battle_set_id FROM ab_selection_pool WHERE selection_pool_id=?1;";
-    else if (event.payload_ref_kind == "selection_decision") sql = "SELECT p.battle_set_id FROM ab_selection_decision d JOIN ab_selection_pool p ON p.selection_pool_id=d.selection_pool_id WHERE d.selection_decision_id=?1;";
-    else if (event.payload_ref_kind == "terminal_followup") sql = "SELECT w.battle_set_id FROM ab_terminal_followup f JOIN ab_turn_job j ON j.turn_job_id=f.turn_job_id JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE f.terminal_followup_id=?1;";
+    else if (event.payload_ref_kind == "battle_advancement_pool") sql = "SELECT battle_set_id FROM ab_battle_advancement_pool WHERE battle_advancement_pool_id=?1;";
+    else if (event.payload_ref_kind == "battle_advancement_decision") sql = "SELECT p.battle_set_id FROM ab_battle_advancement_decision d JOIN ab_battle_advancement_pool p ON p.battle_advancement_pool_id=d.battle_advancement_pool_id WHERE d.battle_advancement_decision_id=?1;";
+    else if (event.payload_ref_kind == "manual_followup") sql = "SELECT w.battle_set_id FROM ab_manual_followup f JOIN ab_turn_job j ON j.turn_job_id=f.turn_job_id JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE f.manual_followup_id=?1;";
     else if (event.payload_ref_kind == "context_probe") sql = "SELECT w.battle_set_id FROM ab_battle_context_probe p JOIN ab_turn_wave w ON w.wave_id=p.wave_id WHERE p.context_probe_id=?1;";
     if (sql == nullptr) return 0;
     Statement st;
@@ -722,11 +722,25 @@ std::int64_t ResolveBattleSetId(sqlite3* source, const OutboxEvent& event, std::
 std::int64_t ResolveTurnJobId(sqlite3* source, const OutboxEvent& event, std::string* error_out) {
     if (event.payload_ref_kind == "turn_job") return event.payload_ref_id;
     if (event.aggregate_kind == "turn_job") return ParseInt64(event.aggregate_id);
-    if (event.payload_ref_kind != "terminal_followup") return 0;
+    const char* sql = nullptr;
+    if (event.payload_ref_kind == "manual_followup") {
+        sql = "SELECT turn_job_id FROM ab_manual_followup WHERE manual_followup_id=?1;";
+    } else if (event.payload_ref_kind == "battle_advancement_decision") {
+        sql = "SELECT turn_job_id FROM ab_battle_advancement_decision WHERE battle_advancement_decision_id=?1;";
+    }
+    if (sql == nullptr) return 0;
 
     Statement st;
-    if (!Prepare(source, "SELECT turn_job_id FROM ab_terminal_followup WHERE terminal_followup_id=?1;", &st, error_out)) return 0;
+    if (!Prepare(source, sql, &st, error_out)) return 0;
     sqlite3_bind_int64(st.st, 1, event.payload_ref_id);
+    return sqlite3_step(st.st) == SQLITE_ROW ? sqlite3_column_int64(st.st, 0) : 0;
+}
+
+std::int64_t ResolveWaveIdForTurnJob(sqlite3* source, std::int64_t turn_job_id, std::string* error_out) {
+    if (turn_job_id <= 0) return 0;
+    Statement st;
+    if (!Prepare(source, "SELECT wave_id FROM ab_turn_job WHERE turn_job_id=?1;", &st, error_out)) return 0;
+    sqlite3_bind_int64(st.st, 1, turn_job_id);
     return sqlite3_step(st.st) == SQLITE_ROW ? sqlite3_column_int64(st.st, 0) : 0;
 }
 
@@ -750,15 +764,15 @@ bool ProjectBattleGroup(sqlite3* source, sqlite3* ui, std::int64_t battle_set_id
 bool ProjectBattleWave(sqlite3* source, sqlite3* ui, std::int64_t wave_id, std::string* error_out) {
     if (wave_id <= 0) return true;
     Statement waves;
-    if (!Prepare(source, "SELECT wave_id,battle_set_id,parent_wave_id,turn_index,status,created_at_utc,completed_at_utc FROM ab_turn_wave WHERE wave_id=?1;", &waves, error_out)) return false;
+    if (!Prepare(source, "SELECT wave_id,battle_set_id,parent_wave_id,parent_turn_job_id,turn_index,status,created_at_utc,completed_at_utc FROM ab_turn_wave WHERE wave_id=?1;", &waves, error_out)) return false;
     sqlite3_bind_int64(waves.st, 1, wave_id);
     while (sqlite3_step(waves.st) == SQLITE_ROW) {
         Statement upsert;
         constexpr const char* kSql =
-            "INSERT INTO ui_battle_wave(wave_id,battle_set_id,parent_wave_id,turn_index,status,created_at_utc,completed_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7) "
-            "ON CONFLICT(wave_id) DO UPDATE SET battle_set_id=excluded.battle_set_id,parent_wave_id=excluded.parent_wave_id,turn_index=excluded.turn_index,status=excluded.status,created_at_utc=excluded.created_at_utc,completed_at_utc=excluded.completed_at_utc;";
+            "INSERT INTO ui_battle_wave(wave_id,battle_set_id,parent_wave_id,parent_turn_job_id,turn_index,status,created_at_utc,completed_at_utc) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) "
+            "ON CONFLICT(wave_id) DO UPDATE SET battle_set_id=excluded.battle_set_id,parent_wave_id=excluded.parent_wave_id,parent_turn_job_id=excluded.parent_turn_job_id,turn_index=excluded.turn_index,status=excluded.status,created_at_utc=excluded.created_at_utc,completed_at_utc=excluded.completed_at_utc;";
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-        for (int i = 0; i < 7; ++i) BindColumn(upsert.st, i + 1, waves.st, i);
+        for (int i = 0; i < 8; ++i) BindColumn(upsert.st, i + 1, waves.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
     }
     return true;
@@ -768,40 +782,66 @@ bool ProjectBattleTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id
     if (turn_job_id <= 0) return true;
     Statement jobs;
     constexpr const char* kJobs =
-        "SELECT j.turn_job_id,j.exec_job_id,j.wave_id,j.job_state,j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,j.pred_passed,j.pred_total,j.battle_outcome,j.started_at_utc,j.ended_at_utc "
+        "SELECT j.turn_job_id,j.exec_job_id,j.wave_id,j.job_state,j.fake_attacks_this_turn,j.fake_attacks_used_before,j.rng_seed,j.delta_vi,j.pred_passed,j.pred_total,j.battle_outcome,"
+        "CASE WHEN j.battle_outcome IN (0,6) THEN 1 ELSE 0 END,"
+        "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 1 ELSE 0 END,"
+        "(SELECT d.decision_kind FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id ORDER BY CASE d.decision_kind WHEN 'SELECTED' THEN 0 WHEN 'NOT_SELECTED' THEN 1 ELSE 2 END,d.battle_advancement_decision_id DESC LIMIT 1),"
+        "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 2 WHEN j.battle_outcome IN (0,6) THEN 1 ELSE 0 END,"
+        "j.started_at_utc,j.ended_at_utc "
         "FROM ab_turn_job j WHERE j.turn_job_id=?1;";
     if (!Prepare(source, kJobs, &jobs, error_out)) return false;
     sqlite3_bind_int64(jobs.st, 1, turn_job_id);
     while (sqlite3_step(jobs.st) == SQLITE_ROW) {
         Statement upsert;
         constexpr const char* kSql =
-            "INSERT INTO ui_battle_turn_job(turn_job_id,exec_job_id,wave_id,job_state,fake_attacks_this_turn,fake_attacks_used_before,rng_seed,delta_vi,pred_passed,pred_total,battle_outcome,started_at_utc,ended_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+            "INSERT INTO ui_battle_turn_job(turn_job_id,exec_job_id,wave_id,job_state,fake_attacks_this_turn,fake_attacks_used_before,rng_seed,delta_vi,pred_passed,pred_total,battle_outcome,has_desired_outcome,selected_for_advancement,advancement_decision_kind,advancement_rank,started_at_utc,ended_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) "
             "ON CONFLICT(turn_job_id) DO UPDATE SET exec_job_id=excluded.exec_job_id,wave_id=excluded.wave_id,job_state=excluded.job_state,fake_attacks_this_turn=excluded.fake_attacks_this_turn,"
             "fake_attacks_used_before=excluded.fake_attacks_used_before,rng_seed=excluded.rng_seed,delta_vi=excluded.delta_vi,pred_passed=excluded.pred_passed,pred_total=excluded.pred_total,"
-            "battle_outcome=excluded.battle_outcome,started_at_utc=excluded.started_at_utc,ended_at_utc=excluded.ended_at_utc;";
+            "battle_outcome=excluded.battle_outcome,has_desired_outcome=excluded.has_desired_outcome,selected_for_advancement=excluded.selected_for_advancement,"
+            "advancement_decision_kind=excluded.advancement_decision_kind,advancement_rank=excluded.advancement_rank,started_at_utc=excluded.started_at_utc,ended_at_utc=excluded.ended_at_utc;";
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-        for (int i = 0; i < 13; ++i) BindColumn(upsert.st, i + 1, jobs.st, i);
+        for (int i = 0; i < 17; ++i) BindColumn(upsert.st, i + 1, jobs.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
     }
     return true;
 }
 
-bool ProjectBattleFollowupForTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id, std::string* error_out) {
+bool ProjectBattleAdvancementDecision(sqlite3* source, sqlite3* ui, std::int64_t battle_advancement_decision_id, std::string* error_out) {
+    if (battle_advancement_decision_id <= 0) return true;
+    Statement decisions;
+    constexpr const char* kDecisions =
+        "SELECT battle_advancement_decision_id,battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc "
+        "FROM ab_battle_advancement_decision WHERE battle_advancement_decision_id=?1;";
+    if (!Prepare(source, kDecisions, &decisions, error_out)) return false;
+    sqlite3_bind_int64(decisions.st, 1, battle_advancement_decision_id);
+    while (sqlite3_step(decisions.st) == SQLITE_ROW) {
+        Statement upsert;
+        constexpr const char* kSql =
+            "INSERT INTO ui_battle_advancement_decision(battle_advancement_decision_id,battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc) VALUES(?1,?2,?3,?4,?5,?6) "
+            "ON CONFLICT(battle_advancement_decision_id) DO UPDATE SET battle_advancement_pool_id=excluded.battle_advancement_pool_id,turn_job_id=excluded.turn_job_id,decision_kind=excluded.decision_kind,decision_reason=excluded.decision_reason,created_at_utc=excluded.created_at_utc;";
+        if (!Prepare(ui, kSql, &upsert, error_out)) return false;
+        for (int i = 0; i < 6; ++i) BindColumn(upsert.st, i + 1, decisions.st, i);
+        if (!StepDone(ui, upsert.st, error_out)) return false;
+    }
+    return true;
+}
+
+bool ProjectBattleManualFollowupForTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id, std::string* error_out) {
     if (turn_job_id <= 0) return true;
     Statement followups;
     constexpr const char* kFollowups =
-        "SELECT f.turn_job_id,f.is_victory,f.manual_followup_status,f.recorded_dtm_artifact_id,f.note,f.updated_at_utc "
-        "FROM ab_terminal_followup f WHERE f.turn_job_id=?1;";
+        "SELECT f.turn_job_id,f.manual_followup_status,f.recorded_dtm_artifact_id,f.note,f.updated_at_utc "
+        "FROM ab_manual_followup f WHERE f.turn_job_id=?1;";
     if (!Prepare(source, kFollowups, &followups, error_out)) return false;
     sqlite3_bind_int64(followups.st, 1, turn_job_id);
     while (sqlite3_step(followups.st) == SQLITE_ROW) {
         Statement upsert;
         constexpr const char* kSql =
-            "INSERT INTO ui_battle_followup(turn_job_id,is_victory,manual_followup_status,recorded_dtm_artifact_id,note,updated_at_utc) VALUES(?1,?2,?3,?4,?5,?6) "
-            "ON CONFLICT(turn_job_id) DO UPDATE SET is_victory=excluded.is_victory,manual_followup_status=excluded.manual_followup_status,recorded_dtm_artifact_id=excluded.recorded_dtm_artifact_id,note=excluded.note,updated_at_utc=excluded.updated_at_utc;";
+            "INSERT INTO ui_battle_manual_followup(turn_job_id,manual_followup_status,recorded_dtm_artifact_id,note,updated_at_utc) VALUES(?1,?2,?3,?4,?5) "
+            "ON CONFLICT(turn_job_id) DO UPDATE SET manual_followup_status=excluded.manual_followup_status,recorded_dtm_artifact_id=excluded.recorded_dtm_artifact_id,note=excluded.note,updated_at_utc=excluded.updated_at_utc;";
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
-        for (int i = 0; i < 6; ++i) BindColumn(upsert.st, i + 1, followups.st, i);
+        for (int i = 0; i < 5; ++i) BindColumn(upsert.st, i + 1, followups.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
     }
     return true;
@@ -828,14 +868,26 @@ bool ProjectBattleSet(sqlite3* source, sqlite3* ui, std::int64_t battle_set_id, 
         if (!ProjectBattleTurnJob(source, ui, sqlite3_column_int64(jobs.st, 0), error_out)) return false;
     }
 
+    Statement decisions;
+    constexpr const char* kDecisions =
+        "SELECT d.battle_advancement_decision_id "
+        "FROM ab_battle_advancement_decision d "
+        "JOIN ab_battle_advancement_pool p ON p.battle_advancement_pool_id=d.battle_advancement_pool_id "
+        "WHERE p.battle_set_id=?1;";
+    if (!Prepare(source, kDecisions, &decisions, error_out)) return false;
+    sqlite3_bind_int64(decisions.st, 1, battle_set_id);
+    while (sqlite3_step(decisions.st) == SQLITE_ROW) {
+        if (!ProjectBattleAdvancementDecision(source, ui, sqlite3_column_int64(decisions.st, 0), error_out)) return false;
+    }
+
     Statement followups;
     constexpr const char* kFollowups =
         "SELECT f.turn_job_id "
-        "FROM ab_terminal_followup f JOIN ab_turn_job j ON j.turn_job_id=f.turn_job_id JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE w.battle_set_id=?1;";
+        "FROM ab_manual_followup f JOIN ab_turn_job j ON j.turn_job_id=f.turn_job_id JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE w.battle_set_id=?1;";
     if (!Prepare(source, kFollowups, &followups, error_out)) return false;
     sqlite3_bind_int64(followups.st, 1, battle_set_id);
     while (sqlite3_step(followups.st) == SQLITE_ROW) {
-        if (!ProjectBattleFollowupForTurnJob(source, ui, sqlite3_column_int64(followups.st, 0), error_out)) return false;
+        if (!ProjectBattleManualFollowupForTurnJob(source, ui, sqlite3_column_int64(followups.st, 0), error_out)) return false;
     }
     return true;
 }
@@ -998,16 +1050,24 @@ bool ClassifyOutboxEvent(
         if (event.event_type == "AnalysisBattle.BattleSetStatusUpdated.v1") {
             return AddDirty(dirty, "battle_group", ResolveBattleSetId(source, event, error_out), event, error_out);
         }
-        if (event.event_type == "AnalysisBattle.TerminalFollowupUpdated.v1") {
+        if (event.event_type == "AnalysisBattle.ManualFollowupUpdated.v1") {
             const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
-            if (!AddDirty(dirty, "battle_followup", turn_job_id, event, error_out)) return false;
+            if (!AddDirty(dirty, "battle_manual_followup", turn_job_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
+        }
+        if (event.event_type == "AnalysisBattle.BattleAdvancementDecisionRecorded.v1") {
+            const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
+            if (!AddDirty(dirty, "battle_advancement_decision", event.payload_ref_id, event, error_out)) return false;
+            if (!AddDirty(dirty, "battle_turn_job", turn_job_id, event, error_out)) return false;
+            const auto wave_id = ResolveWaveIdForTurnJob(source, turn_job_id, error_out);
+            if (wave_id > 0 && !AddDirty(dirty, "battle_wave", wave_id, event, error_out)) return false;
             const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
             return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
         if (event.event_type == "AnalysisBattle.SeedCandidateAdded.v1"
             || event.event_type == "AnalysisBattle.ContextProbeCreated.v1"
-            || event.event_type == "AnalysisBattle.SelectionPoolCreated.v1"
-            || event.event_type == "AnalysisBattle.SelectionDecisionRecorded.v1") {
+            || event.event_type == "AnalysisBattle.BattleAdvancementPoolCreated.v1") {
             return true;
         }
         break;
@@ -1357,7 +1417,8 @@ bool MaterializeDirtyEntity(
         if (entity.kind == "battle_group") return ProjectBattleSet(stream.source_db, stream.ui_db, entity.id, error_out);
         if (entity.kind == "battle_wave") return ProjectBattleWave(stream.source_db, stream.ui_db, entity.id, error_out);
         if (entity.kind == "battle_turn_job") return ProjectBattleTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
-        if (entity.kind == "battle_followup") return ProjectBattleFollowupForTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_advancement_decision") return ProjectBattleAdvancementDecision(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_manual_followup") return ProjectBattleManualFollowupForTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
     }
     if (stream.kind == StreamKind::Archive) {
         OutboxEvent event{};

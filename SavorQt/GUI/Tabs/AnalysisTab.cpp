@@ -861,16 +861,26 @@ void AnalysisTab::showBattleJobDetails(qint64 jobId)
     body += fieldHtml(QStringLiteral("Fake attacks"), QStringLiteral("%1 turn / %2 before")
         .arg(job.fake_attacks_this_turn)
         .arg(job.fake_attacks_used_before));
-    if (job.followup.has_value()) {
-        body += fieldHtml(QStringLiteral("Victory"), job.followup->is_victory ? QStringLiteral("yes") : QStringLiteral("no"));
-        body += fieldHtml(QStringLiteral("Follow-up"), qs(job.followup->manual_followup_status));
-        body += fieldHtml(QStringLiteral("Recorded DTM"), job.followup->recorded_dtm_artifact_id.has_value()
-            ? QStringLiteral("#%1").arg(*job.followup->recorded_dtm_artifact_id)
+    QString advancement = QString(QChar(0x25CB)) + QStringLiteral(" Miss");
+    if (job.advancement_rank >= 2) {
+        advancement = QString(QChar(0x25CF)) + QStringLiteral(" Selected");
+    } else if (job.advancement_rank == 1) {
+        advancement = QString(QChar(0x25D0)) + QStringLiteral(" Candidate");
+    }
+    if (!job.advancement_decision_kind.empty()) {
+        advancement += QStringLiteral(" (%1)").arg(qs(job.advancement_decision_kind));
+    }
+    body += fieldHtml(QStringLiteral("Advancement"), advancement);
+    body += fieldHtml(QStringLiteral("Desired outcome"), job.has_desired_outcome ? QStringLiteral("yes") : QStringLiteral("no"));
+    if (job.manual_followup.has_value()) {
+        body += fieldHtml(QStringLiteral("Manual follow-up"), qs(job.manual_followup->manual_followup_status));
+        body += fieldHtml(QStringLiteral("Recorded DTM"), job.manual_followup->recorded_dtm_artifact_id.has_value()
+            ? QStringLiteral("#%1").arg(*job.manual_followup->recorded_dtm_artifact_id)
             : QStringLiteral("--"));
-        body += fieldHtml(QStringLiteral("Note"), qs(job.followup->note));
-        body += fieldHtml(QStringLiteral("Follow-up updated"), formatBattleTime(job.followup->updated_at_utc));
+        body += fieldHtml(QStringLiteral("Note"), qs(job.manual_followup->note));
+        body += fieldHtml(QStringLiteral("Manual follow-up updated"), formatBattleTime(job.manual_followup->updated_at_utc));
     } else {
-        body += fieldHtml(QStringLiteral("Follow-up"), QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Manual follow-up"), QStringLiteral("--"));
     }
     body += fieldHtml(QStringLiteral("Started"), formatBattleTime(job.started_at_utc));
     body += fieldHtml(QStringLiteral("Ended"), formatBattleTime(job.ended_at_utc));

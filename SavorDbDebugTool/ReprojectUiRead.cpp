@@ -234,6 +234,16 @@ std::filesystem::path SourcePathForStream(const savor::db::DbConfigPaths& paths,
     return paths.analysis_db_path;
 }
 
+std::optional<savor::db::migrations::MigrationContext> SourceMigrationContextForStream(std::string_view stream_id) {
+    namespace migrations = savor::db::migrations;
+    if (stream_id == "execution") return migrations::MigrationContext::Execution;
+    if (stream_id == "state") return migrations::MigrationContext::State;
+    if (stream_id == "analysis-seedprobe") return migrations::MigrationContext::AnalysisSeedProbe;
+    if (stream_id == "analysis-battle") return migrations::MigrationContext::AnalysisBattle;
+    if (stream_id == "archive") return migrations::MigrationContext::Archive;
+    return std::nullopt;
+}
+
 StreamReprojectPlan MakeStreamPlan(std::string stream_id, const savor::db::DbConfigPaths& paths) {
     StreamReprojectPlan plan{};
     plan.stream_id = std::move(stream_id);
@@ -279,7 +289,8 @@ StreamReprojectPlan MakeStreamPlan(std::string stream_id, const savor::db::DbCon
         plan.source_context = "AnalysisBattle";
         plan.source_outbox_table = "ab_outbox_message";
         plan.ui_tables_to_clear = {
-            "ui_battle_followup",
+            "ui_battle_manual_followup",
+            "ui_battle_advancement_decision",
             "ui_battle_turn_job",
             "ui_battle_wave",
             "ui_battle_group",
@@ -478,6 +489,38 @@ bool SeedAllDirtyEntities(sqlite3* ui_db, const ReprojectUiReadPlan& plan, std::
     return true;
 }
 
+bool ApplySelectedSourceMigrations(
+    const ReprojectUiReadPlan& plan,
+    const savor::db::migrations::MigrationSourceOptions& migration_options,
+    std::string* error_out) {
+    std::set<std::pair<std::filesystem::path, savor::db::migrations::MigrationContext>> applied;
+    for (const auto& stream : plan.streams) {
+        const auto context = SourceMigrationContextForStream(stream.stream_id);
+        if (!context.has_value()) {
+            continue;
+        }
+        const auto key = std::make_pair(stream.source_db_path, *context);
+        if (applied.count(key) != 0) {
+            continue;
+        }
+        DbHandle source;
+        if (!OpenDb(stream.source_db_path, false, &source, error_out)) {
+            if (error_out != nullptr) {
+                *error_out = "failed opening source DB for migrations for stream " + stream.stream_id + ": " + *error_out;
+            }
+            return false;
+        }
+        if (!savor::db::migrations::ApplyContextMigrations(source.db, *context, migration_options, error_out)) {
+            if (error_out != nullptr) {
+                *error_out = stream.stream_id + ": " + *error_out;
+            }
+            return false;
+        }
+        applied.insert(key);
+    }
+    return true;
+}
+
 bool IsSelectedStreamCaughtUp(const ReprojectUiReadPlan& plan, const savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot& snapshot) {
     for (const auto& stream : plan.streams) {
         const auto it = std::find_if(snapshot.streams.begin(), snapshot.streams.end(), [&](const auto& row) {
@@ -650,6 +693,9 @@ bool ExecutePlan(const ReprojectUiReadPlan& plan, ReprojectUiReadResult* result_
         .source_kind = savor::db::migrations::MigrationSourceKind::Filesystem,
         .filesystem_root = plan.migration_root,
     };
+    if (!ApplySelectedSourceMigrations(plan, migration_options, error_out)) {
+        return false;
+    }
     if (!savor::db::migrations::ApplyContextMigrations(ui.db, savor::db::migrations::MigrationContext::UIRead, migration_options, error_out)) {
         return false;
     }

@@ -42,7 +42,7 @@ struct BattleRunGroupQuery {
     std::optional<BattleRunCursor> before;
     std::optional<BattleRunCursor> after;
     int limit = 50;
-    bool child_victory_only = false;
+    bool child_selected_only = false;
 };
 
 struct BattleRunGroupPage {
@@ -131,7 +131,7 @@ public:
 
         savor::db::UiBattleGroupListQuery query{};
         query.limit = (std::max)(1, request.limit);
-        query.child_victory_only = request.child_victory_only;
+        query.child_selected_only = request.child_selected_only;
         if (request.before.has_value()) {
             query.before = savor::db::UiReadListCursor{ request.before->primary, request.before->secondary };
         }

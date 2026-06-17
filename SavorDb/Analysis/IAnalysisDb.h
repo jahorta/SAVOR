@@ -70,17 +70,17 @@ enum class BattleTurnJobState {
     Failed,
 };
 
-enum class BattleSelectionCriterionKind {
+enum class BattleAdvancementCriterionKind {
     Unknown = 0,
     MaxVi,
     ViDelta,
     BestFakeAttacksByRngSeed,
 };
 
-enum class BattleSelectionDecisionKind {
+enum class BattleAdvancementDecisionKind {
     Unknown = 0,
-    Winner,
-    Duplicate,
+    Selected,
+    NotSelected,
     Rejected,
 };
 
@@ -204,36 +204,36 @@ inline BattleTurnJobState ParseBattleTurnJobState(std::string_view value) {
     return BattleTurnJobState::Unknown;
 }
 
-inline std::string_view ToDbString(BattleSelectionCriterionKind value) {
+inline std::string_view ToDbString(BattleAdvancementCriterionKind value) {
     switch (value) {
-    case BattleSelectionCriterionKind::MaxVi: return "MAX_VI";
-    case BattleSelectionCriterionKind::ViDelta: return "VI_DELTA";
-    case BattleSelectionCriterionKind::BestFakeAttacksByRngSeed: return "BEST_FAKE_ATTACKS_BY_RNG_SEED";
+    case BattleAdvancementCriterionKind::MaxVi: return "MAX_VI";
+    case BattleAdvancementCriterionKind::ViDelta: return "VI_DELTA";
+    case BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed: return "BEST_FAKE_ATTACKS_BY_RNG_SEED";
     default: return "";
     }
 }
 
-inline BattleSelectionCriterionKind ParseBattleSelectionCriterionKind(std::string_view value) {
-    if (value == "MAX_VI") return BattleSelectionCriterionKind::MaxVi;
-    if (value == "VI_DELTA") return BattleSelectionCriterionKind::ViDelta;
-    if (value == "BEST_FAKE_ATTACKS_BY_RNG_SEED") return BattleSelectionCriterionKind::BestFakeAttacksByRngSeed;
-    return BattleSelectionCriterionKind::Unknown;
+inline BattleAdvancementCriterionKind ParseBattleAdvancementCriterionKind(std::string_view value) {
+    if (value == "MAX_VI") return BattleAdvancementCriterionKind::MaxVi;
+    if (value == "VI_DELTA") return BattleAdvancementCriterionKind::ViDelta;
+    if (value == "BEST_FAKE_ATTACKS_BY_RNG_SEED") return BattleAdvancementCriterionKind::BestFakeAttacksByRngSeed;
+    return BattleAdvancementCriterionKind::Unknown;
 }
 
-inline std::string_view ToDbString(BattleSelectionDecisionKind value) {
+inline std::string_view ToDbString(BattleAdvancementDecisionKind value) {
     switch (value) {
-    case BattleSelectionDecisionKind::Winner: return "WINNER";
-    case BattleSelectionDecisionKind::Duplicate: return "DUPLICATE";
-    case BattleSelectionDecisionKind::Rejected: return "REJECTED";
+    case BattleAdvancementDecisionKind::Selected: return "SELECTED";
+    case BattleAdvancementDecisionKind::NotSelected: return "NOT_SELECTED";
+    case BattleAdvancementDecisionKind::Rejected: return "REJECTED";
     default: return "";
     }
 }
 
-inline BattleSelectionDecisionKind ParseBattleSelectionDecisionKind(std::string_view value) {
-    if (value == "WINNER") return BattleSelectionDecisionKind::Winner;
-    if (value == "DUPLICATE") return BattleSelectionDecisionKind::Duplicate;
-    if (value == "REJECTED") return BattleSelectionDecisionKind::Rejected;
-    return BattleSelectionDecisionKind::Unknown;
+inline BattleAdvancementDecisionKind ParseBattleAdvancementDecisionKind(std::string_view value) {
+    if (value == "SELECTED" || value == "WINNER") return BattleAdvancementDecisionKind::Selected;
+    if (value == "NOT_SELECTED" || value == "DUPLICATE") return BattleAdvancementDecisionKind::NotSelected;
+    if (value == "REJECTED") return BattleAdvancementDecisionKind::Rejected;
+    return BattleAdvancementDecisionKind::Unknown;
 }
 
 inline std::string_view ToDbString(BattleManualFollowupStatus value) {
@@ -418,7 +418,7 @@ struct CreateBattleTurnWaveCommand {
     std::optional<std::int64_t> parent_wave_id;
     std::optional<std::int64_t> parent_turn_job_id;
     std::int64_t seed_candidate_id = 0;
-    std::optional<std::int64_t> selection_pool_id;
+    std::optional<std::int64_t> battle_advancement_pool_id;
     BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
@@ -454,29 +454,28 @@ struct RecordBattleTurnJobCommand {
     std::string causation_id;
 };
 
-struct CreateBattleSelectionPoolCommand {
+struct CreateBattleAdvancementPoolCommand {
     std::int64_t battle_set_id = 0;
     int turn_index = 0;
     std::string pool_name;
-    BattleSelectionCriterionKind criterion_kind = BattleSelectionCriterionKind::Unknown;
+    BattleAdvancementCriterionKind criterion_kind = BattleAdvancementCriterionKind::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct RecordBattleSelectionDecisionCommand {
-    std::int64_t selection_pool_id = 0;
+struct RecordBattleAdvancementDecisionCommand {
+    std::int64_t battle_advancement_pool_id = 0;
     std::int64_t turn_job_id = 0;
-    BattleSelectionDecisionKind decision_kind = BattleSelectionDecisionKind::Unknown;
+    BattleAdvancementDecisionKind decision_kind = BattleAdvancementDecisionKind::Unknown;
     std::optional<std::string> decision_reason;
     types::UtcTimePoint created_at_utc{};
     std::string correlation_id;
     std::string causation_id;
 };
 
-struct UpsertBattleTerminalFollowupCommand {
+struct UpsertBattleManualFollowupCommand {
     std::int64_t turn_job_id = 0;
-    bool is_victory = false;
     BattleManualFollowupStatus manual_followup_status = BattleManualFollowupStatus::Unknown;
     std::optional<std::int64_t> recorded_dtm_artifact_id;
     std::optional<std::int64_t> recorded_dtmini_artifact_id;
@@ -519,7 +518,7 @@ struct BattleTurnWaveSnapshot {
     std::optional<std::int64_t> parent_wave_id;
     std::optional<std::int64_t> parent_turn_job_id;
     std::int64_t seed_candidate_id = 0;
-    std::optional<std::int64_t> selection_pool_id;
+    std::optional<std::int64_t> battle_advancement_pool_id;
     BattleTurnWaveStatus status = BattleTurnWaveStatus::Unknown;
     types::UtcTimePoint created_at_utc{};
     std::optional<types::UtcTimePoint> completed_at_utc;
@@ -581,11 +580,11 @@ struct BattleTurnJobSnapshot {
     std::optional<types::UtcTimePoint> recorded_at_utc;
 };
 
-struct BattleSelectionDecisionRow {
-    std::int64_t selection_decision_id = 0;
-    std::int64_t selection_pool_id = 0;
+struct BattleAdvancementDecisionRow {
+    std::int64_t battle_advancement_decision_id = 0;
+    std::int64_t battle_advancement_pool_id = 0;
     std::int64_t turn_job_id = 0;
-    BattleSelectionDecisionKind decision_kind = BattleSelectionDecisionKind::Unknown;
+    BattleAdvancementDecisionKind decision_kind = BattleAdvancementDecisionKind::Unknown;
     std::optional<std::string> decision_reason;
     types::UtcTimePoint created_at_utc{};
 };
@@ -708,24 +707,24 @@ struct IAnalysisDb {
         const RecordBattleTurnJobCommand& command,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool CreateBattleSelectionPool(
-        const CreateBattleSelectionPoolCommand& command,
-        std::int64_t* selection_pool_id_out = nullptr,
+    virtual bool CreateBattleAdvancementPool(
+        const CreateBattleAdvancementPoolCommand& command,
+        std::int64_t* battle_advancement_pool_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool EnsureBattleSelectionPool(
-        const CreateBattleSelectionPoolCommand& command,
-        std::int64_t* selection_pool_id_out = nullptr,
+    virtual bool EnsureBattleAdvancementPool(
+        const CreateBattleAdvancementPoolCommand& command,
+        std::int64_t* battle_advancement_pool_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool RecordBattleSelectionDecision(
-        const RecordBattleSelectionDecisionCommand& command,
-        std::int64_t* selection_decision_id_out = nullptr,
+    virtual bool RecordBattleAdvancementDecision(
+        const RecordBattleAdvancementDecisionCommand& command,
+        std::int64_t* battle_advancement_decision_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
-    virtual bool UpsertBattleTerminalFollowup(
-        const UpsertBattleTerminalFollowupCommand& command,
-        std::int64_t* terminal_followup_id_out = nullptr,
+    virtual bool UpsertBattleManualFollowup(
+        const UpsertBattleManualFollowupCommand& command,
+        std::int64_t* manual_followup_id_out = nullptr,
         std::string* error_out = nullptr) = 0;
 
     virtual bool UpdateBattleSetStatus(
@@ -752,7 +751,7 @@ struct IAnalysisDb {
     virtual std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const = 0;
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const = 0;
     virtual std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const = 0;
-    virtual std::vector<BattleSelectionDecisionRow> ListBattleSelectionDecisionsForPool(std::int64_t selection_pool_id) const = 0;
+    virtual std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const = 0;
 
     virtual std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

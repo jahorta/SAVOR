@@ -122,23 +122,23 @@ public:
         const RecordBattleTurnJobCommand& command,
         std::string* error_out = nullptr) override;
 
-    bool CreateBattleSelectionPool(
-        const CreateBattleSelectionPoolCommand& command,
-        std::int64_t* selection_pool_id_out = nullptr,
+    bool CreateBattleAdvancementPool(
+        const CreateBattleAdvancementPoolCommand& command,
+        std::int64_t* battle_advancement_pool_id_out = nullptr,
         std::string* error_out = nullptr) override;
-    bool EnsureBattleSelectionPool(
-        const CreateBattleSelectionPoolCommand& command,
-        std::int64_t* selection_pool_id_out = nullptr,
-        std::string* error_out = nullptr) override;
-
-    bool RecordBattleSelectionDecision(
-        const RecordBattleSelectionDecisionCommand& command,
-        std::int64_t* selection_decision_id_out = nullptr,
+    bool EnsureBattleAdvancementPool(
+        const CreateBattleAdvancementPoolCommand& command,
+        std::int64_t* battle_advancement_pool_id_out = nullptr,
         std::string* error_out = nullptr) override;
 
-    bool UpsertBattleTerminalFollowup(
-        const UpsertBattleTerminalFollowupCommand& command,
-        std::int64_t* terminal_followup_id_out = nullptr,
+    bool RecordBattleAdvancementDecision(
+        const RecordBattleAdvancementDecisionCommand& command,
+        std::int64_t* battle_advancement_decision_id_out = nullptr,
+        std::string* error_out = nullptr) override;
+
+    bool UpsertBattleManualFollowup(
+        const UpsertBattleManualFollowupCommand& command,
+        std::int64_t* manual_followup_id_out = nullptr,
         std::string* error_out = nullptr) override;
     bool UpdateBattleSetStatus(
         std::int64_t battle_set_id,
@@ -163,7 +163,7 @@ public:
     std::optional<BattleTurnJobSnapshot> GetBattleTurnJobForExecJob(std::int64_t exec_job_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForWave(std::int64_t wave_id) const override;
     std::vector<BattleTurnJobSnapshot> ListBattleTurnJobsForBattleTurn(std::int64_t battle_set_id, int turn_index) const override;
-    std::vector<BattleSelectionDecisionRow> ListBattleSelectionDecisionsForPool(std::int64_t selection_pool_id) const override;
+    std::vector<BattleAdvancementDecisionRow> ListBattleAdvancementDecisionsForPool(std::int64_t battle_advancement_pool_id) const override;
 
     std::vector<events::EventEnvelope> ReadUnpublishedOutboxBatch(
         std::int64_t after_outbox_id,

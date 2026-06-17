@@ -5,6 +5,7 @@
 #include "GUI/Widgets/ScrollBarStabilizer.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QStringList>
 #include <QtCore/QTimeZone>
 #include <QtCore/QVariant>
 #include <QtWidgets/QAbstractItemView>
@@ -121,8 +122,9 @@ bool jobRowsEqual(const BattleRunsWidget::JobRow& lhs, const BattleRunsWidget::J
         && lhs.deltaVi == rhs.deltaVi
         && lhs.fakeAttacks == rhs.fakeAttacks
         && lhs.rngSeed == rhs.rngSeed
-        && lhs.winner == rhs.winner
-        && lhs.success == rhs.success;
+        && lhs.selectedForAdvancement == rhs.selectedForAdvancement
+        && lhs.desiredOutcome == rhs.desiredOutcome
+        && lhs.advancementRank == rhs.advancementRank;
 }
 
 bool waveRowsEqual(const BattleRunsWidget::WaveRow& lhs, const BattleRunsWidget::WaveRow& rhs)
@@ -133,7 +135,7 @@ bool waveRowsEqual(const BattleRunsWidget::WaveRow& lhs, const BattleRunsWidget:
         && lhs.label == rhs.label
         && lhs.jobs == rhs.jobs
         && lhs.status == rhs.status
-        && lhs.hasWinner == rhs.hasWinner
+        && lhs.advancementRank == rhs.advancementRank
         && lhs.hasFailure == rhs.hasFailure
         && lhs.selected == rhs.selected;
 }
@@ -149,7 +151,9 @@ void populateGroupRow(QTableWidget* table, int row, const BattleRunsWidget::Grou
 {
     table->setItem(row, 0, makeIdItem(item.battleSetId));
     table->setItem(row, 1, makeItem(item.name));
-    table->setItem(row, 2, makeItem(item.results));
+    auto* resultsItem = makeItem(item.results);
+    resultsItem->setToolTip(item.results);
+    table->setItem(row, 2, resultsItem);
     table->setItem(row, 3, makeItem(item.waves));
     table->setItem(row, 4, makeItem(item.status));
 }
@@ -189,7 +193,9 @@ void populateWaveTurnRow(QTreeWidget*, QTreeWidgetItem* item, const BattleRunsWi
 
     for (const auto& wave : row.waves) {
         auto* child = new QTreeWidgetItem(item);
-        const QString marker = wave.hasWinner ? QStringLiteral("[win] ") : (wave.hasFailure ? QStringLiteral("[fail] ") : QString());
+        const QString marker = wave.advancementRank >= 2
+            ? QString(QChar(0x25CF)) + QStringLiteral(" ")
+            : (wave.advancementRank == 1 ? QString(QChar(0x25D0)) + QStringLiteral(" ") : QString(QChar(0x25CB)) + QStringLiteral(" "));
         child->setText(0, marker + wave.label);
         child->setText(1, wave.jobs);
         child->setText(2, wave.status);
@@ -239,8 +245,12 @@ QString waveStatusText(const savor::db::UiBattleWaveSummary& wave)
     if (wave.failed_count > 0) {
         return QStringLiteral("%1 fail").arg(wave.failed_count);
     }
-    if (wave.winner_count > 0) {
-        return QStringLiteral("%1 winner").arg(wave.winner_count);
+    if (wave.selected_count > 0) {
+        return QStringLiteral("%1 selected").arg(wave.selected_count);
+    }
+    const auto candidateCount = std::max<std::int64_t>(0, wave.desired_outcome_count - wave.selected_count);
+    if (candidateCount > 0) {
+        return QStringLiteral("%1 candidate").arg(candidateCount);
     }
     if (!wave.status.empty()) {
         return qs(wave.status);
@@ -251,29 +261,70 @@ QString waveStatusText(const savor::db::UiBattleWaveSummary& wave)
 QString outcomeText(const savor::db::UiBattleTurnJobSummary& job)
 {
     QStringList parts;
-    if (job.followup.has_value() && job.followup->is_victory) {
-        parts.push_back(QStringLiteral("victory"));
+    if (job.selected_for_advancement) {
+        parts.push_back(QStringLiteral("selected"));
+    } else if (job.has_desired_outcome) {
+        parts.push_back(QStringLiteral("candidate"));
+    } else {
+        parts.push_back(QStringLiteral("miss"));
     }
     if (job.battle_outcome.has_value()) {
         parts.push_back(QStringLiteral("outcome %1").arg(*job.battle_outcome));
     }
-    if (job.followup.has_value() && !job.followup->manual_followup_status.empty()) {
-        parts.push_back(qs(job.followup->manual_followup_status));
+    if (!job.advancement_decision_kind.empty()) {
+        parts.push_back(qs(job.advancement_decision_kind));
+    }
+    if (job.manual_followup.has_value() && !job.manual_followup->manual_followup_status.empty()) {
+        parts.push_back(QStringLiteral("manual %1").arg(qs(job.manual_followup->manual_followup_status)));
     }
     return parts.isEmpty() ? QStringLiteral("--") : parts.join(QStringLiteral(" / "));
 }
 
-BattleRunsWidget::GroupRow makeGroupRow(const savor::db::UiBattleGroupSummary& group)
+QString battleTurnIndicatorText(const std::vector<savor::db::UiBattleWaveSummary>& waves)
+{
+    std::map<int, int> turnRank;
+    for (const auto& wave : waves) {
+        const int rank = wave.advancement_rank;
+        auto [it, inserted] = turnRank.emplace(wave.turn_index, rank);
+        if (!inserted) {
+            it->second = std::max(it->second, rank);
+        }
+    }
+
+    QStringList indicators;
+    for (const auto& entry : turnRank) {
+        const int rank = entry.second;
+        if (rank >= 2) {
+            indicators.push_back(QString(QChar(0x25CF)));
+        } else if (rank == 1) {
+            indicators.push_back(QString(QChar(0x25D0)));
+        } else {
+            indicators.push_back(QString(QChar(0x25CB)));
+        }
+    }
+    return indicators.join(QStringLiteral(" "));
+}
+
+BattleRunsWidget::GroupRow makeGroupRow(
+    const savor::db::UiBattleGroupSummary& group,
+    const std::vector<savor::db::UiBattleWaveSummary>& waves)
 {
     BattleRunsWidget::GroupRow row{};
     row.battleSetId = group.battle_set_id;
     row.group = QStringLiteral("#%1").arg(group.battle_set_id);
     row.name = group.name.empty() ? QStringLiteral("Battle set %1").arg(group.battle_set_id) : qs(group.name);
-    row.results = QStringLiteral("win:%1 ok:%2 fail:%3 jobs:%4")
-        .arg(group.winner_count)
-        .arg(group.success_count)
+    const auto candidateCount = std::max<std::int64_t>(0, group.desired_outcome_count - group.selected_count);
+    const auto missCount = std::max<std::int64_t>(0, group.job_count - group.desired_outcome_count);
+    const QString counts = QStringLiteral("sel:%1 cand:%2 miss:%3 fail:%4 jobs:%5")
+        .arg(group.selected_count)
+        .arg(candidateCount)
+        .arg(missCount)
         .arg(group.failed_count)
         .arg(group.job_count);
+    const QString indicators = battleTurnIndicatorText(waves);
+    row.results = indicators.isEmpty()
+        ? counts
+        : QStringLiteral("%1  %2").arg(indicators, counts);
     row.waves = QString::number(group.wave_count);
     row.status = groupStatusText(group);
     return row;
@@ -286,9 +337,13 @@ BattleRunsWidget::WaveRow makeWaveRow(const savor::db::UiBattleWaveSummary& wave
     row.parentWaveId = wave.parent_wave_id;
     row.turnIndex = wave.turn_index;
     row.label = QStringLiteral("Wave %1").arg(wave.wave_id);
-    row.jobs = QStringLiteral("%1 jobs, %2 ok").arg(wave.job_count).arg(wave.success_count);
+    const auto candidateCount = std::max<std::int64_t>(0, wave.desired_outcome_count - wave.selected_count);
+    row.jobs = QStringLiteral("%1 jobs, %2 selected, %3 candidates")
+        .arg(wave.job_count)
+        .arg(wave.selected_count)
+        .arg(candidateCount);
     row.status = waveStatusText(wave);
-    row.hasWinner = wave.winner_count > 0;
+    row.advancementRank = wave.advancement_rank;
     row.hasFailure = wave.failed_count > 0;
     return row;
 }
@@ -309,8 +364,9 @@ BattleRunsWidget::JobRow makeJobRow(const savor::db::UiBattleTurnJobSummary& job
         .arg(job.fake_attacks_this_turn)
         .arg(job.fake_attacks_used_before);
     row.rngSeed = optionalInt64Text(job.rng_seed);
-    row.winner = job.followup.has_value() && job.followup->is_victory;
-    row.success = row.winner || job.battle_outcome.has_value();
+    row.selectedForAdvancement = job.selected_for_advancement;
+    row.desiredOutcome = job.has_desired_outcome;
+    row.advancementRank = job.advancement_rank;
     row.predPassed = job.pred_passed.value_or(-1);
     row.predTotal = job.pred_total.value_or(-1);
     row.deltaViSort = job.delta_vi.value_or(0);
@@ -375,7 +431,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     groupQuery.before = request.before;
     groupQuery.after = request.after;
     groupQuery.limit = request.limit;
-    groupQuery.child_victory_only = request.childVictoryOnly;
+    groupQuery.child_selected_only = request.childSelectedOnly;
 
     const auto groups = db::SavorDbExplorerRunService::ListBattleGroups(groupQuery);
     if (!groups.ok) {
@@ -385,9 +441,19 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     BattleRunsWidget::RefreshData data{};
     data.groupPage = groups.value;
     data.refreshedAt = QDateTime::currentDateTime();
+
+    std::map<std::int64_t, std::vector<savor::db::UiBattleWaveSummary>> wavesByGroup;
+    for (const auto& group : data.groupPage.groups) {
+        const auto waves = db::SavorDbExplorerRunService::ListBattleWaves(group.battle_set_id);
+        if (!waves.ok) {
+            return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(waves.error.message));
+        }
+        wavesByGroup[group.battle_set_id] = waves.value;
+    }
+
     data.groups.reserve(data.groupPage.groups.size());
     for (const auto& group : data.groupPage.groups) {
-        data.groups.push_back(makeGroupRow(group));
+        data.groups.push_back(makeGroupRow(group, wavesByGroup[group.battle_set_id]));
     }
 
     bool selectedGroupVisible = false;
@@ -402,15 +468,15 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
         : (data.groupPage.groups.empty() ? 0 : data.groupPage.groups.front().battle_set_id);
 
     if (data.selectedBattleSetId > 0) {
-        const auto waves = db::SavorDbExplorerRunService::ListBattleWaves(data.selectedBattleSetId);
-        if (!waves.ok) {
-            return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(waves.error.message));
-        }
-        data.waves.reserve(waves.value.size());
+        const auto wavesIt = wavesByGroup.find(data.selectedBattleSetId);
+        const auto* selectedWaves = wavesIt != wavesByGroup.end() ? &wavesIt->second : nullptr;
+        data.waves.reserve(selectedWaves != nullptr ? selectedWaves->size() : 0);
         std::set<std::int64_t> visibleWaveIds;
-        for (const auto& wave : waves.value) {
-            data.waves.push_back(makeWaveRow(wave));
-            visibleWaveIds.insert(wave.wave_id);
+        if (selectedWaves != nullptr) {
+            for (const auto& wave : *selectedWaves) {
+                data.waves.push_back(makeWaveRow(wave));
+                visibleWaveIds.insert(wave.wave_id);
+            }
         }
 
         for (std::int64_t waveId : request.selectedWaveIds) {
@@ -429,10 +495,13 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
         data.jobs.reserve(jobs.value.size());
         for (const auto& job : jobs.value) {
             auto row = makeJobRow(job);
-            if (request.winnersOnly && !row.winner) {
+            if (request.selectedOnly && !row.selectedForAdvancement) {
                 continue;
             }
-            if (request.successOnly && !row.success) {
+            if (request.desiredOutcomeOnly && !row.desiredOutcome) {
+                continue;
+            }
+            if (!request.showCandidates && row.advancementRank == 1) {
                 continue;
             }
             data.jobs.push_back(std::move(row));
@@ -512,10 +581,10 @@ void BattleRunsWidget::build()
     autoRefreshCheck_ = new QCheckBox(QStringLiteral("Auto refresh"), toolbar);
     refreshSecondsSpin_ = new QSpinBox(toolbar);
     pageSizeSpin_ = new QSpinBox(toolbar);
-    childVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Child victory only"), toolbar);
-    winnersOnlyCheck_ = new QCheckBox(QStringLiteral("Winner only"), toolbar);
-    showDuplicatesCheck_ = new QCheckBox(QStringLiteral("Show duplicates"), toolbar);
-    successOnlyCheck_ = new QCheckBox(QStringLiteral("Success only"), toolbar);
+    childSelectedOnlyCheck_ = new QCheckBox(QStringLiteral("Child selected only"), toolbar);
+    selectedOnlyCheck_ = new QCheckBox(QStringLiteral("Selected only"), toolbar);
+    showCandidatesCheck_ = new QCheckBox(QStringLiteral("Show candidates"), toolbar);
+    desiredOutcomeOnlyCheck_ = new QCheckBox(QStringLiteral("Desired outcome only"), toolbar);
     primarySortCombo_ = new QComboBox(toolbar);
     secondarySortCombo_ = new QComboBox(toolbar);
     summaryLabel_ = new QLabel(QStringLiteral("--"), toolbar);
@@ -524,7 +593,7 @@ void BattleRunsWidget::build()
     for (auto* button : { refreshButton_, prevButton_, nextButton_ }) {
         button->setObjectName("jobsSecondaryButton");
     }
-    for (auto* check : { autoRefreshCheck_, childVictoryOnlyCheck_, winnersOnlyCheck_, showDuplicatesCheck_, successOnlyCheck_ }) {
+    for (auto* check : { autoRefreshCheck_, childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_ }) {
         check->setObjectName("jobsCheckBox");
     }
     refreshSecondsSpin_->setObjectName("jobsSpin");
@@ -539,9 +608,7 @@ void BattleRunsWidget::build()
     pageSizeSpin_->setSingleStep(10);
     pageSizeSpin_->setValue(50);
     autoRefreshCheck_->setChecked(true);
-    showDuplicatesCheck_->setChecked(true);
-    showDuplicatesCheck_->setEnabled(false);
-    showDuplicatesCheck_->setToolTip(QStringLiteral("Duplicate classification is not available in the typed battle projection yet."));
+    showCandidatesCheck_->setChecked(true);
 
     const QStringList sortLabels{
         QStringLiteral("Job ID"),
@@ -610,10 +677,10 @@ void BattleRunsWidget::build()
     jobsFilterLayout->setContentsMargins(0, 0, 0, 0);
     jobsFilterLayout->setHorizontalSpacing(8);
     jobsFilterLayout->setVerticalSpacing(6);
-    jobsFilterLayout->addWidget(childVictoryOnlyCheck_, 0, 0);
-    jobsFilterLayout->addWidget(winnersOnlyCheck_, 0, 1);
-    jobsFilterLayout->addWidget(showDuplicatesCheck_, 0, 2);
-    jobsFilterLayout->addWidget(successOnlyCheck_, 0, 3);
+    jobsFilterLayout->addWidget(childSelectedOnlyCheck_, 0, 0);
+    jobsFilterLayout->addWidget(selectedOnlyCheck_, 0, 1);
+    jobsFilterLayout->addWidget(showCandidatesCheck_, 0, 2);
+    jobsFilterLayout->addWidget(desiredOutcomeOnlyCheck_, 0, 3);
     jobsFilterLayout->addWidget(new QLabel(QStringLiteral("Sort"), jobsPanel), 0, 4);
     jobsFilterLayout->addWidget(primarySortCombo_, 0, 5);
     jobsFilterLayout->addWidget(secondarySortCombo_, 0, 6);
@@ -643,7 +710,8 @@ void BattleRunsWidget::build()
     mainSplitter->addWidget(leftSplitter);
     mainSplitter->addWidget(jobsPanel);
     mainSplitter->setStretchFactor(0, 1);
-    mainSplitter->setStretchFactor(1, 1);
+    mainSplitter->setStretchFactor(1, 2);
+    mainSplitter->setSizes({ 1, 2 });
     rootLayout->addWidget(mainSplitter, 1);
 
     inlineMessageLabel_ = new QLabel(this);
@@ -665,10 +733,10 @@ void BattleRunsWidget::build()
         request.selectedJobId = selectedJobId_;
         request.selectedWaveIds = selectedWaveIds_;
         request.limit = pageSizeSpin_->value();
-        request.childVictoryOnly = childVictoryOnlyCheck_->isChecked();
-        request.winnersOnly = winnersOnlyCheck_->isChecked();
-        request.showDuplicates = showDuplicatesCheck_->isChecked();
-        request.successOnly = successOnlyCheck_->isChecked();
+        request.childSelectedOnly = childSelectedOnlyCheck_->isChecked();
+        request.selectedOnly = selectedOnlyCheck_->isChecked();
+        request.showCandidates = showCandidatesCheck_->isChecked();
+        request.desiredOutcomeOnly = desiredOutcomeOnlyCheck_->isChecked();
         request.primarySort = primarySortCombo_->currentIndex();
         request.secondarySort = secondarySortCombo_->currentIndex();
         return request;
@@ -718,7 +786,7 @@ void BattleRunsWidget::wireSignals()
         after_.reset();
         requestRefresh();
     });
-    for (QCheckBox* check : { childVictoryOnlyCheck_, winnersOnlyCheck_, successOnlyCheck_ }) {
+    for (QCheckBox* check : { childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_ }) {
         connect(check, &QCheckBox::toggled, this, [this]() {
             before_.reset();
             after_.reset();

@@ -235,7 +235,7 @@ WorkflowUnitRegistry BuildDefaultWorkflowUnitRegistry() {
             },
             .possible_outputs = {
                 Port("terminal_savestate", "state.savestate_id", "Terminal savestate"),
-                Port("battle_followup", "analysis.battle_followup_id", "Battle follow-up"),
+                Port("battle_manual_followup", "analysis.battle_manual_followup_id", "Battle manual follow-up"),
             },
             .internal_step_kinds = { "battle.context_probe", "battle.single_turn" },
             .step_templates = SingleStep("battle_chain"),

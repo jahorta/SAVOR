@@ -72,15 +72,15 @@ struct IAnalysisBattlePayloadRowResolver {
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
-    virtual std::optional<AnalysisBattleSelectionPoolCreatedPayloadView> ResolveBattleSelectionPoolCreated(
+    virtual std::optional<AnalysisBattleBattleAdvancementPoolCreatedPayloadView> ResolveBattleBattleAdvancementPoolCreated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
-    virtual std::optional<AnalysisBattleSelectionDecisionRecordedPayloadView> ResolveBattleSelectionDecisionRecorded(
+    virtual std::optional<AnalysisBattleBattleAdvancementDecisionRecordedPayloadView> ResolveBattleBattleAdvancementDecisionRecorded(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
-    virtual std::optional<AnalysisBattleTerminalFollowupUpdatedPayloadView> ResolveBattleTerminalFollowupUpdated(
+    virtual std::optional<AnalysisBattleManualFollowupUpdatedPayloadView> ResolveBattleManualFollowupUpdated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 };

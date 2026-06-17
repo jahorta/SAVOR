@@ -407,11 +407,11 @@ std::optional<std::int64_t> BattleSetIdForWave(sqlite3* db, std::int64_t wave_id
     return sqlite3_column_int64(st.st, 0);
 }
 
-std::optional<std::int64_t> BattleSetIdForSelectionPool(sqlite3* db, std::int64_t selection_pool_id) {
+std::optional<std::int64_t> BattleSetIdForBattleAdvancementPool(sqlite3* db, std::int64_t battle_advancement_pool_id) {
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT battle_set_id FROM ab_selection_pool WHERE selection_pool_id=?1;",
+            "SELECT battle_set_id FROM ab_battle_advancement_pool WHERE battle_advancement_pool_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -419,7 +419,7 @@ std::optional<std::int64_t> BattleSetIdForSelectionPool(sqlite3* db, std::int64_
         return std::nullopt;
     }
 
-    sqlite3_bind_int64(st.st, 1, selection_pool_id);
+    sqlite3_bind_int64(st.st, 1, battle_advancement_pool_id);
     if (sqlite3_step(st.st) != SQLITE_ROW) {
         return std::nullopt;
     }
@@ -479,11 +479,11 @@ std::optional<BattleTurnJobProjectionRef> BattleTurnJobProjectionRefForExecJob(s
     };
 }
 
-std::optional<std::int64_t> TerminalFollowupIdForTurnJob(sqlite3* db, std::int64_t turn_job_id) {
+std::optional<std::int64_t> ManualFollowupIdForTurnJob(sqlite3* db, std::int64_t turn_job_id) {
     Statement st;
     if (sqlite3_prepare_v2(
             db,
-            "SELECT terminal_followup_id FROM ab_terminal_followup WHERE turn_job_id=?1;",
+            "SELECT manual_followup_id FROM ab_manual_followup WHERE turn_job_id=?1;",
             -1,
             &st.st,
             nullptr)
@@ -650,16 +650,16 @@ std::optional<events::AnalysisBattlePayloadView> ResolveBattleByKind(
         record.turn_job_id = view->turn_job_id;
         return record;
     }
-    if (payload_ref_kind == "selection_pool") {
-        const auto view = resolver.ResolveBattleSelectionPoolCreated(payload_ref_kind, payload_ref_id);
+    if (payload_ref_kind == "battle_advancement_pool") {
+        const auto view = resolver.ResolveBattleBattleAdvancementPoolCreated(payload_ref_kind, payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
         record.battle_set_id = view->battle_set_id;
         return record;
     }
-    if (payload_ref_kind == "selection_decision") {
-        const auto view = resolver.ResolveBattleSelectionDecisionRecorded(payload_ref_kind, payload_ref_id);
+    if (payload_ref_kind == "battle_advancement_decision") {
+        const auto view = resolver.ResolveBattleBattleAdvancementDecisionRecorded(payload_ref_kind, payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -667,8 +667,8 @@ std::optional<events::AnalysisBattlePayloadView> ResolveBattleByKind(
         record.turn_job_id = view->turn_job_id;
         return record;
     }
-    if (payload_ref_kind == "terminal_followup") {
-        const auto view = resolver.ResolveBattleTerminalFollowupUpdated(payload_ref_kind, payload_ref_id);
+    if (payload_ref_kind == "manual_followup") {
+        const auto view = resolver.ResolveBattleManualFollowupUpdated(payload_ref_kind, payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -2382,7 +2382,7 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     Statement insert_wave;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_turn_wave(battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc) "
+            "INSERT INTO ab_turn_wave(battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc) "
             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
             -1,
             &insert_wave.st,
@@ -2402,7 +2402,7 @@ bool SqliteAnalysisDb::CreateBattleTurnWave(
     if (command.parent_turn_job_id.has_value()) sqlite3_bind_int64(insert_wave.st, 5, command.parent_turn_job_id.value());
     else sqlite3_bind_null(insert_wave.st, 5);
     sqlite3_bind_int64(insert_wave.st, 6, command.seed_candidate_id);
-    if (command.selection_pool_id.has_value()) sqlite3_bind_int64(insert_wave.st, 7, command.selection_pool_id.value());
+    if (command.battle_advancement_pool_id.has_value()) sqlite3_bind_int64(insert_wave.st, 7, command.battle_advancement_pool_id.value());
     else sqlite3_bind_null(insert_wave.st, 7);
     const auto status = ToDbString(command.status);
     sqlite3_bind_text(insert_wave.st, 8, status.data(), static_cast<int>(status.size()), SQLITE_TRANSIENT);
@@ -2861,9 +2861,9 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
     return true;
 }
 
-bool SqliteAnalysisDb::CreateBattleSelectionPool(
-    const CreateBattleSelectionPoolCommand& command,
-    std::int64_t* selection_pool_id_out,
+bool SqliteAnalysisDb::CreateBattleAdvancementPool(
+    const CreateBattleAdvancementPoolCommand& command,
+    std::int64_t* battle_advancement_pool_id_out,
     std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
@@ -2871,7 +2871,7 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
     }
     if (command.battle_set_id <= 0
         || command.pool_name.empty()
-        || command.criterion_kind == BattleSelectionCriterionKind::Unknown) {
+        || command.criterion_kind == BattleAdvancementCriterionKind::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
@@ -2886,7 +2886,7 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
     Statement insert_pool;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_selection_pool(battle_set_id,turn_index,pool_name,criterion_kind,created_at_utc) "
+            "INSERT INTO ab_battle_advancement_pool(battle_set_id,turn_index,pool_name,criterion_kind,created_at_utc) "
             "VALUES(?1,?2,?3,?4,?5);",
             -1,
             &insert_pool.st,
@@ -2911,17 +2911,17 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
         return false;
     }
 
-    const auto selection_pool_id = sqlite3_last_insert_rowid(db_);
+    const auto battle_advancement_pool_id = sqlite3_last_insert_rowid(db_);
     if (!InsertBattleOutboxEvent(
             db_,
-            "AnalysisBattle.SelectionPoolCreated.v1",
+            "AnalysisBattle.BattleAdvancementPoolCreated.v1",
             "battle_set",
             std::to_string(command.battle_set_id),
             command.correlation_id,
             command.causation_id,
             command.created_at_utc.time_since_epoch().count(),
-            "selection_pool",
-            selection_pool_id,
+            "battle_advancement_pool",
+            battle_advancement_pool_id,
             error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
@@ -2935,18 +2935,18 @@ bool SqliteAnalysisDb::CreateBattleSelectionPool(
         return false;
     }
 
-    if (selection_pool_id_out) {
-        *selection_pool_id_out = selection_pool_id;
+    if (battle_advancement_pool_id_out) {
+        *battle_advancement_pool_id_out = battle_advancement_pool_id;
     }
     return true;
 }
 
-bool SqliteAnalysisDb::EnsureBattleSelectionPool(
-    const CreateBattleSelectionPoolCommand& command,
-    std::int64_t* selection_pool_id_out,
+bool SqliteAnalysisDb::EnsureBattleAdvancementPool(
+    const CreateBattleAdvancementPoolCommand& command,
+    std::int64_t* battle_advancement_pool_id_out,
     std::string* error_out) {
-    if (selection_pool_id_out != nullptr) {
-        *selection_pool_id_out = 0;
+    if (battle_advancement_pool_id_out != nullptr) {
+        *battle_advancement_pool_id_out = 0;
     }
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
@@ -2960,7 +2960,7 @@ bool SqliteAnalysisDb::EnsureBattleSelectionPool(
     Statement existing;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT selection_pool_id FROM ab_selection_pool WHERE battle_set_id=?1 AND turn_index=?2 AND pool_name=?3;",
+            "SELECT battle_advancement_pool_id FROM ab_battle_advancement_pool WHERE battle_set_id=?1 AND turn_index=?2 AND pool_name=?3;",
             -1,
             &existing.st,
             nullptr)
@@ -2972,29 +2972,29 @@ bool SqliteAnalysisDb::EnsureBattleSelectionPool(
     sqlite3_bind_int(existing.st, 2, command.turn_index);
     sqlite3_bind_text(existing.st, 3, command.pool_name.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(existing.st) == SQLITE_ROW) {
-        if (selection_pool_id_out) *selection_pool_id_out = sqlite3_column_int64(existing.st, 0);
+        if (battle_advancement_pool_id_out) *battle_advancement_pool_id_out = sqlite3_column_int64(existing.st, 0);
         return true;
     }
 
-    return CreateBattleSelectionPool(command, selection_pool_id_out, error_out);
+    return CreateBattleAdvancementPool(command, battle_advancement_pool_id_out, error_out);
 }
 
-bool SqliteAnalysisDb::RecordBattleSelectionDecision(
-    const RecordBattleSelectionDecisionCommand& command,
-    std::int64_t* selection_decision_id_out,
+bool SqliteAnalysisDb::RecordBattleAdvancementDecision(
+    const RecordBattleAdvancementDecisionCommand& command,
+    std::int64_t* battle_advancement_decision_id_out,
     std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
         return false;
     }
-    if (command.selection_pool_id <= 0 || command.turn_job_id <= 0 || command.decision_kind == BattleSelectionDecisionKind::Unknown) {
+    if (command.battle_advancement_pool_id <= 0 || command.turn_job_id <= 0 || command.decision_kind == BattleAdvancementDecisionKind::Unknown) {
         if (error_out) *error_out = "required command fields are missing";
         return false;
     }
 
-    const auto battle_set_id = BattleSetIdForSelectionPool(db_, command.selection_pool_id);
+    const auto battle_set_id = BattleSetIdForBattleAdvancementPool(db_, command.battle_advancement_pool_id);
     if (!battle_set_id.has_value()) {
-        if (error_out) *error_out = "selection_pool_id does not resolve to battle_set";
+        if (error_out) *error_out = "battle_advancement_pool_id does not resolve to battle_set";
         return false;
     }
 
@@ -3008,7 +3008,7 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
     Statement insert_decision;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT OR IGNORE INTO ab_selection_decision(selection_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc) "
+            "INSERT OR IGNORE INTO ab_battle_advancement_decision(battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc) "
             "VALUES(?1,?2,?3,?4,?5);",
             -1,
             &insert_decision.st,
@@ -3019,7 +3019,7 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
         return false;
     }
 
-    sqlite3_bind_int64(insert_decision.st, 1, command.selection_pool_id);
+    sqlite3_bind_int64(insert_decision.st, 1, command.battle_advancement_pool_id);
     sqlite3_bind_int64(insert_decision.st, 2, command.turn_job_id);
     const auto decision_kind = ToDbString(command.decision_kind);
     sqlite3_bind_text(insert_decision.st, 3, decision_kind.data(), static_cast<int>(decision_kind.size()), SQLITE_TRANSIENT);
@@ -3034,34 +3034,34 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
         return false;
     }
 
-    std::int64_t selection_decision_id = sqlite3_last_insert_rowid(db_);
+    std::int64_t battle_advancement_decision_id = sqlite3_last_insert_rowid(db_);
     const bool inserted_decision = sqlite3_changes(db_) > 0;
     if (!inserted_decision) {
         Statement existing;
         if (sqlite3_prepare_v2(
                 db_,
-                "SELECT selection_decision_id FROM ab_selection_decision WHERE selection_pool_id=?1 AND turn_job_id=?2;",
+                "SELECT battle_advancement_decision_id FROM ab_battle_advancement_decision WHERE battle_advancement_pool_id=?1 AND turn_job_id=?2;",
                 -1,
                 &existing.st,
                 nullptr)
             == SQLITE_OK) {
-            sqlite3_bind_int64(existing.st, 1, command.selection_pool_id);
+            sqlite3_bind_int64(existing.st, 1, command.battle_advancement_pool_id);
             sqlite3_bind_int64(existing.st, 2, command.turn_job_id);
             if (sqlite3_step(existing.st) == SQLITE_ROW) {
-                selection_decision_id = sqlite3_column_int64(existing.st, 0);
+                battle_advancement_decision_id = sqlite3_column_int64(existing.st, 0);
             }
         }
     }
     if (inserted_decision && !InsertBattleOutboxEvent(
             db_,
-            "AnalysisBattle.SelectionDecisionRecorded.v1",
+            "AnalysisBattle.BattleAdvancementDecisionRecorded.v1",
             "battle_set",
             std::to_string(battle_set_id.value()),
             command.correlation_id,
             command.causation_id,
             command.created_at_utc.time_since_epoch().count(),
-            "selection_decision",
-            selection_decision_id,
+            "battle_advancement_decision",
+            battle_advancement_decision_id,
             error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
@@ -3075,15 +3075,15 @@ bool SqliteAnalysisDb::RecordBattleSelectionDecision(
         return false;
     }
 
-    if (selection_decision_id_out) {
-        *selection_decision_id_out = selection_decision_id;
+    if (battle_advancement_decision_id_out) {
+        *battle_advancement_decision_id_out = battle_advancement_decision_id;
     }
     return true;
 }
 
-bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
-    const UpsertBattleTerminalFollowupCommand& command,
-    std::int64_t* terminal_followup_id_out,
+bool SqliteAnalysisDb::UpsertBattleManualFollowup(
+    const UpsertBattleManualFollowupCommand& command,
+    std::int64_t* manual_followup_id_out,
     std::string* error_out) {
     if (db_ == nullptr) {
         if (error_out) *error_out = "database handle is null";
@@ -3110,10 +3110,9 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
     Statement upsert_followup;
     if (sqlite3_prepare_v2(
             db_,
-            "INSERT INTO ab_terminal_followup(turn_job_id,is_victory,manual_followup_status,recorded_dtm_artifact_id,recorded_dtmini_artifact_id,recorded_sav_artifact_id,note,updated_at_utc) "
-            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8) "
+            "INSERT INTO ab_manual_followup(turn_job_id,manual_followup_status,recorded_dtm_artifact_id,recorded_dtmini_artifact_id,recorded_sav_artifact_id,note,updated_at_utc) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7) "
             "ON CONFLICT(turn_job_id) DO UPDATE SET "
-            "is_victory=excluded.is_victory,"
             "manual_followup_status=excluded.manual_followup_status,"
             "recorded_dtm_artifact_id=excluded.recorded_dtm_artifact_id,"
             "recorded_dtmini_artifact_id=excluded.recorded_dtmini_artifact_id,"
@@ -3130,18 +3129,17 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
     }
 
     sqlite3_bind_int64(upsert_followup.st, 1, command.turn_job_id);
-    sqlite3_bind_int(upsert_followup.st, 2, command.is_victory ? 1 : 0);
     const auto manual_followup_status = ToDbString(command.manual_followup_status);
-    sqlite3_bind_text(upsert_followup.st, 3, manual_followup_status.data(), static_cast<int>(manual_followup_status.size()), SQLITE_TRANSIENT);
-    if (command.recorded_dtm_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 4, command.recorded_dtm_artifact_id.value());
+    sqlite3_bind_text(upsert_followup.st, 2, manual_followup_status.data(), static_cast<int>(manual_followup_status.size()), SQLITE_TRANSIENT);
+    if (command.recorded_dtm_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 3, command.recorded_dtm_artifact_id.value());
+    else sqlite3_bind_null(upsert_followup.st, 3);
+    if (command.recorded_dtmini_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 4, command.recorded_dtmini_artifact_id.value());
     else sqlite3_bind_null(upsert_followup.st, 4);
-    if (command.recorded_dtmini_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 5, command.recorded_dtmini_artifact_id.value());
+    if (command.recorded_sav_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 5, command.recorded_sav_artifact_id.value());
     else sqlite3_bind_null(upsert_followup.st, 5);
-    if (command.recorded_sav_artifact_id.has_value()) sqlite3_bind_int64(upsert_followup.st, 6, command.recorded_sav_artifact_id.value());
+    if (command.note.has_value()) sqlite3_bind_text(upsert_followup.st, 6, command.note->c_str(), -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(upsert_followup.st, 6);
-    if (command.note.has_value()) sqlite3_bind_text(upsert_followup.st, 7, command.note->c_str(), -1, SQLITE_TRANSIENT);
-    else sqlite3_bind_null(upsert_followup.st, 7);
-    sqlite3_bind_int64(upsert_followup.st, 8, command.updated_at_utc.time_since_epoch().count());
+    sqlite3_bind_int64(upsert_followup.st, 7, command.updated_at_utc.time_since_epoch().count());
     if (sqlite3_step(upsert_followup.st) != SQLITE_DONE) {
         if (error_out != nullptr) {
             *error_out = sqlite3_errmsg(db_);
@@ -3150,23 +3148,23 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
         return false;
     }
 
-    const auto terminal_followup_id = TerminalFollowupIdForTurnJob(db_, command.turn_job_id);
-    if (!terminal_followup_id.has_value()) {
+    const auto manual_followup_id = ManualFollowupIdForTurnJob(db_, command.turn_job_id);
+    if (!manual_followup_id.has_value()) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
-        if (error_out) *error_out = "turn_job terminal_followup_id could not be resolved";
+        if (error_out) *error_out = "turn_job manual_followup_id could not be resolved";
         return false;
     }
 
     if (!InsertBattleOutboxEvent(
             db_,
-            "AnalysisBattle.TerminalFollowupUpdated.v1",
+            "AnalysisBattle.ManualFollowupUpdated.v1",
             "battle_set",
             std::to_string(battle_set_id.value()),
             command.correlation_id,
             command.causation_id,
             command.updated_at_utc.time_since_epoch().count(),
-            "terminal_followup",
-            terminal_followup_id.value(),
+            "manual_followup",
+            manual_followup_id.value(),
             error_out)) {
         (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
@@ -3180,8 +3178,8 @@ bool SqliteAnalysisDb::UpsertBattleTerminalFollowup(
         return false;
     }
 
-    if (terminal_followup_id_out) {
-        *terminal_followup_id_out = terminal_followup_id.value();
+    if (manual_followup_id_out) {
+        *manual_followup_id_out = manual_followup_id.value();
     }
     return true;
 }
@@ -3430,7 +3428,7 @@ std::optional<BattleTurnWaveSnapshot> SqliteAnalysisDb::GetBattleTurnWave(std::i
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc "
         "FROM ab_turn_wave WHERE wave_id=?1;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return std::nullopt;
@@ -3447,7 +3445,7 @@ std::optional<BattleTurnWaveSnapshot> SqliteAnalysisDb::GetBattleTurnWave(std::i
     out.parent_wave_id = ColumnInt64Optional(st.st, 4);
     out.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
     out.seed_candidate_id = sqlite3_column_int64(st.st, 6);
-    out.selection_pool_id = ColumnInt64Optional(st.st, 7);
+    out.battle_advancement_pool_id = ColumnInt64Optional(st.st, 7);
     out.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
     out.created_at_utc = ColumnTime(st.st, 9);
     out.completed_at_utc = ColumnTimeOptional(st.st, 10);
@@ -3461,7 +3459,7 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWaves(std::i
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc "
         "FROM ab_turn_wave WHERE battle_set_id=?1 ORDER BY turn_index ASC, wave_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -3476,7 +3474,7 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWaves(std::i
         row.parent_wave_id = ColumnInt64Optional(st.st, 4);
         row.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
         row.seed_candidate_id = sqlite3_column_int64(st.st, 6);
-        row.selection_pool_id = ColumnInt64Optional(st.st, 7);
+        row.battle_advancement_pool_id = ColumnInt64Optional(st.st, 7);
         row.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
         row.created_at_utc = ColumnTime(st.st, 9);
         row.completed_at_utc = ColumnTimeOptional(st.st, 10);
@@ -3492,7 +3490,7 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWavesForCont
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,selection_pool_id,status,created_at_utc,completed_at_utc "
+        "SELECT wave_id,battle_set_id,turn_index,context_probe_id,parent_wave_id,parent_turn_job_id,seed_candidate_id,battle_advancement_pool_id,status,created_at_utc,completed_at_utc "
         "FROM ab_turn_wave WHERE context_probe_id=?1 ORDER BY turn_index ASC, wave_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
@@ -3507,7 +3505,7 @@ std::vector<BattleTurnWaveSnapshot> SqliteAnalysisDb::ListBattleTurnWavesForCont
         row.parent_wave_id = ColumnInt64Optional(st.st, 4);
         row.parent_turn_job_id = ColumnInt64Optional(st.st, 5);
         row.seed_candidate_id = sqlite3_column_int64(st.st, 6);
-        row.selection_pool_id = ColumnInt64Optional(st.st, 7);
+        row.battle_advancement_pool_id = ColumnInt64Optional(st.st, 7);
         row.status = ParseBattleTurnWaveStatus(ColumnText(st.st, 8));
         row.created_at_utc = ColumnTime(st.st, 9);
         row.completed_at_utc = ColumnTimeOptional(st.st, 10);
@@ -3688,26 +3686,26 @@ std::vector<BattleTurnJobSnapshot> SqliteAnalysisDb::ListBattleTurnJobsForBattle
     return rows;
 }
 
-std::vector<BattleSelectionDecisionRow> SqliteAnalysisDb::ListBattleSelectionDecisionsForPool(
-    std::int64_t selection_pool_id) const {
-    std::vector<BattleSelectionDecisionRow> rows;
-    if (db_ == nullptr || selection_pool_id <= 0) {
+std::vector<BattleAdvancementDecisionRow> SqliteAnalysisDb::ListBattleAdvancementDecisionsForPool(
+    std::int64_t battle_advancement_pool_id) const {
+    std::vector<BattleAdvancementDecisionRow> rows;
+    if (db_ == nullptr || battle_advancement_pool_id <= 0) {
         return rows;
     }
     Statement st;
     constexpr const char* kSql =
-        "SELECT selection_decision_id,selection_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc "
-        "FROM ab_selection_decision WHERE selection_pool_id=?1 ORDER BY selection_decision_id ASC;";
+        "SELECT battle_advancement_decision_id,battle_advancement_pool_id,turn_job_id,decision_kind,decision_reason,created_at_utc "
+        "FROM ab_battle_advancement_decision WHERE battle_advancement_pool_id=?1 ORDER BY battle_advancement_decision_id ASC;";
     if (sqlite3_prepare_v2(db_, kSql, -1, &st.st, nullptr) != SQLITE_OK) {
         return rows;
     }
-    sqlite3_bind_int64(st.st, 1, selection_pool_id);
+    sqlite3_bind_int64(st.st, 1, battle_advancement_pool_id);
     while (sqlite3_step(st.st) == SQLITE_ROW) {
-        BattleSelectionDecisionRow row{};
-        row.selection_decision_id = sqlite3_column_int64(st.st, 0);
-        row.selection_pool_id = sqlite3_column_int64(st.st, 1);
+        BattleAdvancementDecisionRow row{};
+        row.battle_advancement_decision_id = sqlite3_column_int64(st.st, 0);
+        row.battle_advancement_pool_id = sqlite3_column_int64(st.st, 1);
         row.turn_job_id = sqlite3_column_int64(st.st, 2);
-        row.decision_kind = ParseBattleSelectionDecisionKind(ColumnText(st.st, 3));
+        row.decision_kind = ParseBattleAdvancementDecisionKind(ColumnText(st.st, 3));
         const auto* reason = sqlite3_column_text(st.st, 4);
         row.decision_reason = reason ? std::optional<std::string>(reinterpret_cast<const char*>(reason)) : std::nullopt;
         row.created_at_utc = ColumnTime(st.st, 5);
@@ -4183,8 +4181,8 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         record.battle_set_id = view->battle_set_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisBattle.SelectionPoolCreated.v1") {
-        const auto view = battle_row_resolver_.ResolveBattleSelectionPoolCreated(envelope.payload_ref_kind, envelope.payload_ref_id);
+    if (envelope.event_type == "AnalysisBattle.BattleAdvancementPoolCreated.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleBattleAdvancementPoolCreated(envelope.payload_ref_kind, envelope.payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -4193,8 +4191,8 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         record.battle_set_id = view->battle_set_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisBattle.SelectionDecisionRecorded.v1") {
-        const auto view = battle_row_resolver_.ResolveBattleSelectionDecisionRecorded(envelope.payload_ref_kind, envelope.payload_ref_id);
+    if (envelope.event_type == "AnalysisBattle.BattleAdvancementDecisionRecorded.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleBattleAdvancementDecisionRecorded(envelope.payload_ref_kind, envelope.payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }
@@ -4204,8 +4202,8 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         record.turn_job_id = view->turn_job_id;
         return record;
     }
-    if (envelope.event_type == "AnalysisBattle.TerminalFollowupUpdated.v1") {
-        const auto view = battle_row_resolver_.ResolveBattleTerminalFollowupUpdated(envelope.payload_ref_kind, envelope.payload_ref_id);
+    if (envelope.event_type == "AnalysisBattle.ManualFollowupUpdated.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleManualFollowupUpdated(envelope.payload_ref_kind, envelope.payload_ref_id);
         if (!view.has_value()) {
             return std::nullopt;
         }

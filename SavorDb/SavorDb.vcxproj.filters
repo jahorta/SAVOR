@@ -426,6 +426,9 @@
     <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisBattle\202606171200_analysisbattle_battle_advancement_terminology.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
@@ -520,6 +523,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202606161200_uiread_battle_turn_job_exec_id.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606171200_uiread_battle_advancement_projection.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

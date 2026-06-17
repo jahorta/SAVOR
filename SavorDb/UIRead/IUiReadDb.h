@@ -219,6 +219,7 @@ struct UiWorkflowInstanceSummary {
     std::optional<std::int64_t> completed_at_utc;
     std::string failure_code;
     std::string failure_text;
+    int battle_advancement_rank = 0;
 };
 
 struct UiWorkflowStepSummary {
@@ -241,6 +242,7 @@ struct UiWorkflowStepSummary {
     std::optional<std::int64_t> completed_at_utc;
     std::optional<std::int64_t> failed_at_utc;
     std::int64_t created_at_utc = 0;
+    int battle_advancement_rank = 0;
 };
 
 struct UiWorkflowUnitActivationSummary {
@@ -312,7 +314,7 @@ struct UiBattleGroupListQuery {
     std::optional<UiReadListCursor> before;
     std::optional<UiReadListCursor> after;
     int limit = 50;
-    bool child_victory_only = false;
+    bool child_selected_only = false;
 };
 
 struct UiBattleGroupSummary {
@@ -323,29 +325,40 @@ struct UiBattleGroupSummary {
     std::optional<std::int64_t> completed_at_utc;
     std::int64_t wave_count = 0;
     std::int64_t job_count = 0;
-    std::int64_t winner_count = 0;
-    std::int64_t success_count = 0;
+    std::int64_t selected_count = 0;
+    std::int64_t desired_outcome_count = 0;
     std::int64_t failed_count = 0;
-    std::int64_t victory_followup_count = 0;
+    std::int64_t manual_followup_count = 0;
+    int advancement_rank = 0;
 };
 
 struct UiBattleWaveSummary {
     std::int64_t wave_id = 0;
     std::int64_t battle_set_id = 0;
     std::optional<std::int64_t> parent_wave_id;
+    std::optional<std::int64_t> parent_turn_job_id;
     int turn_index = 0;
     std::string status;
     std::int64_t created_at_utc = 0;
     std::optional<std::int64_t> completed_at_utc;
     std::int64_t job_count = 0;
-    std::int64_t winner_count = 0;
-    std::int64_t success_count = 0;
+    std::int64_t selected_count = 0;
+    std::int64_t desired_outcome_count = 0;
     std::int64_t failed_count = 0;
+    int advancement_rank = 0;
 };
 
-struct UiBattleFollowupSummary {
+struct UiBattleAdvancementDecisionSummary {
+    std::int64_t battle_advancement_decision_id = 0;
+    std::int64_t battle_advancement_pool_id = 0;
     std::int64_t turn_job_id = 0;
-    bool is_victory = false;
+    std::string decision_kind;
+    std::string decision_reason;
+    std::int64_t created_at_utc = 0;
+};
+
+struct UiBattleManualFollowupSummary {
+    std::int64_t turn_job_id = 0;
     std::string manual_followup_status;
     std::optional<std::int64_t> recorded_dtm_artifact_id;
     std::string note;
@@ -366,9 +379,14 @@ struct UiBattleTurnJobSummary {
     std::optional<int> pred_passed;
     std::optional<int> pred_total;
     std::optional<int> battle_outcome;
+    bool has_desired_outcome = false;
+    bool selected_for_advancement = false;
+    std::string advancement_decision_kind;
+    int advancement_rank = 0;
     std::optional<std::int64_t> started_at_utc;
     std::optional<std::int64_t> ended_at_utc;
-    std::optional<UiBattleFollowupSummary> followup;
+    std::optional<UiBattleAdvancementDecisionSummary> advancement_decision;
+    std::optional<UiBattleManualFollowupSummary> manual_followup;
 };
 
 struct UiBattleTurnJobDetail {
