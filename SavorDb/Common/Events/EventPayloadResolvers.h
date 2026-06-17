@@ -60,6 +60,18 @@ struct IAnalysisBattlePayloadRowResolver {
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;
 
+    virtual std::optional<AnalysisBattleTurnJobResultUpdatedPayloadView> ResolveBattleTurnJobResultUpdated(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<AnalysisBattleTurnWaveStatusUpdatedPayloadView> ResolveBattleTurnWaveStatusUpdated(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
+
+    virtual std::optional<AnalysisBattleBattleSetStatusUpdatedPayloadView> ResolveBattleSetStatusUpdated(
+        std::string_view payload_ref_kind,
+        std::int64_t payload_ref_id) const = 0;
+
     virtual std::optional<AnalysisBattleSelectionPoolCreatedPayloadView> ResolveBattleSelectionPoolCreated(
         std::string_view payload_ref_kind,
         std::int64_t payload_ref_id) const = 0;

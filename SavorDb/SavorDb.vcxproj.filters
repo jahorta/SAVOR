@@ -133,9 +133,6 @@
     <ClInclude Include="Archive\ArchivePackageService.h">
       <Filter>Archive</Filter>
     </ClInclude>
-    <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h">
-      <Filter>Archive</Filter>
-    </ClInclude>
     <ClInclude Include="Authoring\IAuthoringDb.h">
       <Filter>Authoring</Filter>
     </ClInclude>
@@ -184,9 +181,6 @@
     <ClInclude Include="Execution\QueuedExecutionDb.h">
       <Filter>Execution</Filter>
     </ClInclude>
-    <ClInclude Include="UIRead\Projectors\JobProjector.h">
-      <Filter>Execution</Filter>
-    </ClInclude>
     <ClInclude Include="Execution\Jobs\JobEventOrchestration.h">
       <Filter>Execution</Filter>
     </ClInclude>
@@ -229,15 +223,6 @@
     <ClInclude Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.h">
       <Filter>Programs\BattleContext</Filter>
     </ClInclude>
-    <ClInclude Include="UIRead\Projectors\BattleProjector.h">
-      <Filter>Analysis</Filter>
-    </ClInclude>
-    <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h">
-      <Filter>Analysis</Filter>
-    </ClInclude>
-    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h">
-      <Filter>UiRead</Filter>
-    </ClInclude>
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h">
       <Filter>UiRead</Filter>
     </ClInclude>
@@ -252,9 +237,6 @@
     </ClInclude>
     <ClInclude Include="UIRead\QueuedUiReadDb.h">
       <Filter>UiRead</Filter>
-    </ClInclude>
-    <ClInclude Include="UIRead\Projectors\ArtifactProjector.h">
-      <Filter>State</Filter>
     </ClInclude>
     <ClInclude Include="Execution\Workflow\AdapterChainOrchestrator.h">
       <Filter>Workflows</Filter>
@@ -330,9 +312,6 @@
     <ClCompile Include="Execution\Workflow\WorkflowComposition.cpp">
       <Filter>Workflows</Filter>
     </ClCompile>
-    <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp">
-      <Filter>Archive</Filter>
-    </ClCompile>
     <ClCompile Include="Archive\ArchivePackageService.cpp">
       <Filter>Archive</Filter>
     </ClCompile>
@@ -368,9 +347,6 @@
     </ClCompile>
     <ClCompile Include="Analysis\QueuedAnalysisDb.cpp">
       <Filter>Analysis</Filter>
-    </ClCompile>
-    <ClCompile Include="UIRead\Projectors\JobProjector.cpp">
-      <Filter>Execution</Filter>
     </ClCompile>
     <ClCompile Include="Execution\Workflow\SqliteExecutionDb.cpp">
       <Filter>Execution</Filter>
@@ -410,18 +386,6 @@
     </ClCompile>
     <ClCompile Include="Execution\ProgramDB\BattleContext\BattleContextProbePhaseRegistration.cpp">
       <Filter>Programs\BattleContext</Filter>
-    </ClCompile>
-    <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp">
-      <Filter>State</Filter>
-    </ClCompile>
-    <ClCompile Include="UIRead\Projectors\BattleProjector.cpp">
-      <Filter>Analysis</Filter>
-    </ClCompile>
-    <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp">
-      <Filter>Analysis</Filter>
-    </ClCompile>
-    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp">
-      <Filter>UiRead</Filter>
     </ClCompile>
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp">
       <Filter>UiRead</Filter>

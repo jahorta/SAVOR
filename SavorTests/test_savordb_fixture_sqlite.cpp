@@ -6547,7 +6547,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionStreamsSeparateExecutionDatabaseForWorkf
     service.Stop();
 }
 
-TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSelectionDecisionAdvancesWithoutRefreshingBattleSet) {
+TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefreshBattleRows) {
     using namespace savor::db;
 
     auto* analysis_db = db_service_->AnalysisDb();
@@ -6616,44 +6616,169 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSelectionDecisionAdvancesW
         &turn_job_id,
         &err)) << err;
 
-    std::int64_t selection_pool_id = 0;
-    ASSERT_TRUE(analysis_db->CreateBattleSelectionPool(
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_group WHERE battle_set_id=" + std::to_string(battle_set_id) + ";").c_str()), "ACTIVE");
+
+    ASSERT_TRUE(analysis_db->UpdateBattleTurnJobResult(
         {
-            .battle_set_id = battle_set_id,
-            .turn_index = 1,
-            .pool_name = "pool-a",
-            .criterion_kind = BattleSelectionCriterionKind::MaxVi,
-            .created_at_utc = now,
+            .exec_job_id = 7001,
+            .job_state = BattleTurnJobState::Succeeded,
+            .ended_at_utc = now,
+            .has_results = true,
+            .vi_start = 44,
+            .vi_end = 74,
+            .delta_vi = 30,
+            .battle_outcome = savor::battle::Outcome::Victory,
+            .recorded_at_utc = now,
             .correlation_id = "projection-battle",
             .causation_id = "test",
         },
-        &selection_pool_id,
         &err)) << err;
 
-    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
-    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
-
-    ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_job SET job_state='FAILED' WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()));
-
-    std::int64_t selection_decision_id = 0;
-    ASSERT_TRUE(analysis_db->RecordBattleSelectionDecision(
-        {
-            .selection_pool_id = selection_pool_id,
-            .turn_job_id = turn_job_id,
-            .decision_kind = BattleSelectionDecisionKind::Winner,
-            .decision_reason = std::string("best vi"),
-            .created_at_utc = now,
-            .correlation_id = "projection-battle",
-            .causation_id = "test",
-        },
-        &selection_decision_id,
-        &err)) << err;
+    ASSERT_TRUE(analysis_db->UpdateBattleTurnWaveStatus(wave_id, BattleTurnWaveStatus::Completed, now, &err)) << err;
+    ASSERT_TRUE(analysis_db->UpdateBattleSetStatus(battle_set_id, BattleSetStatus::Victory, now, &err)) << err;
 
     RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
-    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "SUCCEEDED");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_group WHERE battle_set_id=" + std::to_string(battle_set_id) + ";").c_str()), "VICTORY");
     EXPECT_EQ(
         ReadInt64(db_, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='analysis-battle';"),
         ReadInt64(db_, "SELECT COALESCE(MAX(outbox_id),0) FROM ab_outbox_message;"));
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ab_outbox_message WHERE event_type='AnalysisBattle.TurnJobResultUpdated.v1' AND payload_ref_kind='turn_job' AND payload_ref_id=" + std::to_string(turn_job_id) + ";").c_str()),
+        1);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ab_outbox_message WHERE event_type='AnalysisBattle.TurnWaveStatusUpdated.v1' AND payload_ref_kind='turn_wave' AND payload_ref_id=" + std::to_string(wave_id) + ";").c_str()),
+        1);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ab_outbox_message WHERE event_type='AnalysisBattle.BattleSetStatusUpdated.v1' AND payload_ref_kind='battle_set' AND payload_ref_id=" + std::to_string(battle_set_id) + ";").c_str()),
+        1);
+    EXPECT_FALSE(analysis_db->UpdateBattleTurnJobResult(
+        {
+            .exec_job_id = 999999,
+            .job_state = BattleTurnJobState::Succeeded,
+            .has_results = true,
+            .recorded_at_utc = now,
+        },
+        &err));
+    EXPECT_FALSE(analysis_db->UpdateBattleTurnWaveStatus(999999, BattleTurnWaveStatus::Completed, now, &err));
+    EXPECT_FALSE(analysis_db->UpdateBattleSetStatus(999999, BattleSetStatus::Victory, now, &err));
+    EXPECT_EQ(
+        ReadInt64(db_, "SELECT COUNT(*) FROM ab_outbox_message WHERE event_type IN ('AnalysisBattle.TurnJobResultUpdated.v1','AnalysisBattle.TurnWaveStatusUpdated.v1','AnalysisBattle.BattleSetStatusUpdated.v1');"),
+        3);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSecondTurnSingleTurnJobsRefreshFromResultEvents) {
+    using namespace savor::db;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    ASSERT_NE(analysis_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1712304100000));
+    std::string err;
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "projection-turn-two-set",
+            .entry_savestate_id = 111,
+            .battle_run_spec_id = 222,
+            .explorer_settings_id = 333,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "projection-turn-two",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 777,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "projection-turn-two",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 2,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Running,
+            .created_at_utc = now,
+            .correlation_id = "projection-turn-two",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::array<std::int64_t, 4> turn_job_ids{};
+    for (int index = 0; index < 4; ++index) {
+        ASSERT_TRUE(analysis_db->RecordBattleTurnJob(
+            {
+                .wave_id = wave_id,
+                .exec_job_id = 7101 + index,
+                .plan_id = 9101 + index,
+                .fake_attacks_this_turn = 1,
+                .fake_attacks_used_before = 2,
+                .job_state = BattleTurnJobState::Queued,
+                .has_results = false,
+                .recorded_at_utc = now,
+                .correlation_id = "projection-turn-two",
+                .causation_id = "test",
+            },
+            &turn_job_ids[index],
+            &err)) << err;
+    }
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ui_battle_turn_job WHERE wave_id=" + std::to_string(wave_id) + " AND job_state='QUEUED';").c_str()),
+        4);
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "RUNNING");
+
+    for (int index = 0; index < 4; ++index) {
+        ASSERT_TRUE(analysis_db->UpdateBattleTurnJobResult(
+            {
+                .exec_job_id = 7101 + index,
+                .job_state = BattleTurnJobState::Succeeded,
+                .ended_at_utc = now,
+                .has_results = true,
+                .vi_start = 20 + index,
+                .vi_end = 30 + index,
+                .delta_vi = 10,
+                .battle_outcome = savor::battle::Outcome::Victory,
+                .recorded_at_utc = now,
+                .correlation_id = "projection-turn-two",
+                .causation_id = "test",
+            },
+            &err)) << err;
+    }
+    ASSERT_TRUE(analysis_db->UpdateBattleTurnWaveStatus(wave_id, BattleTurnWaveStatus::Completed, now, &err)) << err;
+    ASSERT_TRUE(analysis_db->UpdateBattleSetStatus(battle_set_id, BattleSetStatus::Victory, now, &err)) << err;
+
+    RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ui_battle_turn_job WHERE wave_id=" + std::to_string(wave_id) + " AND job_state='SUCCEEDED';").c_str()),
+        4);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ui_battle_turn_job WHERE wave_id=" + std::to_string(wave_id) + " AND job_state='QUEUED';").c_str()),
+        0);
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_group WHERE battle_set_id=" + std::to_string(battle_set_id) + ";").c_str()), "VICTORY");
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT COUNT(*) FROM ab_outbox_message WHERE event_type='AnalysisBattle.TurnJobResultUpdated.v1' AND payload_ref_kind='turn_job' AND aggregate_id='" + std::to_string(battle_set_id) + "';").c_str()),
+        4);
 }
 
 TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleRefreshesParentAggregateForTurnJobAndFollowupRows) {

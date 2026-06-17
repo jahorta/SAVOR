@@ -448,6 +448,37 @@ std::optional<std::int64_t> BattleSetIdForTurnJob(sqlite3* db, std::int64_t turn
     return sqlite3_column_int64(st.st, 0);
 }
 
+struct BattleTurnJobProjectionRef {
+    std::int64_t battle_set_id = 0;
+    std::int64_t turn_job_id = 0;
+};
+
+std::optional<BattleTurnJobProjectionRef> BattleTurnJobProjectionRefForExecJob(sqlite3* db, std::int64_t exec_job_id) {
+    Statement st;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT w.battle_set_id,j.turn_job_id "
+            "FROM ab_turn_job j "
+            "JOIN ab_turn_wave w ON w.wave_id=j.wave_id "
+            "WHERE j.exec_job_id=?1;",
+            -1,
+            &st.st,
+            nullptr)
+        != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int64(st.st, 1, exec_job_id);
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return std::nullopt;
+    }
+
+    return BattleTurnJobProjectionRef{
+        .battle_set_id = sqlite3_column_int64(st.st, 0),
+        .turn_job_id = sqlite3_column_int64(st.st, 1),
+    };
+}
+
 std::optional<std::int64_t> TerminalFollowupIdForTurnJob(sqlite3* db, std::int64_t turn_job_id) {
     Statement st;
     if (sqlite3_prepare_v2(
@@ -2737,6 +2768,13 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
         return false;
     }
 
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
@@ -2749,6 +2787,7 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
             &st.st,
             nullptr)
         != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -2776,10 +2815,50 @@ bool SqliteAnalysisDb::UpdateBattleTurnJobResult(
     if (command.recorded_at_utc.has_value()) sqlite3_bind_int64(st.st, 18, command.recorded_at_utc->time_since_epoch().count());
     else sqlite3_bind_null(st.st, 18);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    return sqlite3_changes(db_) > 0;
+    if (sqlite3_changes(db_) <= 0) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto projection_ref = BattleTurnJobProjectionRefForExecJob(db_, *command.exec_job_id);
+    if (!projection_ref.has_value()) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        if (error_out) *error_out = "exec_job_id does not resolve to battle turn job";
+        return false;
+    }
+
+    const auto occurred_at_utc = command.recorded_at_utc.has_value()
+        ? command.recorded_at_utc->time_since_epoch().count()
+        : (command.ended_at_utc.has_value()
+            ? command.ended_at_utc->time_since_epoch().count()
+            : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    if (!InsertBattleOutboxEvent(
+            db_,
+            "AnalysisBattle.TurnJobResultUpdated.v1",
+            "battle_set",
+            std::to_string(projection_ref->battle_set_id),
+            "",
+            "",
+            occurred_at_utc,
+            "turn_job",
+            projection_ref->turn_job_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
 }
 
 bool SqliteAnalysisDb::CreateBattleSelectionPool(
@@ -3120,6 +3199,12 @@ bool SqliteAnalysisDb::UpdateBattleSetStatus(
         if (error_out) *error_out = "battle_set_id and status are required";
         return false;
     }
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
@@ -3128,6 +3213,7 @@ bool SqliteAnalysisDb::UpdateBattleSetStatus(
             &st.st,
             nullptr)
         != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -3137,10 +3223,41 @@ bool SqliteAnalysisDb::UpdateBattleSetStatus(
     if (completed_at_utc.has_value()) sqlite3_bind_int64(st.st, 3, completed_at_utc->time_since_epoch().count());
     else sqlite3_bind_null(st.st, 3);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    return sqlite3_changes(db_) > 0;
+    if (sqlite3_changes(db_) <= 0) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto occurred_at_utc = completed_at_utc.has_value()
+        ? completed_at_utc->time_since_epoch().count()
+        : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (!InsertBattleOutboxEvent(
+            db_,
+            "AnalysisBattle.BattleSetStatusUpdated.v1",
+            "battle_set",
+            std::to_string(battle_set_id),
+            "",
+            "",
+            occurred_at_utc,
+            "battle_set",
+            battle_set_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
 }
 
 bool SqliteAnalysisDb::UpdateBattleTurnWaveStatus(
@@ -3156,6 +3273,18 @@ bool SqliteAnalysisDb::UpdateBattleTurnWaveStatus(
         if (error_out) *error_out = "wave_id and status are required";
         return false;
     }
+    const auto battle_set_id = BattleSetIdForWave(db_, wave_id);
+    if (!battle_set_id.has_value()) {
+        if (error_out) *error_out = "wave_id does not resolve to battle_set";
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
     Statement st;
     if (sqlite3_prepare_v2(
             db_,
@@ -3164,6 +3293,7 @@ bool SqliteAnalysisDb::UpdateBattleTurnWaveStatus(
             &st.st,
             nullptr)
         != SQLITE_OK) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
@@ -3173,10 +3303,41 @@ bool SqliteAnalysisDb::UpdateBattleTurnWaveStatus(
     if (completed_at_utc.has_value()) sqlite3_bind_int64(st.st, 3, completed_at_utc->time_since_epoch().count());
     else sqlite3_bind_null(st.st, 3);
     if (sqlite3_step(st.st) != SQLITE_DONE) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         if (error_out) *error_out = sqlite3_errmsg(db_);
         return false;
     }
-    return sqlite3_changes(db_) > 0;
+    if (sqlite3_changes(db_) <= 0) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    const auto occurred_at_utc = completed_at_utc.has_value()
+        ? completed_at_utc->time_since_epoch().count()
+        : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (!InsertBattleOutboxEvent(
+            db_,
+            "AnalysisBattle.TurnWaveStatusUpdated.v1",
+            "battle_set",
+            std::to_string(battle_set_id.value()),
+            "",
+            "",
+            occurred_at_utc,
+            "turn_wave",
+            wave_id,
+            error_out)) {
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(db_);
+        }
+        (void)sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
 }
 
 std::optional<BattleSetSnapshot> SqliteAnalysisDb::GetBattleSet(std::int64_t battle_set_id) const {
@@ -3987,6 +4148,39 @@ std::optional<BattlePayloadRecord> SqliteAnalysisDb::ResolveBattlePayload(
         record.battle_set_id = view->battle_set_id;
         record.wave_id = view->wave_id;
         record.turn_job_id = view->turn_job_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisBattle.TurnJobResultUpdated.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleTurnJobResultUpdated(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        BattlePayloadRecord record{};
+        record.battle_set_id = view->battle_set_id;
+        record.wave_id = view->wave_id;
+        record.turn_job_id = view->turn_job_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisBattle.TurnWaveStatusUpdated.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleTurnWaveStatusUpdated(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        BattlePayloadRecord record{};
+        record.battle_set_id = view->battle_set_id;
+        record.wave_id = view->wave_id;
+        return record;
+    }
+    if (envelope.event_type == "AnalysisBattle.BattleSetStatusUpdated.v1") {
+        const auto view = battle_row_resolver_.ResolveBattleSetStatusUpdated(envelope.payload_ref_kind, envelope.payload_ref_id);
+        if (!view.has_value()) {
+            return std::nullopt;
+        }
+
+        BattlePayloadRecord record{};
+        record.battle_set_id = view->battle_set_id;
         return record;
     }
     if (envelope.event_type == "AnalysisBattle.SelectionPoolCreated.v1") {

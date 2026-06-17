@@ -80,6 +80,10 @@ struct AnalysisBattleTurnJobRecordedPayloadView {
     std::int64_t exec_job_id = 0;
 };
 
+using AnalysisBattleTurnJobResultUpdatedPayloadView = AnalysisBattleTurnJobRecordedPayloadView;
+using AnalysisBattleTurnWaveStatusUpdatedPayloadView = AnalysisBattleTurnWaveCreatedPayloadView;
+using AnalysisBattleBattleSetStatusUpdatedPayloadView = AnalysisBattleSetCreatedPayloadView;
+
 struct AnalysisBattleSelectionPoolCreatedPayloadView {
     std::int64_t battle_set_id = 0;
     std::int64_t selection_pool_id = 0;

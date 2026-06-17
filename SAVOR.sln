@@ -34,6 +34,12 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SavorDbPerf", "SavorDbPerf\
 		{B214E6BB-5188-481B-93F5-31B0B6E31495} = {B214E6BB-5188-481B-93F5-31B0B6E31495}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SavorDbDebugTool", "SavorDbDebugTool\SavorDbDebugTool.vcxproj", "{E8658578-642C-4D5E-B11F-E64BAF89CB0F}"
+	ProjectSection(ProjectDependencies) = postProject
+		{673E613D-F810-4AEA-B4F6-40E80A21301A} = {673E613D-F810-4AEA-B4F6-40E80A21301A}
+		{A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8} = {A18AF4B4-3A2E-47D9-A252-ACF2E68DB8A8}
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -152,6 +158,18 @@ Global
 		{D1E63FD4-784B-4416-9349-B4B6645C6232}.Release|x64.Build.0 = Release|x64
 		{D1E63FD4-784B-4416-9349-B4B6645C6232}.Release|x86.ActiveCfg = Release|Win32
 		{D1E63FD4-784B-4416-9349-B4B6645C6232}.Release|x86.Build.0 = Release|Win32
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|Any CPU.Build.0 = Debug|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|x64.ActiveCfg = Debug|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|x64.Build.0 = Debug|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|x86.ActiveCfg = Debug|Win32
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Debug|x86.Build.0 = Debug|Win32
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|Any CPU.ActiveCfg = Release|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|Any CPU.Build.0 = Release|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|x64.ActiveCfg = Release|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|x64.Build.0 = Release|x64
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|x86.ActiveCfg = Release|Win32
+		{E8658578-642C-4D5E-B11F-E64BAF89CB0F}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

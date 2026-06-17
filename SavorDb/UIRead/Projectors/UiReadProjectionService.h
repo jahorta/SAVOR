@@ -25,6 +25,7 @@ struct UiReadProjectionConfig {
     int max_dirty_materialization_batch_size = 1000;
     int max_attempts = 5;
     std::chrono::milliseconds poll_interval{ 250 };
+    std::vector<std::string> enabled_stream_ids;
 };
 
 struct UiReadProjectionStreamTelemetrySnapshot {

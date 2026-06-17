@@ -247,6 +247,27 @@ inline bool ValidateAnalysisBattlePayloadV1(const EventEnvelope& envelope, std::
         }
         return true;
     }
+    if (envelope.event_type == "AnalysisBattle.TurnJobResultUpdated.v1") {
+        if (envelope.payload_ref_kind != "turn_job") {
+            if (error_out) *error_out = "payload_ref_kind must be turn_job for AnalysisBattle.TurnJobResultUpdated.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisBattle.TurnWaveStatusUpdated.v1") {
+        if (envelope.payload_ref_kind != "turn_wave") {
+            if (error_out) *error_out = "payload_ref_kind must be turn_wave for AnalysisBattle.TurnWaveStatusUpdated.v1";
+            return false;
+        }
+        return true;
+    }
+    if (envelope.event_type == "AnalysisBattle.BattleSetStatusUpdated.v1") {
+        if (envelope.payload_ref_kind != "battle_set") {
+            if (error_out) *error_out = "payload_ref_kind must be battle_set for AnalysisBattle.BattleSetStatusUpdated.v1";
+            return false;
+        }
+        return true;
+    }
     if (envelope.event_type == "AnalysisBattle.SelectionPoolCreated.v1") {
         if (envelope.payload_ref_kind != "selection_pool") {
             if (error_out) *error_out = "payload_ref_kind must be selection_pool for AnalysisBattle.SelectionPoolCreated.v1";

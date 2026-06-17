@@ -221,13 +221,7 @@
     <ClInclude Include="UIRead\IUiReadDb.h" />
     <ClInclude Include="UIRead\QueuedUiReadDb.h" />
     <ClInclude Include="UIRead\Projectors\AttachedUiReadProjectionService.h" />
-    <ClInclude Include="UIRead\Projectors\ArchiveCatalogProjector.h" />
-    <ClInclude Include="UIRead\Projectors\ArtifactProjector.h" />
-    <ClInclude Include="UIRead\Projectors\BattleProjector.h" />
-    <ClInclude Include="UIRead\Projectors\JobProjector.h" />
     <ClInclude Include="UIRead\Projectors\ProjectorContract.h" />
-    <ClInclude Include="UIRead\Projectors\SeedProbeProjector.h" />
-    <ClInclude Include="UIRead\Projectors\UiOutboxRelayCoordinator.h" />
     <ClInclude Include="UIRead\Projectors\UiReadProjectionService.h" />
     <ClInclude Include="UIRead\SqliteUiReadDb.h" />
   </ItemGroup>
@@ -275,13 +269,7 @@
     <ClCompile Include="State\QueuedStateDb.cpp" />
     <ClCompile Include="State\SqliteStateDb.cpp" />
     <ClCompile Include="UIRead\Projectors\AttachedUiReadProjectionService.cpp" />
-    <ClCompile Include="UIRead\Projectors\ArchiveCatalogProjector.cpp" />
-    <ClCompile Include="UIRead\Projectors\ArtifactProjector.cpp" />
-    <ClCompile Include="UIRead\Projectors\BattleProjector.cpp" />
-    <ClCompile Include="UIRead\Projectors\JobProjector.cpp" />
     <ClCompile Include="UIRead\Projectors\ProjectorContract.cpp" />
-    <ClCompile Include="UIRead\Projectors\SeedProbeProjector.cpp" />
-    <ClCompile Include="UIRead\Projectors\UiOutboxRelayCoordinator.cpp" />
     <ClCompile Include="UIRead\Projectors\UiReadProjectionService.cpp" />
     <ClCompile Include="UIRead\QueuedUiReadDb.cpp" />
     <ClCompile Include="UIRead\SqliteUiReadDb.cpp" />

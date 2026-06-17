@@ -983,6 +983,21 @@ bool ClassifyOutboxEvent(
             const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
             return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
+        if (event.event_type == "AnalysisBattle.TurnJobResultUpdated.v1") {
+            const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
+            if (!AddDirty(dirty, "battle_turn_job", turn_job_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
+        }
+        if (event.event_type == "AnalysisBattle.TurnWaveStatusUpdated.v1") {
+            const auto wave_id = event.payload_ref_kind == "turn_wave" ? event.payload_ref_id : ParseInt64(event.aggregate_id);
+            if (!AddDirty(dirty, "battle_wave", wave_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
+        }
+        if (event.event_type == "AnalysisBattle.BattleSetStatusUpdated.v1") {
+            return AddDirty(dirty, "battle_group", ResolveBattleSetId(source, event, error_out), event, error_out);
+        }
         if (event.event_type == "AnalysisBattle.TerminalFollowupUpdated.v1") {
             const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
             if (!AddDirty(dirty, "battle_followup", turn_job_id, event, error_out)) return false;
@@ -1422,6 +1437,10 @@ OutboxEvent DirtyMaterializationDiagnosticEvent(
 
 UiReadProjectionService::UiReadProjectionService(UiReadProjectionConfig config)
     : config_(std::move(config)) {
+    auto stream_enabled = [this](const std::string& stream_id) {
+        return config_.enabled_stream_ids.empty()
+            || std::find(config_.enabled_stream_ids.begin(), config_.enabled_stream_ids.end(), stream_id) != config_.enabled_stream_ids.end();
+    };
     auto add_stream = [this](StreamKind kind, std::string stream_id, std::string context, std::string table, std::filesystem::path path) {
         auto stream = std::make_unique<StreamRuntime>();
         stream->kind = kind;
@@ -1432,11 +1451,11 @@ UiReadProjectionService::UiReadProjectionService(UiReadProjectionConfig config)
         streams_.push_back(std::move(stream));
     };
 
-    add_stream(StreamKind::Execution, "execution", "Execution", "exec_outbox_message", config_.execution_db_path);
-    add_stream(StreamKind::State, "state", "State", "state_outbox_message", config_.state_db_path);
-    add_stream(StreamKind::AnalysisSeedProbe, "analysis-seedprobe", "AnalysisSeedProbe", "sp_outbox_message", config_.analysis_db_path);
-    add_stream(StreamKind::AnalysisBattle, "analysis-battle", "AnalysisBattle", "ab_outbox_message", config_.analysis_db_path);
-    add_stream(StreamKind::Archive, "archive", "Archive", "ar_outbox_message", config_.archive_db_path);
+    if (stream_enabled("execution")) add_stream(StreamKind::Execution, "execution", "Execution", "exec_outbox_message", config_.execution_db_path);
+    if (stream_enabled("state")) add_stream(StreamKind::State, "state", "State", "state_outbox_message", config_.state_db_path);
+    if (stream_enabled("analysis-seedprobe")) add_stream(StreamKind::AnalysisSeedProbe, "analysis-seedprobe", "AnalysisSeedProbe", "sp_outbox_message", config_.analysis_db_path);
+    if (stream_enabled("analysis-battle")) add_stream(StreamKind::AnalysisBattle, "analysis-battle", "AnalysisBattle", "ab_outbox_message", config_.analysis_db_path);
+    if (stream_enabled("archive")) add_stream(StreamKind::Archive, "archive", "Archive", "ar_outbox_message", config_.archive_db_path);
 }
 
 UiReadProjectionService::~UiReadProjectionService() {

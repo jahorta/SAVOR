@@ -885,20 +885,39 @@ TEST(Stage3cEventContracts, AnalysisSpineValidationRequiresConcretePayloadRefKin
 TEST(Stage3cEventContracts, BattleValidationRequiresConcretePayloadRefKinds) {
     using namespace savor::db::events;
 
-    EventEnvelope envelope{};
-    envelope.event_type = "AnalysisBattle.TurnJobRecorded.v1";
-    envelope.event_version = 1;
-    envelope.context_name = "AnalysisBattle";
-    envelope.aggregate_kind = "battle_set";
-    envelope.payload_ref_kind = "battle_event";
-    envelope.payload_ref_id = 77;
+    struct Case {
+        const char* event_type;
+        const char* required_payload_kind;
+    };
+    constexpr std::array<Case, 4> cases{ {
+        { "AnalysisBattle.TurnJobRecorded.v1", "turn_job" },
+        { "AnalysisBattle.TurnJobResultUpdated.v1", "turn_job" },
+        { "AnalysisBattle.TurnWaveStatusUpdated.v1", "turn_wave" },
+        { "AnalysisBattle.BattleSetStatusUpdated.v1", "battle_set" },
+    } };
 
-    std::string error;
-    EXPECT_FALSE(ValidateAnalysisBattlePayloadV1(envelope, &error));
-    EXPECT_EQ(error, "payload_ref_kind must be turn_job for AnalysisBattle.TurnJobRecorded.v1");
+    for (const auto& test_case : cases) {
+        const auto contract = ResolvePayloadResolverContract(test_case.event_type, 1);
+        ASSERT_TRUE(contract.has_value()) << test_case.event_type;
+        EXPECT_EQ(*contract, PayloadResolverContract::AnalysisBattleV1) << test_case.event_type;
 
-    envelope.payload_ref_kind = "turn_job";
-    EXPECT_TRUE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << error;
+        EventEnvelope envelope{};
+        envelope.event_type = test_case.event_type;
+        envelope.event_version = 1;
+        envelope.context_name = "AnalysisBattle";
+        envelope.aggregate_kind = "battle_set";
+        envelope.payload_ref_kind = "battle_event";
+        envelope.payload_ref_id = 77;
+
+        std::string error;
+        EXPECT_FALSE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << test_case.event_type;
+        EXPECT_EQ(
+            error,
+            std::string("payload_ref_kind must be ") + test_case.required_payload_kind + " for " + test_case.event_type);
+
+        envelope.payload_ref_kind = test_case.required_payload_kind;
+        EXPECT_TRUE(ValidateAnalysisBattlePayloadV1(envelope, &error)) << test_case.event_type << ": " << error;
+    }
 }
 
 TEST(Stage3cEventContracts, AnalysisSpineFamilyDispatchRoutesToSpineContractV1) {

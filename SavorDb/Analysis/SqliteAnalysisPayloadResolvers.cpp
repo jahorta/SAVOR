@@ -344,6 +344,24 @@ std::optional<events::AnalysisBattleTurnJobRecordedPayloadView> SqliteBattlePayl
     return view;
 }
 
+std::optional<events::AnalysisBattleTurnJobResultUpdatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleTurnJobResultUpdated(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    return ResolveBattleTurnJobRecorded(payload_ref_kind, payload_ref_id);
+}
+
+std::optional<events::AnalysisBattleTurnWaveStatusUpdatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleTurnWaveStatusUpdated(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    return ResolveBattleTurnWaveCreated(payload_ref_kind, payload_ref_id);
+}
+
+std::optional<events::AnalysisBattleBattleSetStatusUpdatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleSetStatusUpdated(
+    std::string_view payload_ref_kind,
+    std::int64_t payload_ref_id) const {
+    return ResolveBattleSetCreated(payload_ref_kind, payload_ref_id);
+}
+
 std::optional<events::AnalysisBattleSelectionPoolCreatedPayloadView> SqliteBattlePayloadRowResolver::ResolveBattleSelectionPoolCreated(
     std::string_view payload_ref_kind,
     std::int64_t payload_ref_id) const {
