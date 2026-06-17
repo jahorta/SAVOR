@@ -45,7 +45,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     uint32_t worker_start_timeout_ms = 20000;
     uint32_t worker_start_retry_backoff_ms = 5000;
     uint32_t max_worker_start_attempts = 3;
-    uint32_t max_concurrent_worker_starts = 1;
+    uint32_t max_concurrent_worker_starts = 5;
     std::string worker_exe_path;
     std::string iso_path;
     std::string dolphin_base_dir;
