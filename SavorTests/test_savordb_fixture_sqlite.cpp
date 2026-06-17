@@ -138,7 +138,7 @@ void RunUiReadProjectionUntilCaughtUp(
         const auto snapshot = service.SnapshotPerformance();
         const auto* stream = FindProjectionStream(snapshot, stream_id);
         ASSERT_NE(stream, nullptr);
-        if (stream->lag_count == 0 && stream->last_outbox_id == stream->source_high_water_outbox_id) {
+        if (stream->lag_count == 0 && stream->dirty_count == 0 && stream->last_outbox_id == stream->source_high_water_outbox_id) {
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
@@ -6656,7 +6656,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleSelectionDecisionAdvancesW
         ReadInt64(db_, "SELECT COALESCE(MAX(outbox_id),0) FROM ab_outbox_message;"));
 }
 
-TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleProjectsOnlyAffectedTurnJobAndFollowupRows) {
+TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleRefreshesParentAggregateForTurnJobAndFollowupRows) {
     using namespace savor::db;
 
     auto* analysis_db = db_service_->AnalysisDb();
@@ -6743,7 +6743,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleProjectsOnlyAffectedTurnJo
         &err)) << err;
 
     RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
-    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "COMPLETED");
     EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(second_turn_job_id) + ";").c_str()), "SUCCEEDED");
 
     ASSERT_TRUE(ExecSql(db_, ("UPDATE ab_turn_wave SET status='RUNNING' WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()));
@@ -6764,7 +6764,7 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleProjectsOnlyAffectedTurnJo
         &err)) << err;
 
     RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
-    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
+    EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "RUNNING");
     EXPECT_EQ(ReadText(db_, ("SELECT note FROM ui_battle_followup WHERE turn_job_id=" + std::to_string(first_turn_job_id) + ";").c_str()), "incremental-followup");
 }
 
@@ -6972,6 +6972,214 @@ TEST_F(SqliteDbFixture, UiReadProjectionFailureDiagnosticsRecordPayloadRefsBefor
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT is_dead_letter FROM ui_projection_dead_letter WHERE stream_id='state';"), 0);
     EXPECT_NE(ReadText(verify_handle, "SELECT error_text FROM ui_projection_dead_letter WHERE stream_id='state';").find("ui_artifact_browser"), std::string::npos);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT dead_letter_count FROM ui_projection_subscription WHERE stream_id='state';"), 0);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionAdvancesStateCursorOncePerBatch) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-batch-cursor";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* state_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.state_db_path.string().c_str(), &state_handle));
+    ASSERT_NE(state_handle, nullptr);
+    ASSERT_EQ(SQLITE_OK, sqlite3_busy_timeout(state_handle, 5000));
+    savor::db::state::SqliteStateDb state_db(state_handle);
+
+    std::string err;
+    for (int i = 0; i < 3; ++i) {
+        std::int64_t artifact_id = 0;
+        ASSERT_TRUE(state_db.StoreArtifact(
+            {
+                .sha256 = "projection-batch-artifact-" + std::to_string(i),
+                .size_bytes = 12 + i,
+                .compression_kind = 0,
+                .filename = "batch-" + std::to_string(i) + ".sav",
+                .file_ext = ".sav",
+                .artifact_kind = "SAV",
+                .created_at_utc = savor::db::types::UtcNow(),
+                .correlation_id = "projection-batch",
+                .causation_id = "test",
+            },
+            &artifact_id,
+            &err)) << err;
+    }
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 3,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    ASSERT_TRUE(projection.Start(&err)) << err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    projection.Stop();
+    sqlite3_close(state_handle);
+    state_handle = nullptr;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_artifact_browser;"), 3);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='state';"), 3);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT source_high_water_outbox_id FROM ui_projection_subscription WHERE stream_id='state';"), 3);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT lag_count FROM ui_projection_subscription WHERE stream_id='state';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_subscription_audit WHERE source_context='State';"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT from_outbox_id FROM ui_projection_subscription_audit WHERE source_context='State';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT to_outbox_id FROM ui_projection_subscription_audit WHERE source_context='State';"), 3);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT processed_count FROM ui_projection_subscription_audit WHERE source_context='State';"), 3);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionCoalescesProgressFloodToOneDirtyJob) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-progress-flood";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(1,NULL,42,'progress-flood','test',1000,0,1,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(17401,1,NULL,42,1,'test',1,'progress-flood-job',1,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
+    for (int i = 1; i <= 1000; ++i) {
+        ASSERT_TRUE(ExecSql(exec_handle,
+            ("INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+             "VALUES(" + std::to_string(i) + ",'progress-" + std::to_string(i) + "','Execution.JobProgressed.v1',1,'Execution','job','17401','test','test'," + std::to_string(1000 + i) + ",'job',17401,NULL,0,NULL);")
+                .c_str()));
+    }
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1000,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.Start(&err)) << err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    projection.Stop();
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary;"), 1);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=17401;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1000);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT lag_count FROM ui_projection_subscription WHERE stream_id='execution';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT processed_count FROM ui_projection_subscription_audit WHERE source_context='Execution';"), 1000);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCounts) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-terminal-job-workflow";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
+        "VALUES(25001,'terminal-job-test','RUNNING','job_set',25002,'test',1000,1100);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(25002,NULL,42,'terminal-job-test','test',1000,0,2,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,created_at_utc,started_at_utc) "
+        "VALUES(25003,25001,'terminal-step','job_set','RUNNING',5,1,1,25002,1000,1100);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(25004,25002,NULL,42,1,'test',1,'terminal-job-completed',5,'COMPLETED',1,1,'worker-1',NULL,1000,1100,1200,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(25005,25002,NULL,42,1,'test',2,'terminal-job-running',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(1,'terminal-job-completed-event','Execution.JobCompleted.v1',1,'Execution','job','25004','test','test',1200,'job',25004,NULL,0,NULL);"));
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1000,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.Start(&err)) << err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    projection.Stop();
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=25004;"), "COMPLETED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=25001;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 2);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_completed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_failed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1);
     sqlite3_close(verify_handle);
 }
 

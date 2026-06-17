@@ -21,7 +21,8 @@ struct UiReadProjectionConfig {
     std::filesystem::path state_db_path;
     std::filesystem::path analysis_db_path;
     std::filesystem::path archive_db_path;
-    int max_batch_size = 100;
+    int max_batch_size = 5000;
+    int max_dirty_materialization_batch_size = 1000;
     int max_attempts = 5;
     std::chrono::milliseconds poll_interval{ 250 };
 };
@@ -42,6 +43,7 @@ struct UiReadProjectionStreamTelemetrySnapshot {
     std::int64_t source_high_water_outbox_id = 0;
     std::int64_t lag_count = 0;
     std::int64_t lag_age_ms = 0;
+    std::int64_t dirty_count = 0;
     std::string last_error;
 };
 
@@ -53,6 +55,7 @@ struct UiReadProjectionTelemetrySnapshot {
     std::uint64_t last_run_duration_ms = 0;
     std::uint64_t max_run_duration_ms = 0;
     std::int64_t configured_max_batch_size = 0;
+    std::int64_t configured_max_dirty_materialization_batch_size = 0;
     std::int64_t configured_max_attempts = 0;
     std::vector<UiReadProjectionStreamTelemetrySnapshot> streams;
 };

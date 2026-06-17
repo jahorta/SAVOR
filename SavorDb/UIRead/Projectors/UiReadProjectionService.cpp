@@ -6,6 +6,7 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace savor::db::uiread::projectors {
 namespace {
@@ -30,6 +31,12 @@ struct OutboxEvent {
     std::int64_t occurred_at_utc = 0;
     std::string payload_ref_kind;
     std::int64_t payload_ref_id = 0;
+};
+
+struct DirtyEntity {
+    std::string kind;
+    std::int64_t id = 0;
+    std::int64_t outbox_id = 0;
 };
 
 std::int64_t UtcNowMillis() {
@@ -893,33 +900,58 @@ enum class StreamKind {
     Archive,
 };
 
-bool ApplyEvent(StreamKind kind, sqlite3* source, sqlite3* ui, const OutboxEvent& event, std::string* error_out) {
+bool AddDirty(
+    std::vector<DirtyEntity>* dirty,
+    std::string kind,
+    std::int64_t id,
+    const OutboxEvent& event,
+    std::string* error_out) {
+    if (id <= 0) {
+        if (error_out != nullptr) {
+            *error_out = "projection event did not resolve required entity id: " + event.event_type;
+        }
+        return false;
+    }
+    dirty->push_back(DirtyEntity{
+        .kind = std::move(kind),
+        .id = id,
+        .outbox_id = event.outbox_id,
+    });
+    return true;
+}
+
+bool ClassifyOutboxEvent(
+    StreamKind kind,
+    sqlite3* source,
+    const OutboxEvent& event,
+    std::vector<DirtyEntity>* dirty,
+    std::string* error_out) {
     switch (kind) {
     case StreamKind::Execution:
         if (IsExecutionWorkflowEvent(event.event_type)) {
-            return ProjectWorkflowInstance(source, ui, ParseInt64(event.aggregate_id), error_out);
+            return AddDirty(dirty, "workflow", ParseInt64(event.aggregate_id), event, error_out);
         }
         if (IsExecutionJobEvent(event.event_type)) {
             if (event.event_type == "Execution.JobSetCreated.v1" || event.aggregate_kind == "job_set") {
                 const auto job_set_id = ParseInt64(event.aggregate_id);
-                return ProjectJobSet(source, ui, job_set_id, error_out)
-                    && ProjectWorkflowForJobSet(source, ui, job_set_id, error_out);
+                if (!AddDirty(dirty, "job_set", job_set_id, event, error_out)) return false;
+                const auto workflow_instance_id = ResolveWorkflowInstanceForJobSet(source, job_set_id, error_out);
+                return workflow_instance_id <= 0 || AddDirty(dirty, "workflow", workflow_instance_id, event, error_out);
             }
             const auto job_id = ParseInt64(event.aggregate_id);
-            if (!ProjectJob(source, ui, job_id, error_out)) {
-                return false;
-            }
+            if (!AddDirty(dirty, "job", job_id, event, error_out)) return false;
             if (event.event_type == "Execution.JobQueued.v1"
                 || event.event_type == "Execution.JobCompleted.v1"
                 || event.event_type == "Execution.JobRestored.v1") {
-                return ProjectWorkflowForJob(source, ui, job_id, error_out);
+                const auto workflow_instance_id = ResolveWorkflowInstanceForJob(source, job_id, error_out);
+                return workflow_instance_id <= 0 || AddDirty(dirty, "workflow", workflow_instance_id, event, error_out);
             }
             return true;
         }
         break;
     case StreamKind::State:
         if (event.event_type == "State.ArtifactStored.v1") {
-            return ProjectArtifact(source, ui, event.payload_ref_id, error_out);
+            return AddDirty(dirty, "artifact", event.payload_ref_id, event, error_out);
         }
         break;
     case StreamKind::AnalysisSeedProbe:
@@ -932,22 +964,30 @@ bool ApplyEvent(StreamKind kind, sqlite3* source, sqlite3* ui, const OutboxEvent
             || event.event_type == "AnalysisSeedProbe.UniqueSeedRecorded.v1"
             || event.event_type == "AnalysisSeedProbe.EncounterProjectionRecorded.v1"
             || event.event_type == "AnalysisSeedProbe.RunCompleted.v1") {
-            return ProjectSeedProbeRun(source, ui, ResolveProbeRunId(source, event, error_out), error_out);
+            return AddDirty(dirty, "seed_probe_run", ResolveProbeRunId(source, event, error_out), event, error_out);
         }
         break;
     case StreamKind::AnalysisBattle:
         if (event.event_type == "AnalysisBattle.BattleSetCreated.v1") {
-            return ProjectBattleGroup(source, ui, ResolveBattleSetId(source, event, error_out), error_out);
+            return AddDirty(dirty, "battle_group", ResolveBattleSetId(source, event, error_out), event, error_out);
         }
         if (event.event_type == "AnalysisBattle.TurnWaveCreated.v1") {
             const auto wave_id = event.payload_ref_kind == "turn_wave" ? event.payload_ref_id : ParseInt64(event.aggregate_id);
-            return ProjectBattleWave(source, ui, wave_id, error_out);
+            if (!AddDirty(dirty, "battle_wave", wave_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
         if (event.event_type == "AnalysisBattle.TurnJobRecorded.v1") {
-            return ProjectBattleTurnJob(source, ui, ResolveTurnJobId(source, event, error_out), error_out);
+            const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
+            if (!AddDirty(dirty, "battle_turn_job", turn_job_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
         if (event.event_type == "AnalysisBattle.TerminalFollowupUpdated.v1") {
-            return ProjectBattleFollowupForTurnJob(source, ui, ResolveTurnJobId(source, event, error_out), error_out);
+            const auto turn_job_id = ResolveTurnJobId(source, event, error_out);
+            if (!AddDirty(dirty, "battle_followup", turn_job_id, event, error_out)) return false;
+            const auto battle_set_id = ResolveBattleSetId(source, event, error_out);
+            return battle_set_id <= 0 || AddDirty(dirty, "battle_group", battle_set_id, event, error_out);
         }
         if (event.event_type == "AnalysisBattle.SeedCandidateAdded.v1"
             || event.event_type == "AnalysisBattle.ContextProbeCreated.v1"
@@ -962,7 +1002,11 @@ bool ApplyEvent(StreamKind kind, sqlite3* source, sqlite3* ui, const OutboxEvent
             || event.event_type == "Archive.RehydrateRequested.v1"
             || event.event_type == "Archive.RehydrateCompleted.v1"
             || event.event_type == "Archive.RehydrateFailed.v1") {
-            return ProjectArchive(source, ui, event, error_out);
+            if (event.payload_ref_kind == "rehydrate_request") {
+                return AddDirty(dirty, "rehydrate_request", event.payload_ref_id, event, error_out);
+            }
+            const auto package_id = event.payload_ref_kind == "archive_package" ? event.payload_ref_id : ParseInt64(event.aggregate_id);
+            return AddDirty(dirty, "archive_package", package_id, event, error_out);
         }
         break;
     }
@@ -994,6 +1038,7 @@ struct UiReadProjectionService::StreamRuntime {
     std::int64_t source_high_water_outbox_id = 0;
     std::int64_t lag_count = 0;
     std::int64_t lag_age_ms = 0;
+    std::int64_t dirty_count = 0;
     std::string last_error;
     bool running = false;
 };
@@ -1065,6 +1110,8 @@ bool AdvanceCursor(
     std::int64_t lag_count,
     std::int64_t lag_age_ms,
     int batch_size,
+    int processed_count,
+    std::int64_t from_outbox_id,
     std::uint64_t duration_ms,
     std::string* error_out) {
     Statement st;
@@ -1091,14 +1138,15 @@ bool AdvanceCursor(
     Statement audit;
     constexpr const char* kAudit =
         "INSERT INTO ui_projection_subscription_audit(projector_name,source_context,source_outbox_table,from_outbox_id,to_outbox_id,processed_count,failed_count,recorded_at_utc) "
-        "VALUES(?1,?2,?3,?4,?5,1,0,?6);";
+        "VALUES(?1,?2,?3,?4,?5,?6,0,?7);";
     if (!Prepare(stream.ui_db, kAudit, &audit, error_out)) return false;
     sqlite3_bind_text(audit.st, 1, stream.projector_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(audit.st, 2, stream.source_context.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(audit.st, 3, stream.source_outbox_table.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(audit.st, 4, event.outbox_id - 1);
+    sqlite3_bind_int64(audit.st, 4, from_outbox_id);
     sqlite3_bind_int64(audit.st, 5, event.outbox_id);
-    sqlite3_bind_int64(audit.st, 6, UtcNowMillis());
+    sqlite3_bind_int(audit.st, 6, processed_count);
+    sqlite3_bind_int64(audit.st, 7, UtcNowMillis());
     return StepDone(stream.ui_db, audit.st, error_out);
 }
 
@@ -1177,6 +1225,199 @@ bool RecordFailure(
     return StepDone(stream.ui_db, update.st, error_out);
 }
 
+bool UpsertDirtyEntities(
+    UiReadProjectionService::StreamRuntime& stream,
+    const std::vector<DirtyEntity>& dirty,
+    std::string* error_out) {
+    if (dirty.empty()) {
+        return true;
+    }
+
+    Statement st;
+    constexpr const char* kSql =
+        "INSERT INTO ui_projection_dirty_entity("
+        "stream_id,source_context,source_outbox_table,entity_kind,entity_id,first_outbox_id,last_outbox_id,event_count,updated_at_utc) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?6,1,?7) "
+        "ON CONFLICT(stream_id,entity_kind,entity_id) DO UPDATE SET "
+        "first_outbox_id=MIN(first_outbox_id,excluded.first_outbox_id),"
+        "last_outbox_id=MAX(last_outbox_id,excluded.last_outbox_id),"
+        "event_count=event_count+1,updated_at_utc=excluded.updated_at_utc;";
+    if (!Prepare(stream.ui_db, kSql, &st, error_out)) {
+        return false;
+    }
+
+    const auto now = UtcNowMillis();
+    for (const auto& entity : dirty) {
+        sqlite3_reset(st.st);
+        sqlite3_clear_bindings(st.st);
+        sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 2, stream.source_context.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 3, stream.source_outbox_table.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st.st, 4, entity.kind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st.st, 5, entity.id);
+        sqlite3_bind_int64(st.st, 6, entity.outbox_id);
+        sqlite3_bind_int64(st.st, 7, now);
+        if (!StepDone(stream.ui_db, st.st, error_out)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::int64_t DirtyCount(UiReadProjectionService::StreamRuntime& stream, std::string* error_out) {
+    Statement st;
+    if (!Prepare(
+            stream.ui_db,
+            "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id=?1;",
+            &st,
+            error_out)) {
+        return 0;
+    }
+    sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st.st) == SQLITE_ROW) {
+        return sqlite3_column_int64(st.st, 0);
+    }
+    return 0;
+}
+
+std::vector<DirtyEntity> ReadDirtyEntities(
+    UiReadProjectionService::StreamRuntime& stream,
+    int limit,
+    std::string* error_out) {
+    std::vector<DirtyEntity> rows;
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT entity_kind,entity_id,last_outbox_id "
+        "FROM ui_projection_dirty_entity WHERE stream_id=?1 "
+        "ORDER BY updated_at_utc ASC,last_outbox_id ASC LIMIT ?2;";
+    if (!Prepare(stream.ui_db, kSql, &st, error_out)) {
+        return rows;
+    }
+    sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 2, limit);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows.push_back(DirtyEntity{
+            .kind = Text(st.st, 0),
+            .id = sqlite3_column_int64(st.st, 1),
+            .outbox_id = sqlite3_column_int64(st.st, 2),
+        });
+    }
+    return rows;
+}
+
+bool ClearDirtyEntity(
+    UiReadProjectionService::StreamRuntime& stream,
+    const DirtyEntity& entity,
+    std::string* error_out) {
+    Statement st;
+    constexpr const char* kSql =
+        "DELETE FROM ui_projection_dirty_entity "
+        "WHERE stream_id=?1 AND entity_kind=?2 AND entity_id=?3 AND last_outbox_id<=?4;";
+    if (!Prepare(stream.ui_db, kSql, &st, error_out)) {
+        return false;
+    }
+    sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, entity.kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st.st, 3, entity.id);
+    sqlite3_bind_int64(st.st, 4, entity.outbox_id);
+    return StepDone(stream.ui_db, st.st, error_out);
+}
+
+bool MaterializeDirtyEntity(
+    UiReadProjectionService::StreamRuntime& stream,
+    const DirtyEntity& entity,
+    std::string* error_out) {
+    if (stream.kind == StreamKind::Execution) {
+        if (entity.kind == "job") return ProjectJob(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "job_set") return ProjectJobSet(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "workflow") return ProjectWorkflowInstance(stream.source_db, stream.ui_db, entity.id, error_out);
+    }
+    if (stream.kind == StreamKind::State && entity.kind == "artifact") {
+        return ProjectArtifact(stream.source_db, stream.ui_db, entity.id, error_out);
+    }
+    if (stream.kind == StreamKind::AnalysisSeedProbe && entity.kind == "seed_probe_run") {
+        return ProjectSeedProbeRun(stream.source_db, stream.ui_db, entity.id, error_out);
+    }
+    if (stream.kind == StreamKind::AnalysisBattle) {
+        if (entity.kind == "battle_group") return ProjectBattleSet(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_wave") return ProjectBattleWave(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_turn_job") return ProjectBattleTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "battle_followup") return ProjectBattleFollowupForTurnJob(stream.source_db, stream.ui_db, entity.id, error_out);
+    }
+    if (stream.kind == StreamKind::Archive) {
+        OutboxEvent event{};
+        if (entity.kind == "archive_package") {
+            event.aggregate_kind = "archive_package";
+            event.aggregate_id = std::to_string(entity.id);
+            return ProjectArchive(stream.source_db, stream.ui_db, event, error_out);
+        }
+        if (entity.kind == "rehydrate_request") {
+            event.payload_ref_kind = "rehydrate_request";
+            event.payload_ref_id = entity.id;
+            return ProjectArchive(stream.source_db, stream.ui_db, event, error_out);
+        }
+    }
+    return true;
+}
+
+bool MaterializeDirtyEntities(
+    UiReadProjectionService::StreamRuntime& stream,
+    int limit,
+    int* materialized_count_out,
+    DirtyEntity* failed_entity_out,
+    std::string* error_out) {
+    if (materialized_count_out != nullptr) {
+        *materialized_count_out = 0;
+    }
+    if (failed_entity_out != nullptr) {
+        *failed_entity_out = {};
+    }
+    const auto dirty = ReadDirtyEntities(stream, limit, error_out);
+    if (dirty.empty()) {
+        return true;
+    }
+    if (!Exec(stream.ui_db, "BEGIN IMMEDIATE;", error_out)) {
+        return false;
+    }
+    for (const auto& entity : dirty) {
+        if (!MaterializeDirtyEntity(stream, entity, error_out)
+            || !ClearDirtyEntity(stream, entity, error_out)) {
+            if (failed_entity_out != nullptr) {
+                *failed_entity_out = entity;
+            }
+            Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            return false;
+        }
+        if (materialized_count_out != nullptr) {
+            *materialized_count_out += 1;
+        }
+    }
+    if (!Exec(stream.ui_db, "COMMIT;", error_out)) {
+        Exec(stream.ui_db, "ROLLBACK;", nullptr);
+        return false;
+    }
+    return true;
+}
+
+OutboxEvent DirtyMaterializationDiagnosticEvent(
+    const UiReadProjectionService::StreamRuntime& stream,
+    const DirtyEntity& entity) {
+    OutboxEvent event{};
+    event.outbox_id = entity.outbox_id > 0 ? entity.outbox_id : stream.last_outbox_id;
+    event.event_id = "dirty-materialization:" + stream.stream_id + ":" + entity.kind + ":" + std::to_string(entity.id);
+    event.event_type = "UiReadProjection.DirtyMaterialization.v1";
+    event.event_version = 1;
+    event.context_name = stream.source_context;
+    event.aggregate_kind = entity.kind;
+    event.aggregate_id = std::to_string(entity.id);
+    event.payload_ref_kind = entity.kind;
+    event.payload_ref_id = entity.id;
+    if (stream.kind == StreamKind::State && entity.kind == "artifact") {
+        event.event_type = "State.ArtifactStored.v1";
+    }
+    return event;
+}
+
 } // namespace
 
 UiReadProjectionService::UiReadProjectionService(UiReadProjectionConfig config)
@@ -1203,24 +1444,31 @@ UiReadProjectionService::~UiReadProjectionService() {
 }
 
 bool UiReadProjectionService::Start(std::string* error_out) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (running_) return true;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (running_) return true;
+    }
     if (config_.poll_interval <= std::chrono::milliseconds::zero()) {
         if (error_out) *error_out = "UIRead projection poll interval must be positive";
         return false;
     }
-    if (config_.max_batch_size <= 0 || config_.max_attempts <= 0) {
-        if (error_out) *error_out = "UIRead projection batch size and attempts must be positive";
+    if (config_.max_batch_size <= 0 || config_.max_dirty_materialization_batch_size <= 0 || config_.max_attempts <= 0) {
+        if (error_out) *error_out = "UIRead projection batch size, dirty materialization batch size, and attempts must be positive";
         return false;
     }
     for (auto& stream : streams_) {
         if (!OpenStream(*stream, error_out)) {
-            Stop();
+            for (auto& opened_stream : streams_) {
+                CloseStream(*opened_stream);
+            }
             return false;
         }
     }
-    stopping_ = false;
-    running_ = true;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        stopping_ = false;
+        running_ = true;
+    }
     for (auto& stream : streams_) {
         stream->running = true;
         stream->worker = std::thread([this, stream = stream.get()]() { WorkerLoop(stream); });
@@ -1300,10 +1548,25 @@ void UiReadProjectionService::CloseStream(StreamRuntime& stream) {
 }
 
 bool UiReadProjectionService::RunOnce(std::string* error_out) {
+    if (config_.max_batch_size <= 0 || config_.max_dirty_materialization_batch_size <= 0 || config_.max_attempts <= 0) {
+        if (error_out) *error_out = "UIRead projection batch size, dirty materialization batch size, and attempts must be positive";
+        return false;
+    }
+
     bool all_ok = true;
     std::string combined_error;
     for (auto& stream : streams_) {
         std::string stream_error;
+        if (stream->source_db == nullptr || stream->ui_db == nullptr) {
+            CloseStream(*stream);
+            if (!OpenStream(*stream, &stream_error)) {
+                all_ok = false;
+                if (combined_error.empty()) {
+                    combined_error = stream->stream_id + ": " + stream_error;
+                }
+                continue;
+            }
+        }
         if (!RunStreamOnce(*stream, &stream_error)) {
             all_ok = false;
             if (combined_error.empty()) {
@@ -1352,71 +1615,95 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
     bool ok = true;
     bool stopped = false;
     std::string failure;
+    int processed_count = 0;
 
-    for (const auto& event : batch) {
-        if (IsStoppingRequested()) {
-            stopped = true;
-            break;
-        }
-        const auto event_lag_count = LagCount(stream.source_db, stream.source_outbox_table, event.outbox_id, error_out);
-        if (IsStoppingRequested()) {
-            stopped = true;
-            break;
-        }
-        const auto event_lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, event.outbox_id, error_out);
-        if (IsStoppingRequested()) {
-            stopped = true;
-            break;
-        }
-        const auto duration_ms = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
-
-        if (!Exec(stream.ui_db, "BEGIN IMMEDIATE;", error_out)) {
-            if (IsStoppingRequested()) {
-                stopped = true;
-                break;
-            }
-            ok = false;
-            failure = error_out != nullptr ? *error_out : "failed to begin UI projection transaction";
-            break;
-        }
-
+    if (!batch.empty()) {
+        std::vector<DirtyEntity> dirty;
+        dirty.reserve(batch.size());
+        const OutboxEvent* failure_event = nullptr;
         std::string handler_error;
-        if (!ApplyEvent(stream.kind, stream.source_db, stream.ui_db, event, &handler_error)
-            || !AdvanceCursor(stream, event, high_water, event_lag_count, event_lag_age, static_cast<int>(batch.size()), duration_ms, &handler_error)) {
-            Exec(stream.ui_db, "ROLLBACK;", nullptr);
+        for (const auto& event : batch) {
             if (IsStoppingRequested()) {
                 stopped = true;
                 break;
             }
+            if (!ClassifyOutboxEvent(stream.kind, stream.source_db, event, &dirty, &handler_error)) {
+                failure_event = &event;
+                ok = false;
+                failure = handler_error.empty() ? "projection event classification failed" : handler_error;
+                break;
+            }
+            processed_count += 1;
+        }
+
+        if (!stopped && ok) {
+            const auto& last_event = batch[static_cast<std::size_t>(processed_count - 1)];
+            const auto duration_ms = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
+            const auto batch_lag_count = LagCount(stream.source_db, stream.source_outbox_table, last_event.outbox_id, error_out);
+            const auto batch_lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, last_event.outbox_id, error_out);
+            if (!Exec(stream.ui_db, "BEGIN IMMEDIATE;", error_out)) {
+                ok = false;
+                failure = error_out != nullptr ? *error_out : "failed to begin UI projection ingest transaction";
+                failure_event = &last_event;
+            } else if (!UpsertDirtyEntities(stream, dirty, &handler_error)
+                || !AdvanceCursor(
+                    stream,
+                    last_event,
+                    high_water,
+                    batch_lag_count,
+                    batch_lag_age,
+                    static_cast<int>(batch.size()),
+                    processed_count,
+                    *cursor,
+                    duration_ms,
+                    &handler_error)) {
+                Exec(stream.ui_db, "ROLLBACK;", nullptr);
+                ok = false;
+                failure = handler_error.empty() ? "failed to ingest projection dirty entities" : handler_error;
+                failure_event = &last_event;
+            } else if (!Exec(stream.ui_db, "COMMIT;", error_out)) {
+                Exec(stream.ui_db, "ROLLBACK;", nullptr);
+                ok = false;
+                failure = error_out != nullptr ? *error_out : "failed to commit UI projection ingest transaction";
+                failure_event = &last_event;
+            } else {
+                stream.processed_event_count += static_cast<std::uint64_t>(processed_count);
+                stream.last_outbox_id = last_event.outbox_id;
+            }
+        }
+
+        if (!stopped && !ok && failure_event != nullptr) {
             Exec(stream.ui_db, "BEGIN IMMEDIATE;", nullptr);
-            RecordFailure(stream, event, handler_error.empty() ? "projection handler failed" : handler_error, config_.max_attempts, nullptr);
+            RecordFailure(stream, *failure_event, failure.empty() ? "projection handler failed" : failure, config_.max_attempts, nullptr);
             Exec(stream.ui_db, "COMMIT;", nullptr);
-            ok = false;
-            failure = handler_error.empty() ? "projection handler failed" : handler_error;
-            break;
         }
+    }
 
-        if (!Exec(stream.ui_db, "COMMIT;", error_out)) {
-            Exec(stream.ui_db, "ROLLBACK;", nullptr);
-            if (IsStoppingRequested()) {
-                stopped = true;
-                break;
-            }
+    int materialized_count = 0;
+    DirtyEntity failed_entity;
+    if (ok && !stopped && !IsStoppingRequested()) {
+        std::string materialize_error;
+        if (!MaterializeDirtyEntities(
+                stream,
+                config_.max_dirty_materialization_batch_size,
+                &materialized_count,
+                &failed_entity,
+                &materialize_error)) {
             ok = false;
-            failure = error_out != nullptr ? *error_out : "failed to commit UI projection transaction";
-            break;
+            failure = materialize_error.empty() ? "failed to materialize dirty projection entities" : materialize_error;
+            Exec(stream.ui_db, "BEGIN IMMEDIATE;", nullptr);
+            const auto diagnostic = DirtyMaterializationDiagnosticEvent(stream, failed_entity);
+            RecordFailure(stream, diagnostic, failure, config_.max_attempts, nullptr);
+            Exec(stream.ui_db, "COMMIT;", nullptr);
         }
-
-        stream.processed_event_count += 1;
-        stream.last_outbox_id = event.outbox_id;
     }
 
     const auto duration_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
     std::int64_t lag_count = stream.lag_count;
     std::int64_t lag_age = stream.lag_age_ms;
-    if (!stopped && !IsStoppingRequested()) {
+    if (ok && !stopped && !IsStoppingRequested() && batch.empty()) {
         lag_count = LagCount(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
         if (!IsStoppingRequested()) {
             lag_age = LagAgeMs(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr);
@@ -1424,7 +1711,14 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
                 UpdateIdleSubscription(stream, high_water, lag_count, lag_age, duration_ms, nullptr);
             }
         }
-    } else {
+    } else if (ok && !stopped) {
+        lag_count = stream.last_outbox_id > 0
+            ? LagCount(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr)
+            : stream.lag_count;
+        lag_age = stream.last_outbox_id > 0
+            ? LagAgeMs(stream.source_db, stream.source_outbox_table, stream.last_outbox_id, nullptr)
+            : stream.lag_age_ms;
+    } else if (IsStoppingRequested()) {
         stopped = true;
     }
 
@@ -1434,6 +1728,7 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
     stream.source_high_water_outbox_id = high_water;
     stream.lag_count = lag_count;
     stream.lag_age_ms = lag_age;
+    stream.dirty_count = DirtyCount(stream, nullptr);
     if (stopped) {
         stream.succeeded_run_once_count += 1;
         stream.last_error.clear();
@@ -1461,7 +1756,16 @@ void UiReadProjectionService::WorkerLoop(StreamRuntime* stream) {
             if (stopping_) break;
         }
         std::string ignored_error;
-        RunStreamOnce(*stream, &ignored_error);
+        const bool ok = RunStreamOnce(*stream, &ignored_error);
+        bool has_backlog = false;
+        if (ok) {
+            std::lock_guard<std::mutex> stream_lock(stream->mtx);
+            has_backlog = (stream->lag_count > 0 && stream->last_outbox_id < stream->source_high_water_outbox_id)
+                || stream->dirty_count > 0;
+        }
+        if (has_backlog) {
+            continue;
+        }
         std::unique_lock<std::mutex> lock(mtx_);
         cv_.wait_for(lock, config_.poll_interval, [this]() { return stopping_; });
         if (stopping_) break;
@@ -1479,6 +1783,7 @@ UiReadProjectionTelemetrySnapshot UiReadProjectionService::SnapshotTelemetry() c
         snapshot.running = running_ && !stopping_;
     }
     snapshot.configured_max_batch_size = config_.max_batch_size;
+    snapshot.configured_max_dirty_materialization_batch_size = config_.max_dirty_materialization_batch_size;
     snapshot.configured_max_attempts = config_.max_attempts;
     for (const auto& stream : streams_) {
         std::lock_guard<std::mutex> stream_lock(stream->mtx);
@@ -1498,6 +1803,7 @@ UiReadProjectionTelemetrySnapshot UiReadProjectionService::SnapshotTelemetry() c
         row.source_high_water_outbox_id = stream->source_high_water_outbox_id;
         row.lag_count = stream->lag_count;
         row.lag_age_ms = stream->lag_age_ms;
+        row.dirty_count = stream->dirty_count;
         row.last_error = stream->last_error;
         snapshot.run_once_count += row.run_once_count;
         snapshot.succeeded_run_once_count += row.succeeded_run_once_count;

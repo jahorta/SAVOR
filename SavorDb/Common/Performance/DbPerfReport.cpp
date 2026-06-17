@@ -125,7 +125,7 @@ std::int64_t TotalProjectionLag(
     const savor::db::uiread::projectors::UiReadProjectionTelemetrySnapshot& projection) {
     std::int64_t lag = 0;
     for (const auto& stream : projection.streams) {
-        lag += stream.lag_count;
+        lag += stream.lag_count + stream.dirty_count;
     }
     return lag;
 }
@@ -146,6 +146,7 @@ std::string ProjectionDrainSummary(
             << " cursor=" << stream.last_outbox_id
             << " high_water=" << stream.source_high_water_outbox_id
             << " lag=" << stream.lag_count
+            << " dirty=" << stream.dirty_count
             << " lag_age_ms=" << stream.lag_age_ms
             << " dead_letters=" << stream.dead_letter_count;
         if (!stream.last_error.empty()) {
@@ -205,6 +206,7 @@ void WriteProjectionJson(
         << ",\"last_run_duration_ms\":" << projection.last_run_duration_ms
         << ",\"max_run_duration_ms\":" << projection.max_run_duration_ms
         << ",\"configured_max_batch_size\":" << projection.configured_max_batch_size
+        << ",\"configured_max_dirty_materialization_batch_size\":" << projection.configured_max_dirty_materialization_batch_size
         << ",\"configured_max_attempts\":" << projection.configured_max_attempts
         << ",\"streams\":[";
     for (std::size_t i = 0; i < projection.streams.size(); ++i) {
@@ -227,6 +229,7 @@ void WriteProjectionJson(
             << ",\"source_high_water_outbox_id\":" << stream.source_high_water_outbox_id
             << ",\"lag_count\":" << stream.lag_count
             << ",\"lag_age_ms\":" << stream.lag_age_ms
+            << ",\"dirty_count\":" << stream.dirty_count
             << ",\"last_error\":\"" << JsonEscape(stream.last_error) << "\""
             << "}";
     }
@@ -320,7 +323,7 @@ DecisionMetrics BuildDecisionMetrics(const PerfRunReport& result) {
     }
     metrics.projection_failed_runs = result.projection.failed_run_once_count;
     for (const auto& stream : result.projection.streams) {
-        metrics.projection_lag_count += stream.lag_count;
+        metrics.projection_lag_count += stream.lag_count + stream.dirty_count;
         metrics.projection_max_lag_age_ms = std::max(metrics.projection_max_lag_age_ms, stream.lag_age_ms);
     }
     metrics.workload_failed = static_cast<std::uint64_t>(std::max<std::int64_t>(0, result.failed));

@@ -137,7 +137,8 @@ bool DBService::Start(std::string* error_out) {
             .state_db_path = config_paths_.state_db_path,
             .analysis_db_path = config_paths_.analysis_db_path,
             .archive_db_path = config_paths_.archive_db_path,
-            .max_batch_size = 100,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1000,
             .max_attempts = 5,
             .poll_interval = std::chrono::milliseconds{ 250 },
         });

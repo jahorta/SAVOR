@@ -1,15 +1,13 @@
 #pragma once
 
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
-#include <vector>
 
-#include <sqlite3.h>
+#include "UiReadProjectionService.h"
 
 namespace savor::db::uiread::projectors {
 
@@ -20,7 +18,8 @@ struct AttachedUiReadProjectionConfig {
     std::filesystem::path analysis_db_path;
     std::filesystem::path authoring_db_path;
     std::filesystem::path archive_db_path;
-    int max_batch_size = 100;
+    int max_batch_size = 5000;
+    int max_dirty_materialization_batch_size = 1000;
     int max_attempts = 5;
     std::chrono::milliseconds poll_interval{ 250 };
     bool include_archive = true;
@@ -34,6 +33,7 @@ struct AttachedUiReadProjectionTelemetrySnapshot {
     std::uint64_t last_run_duration_ms = 0;
     std::uint64_t max_run_duration_ms = 0;
     std::int64_t configured_max_batch_size = 0;
+    std::int64_t configured_max_dirty_materialization_batch_size = 0;
     std::int64_t configured_max_attempts = 0;
 };
 
@@ -54,25 +54,11 @@ public:
     [[nodiscard]] AttachedUiReadProjectionTelemetrySnapshot SnapshotTelemetry() const;
 
 private:
-    bool OpenAndAttach(std::string* error_out);
-    bool AttachSourceDatabases(std::string* error_out);
-    bool AttachDatabase(const std::filesystem::path& db_path, const std::string& schema_name, std::string* error_out);
-    bool ConfigureConnection(std::string* error_out);
-    void WorkerLoop();
-    void CloseConnection();
+    [[nodiscard]] UiReadProjectionConfig MakeConfig() const;
 
     AttachedUiReadProjectionConfig config_{};
-    sqlite3* db_ = nullptr;
     mutable std::mutex mtx_;
-    std::condition_variable cv_;
-    std::thread worker_;
-    bool running_ = false;
-    bool stopping_ = false;
-    std::uint64_t run_once_count_ = 0;
-    std::uint64_t succeeded_run_once_count_ = 0;
-    std::uint64_t failed_run_once_count_ = 0;
-    std::uint64_t last_run_duration_ms_ = 0;
-    std::uint64_t max_run_duration_ms_ = 0;
+    std::unique_ptr<UiReadProjectionService> service_;
 };
 
 } // namespace savor::db::uiread::projectors
