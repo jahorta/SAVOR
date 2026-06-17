@@ -59,7 +59,7 @@ void WorkerStatusRegistry::UnregisterWorker(int64_t worker_id) {
 }
 
 void WorkerStatusRegistry::UpdateState(int64_t worker_id, WorkerStateKind s) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
@@ -68,7 +68,7 @@ void WorkerStatusRegistry::UpdateState(int64_t worker_id, WorkerStateKind s) {
 }
 
 void WorkerStatusRegistry::SetCurrentJob(int64_t worker_id, std::optional<int64_t> job_id, std::optional<int> program_kind) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
@@ -81,7 +81,7 @@ void WorkerStatusRegistry::SetCurrentJob(int64_t worker_id, std::optional<int64_
 }
 
 void WorkerStatusRegistry::SetLeaseInfo(int64_t worker_id, std::optional<int64_t> lease_expires_at, int attempts, int max_attempts) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
@@ -91,7 +91,7 @@ void WorkerStatusRegistry::SetLeaseInfo(int64_t worker_id, std::optional<int64_t
 }
 
 void WorkerStatusRegistry::RecordEvent(int64_t worker_id, WorkerEventKind k, std::optional<int64_t> job_id, const std::string& note) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
@@ -102,14 +102,14 @@ void WorkerStatusRegistry::RecordEvent(int64_t worker_id, WorkerEventKind k, std
 
 void WorkerStatusRegistry::RecordHeartbeat(int64_t worker_id) {
     RecordEvent(worker_id, WorkerEventKind::Heartbeat);
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     it->second.last_heartbeat_mono_ns = NowMonoNs();
 }
 
 void WorkerStatusRegistry::RecordDbSuccess(int64_t worker_id) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     it->second.last_successful_db_call_mono_ns = NowMonoNs();
@@ -117,7 +117,7 @@ void WorkerStatusRegistry::RecordDbSuccess(int64_t worker_id) {
 }
 
 void WorkerStatusRegistry::RecordProgress(int64_t worker_id, const std::string& text, std::optional<int64_t> job_id) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;
@@ -130,7 +130,7 @@ void WorkerStatusRegistry::RecordProgress(int64_t worker_id, const std::string& 
 }
 
 void WorkerStatusRegistry::RecordError(int64_t worker_id, const std::string& err) {
-    std::shared_lock rk(mtx_);
+    std::unique_lock rk(mtx_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
     auto& wr = it->second;

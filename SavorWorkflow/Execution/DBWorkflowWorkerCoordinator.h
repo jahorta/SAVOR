@@ -7,6 +7,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -33,6 +34,12 @@
 namespace savor::runner::parallel::savordb {
 
 struct DBWorkflowWorkerCoordinatorConfig {
+    using RuntimeSlotPreparer = std::function<bool(
+        size_t,
+        const DBWorkflowWorkerCoordinatorConfig&,
+        std::filesystem::path*,
+        std::string*)>;
+
     size_t desired_workers = 1;
     uint32_t controller_sleep_ms = 5;
     uint32_t worker_start_timeout_ms = 20000;
@@ -47,6 +54,7 @@ struct DBWorkflowWorkerCoordinatorConfig {
     bool visual_debug_workers = false;
     bool auto_resume_visual_workers = false;
     std::string visual_screenshot_dir;
+    RuntimeSlotPreparer runtime_slot_preparer;
 };
 
 struct WorkflowCoordinatorTelemetry {
@@ -196,9 +204,13 @@ public:
     std::vector<std::string> TakeVisualDebugLogLines();
 
 private:
+    struct WorkerSlot;
+    using WorkerSlotPtr = std::shared_ptr<WorkerSlot>;
+
     struct WorkerSlot {
+        mutable std::mutex mtx;
         size_t id = 0;
-        std::unique_ptr<savor::ProcessWorker> worker;
+        std::shared_ptr<savor::ProcessWorker> worker;
         std::atomic<bool> ready{ false };
         bool start_attempted = false;
         bool startup_in_progress = false;
@@ -255,11 +267,16 @@ private:
     void RecoverDeadInFlightWorkers();
     void ProcessReadyWorkflowStep(const WorkflowReadyStep& step);
     void ReconcileWorkerPool();
-    bool StartWorkerSlot(size_t worker_idx);
+    bool StartWorkerSlot(WorkerSlotPtr slot);
     void CompleteWorkerSlotStartup(size_t worker_idx, uint32_t attempt, bool ready, const std::string& error);
     void ResetWorkerSlotRuntime(WorkerSlot& slot);
-    void StopWorkerSlot(WorkerSlot& slot);
+    void StopWorkerSlot(WorkerSlotPtr slot);
     void RecordWorkerContactLocked(WorkerSlot& slot, std::chrono::steady_clock::time_point observed_at);
+    WorkerSlotPtr MakeWorkerSlot(size_t worker_idx);
+    WorkerSlotPtr GetWorkerSlot(size_t worker_idx) const;
+    std::vector<WorkerSlotPtr> CopyWorkerSlots() const;
+    bool TryRecordWorkerContactFromProgress(std::size_t worker_id, std::uint64_t job_id, std::chrono::steady_clock::time_point observed_at);
+    bool PrepareRuntimeSlotForWorker(size_t worker_idx, std::filesystem::path* runtime_worker_exe_out, std::string* error_out);
     void VisualDebugReplayThread(std::uint64_t session_id);
     bool ConfigureVisualDebugWorkerForJob(
         VisualDebugSession& session,
@@ -353,7 +370,7 @@ private:
     std::unordered_set<std::string> seen_ready_step_ids_;
     std::unordered_set<std::int64_t> seen_workflow_instance_ids_;
     mutable std::mutex workers_mtx_;
-    std::vector<std::unique_ptr<WorkerSlot>> workers_;
+    std::vector<WorkerSlotPtr> workers_;
     std::unordered_map<std::uint64_t, DispatchedJobContext> dispatched_job_context_by_id_;
     std::unordered_map<size_t, WorkerVisualSurface> worker_visual_surfaces_;
     size_t rr_worker_cursor_ = 0;

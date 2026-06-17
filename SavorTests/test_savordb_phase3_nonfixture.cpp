@@ -32,6 +32,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "State/QueuedStateDb.h"
 #include "UIRead/QueuedUiReadDb.h"
+#include "Worker/WorkerStatusRegistry.h"
 #include "common/DbPreparer.h"
 #include "common/RecordingExecutionDb.h"
 #include "common/RecordingJobEventCommandService.h"
@@ -675,6 +676,115 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
 
         std::error_code ec;
         std::filesystem::remove_all(report_dir, ec);
+    }
+
+    TEST(WorkerStatusRegistry, ConcurrentMutationsProduceConsistentSnapshots) {
+        WorkerStatusRegistry registry;
+        constexpr int kWorkerCount = 4;
+        constexpr int kIterations = 200;
+        for (int worker = 0; worker < kWorkerCount; ++worker) {
+            registry.RegisterWorker(worker, "localhost", 1000 + worker, "test");
+        }
+
+        std::atomic<bool> stop_snapshots{ false };
+        std::thread snapshot_thread([&]() {
+            while (!stop_snapshots.load()) {
+                const auto snapshot = registry.GetClusterSnapshot();
+                EXPECT_LE(snapshot.size(), static_cast<std::size_t>(kWorkerCount));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+
+        std::vector<std::thread> workers;
+        for (int worker = 0; worker < kWorkerCount; ++worker) {
+            workers.emplace_back([&, worker]() {
+                for (int i = 0; i < kIterations; ++i) {
+                    registry.UpdateState(worker, (i % 2) == 0 ? WorkerStateKind::Running : WorkerStateKind::Idle);
+                    registry.SetCurrentJob(worker, 10000 + worker, worker);
+                    registry.RecordProgress(worker, "progress-" + std::to_string(i), 10000 + worker);
+                    registry.RecordHeartbeat(worker);
+                    registry.RecordDbSuccess(worker);
+                }
+            });
+        }
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        stop_snapshots.store(true);
+        snapshot_thread.join();
+
+        const auto snapshot = registry.GetClusterSnapshot();
+        ASSERT_EQ(snapshot.size(), static_cast<std::size_t>(kWorkerCount));
+        for (const auto& worker : snapshot) {
+            EXPECT_TRUE(worker.job_id.has_value());
+            EXPECT_FALSE(worker.last_progress.empty());
+            EXPECT_GT(worker.last_heartbeat_mono_ns, 0);
+        }
+    }
+
+    TEST(Stage3Phase3Batching, ProgressSnapshotIsNotBlockedBySlowWorkerStartup) {
+        using namespace savor::runner::parallel::savordb;
+        using namespace savor::db::execution::workflow;
+
+        auto startup_entered = std::make_shared<std::promise<void>>();
+        auto startup_release = std::make_shared<std::promise<void>>();
+        auto release_future = startup_release->get_future().share();
+        auto preparer_calls = std::make_shared<std::atomic<int>>(0);
+
+        DBWorkflowWorkerCoordinatorConfig cfg{
+            .desired_workers = 2,
+            .controller_sleep_ms = 1,
+            .max_concurrent_worker_starts = 1,
+        };
+        cfg.runtime_slot_preparer = [startup_entered, release_future, preparer_calls](
+            size_t,
+            const DBWorkflowWorkerCoordinatorConfig&,
+            std::filesystem::path* runtime_worker_exe_out,
+            std::string* error_out) mutable {
+            if (preparer_calls->fetch_add(1) == 0) {
+                startup_entered->set_value();
+                release_future.wait();
+            }
+            if (runtime_worker_exe_out != nullptr) {
+                *runtime_worker_exe_out = "blocked-startup-test-worker.exe";
+            }
+            if (error_out != nullptr) {
+                *error_out = "blocked by test";
+            }
+            return false;
+        };
+
+        DBWorkflowWorkerCoordinator coordinator(
+            nullptr,
+            std::move(cfg),
+            CoordinatorIntegrationConfig{},
+            [](const WorkflowReadyStep& step) {
+                return ScheduledJobSet{
+                    .job_set_id = 16000 + step.workflow_step_id,
+                    .workflow_step_id = step.workflow_step_id,
+                };
+            });
+
+        coordinator.Start();
+        ASSERT_EQ(startup_entered->get_future().wait_for(std::chrono::milliseconds(1000)), std::future_status::ready);
+
+        coordinator.EnqueueProgressForTest(savor::PRProgress{
+            .worker_id = 1,
+            .job_id = 77,
+            .text = "progress while worker 0 startup is blocked",
+        });
+
+        EXPECT_TRUE(WaitForCondition([&]() {
+            const auto snapshot = coordinator.SnapshotWorkers();
+            const auto it = std::find_if(snapshot.begin(), snapshot.end(), [](const WorkerSnapshot& worker) {
+                return worker.worker_id == 1;
+            });
+            return it != snapshot.end()
+                && it->last_progress == "progress while worker 0 startup is blocked";
+        }, std::chrono::milliseconds{ 1000 }));
+
+        startup_release->set_value();
+        coordinator.Stop();
     }
 
     TEST(Stage3Phase3Batching, ProgressCallbacksDrainInBatchesAndTerminalResultsAreNotBlocked) {
