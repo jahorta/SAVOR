@@ -8,9 +8,15 @@ namespace soa::battle::actions {
 
     struct ActionLibrary {
         static bool generateTurnPlan(const soa::battle::ctx::BattleContext& bc,
-            const TurnPlan& plan,
-            savor::InputPlan& out,
+            const BattleTurnExecutionSpec& plan,
+            savor::ControllerInputSequence& out,
             MaterializeErr& err);
     };
+
+    bool MaterializeBattleTurnInputs(
+        const soa::battle::ctx::BattleContext& bc,
+        const BattleTurnExecutionSpec& plan,
+        savor::ControllerInputSequence& out,
+        MaterializeErr& err);
 
 } // namespace soa::battle::actions

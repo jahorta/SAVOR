@@ -31,6 +31,7 @@ private:
     void refreshResults();
     void setCurrentPane(int index);
     void showBattleJobDetails(qint64 jobId);
+    void showBattleReplicationDetails(qint64 jobId);
     void showBattleUnavailable(qint64 jobId, const QString& title, const QString& message);
 
     Actions actions_;

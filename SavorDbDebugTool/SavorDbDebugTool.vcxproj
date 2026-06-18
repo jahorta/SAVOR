@@ -108,10 +108,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BackfillAnalysisBattle.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="ReprojectUiRead.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BackfillAnalysisBattle.h" />
     <ClInclude Include="ReprojectUiRead.h" />
   </ItemGroup>
   <ItemGroup>

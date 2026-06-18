@@ -529,6 +529,21 @@ QString artifactSummaryHtml(const std::vector<savor::db::UiJobArtifact>& artifac
     return html;
 }
 
+QString battleCommandHtml(const soa::battle::actions::BattleCommand& command)
+{
+    QString out = QStringLiteral("[%1] %2")
+        .arg(command.actor_slot)
+        .arg(qs(soa::battle::actions::get_action_string(command.macro)));
+    if (command.macro == soa::battle::actions::BattleAction::Attack) {
+        out += QStringLiteral(" target=%1").arg(command.params.target_slot <= 11 ? command.params.target_slot : 0xFF);
+    } else if (command.macro == soa::battle::actions::BattleAction::UseItem) {
+        out += QStringLiteral(" item=%1 target=%2")
+            .arg(command.params.item_id)
+            .arg(command.params.target_slot <= 11 ? command.params.target_slot : 0xFF);
+    }
+    return out.toHtmlEscaped();
+}
+
 } // namespace
 
 AnalysisTab::AnalysisTab(Actions actions, QWidget* parent)
@@ -663,10 +678,7 @@ void AnalysisTab::build()
                 QStringLiteral("Battle plan reconstruction is not projected into UIRead yet."));
         },
         [this](std::int64_t jobId) {
-            showBattleUnavailable(
-                static_cast<qint64>(jobId),
-                QStringLiteral("Replication Details"),
-                QStringLiteral("Replication details are not projected into UIRead yet."));
+            showBattleReplicationDetails(static_cast<qint64>(jobId));
         },
         [this](std::int64_t jobId) {
             showBattleUnavailable(
@@ -936,6 +948,96 @@ void AnalysisTab::showBattleJobDetails(qint64 jobId)
                         actions_.openArtifacts();
                     }
                 },
+            },
+        },
+        savorqt::gui::ContextDrawerMode::Expanded);
+}
+
+void AnalysisTab::showBattleReplicationDetails(qint64 jobId)
+{
+    const auto details = savorqt::db::SavorDbExplorerRunService::GetBattleReplicationDetails(jobId);
+    if (!details.ok) {
+        showBattleUnavailable(
+            jobId,
+            QStringLiteral("Replication Details #%1").arg(jobId),
+            QStringLiteral("Replication details are unavailable: %1").arg(qs(details.error.message)));
+        return;
+    }
+
+    const auto& origin = details.value.origin;
+    QString body;
+    body += QStringLiteral("<h4>Battle Origin</h4><table>");
+    body += fieldHtml(QStringLiteral("Entry savestate"), origin.entry_savestate_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.entry_savestate_id)
+        : QStringLiteral("--"));
+    body += fieldHtml(QStringLiteral("Seed candidate"), origin.seed_candidate_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.seed_candidate_id)
+        : QStringLiteral("--"));
+    body += fieldHtml(QStringLiteral("Seed source"), origin.seed_source_kind.empty() ? QStringLiteral("--") : qs(origin.seed_source_kind));
+    body += fieldHtml(QStringLiteral("Unique seed"), origin.source_unique_seed_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.source_unique_seed_id)
+        : QStringLiteral("--"));
+    body += fieldHtml(QStringLiteral("Input frame"), origin.source_input_frame_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.source_input_frame_id)
+        : QStringLiteral("--"));
+    if (origin.initial_input.has_value()) {
+        const auto& frame = *origin.initial_input;
+        body += fieldHtml(QStringLiteral("Initial input"), QStringLiteral("main=(%1,%2) c=(%3,%4) trig=(%5,%6)")
+            .arg(frame.main_x).arg(frame.main_y)
+            .arg(frame.c_x).arg(frame.c_y)
+            .arg(frame.trig_l).arg(frame.trig_r));
+    }
+    body += QStringLiteral("</table>");
+
+    body += QStringLiteral("<h4>Turn Chain</h4>");
+    for (const auto& turn : details.value.turns) {
+        const auto& row = turn.row;
+        body += QStringLiteral("<h5>Turn %1 job #%2</h5><table>")
+            .arg(row.authored_turn_index.value_or(0))
+            .arg(row.turn_job_id);
+        body += fieldHtml(QStringLiteral("Execution job"), row.exec_job_id.has_value()
+            ? QStringLiteral("#%1").arg(*row.exec_job_id)
+            : QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Source savestate"), row.source_savestate_id.has_value()
+            ? QStringLiteral("#%1").arg(*row.source_savestate_id)
+            : QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Output savestate"), row.output_savestate_id.has_value()
+            ? QStringLiteral("#%1").arg(*row.output_savestate_id)
+            : QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Fake attacks"), QStringLiteral("%1 turn / %2 before")
+            .arg(row.fake_attacks_this_turn)
+            .arg(row.fake_attacks_used_before));
+        body += fieldHtml(QStringLiteral("Variant"), row.resolved_turn_variant_key.has_value()
+            ? qs(*row.resolved_turn_variant_key)
+            : QStringLiteral("--"));
+        body += fieldHtml(QStringLiteral("Input trace artifact"), row.input_trace_artifact_id.has_value()
+            ? QStringLiteral("#%1").arg(*row.input_trace_artifact_id)
+            : QStringLiteral("--"));
+        body += QStringLiteral("</table>");
+        if (!turn.command_decode_ok) {
+            body += QStringLiteral("<p>Resolved commands are not available for this turn.</p>");
+        } else {
+            body += QStringLiteral("<ol>");
+            for (const auto& command : turn.commands) {
+                body += QStringLiteral("<li>%1</li>").arg(battleCommandHtml(command));
+            }
+            body += QStringLiteral("</ol>");
+        }
+    }
+
+    setContext(
+        savorqt::gui::UiEntityRef{
+            QStringLiteral("analysis"),
+            QStringLiteral("battle_job"),
+            jobId,
+            QStringLiteral("battle_job:%1:replication").arg(jobId),
+        },
+        QStringLiteral("Replication Details #%1").arg(jobId),
+        body,
+        QVector<std::pair<QString, std::function<void()>>>{
+            {
+                QStringLiteral("View Job Details"),
+                [this, jobId]() { showBattleJobDetails(jobId); },
             },
         },
         savorqt::gui::ContextDrawerMode::Expanded);

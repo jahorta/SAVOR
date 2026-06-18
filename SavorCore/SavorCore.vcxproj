@@ -171,12 +171,14 @@
     <ClInclude Include="Core\Config\SimConfig.h" />
     <ClInclude Include="Core\DolphinWrapper.h" />
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h" />
+    <ClInclude Include="Core\Input\BattleInputTraceBlob.h" />
     <ClInclude Include="Core\Input\GCPadOverride.h" />
     <ClInclude Include="Core\Input\InputPlan.h" />
     <ClInclude Include="Core\Input\InputPlanFmt.h" />
     <ClInclude Include="Core\Input\SoaBattle\ActionLibrary.h" />
     <ClInclude Include="Core\Input\SoaBattle\ActionPlanSerializer.h" />
     <ClInclude Include="Core\Input\SoaBattle\ActionTypes.h" />
+    <ClInclude Include="Core\Input\SoaBattle\BattleCommandCodec.h" />
     <ClInclude Include="Core\Input\SoaBattle\PlanWriter.h" />
     <ClInclude Include="Core\Memory\DerivedBase.h" />
     <ClInclude Include="Core\Memory\Endian.h" />
@@ -198,7 +200,6 @@
     <ClInclude Include="Core\Memory\Soa\SoaStructs.reflect.h" />
     <ClInclude Include="Core\Shims\StateBufferShim.h" />
     <ClInclude Include="framework.h" />
-    <ClInclude Include="Phases\BattleExplorer.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextPayload.h" />
     <ClInclude Include="Phases\Programs\BattleContext\BattleContextScript.h" />
     <ClInclude Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.h" />
@@ -262,6 +263,7 @@
     <ClCompile Include="Core\Input\InputPlanFmt.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\ActionLibrary.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\ActionPlanSerializer.cpp" />
+    <ClCompile Include="Core\Input\SoaBattle\BattleCommandCodec.cpp" />
     <ClCompile Include="Core\Input\SoaBattle\PlanWriter.cpp" />
     <ClCompile Include="Core\Memory\Soa\Battle\BattleContextCodec.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrCatalog.cpp" />
@@ -269,7 +271,6 @@
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgramBuilder.cpp" />
     <ClCompile Include="Core\Memory\Soa\SoaAddrRegistry.cpp" />
     <ClCompile Include="Core\Shims\StateBufferShim.cpp" />
-    <ClCompile Include="Phases\BattleExplorer.cpp" />
     <ClCompile Include="Phases\Programs\BattleContext\BattleContextPayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleMacroProbe\BattleMacroProbePayload.cpp" />
     <ClCompile Include="Phases\Programs\BattleRunner\BattleRunnerPayload.cpp" />

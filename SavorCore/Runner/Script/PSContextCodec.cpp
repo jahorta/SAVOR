@@ -3,7 +3,7 @@
 #include <cstring>
 #include <type_traits>
 #include "CtxRegistry.h"
-#include "../../Core/Input/SoaBattle/ActionPlanSerializer.h"
+#include "../../Core/Input/SoaBattle/BattleCommandCodec.h"
 
 namespace savor::psctx {
 
@@ -68,7 +68,7 @@ namespace savor::psctx {
             }
             else if (const auto pp = std::get_if<soa::battle::actions::BattlePath>(&v)) {
                 std::vector<std::uint8_t> payload;
-                soa::battle::actions::encode_battle_plan_to_buffer(*pp, payload);
+                soa::battle::actions::encode_battle_execution_script_to_buffer(*pp, payload);
                 ep.type = static_cast<uint8_t>(TypeCode::BATTLE_PATH);
                 ep.vlen = static_cast<uint32_t>(payload.size());
                 push(entries, ep);
@@ -156,7 +156,7 @@ namespace savor::psctx {
             case TypeCode::BATTLE_PATH: {
                 soa::battle::actions::BattlePath path;
                 std::span<const std::uint8_t> bytes(p, static_cast<size_t>(ep.vlen));
-                if (!soa::battle::actions::decode_battle_plan_from_buffer(bytes, path)) return false;
+                if (!soa::battle::actions::decode_battle_execution_script_from_buffer(bytes, path)) return false;
                 p += ep.vlen;
                 out.emplace(ep.key_id, std::move(path));
                 break;

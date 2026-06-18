@@ -133,6 +133,7 @@ namespace savor {
         return s ? FromGCPadStatus(*s) : GCInputFrame{};
     }
 
-	using InputPlan = std::vector<GCInputFrame>;
+	using ControllerInputSequence = std::vector<GCInputFrame>;
+	using InputPlan = ControllerInputSequence;
 
 } // namespace savor

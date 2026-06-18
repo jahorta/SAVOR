@@ -219,6 +219,26 @@ std::optional<UiBattleTurnJobDetail> QueuedUiReadDb::GetBattleTurnJobDetail(
         std::nullopt);
 }
 
+std::optional<UiBattleTurnJobReplicationRow> QueuedUiReadDb::GetBattleTurnJobReplication(
+    std::int64_t turn_job_id) const {
+    return ExecuteRead<std::optional<UiBattleTurnJobReplicationRow>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr ? inner_->GetBattleTurnJobReplication(turn_job_id) : std::nullopt;
+        },
+        std::nullopt);
+}
+
+std::vector<UiBattleTurnJobReplicationRow> QueuedUiReadDb::ListBattleTurnJobReplicationChain(
+    std::int64_t turn_job_id) const {
+    return ExecuteRead<std::vector<UiBattleTurnJobReplicationRow>>(
+        [this, turn_job_id]() {
+            return inner_ != nullptr
+                ? inner_->ListBattleTurnJobReplicationChain(turn_job_id)
+                : std::vector<UiBattleTurnJobReplicationRow>{};
+        },
+        {});
+}
+
 UiSeedProbeRunPage QueuedUiReadDb::ListSeedProbeRuns(
     const UiReadSeedProbeRunListQuery& query) const {
     return ExecuteRead<UiSeedProbeRunPage>(

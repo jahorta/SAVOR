@@ -429,6 +429,9 @@
     <None Include="migration\AnalysisBattle\202606171200_analysisbattle_battle_advancement_terminology.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
+    <None Include="migration\AnalysisBattle\202606171500_analysisbattle_turn_job_replication_facts.sql">
+      <Filter>Migrations\Analysis</Filter>
+    </None>
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql">
       <Filter>Migrations\Analysis</Filter>
     </None>
@@ -532,6 +535,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606171520_uiread_battle_replication_details.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

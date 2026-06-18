@@ -3300,6 +3300,12 @@ TEST_F(SqliteDbFixture, Stage3dAnalysisBattleCommandsEmitEventsThirtyThroughThir
             .wave_id = wave_id,
             .exec_job_id = 7001,
             .plan_id = 9001,
+            .source_savestate_id = 1234,
+            .seed_candidate_id = seed_candidate_id,
+            .authored_plan_id = 9001,
+            .authored_turn_index = 1,
+            .resolved_turn_commands_blob = "01000000000004ffff",
+            .resolved_turn_variant_key = "variant-a",
             .fake_attacks_this_turn = 2,
             .fake_attacks_used_before = 1,
             .job_state = savor::db::BattleTurnJobState::Completed,
@@ -6639,6 +6645,12 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefre
             .wave_id = wave_id,
             .exec_job_id = 7001,
             .plan_id = 9001,
+            .source_savestate_id = 1234,
+            .seed_candidate_id = seed_candidate_id,
+            .authored_plan_id = 9001,
+            .authored_turn_index = 1,
+            .resolved_turn_commands_blob = "01000000000004ffff",
+            .resolved_turn_variant_key = "variant-a",
             .fake_attacks_this_turn = 2,
             .fake_attacks_used_before = 1,
             .job_state = BattleTurnJobState::Completed,
@@ -6653,6 +6665,9 @@ TEST_F(SqliteDbFixture, UiReadProjectionAnalysisBattleResultAndStatusEventsRefre
 
     RunUiReadProjectionUntilCaughtUp(*db_service_, "analysis-battle");
     EXPECT_EQ(ReadText(db_, ("SELECT job_state FROM ui_battle_turn_job WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "COMPLETED");
+    EXPECT_EQ(ReadText(db_, ("SELECT resolved_turn_variant_key FROM ui_battle_turn_job_replication WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), "variant-a");
+    EXPECT_EQ(ReadInt64(db_, ("SELECT source_savestate_id FROM ui_battle_turn_job_replication WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), 1234);
+    EXPECT_EQ(ReadInt64(db_, ("SELECT seed_candidate_id FROM ui_battle_turn_job_replication WHERE turn_job_id=" + std::to_string(turn_job_id) + ";").c_str()), seed_candidate_id);
     EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_wave WHERE wave_id=" + std::to_string(wave_id) + ";").c_str()), "READY");
     EXPECT_EQ(ReadText(db_, ("SELECT status FROM ui_battle_group WHERE battle_set_id=" + std::to_string(battle_set_id) + ";").c_str()), "ACTIVE");
 

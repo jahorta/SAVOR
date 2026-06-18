@@ -130,6 +130,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
     <ClCompile Include="..\SavorE2E\Cli.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
@@ -172,6 +173,7 @@
     <ClInclude Include="common\RecordingWorkflowCommandService.h" />
     <ClInclude Include="common\savordb_helpers.h" />
     <ClInclude Include="common\SqliteDbFixture.h" />
+    <ClInclude Include="..\SavorDbDebugTool\BackfillAnalysisBattle.h" />
     <ClInclude Include="..\SavorDbDebugTool\ReprojectUiRead.h" />
     <ClInclude Include="scoped_wrapper.h" />
     <ClInclude Include="seh_guard.h" />

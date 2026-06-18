@@ -63,6 +63,10 @@ public:
         bool final_victory_only = false) const override;
     std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
         std::int64_t turn_job_id) const override;
+    std::optional<UiBattleTurnJobReplicationRow> GetBattleTurnJobReplication(
+        std::int64_t turn_job_id) const override;
+    std::vector<UiBattleTurnJobReplicationRow> ListBattleTurnJobReplicationChain(
+        std::int64_t turn_job_id) const override;
 
     UiSeedProbeRunPage ListSeedProbeRuns(
         const UiReadSeedProbeRunListQuery& query) const override;

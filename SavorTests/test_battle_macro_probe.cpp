@@ -159,7 +159,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanAttackBlockFocusCompilesInActorOrder)
     const auto context = BuildPlanningContext(source);
 
     soa::battle::actions::TurnPlan turn{};
-    turn.spec = {
+    turn.commands = {
         MakeTurnAction(soa::battle::actions::BattleAction::Attack, 0, 5),
         MakeTurnAction(soa::battle::actions::BattleAction::Defend, 1),
         MakeTurnAction(soa::battle::actions::BattleAction::Focus, 2),
@@ -185,7 +185,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanFirstFakeAttackUsesFixedFastPattern)
 
     soa::battle::actions::TurnPlan turn{};
     turn.fake_attack_count = 1;
-    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
+    turn.commands = {MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0)};
 
     soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
     const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
@@ -214,7 +214,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanFastFakeAttacksAreInterleavedWithCommands
 
     soa::battle::actions::TurnPlan turn{};
     turn.fake_attack_count = 3;
-    turn.spec = {
+    turn.commands = {
         MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
         MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
         MakeTurnAction(soa::battle::actions::BattleAction::Defend, 2),
@@ -253,7 +253,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanExcessFakeAttacksUseMeasuredPrefixBeforeF
 
     soa::battle::actions::TurnPlan turn{};
     turn.fake_attack_count = 3;
-    turn.spec = {
+    turn.commands = {
         MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
         MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
     };
@@ -289,7 +289,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanRejectsUseItem)
     const auto context = BuildPlanningContext(source);
 
     soa::battle::actions::TurnPlan turn{};
-    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::UseItem, 0, 4)};
+    turn.commands = {MakeTurnAction(soa::battle::actions::BattleAction::UseItem, 0, 4)};
 
     soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
     const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
@@ -342,7 +342,7 @@ TEST(BattleMacroProbeCompiler, TurnPlanRejectsDeadExplicitAttackTarget)
     const auto context = BuildPlanningContext(source);
 
     soa::battle::actions::TurnPlan turn{};
-    turn.spec = {MakeTurnAction(soa::battle::actions::BattleAction::Attack, 0, 4)};
+    turn.commands = {MakeTurnAction(soa::battle::actions::BattleAction::Attack, 0, 4)};
 
     soa::battle::actions::MaterializeErr err = soa::battle::actions::MaterializeErr::OK;
     const auto steps = BuildMacroPlanStepsFromTurnPlan(turn, 3, &context, &err);
@@ -800,7 +800,7 @@ TEST(BattleTurnRunnerPayload, DecodeInitializesMacroDefaults)
     spec.vi_stall_ms = 5000;
     spec.current_turn = 1;
     spec.max_turn = 1;
-    spec.turn_plan.spec = {
+    spec.turn_plan.commands = {
         MakeTurnAction(soa::battle::actions::BattleAction::Defend, 0),
         MakeTurnAction(soa::battle::actions::BattleAction::Focus, 1),
     };

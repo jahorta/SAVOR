@@ -231,8 +231,8 @@
     <ClInclude Include="Core\Input\SoaBattle\ActionPlanSerializer.h">
       <Filter>Core\Input\SoaBattle</Filter>
     </ClInclude>
-    <ClInclude Include="Phases\BattleExplorer.h">
-      <Filter>Phases</Filter>
+    <ClInclude Include="Core\Input\SoaBattle\BattleCommandCodec.h">
+      <Filter>Core\Input\SoaBattle</Filter>
     </ClInclude>
     <ClInclude Include="Core\Memory\Soa\SoaAddr.def.h">
       <Filter>Core\Memory\Soa</Filter>
@@ -319,6 +319,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Core\Input\AppliedTurnTapeBlob.h">
+      <Filter>Core\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="Core\Input\BattleInputTraceBlob.h">
       <Filter>Core\Input</Filter>
     </ClInclude>
     <ClInclude Include="Tas\DtmAnnotationFile.h">
@@ -410,14 +413,14 @@
     <ClCompile Include="Core\Input\SoaBattle\ActionPlanSerializer.cpp">
       <Filter>Core\Input\SoaBattle</Filter>
     </ClCompile>
+    <ClCompile Include="Core\Input\SoaBattle\BattleCommandCodec.cpp">
+      <Filter>Core\Input\SoaBattle</Filter>
+    </ClCompile>
     <ClCompile Include="Core\Memory\Soa\SoaAddrRegistry.cpp">
       <Filter>Core\Memory\Soa</Filter>
     </ClCompile>
     <ClCompile Include="Core\Memory\Soa\Battle\BattleContextCodec.cpp">
       <Filter>Core\Memory\Soa\Battle</Filter>
-    </ClCompile>
-    <ClCompile Include="Phases\BattleExplorer.cpp">
-      <Filter>Phases</Filter>
     </ClCompile>
     <ClCompile Include="Core\Memory\Soa\SoaAddrProgram.cpp">
       <Filter>Core\Memory\Soa</Filter>

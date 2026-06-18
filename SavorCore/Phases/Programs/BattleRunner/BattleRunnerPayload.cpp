@@ -4,7 +4,7 @@
 
 #include "../../../Runner/IPC/Wire.h"
 #include "../../../Runner/Script/CtxRegistry.h"
-#include "../../../Core/Input/SoaBattle/ActionPlanSerializer.h"
+#include "../../../Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "../../../Runner/Script/ScriptProgress.h"
 
 namespace phase::battle::runner {
@@ -41,7 +41,7 @@ namespace phase::battle::runner {
         if (blob_sz) out.insert(out.end(), blob.begin(), blob.end());
 
         std::vector<std::uint8_t> plans;
-        soa::battle::actions::encode_battle_plan_to_buffer(spec.path, plans);
+        soa::battle::actions::encode_battle_execution_script_to_buffer(spec.path, plans);
         const uint32_t nt = (uint32_t)plans.size();
         put_u32(out, nt);
         if (nt) out.insert(out.end(), plans.begin(), plans.end());
@@ -87,7 +87,9 @@ namespace phase::battle::runner {
 
         uint32_t battle_plan_buf_size = 0; if (!get_u32(p, e, battle_plan_buf_size)) return false;
         soa::battle::actions::BattlePath b_path;
-        soa::battle::actions::decode_battle_plan_from_buffer(std::span<const uint8_t>(p, p + battle_plan_buf_size), b_path);
+        if (!soa::battle::actions::decode_battle_execution_script_from_buffer(std::span<const uint8_t>(p, p + battle_plan_buf_size), b_path)) {
+            return false;
+        }
         p += battle_plan_buf_size;
 
         out_ctx[savor::context::key::core::RUN_MS] = run_ms;

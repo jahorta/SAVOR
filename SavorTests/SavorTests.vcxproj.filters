@@ -2,6 +2,7 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="common\DbPreparer.cpp" />
+    <ClCompile Include="..\SavorDbDebugTool\BackfillAnalysisBattle.cpp" />
     <ClCompile Include="..\SavorDbDebugTool\ReprojectUiRead.cpp" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googlemock\src\gmock-all.cc" />
     <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
@@ -47,6 +48,7 @@
     <ClInclude Include="common\AlwaysAdvanceTransitionHandler.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="..\SavorDbDebugTool\BackfillAnalysisBattle.h" />
     <ClInclude Include="..\SavorDbDebugTool\ReprojectUiRead.h" />
   </ItemGroup>
   <ItemGroup>

@@ -5,6 +5,7 @@
 
 #include "Authoring/RuntimeSymbolAuthoringService.h"
 #include "Core/Input/SoaBattle/ActionTypes.h"
+#include "Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "Core/Memory/Soa/SoaAddrRegistry.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 #include "Runner/Script/CtxRegistry.h"
@@ -22,10 +23,10 @@ bool SameBattlePath(
     if (lhs.size() != rhs.size()) return false;
     for (size_t i = 0; i < lhs.size(); ++i) {
         if (lhs[i].fake_attack_count != rhs[i].fake_attack_count) return false;
-        if (lhs[i].spec.size() != rhs[i].spec.size()) return false;
-        for (size_t j = 0; j < lhs[i].spec.size(); ++j) {
-            const auto& a = lhs[i].spec[j];
-            const auto& b = rhs[i].spec[j];
+        if (lhs[i].commands.size() != rhs[i].commands.size()) return false;
+        for (size_t j = 0; j < lhs[i].commands.size(); ++j) {
+            const auto& a = lhs[i].commands[j];
+            const auto& b = rhs[i].commands[j];
             if (a.actor_slot != b.actor_slot) return false;
             if (a.macro != b.macro) return false;
             if (a.params.target_slot != b.params.target_slot) return false;
@@ -164,7 +165,7 @@ TEST(PSContextCodec, RoundTripsCustomKeysAndRichValues)
     soa::battle::actions::BattlePath path;
     soa::battle::actions::TurnPlan turn;
     turn.fake_attack_count = 2;
-    turn.spec.push_back({
+    turn.commands.push_back({
         .actor_slot = 1,
         .macro = soa::battle::actions::BattleAction::UseItem,
         .params = { .target_slot = 3, .item_id = 42 },
@@ -194,6 +195,51 @@ TEST(PSContextCodec, RoundTripsCustomKeysAndRichValues)
     EXPECT_EQ(text, "custom");
     EXPECT_EQ(decoded_frame, frame);
     EXPECT_TRUE(SameBattlePath(decoded_path, path));
+}
+
+TEST(BattleCommandCodec, RoundTripsCommandSetAndExecutionScript)
+{
+    soa::battle::actions::BattleTurnCommandSet commands{
+        {
+            .actor_slot = 0,
+            .macro = soa::battle::actions::BattleAction::Attack,
+            .params = { .target_slot = 4, .item_id = 0xFFFF },
+        },
+        {
+            .actor_slot = 1,
+            .macro = soa::battle::actions::BattleAction::Focus,
+            .params = { .target_slot = 0xFF, .item_id = 0xFFFF },
+        },
+    };
+
+    const auto hex = soa::battle::actions::encode_battle_turn_commands_hex(commands);
+    const auto decoded = soa::battle::actions::decode_battle_turn_commands_hex(hex);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_EQ(decoded->size(), commands.size());
+    EXPECT_EQ((*decoded)[0].actor_slot, 0);
+    EXPECT_EQ((*decoded)[0].macro, soa::battle::actions::BattleAction::Attack);
+    EXPECT_EQ((*decoded)[0].params.target_slot, 4);
+    EXPECT_EQ((*decoded)[1].macro, soa::battle::actions::BattleAction::Focus);
+
+    soa::battle::actions::BattleExecutionScript script;
+    script.push_back(soa::battle::actions::BattleTurnExecutionSpec{
+        .fake_attack_count = 3,
+        .commands = commands,
+    });
+    std::vector<std::uint8_t> bytes;
+    soa::battle::actions::encode_battle_execution_script_to_buffer(script, bytes);
+    soa::battle::actions::BattleExecutionScript decoded_script;
+    ASSERT_TRUE(soa::battle::actions::decode_battle_execution_script_from_buffer(bytes, decoded_script));
+    ASSERT_EQ(decoded_script.size(), 1u);
+    EXPECT_EQ(decoded_script[0].fake_attack_count, 3u);
+    ASSERT_EQ(decoded_script[0].commands.size(), 2u);
+    EXPECT_EQ(decoded_script[0].commands[0].params.target_slot, 4);
+}
+
+TEST(BattleCommandCodec, RejectsMalformedCommandBlob)
+{
+    EXPECT_FALSE(soa::battle::actions::decode_battle_turn_commands_hex("01000000ff").has_value());
+    EXPECT_FALSE(soa::battle::actions::decode_battle_turn_commands_hex("not-hex").has_value());
 }
 
 TEST_F(SqliteDbFixture, RuntimeSymbolPackImportExportAndLoad)

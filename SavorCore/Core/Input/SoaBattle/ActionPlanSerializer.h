@@ -2,9 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <span>
-#include "ActionTypes.h"
-#include "../../../Runner/IPC/Wire.h"
-#include "../../../Utils/Hash.h"
+#include "BattleCommandCodec.h"
 
 namespace soa::battle::actions {
 
@@ -17,9 +15,7 @@ namespace soa::battle::actions {
     bool decode_battle_plan_from_buffer(std::span<const std::uint8_t> buf, actions::BattlePath& out);
 
     inline static std::string fingerprint_battle_plan(const BattlePath& bp) {
-        std::vector<uint8_t> buf; buf.reserve(8 + bp.size() * 16);
-        encode_battle_plan_to_buffer(bp, buf);
-        return hash::sha256(buf.data(), buf.size());
+        return fingerprint_battle_execution_script(bp);
     }
 
 } // namespace savor::programs::battle

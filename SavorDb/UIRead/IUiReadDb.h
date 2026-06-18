@@ -407,6 +407,25 @@ struct UiBattleTurnJobDetail {
     std::vector<UiJobArtifact> artifacts;
 };
 
+struct UiBattleTurnJobReplicationRow {
+    std::int64_t turn_job_id = 0;
+    std::int64_t battle_set_id = 0;
+    std::int64_t wave_id = 0;
+    std::optional<std::int64_t> parent_wave_id;
+    std::optional<std::int64_t> parent_turn_job_id;
+    std::optional<std::int64_t> exec_job_id;
+    std::optional<std::int64_t> source_savestate_id;
+    std::optional<std::int64_t> seed_candidate_id;
+    std::optional<std::int64_t> authored_plan_id;
+    std::optional<int> authored_turn_index;
+    std::optional<std::string> resolved_turn_commands_blob;
+    std::optional<std::string> resolved_turn_variant_key;
+    int fake_attacks_used_before = 0;
+    int fake_attacks_this_turn = 0;
+    std::optional<std::int64_t> output_savestate_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
+};
+
 struct IUiReadDb {
     virtual ~IUiReadDb() = default;
 
@@ -458,6 +477,12 @@ struct IUiReadDb {
         bool final_victory_only = false) const = 0;
 
     virtual std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
+        std::int64_t turn_job_id) const = 0;
+
+    virtual std::optional<UiBattleTurnJobReplicationRow> GetBattleTurnJobReplication(
+        std::int64_t turn_job_id) const = 0;
+
+    virtual std::vector<UiBattleTurnJobReplicationRow> ListBattleTurnJobReplicationChain(
         std::int64_t turn_job_id) const = 0;
 
     virtual UiSeedProbeRunPage ListSeedProbeRuns(

@@ -20,9 +20,10 @@
 #include "../../../Authoring/IAuthoringDb.h"
 #include "../../../Common/Types/UtcTimestamp.h"
 #include "../../../State/IStateDb.h"
-#include "../../../../SavorCore/Core/Input/AppliedTurnTapeBlob.h"
+#include "../../../../SavorCore/Core/Input/BattleInputTraceBlob.h"
 #include "../../../../SavorCore/Core/Input/InputPlan.h"
 #include "../../../../SavorCore/Core/Input/SoaBattle/ActionTypes.h"
+#include "../../../../SavorCore/Core/Input/SoaBattle/BattleCommandCodec.h"
 #include "../../../../SavorCore/Core/Input/SoaBattle/PlanWriter.h"
 #include "../../../../SavorCore/Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "../../../../SavorCore/Phases/Programs/BattleRunner/BattleOutcome.h"
@@ -53,8 +54,8 @@ struct JobIni {
     int fake_attacks_used_before = 0;
     int fake_attacks_this_turn = 0;
     std::string action_key;
-    std::string concrete_turn_plan_hex;
-    std::string target_variant_key;
+    std::string resolved_turn_commands_blob;
+    std::string resolved_turn_variant_key;
 
     void set_section(IniDoc& ini) const {
         ini.set(kJobSection, "wave_id", std::to_string(wave_id));
@@ -65,8 +66,11 @@ struct JobIni {
         ini.set(kJobSection, "fake_attacks_used_before", std::to_string(fake_attacks_used_before));
         ini.set(kJobSection, "fake_attacks_this_turn", std::to_string(fake_attacks_this_turn));
         ini.set(kJobSection, "action_key", action_key);
-        ini.set(kJobSection, "concrete_turn_plan_hex", concrete_turn_plan_hex);
-        ini.set(kJobSection, "target_variant_key", target_variant_key);
+        ini.set(kJobSection, "resolved_turn_commands_blob", resolved_turn_commands_blob);
+        ini.set(kJobSection, "resolved_turn_variant_key", resolved_turn_variant_key);
+        // Compatibility for queued jobs created before the resolved-command terminology.
+        ini.set(kJobSection, "concrete_turn_plan_hex", resolved_turn_commands_blob);
+        ini.set(kJobSection, "target_variant_key", resolved_turn_variant_key);
     }
 
     static JobIni parse(const std::string& text) {
@@ -80,8 +84,14 @@ struct JobIni {
         out.fake_attacks_used_before = static_cast<int>(ini.get_i64(kJobSection, "fake_attacks_used_before", 0));
         out.fake_attacks_this_turn = static_cast<int>(ini.get_i64(kJobSection, "fake_attacks_this_turn", 0));
         out.action_key = ini.get(kJobSection, "action_key", "");
-        out.concrete_turn_plan_hex = ini.get(kJobSection, "concrete_turn_plan_hex", "");
-        out.target_variant_key = ini.get(kJobSection, "target_variant_key", "");
+        out.resolved_turn_commands_blob = ini.get(kJobSection, "resolved_turn_commands_blob", "");
+        if (out.resolved_turn_commands_blob.empty()) {
+            out.resolved_turn_commands_blob = ini.get(kJobSection, "concrete_turn_plan_hex", "");
+        }
+        out.resolved_turn_variant_key = ini.get(kJobSection, "resolved_turn_variant_key", "");
+        if (out.resolved_turn_variant_key.empty()) {
+            out.resolved_turn_variant_key = ini.get(kJobSection, "target_variant_key", "");
+        }
         return out;
     }
 };
@@ -105,7 +115,8 @@ struct ResultsIni {
     std::uint32_t macro_last_hit_bp = 0;
     std::uint32_t macro_last_hit_pc = 0;
     std::int64_t applied_input_artifact_id = 0;
-    std::string applied_input_tape_text;
+    std::int64_t input_trace_artifact_id = 0;
+    std::string input_trace_blob;
     std::string savestate_path;
     std::int64_t output_savestate_id = 0;
     std::string context_blob_base64;
@@ -131,7 +142,9 @@ struct ResultsIni {
         ini.set(kResultsSection, "macro_last_hit_bp", std::to_string(macro_last_hit_bp));
         ini.set(kResultsSection, "macro_last_hit_pc", std::to_string(macro_last_hit_pc));
         ini.set(kResultsSection, "applied_input_artifact_id", std::to_string(applied_input_artifact_id));
-        ini.set(kResultsSection, "applied_input_tape_text", applied_input_tape_text);
+        ini.set(kResultsSection, "input_trace_artifact_id", std::to_string(input_trace_artifact_id));
+        ini.set(kResultsSection, "input_trace_blob", input_trace_blob);
+        ini.set(kResultsSection, "applied_input_tape_text", input_trace_blob);
         ini.set(kResultsSection, "savestate_path", savestate_path);
         ini.set(kResultsSection, "output_savestate_id", std::to_string(output_savestate_id));
         if (!context_blob_base64.empty()) {
@@ -162,7 +175,11 @@ struct ResultsIni {
         out.macro_last_hit_bp = ini.get_u32(kResultsSection, "macro_last_hit_bp", 0);
         out.macro_last_hit_pc = ini.get_u32(kResultsSection, "macro_last_hit_pc", 0);
         out.applied_input_artifact_id = ini.get_i64(kResultsSection, "applied_input_artifact_id", 0);
-        out.applied_input_tape_text = ini.get(kResultsSection, "applied_input_tape_text", "");
+        out.input_trace_artifact_id = ini.get_i64(kResultsSection, "input_trace_artifact_id", 0);
+        out.input_trace_blob = ini.get(kResultsSection, "input_trace_blob", "");
+        if (out.input_trace_blob.empty()) {
+            out.input_trace_blob = ini.get(kResultsSection, "applied_input_tape_text", "");
+        }
         out.savestate_path = ini.get(kResultsSection, "savestate_path", "");
         out.output_savestate_id = ini.get_i64(kResultsSection, "output_savestate_id", 0);
         out.context_blob_base64 = ini.get(kResultsSection, "context_blob_base64", "");
@@ -267,7 +284,7 @@ soa::battle::actions::TurnPlan BuildTurnPlan(
     out.fake_attack_count = static_cast<std::uint32_t>(std::max(0, fake_attacks_this_turn));
     for (const auto& action : turn.actions) {
         const auto& preset = action.action_preset;
-        soa::battle::actions::ActionPlan ap{};
+        soa::battle::actions::BattleCommand ap{};
         ap.actor_slot = static_cast<std::uint8_t>(std::clamp(action.actor_slot, 0, 255));
         ap.macro = preset.macro;
         if (preset.target_kind == savor::db::BattlePlanTargetKind::SingleEnemy
@@ -279,7 +296,7 @@ soa::battle::actions::TurnPlan BuildTurnPlan(
         if (preset.item_id.has_value()) {
             ap.params.item_id = static_cast<std::uint16_t>(std::clamp(*preset.item_id, 0, 0xFFFF));
         }
-        out.spec.push_back(ap);
+        out.commands.push_back(ap);
     }
     return out;
 }
@@ -403,59 +420,17 @@ std::optional<int> ResolveAssignedTargetForActor(
     return resolved;
 }
 
-bool PutU32(std::vector<std::uint8_t>& out, std::uint32_t value) {
-    out.push_back(static_cast<std::uint8_t>(value));
-    out.push_back(static_cast<std::uint8_t>(value >> 8));
-    out.push_back(static_cast<std::uint8_t>(value >> 16));
-    out.push_back(static_cast<std::uint8_t>(value >> 24));
-    return true;
-}
-
-bool GetU32(const std::uint8_t*& cur, const std::uint8_t* end, std::uint32_t& value) {
-    if (end - cur < 4) {
-        return false;
-    }
-    value = static_cast<std::uint32_t>(cur[0])
-        | (static_cast<std::uint32_t>(cur[1]) << 8)
-        | (static_cast<std::uint32_t>(cur[2]) << 16)
-        | (static_cast<std::uint32_t>(cur[3]) << 24);
-    cur += 4;
-    return true;
-}
-
-std::string EncodeTurnPlanSpecHex(const soa::battle::actions::TurnPlanSpec& spec) {
-    std::vector<std::uint8_t> bytes;
-    PutU32(bytes, static_cast<std::uint32_t>(spec.size()));
-    for (const auto& action : spec) {
-        soa::battle::actions::ActionPlan::to_wire(action, bytes);
-    }
-    return BytesToHex(bytes);
-}
-
 std::optional<soa::battle::actions::TurnPlan> DecodeTurnPlanSpecHex(
     const std::string& hex,
     int fake_attacks_this_turn) {
-    const auto bytes = HexToBytes(hex);
-    if (!bytes.has_value() || bytes->size() < 4) {
-        return std::nullopt;
-    }
-    const std::uint8_t* cur = bytes->data();
-    const std::uint8_t* end = bytes->data() + bytes->size();
-    std::uint32_t action_count = 0;
-    if (!GetU32(cur, end, action_count)) {
+    const auto commands = soa::battle::actions::decode_battle_turn_commands_hex(hex);
+    if (!commands.has_value()) {
         return std::nullopt;
     }
     soa::battle::actions::TurnPlan plan{};
     plan.fake_attack_count = static_cast<std::uint32_t>(std::max(0, fake_attacks_this_turn));
-    plan.spec.reserve(action_count);
-    for (std::uint32_t index = 0; index < action_count; ++index) {
-        soa::battle::actions::ActionPlan action{};
-        if (!soa::battle::actions::ActionPlan::from_wire(cur, end, action)) {
-            return std::nullopt;
-        }
-        plan.spec.push_back(action);
-    }
-    return cur == end ? std::optional<soa::battle::actions::TurnPlan>(std::move(plan)) : std::nullopt;
+    plan.commands = *commands;
+    return plan;
 }
 
 std::vector<soa::battle::actions::TurnPlanSpec> CompileConcreteTurnSpecs(
@@ -463,7 +438,7 @@ std::vector<soa::battle::actions::TurnPlanSpec> CompileConcreteTurnSpecs(
     const savor::db::BattlePlanTurnSnapshot& turn) {
     struct PlannedAction {
         savor::db::BattlePlanActionSnapshot source;
-        soa::battle::actions::ActionPlan base{};
+        soa::battle::actions::BattleCommand base{};
         bool needs_target = false;
         std::vector<int> domain;
         std::optional<int> same_as_actor;
@@ -495,7 +470,7 @@ std::vector<soa::battle::actions::TurnPlanSpec> CompileConcreteTurnSpecs(
     }
 
     std::vector<soa::battle::actions::TurnPlanSpec> specs;
-    std::vector<soa::battle::actions::ActionPlan> current(turn.actions.size());
+    std::vector<soa::battle::actions::BattleCommand> current(turn.actions.size());
     std::map<int, int> direct_target_by_actor;
 
     const auto emit_if_resolved = [&]() -> std::optional<soa::battle::actions::TurnPlanSpec> {
@@ -820,7 +795,7 @@ public:
 
         int jobs_enqueued = 0;
         for (std::size_t variant_index = 0; variant_index < concrete_specs.size(); ++variant_index) {
-            const auto concrete_hex = EncodeTurnPlanSpecHex(concrete_specs[variant_index]);
+            const auto concrete_hex = soa::battle::actions::encode_battle_turn_commands_hex(concrete_specs[variant_index]);
             const auto variant_key = hash::sha256(concrete_hex.data(), concrete_hex.size());
             for (int fake = needed_to_reach_min; fake <= remaining; ++fake) {
                 JobIni job_ini{};
@@ -832,8 +807,8 @@ public:
                 job_ini.fake_attacks_used_before = fake_used_before;
                 job_ini.fake_attacks_this_turn = fake;
                 job_ini.action_key = ActionKey(*turn) + ":" + variant_key;
-                job_ini.concrete_turn_plan_hex = concrete_hex;
-                job_ini.target_variant_key = variant_key;
+                job_ini.resolved_turn_commands_blob = concrete_hex;
+                job_ini.resolved_turn_variant_key = variant_key;
 
                 std::int64_t turn_job_id = 0;
                 const auto now = savor::db::types::UtcNow();
@@ -841,6 +816,12 @@ public:
                         {
                             .wave_id = wave->wave_id,
                             .plan_id = plan->plan_id,
+                            .source_savestate_id = source_savestate_id,
+                            .seed_candidate_id = wave->seed_candidate_id,
+                            .authored_plan_id = plan->plan_id,
+                            .authored_turn_index = wave->turn_index,
+                            .resolved_turn_commands_blob = concrete_hex,
+                            .resolved_turn_variant_key = variant_key,
                             .fake_attacks_this_turn = fake,
                             .fake_attacks_used_before = fake_used_before,
                             .job_state = savor::db::BattleTurnJobState::Queued,
@@ -983,9 +964,9 @@ public:
         spec.vi_stall_ms = ClampU32(run_spec->vi_stall_ms);
         spec.current_turn = static_cast<std::uint32_t>(std::max(1, job_ini.turn_index));
         spec.max_turn = static_cast<std::uint32_t>(std::max(plan->num_turns, job_ini.turn_index));
-        if (!job_ini.concrete_turn_plan_hex.empty()) {
+        if (!job_ini.resolved_turn_commands_blob.empty()) {
             spec.turn_plan = DecodeTurnPlanSpecHex(
-                job_ini.concrete_turn_plan_hex,
+                job_ini.resolved_turn_commands_blob,
                 job_ini.fake_attacks_this_turn).value_or(BuildTurnPlan(*turn, job_ini.fake_attacks_this_turn));
         } else {
             spec.turn_plan = BuildTurnPlan(*turn, job_ini.fake_attacks_this_turn);
@@ -1068,9 +1049,9 @@ public:
         std::string turn_blob;
         result.ps.ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
         if (!turn_blob.empty()) {
-            std::vector<savor::inputtape::TurnChunk> chunks;
-            if (savor::inputtape::decode_turn_chunks(turn_blob, chunks) && !chunks.empty()) {
-                out.applied_input_tape_text = turn_blob;
+            std::vector<savor::inputtrace::BattleTurnInputTrace> traces;
+            if (savor::inputtrace::decode_turn_input_traces(turn_blob, traces) && !traces.empty()) {
+                out.input_trace_blob = turn_blob;
             }
         }
         result.ps.ctx.get(savor::context::key::core::LAST_SAVESTATE_PATH, out.savestate_path);
@@ -1115,11 +1096,12 @@ public:
             parsed.output_savestate_id = *output_savestate_id;
         }
 
-        std::optional<std::int64_t> applied_artifact_id;
-        if (!parsed.applied_input_tape_text.empty()) {
-            applied_artifact_id = StoreAppliedInputTape(job_id, parsed.applied_input_tape_text, payload.event_lines);
-            if (applied_artifact_id.has_value()) {
-                parsed.applied_input_artifact_id = *applied_artifact_id;
+        std::optional<std::int64_t> input_trace_artifact_id;
+        if (!parsed.input_trace_blob.empty()) {
+            input_trace_artifact_id = StoreInputTrace(job_id, parsed.input_trace_blob, payload.event_lines);
+            if (input_trace_artifact_id.has_value()) {
+                parsed.input_trace_artifact_id = *input_trace_artifact_id;
+                parsed.applied_input_artifact_id = *input_trace_artifact_id;
             }
         }
 
@@ -1142,7 +1124,8 @@ public:
         update.pred_total = static_cast<int>(parsed.pred_total);
         update.pred_abort_run = static_cast<int>(parsed.pred_abort_run);
         update.output_savestate_id = output_savestate_id;
-        update.applied_input_artifact_id = applied_artifact_id;
+        update.applied_input_artifact_id = input_trace_artifact_id;
+        update.input_trace_artifact_id = input_trace_artifact_id;
         if (!failed && !parsed.context_blob_base64.empty()) {
             update.result_context_blob_base64 = parsed.context_blob_base64;
             update.result_context_version = parsed.context_version > 0
@@ -1244,7 +1227,7 @@ private:
         return savestate_id;
     }
 
-    std::optional<std::int64_t> StoreAppliedInputTape(
+    std::optional<std::int64_t> StoreInputTrace(
         std::int64_t job_id,
         const std::string& blob,
         std::vector<std::string>& lines) const {
@@ -1253,12 +1236,12 @@ private:
         }
         const auto root = WorkingRoot(working_dir_root_) / ("job-" + std::to_string(job_id));
         std::filesystem::create_directories(root);
-        const auto path = root / "applied_input_tape.aitb";
+        const auto path = root / "battle_input_trace.aitb";
         {
             std::ofstream out(path, std::ios::binary | std::ios::trunc);
             out.write(blob.data(), static_cast<std::streamsize>(blob.size()));
             if (!out.good()) {
-                lines.push_back("[battle-single-turn-result] applied_input_write_failed");
+                lines.push_back("[battle-single-turn-result] input_trace_write_failed");
                 return std::nullopt;
             }
         }
@@ -1279,7 +1262,7 @@ private:
                 &artifact_id,
                 &error)
             || artifact_id <= 0) {
-            lines.push_back("[battle-single-turn-result] applied_input_store_failed error=" + error);
+            lines.push_back("[battle-single-turn-result] input_trace_store_failed error=" + error);
             return std::nullopt;
         }
         return artifact_id;

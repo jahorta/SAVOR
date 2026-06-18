@@ -279,6 +279,7 @@
     <None Include="migration\AnalysisBattle\202604051000_analysisbattle_stage2_schema.sql" />
     <None Include="migration\AnalysisBattle\202604101500_analysisbattle_turn_job_context_blob.sql" />
     <None Include="migration\AnalysisBattle\202606171200_analysisbattle_battle_advancement_terminology.sql" />
+    <None Include="migration\AnalysisBattle\202606171500_analysisbattle_turn_job_replication_facts.sql" />
     <None Include="migration\AnalysisSeedProbe\202604051000_analysisseedprobe_stage2_schema.sql" />
     <None Include="migration\AnalysisSpine\202604051000_analysisspine_stage2_schema.sql" />
     <None Include="migration\Archive\202604051000_archive_stage2_schema.sql" />
@@ -314,6 +315,7 @@
     <None Include="migration\UIRead\202606161200_uiread_battle_turn_job_exec_id.sql" />
     <None Include="migration\UIRead\202606171200_uiread_battle_advancement_projection.sql" />
     <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql" />
+    <None Include="migration\UIRead\202606171520_uiread_battle_replication_details.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

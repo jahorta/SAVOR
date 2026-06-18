@@ -5,6 +5,7 @@
 #include "../../../Runner/IPC/Wire.h"
 #include "../../../Runner/Script/CtxRegistry.h"
 #include "../../../Runner/Script/ScriptProgress.h"
+#include "../../../Core/Input/SoaBattle/BattleCommandCodec.h"
 
 using savor::GCInputFrame;
 
@@ -49,11 +50,11 @@ namespace phase::battle::turnrunner {
         const auto* f = reinterpret_cast<const uint8_t*>(&spec.initial);
         out.insert(out.end(), f, f + sizeof(GCInputFrame));
 
-        // Encode single TurnPlan directly
+        // Encode single resolved command set directly; fake attacks are separate metadata.
         put_u32(out, spec.turn_plan.fake_attack_count);
-        put_u32(out, (uint32_t)spec.turn_plan.spec.size());
-        for (const auto& ap : spec.turn_plan.spec) {
-            soa::battle::actions::ActionPlan::to_wire(ap, out);
+        put_u32(out, (uint32_t)spec.turn_plan.commands.size());
+        for (const auto& command : spec.turn_plan.commands) {
+            soa::battle::actions::BattleCommand::to_wire(command, out);
         }
 
         // bookkeeping metadata
@@ -115,11 +116,11 @@ namespace phase::battle::turnrunner {
 
         soa::battle::actions::TurnPlan turn;
         turn.fake_attack_count = fake_attack_count;
-        turn.spec.reserve(action_count);
+        turn.commands.reserve(action_count);
         for (uint32_t i = 0; i < action_count; ++i) {
-            soa::battle::actions::ActionPlan ap{};
-            if (!soa::battle::actions::ActionPlan::from_wire(p, e, ap)) return false;
-            turn.spec.push_back(ap);
+            soa::battle::actions::BattleCommand command{};
+            if (!soa::battle::actions::BattleCommand::from_wire(p, e, command)) return false;
+            turn.commands.push_back(command);
         }
 
         uint32_t budget_max = 0;

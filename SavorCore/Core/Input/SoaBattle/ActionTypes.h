@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <utility>
 #include "../../Memory/Soa/SoaConstants.h"
 
 namespace soa::battle::actions {
@@ -37,8 +38,9 @@ namespace soa::battle::actions {
         }
     };
 
-    static constexpr size_t ACTION_PLAN_SIZE = 2 + ACTION_PARAM_WIRE_SIZE;
-    struct ActionPlan {
+    static constexpr size_t BATTLE_COMMAND_WIRE_SIZE = 2 + ACTION_PARAM_WIRE_SIZE;
+    static constexpr size_t ACTION_PLAN_SIZE = BATTLE_COMMAND_WIRE_SIZE;
+    struct BattleCommand {
         uint8_t actor_slot = 0;     // 0..3
         BattleAction macro{};
         ActionParameters params{};
@@ -49,13 +51,13 @@ namespace soa::battle::actions {
         [1] macro
         [2..4] ActionParameters (3 bytes)
         */
-        static void to_wire(const actions::ActionPlan& ap, std::vector<std::uint8_t>& out) {
+        static void to_wire(const actions::BattleCommand& ap, std::vector<std::uint8_t>& out) {
             out.push_back(ap.actor_slot);
             out.push_back(static_cast<uint8_t>(ap.macro));
             ActionParameters::to_wire(ap.params, out);
         }
-        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::ActionPlan& ap) {
-            if (end - cur < static_cast<std::ptrdiff_t>(ACTION_PLAN_SIZE)) return false;
+        static bool from_wire(const std::uint8_t*& cur, const std::uint8_t* end, actions::BattleCommand& ap) {
+            if (end - cur < static_cast<std::ptrdiff_t>(BATTLE_COMMAND_WIRE_SIZE)) return false;
 
             ap.actor_slot = *cur; cur += 1;
             ap.macro = static_cast<BattleAction>(*cur); cur += 1;
@@ -64,14 +66,20 @@ namespace soa::battle::actions {
         }
     };
 
-    using TurnPlanSpec = std::vector<ActionPlan>; 
+    using BattleTurnCommandSet = std::vector<BattleCommand>;
 
-    struct TurnPlan {
+    struct BattleTurnExecutionSpec {
         uint32_t     fake_attack_count = 0;
-        TurnPlanSpec spec;
+        BattleTurnCommandSet commands;
     };
 
-    using BattlePath = std::vector<TurnPlan>;
+    using BattleExecutionScript = std::vector<BattleTurnExecutionSpec>;
+
+    // Compatibility names retained while call sites migrate to the resolved-command terminology.
+    using ActionPlan = BattleCommand;
+    using TurnPlanSpec = BattleTurnCommandSet;
+    using TurnPlan = BattleTurnExecutionSpec;
+    using BattlePath = BattleExecutionScript;
 
     inline std::string get_action_string(BattleAction a) {
         switch (a) {
@@ -88,9 +96,9 @@ namespace soa::battle::actions {
         return (slot <= 11u) ? static_cast<int>(slot) : -1;
     }
 
-    inline std::string get_turn_plan_summary(TurnPlan tp, std::string sep = "\n", bool offset = true) {
+    inline std::string get_battle_turn_execution_summary(BattleTurnExecutionSpec tp, std::string sep = "\n", bool offset = true) {
         std::string actor;
-        for (auto sp : tp.spec) {
+        for (auto sp : tp.commands) {
             actor = actor + sep + " [" + std::to_string(sp.actor_slot) + "] " + get_action_string(sp.macro);
             if (sp.macro == BattleAction::Attack)
                 actor = actor + ":[" + std::to_string((sp.params.target_slot <= 11) ? sp.params.target_slot : 0xFF) + "]";
@@ -103,17 +111,25 @@ namespace soa::battle::actions {
         return actor;
     }
 
-    inline std::string get_battle_path_summary(BattlePath bp, std::string sep = "\n", bool offset = true) {
+    inline std::string get_battle_execution_script_summary(BattleExecutionScript bp, std::string sep = "\n", bool offset = true) {
         std::vector<std::string> path;
         for (int i = 0; i < bp.size(); i++) {
             auto tp = bp[i];
             path.emplace_back(sep + (offset ? "    " : " ") + "Turn=" + std::to_string(i) + " FakeAtk:" + std::to_string(tp.fake_attack_count));
-            path.emplace_back(get_turn_plan_summary(tp, sep, offset));
+            path.emplace_back(get_battle_turn_execution_summary(tp, sep, offset));
         }
 
         std::string out;
         for (auto s : path) out.append(s);
         return out;
+    }
+
+    inline std::string get_turn_plan_summary(TurnPlan tp, std::string sep = "\n", bool offset = true) {
+        return get_battle_turn_execution_summary(std::move(tp), std::move(sep), offset);
+    }
+
+    inline std::string get_battle_path_summary(BattlePath bp, std::string sep = "\n", bool offset = true) {
+        return get_battle_execution_script_summary(std::move(bp), std::move(sep), offset);
     }
 
 } // namespace soa::battle::actions

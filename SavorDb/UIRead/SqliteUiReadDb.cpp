@@ -1,5 +1,6 @@
 #include "SqliteUiReadDb.h"
 
+#include <algorithm>
 #include <chrono>
 
 namespace savor::db {
@@ -402,6 +403,29 @@ UiBattleTurnJobSummary ReadBattleTurnJobRow(sqlite3_stmt* st) {
     if (sqlite3_column_type(st, 26) != SQLITE_NULL) {
         row.manual_followup = ReadBattleManualFollowupRow(st, 26);
     }
+    return row;
+}
+
+UiBattleTurnJobReplicationRow ReadBattleTurnJobReplicationRow(sqlite3_stmt* st) {
+    UiBattleTurnJobReplicationRow row{};
+    row.turn_job_id = sqlite3_column_int64(st, 0);
+    row.battle_set_id = sqlite3_column_int64(st, 1);
+    row.wave_id = sqlite3_column_int64(st, 2);
+    row.parent_wave_id = ColumnInt64Optional(st, 3);
+    row.parent_turn_job_id = ColumnInt64Optional(st, 4);
+    row.exec_job_id = ColumnInt64Optional(st, 5);
+    row.source_savestate_id = ColumnInt64Optional(st, 6);
+    row.seed_candidate_id = ColumnInt64Optional(st, 7);
+    row.authored_plan_id = ColumnInt64Optional(st, 8);
+    if (sqlite3_column_type(st, 9) != SQLITE_NULL) {
+        row.authored_turn_index = sqlite3_column_int(st, 9);
+    }
+    row.resolved_turn_commands_blob = ColumnTextOptional(st, 10);
+    row.resolved_turn_variant_key = ColumnTextOptional(st, 11);
+    row.fake_attacks_used_before = sqlite3_column_int(st, 12);
+    row.fake_attacks_this_turn = sqlite3_column_int(st, 13);
+    row.output_savestate_id = ColumnInt64Optional(st, 14);
+    row.input_trace_artifact_id = ColumnInt64Optional(st, 15);
     return row;
 }
 
@@ -1112,6 +1136,46 @@ std::optional<UiBattleTurnJobDetail> SqliteUiReadDb::GetBattleTurnJobDetail(
         ? ListJobArtifacts(*detail->summary.exec_job_id)
         : std::vector<UiJobArtifact>{};
     return detail;
+}
+
+std::optional<UiBattleTurnJobReplicationRow> SqliteUiReadDb::GetBattleTurnJobReplication(
+    std::int64_t turn_job_id) const {
+    if (db_ == nullptr || turn_job_id <= 0) {
+        return std::nullopt;
+    }
+
+    sqlite3_stmt* st = nullptr;
+    constexpr const char* kSql =
+        "SELECT turn_job_id,battle_set_id,wave_id,parent_wave_id,parent_turn_job_id,exec_job_id,"
+        "source_savestate_id,seed_candidate_id,authored_plan_id,authored_turn_index,resolved_turn_commands_blob,resolved_turn_variant_key,"
+        "fake_attacks_used_before,fake_attacks_this_turn,output_savestate_id,input_trace_artifact_id "
+        "FROM ui_battle_turn_job_replication WHERE turn_job_id=?1;";
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(st, 1, turn_job_id);
+    std::optional<UiBattleTurnJobReplicationRow> row;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        row = ReadBattleTurnJobReplicationRow(st);
+    }
+    sqlite3_finalize(st);
+    return row;
+}
+
+std::vector<UiBattleTurnJobReplicationRow> SqliteUiReadDb::ListBattleTurnJobReplicationChain(
+    std::int64_t turn_job_id) const {
+    std::vector<UiBattleTurnJobReplicationRow> chain;
+    std::int64_t current = turn_job_id;
+    for (int guard = 0; guard < 64 && current > 0; ++guard) {
+        auto row = GetBattleTurnJobReplication(current);
+        if (!row.has_value()) {
+            break;
+        }
+        current = row->parent_turn_job_id.value_or(0);
+        chain.push_back(std::move(*row));
+    }
+    std::reverse(chain.begin(), chain.end());
+    return chain;
 }
 
 UiSeedProbeRunPage SqliteUiReadDb::ListSeedProbeRuns(

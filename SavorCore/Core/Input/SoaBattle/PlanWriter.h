@@ -30,41 +30,43 @@ namespace soa::battle::actions {
         return "No Error";
     }
 
-    class PlanWriter {
+    class BattleInputMaterializer {
     public:
-        PlanWriter(const soa::battle::ctx::BattleContext& bc);
+        BattleInputMaterializer(const soa::battle::ctx::BattleContext& bc);
 
-        bool buildTurn(const TurnPlan& plan, savor::InputPlan& out, MaterializeErr& err);
+        bool buildTurn(const BattleTurnExecutionSpec& plan, savor::ControllerInputSequence& out, MaterializeErr& err);
 
     private:
         soa::battle::ctx::BattleContext bc_;
         uint8_t cmd_index_ = 3; // Attack
         uint8_t actor_slot_ = 0;
 
-        void tapA(savor::InputPlan& p);
-        void tapB(savor::InputPlan& p);
-        void tapUp(savor::InputPlan& p);
-        void tapDown(savor::InputPlan& p);
-        void neutral(savor::InputPlan& p, uint32_t n);
+        void tapA(savor::ControllerInputSequence& p);
+        void tapB(savor::ControllerInputSequence& p);
+        void tapUp(savor::ControllerInputSequence& p);
+        void tapDown(savor::ControllerInputSequence& p);
+        void neutral(savor::ControllerInputSequence& p, uint32_t n);
 
         bool if_stop_rotate();
-        bool stop_rotate(savor::InputPlan& p);
-        bool stop_zoom(savor::InputPlan& p);
+        bool stop_rotate(savor::ControllerInputSequence& p);
+        bool stop_zoom(savor::ControllerInputSequence& p);
 
-        void navMainTo(savor::InputPlan& p, uint8_t dst); // main menu, no wrap, +neutral(2) after each move
-        bool attack(savor::InputPlan& p, const ActionParameters& ap, MaterializeErr& err);
-        bool defend(savor::InputPlan& p, MaterializeErr& err);
-        bool focus(savor::InputPlan& p, MaterializeErr& err);
-        bool fake_attack(savor::InputPlan& p, const TurnPlan& ap);
+        void navMainTo(savor::ControllerInputSequence& p, uint8_t dst); // main menu, no wrap, +neutral(2) after each move
+        bool attack(savor::ControllerInputSequence& p, const ActionParameters& ap, MaterializeErr& err);
+        bool defend(savor::ControllerInputSequence& p, MaterializeErr& err);
+        bool focus(savor::ControllerInputSequence& p, MaterializeErr& err);
+        bool fake_attack(savor::ControllerInputSequence& p, const BattleTurnExecutionSpec& ap);
 
         // submenu targeting helpers (wrap allowed)
         int currentTargetIndex() const; // TODO-WRAP: derive or assume 0
         int firstAliveEnemyIndex() const; // uses bc_; assumes top->bottom
         int resolveRequestedTargetIndex(uint32_t mask) const; // single-target for now
 
-        void navTargetTo(savor::InputPlan& p, int cur, int dst); // wrap-aware
+        void navTargetTo(savor::ControllerInputSequence& p, int cur, int dst); // wrap-aware
 
         // TODO-RES: resource checks (Focus/SP gating)
     };
+
+    using PlanWriter = BattleInputMaterializer;
 
 } // namespace soa::battle::actions

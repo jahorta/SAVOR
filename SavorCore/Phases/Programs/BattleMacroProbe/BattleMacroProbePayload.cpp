@@ -604,14 +604,14 @@ std::vector<MacroStep> BuildMacroPlanStepsFromTurnPlan(
     using soa::battle::actions::MaterializeErr;
 
     if (materialize_err_out) *materialize_err_out = MaterializeErr::OK;
-    if (turn_plan.spec.empty()) {
+    if (turn_plan.commands.empty()) {
         if (materialize_err_out) *materialize_err_out = MaterializeErr::BadBlob;
         return {};
     }
 
     std::vector<MacroCommand> commands;
-    commands.reserve(turn_plan.spec.size());
-    for (const auto& action : turn_plan.spec) {
+    commands.reserve(turn_plan.commands.size());
+    for (const auto& action : turn_plan.commands) {
         switch (action.macro) {
         case BattleAction::Attack:
             if (action.params.target_slot < 4 || action.params.target_slot > 11) {

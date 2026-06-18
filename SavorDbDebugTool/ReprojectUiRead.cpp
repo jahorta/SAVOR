@@ -291,6 +291,7 @@ StreamReprojectPlan MakeStreamPlan(std::string stream_id, const savor::db::DbCon
         plan.ui_tables_to_clear = {
             "ui_battle_manual_followup",
             "ui_battle_advancement_decision",
+            "ui_battle_turn_job_replication",
             "ui_battle_turn_job",
             "ui_battle_wave",
             "ui_battle_group",

@@ -11,7 +11,7 @@
 #include "../../Core/Input/SoaBattle/PlanWriter.h"
 #include "../../Core/Input/SoaBattle/ActionLibrary.h"
 #include "../../Core/Input/InputPlanFmt.h"
-#include "../../Core/Input/AppliedTurnTapeBlob.h"
+#include "../../Core/Input/BattleInputTraceBlob.h"
 #include "../../Core/Memory/IKeyReader.h"
 #include "../../Core/Memory/DerivedBase.h"
 #include "../../Core/Memory/Soa/Battle/DerivedBattleBuffer.h"
@@ -1363,9 +1363,9 @@ namespace savor {
         std::string blob;
         if (ctx.get<std::string>(savor::context::key::battle::CTX_BLOB, blob)) soa::battle::ctx::codec::decode(blob, bc);
         const auto& turn_plan = bp[turn - 1];
-        savor::InputPlan plan;
+        savor::ControllerInputSequence plan;
         auto err = soa::battle::actions::MaterializeErr::OK;
-        if (!soa::battle::actions::ActionLibrary::generateTurnPlan(bc, turn_plan, plan, err)) {
+        if (!soa::battle::actions::MaterializeBattleTurnInputs(bc, turn_plan, plan, err)) {
             ctx[savor::context::key::battle::PLAN_MATERIALIZE_ERR] = (uint32_t)err;
             ctx[savor::context::key::core::PLAN_DONE] = (uint32_t)1;
             return;
@@ -1407,7 +1407,7 @@ namespace savor {
             ctx[savor::context::key::battle::INPUT_PLAYBACK_ERR] = uint32_t(2);
             return;
         }
-        savor::InputPlan plan{}; plan.reserve(count);
+        savor::ControllerInputSequence plan{}; plan.reserve(count);
         uint32_t rand{ 0 };
         host_.readU32(addr::AddrRegistry::base(addr::core::RNG_SEED), rand);
         SCLOGTX(SC_TAGS("vm", "input", "rng"), "RNG before inputs %X", rand);
@@ -1444,8 +1444,13 @@ namespace savor {
         uint32_t turn_number = 0;
         if (!ctx.get(savor::context::key::battle::TURN_OUTPUT_INDEX, turn_number)) (void)ctx.get(savor::context::key::battle::ACTIVE_TURN, turn_number);
         std::string turn_blob; (void)ctx.get(savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB, turn_blob);
-        savor::inputtape::TurnChunk chunk{}; chunk.turn_number = turn_number; chunk.vi_start = apply_vi_start; chunk.vi_end = apply_vi_end; chunk.frames = playback.attempted_frames; chunk.vi_durations = playback.vi_durations;
-        (void)savor::inputtape::append_turn_chunk(turn_blob, chunk);
+        savor::inputtrace::BattleTurnInputTrace chunk{};
+        chunk.turn_number = turn_number;
+        chunk.vi_start = apply_vi_start;
+        chunk.vi_end = apply_vi_end;
+        chunk.frames = playback.attempted_frames;
+        chunk.vi_durations = playback.vi_durations;
+        (void)savor::inputtrace::append_turn_input_trace(turn_blob, chunk);
         ctx[savor::context::key::battle::APPLIED_INPUTPLAN_TURN_BLOB] = std::move(turn_blob);
         ctx[savor::context::key::battle::APPLIED_INPUTPLAN_COUNT] = static_cast<uint32_t>(playback.attempted_frames.size());
         ctx[savor::context::key::core::PLAN_DONE] = uint32_t(1);

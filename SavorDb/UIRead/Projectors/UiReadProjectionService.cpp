@@ -917,8 +917,9 @@ bool ProjectBattleTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id
         "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 1 ELSE 0 END,"
         "(SELECT d.decision_kind FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id ORDER BY CASE d.decision_kind WHEN 'SELECTED' THEN 0 WHEN 'NOT_SELECTED' THEN 1 ELSE 2 END,d.battle_advancement_decision_id DESC LIMIT 1),"
         "CASE WHEN EXISTS (SELECT 1 FROM ab_battle_advancement_decision d WHERE d.turn_job_id=j.turn_job_id AND d.decision_kind='SELECTED') THEN 2 WHEN j.battle_outcome IN (0,6) THEN 1 ELSE 0 END,"
-        "j.started_at_utc,j.ended_at_utc "
-        "FROM ab_turn_job j WHERE j.turn_job_id=?1;";
+        "j.started_at_utc,j.ended_at_utc,w.battle_set_id,w.parent_wave_id,w.parent_turn_job_id,"
+        "j.source_savestate_id,j.seed_candidate_id,j.authored_plan_id,j.authored_turn_index,j.resolved_turn_commands_blob,j.resolved_turn_variant_key,j.output_savestate_id,j.input_trace_artifact_id "
+        "FROM ab_turn_job j JOIN ab_turn_wave w ON w.wave_id=j.wave_id WHERE j.turn_job_id=?1;";
     if (!Prepare(source, kJobs, &jobs, error_out)) return false;
     sqlite3_bind_int64(jobs.st, 1, turn_job_id);
     while (sqlite3_step(jobs.st) == SQLITE_ROW) {
@@ -936,6 +937,32 @@ bool ProjectBattleTurnJob(sqlite3* source, sqlite3* ui, std::int64_t turn_job_id
         if (!Prepare(ui, kSql, &upsert, error_out)) return false;
         for (int i = 0; i < 18; ++i) BindColumn(upsert.st, i + 1, jobs.st, i);
         if (!StepDone(ui, upsert.st, error_out)) return false;
+        Statement replication;
+        constexpr const char* kReplicationSql =
+            "INSERT INTO ui_battle_turn_job_replication(turn_job_id,battle_set_id,wave_id,parent_wave_id,parent_turn_job_id,exec_job_id,source_savestate_id,seed_candidate_id,authored_plan_id,authored_turn_index,resolved_turn_commands_blob,resolved_turn_variant_key,fake_attacks_used_before,fake_attacks_this_turn,output_savestate_id,input_trace_artifact_id) "
+            "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) "
+            "ON CONFLICT(turn_job_id) DO UPDATE SET battle_set_id=excluded.battle_set_id,wave_id=excluded.wave_id,parent_wave_id=excluded.parent_wave_id,parent_turn_job_id=excluded.parent_turn_job_id,exec_job_id=excluded.exec_job_id,"
+            "source_savestate_id=excluded.source_savestate_id,seed_candidate_id=excluded.seed_candidate_id,authored_plan_id=excluded.authored_plan_id,authored_turn_index=excluded.authored_turn_index,"
+            "resolved_turn_commands_blob=excluded.resolved_turn_commands_blob,resolved_turn_variant_key=excluded.resolved_turn_variant_key,fake_attacks_used_before=excluded.fake_attacks_used_before,"
+            "fake_attacks_this_turn=excluded.fake_attacks_this_turn,output_savestate_id=excluded.output_savestate_id,input_trace_artifact_id=excluded.input_trace_artifact_id;";
+        if (!Prepare(ui, kReplicationSql, &replication, error_out)) return false;
+        BindColumn(replication.st, 1, jobs.st, 0);
+        BindColumn(replication.st, 2, jobs.st, 18);
+        BindColumn(replication.st, 3, jobs.st, 2);
+        BindColumn(replication.st, 4, jobs.st, 19);
+        BindColumn(replication.st, 5, jobs.st, 20);
+        BindColumn(replication.st, 6, jobs.st, 1);
+        BindColumn(replication.st, 7, jobs.st, 21);
+        BindColumn(replication.st, 8, jobs.st, 22);
+        BindColumn(replication.st, 9, jobs.st, 23);
+        BindColumn(replication.st, 10, jobs.st, 24);
+        BindColumn(replication.st, 11, jobs.st, 25);
+        BindColumn(replication.st, 12, jobs.st, 26);
+        BindColumn(replication.st, 13, jobs.st, 5);
+        BindColumn(replication.st, 14, jobs.st, 4);
+        BindColumn(replication.st, 15, jobs.st, 27);
+        BindColumn(replication.st, 16, jobs.st, 28);
+        if (!StepDone(ui, replication.st, error_out)) return false;
         if (refresh_rollups) {
             if (!ProjectBattleWave(source, ui, wave_id, error_out)) return false;
             if (!RefreshBattleWaveRollup(ui, wave_id, error_out)) return false;

@@ -8,8 +8,10 @@
 
 #include "SavorDbRuntime.h"
 #include "DB/SavorDbServiceResult.h"
+#include "Analysis/IAnalysisDb.h"
 #include "Execution/IExecutionDb.h"
 #include "UIRead/IUiReadDb.h"
+#include "Core/Input/SoaBattle/BattleCommandCodec.h"
 
 namespace savorqt::db {
 
@@ -56,6 +58,26 @@ struct BattleRunJobDetail {
     savor::db::UiBattleTurnJobDetail battle;
     std::optional<savor::db::UiJobDetail> job;
     std::vector<savor::db::ExecutionJobEventRecord> events;
+};
+
+struct BattleReplicationOrigin {
+    std::optional<std::int64_t> entry_savestate_id;
+    std::optional<std::int64_t> seed_candidate_id;
+    std::string seed_source_kind;
+    std::optional<std::int64_t> source_unique_seed_id;
+    std::optional<std::int64_t> source_input_frame_id;
+    std::optional<savor::GCInputFrame> initial_input;
+};
+
+struct BattleReplicationTurn {
+    savor::db::UiBattleTurnJobReplicationRow row;
+    std::vector<soa::battle::actions::BattleCommand> commands;
+    bool command_decode_ok = false;
+};
+
+struct BattleReplicationDetails {
+    BattleReplicationOrigin origin;
+    std::vector<BattleReplicationTurn> turns;
 };
 
 class SavorDbExplorerRunService {
@@ -198,6 +220,66 @@ public:
         return ServiceResult<BattleRunJobDetail>::Ok(std::move(out));
     }
 
+    static ServiceResult<BattleReplicationDetails> GetBattleReplicationDetails(std::int64_t turn_job_id) {
+        auto* ui_read = UiReadDb();
+        if (ui_read == nullptr) {
+            return Unavailable<BattleReplicationDetails>("SavorDb UIRead is unavailable");
+        }
+
+        auto chain = ui_read->ListBattleTurnJobReplicationChain(turn_job_id);
+        if (chain.empty()) {
+            return NotFound<BattleReplicationDetails>("battle replication chain not found");
+        }
+
+        BattleReplicationDetails out{};
+        out.origin.entry_savestate_id = chain.front().source_savestate_id;
+        out.origin.seed_candidate_id = chain.front().seed_candidate_id;
+        if (auto* analysis = AnalysisDb(); analysis != nullptr && out.origin.seed_candidate_id.has_value()) {
+            if (const auto candidate = analysis->GetBattleSeedCandidate(*out.origin.seed_candidate_id); candidate.has_value()) {
+                out.origin.seed_source_kind = std::string(savor::db::ToDbString(candidate->source_kind));
+                out.origin.source_unique_seed_id = candidate->source_unique_seed_id;
+                out.origin.source_input_frame_id = candidate->source_input_frame_id;
+                if (candidate->source_unique_seed_id.has_value()) {
+                    if (const auto unique = analysis->GetSeedProbeUniqueSeed(*candidate->source_unique_seed_id); unique.has_value()) {
+                        savor::GCInputFrame frame{};
+                        frame.main_x = static_cast<std::uint8_t>(std::clamp(unique->main_x, 0, 255));
+                        frame.main_y = static_cast<std::uint8_t>(std::clamp(unique->main_y, 0, 255));
+                        frame.c_x = static_cast<std::uint8_t>(std::clamp(unique->cstick_x, 0, 255));
+                        frame.c_y = static_cast<std::uint8_t>(std::clamp(unique->cstick_y, 0, 255));
+                        frame.trig_l = static_cast<std::uint8_t>(std::clamp(unique->trigger_x, 0, 255));
+                        frame.trig_r = static_cast<std::uint8_t>(std::clamp(unique->trigger_y, 0, 255));
+                        out.origin.initial_input = frame;
+                    }
+                } else if (candidate->source_input_frame_id.has_value()) {
+                    if (const auto input = analysis->GetAnalysisInputFrame(*candidate->source_input_frame_id); input.has_value()) {
+                        savor::GCInputFrame frame{};
+                        frame.main_x = static_cast<std::uint8_t>(std::clamp(input->main_x, 0, 255));
+                        frame.main_y = static_cast<std::uint8_t>(std::clamp(input->main_y, 0, 255));
+                        frame.c_x = static_cast<std::uint8_t>(std::clamp(input->cstick_x, 0, 255));
+                        frame.c_y = static_cast<std::uint8_t>(std::clamp(input->cstick_y, 0, 255));
+                        frame.trig_l = static_cast<std::uint8_t>(std::clamp(input->trigger_x, 0, 255));
+                        frame.trig_r = static_cast<std::uint8_t>(std::clamp(input->trigger_y, 0, 255));
+                        out.origin.initial_input = frame;
+                    }
+                }
+            }
+        }
+
+        out.turns.reserve(chain.size());
+        for (auto& row : chain) {
+            BattleReplicationTurn turn{};
+            turn.row = std::move(row);
+            if (turn.row.resolved_turn_commands_blob.has_value() && !turn.row.resolved_turn_commands_blob->empty()) {
+                if (auto commands = soa::battle::actions::decode_battle_turn_commands_hex(*turn.row.resolved_turn_commands_blob); commands.has_value()) {
+                    turn.commands = std::move(*commands);
+                    turn.command_decode_ok = true;
+                }
+            }
+            out.turns.push_back(std::move(turn));
+        }
+        return ServiceResult<BattleReplicationDetails>::Ok(std::move(out));
+    }
+
 private:
     static savor::db::IUiReadDb* UiReadDb() {
         return savorqt::SavorDbRuntime::instance().uiReadDb();
@@ -205,6 +287,10 @@ private:
 
     static savor::db::IExecutionDb* ExecutionDb() {
         return savorqt::SavorDbRuntime::instance().executionDb();
+    }
+
+    static savor::db::IAnalysisDb* AnalysisDb() {
+        return savorqt::SavorDbRuntime::instance().analysisDb();
     }
 
     template <typename T>

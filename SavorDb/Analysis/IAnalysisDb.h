@@ -430,6 +430,12 @@ struct RecordBattleTurnJobCommand {
     std::int64_t wave_id = 0;
     std::optional<std::int64_t> exec_job_id;
     std::int64_t plan_id = 0;
+    std::optional<std::int64_t> source_savestate_id;
+    std::optional<std::int64_t> seed_candidate_id;
+    std::optional<std::int64_t> authored_plan_id;
+    std::optional<int> authored_turn_index;
+    std::optional<std::string> resolved_turn_commands_blob;
+    std::optional<std::string> resolved_turn_variant_key;
     int fake_attacks_this_turn = 0;
     int fake_attacks_used_before = 0;
     BattleTurnJobState job_state = BattleTurnJobState::Unknown;
@@ -447,6 +453,7 @@ struct RecordBattleTurnJobCommand {
     std::optional<int> pred_abort_run;
     std::optional<std::int64_t> output_savestate_id;
     std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
     std::optional<std::string> result_context_blob_base64;
     std::optional<int> result_context_version;
     std::optional<types::UtcTimePoint> recorded_at_utc;
@@ -558,6 +565,12 @@ struct BattleTurnJobSnapshot {
     std::int64_t wave_id = 0;
     std::optional<std::int64_t> exec_job_id;
     std::int64_t plan_id = 0;
+    std::optional<std::int64_t> source_savestate_id;
+    std::optional<std::int64_t> seed_candidate_id;
+    std::optional<std::int64_t> authored_plan_id;
+    std::optional<int> authored_turn_index;
+    std::optional<std::string> resolved_turn_commands_blob;
+    std::optional<std::string> resolved_turn_variant_key;
     int fake_attacks_this_turn = 0;
     int fake_attacks_used_before = 0;
     BattleTurnJobState job_state = BattleTurnJobState::Unknown;
@@ -575,6 +588,7 @@ struct BattleTurnJobSnapshot {
     std::optional<int> pred_abort_run;
     std::optional<std::int64_t> output_savestate_id;
     std::optional<std::int64_t> applied_input_artifact_id;
+    std::optional<std::int64_t> input_trace_artifact_id;
     std::optional<std::string> result_context_blob_base64;
     std::optional<int> result_context_version;
     std::optional<types::UtcTimePoint> recorded_at_utc;
