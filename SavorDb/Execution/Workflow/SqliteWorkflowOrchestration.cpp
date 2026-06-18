@@ -367,6 +367,24 @@ std::vector<WorkflowReadyStepRecord> SqliteWorkflowOrchestrationQueryService::Li
     return rows;
 }
 
+std::int64_t SqliteWorkflowOrchestrationQueryService::CountActiveMaterializedWorkflows() const {
+    Statement st;
+    if (!Prepare(db_,
+        "SELECT COUNT(DISTINCT s.workflow_instance_id) "
+        "FROM exec_workflow_step s "
+        "JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
+        "WHERE i.state IN ('PENDING','RUNNING') "
+        "AND s.state IN ('MATERIALIZED','RUNNING');",
+        &st,
+        nullptr)) {
+        return 0;
+    }
+    if (sqlite3_step(st.st) != SQLITE_ROW) {
+        return 0;
+    }
+    return sqlite3_column_int64(st.st, 0);
+}
+
 std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryService::GetStepTerminalSnapshotForJob(
     std::int64_t job_id) const {
     if (job_id <= 0) {

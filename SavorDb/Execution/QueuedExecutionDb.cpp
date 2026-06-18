@@ -45,6 +45,15 @@ public:
             {});
     }
 
+    std::int64_t CountActiveMaterializedWorkflows() const override {
+        return owner_->ExecuteRead<std::int64_t>(
+            [this]() {
+                auto* service = owner_->inner_ != nullptr ? owner_->inner_->WorkflowQueryService() : nullptr;
+                return service != nullptr ? service->CountActiveMaterializedWorkflows() : 0;
+            },
+            0);
+    }
+
     std::optional<workflow::WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const override {
         return owner_->ExecuteRead<std::optional<workflow::WorkflowGraphSnapshot>>(
             [this, workflow_instance_id]() {

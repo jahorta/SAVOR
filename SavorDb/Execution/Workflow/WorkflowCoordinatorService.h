@@ -32,6 +32,7 @@ struct WorkflowCoordinatorConfig {
     std::chrono::milliseconds poll_interval{ 50 };
     std::size_t ready_scan_limit = 2048;
     std::size_t terminal_scan_limit = 64;
+    std::size_t max_active_materialized_workflows = 30;
     std::chrono::milliseconds input_timeout{ 2000 };
     int input_timeout_retries = 1;
 };
@@ -41,6 +42,8 @@ struct WorkflowCoordinatorTelemetry {
     std::int64_t ready_steps_seen = 0;
     std::int64_t workflow_created_seen_count = 0;
     std::int64_t last_ready_scan_latency_ms = 0;
+    std::int64_t active_materialized_workflow_count = 0;
+    std::int64_t materialization_throttle_count = 0;
     std::int64_t input_complete_count = 0;
     std::int64_t input_timeout_count = 0;
     std::int64_t terminal_input_failure_count = 0;
@@ -156,6 +159,8 @@ private:
     std::atomic<std::int64_t> ready_steps_seen_{ 0 };
     std::atomic<std::int64_t> workflow_created_seen_count_{ 0 };
     std::atomic<std::int64_t> last_ready_scan_latency_ms_{ 0 };
+    std::atomic<std::int64_t> active_materialized_workflow_count_{ 0 };
+    std::atomic<std::int64_t> materialization_throttle_count_{ 0 };
     std::atomic<std::int64_t> input_complete_count_{ 0 };
     std::atomic<std::int64_t> input_timeout_count_{ 0 };
     std::atomic<std::int64_t> terminal_input_failure_count_{ 0 };

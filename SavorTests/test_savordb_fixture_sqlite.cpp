@@ -129,6 +129,24 @@ std::string ReadText(sqlite3* db, const char* sql) {
     return value;
 }
 
+bool QueryPlanContains(sqlite3* db, const char* sql, const std::string& expected) {
+    sqlite3_stmt* st = nullptr;
+    EXPECT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &st, nullptr));
+    if (st == nullptr) {
+        return false;
+    }
+    bool found = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const auto* detail = sqlite3_column_text(st, 3);
+        if (detail != nullptr && std::string(reinterpret_cast<const char*>(detail)).find(expected) != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 void RunUiReadProjectionUntilCaughtUp(
     savor::db::core::DBService& service,
     const std::string& stream_id) {
@@ -620,6 +638,8 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_edge_instance_to"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_payload_ref"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_outbox_replay_cursor"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_job_event_job_event_id"));
+    EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_step_state_instance"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_graph_revision"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_input_binding_instance"));
     EXPECT_TRUE(IndexExists(db_, "ix_exec_workflow_instance_argument_instance"));
@@ -627,6 +647,8 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_instance_state"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_alert_active"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_projection_dirty_entity_priority"));
+    EXPECT_TRUE(IndexExists(db_, "ix_ui_job_summary_job_set_job"));
+    EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_job_set_instance"));
 
     const auto step_table_sql = TableCreateSql(db_, "exec_workflow_step");
     EXPECT_NE(step_table_sql.find("CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','SKIPPED'))"), std::string::npos);
@@ -7758,6 +7780,123 @@ TEST_F(SqliteDbFixture, UiReadProjectionExecutionDirtyPriorityPreservesWorkflowF
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_id=33121;"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job_set';"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job';"), 1);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadWorkflowBattleRollupQueriesUseJobSetIndexes) {
+    EXPECT_TRUE(QueryPlanContains(db_,
+        "EXPLAIN QUERY PLAN "
+        "SELECT job_event_id,job_id,artifact_id,event_kind,event_ts_utc "
+        "FROM exec_job_event WHERE job_id=1 AND artifact_id IS NOT NULL ORDER BY job_event_id ASC;",
+        "ix_exec_job_event_job_event_id"));
+    EXPECT_TRUE(QueryPlanContains(db_,
+        "EXPLAIN QUERY PLAN "
+        "SELECT COALESCE(MAX(b.advancement_rank),0) "
+        "FROM ui_job_summary j INDEXED BY ix_ui_job_summary_job_set_job "
+        "JOIN ui_battle_turn_job b ON b.exec_job_id=j.job_id "
+        "WHERE j.job_set_id=1;",
+        "ix_ui_job_summary_job_set_job"));
+    EXPECT_TRUE(QueryPlanContains(db_,
+        "EXPLAIN QUERY PLAN "
+        "SELECT DISTINCT s.job_set_id "
+        "FROM ui_job_summary j "
+        "JOIN ui_workflow_step s INDEXED BY ix_ui_workflow_step_job_set_instance ON s.job_set_id=j.job_set_id "
+        "WHERE j.job_id=1 AND s.job_set_id IS NOT NULL;",
+        "ix_ui_workflow_step_job_set_instance"));
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionDirtyJobSetRefreshesWorkflowBattleRollupOnceAfterProjectingJobs) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-job-set-battle-rollup";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* ui_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &ui_handle));
+    ASSERT_NE(ui_handle, nullptr);
+    ASSERT_TRUE(ExecSql(ui_handle,
+        "INSERT INTO ui_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
+        "VALUES(34100,'battle-rollup','RUNNING','manual',NULL,'test',1000,1100);"));
+    ASSERT_TRUE(ExecSql(ui_handle,
+        "INSERT INTO ui_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,job_set_id,priority,attempts,max_attempts,created_at_utc) "
+        "VALUES(34101,34100,'battle-step','battle_single_turn','MATERIALIZED',34110,5,1,1,1000);"));
+    for (int i = 0; i < 24; ++i) {
+        const auto job_id = 34120 + i;
+        const auto turn_job_id = 34220 + i;
+        const int selected = i == 0 ? 1 : 0;
+        const int desired = i < 6 ? 1 : 0;
+        const int victory = i == 1 ? 1 : 0;
+        const int rank = selected ? 2 : (desired ? 1 : 0);
+        ASSERT_TRUE(ExecSql(ui_handle,
+            ("INSERT INTO ui_battle_turn_job(turn_job_id,wave_id,exec_job_id,job_state,fake_attacks_this_turn,fake_attacks_used_before,"
+             "has_desired_outcome,selected_for_advancement,advancement_decision_kind,advancement_rank,has_final_victory_outcome) "
+             "VALUES(" + std::to_string(turn_job_id) + ",34150," + std::to_string(job_id) + ",'SUCCEEDED',0,0,"
+             + std::to_string(desired) + "," + std::to_string(selected) + ","
+             + (selected ? "'SELECTED'" : (desired ? "'NOT_SELECTED'" : "NULL")) + ","
+             + std::to_string(rank) + "," + std::to_string(victory) + ");")
+                .c_str()));
+    }
+    sqlite3_close(ui_handle);
+    ui_handle = nullptr;
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(34110,NULL,42,'rollup-job-set','test',1000,0,24,NULL,NULL,NULL);"));
+    for (int i = 0; i < 24; ++i) {
+        const auto job_id = 34120 + i;
+        ASSERT_TRUE(ExecSql(exec_handle,
+            ("INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+             "VALUES(" + std::to_string(job_id) + ",34110,NULL,42,1,'test',1,'rollup-job-" + std::to_string(i) + "',5,'COMPLETED',1,1,'worker-1',NULL,1000,1100,1200,NULL,NULL);")
+                .c_str()));
+    }
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(1,'rollup-job-set-created','Execution.JobSetCreated.v1',1,'Execution','job_set','34110','test','test',1300,'job_set',34110,NULL,0,NULL);"));
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_set_id=34110;"), 24);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_advancement_rank FROM ui_workflow_step WHERE workflow_step_id=34101;"), 2);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_desired_outcome_count FROM ui_workflow_step WHERE workflow_step_id=34101;"), 6);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_final_victory_count FROM ui_workflow_step WHERE workflow_step_id=34101;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_selected_count FROM ui_workflow_step WHERE workflow_step_id=34101;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_advancement_rank FROM ui_workflow_instance WHERE workflow_instance_id=34100;"), 2);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_desired_outcome_count FROM ui_workflow_instance WHERE workflow_instance_id=34100;"), 6);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_final_victory_count FROM ui_workflow_instance WHERE workflow_instance_id=34100;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT battle_selected_count FROM ui_workflow_instance WHERE workflow_instance_id=34100;"), 1);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job_set';"), 0);
     sqlite3_close(verify_handle);
 }
 

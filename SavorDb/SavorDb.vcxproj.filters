@@ -498,6 +498,12 @@
     <None Include="migration\Execution\202604111000_execution_graph_routing.sql">
       <Filter>Migrations\Execution</Filter>
     </None>
+    <None Include="migration\Execution\202606181100_execution_job_event_projection_index.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
+    <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql">
+      <Filter>Migrations\Execution</Filter>
+    </None>
     <None Include="migration\State\202604051000_state_stage2_schema.sql">
       <Filter>Migrations\State</Filter>
     </None>
@@ -541,6 +547,9 @@
       <Filter>Migrations\UiRead</Filter>
     </None>
     <None Include="migration\UIRead\202606171600_uiread_dirty_entity_priority_index.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
+    <None Include="migration\UIRead\202606181000_uiread_workflow_rollup_indexes.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
   </ItemGroup>

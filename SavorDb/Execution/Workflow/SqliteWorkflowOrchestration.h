@@ -21,6 +21,7 @@ public:
         std::int64_t created_at_utc_end) const override;
 
     std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const override;
+    std::int64_t CountActiveMaterializedWorkflows() const override;
     std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const override;
     std::optional<WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const override;
     std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const override;

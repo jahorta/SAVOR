@@ -108,6 +108,8 @@ WorkflowCoordinatorTelemetry WorkflowCoordinatorService::SnapshotTelemetry() con
     telemetry.ready_steps_seen = ready_steps_seen_.load();
     telemetry.workflow_created_seen_count = workflow_created_seen_count_.load();
     telemetry.last_ready_scan_latency_ms = last_ready_scan_latency_ms_.load();
+    telemetry.active_materialized_workflow_count = active_materialized_workflow_count_.load();
+    telemetry.materialization_throttle_count = materialization_throttle_count_.load();
     telemetry.input_complete_count = input_complete_count_.load();
     telemetry.input_timeout_count = input_timeout_count_.load();
     telemetry.terminal_input_failure_count = terminal_input_failure_count_.load();
@@ -146,13 +148,30 @@ bool WorkflowCoordinatorService::AdvanceAvailableWork() {
 
 bool WorkflowCoordinatorService::PollReadyStepsFromDb() {
     const auto t0 = std::chrono::steady_clock::now();
+    auto finish_scan = [this, t0]() {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
+        ++ready_scan_count_;
+    };
     auto* queries = execution_db_ != nullptr ? execution_db_->WorkflowQueryService() : nullptr;
     if (queries == nullptr) {
-        ++ready_scan_count_;
+        finish_scan();
         return false;
     }
 
-    const auto ready_steps = queries->ListReadySteps(config_.ready_scan_limit);
+    const auto active_count = queries->CountActiveMaterializedWorkflows();
+    active_materialized_workflow_count_.store(active_count);
+    if (config_.max_active_materialized_workflows == 0
+        || active_count >= static_cast<std::int64_t>(config_.max_active_materialized_workflows)) {
+        ++materialization_throttle_count_;
+        finish_scan();
+        return false;
+    }
+
+    const auto remaining_capacity = config_.max_active_materialized_workflows - static_cast<std::size_t>(active_count);
+    const auto scan_limit = std::min(config_.ready_scan_limit, remaining_capacity);
+    const auto ready_steps = queries->ListReadySteps(scan_limit);
     bool processed_any = false;
     for (const auto& step : ready_steps) {
         if (seen_workflow_instance_ids_.emplace(step.workflow_instance_id).second) {
@@ -162,10 +181,7 @@ bool WorkflowCoordinatorService::PollReadyStepsFromDb() {
         processed_any = ProcessReadyWorkflowStep(step) || processed_any;
     }
 
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
-    last_ready_scan_latency_ms_.store(static_cast<std::int64_t>(elapsed));
-    ++ready_scan_count_;
+    finish_scan();
     return processed_any;
 }
 

@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -247,11 +248,30 @@ bool IsExecutionWorkflowEvent(const std::string& event_type) {
 
 bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow_instance_id, std::string* error_out);
 bool RefreshWorkflowBattleRollupsForWorkflow(sqlite3* ui, std::int64_t workflow_instance_id, std::string* error_out);
+bool RefreshWorkflowBattleRollupsForJobSet(sqlite3* ui, std::int64_t job_set_id, std::string* error_out);
 bool RefreshWorkflowBattleRollupsForExecJob(sqlite3* ui, std::int64_t exec_job_id, std::string* error_out);
 
-bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* error_out) {
+bool StopRequested(const std::function<bool()>& stop_requested, std::string* error_out) {
+    if (!stop_requested()) {
+        return false;
+    }
+    if (error_out != nullptr) {
+        *error_out = "projection stop requested";
+    }
+    return true;
+}
+
+bool ProjectJobRows(
+    sqlite3* source,
+    sqlite3* ui,
+    std::int64_t job_id,
+    const std::function<bool()>& stop_requested,
+    std::string* error_out) {
     if (job_id <= 0) {
         return true;
+    }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
     }
     Statement src;
     constexpr const char* kSelect =
@@ -262,8 +282,18 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
         return false;
     }
     sqlite3_bind_int64(src.st, 1, job_id);
-    if (sqlite3_step(src.st) != SQLITE_ROW) {
+    const int src_rc = sqlite3_step(src.st);
+    if (src_rc == SQLITE_DONE) {
         return true;
+    }
+    if (src_rc != SQLITE_ROW) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(source);
+        }
+        return false;
+    }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
     }
 
     Statement summary;
@@ -280,6 +310,9 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
         BindColumn(summary.st, i + 1, src.st, i);
     }
     if (!StepDone(ui, summary.st, error_out)) {
+        return false;
+    }
+    if (StopRequested(stop_requested, error_out)) {
         return false;
     }
 
@@ -300,6 +333,9 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
     if (!StepDone(ui, detail.st, error_out)) {
         return false;
     }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
+    }
 
     Statement del;
     if (!Prepare(ui, "DELETE FROM ui_job_artifact WHERE job_id=?1;", &del, error_out)) {
@@ -307,6 +343,9 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
     }
     sqlite3_bind_int64(del.st, 1, job_id);
     if (!StepDone(ui, del.st, error_out)) {
+        return false;
+    }
+    if (StopRequested(stop_requested, error_out)) {
         return false;
     }
 
@@ -318,7 +357,11 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
         return false;
     }
     sqlite3_bind_int64(events.st, 1, job_id);
-    while (sqlite3_step(events.st) == SQLITE_ROW) {
+    int events_rc = SQLITE_OK;
+    while ((events_rc = sqlite3_step(events.st)) == SQLITE_ROW) {
+        if (StopRequested(stop_requested, error_out)) {
+            return false;
+        }
         Statement ins;
         constexpr const char* kArtifact =
             "INSERT INTO ui_job_artifact(ui_job_artifact_id,job_id,artifact_id,role_kind,created_at_utc) "
@@ -334,24 +377,66 @@ bool ProjectJob(sqlite3* source, sqlite3* ui, std::int64_t job_id, std::string* 
             return false;
         }
     }
+    if (events_rc != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(source);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ProjectJob(
+    sqlite3* source,
+    sqlite3* ui,
+    std::int64_t job_id,
+    const std::function<bool()>& stop_requested,
+    std::string* error_out) {
+    if (!ProjectJobRows(source, ui, job_id, stop_requested, error_out)) {
+        return false;
+    }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
+    }
     return RefreshWorkflowBattleRollupsForExecJob(ui, job_id, error_out);
 }
 
-bool ProjectJobSet(sqlite3* source, sqlite3* ui, std::int64_t job_set_id, std::string* error_out) {
+bool ProjectJobSet(
+    sqlite3* source,
+    sqlite3* ui,
+    std::int64_t job_set_id,
+    const std::function<bool()>& stop_requested,
+    std::string* error_out) {
     if (job_set_id <= 0) {
         return true;
+    }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
     }
     Statement st;
     if (!Prepare(source, "SELECT job_id FROM exec_job WHERE job_set_id=?1;", &st, error_out)) {
         return false;
     }
     sqlite3_bind_int64(st.st, 1, job_set_id);
-    while (sqlite3_step(st.st) == SQLITE_ROW) {
-        if (!ProjectJob(source, ui, sqlite3_column_int64(st.st, 0), error_out)) {
+    int rc = SQLITE_OK;
+    while ((rc = sqlite3_step(st.st)) == SQLITE_ROW) {
+        if (StopRequested(stop_requested, error_out)) {
+            return false;
+        }
+        if (!ProjectJobRows(source, ui, sqlite3_column_int64(st.st, 0), stop_requested, error_out)) {
             return false;
         }
     }
-    return true;
+    if (rc != SQLITE_DONE) {
+        if (error_out != nullptr) {
+            *error_out = sqlite3_errmsg(source);
+        }
+        return false;
+    }
+    if (StopRequested(stop_requested, error_out)) {
+        return false;
+    }
+    return RefreshWorkflowBattleRollupsForJobSet(ui, job_set_id, error_out);
 }
 
 std::int64_t ResolveWorkflowInstanceForJobSet(sqlite3* source, std::int64_t job_set_id, std::string* error_out) {
@@ -815,16 +900,16 @@ bool RefreshWorkflowStepBattleRollup(sqlite3* ui, std::int64_t job_set_id, std::
     constexpr const char* kSql =
         "UPDATE ui_workflow_step SET "
         "battle_advancement_rank=("
-        "SELECT COALESCE(MAX(b.advancement_rank),0) FROM ui_job_summary j "
+        "SELECT COALESCE(MAX(b.advancement_rank),0) FROM ui_job_summary j INDEXED BY ix_ui_job_summary_job_set_job "
         "JOIN ui_battle_turn_job b ON b.exec_job_id=j.job_id WHERE j.job_set_id=?1),"
         "battle_desired_outcome_count=("
-        "SELECT COALESCE(SUM(CASE WHEN b.has_desired_outcome=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j "
+        "SELECT COALESCE(SUM(CASE WHEN b.has_desired_outcome=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j INDEXED BY ix_ui_job_summary_job_set_job "
         "JOIN ui_battle_turn_job b ON b.exec_job_id=j.job_id WHERE j.job_set_id=?1),"
         "battle_final_victory_count=("
-        "SELECT COALESCE(SUM(CASE WHEN b.has_final_victory_outcome=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j "
+        "SELECT COALESCE(SUM(CASE WHEN b.has_final_victory_outcome=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j INDEXED BY ix_ui_job_summary_job_set_job "
         "JOIN ui_battle_turn_job b ON b.exec_job_id=j.job_id WHERE j.job_set_id=?1),"
         "battle_selected_count=("
-        "SELECT COALESCE(SUM(CASE WHEN b.selected_for_advancement=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j "
+        "SELECT COALESCE(SUM(CASE WHEN b.selected_for_advancement=1 THEN 1 ELSE 0 END),0) FROM ui_job_summary j INDEXED BY ix_ui_job_summary_job_set_job "
         "JOIN ui_battle_turn_job b ON b.exec_job_id=j.job_id WHERE j.job_set_id=?1) "
         "WHERE job_set_id=?1;";
     if (!Prepare(ui, kSql, &st, error_out)) return false;
@@ -861,7 +946,7 @@ bool RefreshWorkflowBattleRollupsForExecJob(sqlite3* ui, std::int64_t exec_job_i
     Statement job_sets;
     constexpr const char* kSql =
         "SELECT DISTINCT s.job_set_id "
-        "FROM ui_job_summary j JOIN ui_workflow_step s ON s.job_set_id=j.job_set_id "
+        "FROM ui_job_summary j JOIN ui_workflow_step s INDEXED BY ix_ui_workflow_step_job_set_instance ON s.job_set_id=j.job_set_id "
         "WHERE j.job_id=?1 AND s.job_set_id IS NOT NULL;";
     if (!Prepare(ui, kSql, &job_sets, error_out)) return false;
     sqlite3_bind_int64(job_sets.st, 1, exec_job_id);
@@ -1658,10 +1743,11 @@ bool ClearDirtyEntity(
 bool MaterializeDirtyEntity(
     UiReadProjectionService::StreamRuntime& stream,
     const DirtyEntity& entity,
+    const std::function<bool()>& stop_requested,
     std::string* error_out) {
     if (stream.kind == StreamKind::Execution) {
-        if (entity.kind == "job") return ProjectJob(stream.source_db, stream.ui_db, entity.id, error_out);
-        if (entity.kind == "job_set") return ProjectJobSet(stream.source_db, stream.ui_db, entity.id, error_out);
+        if (entity.kind == "job") return ProjectJob(stream.source_db, stream.ui_db, entity.id, stop_requested, error_out);
+        if (entity.kind == "job_set") return ProjectJobSet(stream.source_db, stream.ui_db, entity.id, stop_requested, error_out);
         if (entity.kind == "workflow") return ProjectWorkflowInstance(stream.source_db, stream.ui_db, entity.id, error_out);
     }
     if (stream.kind == StreamKind::State && entity.kind == "artifact") {
@@ -1696,8 +1782,10 @@ bool MaterializeDirtyEntity(
 bool MaterializeDirtyEntities(
     UiReadProjectionService::StreamRuntime& stream,
     int limit,
+    const std::function<bool()>& stop_requested,
     int* materialized_count_out,
     DirtyEntity* failed_entity_out,
+    bool* stopped_out,
     std::string* error_out) {
     if (materialized_count_out != nullptr) {
         *materialized_count_out = 0;
@@ -1705,18 +1793,60 @@ bool MaterializeDirtyEntities(
     if (failed_entity_out != nullptr) {
         *failed_entity_out = {};
     }
+    if (stopped_out != nullptr) {
+        *stopped_out = false;
+    }
+    if (stop_requested()) {
+        if (stopped_out != nullptr) {
+            *stopped_out = true;
+        }
+        return true;
+    }
     const auto dirty = stream.kind == StreamKind::Execution
         ? ReadExecutionDirtyEntities(stream, limit, error_out)
         : ReadDirtyEntities(stream, limit, error_out);
     if (dirty.empty()) {
         return true;
     }
+    if (stop_requested()) {
+        if (stopped_out != nullptr) {
+            *stopped_out = true;
+        }
+        return true;
+    }
     if (!Exec(stream.ui_db, "BEGIN IMMEDIATE;", error_out)) {
         return false;
     }
     for (const auto& entity : dirty) {
-        if (!MaterializeDirtyEntity(stream, entity, error_out)
-            || !ClearDirtyEntity(stream, entity, error_out)) {
+        if (stop_requested()) {
+            if (stopped_out != nullptr) {
+                *stopped_out = true;
+            }
+            Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            return true;
+        }
+        if (!MaterializeDirtyEntity(stream, entity, stop_requested, error_out)) {
+            if (stop_requested()) {
+                if (stopped_out != nullptr) {
+                    *stopped_out = true;
+                }
+                Exec(stream.ui_db, "ROLLBACK;", nullptr);
+                return true;
+            }
+            if (failed_entity_out != nullptr) {
+                *failed_entity_out = entity;
+            }
+            Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            return false;
+        }
+        if (stop_requested()) {
+            if (stopped_out != nullptr) {
+                *stopped_out = true;
+            }
+            Exec(stream.ui_db, "ROLLBACK;", nullptr);
+            return true;
+        }
+        if (!ClearDirtyEntity(stream, entity, error_out)) {
             if (failed_entity_out != nullptr) {
                 *failed_entity_out = entity;
             }
@@ -1726,6 +1856,13 @@ bool MaterializeDirtyEntities(
         if (materialized_count_out != nullptr) {
             *materialized_count_out += 1;
         }
+    }
+    if (stop_requested()) {
+        if (stopped_out != nullptr) {
+            *stopped_out = true;
+        }
+        Exec(stream.ui_db, "ROLLBACK;", nullptr);
+        return true;
     }
     if (!Exec(stream.ui_db, "COMMIT;", error_out)) {
         Exec(stream.ui_db, "ROLLBACK;", nullptr);
@@ -2021,13 +2158,16 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
 
     int materialized_count = 0;
     DirtyEntity failed_entity;
+    bool materialization_stopped = false;
     if (ok && !stopped && !IsStoppingRequested()) {
         std::string materialize_error;
         if (!MaterializeDirtyEntities(
                 stream,
                 config_.max_dirty_materialization_batch_size,
+                [this]() { return IsStoppingRequested(); },
                 &materialized_count,
                 &failed_entity,
+                &materialization_stopped,
                 &materialize_error)) {
             ok = false;
             failure = materialize_error.empty() ? "failed to materialize dirty projection entities" : materialize_error;
@@ -2035,6 +2175,8 @@ bool UiReadProjectionService::RunStreamOnce(StreamRuntime& stream, std::string* 
             const auto diagnostic = DirtyMaterializationDiagnosticEvent(stream, failed_entity);
             RecordFailure(stream, diagnostic, failure, config_.max_attempts, nullptr);
             Exec(stream.ui_db, "COMMIT;", nullptr);
+        } else if (materialization_stopped) {
+            stopped = true;
         }
     }
 

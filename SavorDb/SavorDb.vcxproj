@@ -302,6 +302,8 @@
     <None Include="migration\Execution\202604101300_execution_workflow_graph_instance_bindings.sql" />
     <None Include="migration\Execution\202604101500_execution_workflow_instance_arguments.sql" />
     <None Include="migration\Execution\202604111000_execution_graph_routing.sql" />
+    <None Include="migration\Execution\202606181100_execution_job_event_projection_index.sql" />
+    <None Include="migration\Execution\202606181200_execution_active_workflow_materialization_index.sql" />
     <None Include="migration\State\202604051000_state_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051000_uiread_stage2_schema.sql" />
     <None Include="migration\UIRead\202604051200_uiread_stage3b_workflow.sql" />
@@ -317,6 +319,7 @@
     <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql" />
     <None Include="migration\UIRead\202606171520_uiread_battle_replication_details.sql" />
     <None Include="migration\UIRead\202606171600_uiread_dirty_entity_priority_index.sql" />
+    <None Include="migration\UIRead\202606181000_uiread_workflow_rollup_indexes.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

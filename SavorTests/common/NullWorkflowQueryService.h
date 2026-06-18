@@ -27,6 +27,9 @@ public:
     std::vector<savor::db::execution::workflow::WorkflowReadyStepRecord> ListReadySteps(std::size_t) const override {
         return {};
     }
+    std::int64_t CountActiveMaterializedWorkflows() const override {
+        return 0;
+    }
     std::vector<savor::db::execution::workflow::WorkflowStepRecord> ListBlockedSteps(std::int64_t) const override {
         return {};
     }

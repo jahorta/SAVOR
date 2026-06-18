@@ -186,6 +186,36 @@ namespace savordb {
                 .terminal_scan_limit = 16,
             };
         }
+
+        bool InsertActiveWorkflow(
+            sqlite3* db,
+            std::int64_t workflow_instance_id,
+            std::int64_t workflow_step_id,
+            const std::string& workflow_state = "RUNNING",
+            const std::string& step_state = "MATERIALIZED") {
+            return ExecSql(
+                db,
+                ("INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc) "
+                 "VALUES(" + std::to_string(workflow_instance_id) + ", 'workflow_coordinator_test', '" + workflow_state + "', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);"
+                 "INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, started_at_utc) "
+                 "VALUES(" + std::to_string(workflow_step_id) + ", " + std::to_string(workflow_instance_id) + ", 'Active', 'unit.step', '" + step_state + "', 0, 1, unixepoch()*1000, unixepoch()*1000);")
+                    .c_str());
+        }
+
+        bool InsertReadyWorkflow(
+            sqlite3* db,
+            std::int64_t workflow_instance_id,
+            std::int64_t workflow_step_id,
+            std::int64_t input_ref_id) {
+            return ExecSql(
+                db,
+                ("INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc) "
+                 "VALUES(" + std::to_string(workflow_instance_id) + ", 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);"
+                 "INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, input_ref_kind, input_ref_id, attempts, max_attempts, created_at_utc, ready_at_utc) "
+                 "VALUES(" + std::to_string(workflow_step_id) + ", " + std::to_string(workflow_instance_id) + ", 'Ready', 'unit.ready', 'READY', 'unit.input', "
+                 + std::to_string(input_ref_id) + ", 0, 1, unixepoch()*1000, unixepoch()*1000);")
+                    .c_str());
+        }
     }
 
     TEST(Stage3Phase2Contracts, DbLifecyclePreservesCanonicalEventOrderingAndOutboxContracts) {
@@ -368,6 +398,148 @@ VALUES(6102, 6101, 'Ready', 'unit.ready', 'READY', 'unit.input', 6103, 0, 1, uni
 
         const auto telemetry = service.SnapshotTelemetry();
         EXPECT_GE(telemetry.materialization_count, 1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, CountsDistinctActiveMaterializedWorkflows) {
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES
+    (6501, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000),
+    (6502, 'workflow_coordinator_test', 'PENDING', 'manual', 'test', unixepoch()*1000, NULL),
+    (6503, 'workflow_coordinator_test', 'COMPLETED', 'manual', 'test', unixepoch()*1000, unixepoch()*1000),
+    (6504, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES
+    (6511, 6501, 'ActiveA', 'unit.step', 'MATERIALIZED', 0, 1, unixepoch()*1000, unixepoch()*1000),
+    (6512, 6501, 'ActiveB', 'unit.step', 'RUNNING', 0, 1, unixepoch()*1000, unixepoch()*1000),
+    (6521, 6502, 'PendingActive', 'unit.step', 'RUNNING', 0, 1, unixepoch()*1000, unixepoch()*1000),
+    (6531, 6503, 'CompletedIgnored', 'unit.step', 'RUNNING', 0, 1, unixepoch()*1000, unixepoch()*1000),
+    (6541, 6504, 'ReadyIgnored', 'unit.step', 'READY', 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        ASSERT_NE(execution_db.WorkflowQueryService(), nullptr);
+        EXPECT_EQ(execution_db.WorkflowQueryService()->CountActiveMaterializedWorkflows(), 2);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, ThrottlesReadyMaterializationWhenActiveWorkflowLimitReached) {
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        for (int i = 0; i < 30; ++i) {
+            ASSERT_TRUE(InsertActiveWorkflow(db, 6600 + i, 6700 + i));
+        }
+        ASSERT_TRUE(InsertReadyWorkflow(db, 6801, 6802, 6803));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db, true);
+        auto config = FastWorkflowCoordinatorConfig();
+        config.max_active_materialized_workflows = 30;
+        WorkflowCoordinatorService service(&execution_db, &registry, config);
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            return service.SnapshotTelemetry().materialization_throttle_count > 0;
+        }));
+        service.Stop();
+
+        std::string ready_state;
+        std::int64_t created_job_sets = 0;
+        ASSERT_TRUE(QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=6802;", &ready_state));
+        ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_job_set WHERE created_by='WorkflowCoordinatorServiceTest';", &created_job_sets));
+        EXPECT_EQ(ready_state, "READY");
+        EXPECT_EQ(created_job_sets, 0);
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_EQ(telemetry.active_materialized_workflow_count, 30);
+        EXPECT_GE(telemetry.materialization_throttle_count, 1);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, MaterializesOnlyRemainingWorkflowCapacity) {
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        for (int i = 0; i < 29; ++i) {
+            ASSERT_TRUE(InsertActiveWorkflow(db, 6900 + i, 7000 + i));
+        }
+        ASSERT_TRUE(InsertReadyWorkflow(db, 7101, 7102, 7103));
+        ASSERT_TRUE(InsertReadyWorkflow(db, 7111, 7112, 7113));
+        ASSERT_TRUE(InsertReadyWorkflow(db, 7121, 7122, 7123));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db, true);
+        auto config = FastWorkflowCoordinatorConfig();
+        config.max_active_materialized_workflows = 30;
+        WorkflowCoordinatorService service(&execution_db, &registry, config);
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::int64_t materialized_ready_steps = 0;
+            return QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='MATERIALIZED';", &materialized_ready_steps)
+                && materialized_ready_steps == 1
+                && service.SnapshotTelemetry().materialization_throttle_count > 0;
+        }));
+        service.Stop();
+
+        std::int64_t materialized_ready_steps = 0;
+        std::int64_t ready_steps = 0;
+        ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='MATERIALIZED';", &materialized_ready_steps));
+        ASSERT_TRUE(QueryInt64(db, "SELECT COUNT(1) FROM exec_workflow_step WHERE workflow_instance_id IN (7101,7111,7121) AND state='READY';", &ready_steps));
+        EXPECT_EQ(materialized_ready_steps, 1);
+        EXPECT_EQ(ready_steps, 2);
+        sqlite3_close(db);
+    }
+
+    TEST(WorkflowCoordinatorService, TerminalReconciliationRunsWhileMaterializationThrottled) {
+        using namespace savor::db::execution::workflow;
+        using namespace savor::db::migrations;
+
+        sqlite3* db = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_open(":memory:", &db));
+        std::string err;
+        ASSERT_TRUE(ApplyContextMigrations(db, MigrationContext::Execution, { .source_kind = MigrationSourceKind::Embedded }, &err)) << err;
+        for (int i = 0; i < 29; ++i) {
+            ASSERT_TRUE(InsertActiveWorkflow(db, 7200 + i, 7300 + i));
+        }
+        ASSERT_TRUE(ExecSql(db, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc, started_at_utc)
+VALUES(7401, 'workflow_coordinator_test', 'RUNNING', 'manual', 'test', unixepoch()*1000, unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, expected_total, created_at_utc)
+VALUES(7402, 1, 'workflow-test-empty', 0, unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, attempts, max_attempts, created_at_utc, started_at_utc)
+VALUES(7403, 7401, 'Current', 'unit.step', 'MATERIALIZED', 7402, 0, 1, unixepoch()*1000, unixepoch()*1000);
+)SQL"));
+
+        SqliteExecutionDb execution_db(db);
+        auto registry = BuildWorkflowCoordinatorTestRegistry(&execution_db);
+        auto config = FastWorkflowCoordinatorConfig();
+        config.max_active_materialized_workflows = 30;
+        WorkflowCoordinatorService service(&execution_db, &registry, config);
+        ASSERT_TRUE(service.Start(&err)) << err;
+        EXPECT_TRUE(WaitForCondition([&]() {
+            std::string step_state;
+            return QueryText(db, "SELECT state FROM exec_workflow_step WHERE workflow_step_id=7403;", &step_state)
+                && step_state == "COMPLETED";
+        }));
+        service.Stop();
+
+        const auto telemetry = service.SnapshotTelemetry();
+        EXPECT_GE(telemetry.terminal_empty_step_count, 1);
         sqlite3_close(db);
     }
 

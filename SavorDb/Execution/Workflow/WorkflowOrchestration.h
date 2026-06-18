@@ -377,6 +377,7 @@ struct IWorkflowOrchestrationQueryService {
         std::int64_t created_at_utc_end) const = 0;
 
     virtual std::vector<WorkflowReadyStepRecord> ListReadySteps(std::size_t limit) const = 0;
+    virtual std::int64_t CountActiveMaterializedWorkflows() const = 0;
     virtual std::optional<WorkflowGraphSnapshot> GetWorkflowGraph(std::int64_t workflow_instance_id) const = 0;
     virtual std::optional<WorkflowStepTerminalSnapshot> GetStepTerminalSnapshotForJob(std::int64_t job_id) const = 0;
     virtual std::vector<WorkflowStepTerminalSnapshot> ListTerminalReadyStepSnapshots(std::size_t limit) const = 0;
