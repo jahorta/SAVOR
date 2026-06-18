@@ -1,6 +1,7 @@
 #include "UiReadProjectionService.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <optional>
@@ -1562,6 +1563,80 @@ std::vector<DirtyEntity> ReadDirtyEntities(
     return rows;
 }
 
+void AppendDirtyEntitiesForKind(
+    UiReadProjectionService::StreamRuntime& stream,
+    const std::string& kind,
+    int limit,
+    std::vector<DirtyEntity>* rows,
+    std::string* error_out) {
+    if (rows == nullptr || limit <= 0) {
+        return;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT entity_kind,entity_id,last_outbox_id "
+        "FROM ui_projection_dirty_entity WHERE stream_id=?1 AND entity_kind=?2 "
+        "ORDER BY updated_at_utc ASC,last_outbox_id ASC LIMIT ?3;";
+    if (!Prepare(stream.ui_db, kSql, &st, error_out)) {
+        return;
+    }
+    sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st.st, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 3, limit);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows->push_back(DirtyEntity{
+            .kind = Text(st.st, 0),
+            .id = sqlite3_column_int64(st.st, 1),
+            .outbox_id = sqlite3_column_int64(st.st, 2),
+        });
+    }
+}
+
+void AppendUnknownExecutionDirtyEntities(
+    UiReadProjectionService::StreamRuntime& stream,
+    int limit,
+    std::vector<DirtyEntity>* rows,
+    std::string* error_out) {
+    if (rows == nullptr || limit <= 0) {
+        return;
+    }
+    Statement st;
+    constexpr const char* kSql =
+        "SELECT entity_kind,entity_id,last_outbox_id "
+        "FROM ui_projection_dirty_entity WHERE stream_id=?1 "
+        "AND entity_kind NOT IN ('workflow','job_set','job') "
+        "ORDER BY updated_at_utc ASC,last_outbox_id ASC LIMIT ?2;";
+    if (!Prepare(stream.ui_db, kSql, &st, error_out)) {
+        return;
+    }
+    sqlite3_bind_text(st.st, 1, stream.stream_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st.st, 2, limit);
+    while (sqlite3_step(st.st) == SQLITE_ROW) {
+        rows->push_back(DirtyEntity{
+            .kind = Text(st.st, 0),
+            .id = sqlite3_column_int64(st.st, 1),
+            .outbox_id = sqlite3_column_int64(st.st, 2),
+        });
+    }
+}
+
+std::vector<DirtyEntity> ReadExecutionDirtyEntities(
+    UiReadProjectionService::StreamRuntime& stream,
+    int limit,
+    std::string* error_out) {
+    std::vector<DirtyEntity> rows;
+    rows.reserve(static_cast<std::size_t>(std::max(limit, 0)));
+    constexpr std::array<const char*, 3> kExecutionDirtyPriority{ "workflow", "job_set", "job" };
+    for (const char* kind : kExecutionDirtyPriority) {
+        AppendDirtyEntitiesForKind(stream, kind, limit - static_cast<int>(rows.size()), &rows, error_out);
+        if (static_cast<int>(rows.size()) >= limit) {
+            return rows;
+        }
+    }
+    AppendUnknownExecutionDirtyEntities(stream, limit - static_cast<int>(rows.size()), &rows, error_out);
+    return rows;
+}
+
 bool ClearDirtyEntity(
     UiReadProjectionService::StreamRuntime& stream,
     const DirtyEntity& entity,
@@ -1630,7 +1705,9 @@ bool MaterializeDirtyEntities(
     if (failed_entity_out != nullptr) {
         *failed_entity_out = {};
     }
-    const auto dirty = ReadDirtyEntities(stream, limit, error_out);
+    const auto dirty = stream.kind == StreamKind::Execution
+        ? ReadExecutionDirtyEntities(stream, limit, error_out)
+        : ReadDirtyEntities(stream, limit, error_out);
     if (dirty.empty()) {
         return true;
     }

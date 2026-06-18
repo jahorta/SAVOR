@@ -316,6 +316,7 @@
     <None Include="migration\UIRead\202606171200_uiread_battle_advancement_projection.sql" />
     <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql" />
     <None Include="migration\UIRead\202606171520_uiread_battle_replication_details.sql" />
+    <None Include="migration\UIRead\202606171600_uiread_dirty_entity_priority_index.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -540,5 +540,8 @@
     <None Include="migration\UIRead\202606171520_uiread_battle_replication_details.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
+    <None Include="migration\UIRead\202606171600_uiread_dirty_entity_priority_index.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
   </ItemGroup>
 </Project>

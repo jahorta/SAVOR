@@ -626,6 +626,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_state_created"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_instance_state"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_alert_active"));
+    EXPECT_TRUE(IndexExists(db_, "ix_ui_projection_dirty_entity_priority"));
 
     const auto step_table_sql = TableCreateSql(db_, "exec_workflow_step");
     EXPECT_NE(step_table_sql.find("CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','SKIPPED'))"), std::string::npos);
@@ -7603,6 +7604,160 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_failed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionPrioritizesWorkflowDirtyRowsOverOlderJobs) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-prioritize-workflow";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(32001,NULL,42,'priority-old-jobs','test',1000,0,5,NULL,NULL,NULL);"));
+    for (int i = 0; i < 5; ++i) {
+        const auto job_id = 32010 + i;
+        ASSERT_TRUE(ExecSql(exec_handle,
+            ("INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+             "VALUES(" + std::to_string(job_id) + ",32001,NULL,42,1,'test',1,'priority-old-job-" + std::to_string(i) + "',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);")
+                .c_str()));
+        ASSERT_TRUE(ExecSql(exec_handle,
+            ("INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+             "VALUES(" + std::to_string(i + 1) + ",'priority-old-job-event-" + std::to_string(i) + "','Execution.JobStarted.v1',1,'Execution','job','" + std::to_string(job_id) + "','test','test'," + std::to_string(1100 + i) + ",'job'," + std::to_string(job_id) + ",NULL,0,NULL);")
+                .c_str()));
+    }
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
+        "VALUES(32100,'priority-workflow','RUNNING','manual',NULL,'test',2000,2100);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(100,'priority-workflow-event','Execution.WorkflowInstanceCreated.v1',1,'Execution','workflow','32100','test','test',2100,'workflow',32100,NULL,0,NULL);"));
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=32100;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_id BETWEEN 32010 AND 32014;"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='workflow';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job';"), 5);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionExecutionDirtyPriorityPreservesWorkflowFifoThenJobSetBeforeJob) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-priority-order";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
+        "VALUES(33100,'priority-order','RUNNING','manual',NULL,'test',2000,2100);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc) "
+        "VALUES(33101,'priority-order','RUNNING','manual',NULL,'test',2001,2101);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(33110,NULL,42,'priority-job-set','test',1000,0,1,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(33120,NULL,42,'priority-plain-job','test',1000,0,1,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(33111,33110,NULL,42,1,'test',1,'priority-job-set-job',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,claimed_by_token,lease_expires_at_utc,queued_at_utc,started_at_utc,ended_at_utc,error_code,error_text) "
+        "VALUES(33121,33120,NULL,42,1,'test',1,'priority-plain-job',5,'RUNNING',1,1,'worker-1',NULL,1000,1100,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(1,'priority-order-plain-job','Execution.JobStarted.v1',1,'Execution','job','33121','test','test',1100,'job',33121,NULL,0,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(2,'priority-order-job-set','Execution.JobSetCreated.v1',1,'Execution','job_set','33110','test','test',1101,'job_set',33110,NULL,0,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(3,'priority-order-workflow-a','Execution.WorkflowInstanceCreated.v1',1,'Execution','workflow','33100','test','test',2100,'workflow',33100,NULL,0,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+        "VALUES(4,'priority-order-workflow-b','Execution.WorkflowInstanceCreated.v1',1,'Execution','workflow','33101','test','test',2101,'workflow',33101,NULL,0,NULL);"));
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=33100;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_workflow_instance WHERE workflow_instance_id=33101;"), 0);
+
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=33101;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_id IN (33111,33121);"), 0);
+
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_job_summary WHERE job_id=33111;"), "RUNNING");
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_job_summary WHERE job_id=33121;"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job_set';"), 0);
+    EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution' AND entity_kind='job';"), 1);
     sqlite3_close(verify_handle);
 }
 
