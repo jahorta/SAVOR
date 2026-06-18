@@ -10,6 +10,8 @@
 namespace savor::db::execution::workflow {
 namespace {
 
+constexpr int kDefaultSuccessorStepPriorityBoost = 10;
+
 struct Statement {
     sqlite3_stmt* st = nullptr;
     ~Statement() {
@@ -562,7 +564,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                     .input_ref_id = step.input_ref_id,
                     .guard_kind = step.guard_kind,
                     .guard_value = step.guard_value,
-                    .priority = step.priority,
+                    .priority = step.priority + kDefaultSuccessorStepPriorityBoost,
                     .max_attempts = step.max_attempts,
                 });
             }
@@ -576,6 +578,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = *terminal.transition->next_step_key,
                     .requested_by = "workflow_terminal_subscriber",
+                    .priority_delta = kDefaultSuccessorStepPriorityBoost,
                 },
                 &command_error)) {
                 if (error_out) *error_out = command_error;

@@ -27,7 +27,8 @@ public:
         savor::db::IExecutionDb* execution_db,
         savor::db::IAuthoringDb* authoring_db,
         IWorkflowOrchestrationQueryService* query_service,
-        IWorkflowOrchestrationCommandService* command_service);
+        IWorkflowOrchestrationCommandService* command_service,
+        int successor_step_priority_boost = 10);
 
     bool RouteTerminalStep(
         const WorkflowStepTerminalSnapshot& snapshot,
@@ -39,6 +40,7 @@ private:
     savor::db::IAuthoringDb* authoring_db_ = nullptr;
     IWorkflowOrchestrationQueryService* query_service_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;
+    int successor_step_priority_boost_ = 10;
 };
 
 } // namespace savor::db::execution::workflow

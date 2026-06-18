@@ -476,7 +476,8 @@ void WorkflowsPage::createWidgets()
     stateFilter_->setObjectName("jobSetsFilterCombo");
     stateFilter_->addItem(QStringLiteral("All states"), QString());
     stateFilter_->addItem(QStringLiteral("Running"), QStringLiteral("RUNNING"));
-    stateFilter_->addItem(QStringLiteral("Pending"), QStringLiteral("PENDING"));
+    stateFilter_->addItem(QStringLiteral("Queued"), QStringLiteral("QUEUED"));
+    stateFilter_->addItem(QStringLiteral("Waiting"), QStringLiteral("WAITING"));
     stateFilter_->addItem(QStringLiteral("Completed"), QStringLiteral("COMPLETED"));
     stateFilter_->addItem(QStringLiteral("Failed"), QStringLiteral("FAILED"));
     stateFilter_->addItem(QStringLiteral("Canceled"), QStringLiteral("CANCELED"));
@@ -684,7 +685,7 @@ void WorkflowsPage::wireSignals()
         errorMessage_.clear();
 
         savorqt::db::WorkflowListRequest request{};
-        request.state = stateFilter_->currentData().toString().trimmed().toStdString();
+        request.display_state = stateFilter_->currentData().toString().trimmed().toStdString();
         request.workflow_kind = kindFilter_->text().trimmed().toStdString();
         request.before = before_;
         request.after = after_;
@@ -847,7 +848,7 @@ void WorkflowsPage::updateWorkflowTable()
         rows.push_back(WorkflowTableRow{
             workflow.workflow_instance_id,
             qstr(workflow.workflow_kind),
-            qstr(workflow.state),
+            qstr(workflow.display_state.empty() ? workflow.state : workflow.display_state),
             QStringLiteral("-"),
             QStringLiteral("-"),
             QStringLiteral("-"),
@@ -916,9 +917,16 @@ void WorkflowsPage::updateWorkflowDetail()
     const auto& detail = *selectedWorkflowDetail_;
     detailHeaderLabel_->setText(QStringLiteral("Workflow #%1")
         .arg(static_cast<qint64>(detail.instance.workflow_instance_id)));
+    const QString lifecycleState = qstr(detail.instance.state);
+    const QString displayState = qstr(detail.instance.display_state.empty()
+        ? detail.instance.state
+        : detail.instance.display_state);
+    const QString stateText = displayState == lifecycleState
+        ? displayState
+        : QStringLiteral("%1 (lifecycle %2)").arg(displayState, lifecycleState);
     detailMetaLabel_->setText(QStringLiteral("%1 - %2 - root %3 #%4 - created by %5")
         .arg(qstr(detail.instance.workflow_kind))
-        .arg(qstr(detail.instance.state))
+        .arg(stateText)
         .arg(qstr(detail.instance.root_scope_kind))
         .arg(formatOptionalId(detail.instance.root_scope_id))
         .arg(qstr(detail.instance.created_by)));

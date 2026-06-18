@@ -21,6 +21,7 @@ namespace savorqt::db {
 
 struct WorkflowListRequest {
     std::string state;
+    std::string display_state;
     std::string workflow_kind;
     std::optional<savor::db::UiReadListCursor> before;
     std::optional<savor::db::UiReadListCursor> after;
@@ -169,6 +170,7 @@ public:
 
         savor::db::UiWorkflowInstanceListQuery query{};
         query.state = request.state;
+        query.display_state = request.display_state;
         query.workflow_kind = request.workflow_kind;
         query.before = request.before;
         query.after = request.after;
@@ -176,6 +178,15 @@ public:
         query.battle_final_victory_only = request.battle_final_victory_only;
         return ServiceResult<savor::db::UiReadPage<savor::db::UiWorkflowInstanceSummary>>::Ok(
             db->ListWorkflowInstances(query));
+    }
+
+    static ServiceResult<savor::db::UiWorkflowDisplayStateCounts> CountWorkflowDisplayStates() {
+        auto* db = UiReadDb();
+        if (db == nullptr) {
+            return Unavailable<savor::db::UiWorkflowDisplayStateCounts>(kSavorDbRuntimeUnavailableMessage);
+        }
+        return ServiceResult<savor::db::UiWorkflowDisplayStateCounts>::Ok(
+            db->CountWorkflowDisplayStates());
     }
 
     static ServiceResult<savor::db::UiWorkflowDetail> GetWorkflowDetail(std::int64_t workflow_instance_id) {

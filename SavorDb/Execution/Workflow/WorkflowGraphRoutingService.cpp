@@ -103,11 +103,13 @@ WorkflowGraphRoutingService::WorkflowGraphRoutingService(
     savor::db::IExecutionDb* execution_db,
     savor::db::IAuthoringDb* authoring_db,
     IWorkflowOrchestrationQueryService* query_service,
-    IWorkflowOrchestrationCommandService* command_service)
+    IWorkflowOrchestrationCommandService* command_service,
+    int successor_step_priority_boost)
     : execution_db_(execution_db)
     , authoring_db_(authoring_db)
     , query_service_(query_service)
-    , command_service_(command_service) {
+    , command_service_(command_service)
+    , successor_step_priority_boost_(successor_step_priority_boost) {
 }
 
 bool WorkflowGraphRoutingService::RouteTerminalStep(
@@ -287,6 +289,7 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = target_node_key,
                     .requested_by = "workflow_graph_routing",
+                    .priority_delta = successor_step_priority_boost_,
                 },
                 &command_error)) {
             if (error_out) *error_out = command_error;

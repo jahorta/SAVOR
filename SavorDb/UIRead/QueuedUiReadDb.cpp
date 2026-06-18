@@ -171,6 +171,14 @@ UiReadPage<UiWorkflowInstanceSummary> QueuedUiReadDb::ListWorkflowInstances(
         {});
 }
 
+UiWorkflowDisplayStateCounts QueuedUiReadDb::CountWorkflowDisplayStates() const {
+    return ExecuteRead<UiWorkflowDisplayStateCounts>(
+        [this]() {
+            return inner_ != nullptr ? inner_->CountWorkflowDisplayStates() : UiWorkflowDisplayStateCounts{};
+        },
+        {});
+}
+
 std::optional<UiWorkflowDetail> QueuedUiReadDb::GetWorkflowDetail(
     std::int64_t workflow_instance_id) const {
     return ExecuteRead<std::optional<UiWorkflowDetail>>(

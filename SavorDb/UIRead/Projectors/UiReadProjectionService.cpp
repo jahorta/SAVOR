@@ -490,7 +490,14 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
 
     Statement inst;
     constexpr const char* kInst =
-        "SELECT i.workflow_instance_id,i.workflow_kind,i.state,i.root_scope_kind,i.root_scope_id,i.created_by,"
+        "SELECT i.workflow_instance_id,i.workflow_kind,i.state,"
+        "CASE "
+        "WHEN i.state IN ('COMPLETED','FAILED','CANCELED') THEN i.state "
+        "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state IN ('MATERIALIZED','RUNNING')) THEN 'RUNNING' "
+        "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s JOIN exec_job j ON j.job_set_id=s.job_set_id WHERE s.workflow_instance_id=i.workflow_instance_id AND j.state IN ('PENDING_MATERIALIZATION','QUEUED','CLAIMED','RUNNING')) THEN 'RUNNING' "
+        "WHEN EXISTS(SELECT 1 FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state='READY') THEN 'QUEUED' "
+        "ELSE 'WAITING' END,"
+        "i.root_scope_kind,i.root_scope_id,i.created_by,"
         "(SELECT COUNT(1) FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.blocked_reason IS NOT NULL),"
         "(SELECT COUNT(1) FROM exec_workflow_step s WHERE s.workflow_instance_id=i.workflow_instance_id AND s.state='FAILED'),"
         "i.created_at_utc,i.started_at_utc,i.completed_at_utc,i.failure_code,i.failure_text "
@@ -506,16 +513,16 @@ bool ProjectWorkflowInstance(sqlite3* source, sqlite3* ui, std::int64_t workflow
     Statement upsert_inst;
     constexpr const char* kUpsertInst =
         "INSERT INTO ui_workflow_instance("
-        "workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,blocked_step_count,failed_step_count,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+        "workflow_instance_id,workflow_kind,state,display_state,root_scope_kind,root_scope_id,created_by,blocked_step_count,failed_step_count,created_at_utc,started_at_utc,completed_at_utc,failure_code,failure_text) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) "
         "ON CONFLICT(workflow_instance_id) DO UPDATE SET "
-        "workflow_kind=excluded.workflow_kind,state=excluded.state,root_scope_kind=excluded.root_scope_kind,root_scope_id=excluded.root_scope_id,"
+        "workflow_kind=excluded.workflow_kind,state=excluded.state,display_state=excluded.display_state,root_scope_kind=excluded.root_scope_kind,root_scope_id=excluded.root_scope_id,"
         "created_by=excluded.created_by,blocked_step_count=excluded.blocked_step_count,failed_step_count=excluded.failed_step_count,"
         "started_at_utc=excluded.started_at_utc,completed_at_utc=excluded.completed_at_utc,failure_code=excluded.failure_code,failure_text=excluded.failure_text;";
     if (!Prepare(ui, kUpsertInst, &upsert_inst, error_out)) {
         return false;
     }
-    for (int i = 0; i < 13; ++i) {
+    for (int i = 0; i < 14; ++i) {
         BindColumn(upsert_inst.st, i + 1, inst.st, i);
     }
     if (!StepDone(ui, upsert_inst.st, error_out)) {

@@ -33,6 +33,7 @@ struct WorkflowCoordinatorConfig {
     std::size_t ready_scan_limit = 2048;
     std::size_t terminal_scan_limit = 64;
     std::size_t max_active_materialized_workflows = 30;
+    int successor_step_priority_boost = 10;
     std::chrono::milliseconds input_timeout{ 2000 };
     int input_timeout_retries = 1;
 };

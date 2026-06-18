@@ -38,13 +38,6 @@
 
 namespace {
 
-struct WorkflowBuckets {
-    int active = 0;
-    int blocked = 0;
-    int failed = 0;
-    int terminal = 0;
-};
-
 struct JobBuckets {
     std::vector<savor::db::UiJobSummary> queued;
     std::vector<savor::db::UiJobSummary> running;
@@ -130,6 +123,10 @@ struct RunningRefreshData {
     QString failuresText;
     QString lastRefreshText;
     QString workflowSummary;
+    QString workflowReadyText;
+    QString workflowQueuedText;
+    QString workflowWaitingText;
+    QString workflowTerminalText;
     QString queueSummary;
     QString workerSummary;
     QString attentionSummary;
@@ -274,16 +271,6 @@ void configureTable(QTableWidget* table)
     table->setShowGrid(false);
 }
 
-bool isWorkflowFailed(const savor::db::UiWorkflowInstanceSummary& workflow)
-{
-    return workflow.state == "FAILED" || workflow.failed_step_count > 0;
-}
-
-bool isWorkflowTerminal(const savor::db::UiWorkflowInstanceSummary& workflow)
-{
-    return workflow.state == "COMPLETED" || workflow.state == "SKIPPED" || workflow.state == "CANCELED";
-}
-
 bool isJobRunning(const savor::db::UiJobSummary& job)
 {
     return job.state == "RUNNING" || job.state == "CLAIMED";
@@ -296,24 +283,6 @@ bool isJobTerminal(const savor::db::UiJobSummary& job)
         || job.state == "SUPERSEDED"
         || job.state == "SUCCEEDED_WINNER"
         || job.state == "SUCCEEDED_DUPLICATE";
-}
-
-WorkflowBuckets bucketWorkflows(const std::vector<savor::db::UiWorkflowInstanceSummary>& workflows)
-{
-    WorkflowBuckets buckets{};
-    for (const auto& workflow : workflows) {
-        if (workflow.blocked_step_count > 0) {
-            ++buckets.blocked;
-        }
-        if (isWorkflowFailed(workflow)) {
-            ++buckets.failed;
-        } else if (isWorkflowTerminal(workflow)) {
-            ++buckets.terminal;
-        } else {
-            ++buckets.active;
-        }
-    }
-    return buckets;
 }
 
 JobBuckets bucketJobs(const std::vector<savor::db::UiJobSummary>& jobs)
@@ -635,22 +604,6 @@ QString formatCount(std::int64_t value)
     return QString::number(static_cast<qlonglong>(value));
 }
 
-bool workflowIsActiveFirst(const savor::db::UiWorkflowInstanceSummary& workflow)
-{
-    return !isWorkflowFailed(workflow) && !isWorkflowTerminal(workflow);
-}
-
-int workflowSortBucket(const savor::db::UiWorkflowInstanceSummary& workflow)
-{
-    if (workflowIsActiveFirst(workflow)) {
-        return 0;
-    }
-    if (isWorkflowFailed(workflow)) {
-        return 1;
-    }
-    return 2;
-}
-
 QString workflowCurrentText(
     const savor::db::UiWorkflowInstanceSummary& workflow,
     const std::optional<savor::db::UiWorkflowDetail>& detail)
@@ -740,7 +693,7 @@ RunningWorkflowRow prepareWorkflowRow(
         workflow.workflow_instance_id,
         QStringLiteral("#%1").arg(workflow.workflow_instance_id),
         qs(workflow.workflow_kind),
-        qs(workflow.state),
+        qs(workflow.display_state.empty() ? workflow.state : workflow.display_state),
         progress,
         workflowCurrentText(workflow, detail),
         done,
@@ -753,8 +706,10 @@ RunningWorkflowRow prepareWorkflowRow(
 RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& request)
 {
     savorqt::db::WorkflowListRequest workflowRequest{};
+    workflowRequest.display_state = "RUNNING";
     workflowRequest.limit = 100;
     const auto workflows = savorqt::db::SavorDbWorkflowService::ListWorkflowInstances(workflowRequest);
+    const auto workflowCountsResult = savorqt::db::SavorDbWorkflowService::CountWorkflowDisplayStates();
 
     savor::db::UiReadJobListQuery jobQuery{};
     const auto jobs = savorqt::db::SavorDbJobService::FetchJobsPage(jobQuery, std::nullopt, std::nullopt, 100);
@@ -776,21 +731,19 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     const savor::db::UiJobStateCounts counts = jobCounts.ok ? jobCounts.value : savor::db::UiJobStateCounts{};
 
     std::stable_sort(workflowItems.begin(), workflowItems.end(), [](const auto& lhs, const auto& rhs) {
-        const int lhsBucket = workflowSortBucket(lhs);
-        const int rhsBucket = workflowSortBucket(rhs);
-        if (lhsBucket != rhsBucket) {
-            return lhsBucket < rhsBucket;
-        }
         return lhs.created_at_utc > rhs.created_at_utc;
     });
-    const WorkflowBuckets workflowBuckets = bucketWorkflows(workflowItems);
+    const savor::db::UiWorkflowDisplayStateCounts workflowCounts =
+        workflowCountsResult.ok ? workflowCountsResult.value : savor::db::UiWorkflowDisplayStateCounts{};
     const JobBuckets jobBuckets = bucketJobs(jobItems);
     const bool hasValidation = !request.validation.trimmed().isEmpty();
 
     RunningRefreshData data;
-    data.workflowsOk = workflows.ok;
+    data.workflowsOk = workflows.ok && workflowCountsResult.ok;
     data.jobsOk = jobs.ok && jobCounts.ok;
-    data.workflowError = workflows.ok ? QString() : qs(workflows.error.message);
+    data.workflowError = !workflows.ok
+        ? qs(workflows.error.message)
+        : (workflowCountsResult.ok ? QString() : qs(workflowCountsResult.error.message));
     data.jobError = !jobs.ok ? qs(jobs.error.message) : (jobCounts.ok ? QString() : qs(jobCounts.error.message));
     data.controllerAvailable = request.controllerAvailable;
     data.hasValidation = hasValidation;
@@ -802,7 +755,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
     data.isoMissing = request.isoMissing;
     data.dolphinMissing = request.dolphinMissing;
     data.targetWorkers = request.targetWorkers;
-    data.failedWorkflows = workflowBuckets.failed;
+    data.failedWorkflows = static_cast<int>((std::min<std::int64_t>)(workflowCounts.failed, std::numeric_limits<int>::max()));
     data.failedJobs = static_cast<int>(counts.failed);
 
     data.coordinatorText = QStringLiteral("Stopped");
@@ -818,18 +771,19 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
         : QStringLiteral("--");
     data.queueText = data.jobsOk ? formatCount(counts.queued) : QStringLiteral("--");
     data.runningText = data.jobsOk ? formatCount(counts.claimed + counts.running) : QStringLiteral("--");
-    data.failuresText = workflows.ok && data.jobsOk
-        ? QStringLiteral("%1/%2").arg(workflowBuckets.failed).arg(formatCount(counts.failed))
+    data.failuresText = data.workflowsOk && data.jobsOk
+        ? QStringLiteral("%1/%2").arg(formatCount(workflowCounts.failed)).arg(formatCount(counts.failed))
         : QStringLiteral("--");
     data.lastRefreshText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
 
-    data.workflowSummary = workflows.ok
-        ? QStringLiteral("%1 visible, %2 active, %3 blocked, %4 failed, %5 terminal.")
+    data.workflowReadyText = data.workflowsOk ? formatCount(workflowCounts.running) : QStringLiteral("--");
+    data.workflowQueuedText = data.workflowsOk ? formatCount(workflowCounts.queued) : QStringLiteral("--");
+    data.workflowWaitingText = data.workflowsOk ? formatCount(workflowCounts.waiting) : QStringLiteral("--");
+    data.workflowTerminalText = data.workflowsOk ? formatCount(workflowCounts.terminal) : QStringLiteral("--");
+    data.workflowSummary = data.workflowsOk
+        ? QStringLiteral("%1 active workflow%2 shown in the main table.")
             .arg(static_cast<int>(workflowItems.size()))
-            .arg(workflowBuckets.active)
-            .arg(workflowBuckets.blocked)
-            .arg(workflowBuckets.failed)
-            .arg(workflowBuckets.terminal)
+            .arg(workflowItems.size() == 1 ? QString() : QStringLiteral("s"))
         : QStringLiteral("Workflow list unavailable: %1").arg(data.workflowError);
     data.queueSummary = data.jobsOk
         ? QStringLiteral("%1 total: %2 queued, %3 claimed/running, %4 failed, %5 terminal. Showing recent samples.")
@@ -894,10 +848,10 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::StartCoordinator,
         });
     }
-    if (workflowBuckets.failed > 0) {
+    if (workflowCounts.failed > 0) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Failed workflows"),
-            QStringLiteral("%1 visible workflow instances need triage.").arg(workflowBuckets.failed),
+            QStringLiteral("%1 workflow instances need triage.").arg(formatCount(workflowCounts.failed)),
             QStringLiteral("Open Workflows"),
             AttentionRoute::Workflows,
         });
@@ -918,7 +872,7 @@ RunningRefreshData prepareRunningRefreshData(const RunningRefreshRequest& reques
             AttentionRoute::Workers,
         });
     }
-    if (!workflows.ok) {
+    if (!data.workflowsOk) {
         data.attentionItems.push_back(AttentionItemData{
             QStringLiteral("Workflow read unavailable"),
             data.workflowError,
@@ -1089,6 +1043,16 @@ void RunningTab::build()
     });
     workflowHeader->addWidget(openWorkflowsButton);
     workflowLayout->addLayout(workflowHeader);
+
+    auto* workflowStateStrip = new QHBoxLayout();
+    workflowStateStrip->setContentsMargins(0, 0, 0, 0);
+    workflowStateStrip->setSpacing(8);
+    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Ready"), workflowPanel, &workflowReadyValueLabel_));
+    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Queued"), workflowPanel, &workflowQueuedValueLabel_));
+    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Waiting"), workflowPanel, &workflowWaitingValueLabel_));
+    workflowStateStrip->addWidget(createStatusPill(QStringLiteral("Terminal"), workflowPanel, &workflowTerminalValueLabel_));
+    workflowStateStrip->addStretch();
+    workflowLayout->addLayout(workflowStateStrip);
 
     workflowTable_ = new QTableWidget(workflowPanel);
     configureTable(workflowTable_);
@@ -1284,6 +1248,10 @@ void RunningTab::build()
         }
 
         workflowSummaryLabel_->setText(data.workflowSummary);
+        workflowReadyValueLabel_->setText(data.workflowReadyText);
+        workflowQueuedValueLabel_->setText(data.workflowQueuedText);
+        workflowWaitingValueLabel_->setText(data.workflowWaitingText);
+        workflowTerminalValueLabel_->setText(data.workflowTerminalText);
         savorqt::gui::ApplyTableRowsByKey(
             workflowTable_,
             *workflowRows,

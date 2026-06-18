@@ -268,6 +268,7 @@ struct WorkflowMarkStepReadyCommand {
     std::int64_t workflow_instance_id = 0;
     std::string step_key;
     std::string requested_by;
+    int priority_delta = 0;
 };
 
 struct WorkflowAppendDynamicStepSpec {

@@ -33,12 +33,14 @@ public:
         savor::db::IExecutionDb* execution_db,
         IWorkflowOrchestrationQueryService* query_service,
         IWorkflowOrchestrationCommandService* command_service,
-        const WorkflowGraphRoutingService* graph_routing_service = nullptr);
+        const WorkflowGraphRoutingService* graph_routing_service = nullptr,
+        int successor_step_priority_boost = 10);
     WorkflowTerminalAdvancementService(
         const AdapterChainOrchestrator* orchestrator,
         IWorkflowOrchestrationQueryService* query_service,
         IWorkflowOrchestrationCommandService* command_service,
-        const WorkflowGraphRoutingService* graph_routing_service = nullptr);
+        const WorkflowGraphRoutingService* graph_routing_service = nullptr,
+        int successor_step_priority_boost = 10);
 
     bool AdvanceForTerminalJob(
         std::int64_t job_id,
@@ -58,6 +60,7 @@ private:
     IWorkflowOrchestrationQueryService* query_service_ = nullptr;
     IWorkflowOrchestrationCommandService* command_service_ = nullptr;
     const WorkflowGraphRoutingService* graph_routing_service_ = nullptr;
+    int successor_step_priority_boost_ = 10;
 };
 
 } // namespace savor::db::execution::workflow

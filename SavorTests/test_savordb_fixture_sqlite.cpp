@@ -629,6 +629,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(ColumnExists(db_, "exec_workflow_instance", "workflow_graph_revision_id"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_input_binding"));
     EXPECT_TRUE(TableExists(db_, "exec_workflow_instance_argument"));
+    EXPECT_TRUE(ColumnExists(db_, "ui_workflow_instance", "display_state"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_step", "job_failed_count"));
     EXPECT_TRUE(ColumnExists(db_, "ui_workflow_alert", "is_active"));
 
@@ -649,6 +650,7 @@ TEST_F(SqliteDbFixture, Stage3bWorkflowMigrationsCreateExecutionAndUiReadTables)
     EXPECT_TRUE(IndexExists(db_, "ix_ui_projection_dirty_entity_priority"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_job_summary_job_set_job"));
     EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_step_job_set_instance"));
+    EXPECT_TRUE(IndexExists(db_, "ix_ui_workflow_instance_display_state_created"));
 
     const auto step_table_sql = TableCreateSql(db_, "exec_workflow_step");
     EXPECT_NE(step_table_sql.find("CHECK(state IN ('WAITING','READY','MATERIALIZED','RUNNING','COMPLETED','FAILED','SKIPPED'))"), std::string::npos);
@@ -1103,6 +1105,43 @@ VALUES
     EXPECT_EQ(ready_steps[1].workflow_step_id, 2101);
 }
 
+TEST_F(SqliteDbFixture, Stage3cMarkStepReadyAppliesPriorityDeltaOnce) {
+    using namespace savor::db::migrations;
+    using namespace savor::db::execution::workflow;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_at_utc)
+VALUES(1201, 'priority-delta', 'RUNNING', 'manual', unixepoch());
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, priority, attempts, max_attempts, created_at_utc)
+VALUES(2201, 1201, 'next', 'seedprobe.next', 'WAITING', 3, 0, 1, unixepoch());
+)SQL"));
+
+    savor::db::execution::workflow::SqliteExecutionDb execution_db(db_);
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepReady(
+        {
+            .workflow_instance_id = 1201,
+            .step_key = "next",
+            .requested_by = "test",
+            .priority_delta = 10,
+        },
+        &err)) << err;
+    EXPECT_EQ(ReadInt64(db_, "SELECT priority FROM exec_workflow_step WHERE workflow_step_id=2201;"), 13);
+
+    ASSERT_TRUE(execution_db.WorkflowCommandService()->MarkStepReady(
+        {
+            .workflow_instance_id = 1201,
+            .step_key = "next",
+            .requested_by = "test-repeat",
+            .priority_delta = 10,
+        },
+        &err)) << err;
+    EXPECT_EQ(ReadInt64(db_, "SELECT priority FROM exec_workflow_step WHERE workflow_step_id=2201;"), 13);
+}
+
 TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorProjectsUiReadRows) {
     using namespace savor::db::migrations;
     using namespace savor::db::execution::workflow;
@@ -1500,7 +1539,7 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
         db_,
-        "SELECT source.state, next.state "
+        "SELECT source.state, next.state, next.priority "
         "FROM exec_workflow_step source "
         "JOIN exec_workflow_step next ON next.workflow_instance_id=source.workflow_instance_id AND next.step_key='next' "
         "WHERE source.workflow_step_id=200;",
@@ -1510,7 +1549,61 @@ VALUES(2000, 20, 1, 1, 'seedprobe_spec', 44, 'fp-2', 0, 'SUCCEEDED', 0, 1, unixe
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "COMPLETED");
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), "READY");
+    EXPECT_EQ(sqlite3_column_int(st, 2), 10);
     sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
+    using namespace savor::db::execution::workflow;
+
+    class SpawnStepTransitionHandler final : public savor::db::execution::programdb::IWorkflowTransitionHandler {
+    public:
+        savor::db::execution::programdb::WorkflowTransitionDecision EvaluateTransition(
+            const savor::db::execution::programdb::WorkflowTransitionContext&) const override {
+            savor::db::execution::programdb::WorkflowTransitionDecision decision{};
+            decision.should_advance = true;
+            decision.spawn_steps.push_back({
+                .step_key = "spawned-next",
+                .step_kind = "mock.spawned",
+                .priority = 4,
+                .max_attempts = 2,
+            });
+            return decision;
+        }
+    };
+
+    savor::db::execution::programdb::ProgramKindRegistry registry;
+    savor::db::execution::programdb::ProgramKindDescriptor descriptor{};
+    descriptor.program_kind = 1;
+    descriptor.program_name = "mock.spawn";
+    descriptor.workflow_transition = std::make_shared<SpawnStepTransitionHandler>();
+    ASSERT_TRUE(registry.RegisterForStepKind("mock.spawn", descriptor));
+    StepCompletionGateService gate;
+    AdapterChainOrchestrator orchestrator(&registry, &gate);
+    RecordingWorkflowCommandService command_service;
+    WorkflowTerminalAdvancementService advancement(&orchestrator, nullptr, &command_service);
+
+    WorkflowStepTerminalSnapshot snapshot{};
+    snapshot.workflow_instance_id = 77;
+    snapshot.workflow_step_id = 88;
+    snapshot.job_set_id = 99;
+    snapshot.expected_total = 1;
+    snapshot.discovered_total = 1;
+    snapshot.terminal_total = 1;
+    snapshot.failed_total = 0;
+    snapshot.workflow_kind = "mock";
+    snapshot.step_key = "source";
+    snapshot.step_kind = "mock.spawn";
+
+    std::string err;
+    WorkflowTerminalAdvancementResult result{};
+    ASSERT_TRUE(advancement.AdvanceSnapshot(snapshot, &result, &err)) << err;
+    EXPECT_TRUE(result.advanced_next_step);
+    EXPECT_EQ(result.spawned_step_count, 1);
+    ASSERT_EQ(command_service.dynamic_step_calls.size(), 1u);
+    ASSERT_EQ(command_service.dynamic_step_calls[0].steps.size(), 1u);
+    EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].step_key, "spawned-next");
+    EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].priority, 14);
 }
 
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceUsesRecordedStepOutputFromSnapshot) {
@@ -4566,6 +4659,19 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
         EXPECT_NE(it, graph->steps.end());
         return it != graph->steps.end() ? it->state : WorkflowStepState::Failed;
     };
+    auto step_priority = [&](const std::string& step_key) -> int {
+        const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
+        EXPECT_TRUE(graph.has_value());
+        if (!graph.has_value()) {
+            return 0;
+        }
+        const auto it = std::find_if(
+            graph->steps.begin(),
+            graph->steps.end(),
+            [&](const auto& step) { return step.step_key == step_key; });
+        EXPECT_NE(it, graph->steps.end());
+        return it != graph->steps.end() ? it->priority : 0;
+    };
 
     const auto tas_step_id = step_id("tas_1");
     std::int64_t tas_job_set_id = 0;
@@ -4638,6 +4744,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     EXPECT_TRUE(route_result.routed_input_binding);
     EXPECT_TRUE(route_result.advanced_ready_step);
     EXPECT_EQ(step_state("probe_1"), WorkflowStepState::Ready);
+    EXPECT_EQ(step_priority("probe_1"), 15);
     EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Waiting);
 
     auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -4723,6 +4830,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     EXPECT_TRUE(route_result.routed_input_binding);
     EXPECT_TRUE(route_result.advanced_ready_step);
     EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Ready);
+    EXPECT_EQ(step_priority("battle_1"), 11);
 
     graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
@@ -7626,6 +7734,99 @@ TEST_F(SqliteDbFixture, UiReadProjectionTerminalJobEventRefreshesWorkflowLaneCou
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT job_failed_count FROM ui_workflow_step WHERE workflow_step_id=25003;"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT COUNT(1) FROM ui_projection_dirty_entity WHERE stream_id='execution';"), 0);
     EXPECT_EQ(ReadInt64(verify_handle, "SELECT last_outbox_id FROM ui_projection_subscription WHERE stream_id='execution';"), 1);
+    sqlite3_close(verify_handle);
+}
+
+TEST_F(SqliteDbFixture, UiReadProjectionProjectsWorkflowDisplayStateFromStepActivity) {
+    namespace migrations = savor::db::migrations;
+    namespace projectors = savor::db::uiread::projectors;
+
+    const auto separate_root = temp_root_ / "projection-workflow-display-state";
+    ASSERT_TRUE(std::filesystem::create_directories(separate_root));
+    const auto paths = MakePhase4DbPaths(separate_root);
+
+    {
+        savor::db::core::DBService initializer(
+            paths,
+            migrations::MigrationSourceOptions{ .source_kind = migrations::MigrationSourceKind::Embedded });
+        std::string err;
+        ASSERT_TRUE(initializer.Start(&err)) << err;
+        initializer.Stop();
+    }
+
+    sqlite3* exec_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.execution_db_path.string().c_str(), &exec_handle));
+    ASSERT_NE(exec_handle, nullptr);
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_instance(workflow_instance_id,workflow_kind,state,root_scope_kind,root_scope_id,created_by,created_at_utc,started_at_utc,completed_at_utc) "
+        "VALUES"
+        "(26001,'display-test','RUNNING','manual',NULL,'test',1000,1100,NULL),"
+        "(26002,'display-test','RUNNING','manual',NULL,'test',1001,1101,NULL),"
+        "(26003,'display-test','RUNNING','manual',NULL,'test',1002,1102,NULL),"
+        "(26004,'display-test','COMPLETED','manual',NULL,'test',1003,1103,1203),"
+        "(26005,'display-test','RUNNING','manual',NULL,'test',1004,1104,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job_set(job_set_id,parent_job_set_id,program_kind,purpose,created_by,created_at_utc,priority_boost,expected_total,domain_ref_kind,domain_ref_id,meta_note) "
+        "VALUES(26050,NULL,42,'display-active-job','test',1000,0,1,NULL,NULL,NULL);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_workflow_step(workflow_step_id,workflow_instance_id,step_key,step_kind,state,priority,attempts,max_attempts,job_set_id,ready_at_utc,created_at_utc) "
+        "VALUES"
+        "(26011,26001,'ready-step','test','READY',1,0,1,NULL,1150,1000),"
+        "(26012,26002,'waiting-step','test','WAITING',1,0,1,NULL,NULL,1000),"
+        "(26013,26003,'materialized-step','test','MATERIALIZED',1,0,1,NULL,NULL,1000),"
+        "(26014,26004,'terminal-step','test','RUNNING',1,0,1,NULL,NULL,1000),"
+        "(26015,26005,'active-job-step','test','WAITING',1,0,1,26050,NULL,1000);"));
+    ASSERT_TRUE(ExecSql(exec_handle,
+        "INSERT INTO exec_job(job_id,job_set_id,parent_job_id,program_kind,program_version,program_ref_kind,program_ref_id,fingerprint,priority,state,attempts,max_attempts,queued_at_utc) "
+        "VALUES(26051,26050,NULL,42,1,'test',1,'display-active-job',1,'QUEUED',0,1,1160);"));
+    for (int i = 0; i < 5; ++i) {
+        const auto workflow_id = 26001 + i;
+        ASSERT_TRUE(ExecSql(exec_handle,
+            ("INSERT INTO exec_outbox_message(outbox_id,event_id,event_type,event_version,context_name,aggregate_kind,aggregate_id,correlation_id,causation_id,occurred_at_utc,payload_ref_kind,payload_ref_id,published_at_utc,attempt_count,last_error) "
+             "VALUES(" + std::to_string(i + 1) + ",'display-workflow-" + std::to_string(workflow_id) + "','Execution.WorkflowInstanceCreated.v1',1,'Execution','workflow','" + std::to_string(workflow_id) + "','test','test'," + std::to_string(1200 + i) + ",'workflow'," + std::to_string(workflow_id) + ",NULL,0,NULL);")
+                .c_str()));
+    }
+    sqlite3_close(exec_handle);
+    exec_handle = nullptr;
+
+    projectors::UiReadProjectionService projection(
+        projectors::UiReadProjectionConfig{
+            .ui_read_db_path = paths.ui_read_db_path,
+            .execution_db_path = paths.execution_db_path,
+            .state_db_path = paths.state_db_path,
+            .analysis_db_path = paths.analysis_db_path,
+            .archive_db_path = paths.archive_db_path,
+            .max_batch_size = 5000,
+            .max_dirty_materialization_batch_size = 1000,
+            .max_attempts = 5,
+            .poll_interval = std::chrono::hours{ 24 },
+        });
+    std::string err;
+    ASSERT_TRUE(projection.RunOnce(&err)) << err;
+
+    sqlite3* verify_handle = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_open(paths.ui_read_db_path.string().c_str(), &verify_handle));
+    ASSERT_NE(verify_handle, nullptr);
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=26001;"), "QUEUED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=26002;"), "WAITING");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=26003;"), "RUNNING");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=26004;"), "COMPLETED");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT display_state FROM ui_workflow_instance WHERE workflow_instance_id=26005;"), "RUNNING");
+    EXPECT_EQ(ReadText(verify_handle, "SELECT state FROM ui_workflow_instance WHERE workflow_instance_id=26001;"), "RUNNING");
+    savor::db::SqliteUiReadDb ui_read(verify_handle);
+    savor::db::UiWorkflowInstanceListQuery query{};
+    query.display_state = "QUEUED";
+    query.limit = 10;
+    const auto queued_page = ui_read.ListWorkflowInstances(query);
+    ASSERT_EQ(queued_page.items.size(), 1u);
+    EXPECT_EQ(queued_page.items[0].workflow_instance_id, 26001);
+    const auto counts = ui_read.CountWorkflowDisplayStates();
+    EXPECT_EQ(counts.running, 2);
+    EXPECT_EQ(counts.queued, 1);
+    EXPECT_EQ(counts.waiting, 1);
+    EXPECT_EQ(counts.completed, 1);
+    EXPECT_EQ(counts.terminal, 1);
+    EXPECT_EQ(counts.total, 5);
     sqlite3_close(verify_handle);
 }
 

@@ -202,6 +202,7 @@ struct UiWorkflowInstanceListQuery {
     std::optional<UiReadListCursor> after;
     int limit = 50;
     std::string state;
+    std::string display_state;
     std::string workflow_kind;
     bool battle_final_victory_only = false;
 };
@@ -210,6 +211,7 @@ struct UiWorkflowInstanceSummary {
     std::int64_t workflow_instance_id = 0;
     std::string workflow_kind;
     std::string state;
+    std::string display_state;
     std::string root_scope_kind;
     std::optional<std::int64_t> root_scope_id;
     std::string created_by;
@@ -224,6 +226,18 @@ struct UiWorkflowInstanceSummary {
     std::int64_t battle_desired_outcome_count = 0;
     std::int64_t battle_final_victory_count = 0;
     std::int64_t battle_selected_count = 0;
+};
+
+struct UiWorkflowDisplayStateCounts {
+    std::int64_t total = 0;
+    std::int64_t running = 0;
+    std::int64_t queued = 0;
+    std::int64_t waiting = 0;
+    std::int64_t completed = 0;
+    std::int64_t failed = 0;
+    std::int64_t canceled = 0;
+    std::int64_t terminal = 0;
+    std::int64_t other = 0;
 };
 
 struct UiWorkflowStepSummary {
@@ -462,6 +476,8 @@ struct IUiReadDb {
 
     virtual UiReadPage<UiWorkflowInstanceSummary> ListWorkflowInstances(
         const UiWorkflowInstanceListQuery& query) const = 0;
+
+    virtual UiWorkflowDisplayStateCounts CountWorkflowDisplayStates() const = 0;
 
     virtual std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const = 0;

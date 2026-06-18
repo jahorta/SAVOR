@@ -9,25 +9,29 @@ WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
     savor::db::IExecutionDb* execution_db,
     IWorkflowOrchestrationQueryService* query_service,
     IWorkflowOrchestrationCommandService* command_service,
-    const WorkflowGraphRoutingService* graph_routing_service)
+    const WorkflowGraphRoutingService* graph_routing_service,
+    int successor_step_priority_boost)
     : orchestrator_(orchestrator)
     , execution_db_(execution_db)
     , query_service_(query_service)
     , command_service_(command_service)
-    , graph_routing_service_(graph_routing_service) {
+    , graph_routing_service_(graph_routing_service)
+    , successor_step_priority_boost_(successor_step_priority_boost) {
 }
 
 WorkflowTerminalAdvancementService::WorkflowTerminalAdvancementService(
     const AdapterChainOrchestrator* orchestrator,
     IWorkflowOrchestrationQueryService* query_service,
     IWorkflowOrchestrationCommandService* command_service,
-    const WorkflowGraphRoutingService* graph_routing_service)
+    const WorkflowGraphRoutingService* graph_routing_service,
+    int successor_step_priority_boost)
     : WorkflowTerminalAdvancementService(
         orchestrator,
         nullptr,
         query_service,
         command_service,
-        graph_routing_service) {
+        graph_routing_service,
+        successor_step_priority_boost) {
 }
 
 bool WorkflowTerminalAdvancementService::AdvanceForTerminalJob(
@@ -254,7 +258,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
                     .input_ref_id = step.input_ref_id,
                     .guard_kind = step.guard_kind,
                     .guard_value = step.guard_value,
-                    .priority = step.priority,
+                    .priority = step.priority + successor_step_priority_boost_,
                     .max_attempts = step.max_attempts,
                 });
             }
@@ -271,6 +275,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = *terminal.transition->next_step_key,
                     .requested_by = "workflow_terminal_advancement",
+                    .priority_delta = successor_step_priority_boost_,
                 },
                 &command_error)) {
                 if (error_out) *error_out = command_error;

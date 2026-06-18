@@ -2156,7 +2156,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
     Statement update;
     if (!Prepare(db_,
         "UPDATE exec_workflow_step "
-        "SET state='READY', ready_at_utc=?3, blocked_reason=NULL "
+        "SET state='READY', ready_at_utc=?3, blocked_reason=NULL, priority=priority + ?4 "
         "WHERE workflow_instance_id=?1 AND step_key=?2 AND state='WAITING' AND job_set_id IS NULL;",
         &update,
         error_out)) {
@@ -2166,6 +2166,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
     sqlite3_bind_int64(update.st, 1, command.workflow_instance_id);
     sqlite3_bind_text(update.st, 2, command.step_key.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(update.st, 3, NowUtc());
+    sqlite3_bind_int(update.st, 4, command.priority_delta);
     if (sqlite3_step(update.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         Exec(db_, "ROLLBACK;", nullptr);

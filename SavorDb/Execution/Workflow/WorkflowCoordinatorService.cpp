@@ -202,13 +202,15 @@ bool WorkflowCoordinatorService::ReconcileTerminalWorkflowSteps() {
         execution_db_,
         authoring_db_,
         queries,
-        commands);
+        commands,
+        config_.successor_step_priority_boost);
     WorkflowTerminalAdvancementService terminal_advancement(
         &adapter_chain_orchestrator_,
         execution_db_,
         queries,
         commands,
-        authoring_db_ != nullptr ? &graph_routing : nullptr);
+        authoring_db_ != nullptr ? &graph_routing : nullptr,
+        config_.successor_step_priority_boost);
 
     bool advanced_any = false;
     for (const auto& snapshot : snapshots) {

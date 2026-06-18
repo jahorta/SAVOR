@@ -51,6 +51,7 @@ public:
         std::string* error_out = nullptr) override;
     UiReadPage<UiWorkflowInstanceSummary> ListWorkflowInstances(
         const UiWorkflowInstanceListQuery& query) const override;
+    UiWorkflowDisplayStateCounts CountWorkflowDisplayStates() const override;
     std::optional<UiWorkflowDetail> GetWorkflowDetail(
         std::int64_t workflow_instance_id) const override;
 
