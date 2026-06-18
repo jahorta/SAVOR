@@ -531,5 +531,8 @@
     <None Include="migration\UIRead\202606171200_uiread_battle_advancement_projection.sql">
       <Filter>Migrations\UiRead</Filter>
     </None>
+    <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql">
+      <Filter>Migrations\UiRead</Filter>
+    </None>
   </ItemGroup>
 </Project>

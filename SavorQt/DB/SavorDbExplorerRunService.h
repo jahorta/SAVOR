@@ -43,6 +43,7 @@ struct BattleRunGroupQuery {
     std::optional<BattleRunCursor> after;
     int limit = 50;
     bool child_selected_only = false;
+    bool final_victory_only = false;
 };
 
 struct BattleRunGroupPage {
@@ -132,6 +133,7 @@ public:
         savor::db::UiBattleGroupListQuery query{};
         query.limit = (std::max)(1, request.limit);
         query.child_selected_only = request.child_selected_only;
+        query.final_victory_only = request.final_victory_only;
         if (request.before.has_value()) {
             query.before = savor::db::UiReadListCursor{ request.before->primary, request.before->secondary };
         }
@@ -161,13 +163,14 @@ public:
     }
 
     static ServiceResult<std::vector<savor::db::UiBattleTurnJobSummary>> ListBattleTurnJobsForWaves(
-        const std::vector<std::int64_t>& wave_ids) {
+        const std::vector<std::int64_t>& wave_ids,
+        bool final_victory_only = false) {
         auto* db = UiReadDb();
         if (db == nullptr) {
             return Unavailable<std::vector<savor::db::UiBattleTurnJobSummary>>("SavorDb UIRead is unavailable");
         }
         return ServiceResult<std::vector<savor::db::UiBattleTurnJobSummary>>::Ok(
-            db->ListBattleTurnJobsForWaves(wave_ids));
+            db->ListBattleTurnJobsForWaves(wave_ids, final_victory_only));
     }
 
     static ServiceResult<BattleRunJobDetail> GetBattleTurnJobDetail(std::int64_t turn_job_id) {

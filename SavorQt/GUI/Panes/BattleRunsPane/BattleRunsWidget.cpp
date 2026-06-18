@@ -124,6 +124,7 @@ bool jobRowsEqual(const BattleRunsWidget::JobRow& lhs, const BattleRunsWidget::J
         && lhs.rngSeed == rhs.rngSeed
         && lhs.selectedForAdvancement == rhs.selectedForAdvancement
         && lhs.desiredOutcome == rhs.desiredOutcome
+        && lhs.finalVictoryOutcome == rhs.finalVictoryOutcome
         && lhs.advancementRank == rhs.advancementRank;
 }
 
@@ -366,6 +367,7 @@ BattleRunsWidget::JobRow makeJobRow(const savor::db::UiBattleTurnJobSummary& job
     row.rngSeed = optionalInt64Text(job.rng_seed);
     row.selectedForAdvancement = job.selected_for_advancement;
     row.desiredOutcome = job.has_desired_outcome;
+    row.finalVictoryOutcome = job.has_final_victory_outcome;
     row.advancementRank = job.advancement_rank;
     row.predPassed = job.pred_passed.value_or(-1);
     row.predTotal = job.pred_total.value_or(-1);
@@ -432,6 +434,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     groupQuery.after = request.after;
     groupQuery.limit = request.limit;
     groupQuery.child_selected_only = request.childSelectedOnly;
+    groupQuery.final_victory_only = request.finalVictoryOnly;
 
     const auto groups = db::SavorDbExplorerRunService::ListBattleGroups(groupQuery);
     if (!groups.ok) {
@@ -441,6 +444,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
     BattleRunsWidget::RefreshData data{};
     data.groupPage = groups.value;
     data.refreshedAt = QDateTime::currentDateTime();
+    data.selectionEpoch = request.selectionEpoch;
 
     std::map<std::int64_t, std::vector<savor::db::UiBattleWaveSummary>> wavesByGroup;
     for (const auto& group : data.groupPage.groups) {
@@ -488,7 +492,7 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
             data.selectedWaveIds.push_back(data.waves.front().waveId);
         }
 
-        const auto jobs = db::SavorDbExplorerRunService::ListBattleTurnJobsForWaves(data.selectedWaveIds);
+        const auto jobs = db::SavorDbExplorerRunService::ListBattleTurnJobsForWaves(data.selectedWaveIds, request.finalVictoryOnly);
         if (!jobs.ok) {
             return AsyncRefreshResult<BattleRunsWidget::RefreshData>::Err(QString::fromStdString(jobs.error.message));
         }
@@ -499,6 +503,9 @@ AsyncRefreshResult<BattleRunsWidget::RefreshData> loadBattleRuns(BattleRunsWidge
                 continue;
             }
             if (request.desiredOutcomeOnly && !row.desiredOutcome) {
+                continue;
+            }
+            if (request.finalVictoryOnly && !row.finalVictoryOutcome) {
                 continue;
             }
             if (!request.showCandidates && row.advancementRank == 1) {
@@ -585,6 +592,7 @@ void BattleRunsWidget::build()
     selectedOnlyCheck_ = new QCheckBox(QStringLiteral("Selected only"), toolbar);
     showCandidatesCheck_ = new QCheckBox(QStringLiteral("Show candidates"), toolbar);
     desiredOutcomeOnlyCheck_ = new QCheckBox(QStringLiteral("Desired outcome only"), toolbar);
+    finalVictoryOnlyCheck_ = new QCheckBox(QStringLiteral("Victory only"), toolbar);
     primarySortCombo_ = new QComboBox(toolbar);
     secondarySortCombo_ = new QComboBox(toolbar);
     summaryLabel_ = new QLabel(QStringLiteral("--"), toolbar);
@@ -593,7 +601,7 @@ void BattleRunsWidget::build()
     for (auto* button : { refreshButton_, prevButton_, nextButton_ }) {
         button->setObjectName("jobsSecondaryButton");
     }
-    for (auto* check : { autoRefreshCheck_, childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_ }) {
+    for (auto* check : { autoRefreshCheck_, childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_, finalVictoryOnlyCheck_ }) {
         check->setObjectName("jobsCheckBox");
     }
     refreshSecondsSpin_->setObjectName("jobsSpin");
@@ -681,10 +689,11 @@ void BattleRunsWidget::build()
     jobsFilterLayout->addWidget(selectedOnlyCheck_, 0, 1);
     jobsFilterLayout->addWidget(showCandidatesCheck_, 0, 2);
     jobsFilterLayout->addWidget(desiredOutcomeOnlyCheck_, 0, 3);
-    jobsFilterLayout->addWidget(new QLabel(QStringLiteral("Sort"), jobsPanel), 0, 4);
-    jobsFilterLayout->addWidget(primarySortCombo_, 0, 5);
-    jobsFilterLayout->addWidget(secondarySortCombo_, 0, 6);
-    jobsFilterLayout->setColumnStretch(7, 1);
+    jobsFilterLayout->addWidget(finalVictoryOnlyCheck_, 0, 4);
+    jobsFilterLayout->addWidget(new QLabel(QStringLiteral("Sort"), jobsPanel), 0, 5);
+    jobsFilterLayout->addWidget(primarySortCombo_, 0, 6);
+    jobsFilterLayout->addWidget(secondarySortCombo_, 0, 7);
+    jobsFilterLayout->setColumnStretch(8, 1);
     jobsLayout->addLayout(jobsFilterLayout);
 
     jobsTable_ = new QTableWidget(jobsPanel);
@@ -737,8 +746,10 @@ void BattleRunsWidget::build()
         request.selectedOnly = selectedOnlyCheck_->isChecked();
         request.showCandidates = showCandidatesCheck_->isChecked();
         request.desiredOutcomeOnly = desiredOutcomeOnlyCheck_->isChecked();
+        request.finalVictoryOnly = finalVictoryOnlyCheck_->isChecked();
         request.primarySort = primarySortCombo_->currentIndex();
         request.secondarySort = secondarySortCombo_->currentIndex();
+        request.selectionEpoch = selectionEpoch_;
         return request;
     });
     refreshPipeline_->setLoadAndPrepare([](RefreshRequest request) {
@@ -786,7 +797,7 @@ void BattleRunsWidget::wireSignals()
         after_.reset();
         requestRefresh();
     });
-    for (QCheckBox* check : { childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_ }) {
+    for (QCheckBox* check : { childSelectedOnlyCheck_, selectedOnlyCheck_, showCandidatesCheck_, desiredOutcomeOnlyCheck_, finalVictoryOnlyCheck_ }) {
         connect(check, &QCheckBox::toggled, this, [this]() {
             before_.reset();
             after_.reset();
@@ -832,6 +843,19 @@ void BattleRunsWidget::wireSignals()
 
 void BattleRunsWidget::applyRefresh(const RefreshData& data)
 {
+    if (data.selectionEpoch != selectionEpoch_) {
+        next_ = data.groupPage.next;
+        prev_ = data.groupPage.prev;
+        lastRefresh_ = data.refreshedAt;
+
+        summaryLabel_->setText(data.summary);
+        lastRefreshLabel_->setText(QStringLiteral("Last refresh: %1").arg(lastRefresh_.toString(QStringLiteral("HH:mm:ss"))));
+        inlineMessageLabel_->setText(data.message);
+        refreshGroups(data.groups);
+        refreshControlState();
+        return;
+    }
+
     selectedBattleSetId_ = data.selectedBattleSetId;
     selectedWaveIds_ = data.selectedWaveIds;
     selectedJobId_ = data.selectedJobId;
@@ -928,6 +952,7 @@ void BattleRunsWidget::selectCurrentGroup(std::int64_t battleSetId)
     selectedBattleSetId_ = battleSetId;
     selectedWaveIds_.clear();
     selectedJobId_ = 0;
+    ++selectionEpoch_;
     requestRefresh();
 }
 
@@ -950,6 +975,7 @@ void BattleRunsWidget::requestSelectedWavesRefresh()
     }
     selectedWaveIds_ = std::move(waveIds);
     selectedJobId_ = 0;
+    ++selectionEpoch_;
     requestRefresh();
 }
 

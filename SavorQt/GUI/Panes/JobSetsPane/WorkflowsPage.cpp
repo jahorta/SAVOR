@@ -505,6 +505,8 @@ void WorkflowsPage::createWidgets()
     autoRefreshCheck_ = new QCheckBox(QStringLiteral("Auto refresh"), toolbarPanel);
     autoRefreshCheck_->setObjectName("jobSetsCheckBox");
     autoRefreshCheck_->setChecked(true);
+    victoryOnlyCheck_ = new QCheckBox(QStringLiteral("Victory only"), toolbarPanel);
+    victoryOnlyCheck_->setObjectName("jobSetsCheckBox");
 
     refreshSecondsSpin_ = new QSpinBox(toolbarPanel);
     refreshSecondsSpin_->setObjectName("jobSetsSpin");
@@ -523,8 +525,9 @@ void WorkflowsPage::createWidgets()
     toolbarLayout->addWidget(refreshButton_, 1, 5);
     toolbarLayout->addWidget(prevButton_, 1, 6);
     toolbarLayout->addWidget(nextButton_, 1, 7);
-    toolbarLayout->addWidget(autoRefreshCheck_, 0, 8, 1, 2, Qt::AlignBottom);
-    toolbarLayout->addWidget(refreshSecondsSpin_, 1, 8);
+    toolbarLayout->addWidget(victoryOnlyCheck_, 0, 8, 1, 1, Qt::AlignBottom);
+    toolbarLayout->addWidget(autoRefreshCheck_, 0, 9, 1, 2, Qt::AlignBottom);
+    toolbarLayout->addWidget(refreshSecondsSpin_, 1, 9);
     toolbarLayout->setColumnStretch(1, 1);
 
     rootLayout->addWidget(toolbarPanel);
@@ -643,6 +646,7 @@ void WorkflowsPage::wireSignals()
     connect(resetButton_, &QPushButton::clicked, this, [this]() {
         stateFilter_->setCurrentIndex(0);
         kindFilter_->clear();
+        victoryOnlyCheck_->setChecked(false);
         pageSizeSpin_->setValue(kDefaultPageSize);
         before_.reset();
         after_.reset();
@@ -660,6 +664,7 @@ void WorkflowsPage::wireSignals()
             workflowRefreshPipeline_->setAutoRefreshEnabled(enabled);
         }
     });
+    connect(victoryOnlyCheck_, &QCheckBox::toggled, this, &WorkflowsPage::applyFilters);
     connect(refreshSecondsSpin_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int seconds) {
         if (workflowRefreshPipeline_ != nullptr) {
             workflowRefreshPipeline_->setRefreshIntervalMs(seconds * 1000);
@@ -684,6 +689,7 @@ void WorkflowsPage::wireSignals()
         request.before = before_;
         request.after = after_;
         request.limit = pageSizeSpin_->value();
+        request.battle_final_victory_only = victoryOnlyCheck_->isChecked();
         updateStatusWidgets();
         return request;
     });

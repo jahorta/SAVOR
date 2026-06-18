@@ -117,6 +117,7 @@ private:
     QPushButton* nextButton_ = nullptr;
     QPushButton* refreshButton_ = nullptr;
     QCheckBox* autoRefreshCheck_ = nullptr;
+    QCheckBox* victoryOnlyCheck_ = nullptr;
     QSpinBox* refreshSecondsSpin_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
     QLabel* lastRefreshLabel_ = nullptr;

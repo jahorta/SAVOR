@@ -1114,6 +1114,40 @@ VALUES(6001, 4001, 5001, 5001, unixepoch());
     sqlite3_finalize(st);
 }
 
+TEST_F(SqliteDbFixture, UiReadWorkflowListFiltersProjectedBattleVictoryRows) {
+    using namespace savor::db;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::UIRead, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO ui_workflow_instance(
+    workflow_instance_id, workflow_kind, state, root_scope_kind, created_by,
+    blocked_step_count, failed_step_count, created_at_utc,
+    battle_advancement_rank, battle_desired_outcome_count, battle_final_victory_count, battle_selected_count)
+VALUES
+  (7001, 'workflow_graph', 'COMPLETED', 'manual', 'test', 0, 0, 2000, 2, 2, 1, 1),
+  (7002, 'workflow_graph', 'COMPLETED', 'manual', 'test', 0, 0, 1000, 1, 1, 0, 0);
+)SQL"));
+
+    SqliteUiReadDb ui_read_db(db_);
+    UiWorkflowInstanceListQuery query{};
+    query.limit = 10;
+
+    const auto all = ui_read_db.ListWorkflowInstances(query);
+    ASSERT_EQ(all.items.size(), 2u);
+    EXPECT_EQ(all.items.front().workflow_instance_id, 7001);
+    EXPECT_EQ(all.items.front().battle_final_victory_count, 1);
+
+    query.battle_final_victory_only = true;
+    const auto victory_only = ui_read_db.ListWorkflowInstances(query);
+    ASSERT_EQ(victory_only.items.size(), 1u);
+    EXPECT_EQ(victory_only.items.front().workflow_instance_id, 7001);
+    EXPECT_EQ(victory_only.items.front().battle_final_victory_count, 1);
+}
+
 TEST_F(SqliteDbFixture, Stage3cWorkflowProjectorProjectsAndClearsUiAlerts) {
     using namespace savor::db::migrations;
     using namespace savor::db::execution::workflow;
@@ -7197,8 +7231,20 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     EXPECT_EQ(group_it->job_count, 3);
     EXPECT_EQ(group_it->selected_count, 1);
     EXPECT_EQ(group_it->desired_outcome_count, 2);
+    EXPECT_EQ(group_it->final_victory_count, 1);
     EXPECT_EQ(group_it->manual_followup_count, 1);
     EXPECT_EQ(group_it->advancement_rank, 2);
+
+    UiBattleGroupListQuery victory_group_query{};
+    victory_group_query.limit = 10;
+    victory_group_query.final_victory_only = true;
+    const auto victory_groups = ui_read_db->ListBattleGroups(victory_group_query);
+    EXPECT_NE(
+        std::find_if(
+            victory_groups.items.begin(),
+            victory_groups.items.end(),
+            [battle_set_id](const auto& group) { return group.battle_set_id == battle_set_id; }),
+        victory_groups.items.end());
 
     const auto waves = ui_read_db->ListBattleWaves(battle_set_id);
     ASSERT_EQ(waves.size(), 1u);
@@ -7206,6 +7252,7 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     EXPECT_EQ(waves.front().turn_index, 2);
     EXPECT_EQ(waves.front().selected_count, 1);
     EXPECT_EQ(waves.front().desired_outcome_count, 2);
+    EXPECT_EQ(waves.front().final_victory_count, 1);
     EXPECT_EQ(waves.front().advancement_rank, 2);
 
     const auto jobs = ui_read_db->ListBattleTurnJobsForWaves({ wave_id });
@@ -7216,6 +7263,7 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     EXPECT_EQ(jobs.front().fake_attacks_this_turn, 4);
     EXPECT_TRUE(jobs.front().selected_for_advancement);
     EXPECT_TRUE(jobs.front().has_desired_outcome);
+    EXPECT_TRUE(jobs.front().has_final_victory_outcome);
     EXPECT_EQ(jobs.front().advancement_rank, 2);
     ASSERT_TRUE(jobs.front().advancement_decision.has_value());
     EXPECT_EQ(jobs.front().advancement_decision->decision_kind, "SELECTED");
@@ -7228,6 +7276,7 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     ASSERT_NE(candidate_it, jobs.end());
     EXPECT_FALSE(candidate_it->selected_for_advancement);
     EXPECT_TRUE(candidate_it->has_desired_outcome);
+    EXPECT_FALSE(candidate_it->has_final_victory_outcome);
     EXPECT_EQ(candidate_it->advancement_rank, 1);
     ASSERT_TRUE(candidate_it->advancement_decision.has_value());
     EXPECT_EQ(candidate_it->advancement_decision->decision_kind, "NOT_SELECTED");
@@ -7238,7 +7287,12 @@ TEST_F(SqliteDbFixture, UiReadBattleQueriesListGroupsWavesJobsAndDetail) {
     ASSERT_NE(miss_it, jobs.end());
     EXPECT_FALSE(miss_it->selected_for_advancement);
     EXPECT_FALSE(miss_it->has_desired_outcome);
+    EXPECT_FALSE(miss_it->has_final_victory_outcome);
     EXPECT_EQ(miss_it->advancement_rank, 0);
+
+    const auto victory_jobs = ui_read_db->ListBattleTurnJobsForWaves({ wave_id }, true);
+    ASSERT_EQ(victory_jobs.size(), 1u);
+    EXPECT_EQ(victory_jobs.front().turn_job_id, turn_job_id);
 
     const auto detail = ui_read_db->GetBattleTurnJobDetail(turn_job_id);
     ASSERT_TRUE(detail.has_value());

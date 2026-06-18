@@ -203,6 +203,7 @@ struct UiWorkflowInstanceListQuery {
     int limit = 50;
     std::string state;
     std::string workflow_kind;
+    bool battle_final_victory_only = false;
 };
 
 struct UiWorkflowInstanceSummary {
@@ -220,6 +221,9 @@ struct UiWorkflowInstanceSummary {
     std::string failure_code;
     std::string failure_text;
     int battle_advancement_rank = 0;
+    std::int64_t battle_desired_outcome_count = 0;
+    std::int64_t battle_final_victory_count = 0;
+    std::int64_t battle_selected_count = 0;
 };
 
 struct UiWorkflowStepSummary {
@@ -243,6 +247,9 @@ struct UiWorkflowStepSummary {
     std::optional<std::int64_t> failed_at_utc;
     std::int64_t created_at_utc = 0;
     int battle_advancement_rank = 0;
+    std::int64_t battle_desired_outcome_count = 0;
+    std::int64_t battle_final_victory_count = 0;
+    std::int64_t battle_selected_count = 0;
 };
 
 struct UiWorkflowUnitActivationSummary {
@@ -315,6 +322,7 @@ struct UiBattleGroupListQuery {
     std::optional<UiReadListCursor> after;
     int limit = 50;
     bool child_selected_only = false;
+    bool final_victory_only = false;
 };
 
 struct UiBattleGroupSummary {
@@ -327,6 +335,7 @@ struct UiBattleGroupSummary {
     std::int64_t job_count = 0;
     std::int64_t selected_count = 0;
     std::int64_t desired_outcome_count = 0;
+    std::int64_t final_victory_count = 0;
     std::int64_t failed_count = 0;
     std::int64_t manual_followup_count = 0;
     int advancement_rank = 0;
@@ -344,6 +353,7 @@ struct UiBattleWaveSummary {
     std::int64_t job_count = 0;
     std::int64_t selected_count = 0;
     std::int64_t desired_outcome_count = 0;
+    std::int64_t final_victory_count = 0;
     std::int64_t failed_count = 0;
     int advancement_rank = 0;
 };
@@ -380,6 +390,7 @@ struct UiBattleTurnJobSummary {
     std::optional<int> pred_total;
     std::optional<int> battle_outcome;
     bool has_desired_outcome = false;
+    bool has_final_victory_outcome = false;
     bool selected_for_advancement = false;
     std::string advancement_decision_kind;
     int advancement_rank = 0;
@@ -443,7 +454,8 @@ struct IUiReadDb {
         std::int64_t battle_set_id) const = 0;
 
     virtual std::vector<UiBattleTurnJobSummary> ListBattleTurnJobsForWaves(
-        const std::vector<std::int64_t>& wave_ids) const = 0;
+        const std::vector<std::int64_t>& wave_ids,
+        bool final_victory_only = false) const = 0;
 
     virtual std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
         std::int64_t turn_job_id) const = 0;

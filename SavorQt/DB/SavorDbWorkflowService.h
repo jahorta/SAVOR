@@ -25,6 +25,7 @@ struct WorkflowListRequest {
     std::optional<savor::db::UiReadListCursor> before;
     std::optional<savor::db::UiReadListCursor> after;
     int limit = 50;
+    bool battle_final_victory_only = false;
 };
 
 struct WorkflowGraphInputBindingDraft {
@@ -172,6 +173,7 @@ public:
         query.before = request.before;
         query.after = request.after;
         query.limit = request.limit;
+        query.battle_final_victory_only = request.battle_final_victory_only;
         return ServiceResult<savor::db::UiReadPage<savor::db::UiWorkflowInstanceSummary>>::Ok(
             db->ListWorkflowInstances(query));
     }

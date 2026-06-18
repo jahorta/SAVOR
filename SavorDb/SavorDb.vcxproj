@@ -313,6 +313,7 @@
     <None Include="migration\UIRead\202606121000_uiread_projection_failure_payload_refs.sql" />
     <None Include="migration\UIRead\202606161200_uiread_battle_turn_job_exec_id.sql" />
     <None Include="migration\UIRead\202606171200_uiread_battle_advancement_projection.sql" />
+    <None Include="migration\UIRead\202606171400_uiread_battle_rollups_victory_filters.sql" />
     <None Include="update_generated_migrations_command.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

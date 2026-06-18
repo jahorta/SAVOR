@@ -59,7 +59,8 @@ public:
     std::vector<UiBattleWaveSummary> ListBattleWaves(
         std::int64_t battle_set_id) const override;
     std::vector<UiBattleTurnJobSummary> ListBattleTurnJobsForWaves(
-        const std::vector<std::int64_t>& wave_ids) const override;
+        const std::vector<std::int64_t>& wave_ids,
+        bool final_victory_only = false) const override;
     std::optional<UiBattleTurnJobDetail> GetBattleTurnJobDetail(
         std::int64_t turn_job_id) const override;
 

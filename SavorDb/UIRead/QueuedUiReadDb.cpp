@@ -199,10 +199,13 @@ std::vector<UiBattleWaveSummary> QueuedUiReadDb::ListBattleWaves(
 }
 
 std::vector<UiBattleTurnJobSummary> QueuedUiReadDb::ListBattleTurnJobsForWaves(
-    const std::vector<std::int64_t>& wave_ids) const {
+    const std::vector<std::int64_t>& wave_ids,
+    bool final_victory_only) const {
     return ExecuteRead<std::vector<UiBattleTurnJobSummary>>(
-        [this, wave_ids]() {
-            return inner_ != nullptr ? inner_->ListBattleTurnJobsForWaves(wave_ids) : std::vector<UiBattleTurnJobSummary>{};
+        [this, wave_ids, final_victory_only]() {
+            return inner_ != nullptr
+                ? inner_->ListBattleTurnJobsForWaves(wave_ids, final_victory_only)
+                : std::vector<UiBattleTurnJobSummary>{};
         },
         {});
 }

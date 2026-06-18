@@ -55,8 +55,10 @@ public:
         bool selectedOnly = false;
         bool showCandidates = true;
         bool desiredOutcomeOnly = false;
+        bool finalVictoryOnly = false;
         int primarySort = 0;
         int secondarySort = 0;
+        std::uint64_t selectionEpoch = 0;
     };
 
     struct GroupRow {
@@ -92,6 +94,7 @@ public:
         QString rngSeed;
         bool selectedForAdvancement = false;
         bool desiredOutcome = false;
+        bool finalVictoryOutcome = false;
         int advancementRank = 0;
         int predPassed = -1;
         int predTotal = -1;
@@ -114,6 +117,7 @@ public:
         std::int64_t selectedBattleSetId = 0;
         std::vector<std::int64_t> selectedWaveIds;
         std::int64_t selectedJobId = 0;
+        std::uint64_t selectionEpoch = 0;
         QString summary;
         QString message;
         QDateTime refreshedAt;
@@ -145,6 +149,7 @@ private:
     QCheckBox* selectedOnlyCheck_ = nullptr;
     QCheckBox* showCandidatesCheck_ = nullptr;
     QCheckBox* desiredOutcomeOnlyCheck_ = nullptr;
+    QCheckBox* finalVictoryOnlyCheck_ = nullptr;
     QComboBox* primarySortCombo_ = nullptr;
     QComboBox* secondarySortCombo_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
@@ -169,6 +174,7 @@ private:
     QDateTime lastRefresh_;
     bool refreshingSelection_ = false;
     bool pageActive_ = false;
+    std::uint64_t selectionEpoch_ = 0;
 };
 
 } // namespace savorqt::gui
