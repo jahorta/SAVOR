@@ -12,3 +12,8 @@ When running SavorE2E.exe, use these arguments for the required artifacts:
 - UI apply callbacks must only apply prepared data, and should use targeted table/model updates with stable row keys where available.
 - DB refresh apply code may update DB-derived tables, lists, labels, and badges, but must not reset user-authored input widgets unless it captures/restores draft state or the selected backing item no longer exists.
 - Do not add new ad hoc timer plus `QFutureWatcher` database refresh loops unless there is a documented reason the shared pipeline cannot fit.
+
+## Local debugger
+
+- WinDbg/cdb is installed at `C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\cdb.exe`.
+- For live SavorQt investigation, prefer non-invasive attach (`-pv`) and detach cleanly with `.detach; q` unless the user explicitly asks for invasive debugging or process termination.
