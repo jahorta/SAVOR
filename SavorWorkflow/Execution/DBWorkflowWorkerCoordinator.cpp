@@ -51,7 +51,16 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
         }
         std::optional<savor::db::execution::programdb::WorkflowStepScheduleResult> persisted;
         if (step.input_ref_id.has_value() && descriptor->job_persistence != nullptr && step.step_kind != "battle_chain") {
-            persisted = adapter_chain_orchestrator->OnInputComplete(step.step_kind, *step.input_ref_id);
+            persisted = adapter_chain_orchestrator->OnInputComplete(
+                step.step_kind,
+                savor::db::execution::programdb::WorkflowStepScheduleContext{
+                    .workflow_instance_id = step.workflow_instance_id,
+                    .workflow_step_id = step.workflow_step_id,
+                    .step_key = step.step_key,
+                    .step_kind = step.step_kind,
+                    .domain_ref_id = *step.input_ref_id,
+                    .step_priority = step.priority,
+                });
         } else if (descriptor->graph_job_persistence != nullptr && execution_db->WorkflowQueryService() != nullptr) {
             const auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(step.workflow_instance_id);
             if (!graph.has_value()) {
@@ -64,6 +73,7 @@ WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
             context.workflow_graph_revision_id = graph->instance.workflow_graph_revision_id;
             context.step_key = step.step_key;
             context.step_kind = step.step_kind;
+            context.step_priority = step.priority;
             if (step.input_ref_id.has_value() && *step.input_ref_id > 0) {
                 if (step.step_kind == "seed_probe_chain" && step.input_ref_kind == "state.savestate") {
                     context.input_bindings.push_back(

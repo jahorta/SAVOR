@@ -45,6 +45,15 @@ struct WorkflowGraphArgument {
     std::string source_kind;
 };
 
+struct WorkflowStepScheduleContext {
+    std::int64_t workflow_instance_id = 0;
+    std::int64_t workflow_step_id = 0;
+    std::string step_key;
+    std::string step_kind;
+    std::int64_t domain_ref_id = 0;
+    int step_priority = 0;
+};
+
 struct WorkflowGraphStepScheduleContext {
     std::int64_t workflow_instance_id = 0;
     std::int64_t workflow_step_id = 0;
@@ -58,6 +67,7 @@ struct WorkflowGraphStepScheduleContext {
     std::string unit_variant;
     std::string breakpoint_profile_key;
     std::string activation_params_json;
+    int step_priority = 0;
     std::vector<WorkflowGraphInputBinding> input_bindings;
     std::vector<WorkflowGraphArgument> arguments;
 };
@@ -98,6 +108,7 @@ struct WorkflowTransitionContext {
     int discovered_total = 0;
     int terminal_total = 0;
     int failed_total = 0;
+    int priority = 0;
     std::string workflow_kind;
     std::optional<std::int64_t> workflow_graph_revision_id;
     std::string step_key;
@@ -126,7 +137,7 @@ struct WorkflowTransitionDecision {
 
 struct IJobPersistenceAdapter {
     virtual ~IJobPersistenceAdapter() = default;
-    virtual WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const = 0;
+    virtual WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const = 0;
     virtual std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const = 0;
 };
 

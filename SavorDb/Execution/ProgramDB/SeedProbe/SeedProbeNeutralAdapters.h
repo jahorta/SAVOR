@@ -16,7 +16,7 @@ public:
         savor::db::IAnalysisDb* analysis_db,
         savor::db::IAuthoringDb* authoring_db = nullptr);
 
-    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
+    WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
 
 private:

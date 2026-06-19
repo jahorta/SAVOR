@@ -144,7 +144,15 @@ public:
             return {};
         }
 
-        auto result = neutral_job_persistence_->EncodeForQueueing(probe_run_id);
+        auto result = neutral_job_persistence_->EncodeForQueueing(
+            WorkflowStepScheduleContext{
+                .workflow_instance_id = context.workflow_instance_id,
+                .workflow_step_id = context.workflow_step_id,
+                .step_key = context.step_key,
+                .step_kind = context.step_kind,
+                .domain_ref_id = probe_run_id,
+                .step_priority = context.step_priority,
+            });
         result.event_lines.push_back(
             "[workflow-graph-seedprobe-bootstrap] workflow_instance_id="
             + std::to_string(context.workflow_instance_id)

@@ -102,6 +102,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         .discovered_total = snapshot.discovered_total,
         .terminal_total = snapshot.terminal_total,
         .failed_total = snapshot.failed_total,
+        .priority = snapshot.priority,
         .workflow_kind = snapshot.workflow_kind,
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
@@ -244,6 +245,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
         : terminal.transition.has_value() ? terminal.transition->blocked_reason : std::optional<std::string>("transition_blocked");
 
     if (advanced) {
+        const int successor_priority = snapshot.priority + successor_step_priority_boost_;
         if (!terminal.transition->spawn_steps.empty()) {
             WorkflowAppendDynamicStepsCommand append{};
             append.workflow_instance_id = snapshot.workflow_instance_id;
@@ -258,7 +260,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
                     .input_ref_id = step.input_ref_id,
                     .guard_kind = step.guard_kind,
                     .guard_value = step.guard_value,
-                    .priority = step.priority + successor_step_priority_boost_,
+                    .priority = successor_priority + step.priority,
                     .max_attempts = step.max_attempts,
                 });
             }
@@ -275,7 +277,7 @@ bool WorkflowTerminalAdvancementService::AdvanceSnapshot(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = *terminal.transition->next_step_key,
                     .requested_by = "workflow_terminal_advancement",
-                    .priority_delta = successor_step_priority_boost_,
+                    .ready_priority = successor_priority,
                 },
                 &command_error)) {
                 if (error_out) *error_out = command_error;

@@ -145,8 +145,9 @@ SeedProbeUniqueJobPersistenceAdapter::SeedProbeUniqueJobPersistenceAdapter(
     , unique_ini_(unique_ini) {
 }
 
-WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueueing(const WorkflowStepScheduleContext& context) const {
     WorkflowStepScheduleResult scheduled{};
+    const std::int64_t domain_ref_id = context.domain_ref_id;
     const auto resolved_blueprint = ResolveBlueprintForRun(domain_ref_id);
     const auto resolved_unique = ResolveUniqueSpecForRun(domain_ref_id);
     auto& persisted = scheduled.persistence;
@@ -259,7 +260,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
             frame_hex,
             probe_result_id,
             singleton.target_delta);
-        enqueue.priority = 1;
+        enqueue.priority = context.step_priority + 1;
         enqueue.max_attempts = 2;
         enqueue.pending_until_workflow_materialized = true;
         std::int64_t job_id = 0;
@@ -309,7 +310,7 @@ WorkflowStepScheduleResult SeedProbeUniqueJobPersistenceAdapter::EncodeForQueuei
                 frame_hex,
                 probe_result_id,
                 sample.target_delta);
-            enqueue.priority = 0;
+            enqueue.priority = context.step_priority;
             enqueue.max_attempts = 2;
             enqueue.pending_until_workflow_materialized = true;
             std::int64_t job_id = 0;

@@ -289,7 +289,7 @@ bool WorkflowGraphRoutingService::RouteTerminalStep(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = target_node_key,
                     .requested_by = "workflow_graph_routing",
-                    .priority_delta = successor_step_priority_boost_,
+                    .ready_priority = snapshot.priority + successor_step_priority_boost_,
                 },
                 &command_error)) {
             if (error_out) *error_out = command_error;

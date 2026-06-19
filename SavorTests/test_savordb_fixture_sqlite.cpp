@@ -53,6 +53,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "Execution/StepInputAggregationService.h"
 #include "Execution/JobMaterializationService.h"
+#include "Core/Memory/Soa/Battle/BattleContextCodec.h"
 #include "Runner/Breakpoints/BpRegistry.h"
 
 #include "common/RecordingExecutionDb.h"
@@ -339,8 +340,10 @@ TEST_F(SqliteDbFixture, TasMovieRepeatedSchedulesUseDbJobSetScopedFingerprints) 
     ASSERT_NE(descriptor, nullptr);
     ASSERT_NE(descriptor->job_persistence, nullptr);
 
-    const auto first = descriptor->job_persistence->EncodeForQueueing(base_artifact_id);
-    const auto second = descriptor->job_persistence->EncodeForQueueing(base_artifact_id);
+    const auto first = descriptor->job_persistence->EncodeForQueueing(
+        WorkflowStepScheduleContext{ .domain_ref_id = base_artifact_id, .step_priority = 42 });
+    const auto second = descriptor->job_persistence->EncodeForQueueing(
+        WorkflowStepScheduleContext{ .domain_ref_id = base_artifact_id, .step_priority = 42 });
     ASSERT_GT(first.root_job_set_id, 0);
     ASSERT_GT(second.root_job_set_id, 0);
     ASSERT_NE(first.root_job_set_id, second.root_job_set_id);
@@ -348,6 +351,7 @@ TEST_F(SqliteDbFixture, TasMovieRepeatedSchedulesUseDbJobSetScopedFingerprints) 
     EXPECT_EQ(1, ReadInt64(db_, "SELECT COUNT(1) FROM state_tas_movie_variant WHERE name='tasmovie-base-1-rtc-0';"));
     EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE program_kind=2;"));
     EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(DISTINCT fingerprint) FROM exec_job WHERE program_kind=2;"));
+    EXPECT_EQ(2, ReadInt64(db_, "SELECT COUNT(1) FROM exec_job WHERE program_kind=2 AND priority=42;"));
 
     sqlite3_stmt* st = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
@@ -766,6 +770,256 @@ TEST_F(SqliteDbFixture, Stage5WorkflowAppendDynamicStepsCreatesReadyIdempotentCh
     EXPECT_EQ(after_retry->edges.size(), with_dynamic->edges.size());
 }
 
+TEST_F(SqliteDbFixture, BattleContextProbeEnqueueUsesWorkflowStepPriority) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::battlecontext;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000100));
+    std::string err;
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "context-probe-priority-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = 202,
+            .explorer_settings_id = 303,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "context-probe-priority",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 12345,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "context-probe-priority",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "context-probe-priority",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    const auto descriptor = BuildBattleContextProbeDescriptor(execution_db, analysis_db, {});
+    ASSERT_NE(descriptor.job_persistence, nullptr);
+    const auto scheduled = descriptor.job_persistence->EncodeForQueueing(
+        WorkflowStepScheduleContext{ .domain_ref_id = wave_id, .step_priority = 42 });
+    ASSERT_GT(scheduled.root_job_set_id, 0);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str()),
+        42);
+}
+
+TEST_F(SqliteDbFixture, BattleSingleTurnEnqueueUsesWorkflowStepPriority) {
+    using namespace savor::db;
+    using namespace savor::db::execution::programdb;
+    using namespace savor::db::execution::programdb::battle;
+
+    auto* analysis_db = db_service_->AnalysisDb();
+    auto* authoring_db = db_service_->AuthoringDb();
+    auto* execution_db = db_service_->ExecutionDb();
+    ASSERT_NE(analysis_db, nullptr);
+    ASSERT_NE(authoring_db, nullptr);
+    ASSERT_NE(execution_db, nullptr);
+
+    const auto now = types::UtcTimePoint(std::chrono::milliseconds(1781000000200));
+    std::string err;
+
+    std::int64_t battle_run_spec_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattleRunSpec(
+        {
+            .name = "single-turn-priority-run",
+            .priority = 7,
+            .run_ms = 1000,
+            .vi_stall_ms = 0,
+            .use_single_turn_runner = true,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &battle_run_spec_id,
+        &err)) << err;
+
+    std::int64_t plan_id = 0;
+    ASSERT_TRUE(authoring_db->SavePlan(
+        {
+            .name = "single-turn-priority-plan",
+            .fingerprint = "single-turn-priority-plan",
+            .num_turns = 1,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &plan_id,
+        &err)) << err;
+
+    std::int64_t action_preset_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattlePlanActionPreset(
+        {
+            .name = "attack-enemy",
+            .macro = BattlePlanActionMacro::Attack,
+            .target_kind = BattlePlanTargetKind::SingleEnemy,
+            .target_single_slot = 4,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &action_preset_id,
+        &err)) << err;
+
+    std::int64_t plan_turn_id = 0;
+    ASSERT_TRUE(authoring_db->SaveBattlePlanTurn(
+        {
+            .plan_id = plan_id,
+            .turn_index = 1,
+            .actions = {
+                {
+                    .actor_slot = 0,
+                    .action_preset_id = action_preset_id,
+                    .ordinal = 0,
+                },
+            },
+            .replace_existing_actions = true,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &plan_turn_id,
+        &err)) << err;
+
+    std::int64_t explorer_settings_id = 0;
+    ASSERT_TRUE(authoring_db->SaveExplorerSettings(
+        {
+            .name = "single-turn-priority-settings",
+            .default_plan_id = plan_id,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &explorer_settings_id,
+        &err)) << err;
+
+    std::int64_t battle_set_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleSet(
+        {
+            .name = "single-turn-priority-set",
+            .entry_savestate_id = 101,
+            .battle_run_spec_id = battle_run_spec_id,
+            .explorer_settings_id = explorer_settings_id,
+            .status = BattleSetStatus::Active,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &battle_set_id,
+        &err)) << err;
+
+    std::int64_t seed_candidate_id = 0;
+    ASSERT_TRUE(analysis_db->AddBattleSeedCandidate(
+        {
+            .battle_set_id = battle_set_id,
+            .seed_value = 12345,
+            .source_kind = BattleSeedCandidateSourceKind::Synthetic,
+            .candidate_status = BattleSeedCandidateStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &seed_candidate_id,
+        &err)) << err;
+
+    std::int64_t wave_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleTurnWave(
+        {
+            .battle_set_id = battle_set_id,
+            .turn_index = 1,
+            .seed_candidate_id = seed_candidate_id,
+            .status = BattleTurnWaveStatus::Ready,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &wave_id,
+        &err)) << err;
+
+    std::int64_t context_probe_id = 0;
+    ASSERT_TRUE(analysis_db->CreateBattleContextProbe(
+        {
+            .wave_id = wave_id,
+            .source_savestate_id = 101,
+            .probe_status = BattleContextProbeStatus::Queued,
+            .created_at_utc = now,
+            .correlation_id = "single-turn-priority",
+            .causation_id = "test",
+        },
+        &context_probe_id,
+        &err)) << err;
+    ASSERT_TRUE(analysis_db->SetBattleContextProbeExecJobId(context_probe_id, 9201, &err)) << err;
+
+    soa::battle::ctx::BattleContext battle_context{};
+    for (std::uint32_t slot = 0; slot < 4; ++slot) {
+        battle_context.slots_[slot].is_player = 1;
+        battle_context.slots_[slot].present = 1;
+        battle_context.slots_[slot].is_alive = 1;
+    }
+    battle_context.slots_[4].is_player = 0;
+    battle_context.slots_[4].present = 1;
+    battle_context.slots_[4].is_alive = 1;
+    std::string context_blob;
+    ASSERT_TRUE(soa::battle::ctx::codec::encode(battle_context, context_blob));
+    ASSERT_TRUE(analysis_db->CompleteBattleContextProbe(
+        {
+            .exec_job_id = 9201,
+            .probe_status = BattleContextProbeStatus::Succeeded,
+            .context_blob = context_blob,
+            .context_version = soa::battle::ctx::codec::ver,
+            .recorded_at_utc = now,
+        },
+        &err)) << err;
+
+    const auto descriptor = BuildBattleSingleTurnDescriptor(
+        execution_db,
+        nullptr,
+        analysis_db,
+        BattleSingleTurnPhaseRegistrationConfig{
+            .authoring_db = authoring_db,
+            .working_dir_root = temp_root_,
+        });
+    ASSERT_NE(descriptor.job_persistence, nullptr);
+    const auto scheduled = descriptor.job_persistence->EncodeForQueueing(
+        WorkflowStepScheduleContext{ .domain_ref_id = wave_id, .step_priority = 42 });
+    ASSERT_GT(scheduled.root_job_set_id, 0);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(scheduled.root_job_set_id) + ";").c_str()),
+        42);
+}
+
 TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromReturnedContext) {
     using namespace savor::db;
     using namespace savor::db::execution::programdb;
@@ -954,7 +1208,7 @@ TEST_F(SqliteDbFixture, BattleSingleTurnTransitionSpawnsNextTurnDirectlyFromRetu
     ASSERT_EQ(decision.spawn_steps.size(), 1);
     EXPECT_EQ(decision.spawn_steps[0].step_kind, "battle.single_turn");
     EXPECT_EQ(decision.spawn_steps[0].input_ref_kind.value_or(""), "analysis_battle.turn_wave");
-    EXPECT_EQ(decision.spawn_steps[0].priority, 2);
+    EXPECT_EQ(decision.spawn_steps[0].priority, 0);
     EXPECT_NE(decision.spawn_steps[0].step_key.find("BattleTurn/t2/w"), std::string::npos);
     EXPECT_EQ(decision.spawn_steps[0].step_key.find("BattleContext/"), std::string::npos);
 
@@ -1591,6 +1845,7 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     snapshot.discovered_total = 1;
     snapshot.terminal_total = 1;
     snapshot.failed_total = 0;
+    snapshot.priority = 20;
     snapshot.workflow_kind = "mock";
     snapshot.step_key = "source";
     snapshot.step_kind = "mock.spawn";
@@ -1603,7 +1858,7 @@ TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementBoostsDynamicSuccessorSteps) {
     ASSERT_EQ(command_service.dynamic_step_calls.size(), 1u);
     ASSERT_EQ(command_service.dynamic_step_calls[0].steps.size(), 1u);
     EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].step_key, "spawned-next");
-    EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].priority, 14);
+    EXPECT_EQ(command_service.dynamic_step_calls[0].steps[0].priority, 34);
 }
 
 TEST_F(SqliteDbFixture, Stage3cTerminalAdvancementServiceUsesRecordedStepOutputFromSnapshot) {
@@ -2664,6 +2919,38 @@ VALUES(1702, 1701, 7, 1, 'seed_probe', 33, 'fp-stage3d-claim', 5, 'QUEUED', 0, 3
     ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
     EXPECT_EQ(sqlite3_column_int(st, 0), 1);
     sqlite3_finalize(st);
+}
+
+TEST_F(SqliteDbFixture, Stage3dClaimNextReadyExecutionJobOrdersByStepDerivedJobPriority) {
+    using namespace savor::db::execution::workflow;
+    using namespace savor::db::migrations;
+
+    const MigrationSourceOptions embedded_options{ .source_kind = MigrationSourceKind::Embedded };
+    std::string err;
+    ASSERT_TRUE(ApplyContextMigrations(db_, MigrationContext::Execution, embedded_options, &err)) << err;
+
+    ASSERT_TRUE(ExecSql(db_, R"SQL(
+INSERT INTO exec_workflow_instance(workflow_instance_id, workflow_kind, state, root_scope_kind, created_by, created_at_utc)
+VALUES(1710, 'priority-order', 'RUNNING', 'manual', 'test', unixepoch()*1000);
+INSERT INTO exec_job_set(job_set_id, program_kind, purpose, created_at_utc)
+VALUES(1711, 7, 'low-priority-step', unixepoch()*1000),
+      (1721, 7, 'high-priority-step', unixepoch()*1000);
+INSERT INTO exec_workflow_step(workflow_step_id, workflow_instance_id, step_key, step_kind, state, job_set_id, priority, attempts, max_attempts, created_at_utc)
+VALUES(1712, 1710, 'Low', 'test.low', 'MATERIALIZED', 1711, 10, 0, 1, unixepoch()*1000),
+      (1722, 1710, 'High', 'test.high', 'MATERIALIZED', 1721, 42, 0, 1, unixepoch()*1000);
+INSERT INTO exec_job(job_id, job_set_id, program_kind, program_version, program_ref_kind, program_ref_id, fingerprint, priority, state, attempts, max_attempts, queued_at_utc)
+VALUES(1713, 1711, 7, 1, 'test', 1, 'priority-order-low', 10, 'QUEUED', 0, 1, 1000),
+      (1723, 1721, 7, 1, 'test', 2, 'priority-order-high', 42, 'QUEUED', 0, 1, 1000);
+)SQL"));
+
+    SqliteExecutionDb execution_db(db_);
+    std::string claim_error;
+    const auto claimed = execution_db.ClaimNextReadyExecutionJob("worker-priority-order", 30000, &claim_error);
+    EXPECT_TRUE(claim_error.empty()) << claim_error;
+    ASSERT_TRUE(claimed.has_value());
+    EXPECT_EQ(claimed->job_id, 1723);
+    EXPECT_EQ(claimed->workflow_step_id, 1722);
+    EXPECT_EQ(claimed->workflow_step_priority, 42);
 }
 
 TEST_F(SqliteDbFixture, Stage3dDefaultEnqueueJobIsImmediatelyQueued) {
@@ -4183,10 +4470,13 @@ TEST_F(SqliteDbFixture, Stage5BattleChainGraphAcceptsInputSetsAndRejectsProbeRun
             .workflow_step_id = valid_graph->steps.front().workflow_step_id,
             .step_key = "battle_1",
             .step_kind = "battle_chain",
-            .priority = 5,
+            .priority = 42,
         });
     ASSERT_TRUE(valid_scheduled.has_value());
     EXPECT_GT(valid_scheduled->job_set_id, 0);
+    EXPECT_EQ(
+        ReadInt64(db_, ("SELECT priority FROM exec_job WHERE job_set_id=" + std::to_string(valid_scheduled->job_set_id) + ";").c_str()),
+        42);
 
     const auto invalid_instance_id = create_instance("sp_probe_run", 99001);
     const auto invalid_graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(invalid_instance_id);
@@ -4734,6 +5024,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .step_key = "tas_1",
             .graph_node_key = "tas_1",
             .step_kind = "tas_movie",
+            .priority = step_priority("tas_1"),
             .expected_total = 1,
             .discovered_total = 1,
             .terminal_total = 1,
@@ -4744,7 +5035,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     EXPECT_TRUE(route_result.routed_input_binding);
     EXPECT_TRUE(route_result.advanced_ready_step);
     EXPECT_EQ(step_state("probe_1"), WorkflowStepState::Ready);
-    EXPECT_EQ(step_priority("probe_1"), 15);
+    EXPECT_EQ(step_priority("probe_1"), 20);
     EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Waiting);
 
     auto graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
@@ -4820,6 +5111,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
             .step_key = "probe_1",
             .graph_node_key = "probe_1",
             .step_kind = "seed_probe_chain",
+            .priority = step_priority("probe_1"),
             .expected_total = 1,
             .discovered_total = 1,
             .terminal_total = 1,
@@ -4830,7 +5122,7 @@ TEST_F(SqliteDbFixture, Stage5GraphRoutingRoutesJobOutputsAndWaitsForRequiredInp
     EXPECT_TRUE(route_result.routed_input_binding);
     EXPECT_TRUE(route_result.advanced_ready_step);
     EXPECT_EQ(step_state("battle_1"), WorkflowStepState::Ready);
-    EXPECT_EQ(step_priority("battle_1"), 11);
+    EXPECT_EQ(step_priority("battle_1"), 30);
 
     graph = execution_db->WorkflowQueryService()->GetWorkflowGraph(workflow_instance_id);
     ASSERT_TRUE(graph.has_value());
@@ -5972,6 +6264,7 @@ VALUES(1402, 1401, 'Grid', 'seedprobe.grid', 'READY', 1, 0, 2, unixepoch()*1000,
 
 TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerprints) {
     using namespace savor::db;
+    using namespace savor::db::execution::programdb;
     using namespace savor::db::execution::programdb::seedprobe;
     using namespace savor::db::execution::workflow;
 
@@ -6078,17 +6371,50 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         EXPECT_GT(total, 0);
         EXPECT_EQ(pending, total);
     };
+    auto expect_priority_range = [&](std::int64_t job_set_id, int expected_min, int expected_max) {
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(
+            db_,
+            "WITH RECURSIVE job_set_descendants(job_set_id) AS ("
+            "  SELECT job_set_id FROM exec_job_set WHERE job_set_id=?1 "
+            "  UNION ALL "
+            "  SELECT child.job_set_id FROM exec_job_set child "
+            "  JOIN job_set_descendants parent ON parent.job_set_id=child.parent_job_set_id"
+            ") "
+            "SELECT COUNT(1), COALESCE(MIN(priority), 0), COALESCE(MAX(priority), 0) "
+            "FROM exec_job "
+            "WHERE job_set_id IN (SELECT job_set_id FROM job_set_descendants);",
+            -1,
+            &st,
+            nullptr));
+        sqlite3_bind_int64(st, 1, job_set_id);
+        ASSERT_EQ(SQLITE_ROW, sqlite3_step(st));
+        const int total = sqlite3_column_int(st, 0);
+        const int min_priority = sqlite3_column_int(st, 1);
+        const int max_priority = sqlite3_column_int(st, 2);
+        sqlite3_finalize(st);
+        EXPECT_GT(total, 0);
+        EXPECT_EQ(min_priority, expected_min);
+        EXPECT_EQ(max_priority, expected_max);
+    };
     auto expect_timing = [](const std::string& fingerprint) {
         EXPECT_NE(fingerprint.find(";run_ms=12345"), std::string::npos) << fingerprint;
         EXPECT_NE(fingerprint.find(";vi=678"), std::string::npos) << fingerprint;
     };
+    auto schedule_context = [](std::int64_t domain_ref_id, int step_priority = 42) {
+        return WorkflowStepScheduleContext{
+            .domain_ref_id = domain_ref_id,
+            .step_priority = step_priority,
+        };
+    };
 
     auto neutral = BuildSeedProbeNeutralDescriptor(&execution_db, analysis_db, authoring_db);
-    const auto neutral_scheduled = neutral.job_persistence->EncodeForQueueing(probe_run_id);
+    const auto neutral_scheduled = neutral.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
     ASSERT_GT(neutral_scheduled.root_job_set_id, 0);
     expect_timing(neutral_scheduled.persistence.fingerprint);
     expect_timing(read_first_job_fingerprint(neutral_scheduled.root_job_set_id));
     expect_pending_jobs(neutral_scheduled.root_job_set_id);
+    expect_priority_range(neutral_scheduled.root_job_set_id, 42, 42);
 
     SeedProbeGridSpec grid_spec{};
     grid_spec.samples_per_axis = 1;
@@ -6098,11 +6424,12 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         SeedProbeGridBlueprintConfig{},
         grid_spec,
         authoring_db);
-    const auto grid_scheduled = grid.job_persistence->EncodeForQueueing(probe_run_id);
+    const auto grid_scheduled = grid.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
     ASSERT_GT(grid_scheduled.root_job_set_id, 0);
     expect_timing(grid_scheduled.persistence.fingerprint);
     expect_timing(read_first_job_fingerprint(grid_scheduled.root_job_set_id));
     expect_pending_jobs(grid_scheduled.root_job_set_id);
+    expect_priority_range(grid_scheduled.root_job_set_id, 42, 42);
 
     ASSERT_TRUE(analysis_db->SetSeedProbeRunNeutralSeed(probe_run_id, 1000, &err)) << err;
     const auto probe_result_id = analysis_db->LookupSeedProbeResultId(probe_run_id);
@@ -6157,11 +6484,12 @@ TEST_F(SqliteDbFixture, Stage3cSeedProbeAdaptersUseAuthoringSpecTimingInFingerpr
         UniqueIni{},
         {},
         authoring_db);
-    const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(probe_run_id);
+    const auto unique_scheduled = unique.job_persistence->EncodeForQueueing(schedule_context(probe_run_id));
     expect_timing(unique_scheduled.persistence.fingerprint);
     ASSERT_GT(unique_scheduled.root_job_set_id, 0);
     ASSERT_FALSE(unique_scheduled.event_lines.empty());
     expect_pending_jobs(unique_scheduled.root_job_set_id);
+    expect_priority_range(unique_scheduled.root_job_set_id, 42, 43);
     EXPECT_NE(unique_scheduled.event_lines.back().find("combo_attempts_per_target=1"), std::string::npos)
         << unique_scheduled.event_lines.back();
     EXPECT_NE(unique_scheduled.event_lines.back().find("combo_sampler_tries=1"), std::string::npos)

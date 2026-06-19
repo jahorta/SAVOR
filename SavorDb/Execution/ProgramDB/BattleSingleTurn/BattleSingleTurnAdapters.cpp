@@ -679,8 +679,9 @@ public:
         , authoring_db_(authoring_db) {
     }
 
-    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+    WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override {
         WorkflowStepScheduleResult scheduled{};
+        const std::int64_t domain_ref_id = context.domain_ref_id;
         scheduled.persistence.program_ref_kind = kWaveRefKind;
         scheduled.persistence.program_ref_id = domain_ref_id;
         scheduled.persistence.program_version = kProgramVersion;
@@ -848,7 +849,7 @@ public:
                             .program_ref_id = turn_job_id,
                             .savestate_id = source_savestate_id,
                             .fingerprint = FingerprintFor(job_ini),
-                            .priority = run_spec->priority,
+                            .priority = context.step_priority,
                             .max_attempts = 1,
                             .input_ini = BuildInputIni(job_ini),
                             .pending_until_workflow_materialized = true,
@@ -1519,7 +1520,7 @@ public:
             step.step_kind = kBattleSingleTurnStepKind;
             step.input_ref_kind = kWaveRefKind;
             step.input_ref_id = next_wave_id;
-            step.priority = current_wave->turn_index + 1;
+            step.priority = 0;
             step.max_attempts = 1;
             decision.spawn_steps.push_back(std::move(step));
         }

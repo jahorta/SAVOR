@@ -195,8 +195,9 @@ public:
         , blueprint_(std::move(blueprint)) {
     }
 
-    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+    WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override {
         WorkflowStepScheduleResult scheduled{};
+        const std::int64_t domain_ref_id = context.domain_ref_id;
         auto cfg = blueprint_;
         if (cfg.base_dtm_artifact_id <= 0) {
             cfg.base_dtm_artifact_id = domain_ref_id;
@@ -256,7 +257,7 @@ public:
             enqueue.program_ref_kind = kVariantRefKind;
             enqueue.program_ref_id = tas_variant_id;
             enqueue.fingerprint = VariantFingerprint(cfg, job_set_id, tas_variant_id, rtc);
-            enqueue.priority = cfg.priority;
+            enqueue.priority = context.step_priority;
             enqueue.max_attempts = 1;
             enqueue.input_ini = BuildInputIni(cfg, rtc);
             enqueue.pending_until_workflow_materialized = true;
@@ -410,7 +411,15 @@ public:
             execution_db_,
             state_db_,
             cfg);
-        auto scheduled = adapter.EncodeForQueueing(cfg.base_dtm_artifact_id);
+        auto scheduled = adapter.EncodeForQueueing(
+            WorkflowStepScheduleContext{
+                .workflow_instance_id = context.workflow_instance_id,
+                .workflow_step_id = context.workflow_step_id,
+                .step_key = context.step_key,
+                .step_kind = context.step_kind,
+                .domain_ref_id = cfg.base_dtm_artifact_id,
+                .step_priority = context.step_priority,
+            });
         scheduled.event_lines.push_back(
             "[workflow-graph-tasmovie-bootstrap] workflow_instance_id="
             + std::to_string(context.workflow_instance_id)

@@ -121,8 +121,9 @@ SeedProbeGridJobPersistenceAdapter::SeedProbeGridJobPersistenceAdapter(
     , fanout_(BuildFanout(grid_, blueprint_)) {
 }
 
-WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing(const WorkflowStepScheduleContext& context) const {
     WorkflowStepScheduleResult scheduled{};
+    const std::int64_t domain_ref_id = context.domain_ref_id;
     const std::int64_t probe_run_id = domain_ref_id;
     const auto resolved_blueprint = ResolveBlueprintForRun(probe_run_id);
     const auto resolved_grid = ResolveGridSpecForRun(probe_run_id);
@@ -155,7 +156,7 @@ WorkflowStepScheduleResult SeedProbeGridJobPersistenceAdapter::EncodeForQueueing
                     entry.frame_hex,
                     entry.family.c_str(),
                     entry.domain_ref_id);
-                enqueue.priority = 0;
+                enqueue.priority = context.step_priority;
                 enqueue.max_attempts = 3;
                 enqueue.input_ini = "";
                 enqueue.pending_until_workflow_materialized = true;

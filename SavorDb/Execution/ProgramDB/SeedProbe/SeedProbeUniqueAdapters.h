@@ -33,7 +33,7 @@ public:
         SeedProbeGridBlueprintConfig blueprint,
         UniqueIni unique_ini);
 
-    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
+    WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
 
 private:

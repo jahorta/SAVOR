@@ -66,8 +66,9 @@ NeutralProbeJobPersistenceAdapter::NeutralProbeJobPersistenceAdapter(
     , authoring_db_(authoring_db) {
 }
 
-WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(std::int64_t domain_ref_id) const {
+WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(const WorkflowStepScheduleContext& context) const {
     WorkflowStepScheduleResult scheduled{};
+    const std::int64_t domain_ref_id = context.domain_ref_id;
     auto& persisted = scheduled.persistence;
     persisted.program_ref_kind = kProgramRefKind;
     persisted.program_version = kProgramVersion;
@@ -102,7 +103,7 @@ WorkflowStepScheduleResult NeutralProbeJobPersistenceAdapter::EncodeForQueueing(
                     .program_ref_kind = "seed_probe_run",
                     .program_ref_id = persisted.program_ref_id,
                     .fingerprint = persisted.fingerprint,
-                    .priority = 0,
+                    .priority = context.step_priority,
                     .max_attempts = 1,
                     .pending_until_workflow_materialized = true,
                 },

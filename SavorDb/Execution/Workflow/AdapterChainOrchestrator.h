@@ -27,6 +27,7 @@ struct StepCompletionSnapshot {
     int discovered_total = 0;
     int terminal_total = 0;
 	int failed_total = 0;
+    int priority = 0;
 };
 
 struct StepCompletionGateDecision {
@@ -49,7 +50,10 @@ public:
         const programdb::ProgramKindRegistry* registry,
         StepCompletionGateService* completion_gate);
 
-    std::optional<programdb::WorkflowStepScheduleResult> OnInputComplete(std::string_view step_kind, std::int64_t domain_ref_id, AdapterChainTrace* trace = nullptr) const;
+    std::optional<programdb::WorkflowStepScheduleResult> OnInputComplete(
+        std::string_view step_kind,
+        const programdb::WorkflowStepScheduleContext& context,
+        AdapterChainTrace* trace = nullptr) const;
     std::optional<programdb::WorkflowStepScheduleResult> OnGraphInputComplete(
         std::string_view step_kind,
         const programdb::WorkflowGraphStepScheduleContext& context,

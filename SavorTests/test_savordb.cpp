@@ -274,13 +274,13 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
 
     class MockPersistence final : public IJobPersistenceAdapter {
     public:
-        WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+        WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override {
             JobPersistenceRecord r{};
             r.program_ref_kind = "mock";
-            r.program_ref_id = domain_ref_id;
+            r.program_ref_id = context.domain_ref_id;
             return WorkflowStepScheduleResult{
                 .persistence = r,
-                .root_job_set_id = domain_ref_id,
+                .root_job_set_id = context.domain_ref_id,
             };
         }
         std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override { return persisted.program_ref_id; }
@@ -343,7 +343,17 @@ TEST(Stage2AdapterChain, InvokesCanonicalOrderAndWriterContract) {
     AdapterChainOrchestrator orchestrator(&registry, &gate);
 
     AdapterChainTrace trace{};
-    const auto persisted = orchestrator.OnInputComplete("mock.step", 77, &trace);
+    const auto persisted = orchestrator.OnInputComplete(
+        "mock.step",
+        WorkflowStepScheduleContext{
+            .workflow_instance_id = 1,
+            .workflow_step_id = 2,
+            .step_key = "Mock",
+            .step_kind = "mock.step",
+            .domain_ref_id = 77,
+            .step_priority = 42,
+        },
+        &trace);
     ASSERT_TRUE(persisted.has_value());
     EXPECT_TRUE(trace.job_persistence_invoked);
 
@@ -676,12 +686,12 @@ TEST(Stage1CoordinatorIntegration, DbBackedSchedulerInvokesInputCompleteOnceAndM
 
     class CountingPersistenceAdapter final : public IJobPersistenceAdapter {
     public:
-        WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+        WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override {
             ++encode_calls;
             WorkflowStepScheduleResult result{};
-            result.root_job_set_id = 17000 + domain_ref_id;
+            result.root_job_set_id = 17000 + context.domain_ref_id;
             result.persistence.program_ref_kind = "test.domain";
-            result.persistence.program_ref_id = domain_ref_id;
+            result.persistence.program_ref_id = context.domain_ref_id;
             result.persistence.fingerprint = "test";
             return result;
         }

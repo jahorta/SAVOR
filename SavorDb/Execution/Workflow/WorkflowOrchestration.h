@@ -163,6 +163,7 @@ struct WorkflowStepTerminalSnapshot {
     std::optional<std::int64_t> input_ref_id;
     std::optional<std::string> output_ref_kind;
     std::optional<std::int64_t> output_ref_id;
+    int priority = 0;
     int expected_total = 0;
     int discovered_total = 0;
     int terminal_total = 0;
@@ -269,6 +270,7 @@ struct WorkflowMarkStepReadyCommand {
     std::string step_key;
     std::string requested_by;
     int priority_delta = 0;
+    std::optional<int> ready_priority;
 };
 
 struct WorkflowAppendDynamicStepSpec {

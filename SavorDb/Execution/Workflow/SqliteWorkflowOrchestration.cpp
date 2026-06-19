@@ -283,10 +283,11 @@ std::optional<WorkflowStepTerminalSnapshot> ReadStepTerminalSnapshot(sqlite3_stm
     snapshot.output_ref_kind = ColumnTextOptional(st, 11);
     snapshot.output_ref_id = ColumnInt64Optional(st, 12);
 
-    snapshot.expected_total = sqlite3_column_int(st, 13);
-    snapshot.discovered_total = sqlite3_column_int(st, 14);
-    snapshot.terminal_total = sqlite3_column_int(st, 15);
-    snapshot.failed_total = sqlite3_column_int(st, 16);
+    snapshot.priority = sqlite3_column_int(st, 13);
+    snapshot.expected_total = sqlite3_column_int(st, 14);
+    snapshot.discovered_total = sqlite3_column_int(st, 15);
+    snapshot.terminal_total = sqlite3_column_int(st, 16);
+    snapshot.failed_total = sqlite3_column_int(st, 17);
     return snapshot;
 }
 
@@ -408,7 +409,7 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         "step_root AS ("
         "  SELECT i.workflow_instance_id, s.workflow_step_id, s.workflow_unit_activation_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
         "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
-        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
+        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority "
         "  FROM job_set_ancestry a "
         "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
@@ -424,7 +425,7 @@ std::optional<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServ
         ") "
         "SELECT r.workflow_instance_id, r.workflow_step_id, r.workflow_unit_activation_id, r.job_set_id, r.workflow_kind, r.workflow_graph_revision_id, "
         "r.step_key, r.graph_node_key, r.step_kind, "
-        "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, "
+        "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, r.priority, "
         "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
         "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
         "  ELSE COALESCE(root_js.expected_total, 0) END, "
@@ -458,33 +459,33 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         "WITH RECURSIVE step_root AS ("
         "  SELECT i.workflow_instance_id, s.workflow_step_id, s.workflow_unit_activation_id, s.job_set_id, i.workflow_kind, i.workflow_graph_revision_id, "
         "s.step_key, COALESCE(s.graph_node_key, s.step_key) AS graph_node_key, s.step_kind, "
-        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
+        "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id, s.priority "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
         "  WHERE i.state IN ('PENDING','RUNNING') "
         "    AND s.state IN ('MATERIALIZED','RUNNING') "
         "    AND s.job_set_id IS NOT NULL "
         "), "
-        "job_set_descendants(workflow_instance_id, workflow_step_id, workflow_unit_activation_id, root_job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, depth) AS ("
-        "  SELECT workflow_instance_id, workflow_step_id, workflow_unit_activation_id, job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, job_set_id, 0 "
+        "job_set_descendants(workflow_instance_id, workflow_step_id, workflow_unit_activation_id, root_job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, job_set_id, depth) AS ("
+        "  SELECT workflow_instance_id, workflow_step_id, workflow_unit_activation_id, job_set_id, workflow_kind, workflow_graph_revision_id, step_key, graph_node_key, step_kind, input_ref_kind, input_ref_id, output_ref_kind, output_ref_id, priority, job_set_id, 0 "
         "  FROM step_root "
         "  UNION ALL "
         "  SELECT d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, "
-        "d.step_key, d.graph_node_key, d.step_kind, d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, child.job_set_id, d.depth + 1 "
+        "d.step_key, d.graph_node_key, d.step_kind, d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, child.job_set_id, d.depth + 1 "
         "  FROM exec_job_set child "
         "  JOIN job_set_descendants d ON child.parent_job_set_id=d.job_set_id "
         "  WHERE d.depth < 64"
         "), "
         "expected_summary AS ("
         "  SELECT d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
-        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, "
+        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority, "
         "    CASE WHEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN 1 ELSE 0 END), 0) > 0 "
         "      THEN COALESCE(SUM(CASE WHEN d.depth > 0 THEN COALESCE(js.expected_total, 0) ELSE 0 END), 0) "
         "      ELSE COALESCE(MAX(CASE WHEN d.depth=0 THEN js.expected_total ELSE NULL END), 0) END AS expected_total "
         "  FROM job_set_descendants d "
         "  LEFT JOIN exec_job_set js ON js.job_set_id=d.job_set_id "
         "  GROUP BY d.workflow_instance_id, d.workflow_step_id, d.workflow_unit_activation_id, d.root_job_set_id, d.workflow_kind, d.workflow_graph_revision_id, d.step_key, d.graph_node_key, d.step_kind, "
-        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id "
+        "d.input_ref_kind, d.input_ref_id, d.output_ref_kind, d.output_ref_id, d.priority "
         "), "
         "job_summary AS ("
         "  SELECT d.workflow_step_id, "
@@ -497,7 +498,7 @@ std::vector<WorkflowStepTerminalSnapshot> SqliteWorkflowOrchestrationQueryServic
         ") "
         "SELECT e.workflow_instance_id, e.workflow_step_id, e.workflow_unit_activation_id, e.root_job_set_id, e.workflow_kind, e.workflow_graph_revision_id, "
         "e.step_key, e.graph_node_key, e.step_kind, "
-        "e.input_ref_kind, e.input_ref_id, e.output_ref_kind, e.output_ref_id, "
+        "e.input_ref_kind, e.input_ref_id, e.output_ref_kind, e.output_ref_id, e.priority, "
         "e.expected_total, j.discovered_total, j.terminal_total, j.failed_total "
         "FROM expected_summary e "
         "JOIN job_summary j ON j.workflow_step_id=e.workflow_step_id "
@@ -2119,7 +2120,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
 
     Statement read;
     if (!Prepare(db_,
-        "SELECT workflow_step_id, workflow_unit_activation_id, state, job_set_id "
+        "SELECT workflow_step_id, workflow_unit_activation_id, state, job_set_id, priority "
         "FROM exec_workflow_step WHERE workflow_instance_id=?1 AND step_key=?2;",
         &read,
         error_out)) {
@@ -2139,6 +2140,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
     const auto workflow_unit_activation_id = ColumnInt64Optional(read.st, 1);
     const std::string state = reinterpret_cast<const char*>(sqlite3_column_text(read.st, 2));
     const auto existing_job_set_id = ColumnInt64Optional(read.st, 3);
+    const int current_priority = sqlite3_column_int(read.st, 4);
 
     if (state == "READY" && !existing_job_set_id.has_value()) {
         if (!Exec(db_, "COMMIT;", error_out)) {
@@ -2156,7 +2158,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
     Statement update;
     if (!Prepare(db_,
         "UPDATE exec_workflow_step "
-        "SET state='READY', ready_at_utc=?3, blocked_reason=NULL, priority=priority + ?4 "
+        "SET state='READY', ready_at_utc=?3, blocked_reason=NULL, priority=?4 "
         "WHERE workflow_instance_id=?1 AND step_key=?2 AND state='WAITING' AND job_set_id IS NULL;",
         &update,
         error_out)) {
@@ -2166,7 +2168,7 @@ bool SqliteWorkflowOrchestrationCommandService::MarkStepReady(
     sqlite3_bind_int64(update.st, 1, command.workflow_instance_id);
     sqlite3_bind_text(update.st, 2, command.step_key.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(update.st, 3, NowUtc());
-    sqlite3_bind_int(update.st, 4, command.priority_delta);
+    sqlite3_bind_int(update.st, 4, command.ready_priority.value_or(current_priority + command.priority_delta));
     if (sqlite3_step(update.st) != SQLITE_DONE) {
         if (error_out) *error_out = sqlite3_errmsg(db_);
         Exec(db_, "ROLLBACK;", nullptr);

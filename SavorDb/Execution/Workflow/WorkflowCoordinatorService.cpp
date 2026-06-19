@@ -343,7 +343,16 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
     if (step.input_ref_id.has_value()
         && descriptor->job_persistence != nullptr
         && step.step_kind != "battle_chain") {
-        return adapter_chain_orchestrator_.OnInputComplete(step.step_kind, *step.input_ref_id);
+        return adapter_chain_orchestrator_.OnInputComplete(
+            step.step_kind,
+            programdb::WorkflowStepScheduleContext{
+                .workflow_instance_id = step.workflow_instance_id,
+                .workflow_step_id = step.workflow_step_id,
+                .step_key = step.step_key,
+                .step_kind = step.step_kind,
+                .domain_ref_id = *step.input_ref_id,
+                .step_priority = step.priority,
+            });
     }
 
     if (descriptor->graph_job_persistence == nullptr || execution_db_->WorkflowQueryService() == nullptr) {
@@ -362,6 +371,7 @@ std::optional<programdb::WorkflowStepScheduleResult> WorkflowCoordinatorService:
     context.step_key = step.step_key;
     context.step_kind = step.step_kind;
     context.workflow_unit_activation_id = step.workflow_unit_activation_id;
+    context.step_priority = step.priority;
     const WorkflowUnitActivationRecord* owning_activation = nullptr;
     if (step.workflow_unit_activation_id.has_value()) {
         for (const auto& activation : graph->unit_activations) {

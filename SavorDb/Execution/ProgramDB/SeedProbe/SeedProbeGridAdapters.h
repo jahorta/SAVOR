@@ -51,7 +51,7 @@ public:
         SeedProbeGridBlueprintConfig blueprint,
         SeedProbeGridSpec grid);
 
-    WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override;
+    WorkflowStepScheduleResult EncodeForQueueing(const WorkflowStepScheduleContext& context) const override;
     std::int64_t DecodeDomainRefId(const JobPersistenceRecord& persisted) const override;
 
     const std::vector<GridFanoutEntry>& Fanout() const;

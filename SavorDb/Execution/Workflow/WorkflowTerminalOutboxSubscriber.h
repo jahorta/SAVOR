@@ -29,6 +29,7 @@ public:
         std::string workflow_kind;
         std::string step_key;
         std::string step_kind;
+        int priority = 0;
         std::optional<std::string> input_ref_kind;
         std::optional<std::int64_t> input_ref_id;
         std::optional<std::string> output_ref_kind;

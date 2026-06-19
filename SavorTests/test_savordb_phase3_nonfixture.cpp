@@ -89,8 +89,10 @@ namespace savordb {
                 : execution_db_(execution_db) {
             }
 
-            savor::db::execution::programdb::WorkflowStepScheduleResult EncodeForQueueing(std::int64_t domain_ref_id) const override {
+            savor::db::execution::programdb::WorkflowStepScheduleResult EncodeForQueueing(
+                const savor::db::execution::programdb::WorkflowStepScheduleContext& context) const override {
                 savor::db::execution::programdb::WorkflowStepScheduleResult result{};
+                const std::int64_t domain_ref_id = context.domain_ref_id;
                 if (execution_db_ == nullptr) {
                     return result;
                 }
@@ -122,7 +124,7 @@ namespace savordb {
                         .program_ref_kind = "unit.input",
                         .program_ref_id = domain_ref_id,
                         .fingerprint = "workflow-coordinator-test-" + std::to_string(domain_ref_id),
-                        .priority = 0,
+                        .priority = context.step_priority,
                         .max_attempts = 1,
                     },
                     &job_id,

@@ -125,35 +125,37 @@ bool LoadStepTerminalSnapshot(
     snapshot_out->workflow_kind = workflow_kind ? reinterpret_cast<const char*>(workflow_kind) : "";
     snapshot_out->step_key = step_key ? reinterpret_cast<const char*>(step_key) : "";
     snapshot_out->step_kind = step_kind ? reinterpret_cast<const char*>(step_kind) : "";
-    if (sqlite3_column_type(st.st, 6) == SQLITE_NULL) {
+    snapshot_out->priority = sqlite3_column_int(st.st, 6);
+    if (sqlite3_column_type(st.st, 7) == SQLITE_NULL) {
         snapshot_out->input_ref_kind = std::nullopt;
     } else {
-        const auto* input_ref_kind = sqlite3_column_text(st.st, 6);
+        const auto* input_ref_kind = sqlite3_column_text(st.st, 7);
         snapshot_out->input_ref_kind = input_ref_kind ? std::optional<std::string>(reinterpret_cast<const char*>(input_ref_kind)) : std::nullopt;
     }
-    if (sqlite3_column_type(st.st, 7) == SQLITE_NULL) {
+    if (sqlite3_column_type(st.st, 8) == SQLITE_NULL) {
         snapshot_out->input_ref_id = std::nullopt;
     } else {
-        snapshot_out->input_ref_id = sqlite3_column_int64(st.st, 7);
-    }
-    if (sqlite3_column_type(st.st, 8) == SQLITE_NULL) {
-        snapshot_out->output_ref_kind = std::nullopt;
-    } else {
-        const auto* output_ref_kind = sqlite3_column_text(st.st, 8);
-        snapshot_out->output_ref_kind = output_ref_kind ? std::optional<std::string>(reinterpret_cast<const char*>(output_ref_kind)) : std::nullopt;
+        snapshot_out->input_ref_id = sqlite3_column_int64(st.st, 8);
     }
     if (sqlite3_column_type(st.st, 9) == SQLITE_NULL) {
+        snapshot_out->output_ref_kind = std::nullopt;
+    } else {
+        const auto* output_ref_kind = sqlite3_column_text(st.st, 9);
+        snapshot_out->output_ref_kind = output_ref_kind ? std::optional<std::string>(reinterpret_cast<const char*>(output_ref_kind)) : std::nullopt;
+    }
+    if (sqlite3_column_type(st.st, 10) == SQLITE_NULL) {
         snapshot_out->output_ref_id = std::nullopt;
     } else {
-        snapshot_out->output_ref_id = sqlite3_column_int64(st.st, 9);
+        snapshot_out->output_ref_id = sqlite3_column_int64(st.st, 10);
     }
 
     snapshot_out->completion.workflow_step_id = snapshot_out->workflow_step_id;
     snapshot_out->completion.job_set_id = snapshot_out->job_set_id;
-    snapshot_out->completion.expected_total = sqlite3_column_int(st.st, 10);
-    snapshot_out->completion.discovered_total = sqlite3_column_int(st.st, 11);
-    snapshot_out->completion.terminal_total = sqlite3_column_int(st.st, 12);
-    snapshot_out->completion.failed_total = sqlite3_column_int(st.st, 13);
+    snapshot_out->completion.expected_total = sqlite3_column_int(st.st, 11);
+    snapshot_out->completion.discovered_total = sqlite3_column_int(st.st, 12);
+    snapshot_out->completion.terminal_total = sqlite3_column_int(st.st, 13);
+    snapshot_out->completion.failed_total = sqlite3_column_int(st.st, 14);
+    snapshot_out->completion.priority = snapshot_out->priority;
     snapshot_out->failed_total = snapshot_out->completion.failed_total;
 
     return true;
@@ -272,7 +274,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForJob(
         "    AND job_set_ancestry.depth < 64"
         "), "
         "step_root AS ("
-        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, s.priority, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
         "  FROM job_set_ancestry a "
         "  JOIN exec_workflow_step s ON s.job_set_id=a.job_set_id "
@@ -287,7 +289,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForJob(
         "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
         "  WHERE job_set_descendants.depth < 64"
         ") "
-        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, r.priority, "
         "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, "
         "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
         "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
@@ -307,7 +309,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForStep(
     std::string* error_out) const {
     constexpr const char* kSql =
         "WITH RECURSIVE step_root AS ("
-        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, s.priority, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
         "  FROM exec_workflow_step s "
         "  JOIN exec_workflow_instance i ON i.workflow_instance_id=s.workflow_instance_id "
@@ -321,7 +323,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForStep(
         "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
         "  WHERE job_set_descendants.depth < 64"
         ") "
-        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, r.priority, "
         "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, "
         "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
         "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
@@ -341,7 +343,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForWorkflowEvent(
     std::string* error_out) const {
     constexpr const char* kSql =
         "WITH RECURSIVE step_root AS ("
-        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, "
+        "  SELECT i.workflow_instance_id, s.workflow_step_id, s.job_set_id, i.workflow_kind, s.step_key, s.step_kind, s.priority, "
         "s.input_ref_kind, s.input_ref_id, s.output_ref_kind, s.output_ref_id "
         "  FROM exec_workflow_event source "
         "  JOIN exec_workflow_step s ON s.workflow_step_id=source.workflow_step_id "
@@ -356,7 +358,7 @@ bool WorkflowTerminalOutboxSubscriber::LoadStepTerminalSnapshotForWorkflowEvent(
         "  JOIN job_set_descendants ON child.parent_job_set_id=job_set_descendants.job_set_id "
         "  WHERE job_set_descendants.depth < 64"
         ") "
-        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, "
+        "SELECT r.workflow_instance_id, r.workflow_step_id, r.job_set_id, r.workflow_kind, r.step_key, r.step_kind, r.priority, "
         "r.input_ref_kind, r.input_ref_id, r.output_ref_kind, r.output_ref_id, "
         "CASE WHEN EXISTS(SELECT 1 FROM job_set_descendants WHERE depth > 0) "
         "  THEN (SELECT COALESCE(SUM(COALESCE(js.expected_total, 0)), 0) FROM exec_job_set js JOIN job_set_descendants d ON d.job_set_id=js.job_set_id WHERE d.depth > 0) "
@@ -382,6 +384,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
         .discovered_total = snapshot.completion.discovered_total,
         .terminal_total = snapshot.completion.terminal_total,
         .failed_total = snapshot.completion.failed_total,
+        .priority = snapshot.priority,
         .workflow_kind = snapshot.workflow_kind,
         .step_key = snapshot.step_key,
         .input_ref_kind = snapshot.input_ref_kind,
@@ -550,6 +553,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
         : terminal.transition.has_value() ? terminal.transition->blocked_reason : std::optional<std::string>("transition_blocked");
 
     if (advanced) {
+        const int successor_priority = snapshot.priority + kDefaultSuccessorStepPriorityBoost;
         if (!terminal.transition->spawn_steps.empty()) {
             WorkflowAppendDynamicStepsCommand append{};
             append.workflow_instance_id = snapshot.workflow_instance_id;
@@ -564,7 +568,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                     .input_ref_id = step.input_ref_id,
                     .guard_kind = step.guard_kind,
                     .guard_value = step.guard_value,
-                    .priority = step.priority + kDefaultSuccessorStepPriorityBoost,
+                    .priority = successor_priority + step.priority,
                     .max_attempts = step.max_attempts,
                 });
             }
@@ -578,7 +582,7 @@ bool WorkflowTerminalOutboxSubscriber::HandleStepTerminalSnapshot(
                     .workflow_instance_id = snapshot.workflow_instance_id,
                     .step_key = *terminal.transition->next_step_key,
                     .requested_by = "workflow_terminal_subscriber",
-                    .priority_delta = kDefaultSuccessorStepPriorityBoost,
+                    .ready_priority = successor_priority,
                 },
                 &command_error)) {
                 if (error_out) *error_out = command_error;
