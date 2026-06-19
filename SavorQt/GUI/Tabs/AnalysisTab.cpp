@@ -970,6 +970,9 @@ void AnalysisTab::showBattleReplicationDetails(qint64 jobId)
     body += fieldHtml(QStringLiteral("Entry savestate"), origin.entry_savestate_id.has_value()
         ? QStringLiteral("#%1").arg(*origin.entry_savestate_id)
         : QStringLiteral("--"));
+    body += fieldHtml(QStringLiteral("Entry savestate artifact"), origin.entry_savestate_artifact_id.has_value()
+        ? QStringLiteral("#%1").arg(*origin.entry_savestate_artifact_id)
+        : QStringLiteral("--"));
     body += fieldHtml(QStringLiteral("Seed candidate"), origin.seed_candidate_id.has_value()
         ? QStringLiteral("#%1").arg(*origin.seed_candidate_id)
         : QStringLiteral("--"));

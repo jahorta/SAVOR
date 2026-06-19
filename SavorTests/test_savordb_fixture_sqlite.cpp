@@ -6823,6 +6823,11 @@ TEST_F(SqliteDbFixture, StateDbMaterializesSavestateToExplicitPath) {
     EXPECT_EQ(std::filesystem::path(*materialized), destination_path);
     ASSERT_TRUE(std::filesystem::exists(destination_path));
 
+    const auto payload = state_db->ResolveArtifactPayload(1, "savestate", savestate_id);
+    ASSERT_TRUE(payload.has_value());
+    EXPECT_EQ(payload->savestate_id, savestate_id);
+    EXPECT_EQ(payload->artifact_id, artifact_id);
+
     std::ifstream in(destination_path, std::ios::binary);
     std::stringstream buffer;
     buffer << in.rdbuf();

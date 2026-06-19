@@ -10,6 +10,7 @@
 #include "DB/SavorDbServiceResult.h"
 #include "Analysis/IAnalysisDb.h"
 #include "Execution/IExecutionDb.h"
+#include "State/IStateDb.h"
 #include "UIRead/IUiReadDb.h"
 #include "Core/Input/SoaBattle/BattleCommandCodec.h"
 
@@ -62,6 +63,7 @@ struct BattleRunJobDetail {
 
 struct BattleReplicationOrigin {
     std::optional<std::int64_t> entry_savestate_id;
+    std::optional<std::int64_t> entry_savestate_artifact_id;
     std::optional<std::int64_t> seed_candidate_id;
     std::string seed_source_kind;
     std::optional<std::int64_t> source_unique_seed_id;
@@ -233,6 +235,14 @@ public:
 
         BattleReplicationDetails out{};
         out.origin.entry_savestate_id = chain.front().source_savestate_id;
+        if (out.origin.entry_savestate_id.has_value()) {
+            if (auto* state = StateDb(); state != nullptr) {
+                if (const auto payload = state->ResolveArtifactPayload(1, "savestate", *out.origin.entry_savestate_id);
+                    payload.has_value() && payload->artifact_id > 0) {
+                    out.origin.entry_savestate_artifact_id = payload->artifact_id;
+                }
+            }
+        }
         out.origin.seed_candidate_id = chain.front().seed_candidate_id;
         if (auto* analysis = AnalysisDb(); analysis != nullptr && out.origin.seed_candidate_id.has_value()) {
             if (const auto candidate = analysis->GetBattleSeedCandidate(*out.origin.seed_candidate_id); candidate.has_value()) {
@@ -287,6 +297,10 @@ private:
 
     static savor::db::IExecutionDb* ExecutionDb() {
         return savorqt::SavorDbRuntime::instance().executionDb();
+    }
+
+    static savor::db::IStateDb* StateDb() {
+        return savorqt::SavorDbRuntime::instance().stateDb();
     }
 
     static savor::db::IAnalysisDb* AnalysisDb() {
