@@ -1079,15 +1079,9 @@ void RunningTab::build()
     workflowLayout->addWidget(workflowTable_, 1);
     cockpitLayout->addWidget(workflowPanel, 1);
 
-    detailDrawer_ = new QFrame(cockpit);
-    detailDrawer_->setObjectName("workspaceHeroPanel");
-    detailDrawer_->setMinimumWidth(380);
-    detailDrawer_->setMaximumWidth(520);
-    auto* drawerLayout = new QVBoxLayout(detailDrawer_);
-    drawerLayout->setContentsMargins(12, 12, 12, 12);
-    drawerLayout->setSpacing(8);
-    detailTabs_ = new QTabWidget(detailDrawer_);
-    drawerLayout->addWidget(detailTabs_, 1);
+    detailTabs_ = new QTabWidget(this);
+    detailTabs_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    detailTabs_->hide();
 
     auto* queuePanel = new QFrame(detailTabs_);
     auto* queueLayout = new QVBoxLayout(queuePanel);
@@ -1169,17 +1163,14 @@ void RunningTab::build()
     attentionPanelLayout->addWidget(createPanelScrollArea(attentionPanel, &attentionLayout_), 1);
     detailTabs_->addTab(attentionPanel, QStringLiteral("Attention"));
 
-    detailDrawer_->setVisible(false);
-    QObject::connect(detailsDrawerButton_, &QPushButton::clicked, detailDrawer_, [this]() {
-        const bool nextVisible = detailDrawer_ != nullptr && !detailDrawer_->isVisible();
-        if (detailDrawer_ != nullptr) {
-            detailDrawer_->setVisible(nextVisible);
-        }
-        if (detailsDrawerButton_ != nullptr) {
-            detailsDrawerButton_->setText(nextVisible ? QStringLiteral("Hide details") : QStringLiteral("Details"));
+    QObject::connect(detailsDrawerButton_, &QPushButton::clicked, this, [this]() {
+        if (isContextDrawerOpen()) {
+            closeDrawer(true);
+            refreshDetailsButton();
+        } else {
+            showOperationalDetails();
         }
     });
-    cockpitLayout->addWidget(detailDrawer_);
 
     canvasLayout()->addWidget(cockpit, 1);
 
@@ -1220,6 +1211,7 @@ void RunningTab::build()
 
         lastFailedWorkflows_ = data.failedWorkflows;
         lastFailedJobs_ = data.failedJobs;
+        lastAttentionItems_ = static_cast<int>(data.attentionItems.size());
 
         startCoordinatorButton_->setVisible(data.controllerAvailable && !data.coordinatorRunning && !data.hasValidation);
         pauseCoordinatorButton_->setText(data.coordinatorPaused ? QStringLiteral("Resume") : QStringLiteral("Pause"));
@@ -1238,12 +1230,7 @@ void RunningTab::build()
         fixRuntimeSetupButton_->setToolTip(data.validation);
         openFailuresButton_->setVisible(data.failedWorkflows > 0 || data.failedJobs > 0);
         if (detailsDrawerButton_ != nullptr) {
-            const bool drawerVisible = detailDrawer_ != nullptr && detailDrawer_->isVisible();
-            if (!drawerVisible) {
-                detailsDrawerButton_->setText(data.attentionItems.empty()
-                    ? QStringLiteral("Details")
-                    : QStringLiteral("Details (%1)").arg(static_cast<int>(data.attentionItems.size())));
-            }
+            refreshDetailsButton();
             detailsDrawerButton_->setToolTip(data.attentionSummary);
         }
 
@@ -1341,4 +1328,38 @@ void RunningTab::refreshCockpit()
     if (requestCockpitRefresh_) {
         requestCockpitRefresh_();
     }
+}
+
+void RunningTab::showOperationalDetails()
+{
+    if (detailTabs_ == nullptr) {
+        return;
+    }
+
+    setContextWidget(
+        savorqt::gui::UiEntityRef{
+            QStringLiteral("running"),
+            QStringLiteral("operational_details"),
+            0,
+            QStringLiteral("running:operational_details"),
+        },
+        QStringLiteral("Operational Details"),
+        detailTabs_,
+        QVector<std::pair<QString, std::function<void()>>>{},
+        savorqt::gui::ContextDrawerMode::Expanded);
+    refreshDetailsButton();
+}
+
+void RunningTab::refreshDetailsButton()
+{
+    if (detailsDrawerButton_ == nullptr) {
+        return;
+    }
+    if (isContextDrawerOpen()) {
+        detailsDrawerButton_->setText(QStringLiteral("Hide details"));
+        return;
+    }
+    detailsDrawerButton_->setText(lastAttentionItems_ == 0
+        ? QStringLiteral("Details")
+        : QStringLiteral("Details (%1)").arg(lastAttentionItems_));
 }

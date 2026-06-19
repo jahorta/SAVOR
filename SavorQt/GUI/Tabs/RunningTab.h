@@ -30,6 +30,8 @@ public:
 private:
     void build();
     void refreshCockpit();
+    void showOperationalDetails();
+    void refreshDetailsButton();
 
     CoordinatorController* coordinatorController_ = nullptr;
     Actions actions_;
@@ -63,11 +65,11 @@ private:
 
     QTableWidget* workflowTable_ = nullptr;
     QTableWidget* workerTable_ = nullptr;
-    QFrame* detailDrawer_ = nullptr;
     QTabWidget* detailTabs_ = nullptr;
     QVBoxLayout* queueBucketsLayout_ = nullptr;
     QVBoxLayout* attentionLayout_ = nullptr;
 
     int lastFailedWorkflows_ = 0;
     int lastFailedJobs_ = 0;
+    int lastAttentionItems_ = 0;
 };

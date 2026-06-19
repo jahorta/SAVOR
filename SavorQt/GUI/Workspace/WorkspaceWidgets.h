@@ -294,17 +294,17 @@ public:
         auto* drawerScroll = new QScrollArea(drawer_);
         drawerScroll->setWidgetResizable(true);
         drawerScroll->setFrameShape(QFrame::NoFrame);
-        auto* drawerScrollContent = new QWidget(drawerScroll);
-        auto* drawerScrollLayout = new QVBoxLayout(drawerScrollContent);
-        drawerScrollLayout->setContentsMargins(0, 0, 0, 0);
-        drawerScrollLayout->setSpacing(0);
-        drawerBody_ = new QLabel(drawerScrollContent);
+        drawerScrollContent_ = new QWidget(drawerScroll);
+        drawerContentLayout_ = new QVBoxLayout(drawerScrollContent_);
+        drawerContentLayout_->setContentsMargins(0, 0, 0, 0);
+        drawerContentLayout_->setSpacing(0);
+        drawerBody_ = new QLabel(drawerScrollContent_);
         drawerBody_->setObjectName("sectionDescription");
         drawerBody_->setWordWrap(true);
         drawerBody_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-        drawerScrollLayout->addWidget(drawerBody_);
-        drawerScrollLayout->addStretch();
-        drawerScroll->setWidget(drawerScrollContent);
+        drawerContentLayout_->addWidget(drawerBody_);
+        drawerContentLayout_->addStretch();
+        drawerScroll->setWidget(drawerScrollContent_);
         drawerActions_ = new QGridLayout();
         drawerActions_->setSpacing(8);
         drawerActions_->setColumnStretch(0, 1);
@@ -338,29 +338,42 @@ public:
     {
         currentEntity_ = entity;
         drawerTitle_->setText(title);
+        clearContextWidget();
+        drawerBody_->show();
         drawerBody_->setText(body);
-        while (QLayoutItem* item = drawerActions_->takeAt(0)) {
-            if (QWidget* widget = item->widget()) {
-                widget->deleteLater();
-            }
-            delete item;
-        }
-        for (int i = 0; i < actions.size(); ++i) {
-            const auto& action = actions[i];
-            auto* button = new QPushButton(action.first, drawer_);
-            button->setObjectName("jobsPrimaryButton");
-            connect(button, &QPushButton::clicked, drawer_, [callback = action.second]() {
-                if (callback) {
-                    callback();
-                }
-            });
-            if (i == actions.size() - 1 && actions.size() % 2 != 0) {
-                drawerActions_->addWidget(button, i / 2, 0, 1, 2);
-            } else {
-                drawerActions_->addWidget(button, i / 2, i % 2);
-            }
-        }
+        setDrawerActions(actions);
         setDrawerMode(preferredMode);
+    }
+
+    void setContextWidget(
+        const UiEntityRef& entity,
+        const QString& title,
+        QWidget* bodyWidget,
+        const QVector<std::pair<QString, std::function<void()>>>& actions,
+        ContextDrawerMode preferredMode = ContextDrawerMode::Expanded)
+    {
+        currentEntity_ = entity;
+        drawerTitle_->setText(title);
+        drawerBody_->hide();
+        if (contextWidget_ != bodyWidget) {
+            clearContextWidget();
+            contextWidget_ = bodyWidget;
+            if (contextWidget_ != nullptr) {
+                contextWidget_->setParent(drawerScrollContent_);
+                contextWidget_->show();
+                const int insertIndex = std::max(0, drawerContentLayout_->count() - 1);
+                drawerContentLayout_->insertWidget(insertIndex, contextWidget_, 1);
+            }
+        } else if (contextWidget_ != nullptr) {
+            contextWidget_->show();
+        }
+        setDrawerActions(actions);
+        setDrawerMode(preferredMode);
+    }
+
+    bool isContextDrawerOpen() const
+    {
+        return drawerMode_ != ContextDrawerMode::Collapsed;
     }
 
     void closeDrawer(bool force = false)
@@ -387,6 +400,42 @@ protected:
     }
 
 private:
+    void clearContextWidget()
+    {
+        if (contextWidget_ == nullptr || drawerContentLayout_ == nullptr) {
+            return;
+        }
+        drawerContentLayout_->removeWidget(contextWidget_);
+        contextWidget_->hide();
+        contextWidget_->setParent(nullptr);
+        contextWidget_ = nullptr;
+    }
+
+    void setDrawerActions(const QVector<std::pair<QString, std::function<void()>>>& actions)
+    {
+        while (QLayoutItem* item = drawerActions_->takeAt(0)) {
+            if (QWidget* widget = item->widget()) {
+                widget->deleteLater();
+            }
+            delete item;
+        }
+        for (int i = 0; i < actions.size(); ++i) {
+            const auto& action = actions[i];
+            auto* button = new QPushButton(action.first, drawer_);
+            button->setObjectName("jobsPrimaryButton");
+            connect(button, &QPushButton::clicked, drawer_, [callback = action.second]() {
+                if (callback) {
+                    callback();
+                }
+            });
+            if (i == actions.size() - 1 && actions.size() % 2 != 0) {
+                drawerActions_->addWidget(button, i / 2, 0, 1, 2);
+            } else {
+                drawerActions_->addWidget(button, i / 2, i % 2);
+            }
+        }
+    }
+
     void setDrawerMode(ContextDrawerMode mode)
     {
         drawerMode_ = mode;
@@ -525,7 +574,10 @@ private:
     QFrame* drawer_ = nullptr;
     DrawerResizeHandle* drawerHandle_ = nullptr;
     QLabel* drawerTitle_ = nullptr;
+    QWidget* drawerScrollContent_ = nullptr;
+    QVBoxLayout* drawerContentLayout_ = nullptr;
     QLabel* drawerBody_ = nullptr;
+    QWidget* contextWidget_ = nullptr;
     QPushButton* closeDrawerButton_ = nullptr;
     QGridLayout* drawerActions_ = nullptr;
     UiEntityRef currentEntity_;
