@@ -4,6 +4,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <cstdint>
 #include <windows.h>
 #include "Core/Input/InputPlan.h"
 #include "Runner/Script/PhaseScriptVM.h"  // for PSResult
@@ -14,6 +15,28 @@
 
 
 namespace savor {
+
+	struct ProcessWorkerStopSnapshot {
+		bool already_stopping{ false };
+		bool was_running{ false };
+		bool stdin_close_attempted{ false };
+		bool stdin_close_succeeded{ false };
+		uint32_t stdin_close_error{ 0 };
+		bool termination_attempted{ false };
+		bool termination_succeeded{ false };
+		uint32_t termination_error{ 0 };
+		std::string termination_method;
+		bool cancel_pipe_attempted{ false };
+		bool cancel_pipe_succeeded{ false };
+		uint32_t cancel_pipe_error{ 0 };
+		bool cancel_reader_attempted{ false };
+		bool cancel_reader_succeeded{ false };
+		uint32_t cancel_reader_error{ 0 };
+		bool reader_joined{ false };
+		uint32_t process_wait_result{ WAIT_FAILED };
+		uint32_t process_wait_error{ 0 };
+		uint32_t process_exit_code{ 0 };
+	};
 
 		struct ProcStartParams {
 			size_t worker_id{ 0 };
@@ -79,6 +102,7 @@ namespace savor {
 		bool start(ProcStartParams& p, TSQueue<PRResult>* out_queue);
 		bool send_job(uint64_t job_id, uint64_t epoch, const PSJob& job);
 		void stop();
+		ProcessWorkerStopSnapshot last_stop_snapshot() const;
 
 		bool ctl_set_program(uint8_t init_kind, uint8_t main_kind, const PSInit& init);
 		bool ctl_run_init_once();
@@ -154,6 +178,9 @@ namespace savor {
 		std::string visual_host_events_pipe_name_{};
 		mutable std::mutex visual_pipe_m_;
 		HANDLE hVisualControlPipe_{ INVALID_HANDLE_VALUE };
+		std::atomic<bool> stop_started_{ false };
+		mutable std::mutex stop_mtx_;
+		ProcessWorkerStopSnapshot last_stop_snapshot_{};
 
 	};
 

@@ -33,6 +33,7 @@
 #include "Execution/WorkflowSchedulerAdapter.h"
 #include "State/QueuedStateDb.h"
 #include "UIRead/QueuedUiReadDb.h"
+#include "Worker/ProcessWorker.h"
 #include "Worker/WorkerStatusRegistry.h"
 #include "common/DbPreparer.h"
 #include "common/RecordingExecutionDb.h"
@@ -716,6 +717,24 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         EXPECT_GE(telemetry.dispatch_miss_rate_basis_points, 0);
     }
 
+    TEST(ProcessWorkerShutdown, StopIsIdempotentWithoutStartedChild) {
+        savor::ProcessWorker worker;
+
+        worker.stop();
+        const auto first = worker.last_stop_snapshot();
+        EXPECT_FALSE(first.already_stopping);
+        EXPECT_FALSE(first.was_running);
+        EXPECT_FALSE(first.stdin_close_attempted);
+        EXPECT_FALSE(first.termination_attempted);
+        EXPECT_FALSE(first.cancel_pipe_attempted);
+        EXPECT_FALSE(first.cancel_reader_attempted);
+        EXPECT_FALSE(first.reader_joined);
+
+        worker.stop();
+        const auto second = worker.last_stop_snapshot();
+        EXPECT_TRUE(second.already_stopping);
+    }
+
     TEST(Stage3Phase3Shutdown, StopIsIdempotentAndEmitsOneCompletePhase) {
         using namespace savor::runner::parallel::savordb;
         using namespace savor::db::execution::workflow;
@@ -876,9 +895,17 @@ VALUES(6403, 6401, 'Current', 'unit.step', 'MATERIALIZED', 6402, 0, 1, unixepoch
         const auto join_it = std::find_if(events.begin(), events.end(), [](const std::string& line) {
             return line.find("phase=join_begin thread=worker_job") != std::string::npos;
         });
+        const auto worker_stop_end_it = std::find_if(events.begin(), events.end(), [](const std::string& line) {
+            return line.find("phase=worker_stop_end") != std::string::npos;
+        });
         ASSERT_NE(worker_stop_it, events.end());
         ASSERT_NE(join_it, events.end());
+        ASSERT_NE(worker_stop_end_it, events.end());
         EXPECT_LT(std::distance(events.begin(), worker_stop_it), std::distance(events.begin(), join_it));
+        EXPECT_NE(worker_stop_end_it->find("terminate="), std::string::npos);
+        EXPECT_NE(worker_stop_end_it->find("cancel_pipe="), std::string::npos);
+        EXPECT_NE(worker_stop_end_it->find("cancel_reader="), std::string::npos);
+        EXPECT_NE(worker_stop_end_it->find("reader_joined="), std::string::npos);
     }
 
     TEST(Stage3Phase3ClaimAccounting, DistinguishesCleanZeroClaimFromClaimErrorAndPartialClaim) {

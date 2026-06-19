@@ -31,6 +31,38 @@ struct ProgressDedupState {
     bool warning_written = false;
 };
 
+std::string FormatWorkerStopSnapshot(const savor::ProcessWorkerStopSnapshot& snapshot) {
+    std::ostringstream detail;
+    detail << " already_stopping=" << (snapshot.already_stopping ? "true" : "false")
+           << " was_running=" << (snapshot.was_running ? "true" : "false")
+           << " stdin_close=" << (snapshot.stdin_close_attempted ? (snapshot.stdin_close_succeeded ? "ok" : "failed") : "skipped");
+    if (snapshot.stdin_close_error != 0) {
+        detail << " stdin_error=" << snapshot.stdin_close_error;
+    }
+    detail << " terminate=" << (snapshot.termination_attempted ? (snapshot.termination_succeeded ? "ok" : "failed") : "skipped");
+    if (!snapshot.termination_method.empty()) {
+        detail << " terminate_method=" << snapshot.termination_method;
+    }
+    if (snapshot.termination_error != 0) {
+        detail << " terminate_error=" << snapshot.termination_error;
+    }
+    detail << " cancel_pipe=" << (snapshot.cancel_pipe_attempted ? (snapshot.cancel_pipe_succeeded ? "ok" : "failed") : "skipped");
+    if (snapshot.cancel_pipe_error != 0) {
+        detail << " cancel_pipe_error=" << snapshot.cancel_pipe_error;
+    }
+    detail << " cancel_reader=" << (snapshot.cancel_reader_attempted ? (snapshot.cancel_reader_succeeded ? "ok" : "failed") : "skipped");
+    if (snapshot.cancel_reader_error != 0) {
+        detail << " cancel_reader_error=" << snapshot.cancel_reader_error;
+    }
+    detail << " reader_joined=" << (snapshot.reader_joined ? "true" : "false")
+           << " process_wait=" << snapshot.process_wait_result;
+    if (snapshot.process_wait_error != 0) {
+        detail << " process_wait_error=" << snapshot.process_wait_error;
+    }
+    detail << " process_exit=" << snapshot.process_exit_code;
+    return detail.str();
+}
+
 WorkflowSchedulerAdapter::ScheduleFn ResolveWorkflowScheduleFn(
     savor::db::IExecutionDb* execution_db,
     const savor::db::execution::programdb::ProgramKindRegistry* program_kind_registry,
@@ -2478,8 +2510,12 @@ void DBWorkflowWorkerCoordinator::StopWorkerSlot(WorkerSlotPtr slot_handle) {
         worker_to_stop->stop();
     }
     {
+        const auto stop_snapshot = worker_to_stop
+            ? worker_to_stop->last_stop_snapshot()
+            : savor::ProcessWorkerStopSnapshot{};
         std::ostringstream detail;
-        detail << "worker=" << worker_id << " pid=" << pid;
+        detail << "worker=" << worker_id << " pid=" << pid
+               << FormatWorkerStopSnapshot(stop_snapshot);
         EmitShutdownPhase("worker_stop_end", detail.str());
     }
 

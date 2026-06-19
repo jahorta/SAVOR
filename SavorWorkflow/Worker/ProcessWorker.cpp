@@ -110,6 +110,11 @@ namespace savor {
 
     bool ProcessWorker::start(ProcStartParams& p, TSQueue<PRResult>* outq)
     {
+        stop_started_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(stop_mtx_);
+            last_stop_snapshot_ = ProcessWorkerStopSnapshot{};
+        }
         out_ = outq;
         id_ = p.worker_id;
         visual_control_pipe_name_ = p.visual_debug && p.visual_control_pipe_name.empty()
@@ -415,34 +420,94 @@ namespace savor {
 
     void ProcessWorker::stop()
     {
-        const bool was_running = running_.exchange(false);
+        if (stop_started_.exchange(true)) {
+            std::lock_guard<std::mutex> lock(stop_mtx_);
+            last_stop_snapshot_.already_stopping = true;
+            return;
+        }
 
-        // Kill first when still active so the reader unblocks, then always join/close.
+        ProcessWorkerStopSnapshot snapshot{};
+        const bool was_running = running_.exchange(false);
+        snapshot.was_running = was_running;
+        ack_.cancel_all();
+
+        if (hChildStd_IN_Wr) {
+            snapshot.stdin_close_attempted = true;
+            if (CloseHandle(hChildStd_IN_Wr)) {
+                snapshot.stdin_close_succeeded = true;
+            } else {
+                snapshot.stdin_close_error = GetLastError();
+            }
+            hChildStd_IN_Wr = NULL;
+        }
+
+        // Kill first when still active so the reader unblocks, then explicitly cancel
+        // the synchronous read as a backstop before joining the reader thread.
         if (was_running) {
+            snapshot.termination_attempted = true;
             if (hJob) {
-                TerminateJobObject(hJob, /*exit_code*/1);
+                snapshot.termination_method = "job";
+                snapshot.termination_succeeded = TerminateJobObject(hJob, /*exit_code*/1) != 0;
+                if (!snapshot.termination_succeeded) {
+                    snapshot.termination_error = GetLastError();
+                }
             }
             else if (hProcess) {
-                TerminateProcess(hProcess, /*exit_code*/1);
+                snapshot.termination_method = "process";
+                snapshot.termination_succeeded = TerminateProcess(hProcess, /*exit_code*/1) != 0;
+                if (!snapshot.termination_succeeded) {
+                    snapshot.termination_error = GetLastError();
+                }
             }
         } else if (hProcess) {
             DWORD exit_code = 0;
             if (GetExitCodeProcess(hProcess, &exit_code) && exit_code == STILL_ACTIVE) {
+                snapshot.termination_attempted = true;
                 if (hJob) {
-                    TerminateJobObject(hJob, /*exit_code*/1);
+                    snapshot.termination_method = "job";
+                    snapshot.termination_succeeded = TerminateJobObject(hJob, /*exit_code*/1) != 0;
+                    if (!snapshot.termination_succeeded) {
+                        snapshot.termination_error = GetLastError();
+                    }
                 } else {
-                    TerminateProcess(hProcess, /*exit_code*/1);
+                    snapshot.termination_method = "process";
+                    snapshot.termination_succeeded = TerminateProcess(hProcess, /*exit_code*/1) != 0;
+                    if (!snapshot.termination_succeeded) {
+                        snapshot.termination_error = GetLastError();
+                    }
                 }
             }
         }
 
-        if (reader_.joinable()) reader_.join();
+        if (hChildStd_OUT_Rd) {
+            snapshot.cancel_pipe_attempted = true;
+            snapshot.cancel_pipe_succeeded = CancelIoEx(hChildStd_OUT_Rd, nullptr) != 0;
+            if (!snapshot.cancel_pipe_succeeded) {
+                snapshot.cancel_pipe_error = GetLastError();
+            }
+        }
 
-        if (hChildStd_IN_Wr) { CloseHandle(hChildStd_IN_Wr); hChildStd_IN_Wr = NULL; }
+        if (reader_.joinable()) {
+            snapshot.cancel_reader_attempted = true;
+            snapshot.cancel_reader_succeeded = CancelSynchronousIo(reader_.native_handle()) != 0;
+            if (!snapshot.cancel_reader_succeeded) {
+                snapshot.cancel_reader_error = GetLastError();
+            }
+            reader_.join();
+            snapshot.reader_joined = true;
+        }
+
         if (hChildStd_OUT_Rd) { CloseHandle(hChildStd_OUT_Rd); hChildStd_OUT_Rd = NULL; }
 
         if (hProcess) { 
-            WaitForSingleObject(hProcess, 2000);
+            snapshot.process_wait_result = WaitForSingleObject(hProcess, 2000);
+            if (snapshot.process_wait_result == WAIT_FAILED) {
+                snapshot.process_wait_error = GetLastError();
+            }
+            DWORD exit_code = 0;
+            if (GetExitCodeProcess(hProcess, &exit_code)) {
+                snapshot.process_exit_code = exit_code;
+            }
             CloseHandle(hProcess); hProcess = NULL; 
         }
 
@@ -456,7 +521,16 @@ namespace savor {
             }
         }
 
-        ack_.cancel_all();
+        {
+            std::lock_guard<std::mutex> lock(stop_mtx_);
+            last_stop_snapshot_ = snapshot;
+        }
+    }
+
+    ProcessWorkerStopSnapshot ProcessWorker::last_stop_snapshot() const
+    {
+        std::lock_guard<std::mutex> lock(stop_mtx_);
+        return last_stop_snapshot_;
     }
 
 } // namespace savor
